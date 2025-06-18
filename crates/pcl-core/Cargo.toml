@@ -1,0 +1,39 @@
+[package]
+name = "pcl-core"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+
+[dependencies]
+# PCL deps
+pcl-common = { workspace = true }
+pcl-phoundry = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+alloy-primitives = { version = "0.8.21", features = ["serde"] }
+inquire = "0.7.5"
+toml = "0.8.2"
+dirs = "6.0.0"
+color-eyre = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+colored = { workspace = true }
+indicatif = "0.17"
+assertion-da-client = { git = "https://github.com/phylaxsystems/assertion-da.git", tag = "0.1.5" }
+jsonrpsee-core = { version = "0.24.9", features = ["client", "http"] }
+jsonrpsee-http-client = "0.24.9"
+anyhow = { version = "1.0.98" }
+
+[dev-dependencies]
+mockito = "1.2"
+tempfile = "3.6.0"
+alloy = { version = "0.11.1", features = ["signer-local"] }
+rand = "0.8.1"
+int-test-utils = { git = "https://github.com/phylaxsystems/int-test-utils.git", tag = "0.1.0" }
+libc = "0.2.172"
