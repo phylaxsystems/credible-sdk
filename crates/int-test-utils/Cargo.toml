@@ -1,0 +1,35 @@
+[package]
+name = "int-test-utils"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+alloy = { workspace = true, version = "0.11.1", features = [
+    "full",
+    "node-bindings",
+    "json-rpc",
+    "rpc-client",
+    "signer-local",
+    "k256",
+    "rand",
+    "rlp",
+] }
+assertion-da-server.workspace = true
+sled.workspace = true
+rand.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+bollard.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tracing.workspace = true
+assertion-da-client.workspace = true
+reqwest.workspace = true
