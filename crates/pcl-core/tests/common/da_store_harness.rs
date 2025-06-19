@@ -57,7 +57,7 @@ impl TestSetup {
             root: Some(
                 self.root
                     .clone()
-                    .unwrap_or(PathBuf::from("../../../../testdata/mock-protocol")),
+                    .unwrap_or(PathBuf::from("../../testdata/mock-protocol")),
             ),
             assertion_contract: self
                 .assertion_contract

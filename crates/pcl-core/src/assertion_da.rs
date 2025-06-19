@@ -294,13 +294,12 @@ impl DaStoreArgs {
     /// Executes the assertion storage process.
     ///
     /// This method:
-    /// 1. Builds and flattens the assertion
-    /// 2. Creates a DA client with appropriate authentication
-    /// 3. Submits the assertion to the DA layer
-    /// 4. Updates the configuration with the submission result
+    /// 1. Sets up dependencies
+    /// 2. Stores the assertions
+    /// 3. Submits the selected assertions to the Dapp from the CLI
     ///
     /// # Arguments
-    /// * `_cli_args` - General CLI arguments (unused)
+    /// * `cli_args` - General CLI arguments
     /// * `config` - Configuration containing assertions and auth details
     ///
     /// # Returns
@@ -381,7 +380,7 @@ mod tests {
     fn create_test_build_args() -> BuildAndFlattenArgs {
         BuildAndFlattenArgs {
             assertion_contract: "MockAssertion".to_string(),
-            root: Some("../../../testdata/mock-protocol".parse().unwrap()),
+            root: Some("../../testdata/mock-protocol".parse().unwrap()),
         }
     }
 
