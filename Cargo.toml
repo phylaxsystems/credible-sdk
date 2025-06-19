@@ -25,6 +25,11 @@ pcl-phoundry = { path = "crates/pcl-phoundry" }
 pcl-common = { path = "crates/pcl-common" }
 pcl-core = { path = "crates/pcl-core" }
 
+# DA dependencies
+assertion-da-client = { path = "crates/da-client" }
+assertion-da-server = { path = "crates/da-server" }
+assertion-da-core = { path = "crates/da-core" }
+
 alloy = { version = "0.11.1", features = ["full", "node-bindings", "json-rpc", "rpc-client", "signer-local", "k256"] }
 alloy-dyn-abi = {version = "0.8.15", features = ["std"] }
 alloy-json-abi = "0.8.15"

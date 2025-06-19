@@ -8188,7 +8188,7 @@ dependencies = [
  "alloy 0.11.1",
  "alloy-primitives",
  "anyhow",
- "assertion-da-client 0.1.5",
+ "assertion-da-client 0.2.0",
  "chrono",
  "clap",
  "color-eyre",
