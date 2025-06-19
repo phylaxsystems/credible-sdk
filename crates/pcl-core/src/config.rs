@@ -460,7 +460,7 @@ mod tests {
     /// Helper function to set up a temporary config directory
     fn setup_config_dir() -> (PathBuf, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        env::set_var("HOME", temp_dir.path());
+        unsafe { env::set_var("HOME", temp_dir.path()); }
         (temp_dir.path().join(CONFIG_DIR), temp_dir)
     }
 
