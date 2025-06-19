@@ -48,7 +48,7 @@ pub struct DappSubmitArgs {
         value_name = "API Endpoint",
         default_value = "https://dapp.phylax.systems/api/v1"
     )]
-    dapp_url: String,
+    pub dapp_url: String,
 
     /// Optional project name to skip interactive selection
     #[clap(
@@ -58,7 +58,7 @@ pub struct DappSubmitArgs {
         value_hint = ValueHint::Other,
 
     )]
-    project_name: Option<String>,
+    pub project_name: Option<String>,
 
     /// Optional list of assertion name and constructor args to skip interactive selection
     /// Format: assertion_name OR 'assertion_name(constructor_arg0,constructor_arg1)'
@@ -68,7 +68,7 @@ pub struct DappSubmitArgs {
         value_name = "ASSERTION_KEYS",
         value_hint = ValueHint::Other,
     )]
-    assertion_keys: Option<Vec<AssertionKey>>,
+    pub assertion_keys: Option<Vec<AssertionKey>>,
 }
 
 impl DappSubmitArgs {
