@@ -227,7 +227,7 @@ mod tests {
         let result = deploy_contracts(
             &anvil,
             SigningKey::random(&mut rand::thread_rng()), // Using same key for both roles in test
-            std::path::PathBuf::from("lib/credible-layer-contracts"),
+            std::path::PathBuf::from("../../lib/credible-layer-contracts"),
             5,
         );
 
@@ -299,7 +299,7 @@ mod tests {
         let result = deploy_contracts(
             &anvil,
             deployer_key,
-            std::path::PathBuf::from("lib/credible-layer-contracts"),
+            std::path::PathBuf::from("../../lib/credible-layer-contracts"),
             5,
         );
 
@@ -323,7 +323,7 @@ mod tests {
         let deployer_key = get_anvil_deployer(&anvil);
         let result = deploy_create_factory(
             &deployer_key,
-            std::path::PathBuf::from("lib/credible-layer-contracts"),
+            std::path::PathBuf::from("../../lib/credible-layer-contracts"),
             &anvil.endpoint(),
         );
 
