@@ -4,11 +4,49 @@ Assertion DA functions as a temporary data availability layer for the Phylax Cre
 
 ## Running the `assertion-da`
 
-To run the `assertion-da`, clone the repository and use cargo, nix or Docker.
+The assertion-da server is part of the credible-sdk monorepo. To run it, you have several options:
 
-- With cargo: `cargo build --release --locked`
-- With nix: `nix build`
-- With Docker: `docker compose up`
+### Using Make (Recommended)
+
+```bash
+# Run with Docker using the latest published image
+make compose
+
+# Run with Docker for development (includes debug_assertions feature)
+make compose-dev
+
+# Build Docker image from source
+make docker-build
+
+# Build Docker image for development
+make docker-build-dev
+```
+
+### Using Cargo
+
+```bash
+# Run directly from the monorepo root
+cargo run --release --bin assertion-da -- --private-key <PRIVATE_KEY>
+
+# Run with debug assertions enabled
+cargo run --release --bin assertion-da --features debug_assertions -- --private-key <PRIVATE_KEY>
+
+# Build the binary
+cargo build --release --bin assertion-da
+```
+
+### Using Docker Compose
+
+```bash
+# Set the required environment variable
+export DA_PRIVATE_KEY=0x...
+
+# Run the service
+docker compose -f etc/docker-compose.yaml up
+
+# Or for development
+docker compose -f etc/docker-compose-dev.yaml up
+```
 
 **Note:** The `private-key` flag is required so the Assertion DA can sign the Assertion bytecode.
 
@@ -106,7 +144,7 @@ Submits and compiles a Solidity assertion.
     {
       "solidity_source": "contract MyAssertion { ... }",
       "compiler_version": "0.8.17",
-      "assertion_contract_name": "MyAssertion"
+      "assertion_contract_name": "MyAssertion",
       "constructor_args": [],
       "constructor_abi_signature": "constructor()"
     }
