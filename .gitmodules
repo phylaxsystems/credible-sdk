@@ -10,6 +10,3 @@
 [submodule "lib/credible-layer-dapp"]
 	path = lib/credible-layer-dapp
 	url = git@github.com:phylaxsystems/credible-layer-dapp.git
-[submodule "lib/credible-layer-contracts"]
-	path = lib/credible-layer-contracts
-	url = https://github.com/phylaxsystems/credible-layer-contracts.git

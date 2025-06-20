@@ -756,7 +756,7 @@ mod tests {
     #[tokio::test]
     async fn test_complex_contract() {
         let docker = setup_docker();
-        let source_code = std::fs::read_to_string("../../testdata/MockAssertion.sol").unwrap();
+        let source_code = std::fs::read_to_string("../../../testdata/MockAssertion.sol").unwrap();
 
         let result = compile_solidity("MockAssertion", &source_code, "0.8.28", docker).await;
         assert!(

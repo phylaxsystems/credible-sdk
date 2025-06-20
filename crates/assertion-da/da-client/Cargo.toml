@@ -5,7 +5,7 @@ edition.workspace = true
 
 [[example]]
 name = "test_http_client"
-path = "../../examples/test_http_client.rs"
+path = "../../../examples/test_http_client.rs"
 
 [dependencies]
 tokio.workspace = true
