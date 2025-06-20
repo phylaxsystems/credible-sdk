@@ -380,7 +380,7 @@ mod tests {
     fn create_test_build_args() -> BuildAndFlattenArgs {
         BuildAndFlattenArgs {
             assertion_contract: "MockAssertion".to_string(),
-            root: Some("../../testdata/mock-protocol".parse().unwrap()),
+            root: Some("../../../testdata/mock-protocol".parse().unwrap()),
         }
     }
 

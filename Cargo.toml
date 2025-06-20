@@ -3,10 +3,10 @@ members = [
     "crates/assertion-da/da-client",
     "crates/assertion-da/da-server", 
     "crates/assertion-da/da-core",
-    "crates/pcl-cli",
-    "crates/pcl-phoundry",
-    "crates/pcl-common",
-    "crates/pcl-core"
+    "crates/pcl/cli",
+    "crates/pcl/phoundry",
+    "crates/pcl/common",
+    "crates/pcl/core"
 ]
 resolver = "2"
 
@@ -21,9 +21,9 @@ repository = "https://github.com/phylaxsystems/credible-sdk"
 rust-tracing = { git = "https://github.com/phylaxsystems/rust-tracing.git", tag = "0.1.3"}
 
 # PCL dependencies
-pcl-phoundry = { path = "crates/pcl-phoundry" }
-pcl-common = { path = "crates/pcl-common" }
-pcl-core = { path = "crates/pcl-core" }
+pcl-phoundry = { path = "crates/pcl/phoundry" }
+pcl-common = { path = "crates/pcl/common" }
+pcl-core = { path = "crates/pcl/core" }
 
 # DA dependencies
 assertion-da-client = { path = "crates/assertion-da/da-client" }
