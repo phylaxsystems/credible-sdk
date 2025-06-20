@@ -1,5 +1,5 @@
 [workspace]
-members = [ "crates/da-client","crates/da-server", "crates/da-core"]
+members = [ "crates/assertion-da/da-client","crates/assertion-da/da-server", "crates/assertion-da/da-core"]
 resolver = "2"
 
 [workspace.package]
