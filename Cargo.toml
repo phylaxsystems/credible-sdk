@@ -1,16 +1,38 @@
 [workspace]
-members = [ "crates/assertion-da/da-client","crates/assertion-da/da-server", "crates/assertion-da/da-core"]
+members = [ 
+    "crates/assertion-da/da-client",
+    "crates/assertion-da/da-server", 
+    "crates/assertion-da/da-core",
+    "crates/pcl/cli",
+    "crates/pcl/phoundry",
+    "crates/pcl/common",
+    "crates/pcl/core"
+]
 resolver = "2"
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
+authors = ["Phylax Systems"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/phylaxsystems/credible-sdk"
 
 [workspace.dependencies]
+rust-tracing = { git = "https://github.com/phylaxsystems/rust-tracing.git", tag = "0.1.3"}
+
+# PCL dependencies
+pcl-phoundry = { path = "crates/pcl/phoundry" }
+pcl-common = { path = "crates/pcl/common" }
+pcl-core = { path = "crates/pcl/core" }
+
+# DA dependencies
+assertion-da-client = { path = "crates/assertion-da/da-client" }
+assertion-da-server = { path = "crates/assertion-da/da-server" }
+assertion-da-core = { path = "crates/assertion-da/da-core" }
+
 alloy = { version = "0.11.1", features = ["full", "node-bindings", "json-rpc", "rpc-client", "signer-local", "k256"] }
 alloy-dyn-abi = {version = "0.8.15", features = ["std"] }
 alloy-json-abi = "0.8.15"
-rust-tracing = { git = "https://github.com/phylaxsystems/rust-tracing.git", tag = "0.1.3"}
 
 anyhow = "1.0.86"
 clap = {version = "4.5.11", features = ["derive", "env"]}
@@ -41,3 +63,9 @@ bollard = "0.18"
 
 tracing = "0.1.41"
 tracing-subscriber = {version = "0.3", features = ["std", "env-filter"]}
+
+color-eyre = "0.6"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+colored = "3"
+tempdir = "0.3"
