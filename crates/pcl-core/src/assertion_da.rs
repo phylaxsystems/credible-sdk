@@ -401,7 +401,7 @@ mod tests {
         String::from_utf8(output).unwrap()
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_run_with_malformed_response() {
         let mut server = Server::new_async().await;
         let mock = server
@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(assertion.signature, "test_signature");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_run_with_expired_auth() {
         let mut server = Server::new_async().await;
         let mock = server.mock("POST", "/").with_status(401).create();
