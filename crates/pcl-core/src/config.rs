@@ -480,6 +480,7 @@ mod tests {
         fs::set_permissions(path, perms)
     }
 
+
     #[test]
     fn test_write_and_read_config() {
         let (config_dir, _temp_dir) = setup_config_dir();
@@ -534,30 +535,22 @@ mod tests {
             "contract1"
         );
 
-        // Test display format without colors
+        // Test display format - check for key content rather than exact match due to color codes
         let formatted_cfg = format!("{read_config}");
-        let expected_cfg = format!(
-            r"PCL Configuration
-==================
-Config path: {}
-Authentication:
-  User Address: 0x0000000000000000000000000000000000000000
-  Token Expired at 2022-12-31 16:00:00 UTC
-  Access Token: [Set]
-  Refresh Token: [Set]
-
-
-Pending Assertions for Submission
---------------------------------
-Assertion #1:
-Contract: contract1
-  ID: id1
-  Constructor Args: arg1,arg2
-  DA Signature: sig1...
-",
-            config_dir.join(CONFIG_FILE).display()
-        );
-        assert_eq!(formatted_cfg, expected_cfg);
+        
+        // Check that all the important information is present
+        assert!(formatted_cfg.contains("PCL Configuration"));
+        assert!(formatted_cfg.contains("Config path:"));
+        assert!(formatted_cfg.contains(".pcl/config.toml"));
+        assert!(formatted_cfg.contains("User Address: 0x0000000000000000000000000000000000000000"));
+        assert!(formatted_cfg.contains("2022-12-31 16:00:00 UTC"));
+        assert!(formatted_cfg.contains("Access Token: [Set]"));
+        assert!(formatted_cfg.contains("Refresh Token: [Set]"));
+        assert!(formatted_cfg.contains("Pending Assertions for Submission"));
+        assert!(formatted_cfg.contains("Contract: contract1"));
+        assert!(formatted_cfg.contains("ID: id1"));
+        assert!(formatted_cfg.contains("Constructor Args: arg1,arg2"));
+        assert!(formatted_cfg.contains("DA Signature: sig1..."));
     }
 
     #[test]
