@@ -1,1 +1,14 @@
+# General ignores
+.vscode
+.env
 /target
+
+# DA specifics
+/assertions
+*.assertions
+*.ids_by_block
+*.failed_queue
+
+# Claude code
+.claude
+*CLAUDE*

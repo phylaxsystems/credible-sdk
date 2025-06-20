@@ -1,0 +1,31 @@
+version: '3.8'
+services:
+  assertion-da:
+    image: ghcr.io/phylaxsystems/assertion-da/assertion-da-dev:main
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp  # For temporary file mounting
+      - assertion_data:/usr/local/assertions  # Named volume for persistent storage
+    environment:
+      # Override the default db path to use the volume
+      - DB_PATH=/usr/local/assertions
+      - DA_CACHE_SIZE=1000000
+      # Private key for DEVELOPMENT ONLY. It's #4 on the list of private keys from `anvil`.
+      - DA_PRIVATE_KEY=0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a
+      - DA_LISTEN_ADDR=0.0.0.0:5001
+      - DA_LOG_LEVEL=${DA_LOG_LEVEL:-info}
+      - DA_METRICS_ADDR=0.0.0.0:9002
+    ports:
+      - "${DA_PORT:-5001}:5001"
+      - "${DA_METRICS_PORT:-9002}:9002"
+    cap_add:
+      - CAP_NET_BIND_SERVICE  # For container networking
+      - CAP_DAC_OVERRIDE      # For file operations/mounting
+    security_opt:
+      - seccomp=unconfined   # Needed for container operations
+    restart: unless-stopped
+
+# Define the named volume
+volumes:
+  assertion_data:
+    name: assertion_data  # Explicit name for the volume

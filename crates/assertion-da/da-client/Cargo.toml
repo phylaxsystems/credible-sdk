@@ -1,0 +1,30 @@
+[package]
+name = "assertion-da-client"
+version.workspace = true
+edition.workspace = true
+
+[[example]]
+name = "test_http_client"
+path = "../../../examples/test_http_client.rs"
+
+[dependencies]
+tokio.workspace = true
+tokio-util.workspace = true
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+http = "1.1.0"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2"
+alloy.workspace = true
+assertion-da-core = { path = "../da-core" }
+url = "2.5"
+
+[dev-dependencies]
+assertion-da-server = { path = "../da-server" }
+alloy.workspace = true
+bincode.workspace = true
+sled.workspace = true
+tempfile.workspace = true
+mockall.workspace = true
+wiremock.workspace = true
+bollard.workspace = true
