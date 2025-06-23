@@ -44,7 +44,7 @@ export DA_PRIVATE_KEY=0x...
 # Run the service
 docker compose -f etc/docker-compose.yaml up
 
-# Or for development
+# Or for development (allows bytecode submissions)
 docker compose -f etc/docker-compose-dev.yaml up
 ```
 
