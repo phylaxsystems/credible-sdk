@@ -6486,6 +6486,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "int-test-utils"
+version = "0.2.0"
+dependencies = [
+ "alloy 0.11.1",
+ "anyhow",
+ "assertion-da-client 0.2.0",
+ "assertion-da-server 0.2.0",
+ "bollard",
+ "rand 0.8.5",
+ "reqwest",
+ "sled",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "interprocess"
 version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8196,7 +8215,7 @@ dependencies = [
  "dirs",
  "indicatif",
  "inquire",
- "int-test-utils",
+ "int-test-utils 0.1.0",
  "jsonrpsee-core",
  "jsonrpsee-http-client",
  "libc",

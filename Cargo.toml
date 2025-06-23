@@ -6,7 +6,8 @@ members = [
     "crates/pcl/cli",
     "crates/pcl/phoundry",
     "crates/pcl/common",
-    "crates/pcl/core"
+    "crates/pcl/core",
+    "crates/int-test-utils",
 ]
 resolver = "2"
 
