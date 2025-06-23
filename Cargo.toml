@@ -1,7 +1,7 @@
 [workspace]
 members = [ 
     "crates/assertion-da/da-client",
-    "crates/assertion-da/da-server", 
+    "crates/assertion-da/da-server",
     "crates/assertion-da/da-core",
     "crates/pcl/cli",
     "crates/pcl/phoundry",
