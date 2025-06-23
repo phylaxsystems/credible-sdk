@@ -25,7 +25,7 @@ tokio = { workspace = true }
 chrono = { workspace = true }
 colored = { workspace = true }
 indicatif = "0.17"
-assertion-da-client = { git = "https://github.com/phylaxsystems/assertion-da.git", tag = "0.1.5" }
+assertion-da-client = { workspace = true }
 jsonrpsee-core = { version = "0.24.9", features = ["client", "http"] }
 jsonrpsee-http-client = "0.24.9"
 anyhow = { version = "1.0.98" }
