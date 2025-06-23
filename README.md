@@ -21,10 +21,10 @@ The credible sdk contains building blocks for running transactions against phyla
 ### READMEs
 
 For more detailed info on how to run, build and test the `credible-sdk` see:
-- [Assertion DA](docs/assertion-da.md) - Documentation for the Data Availability server component
-- [`pcl`](docs/pcl.md) - Documentation for phylax command line utilities
+- [Assertion DA](crates/assertion-da/README.md) - Documentation for the Data Availability server component
+- [`pcl`](crates/pcl/README.md) - Documentation for phylax command line utilities
 - [Assertion Executor]() - Documentation for assertion execution
-- [Integration Test Utils](docs/int-test-utils.md) - Documentation for integration testing utilities
+- [Integration Test Utils](crates/int-test-utils/README.md) - Documentation for integration testing utilities
 
 ## Running and building the `assertion-da-server`
 
