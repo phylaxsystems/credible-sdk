@@ -35,5 +35,5 @@ mockito = "1.2"
 tempfile = "3.6.0"
 alloy = { version = "0.11.1", features = ["signer-local"] }
 rand = "0.8.1"
-int-test-utils = { git = "https://github.com/phylaxsystems/int-test-utils.git", tag = "0.1.0" }
+int-test-utils = { workspace = true }
 libc = "0.2.172"

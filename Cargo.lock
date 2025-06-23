@@ -1591,7 +1591,7 @@ version = "0.2.0"
 dependencies = [
  "alloy 0.11.1",
  "assertion-da-core 0.2.0",
- "assertion-da-server 0.2.0",
+ "assertion-da-server",
  "bincode",
  "bollard",
  "http",
@@ -1623,50 +1623,6 @@ version = "0.2.0"
 dependencies = [
  "alloy 0.11.1",
  "serde",
-]
-
-[[package]]
-name = "assertion-da-server"
-version = "0.1.5"
-source = "git+https://github.com/phylaxsystems/assertion-da.git?tag=0.1.5#3c31186078d71ff6c0c54faf2c83913787ea7dd1"
-dependencies = [
- "alloy 0.11.1",
- "alloy-dyn-abi",
- "alloy-json-abi",
- "anyhow",
- "assertion-da-core 0.1.5",
- "bincode",
- "bollard",
- "clap",
- "directories",
- "ecdsa",
- "futures",
- "futures-util",
- "hex",
- "http-body-util",
- "hyper",
- "hyper-util",
- "k256",
- "metrics",
- "metrics-exporter-prometheus 0.16.2",
- "rand 0.8.5",
- "regex",
- "reqwest",
- "rust-tracing",
- "serde",
- "serde_json",
- "simd-json",
- "sled",
- "tempfile",
- "thiserror 2.0.12",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "util",
- "uuid 1.16.0",
- "zerocopy 0.7.35",
 ]
 
 [[package]]
@@ -6469,30 +6425,12 @@ dependencies = [
 
 [[package]]
 name = "int-test-utils"
-version = "0.1.0"
-source = "git+https://github.com/phylaxsystems/int-test-utils.git?tag=0.1.0#72fb19d4913d929cefcc342d9503493fb41e213e"
-dependencies = [
- "alloy 0.11.1",
- "anyhow",
- "assertion-da-server 0.1.5",
- "bollard",
- "rand 0.8.5",
- "sled",
- "tempfile",
- "thiserror 2.0.12",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "int-test-utils"
 version = "0.2.0"
 dependencies = [
  "alloy 0.11.1",
  "anyhow",
  "assertion-da-client 0.2.0",
- "assertion-da-server 0.2.0",
+ "assertion-da-server",
  "bollard",
  "rand 0.8.5",
  "reqwest",
@@ -8215,7 +8153,7 @@ dependencies = [
  "dirs",
  "indicatif",
  "inquire",
- "int-test-utils 0.1.0",
+ "int-test-utils",
  "jsonrpsee-core",
  "jsonrpsee-http-client",
  "libc",

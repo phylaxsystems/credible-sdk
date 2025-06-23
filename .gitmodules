@@ -1,6 +1,3 @@
-[submodule "credible-std"]
-	path = testdata/mock-protocol/lib/credible-std
-	url = https://github.com/phylaxsystems/credible-std
 [submodule "testdata/mock-protocol/lib/openzeppelin-contracts"]
 	path = testdata/mock-protocol/lib/openzeppelin-contracts
 	url = https://github.com/OpenZeppelin/openzeppelin-contracts
@@ -13,3 +10,6 @@
 [submodule "lib/credible-layer-dapp"]
 	path = lib/credible-layer-dapp
 	url = git@github.com:phylaxsystems/credible-layer-dapp.git
+[submodule "testdata/mock-protocol/lib/credible-std"]
+	path = testdata/mock-protocol/lib/credible-std
+	url = https://github.com/phylaxsystems/credible-std
