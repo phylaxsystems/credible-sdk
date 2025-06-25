@@ -1,0 +1,73 @@
+[package]
+name = "assertion-executor"
+version = "0.1.7"
+edition = "2024"
+
+[dependencies]
+rayon = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sled = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+tracing = { workspace = true }
+zerocopy = { workspace = true, features = ["derive"] }
+tempfile = { workspace = true }
+parking_lot = { workspace = true }
+assertion-da-client = { workspace = true }
+bincode = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+
+# ETH deps
+alloy = { workspace = true }
+alloy-provider = { workspace = true }
+alloy-sol-types = { workspace = true }
+alloy-consensus = { workspace = true }
+alloy-rpc-types = { workspace = true }
+alloy-rpc-types-anvil = { workspace = true }
+alloy-pubsub = { workspace = true }
+alloy-rpc-client = { workspace = true }
+alloy-node-bindings = { workspace = true }
+alloy-network = { workspace = true }
+alloy-network-primitives = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
+alloy-transport = { workspace = true }
+alloy-transport-ws = { workspace = true }
+revm = { workspace = true }
+reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.2.1" }
+
+# Test deps
+serde_json = { workspace = true }
+rand = { workspace = true, optional = true }
+jsonrpsee = { workspace = true }
+tokio-util = { workspace = true }
+evm-glue = { git = "https://git@github.com/Philogy/evm-glue.git", version = "0.1.0" }
+moka = { workspace = true }
+enum-as-inner = { workspace = true }
+url = { workspace = true }
+
+
+[features]
+default = ["optimism"]
+optimism = ["revm/optimism", "revm/optimism-default-handler"]
+test = ["serde_json", "rand"]
+serde_json = []
+
+[dev-dependencies]
+rand = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+alloy-eip7702 = { workspace = true }
+assertion-da-server = { workspace = true }
+criterion = { workspace = true }
+bollard = { workspace = true }
+int-test-utils = { workspace = true }
+assertion-executor = { path = ".", features = ["test"] }
+futures = { workspace = true }
+
+[[bench]]
+name = "worst-case-op"
+required-features = ["test"]
+harness = false

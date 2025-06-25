@@ -1,0 +1,40 @@
+[package]
+name = "assertion-executor-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+revm = { version = "19.4.0", features = ["serde"]}
+alloy-sol-types = "0.8.3"
+alloy-primitives = { version = "0.8.22", features = ["getrandom"] }
+
+[dependencies.assertion-executor]
+path = ".."
+features = ["test"]
+
+
+[[bin]]
+name = "load_external_slot_fuzz"
+path = "fuzz_targets/load_external_slot_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "calls_fuzz"
+path = "fuzz_targets/calls_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "logs_fuzz"
+path = "fuzz_targets/logs_fuzz.rs"
+test = false
+doc = false
+bench = false

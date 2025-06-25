@@ -8,6 +8,7 @@ members = [
     "crates/pcl/common",
     "crates/pcl/core",
     "crates/int-test-utils",
+    "crates/assertion-executor",
 ]
 resolver = "2"
 
@@ -73,3 +74,37 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 colored = "3"
 tempdir = "0.3"
+
+# Additional dependencies from assertion-executor
+rayon = "1.10.0"
+parking_lot = "0.12.1"
+alloy-provider = { version = "0.11.1", features = ["ws", "anvil-node", "trace-api", "debug-api"] }
+alloy-sol-types = "0.8.3"
+alloy-consensus = { version = "0.11.1", features = ["k256"] }
+alloy-rpc-types = "0.11.1"
+alloy-rpc-types-anvil = "0.11.1"
+alloy-pubsub = "0.11.1"
+alloy-rpc-client = "0.11.1"
+alloy-node-bindings = "0.11.1"
+alloy-network = "0.11.1"
+alloy-network-primitives = "0.11.1"
+alloy-primitives = { version = "0.8.22", features = ["getrandom"] }
+alloy-signer = "0.11.1"
+alloy-signer-local = "0.11.1"
+alloy-transport = "0.11.1"
+alloy-transport-ws = "0.11.1"
+alloy-eip7702 = "0.5.1"
+revm = { version = "19.4.0", features = ["serde"] }
+jsonrpsee = { version = "0.24.7", features = ["client", "http-client", "server"] }
+moka = { version = "0.12.10", features = ["sync"] }
+enum-as-inner = "0.6.1"
+url = "2.5.4"
+criterion = { version = "0.5.1" }
+
+# Maxperf profile for absolute maximum performance
+# Only use for builds that are going to get used by end users
+[profile.maxperf]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+incremental = false
