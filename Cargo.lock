@@ -1740,6 +1740,7 @@ dependencies = [
  "alloy-sol-types",
  "alloy-transport 0.11.1",
  "alloy-transport-ws 0.11.1",
+ "anyhow",
  "assertion-da-client 0.2.0",
  "assertion-da-server",
  "assertion-executor 0.2.0",

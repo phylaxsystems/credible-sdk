@@ -62,6 +62,7 @@ bollard = { workspace = true }
 int-test-utils = { workspace = true }
 assertion-executor = { path = ".", features = ["test"] }
 futures = { workspace = true }
+anyhow = { workspace = true }
 
 [[bench]]
 name = "worst-case-op"
