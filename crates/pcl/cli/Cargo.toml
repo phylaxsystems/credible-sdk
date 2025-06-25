@@ -17,8 +17,7 @@ serde_json = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 color-eyre = { workspace = true }
-jsonrpsee-core = "0.24.9"
-jsonrpsee-http-client = "0.24.9"
+
 
 [build-dependencies]
 vergen-gix = { version = "1.0.3", features = ["build", "cargo", "rustc", "si"] }

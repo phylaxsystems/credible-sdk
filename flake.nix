@@ -31,7 +31,6 @@
             darwin.apple_sdk.frameworks.SystemConfiguration
             libiconv
           ] else [
-            pkgs.glibc
             llvm.libcxx
           ];
 
@@ -45,6 +44,7 @@
           buildInputs = with pkgs; [
             rustNightly
             cargo-flamegraph
+            cargo-fuzz
 
             # Explicitly list llvm tools for clarity and PATH access
             llvm.clang
