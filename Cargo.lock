@@ -1724,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-executor"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "alloy 0.11.1",
  "alloy-consensus 0.11.1",
@@ -1746,7 +1746,7 @@ dependencies = [
  "anyhow",
  "assertion-da-client 0.2.0",
  "assertion-da-server",
- "assertion-executor 0.1.7",
+ "assertion-executor 0.2.0",
  "bincode",
  "bollard",
  "clap",
@@ -1772,17 +1772,6 @@ dependencies = [
  "tracing",
  "url",
  "zerocopy 0.7.35",
-]
-
-[[package]]
-name = "assertion-executor-fuzz"
-version = "0.0.0"
-dependencies = [
- "alloy-primitives",
- "alloy-sol-types",
- "assertion-executor 0.1.7",
- "libfuzzer-sys",
- "revm",
 ]
 
 [[package]]
@@ -7094,16 +7083,6 @@ checksum = "06085512b750d640299b79be4bad3d2fa90a9c00b1fd9e1b46364f66f0485c72"
 dependencies = [
  "cc",
  "pkg-config",
-]
-
-[[package]]
-name = "libfuzzer-sys"
-version = "0.4.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf78f52d400cf2d84a3a973a78a592b4adc535739e0a5597a0da6f0c357adc75"
-dependencies = [
- "arbitrary",
- "cc",
 ]
 
 [[package]]
