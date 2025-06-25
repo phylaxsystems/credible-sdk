@@ -9,6 +9,7 @@ members = [
     "crates/pcl/core",
     "crates/int-test-utils",
     "crates/assertion-executor",
+    "fuzz",
 ]
 resolver = "2"
 

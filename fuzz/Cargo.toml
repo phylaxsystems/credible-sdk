@@ -9,12 +9,12 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-revm = { version = "19.4.0", features = ["serde"]}
-alloy-sol-types = "0.8.3"
-alloy-primitives = { version = "0.8.22", features = ["getrandom"] }
+revm = { workspace = true, features = ["serde"]}
+alloy-sol-types = { workspace = true }
+alloy-primitives = { workspace = true, features = ["getrandom"] }
 
 [dependencies.assertion-executor]
-path = ".."
+path = "../crates/assertion-executor"
 features = ["test"]
 
 
