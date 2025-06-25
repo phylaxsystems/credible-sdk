@@ -125,13 +125,13 @@ fn read_artifact(input: &str) -> serde_json::Value {
     let mut parts = input.split(':');
     let file_name = parts.next().expect("Failed to read filename");
     let contract_name = parts.next().expect("Failed to read contract name");
-    let path = format!("contract-mocks/out/{file_name}/{contract_name}.json");
+    let path = format!("../../testdata/mock-protocol/out/{file_name}/{contract_name}.json");
 
     let file = std::fs::File::open(path).expect("Failed to open file");
     serde_json::from_reader(file).expect("Failed to parse JSON")
 }
 
-/// Reads deployment bytecode from a contract-mocks artifact
+/// Reads deployment bytecode from a ../../testdata/mock-protocol artifact
 ///
 /// # Arguments
 /// * `input` - ${file_name}:${contract_name}
@@ -145,7 +145,7 @@ pub fn bytecode(input: &str) -> Bytes {
         .into()
 }
 
-/// Reads deployed bytecode from a contract-mocks artifact
+/// Reads deployed bytecode from a ../../testdata/mock-protocol artifact
 ///
 /// # Arguments
 /// * `input` - ${file_name}:${contract_name}
@@ -168,7 +168,7 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
     let mut fork_db = db.fork();
 
     // Write test assertion to assertion store
-    // bytecode of contract-mocks/src/GetLogsTest.sol:GetLogsTest
+    // bytecode of GetLogsTest.sol:GetLogsTest
     let assertion_code = bytecode(&format!("{artifact}.sol:{artifact}"));
 
     let assertion_store = AssertionStore::new_ephemeral().unwrap();
@@ -178,7 +178,7 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
 
     let mut executor = ExecutorConfig::default().build(db, assertion_store);
 
-    // Deploy mock using bytecode of contract-mocks/src/GetLogsTest.sol:Target
+    // Deploy mock using bytecode of Target.sol:Target
     let target_deployment_tx = TxEnv {
         caller,
         data: bytecode("Target.sol:Target"),
@@ -202,7 +202,7 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
     mock_db.commit(result.1.state.clone());
 
     // Deploy TriggeringTx contract using bytecode of
-    // contract-mocks/src/GetLogsTest.sol:TriggeringTx
+    // GetLogsTest.sol:TriggeringTx
     let trigger_tx = TxEnv {
         caller,
         data: bytecode(&format!("{}.sol:{}", artifact, "TriggeringTx")),
