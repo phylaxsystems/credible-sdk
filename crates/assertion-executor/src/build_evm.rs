@@ -311,6 +311,12 @@ mod tests {
     fn test_diff(contract: &str, expected_gas: u64) {
         let with_reprice_result = run_test(contract, true, None);
         let without_reprice_result = run_test(contract, false, None);
+        println!(
+            "Gas used without reprice: {}, with reprice: {}",
+            without_reprice_result.gas_used(),
+            with_reprice_result.gas_used()
+        );
+
         assert_eq!(
             without_reprice_result.gas_used() - with_reprice_result.gas_used(),
             expected_gas
