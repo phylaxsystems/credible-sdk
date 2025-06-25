@@ -36,6 +36,9 @@ assertion-da-core = { path = "crates/assertion-da/da-core" }
 # int-test-utils
 int-test-utils = { path = "crates/int-test-utils" }
 
+# assertion-executor
+assertion-executor = { path = "crates/assertion-executor" }
+
 alloy = { version = "0.11.1", features = ["full", "node-bindings", "json-rpc", "rpc-client", "signer-local", "k256"] }
 alloy-dyn-abi = {version = "0.8.15", features = ["std"] }
 alloy-json-abi = "0.8.15"
@@ -76,7 +79,6 @@ chrono = { version = "0.4", features = ["serde"] }
 colored = "3"
 tempdir = "0.3"
 
-# Additional dependencies from assertion-executor
 rayon = "1.10.0"
 parking_lot = "0.12.1"
 alloy-provider = { version = "0.11.1", features = ["ws", "anvil-node", "trace-api", "debug-api"] }
