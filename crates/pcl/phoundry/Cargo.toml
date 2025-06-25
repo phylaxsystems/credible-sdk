@@ -8,9 +8,6 @@ repository.workspace = true
 
 
 [dependencies]
-# PCL deps
-pcl-common = { workspace = true }
-
 # Foundry deps
 forge = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "a6e5630" }
 foundry-config = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "a6e5630" }

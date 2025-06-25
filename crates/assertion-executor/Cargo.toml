@@ -15,7 +15,6 @@ tempfile = { workspace = true }
 parking_lot = { workspace = true }
 assertion-da-client = { workspace = true }
 bincode = { workspace = true }
-anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 
 # ETH deps
@@ -36,14 +35,11 @@ alloy-signer-local = { workspace = true }
 alloy-transport = { workspace = true }
 alloy-transport-ws = { workspace = true }
 revm = { workspace = true }
-reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.2.1" }
 
 # Test deps
 serde_json = { workspace = true }
 rand = { workspace = true, optional = true }
-jsonrpsee = { workspace = true }
 tokio-util = { workspace = true }
-evm-glue = { git = "https://git@github.com/Philogy/evm-glue.git", version = "0.1.0" }
 moka = { workspace = true }
 enum-as-inner = { workspace = true }
 url = { workspace = true }

@@ -26,8 +26,6 @@ chrono = { workspace = true }
 colored = { workspace = true }
 indicatif = "0.17"
 assertion-da-client = { workspace = true }
-jsonrpsee-core = { version = "0.24.9", features = ["client", "http"] }
-jsonrpsee-http-client = "0.24.9"
 anyhow = { version = "1.0.98" }
 
 [dev-dependencies]
