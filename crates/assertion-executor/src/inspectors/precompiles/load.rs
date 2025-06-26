@@ -7,9 +7,9 @@ use crate::{
     },
 };
 use revm::{
-    interpreter::CallInputs,
     DatabaseRef,
     InnerEvmContext,
+    interpreter::CallInputs,
 };
 
 use alloy_sol_types::{
@@ -66,6 +66,7 @@ mod test {
     };
     use alloy_sol_types::SolCall;
     use revm::{
+        InnerEvmContext,
         interpreter::{
             CallInputs,
             CallScheme,
@@ -75,7 +76,6 @@ mod test {
             AccountInfo,
             KECCAK_EMPTY,
         },
-        InnerEvmContext,
     };
 
     use super::*;

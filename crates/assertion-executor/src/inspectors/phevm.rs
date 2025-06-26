@@ -1,18 +1,18 @@
 use crate::{
     db::{
+        DatabaseRef,
         multi_fork_db::{
             ForkError,
             MultiForkDb,
         },
-        DatabaseRef,
     },
     inspectors::{
         inspector_result_to_call_outcome,
         precompiles::{
             assertion_adopter::get_assertion_adopter,
             calls::{
-                get_call_inputs,
                 GetCallInputsError,
+                get_call_inputs,
             },
             fork::{
                 fork_post_state,
@@ -21,25 +21,27 @@ use crate::{
             load::load_external_slot,
             logs::get_logs,
             state_changes::{
-                get_state_changes,
                 GetStateChangesError,
+                get_state_changes,
             },
         },
         sol_primitives::PhEvm,
         tracer::CallTracer,
     },
     primitives::{
-        address,
-        bytes,
         Address,
         Bytecode,
         Bytes,
         JournaledState,
         U256,
+        address,
+        bytes,
     },
 };
 
 use revm::{
+    EvmContext,
+    Inspector,
     interpreter::{
         CallInputs,
         CallOutcome,
@@ -57,8 +59,6 @@ use revm::{
         Log,
         SpecId,
     },
-    EvmContext,
-    Inspector,
 };
 
 use alloy_sol_types::SolCall;

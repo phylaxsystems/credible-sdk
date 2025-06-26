@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 
 use crate::{
+    ExecutorConfig,
     build_evm::new_evm,
     db::DatabaseCommit,
     executor::{
@@ -8,11 +9,10 @@ use crate::{
         CALLER,
     },
     inspectors::{
-        insert_trigger_recorder_account,
         TriggerRecorder,
+        insert_trigger_recorder_account,
     },
     primitives::{
-        keccak256,
         Account,
         AssertionContract,
         BlockEnv,
@@ -21,8 +21,8 @@ use crate::{
         ResultAndState,
         TxEnv,
         TxKind,
+        keccak256,
     },
-    ExecutorConfig,
 };
 
 use revm::{
@@ -31,8 +31,8 @@ use revm::{
 };
 
 use alloy_sol_types::{
-    sol,
     SolCall,
+    sol,
 };
 
 use tracing::{
@@ -264,15 +264,21 @@ fn test_extract_all_trigger_types() {
         extract_assertion_contract(bytecode("TriggerOnAny.sol:TriggerOnAny"), &config).unwrap();
 
     // Should have all three "Any" trigger types
-    assert!(trigger_recorder_any
-        .triggers
-        .contains_key(&TriggerType::AllCalls));
-    assert!(trigger_recorder_any
-        .triggers
-        .contains_key(&TriggerType::AllStorageChanges));
-    assert!(trigger_recorder_any
-        .triggers
-        .contains_key(&TriggerType::BalanceChange));
+    assert!(
+        trigger_recorder_any
+            .triggers
+            .contains_key(&TriggerType::AllCalls)
+    );
+    assert!(
+        trigger_recorder_any
+            .triggers
+            .contains_key(&TriggerType::AllStorageChanges)
+    );
+    assert!(
+        trigger_recorder_any
+            .triggers
+            .contains_key(&TriggerType::BalanceChange)
+    );
 
     // Each trigger should have the DEADBEEF selector
     let expected_selector = crate::primitives::fixed_bytes!("DEADBEEF");
@@ -280,7 +286,9 @@ fn test_extract_all_trigger_types() {
     assert!(
         trigger_recorder_any.triggers[&TriggerType::AllStorageChanges].contains(&expected_selector)
     );
-    assert!(trigger_recorder_any.triggers[&TriggerType::BalanceChange].contains(&expected_selector));
+    assert!(
+        trigger_recorder_any.triggers[&TriggerType::BalanceChange].contains(&expected_selector)
+    );
 
     // Test extraction from TriggerOnSpecific contract which should have specific Call and StorageChange triggers
     let (_, trigger_recorder_specific) =
@@ -297,15 +305,21 @@ fn test_extract_all_trigger_types() {
         ),
     };
 
-    assert!(trigger_recorder_specific
-        .triggers
-        .contains_key(&expected_call_trigger));
-    assert!(trigger_recorder_specific
-        .triggers
-        .contains_key(&expected_storage_trigger));
+    assert!(
+        trigger_recorder_specific
+            .triggers
+            .contains_key(&expected_call_trigger)
+    );
+    assert!(
+        trigger_recorder_specific
+            .triggers
+            .contains_key(&expected_storage_trigger)
+    );
 
     // Both should have the DEADBEEF selector
-    assert!(trigger_recorder_specific.triggers[&expected_call_trigger].contains(&expected_selector));
+    assert!(
+        trigger_recorder_specific.triggers[&expected_call_trigger].contains(&expected_selector)
+    );
     assert!(
         trigger_recorder_specific.triggers[&expected_storage_trigger].contains(&expected_selector)
     );

@@ -15,8 +15,8 @@ use alloy_sol_types::{
 };
 
 use revm::{
-    interpreter::CallInputs,
     JournalEntry,
+    interpreter::CallInputs,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -125,12 +125,12 @@ mod test {
         SolValue,
     };
     use revm::{
+        JournalEntry,
         interpreter::{
             CallInputs,
             CallScheme,
             CallValue,
         },
-        JournalEntry,
     };
     use std::collections::HashSet;
 

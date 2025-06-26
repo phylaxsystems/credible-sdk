@@ -1,8 +1,8 @@
 use crate::{
     inspectors::phevm::PhEvmContext,
     inspectors::sol_primitives::PhEvm::{
-        getCallInputsCall,
         CallInputs as PhEvmCallInputs,
+        getCallInputsCall,
     },
     primitives::Bytes,
 };

@@ -1,8 +1,8 @@
 mod assertion_contract_extractor;
 pub use assertion_contract_extractor::{
+    FnSelectorExtractorError,
     extract_assertion_contract,
     triggersCall,
-    FnSelectorExtractorError,
 };
 
 pub use assertion_da_client::{

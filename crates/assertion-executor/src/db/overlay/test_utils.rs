@@ -1,6 +1,6 @@
-use crate::db::overlay::AccountInfo;
 use crate::db::DatabaseCommit;
 use crate::db::NotFoundError;
+use crate::db::overlay::AccountInfo;
 use crate::primitives::EvmState;
 
 use alloy_primitives::Address;

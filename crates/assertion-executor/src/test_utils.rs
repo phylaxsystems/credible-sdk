@@ -1,16 +1,13 @@
 #![cfg(any(test, feature = "test"))]
 
 use crate::{
+    ExecutorConfig,
     db::{
-        overlay::OverlayDb,
         DatabaseCommit,
+        overlay::OverlayDb,
     },
     inspectors::TriggerRecorder,
     primitives::{
-        address,
-        fixed_bytes,
-        hex,
-        keccak256,
         AccountInfo,
         Address,
         AssertionContract,
@@ -22,13 +19,16 @@ use crate::{
         TxKind,
         TxValidationResult,
         U256,
+        address,
+        fixed_bytes,
+        hex,
+        keccak256,
     },
     store::{
-        extract_assertion_contract,
         AssertionState,
         AssertionStore,
+        extract_assertion_contract,
     },
-    ExecutorConfig,
 };
 use revm::db::CacheDB;
 use revm::db::EmptyDBTyped;
@@ -46,10 +46,10 @@ use alloy_node_bindings::{
 };
 
 use alloy_provider::{
-    ext::AnvilApi,
     Provider,
     ProviderBuilder,
     RootProvider,
+    ext::AnvilApi,
 };
 
 #[cfg(feature = "optimism")]

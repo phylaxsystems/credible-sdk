@@ -6,6 +6,13 @@ use std::{
 
 use crate::{
     api::{
+        json_validation::{
+            JsonRpcErrorCode,
+            JsonRpcRequest,
+            MAX_JSON_SIZE,
+            check_json_depth,
+            sanitize_error_message,
+        },
         source_compilation::compile_solidity,
         types::{
             DbOperation,
@@ -25,14 +32,14 @@ use assertion_da_core::{
 
 use alloy::{
     primitives::{
-        keccak256,
-        Bytes,
         B256,
+        Bytes,
+        keccak256,
     },
     signers::{
-        local::PrivateKeySigner,
         Signature,
         Signer,
+        local::PrivateKeySigner,
     },
 };
 use anyhow::Result;
@@ -48,8 +55,8 @@ use serde::{
     Serialize,
 };
 use serde_json::{
-    json,
     Value,
+    json,
 };
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -91,12 +98,86 @@ where
     tracing::Span::current().record("request_id", tracing::field::display(&request_id));
     tracing::Span::current().record("client_addr", tracing::field::display(&client_addr));
 
-    // Read body and parse as JSON-RPC request
+    // Read body with size limit
     let headers = req.headers().clone();
     let body = req.into_body().collect().await?.to_bytes();
-    let json_rpc: Value = serde_json::from_slice(&body)?;
-    let method = json_rpc["method"].as_str().unwrap_or_default();
-    let json_rpc_id = json_rpc["id"].clone();
+
+    // Check payload size
+    if body.len() > MAX_JSON_SIZE {
+        warn!(target: "json_rpc", %request_id, %client_ip, size = body.len(), "Request payload too large");
+        return Ok(json!({
+            "jsonrpc": "2.0",
+            "error": {
+                "code": -32600,
+                "message": "Request too large",
+                "data": {
+                    "request_id": request_id.to_string()
+                }
+            },
+            "id": null
+        })
+        .to_string());
+    }
+
+    // Parse JSON
+    let json_value: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(target: "json_rpc", %request_id, %client_ip, error = %e, "Failed to parse JSON");
+            return Ok(json!({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32700,
+                    "message": "Parse error",
+                    "data": {
+                        "request_id": request_id.to_string()
+                    }
+                },
+                "id": null
+            })
+            .to_string());
+        }
+    };
+
+    // Check JSON depth
+    if !check_json_depth(&json_value, 0) {
+        warn!(target: "json_rpc", %request_id, %client_ip, "JSON nesting depth exceeded");
+        return Ok(json!({
+            "jsonrpc": "2.0",
+            "error": {
+                "code": -32600,
+                "message": "Invalid request: excessive nesting",
+                "data": {
+                    "request_id": request_id.to_string()
+                }
+            },
+            "id": null
+        })
+        .to_string());
+    }
+
+    // Validate JSON-RPC structure
+    let json_rpc = match JsonRpcRequest::validate(json_value) {
+        Ok(req) => req,
+        Err((code, msg)) => {
+            warn!(target: "json_rpc", %request_id, %client_ip, error = msg, "Invalid JSON-RPC structure");
+            return Ok(json!({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": code as i32,
+                    "message": sanitize_error_message(code, msg),
+                    "data": {
+                        "request_id": request_id.to_string()
+                    }
+                },
+                "id": null
+            })
+            .to_string());
+        }
+    };
+
+    let method = &json_rpc.method;
+    let json_rpc_id = &json_rpc.id;
     let labels = [("http_method", method.to_string())];
 
     gauge!("api_requests_active", &labels).increment(1);
@@ -113,17 +194,17 @@ where
     );
 
     let req_start = Instant::now();
-    let result = match method {
+    let result = match method.as_str() {
         #[cfg(feature = "debug_assertions")]
         "da_submit_assertion" => {
-            let code = match json_rpc["params"][0].as_str() {
-                Some(code) => code,
-                _ => {
-                    warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid params: missing or invalid bytecode parameter");
-                    return Ok(rpc_error_with_request_id(
+            let code = match json_rpc.get_string_param(0) {
+                Ok(code) => code,
+                Err(e) => {
+                    warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = e, "Invalid params: missing or invalid bytecode parameter");
+                    return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
-                        -32602,
-                        "Invalid params",
+                        JsonRpcErrorCode::InvalidParams,
+                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
                         &request_id,
                     ));
                 }
@@ -134,10 +215,10 @@ where
                 Ok(code) => code,
                 _ => {
                     warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, "Failed to decode hex bytecode");
-                    return Ok(rpc_error_with_request_id(
+                    return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
-                        500,
-                        "Failed to decode hex",
+                        JsonRpcErrorCode::InvalidParams,
+                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, ""),
                         &request_id,
                     ));
                 }
@@ -151,10 +232,10 @@ where
                 Ok(sig) => sig,
                 Err(err) => {
                     warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to sign assertion");
-                    return Ok(rpc_error_with_request_id(
+                    return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
-                        -32604,
-                        "Internal Error: Failed to sign Assertion",
+                        JsonRpcErrorCode::InternalError,
+                        sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
                         &request_id,
                     ));
                 }
@@ -180,7 +261,7 @@ where
                 &json_rpc,
                 request_id,
                 &client_ip,
-                &json_rpc_id,
+                json_rpc_id,
             )
             .await;
 
@@ -202,16 +283,14 @@ where
             res
         }
         "da_submit_solidity_assertion" => {
-            let da_submission: DaSubmission = match serde_json::from_value(
-                json_rpc["params"][0].clone(),
-            ) {
+            let da_submission: DaSubmission = match json_rpc.deserialize_param(0) {
                 Ok(da_submission) => da_submission,
-                Err(err) => {
-                    warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to parse DaSubmission payload");
-                    return Ok(rpc_error_with_request_id(
+                Err(e) => {
+                    warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = e, "Failed to parse DaSubmission payload");
+                    return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
-                        -32602,
-                        format!("Invalid params: Failed to parse payload {err:?}").as_str(),
+                        JsonRpcErrorCode::InvalidParams,
+                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
                         &request_id,
                     ));
                 }
@@ -230,10 +309,10 @@ where
                 Ok(bytecode) => bytecode,
                 Err(err) => {
                     warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, compiler_version = da_submission.compiler_version, contract_name = da_submission.assertion_contract_name, "Solidity compilation failed");
-                    return Ok(rpc_error_with_request_id(
+                    return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
-                        -32603,
-                        &format!("Solidity Compilation Error: {err}"),
+                        JsonRpcErrorCode::InternalError,
+                        sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
                         &request_id,
                     ));
                 }
@@ -246,10 +325,10 @@ where
                 Ok(encoded_args) => encoded_args,
                 Err(err) => {
                     warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, constructor_abi = da_submission.constructor_abi_signature, "Constructor args ABI encoding failed");
-                    return Ok(rpc_error_with_request_id(
+                    return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
-                        -32603,
-                        &format!("Constructor args ABI Encoding Error: {err}"),
+                        JsonRpcErrorCode::InternalError,
+                        sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
                         &request_id,
                     ));
                 }
@@ -264,10 +343,10 @@ where
                 Ok(sig) => sig,
                 Err(err) => {
                     warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to sign assertion");
-                    return Ok(rpc_error_with_request_id(
+                    return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
-                        -32604,
-                        "Internal Error: Failed to sign Assertion",
+                        JsonRpcErrorCode::InternalError,
+                        sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
                         &request_id,
                     ));
                 }
@@ -291,7 +370,7 @@ where
                 &json_rpc,
                 request_id,
                 &client_ip,
-                &json_rpc_id,
+                json_rpc_id,
             )
             .await;
 
@@ -312,14 +391,14 @@ where
             res
         }
         "da_get_assertion" => {
-            let id = match json_rpc["params"][0].as_str() {
-                Some(id) => id,
-                None => {
-                    warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid params: missing id parameter");
-                    return Ok(rpc_error_with_request_id(
+            let id = match json_rpc.get_string_param(0) {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = e, "Invalid params: missing id parameter");
+                    return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
-                        -32602,
-                        "Invalid params: Didn't find id",
+                        JsonRpcErrorCode::InvalidParams,
+                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
                         &request_id,
                     ));
                 }
@@ -330,10 +409,10 @@ where
                 Ok(id) => id,
                 _ => {
                     warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, id = id, "Failed to decode hex ID");
-                    return Ok(rpc_error_with_request_id(
+                    return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
-                        -32605,
-                        "Internal Error: Failed to decode hex of id",
+                        JsonRpcErrorCode::InvalidParams,
+                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, ""),
                         &request_id,
                     ));
                 }
@@ -368,10 +447,10 @@ where
                 "method" => "unknown"
             )
             .record(req_start.elapsed().as_secs_f64());
-            Ok(rpc_error_with_request_id(
+            Ok(rpc_error_with_request_id_obj(
                 &json_rpc,
-                -32601,
-                "Method not found",
+                JsonRpcErrorCode::MethodNotFound,
+                sanitize_error_message(JsonRpcErrorCode::MethodNotFound, ""),
                 &request_id,
             ))
         }
@@ -439,7 +518,7 @@ async fn process_add_assertion(
     id: B256,
     stored_assertion: StoredAssertion,
     db: &DbRequestSender,
-    json_rpc: &Value,
+    json_rpc: &JsonRpcRequest,
     request_id: Uuid,
     client_ip: &str,
     json_rpc_id: &Value,
@@ -451,10 +530,10 @@ async fn process_add_assertion(
         Ok(ser) => ser,
         Err(err) => {
             warn!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to serialize assertion for database storage");
-            return Ok(rpc_error_with_request_id(
+            return Ok(rpc_error_with_request_id_obj(
                 json_rpc,
-                -32603,
-                "Internal error d",
+                JsonRpcErrorCode::InternalError,
+                sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
                 &request_id,
             ));
         }
@@ -479,10 +558,10 @@ async fn process_add_assertion(
         }
         Err(err) => {
             debug!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Database operation failed for assertion storage");
-            Ok(rpc_error_with_request_id(
+            Ok(rpc_error_with_request_id_obj(
                 json_rpc,
-                -32603,
-                "Internal error c",
+                JsonRpcErrorCode::InternalError,
+                sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
                 &request_id,
             ))
         }
@@ -492,7 +571,7 @@ async fn process_add_assertion(
 async fn process_get_assertion(
     id: B256,
     db: &DbRequestSender,
-    json_rpc: &Value,
+    json_rpc: &JsonRpcRequest,
     request_id: Uuid,
     client_ip: &str,
     json_rpc_id: &Value,
@@ -522,9 +601,9 @@ async fn process_get_assertion(
         }
         None => {
             warn!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Assertion not found in database");
-            Ok(rpc_error_with_request_id(
+            Ok(rpc_error_with_request_id_obj(
                 json_rpc,
-                404,
+                JsonRpcErrorCode::InvalidParams,
                 "Assertion not found",
                 &request_id,
             ))
@@ -532,44 +611,44 @@ async fn process_get_assertion(
     }
 }
 
-fn rpc_response<T: Serialize>(request: &Value, result: T) -> String {
+fn rpc_response<T: Serialize>(request: &JsonRpcRequest, result: T) -> String {
     json!({
         "jsonrpc": "2.0",
         "result": result,
-        "id": request["id"]
+        "id": request.id
     })
     .to_string()
 }
 
 #[allow(dead_code)]
-fn rpc_error(request: &Value, code: i128, message: &str) -> String {
+fn rpc_error(request: &JsonRpcRequest, code: i128, message: &str) -> String {
     json!({
         "jsonrpc": "2.0",
         "error": {
             "code": code,
             "message": message
         },
-        "id": request["id"]
+        "id": request.id
     })
     .to_string()
 }
 
-fn rpc_error_with_request_id(
-    request: &Value,
-    code: i128,
+fn rpc_error_with_request_id_obj(
+    request: &JsonRpcRequest,
+    code: JsonRpcErrorCode,
     message: &str,
     request_id: &Uuid,
 ) -> String {
     json!({
         "jsonrpc": "2.0",
         "error": {
-            "code": code,
+            "code": code as i32,
             "message": message,
             "data": {
                 "request_id": request_id.to_string()
             }
         },
-        "id": request["id"]
+        "id": request.id
     })
     .to_string()
 }
@@ -873,5 +952,244 @@ mod tests {
         assert_eq!(response_json["id"], 1);
         assert_eq!(response_json["error"]["code"], -32601);
         assert_eq!(response_json["error"]["message"], "Method not found");
+    }
+
+    // Security test cases
+    #[tokio::test]
+    async fn test_malformed_json_not_object() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        // Send array instead of object
+        let request_body = json!(["invalid", "json", "structure"]);
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let response_json: Value = response.json().await.unwrap();
+        assert_eq!(response_json["error"]["code"], -32600);
+        // Should get sanitized error message
+        assert_eq!(
+            response_json["error"]["message"].as_str().unwrap(),
+            "Invalid request"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_missing_method_field() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "params": [],
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let response_json: Value = response.json().await.unwrap();
+        assert_eq!(response_json["error"]["code"], -32600);
+        // Should get sanitized error message
+        assert_eq!(
+            response_json["error"]["message"].as_str().unwrap(),
+            "Invalid request"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_empty_params_array_access() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "da_get_assertion",
+            "params": [],  // Empty array - will cause panic when accessing params[0]
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let response_json: Value = response.json().await.unwrap();
+        assert_eq!(response_json["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn test_params_not_array() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "da_get_assertion",
+            "params": {"0": "0x1234"},  // Object instead of array
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let response_json: Value = response.json().await.unwrap();
+        assert!(response_json.get("error").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_prototype_pollution_attempt() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        let request_body = json!({
+            "__proto__": {"isAdmin": true},
+            "jsonrpc": "2.0",
+            "method": "da_get_assertion",
+            "params": ["0x1234567890123456789012345678901234567890123456789012345678901234"],
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        // Should handle gracefully without prototype pollution
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_deeply_nested_json() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        // Create deeply nested structure
+        let mut nested = json!({"value": "test"});
+        for _ in 0..1000 {
+            nested = json!({"nested": nested});
+        }
+
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "da_submit_solidity_assertion",
+            "params": [nested],
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        // Should reject or handle gracefully
+        assert_eq!(response.status(), 200);
+        let response_json: Value = response.json().await.unwrap();
+        assert!(response_json.get("error").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_hex_encoding_injection() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "da_get_assertion",
+            "params": ["0xZZZZinvalid_hex"],
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let response_json: Value = response.json().await.unwrap();
+        assert_eq!(response_json["error"]["code"], -32602);
+        // Should not expose internal error details
+        let error_msg = response_json["error"]["message"].as_str().unwrap();
+        assert!(!error_msg.contains("Failed to decode hex"));
+        assert_eq!(error_msg, "Invalid parameters");
+    }
+
+    #[tokio::test]
+    async fn test_null_injection_in_params() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "da_get_assertion",
+            "params": [null],
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let response_json: Value = response.json().await.unwrap();
+        assert_eq!(response_json["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn test_type_confusion_in_da_submission() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "da_submit_solidity_assertion",
+            "params": [{
+                "solidity_source": ["not", "a", "string"],  // Array instead of string
+                "compiler_version": 123,  // Number instead of string
+                "assertion_contract_name": null,
+                "constructor_args": "not_an_array",
+                "constructor_abi_signature": {}
+            }],
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let response_json: Value = response.json().await.unwrap();
+        assert_eq!(response_json["error"]["code"], -32602);
     }
 }

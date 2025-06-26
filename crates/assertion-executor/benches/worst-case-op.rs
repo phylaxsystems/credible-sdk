@@ -1,11 +1,12 @@
+use Asm::*;
 use assertion_executor::{
     build_evm::new_phevm,
     db::{
-        overlay::{
-            test_utils::MockDb,
-            OverlayDb,
-        },
         MultiForkDb,
+        overlay::{
+            OverlayDb,
+            test_utils::MockDb,
+        },
     },
     inspectors::{
         CallTracer,
@@ -14,8 +15,6 @@ use assertion_executor::{
         PhEvmInspector,
     },
     primitives::{
-        hex as hx,
-        keccak256,
         AccountInfo,
         Address,
         BlockEnv,
@@ -25,20 +24,21 @@ use assertion_executor::{
         TxEnv,
         TxKind,
         U256,
+        hex as hx,
+        keccak256,
     },
 };
 use criterion::{
+    BenchmarkGroup,
+    Criterion,
     criterion_group,
     criterion_main,
     measurement::Measurement,
-    BenchmarkGroup,
-    Criterion,
 };
 use evm_glue::assembler::assemble_minimized;
 use evm_glue::assembly::Asm;
 use evm_glue::opcodes::Opcode::*;
 use revm::primitives::HaltReason;
-use Asm::*;
 
 fn register_op<M: Measurement>(
     group: &mut BenchmarkGroup<M>,

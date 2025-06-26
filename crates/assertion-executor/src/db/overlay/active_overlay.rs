@@ -1,11 +1,11 @@
 use crate::db::{
+    DatabaseCommit,
+    NotFoundError,
     overlay::{
         ForkDb,
         TableKey,
         TableValue,
     },
-    DatabaseCommit,
-    NotFoundError,
 };
 use std::{
     cell::UnsafeCell,
@@ -18,12 +18,12 @@ use alloy_primitives::{
     U256,
 };
 use revm::{
+    Database,
+    DatabaseRef,
     primitives::{
         AccountInfo,
         Bytecode,
     },
-    Database,
-    DatabaseRef,
 };
 
 use moka::sync::Cache;
@@ -228,13 +228,13 @@ impl<Db> DatabaseCommit for ActiveOverlay<Db> {
 #[cfg(test)]
 mod active_overlay_tests {
     use super::*;
-    use crate::db::overlay::test_utils::mock_account_info;
     use crate::db::overlay::test_utils::MockDb;
+    use crate::db::overlay::test_utils::mock_account_info;
     use alloy_primitives::{
+        U256,
         address,
         b256,
         bytes,
-        U256,
     };
     use moka::sync::Cache;
     use revm::primitives::Bytecode;

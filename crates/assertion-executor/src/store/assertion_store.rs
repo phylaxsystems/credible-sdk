@@ -1,4 +1,5 @@
 use crate::{
+    ExecutorConfig,
     inspectors::{
         CallTracer,
         TriggerRecorder,
@@ -7,19 +8,18 @@ use crate::{
     primitives::{
         Address,
         AssertionContract,
+        B256,
         Bytes,
         FixedBytes,
-        B256,
         U256,
     },
     store::{
-        assertion_contract_extractor::{
-            extract_assertion_contract,
-            FnSelectorExtractorError,
-        },
         PendingModification,
+        assertion_contract_extractor::{
+            FnSelectorExtractorError,
+            extract_assertion_contract,
+        },
     },
-    ExecutorConfig,
 };
 
 use std::sync::{
