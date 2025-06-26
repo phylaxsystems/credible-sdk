@@ -12,6 +12,8 @@ use crate::{
             MAX_JSON_SIZE,
             check_json_depth,
             sanitize_error_message,
+            validate_da_submission_params,
+            validate_hex_param,
         },
         source_compilation::compile_solidity,
         types::{
@@ -197,6 +199,19 @@ where
     let result = match method.as_str() {
         #[cfg(feature = "debug_assertions")]
         "da_submit_assertion" => {
+            // Validate params structure first
+            if let Some(params) = &json_rpc.params {
+                if let Err(e) = validate_hex_param(params) {
+                    warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = e, "Invalid params structure");
+                    return Ok(rpc_error_with_request_id_obj(
+                        &json_rpc,
+                        JsonRpcErrorCode::InvalidParams,
+                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
+                        &request_id,
+                    ));
+                }
+            }
+            
             let code = match json_rpc.get_string_param(0) {
                 Ok(code) => code,
                 Err(e) => {
@@ -283,6 +298,19 @@ where
             res
         }
         "da_submit_solidity_assertion" => {
+            // Validate params structure first
+            if let Some(params) = &json_rpc.params {
+                if let Err(e) = validate_da_submission_params(params) {
+                    warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = e, "Invalid params structure");
+                    return Ok(rpc_error_with_request_id_obj(
+                        &json_rpc,
+                        JsonRpcErrorCode::InvalidParams,
+                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
+                        &request_id,
+                    ));
+                }
+            }
+            
             let da_submission: DaSubmission = match json_rpc.deserialize_param(0) {
                 Ok(da_submission) => da_submission,
                 Err(e) => {
@@ -391,6 +419,19 @@ where
             res
         }
         "da_get_assertion" => {
+            // Validate params structure first
+            if let Some(params) = &json_rpc.params {
+                if let Err(e) = validate_hex_param(params) {
+                    warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = e, "Invalid params structure");
+                    return Ok(rpc_error_with_request_id_obj(
+                        &json_rpc,
+                        JsonRpcErrorCode::InvalidParams,
+                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
+                        &request_id,
+                    ));
+                }
+            }
+            
             let id = match json_rpc.get_string_param(0) {
                 Ok(id) => id,
                 Err(e) => {

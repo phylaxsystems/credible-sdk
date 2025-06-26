@@ -36,6 +36,69 @@ pub struct JsonRpcRequest {
     pub id: Value,
 }
 
+/// Strict validation for da_submit_solidity_assertion params
+pub fn validate_da_submission_params(params: &[Value]) -> Result<(), &'static str> {
+    if params.len() != 1 {
+        return Err("Expected exactly one parameter");
+    }
+    
+    let obj = params[0].as_object().ok_or("Parameter must be an object")?;
+    
+    // Check for exact fields - no more, no less
+    let expected_fields = ["solidity_source", "compiler_version", "assertion_contract_name", 
+                          "constructor_args", "constructor_abi_signature"];
+    let mut seen_fields = std::collections::HashSet::new();
+    
+    for (key, value) in obj {
+        if !expected_fields.contains(&key.as_str()) {
+            return Err("Unexpected field in submission");
+        }
+        seen_fields.insert(key.as_str());
+        
+        // Validate field types
+        match key.as_str() {
+            "solidity_source" | "compiler_version" | "assertion_contract_name" | 
+            "constructor_abi_signature" => {
+                if !value.is_string() {
+                    return Err("Field must be a string");
+                }
+            }
+            "constructor_args" => {
+                let arr = value.as_array().ok_or("constructor_args must be an array")?;
+                // Ensure all elements are strings with no nesting
+                for arg in arr {
+                    if !arg.is_string() {
+                        return Err("constructor_args must contain only strings");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    // Ensure all required fields are present
+    for field in expected_fields {
+        if !seen_fields.contains(field) {
+            return Err("Missing required field");
+        }
+    }
+    
+    Ok(())
+}
+
+/// Validate params for methods expecting a single hex string
+pub fn validate_hex_param(params: &[Value]) -> Result<(), &'static str> {
+    if params.len() != 1 {
+        return Err("Expected exactly one parameter");
+    }
+    
+    if !params[0].is_string() {
+        return Err("Parameter must be a string");
+    }
+    
+    Ok(())
+}
+
 /// Safe parameter access result
 pub enum ParamAccess<'a> {
     Value(&'a Value),
