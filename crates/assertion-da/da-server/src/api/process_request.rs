@@ -10,7 +10,6 @@ use crate::{
             JsonRpcErrorCode,
             JsonRpcRequest,
             MAX_JSON_SIZE,
-            check_json_depth,
             sanitize_error_message,
             validate_da_submission_params,
             validate_hex_param,
@@ -140,23 +139,6 @@ where
             .to_string());
         }
     };
-
-    // Check JSON depth
-    if !check_json_depth(&json_value, 0) {
-        warn!(target: "json_rpc", %request_id, %client_ip, "JSON nesting depth exceeded");
-        return Ok(json!({
-            "jsonrpc": "2.0",
-            "error": {
-                "code": -32600,
-                "message": "Invalid request: excessive nesting",
-                "data": {
-                    "request_id": request_id.to_string()
-                }
-            },
-            "id": null
-        })
-        .to_string());
-    }
 
     // Validate JSON-RPC structure
     let json_rpc = match JsonRpcRequest::validate(json_value) {

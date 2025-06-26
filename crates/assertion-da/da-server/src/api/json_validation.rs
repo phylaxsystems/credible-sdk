@@ -198,33 +198,6 @@ impl JsonRpcRequest {
     }
 }
 
-/// Check JSON depth to prevent stack overflow attacks
-pub fn check_json_depth(value: &Value, current_depth: usize) -> bool {
-    if current_depth > MAX_JSON_DEPTH {
-        return false;
-    }
-
-    match value {
-        Value::Object(map) => {
-            for (_, v) in map {
-                if !check_json_depth(v, current_depth + 1) {
-                    return false;
-                }
-            }
-            true
-        }
-        Value::Array(arr) => {
-            for v in arr {
-                if !check_json_depth(v, current_depth + 1) {
-                    return false;
-                }
-            }
-            true
-        }
-        _ => true,
-    }
-}
-
 /// Sanitize error messages to prevent information disclosure
 pub fn sanitize_error_message(code: JsonRpcErrorCode, _details: &str) -> &'static str {
     match code {
