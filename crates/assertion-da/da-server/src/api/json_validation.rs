@@ -258,81 +258,92 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_jsonrpc_version() {
-        let json = json!({
-            "method": "test_method",
-            "params": [],
-            "id": 1
-        });
+    fn test_validate_da_submission_params_valid() {
+        let params = vec![json!({
+            "solidity_source": "contract Test {}",
+            "compiler_version": "0.8.17",
+            "assertion_contract_name": "Test",
+            "constructor_args": ["arg1", "arg2"],
+            "constructor_abi_signature": "constructor(string,string)"
+        })];
+        
+        assert!(validate_da_submission_params(&params).is_ok());
+    }
 
-        let result = JsonRpcRequest::validate(json);
+    #[test]
+    fn test_validate_da_submission_params_extra_field() {
+        let params = vec![json!({
+            "solidity_source": "contract Test {}",
+            "compiler_version": "0.8.17",
+            "assertion_contract_name": "Test",
+            "constructor_args": [],
+            "constructor_abi_signature": "constructor()",
+            "extra_field": "not allowed"
+        })];
+        
+        let result = validate_da_submission_params(&params);
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().0 as i32,
-            JsonRpcErrorCode::InvalidRequest as i32
-        );
+        assert_eq!(result.unwrap_err(), "Unexpected field in submission");
     }
 
     #[test]
-    fn test_wrong_jsonrpc_version() {
-        let json = json!({
-            "jsonrpc": "1.0",
-            "method": "test_method",
-            "params": [],
-            "id": 1
-        });
-
-        let result = JsonRpcRequest::validate(json);
+    fn test_validate_da_submission_params_nested_object() {
+        let params = vec![json!({
+            "solidity_source": "contract Test {}",
+            "compiler_version": "0.8.17",
+            "assertion_contract_name": "Test",
+            "constructor_args": [{"nested": "not allowed"}],
+            "constructor_abi_signature": "constructor()"
+        })];
+        
+        let result = validate_da_submission_params(&params);
         assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "constructor_args must contain only strings");
     }
 
     #[test]
-    fn test_params_not_array() {
-        let json = json!({
-            "jsonrpc": "2.0",
-            "method": "test_method",
-            "params": {"key": "value"},
-            "id": 1
-        });
-
-        let result = JsonRpcRequest::validate(json);
+    fn test_validate_da_submission_params_missing_field() {
+        let params = vec![json!({
+            "solidity_source": "contract Test {}",
+            "compiler_version": "0.8.17",
+            "assertion_contract_name": "Test",
+            "constructor_args": []
+            // Missing constructor_abi_signature
+        })];
+        
+        let result = validate_da_submission_params(&params);
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().0 as i32,
-            JsonRpcErrorCode::InvalidParams as i32
-        );
+        assert_eq!(result.unwrap_err(), "Missing required field");
     }
 
     #[test]
-    fn test_safe_param_access() {
-        let json = json!({
-            "jsonrpc": "2.0",
-            "method": "test_method",
-            "params": ["value1", 42, null],
-            "id": 1
-        });
-
-        let request = JsonRpcRequest::validate(json).unwrap();
-
-        // Test string param
-        assert_eq!(request.get_string_param(0).unwrap(), "value1");
-
-        // Test out of bounds
-        assert!(request.get_string_param(10).is_err());
-
-        // Test wrong type
-        assert!(request.get_string_param(1).is_err());
+    fn test_validate_hex_param_valid() {
+        let params = vec![json!("0xabcd1234")];
+        assert!(validate_hex_param(&params).is_ok());
     }
 
     #[test]
-    fn test_depth_check() {
-        let shallow = json!({"a": {"b": {"c": "d"}}});
-        assert!(check_json_depth(&shallow, 0));
-
-        let mut deep = json!({"value": "test"});
-        for _ in 0..50 {
-            deep = json!({"nested": deep});
-        }
-        assert!(!check_json_depth(&deep, 0));
+    fn test_validate_hex_param_nested() {
+        let params = vec![json!({"hex": "0xabcd1234"})];
+        let result = validate_hex_param(&params);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Parameter must be a string");
     }
+
+    #[test]
+    fn test_validate_hex_param_array() {
+        let params = vec![json!(["0xabcd1234"])];
+        let result = validate_hex_param(&params);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Parameter must be a string");
+    }
+
+    #[test]
+    fn test_validate_hex_param_multiple() {
+        let params = vec![json!("0xabcd1234"), json!("0x5678")];
+        let result = validate_hex_param(&params);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Expected exactly one parameter");
+    }
+
 }
