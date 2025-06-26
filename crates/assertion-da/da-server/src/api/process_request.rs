@@ -280,8 +280,8 @@ where
         }
         "da_submit_solidity_assertion" => {
             // Validate params structure first
-            if let Some(params) = &json_rpc.params {
-                if let Err(e) = validate_da_submission_params(params) {
+            if let Some(params) = &json_rpc.params
+                && let Err(e) = validate_da_submission_params(params) {
                     warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = e, "Invalid params structure");
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
@@ -290,7 +290,6 @@ where
                         &request_id,
                     ));
                 }
-            }
             
             let da_submission: DaSubmission = match json_rpc.deserialize_param(0) {
                 Ok(da_submission) => da_submission,
@@ -401,8 +400,8 @@ where
         }
         "da_get_assertion" => {
             // Validate params structure first
-            if let Some(params) = &json_rpc.params {
-                if let Err(e) = validate_hex_param(params) {
+            if let Some(params) = &json_rpc.params
+                && let Err(e) = validate_hex_param(params) {
                     warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = e, "Invalid params structure");
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
@@ -411,7 +410,6 @@ where
                         &request_id,
                     ));
                 }
-            }
             
             let id = match json_rpc.get_string_param(0) {
                 Ok(id) => id,
@@ -443,15 +441,14 @@ where
             debug!(target: "json_rpc", ?id, "Getting assertion");
 
             let res =
-                process_get_assertion(id, db, &json_rpc, request_id, &client_ip, &json_rpc_id)
+                process_get_assertion(id, db, &json_rpc, request_id, &client_ip, json_rpc_id)
                     .await;
 
             // Log success for get_assertion if not an error response
-            if let Ok(ref response) = res {
-                if !response.contains("\"error\"") {
+            if let Ok(ref response) = res
+                && !response.contains("\"error\"") {
                     info!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Successfully retrieved assertion");
                 }
-            }
             histogram!(
                 "da_request_duration_seconds",
                 "method" => "get_assertion",

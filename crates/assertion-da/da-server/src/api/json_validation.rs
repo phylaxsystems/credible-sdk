@@ -8,9 +8,6 @@ use std::fmt;
 /// Maximum allowed JSON payload size (10MB)
 pub const MAX_JSON_SIZE: usize = 10 * 1024 * 1024;
 
-/// Maximum allowed nesting depth for JSON structures
-pub const MAX_JSON_DEPTH: usize = 32;
-
 /// Standard JSON-RPC error codes
 #[derive(Debug, Clone, Copy)]
 pub enum JsonRpcErrorCode {
