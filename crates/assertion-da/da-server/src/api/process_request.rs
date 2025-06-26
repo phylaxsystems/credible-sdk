@@ -10,7 +10,6 @@ use crate::{
             JsonRpcErrorCode,
             JsonRpcRequest,
             MAX_JSON_SIZE,
-            sanitize_error_message,
             validate_da_submission_params,
             validate_hex_param,
         },
@@ -149,7 +148,7 @@ where
                 "jsonrpc": "2.0",
                 "error": {
                     "code": code as i32,
-                    "message": sanitize_error_message(code, msg),
+                    "message": "Invalid JSON-RPC structure",
                     "data": {
                         "request_id": request_id.to_string()
                     }
@@ -188,7 +187,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InvalidParams,
-                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
+                        "Invalid params",
                         &request_id,
                     ));
                 }
@@ -201,7 +200,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InvalidParams,
-                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
+                        "Invalid params",
                         &request_id,
                     ));
                 }
@@ -215,7 +214,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InvalidParams,
-                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, ""),
+                        "Failed to decode hex bytecode",
                         &request_id,
                     ));
                 }
@@ -232,7 +231,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InternalError,
-                        sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
+                        "Failed to sign assertion",
                         &request_id,
                     ));
                 }
@@ -287,7 +286,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InvalidParams,
-                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
+                        "Invalid params structure",
                         &request_id,
                     ));
                 }
@@ -300,7 +299,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InvalidParams,
-                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
+                        "Failed to parse DaSubmission payload",
                         &request_id,
                     ));
                 }
@@ -322,7 +321,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InternalError,
-                        sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
+                        &format!("Solidity Compilation Error: {err}"),
                         &request_id,
                     ));
                 }
@@ -338,7 +337,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InternalError,
-                        sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
+                        &format!("Constructor args ABI Encoding Error: {err}"),
                         &request_id,
                     ));
                 }
@@ -356,7 +355,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InternalError,
-                        sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
+                        "Internal Error: Failed to sign Assertion",
                         &request_id,
                     ));
                 }
@@ -408,7 +407,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InvalidParams,
-                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
+                        "Invalid params: Didn't find id",
                         &request_id,
                     ));
                 }
@@ -421,7 +420,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InvalidParams,
-                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, e),
+                        "Invalid params: missing id parameter",
                         &request_id,
                     ));
                 }
@@ -435,7 +434,7 @@ where
                     return Ok(rpc_error_with_request_id_obj(
                         &json_rpc,
                         JsonRpcErrorCode::InvalidParams,
-                        sanitize_error_message(JsonRpcErrorCode::InvalidParams, ""),
+                        "Internal Error: Failed to decode hex of id",
                         &request_id,
                     ));
                 }
@@ -473,7 +472,7 @@ where
             Ok(rpc_error_with_request_id_obj(
                 &json_rpc,
                 JsonRpcErrorCode::MethodNotFound,
-                sanitize_error_message(JsonRpcErrorCode::MethodNotFound, ""),
+                "Method not found",
                 &request_id,
             ))
         }
@@ -556,7 +555,7 @@ async fn process_add_assertion(
             return Ok(rpc_error_with_request_id_obj(
                 json_rpc,
                 JsonRpcErrorCode::InternalError,
-                sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
+                "Internal error",
                 &request_id,
             ));
         }
@@ -584,7 +583,7 @@ async fn process_add_assertion(
             Ok(rpc_error_with_request_id_obj(
                 json_rpc,
                 JsonRpcErrorCode::InternalError,
-                sanitize_error_message(JsonRpcErrorCode::InternalError, ""),
+                "Internal error",
                 &request_id,
             ))
         }
@@ -1156,10 +1155,10 @@ mod tests {
         assert_eq!(response.status(), 200);
         let response_json: Value = response.json().await.unwrap();
         assert_eq!(response_json["error"]["code"], -32602);
-        // Should not expose internal error details
         let error_msg = response_json["error"]["message"].as_str().unwrap();
-        assert!(!error_msg.contains("Failed to decode hex"));
-        assert_eq!(error_msg, "Invalid parameters");
+        println!("Error message: {}", error_msg);
+        assert!(error_msg.contains("Failed to decode hex"));
+        assert_eq!(error_msg, "Internal Error: Failed to decode hex of id");
     }
 
     #[tokio::test]

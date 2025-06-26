@@ -198,17 +198,6 @@ impl JsonRpcRequest {
     }
 }
 
-/// Sanitize error messages to prevent information disclosure
-pub fn sanitize_error_message(code: JsonRpcErrorCode, _details: &str) -> &'static str {
-    match code {
-        JsonRpcErrorCode::ParseError => "Parse error",
-        JsonRpcErrorCode::InvalidRequest => "Invalid request",
-        JsonRpcErrorCode::MethodNotFound => "Method not found",
-        JsonRpcErrorCode::InvalidParams => "Invalid parameters",
-        JsonRpcErrorCode::InternalError => "Internal error",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

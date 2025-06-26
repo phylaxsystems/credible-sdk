@@ -476,6 +476,7 @@ mod tests {
 
         assert!(result.is_err());
         let error = result.unwrap_err();
+        println!("Error: {}", error);
         assert!(
             error.to_string().contains("Compilation Error")
                 || error.to_string().contains("Solidity Error")
