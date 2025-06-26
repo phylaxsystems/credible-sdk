@@ -922,7 +922,7 @@ mod tests {
         let response_json: Value = response.json().await.unwrap();
         assert_eq!(response_json["jsonrpc"], "2.0");
         assert_eq!(response_json["id"], 1);
-        assert_eq!(response_json["error"]["code"], 404);
+        assert_eq!(response_json["error"]["code"], -32602);
         assert_eq!(response_json["error"]["message"], "Assertion not found");
     }
 

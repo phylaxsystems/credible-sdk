@@ -126,7 +126,7 @@ mod tests {
         if let Err(DaClientError::JsonRpcError { code, message }) =
             da_client.fetch_assertion(Default::default()).await
         {
-            assert_eq!(code, 404);
+            assert_eq!(code, -32602);
             assert_eq!(message, "Assertion not found");
         }
 
