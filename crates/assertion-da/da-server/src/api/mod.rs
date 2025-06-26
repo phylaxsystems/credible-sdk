@@ -98,6 +98,7 @@
 
 pub mod accept;
 pub mod db;
+pub mod json_validation;
 pub mod process_request;
 pub mod source_compilation;
 pub mod types;
