@@ -21,7 +21,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/phylaxsystems/credible-sdk"
 
 [workspace.dependencies]
-rust-tracing = { git = "https://github.com/phylaxsystems/rust-tracing.git", tag = "0.1.3"}
+rust-tracing = { git = "https://github.com/phylaxsystems/rust-tracing.git", tag = "0.1.3", default-features = false }
 
 # PCL dependencies
 pcl-phoundry = { path = "crates/pcl/phoundry" }
@@ -39,10 +39,6 @@ int-test-utils = { path = "crates/int-test-utils" }
 # assertion-executor
 assertion-executor = { path = "crates/assertion-executor" }
 
-alloy = { version = "0.11.1", features = ["full", "node-bindings", "json-rpc", "rpc-client", "signer-local", "k256"] }
-alloy-dyn-abi = {version = "0.8.15", features = ["std"] }
-alloy-json-abi = "0.8.15"
-
 anyhow = "1.0.86"
 clap = {version = "4.5.11", features = ["derive", "env"]}
 futures = "0.3.30"
@@ -56,12 +52,11 @@ hyper = { version = "1.4.1", features = ["full"] }
 util = "0.1.3"
 http-body-util = "0.1.2"
 simd-json = "0.13.10"
-rand = "0.8.5"
+rand = "0.9.1"
 hyper-util = "0.1.6"
 bincode = "1.3.3"
 tokio-stream = "0.1.15"
 sled = { version = "1.0.0-alpha.122" }
-ecdsa = { version = "0.16.9", features = ["serde", "signing"] }
 k256 = "0.13.4"
 hex = "0.4.3"
 tempfile = { version = "3.12.0" }
@@ -81,28 +76,45 @@ tempdir = "0.3"
 
 rayon = "1.10.0"
 parking_lot = "0.12.1"
-alloy-provider = { version = "0.11.1", features = ["ws", "anvil-node", "trace-api", "debug-api"] }
-alloy-sol-types = "0.8.3"
-alloy-consensus = { version = "0.11.1", features = ["k256"] }
-alloy-rpc-types = "0.11.1"
-alloy-rpc-types-anvil = "0.11.1"
-alloy-pubsub = "0.11.1"
-alloy-rpc-client = "0.11.1"
-alloy-node-bindings = "0.11.1"
-alloy-network = "0.11.1"
-alloy-network-primitives = "0.11.1"
-alloy-primitives = { version = "0.8.22", features = ["getrandom"] }
-alloy-signer = "0.11.1"
-alloy-signer-local = "0.11.1"
-alloy-transport = "0.11.1"
-alloy-transport-ws = "0.11.1"
-alloy-eip7702 = "0.5.1"
-revm = { version = "19.4.0", features = ["serde"] }
+
+
+# alloy dependencies
+alloy-provider = { version = "1.0.11", features = ["ws", "anvil-node", "trace-api", "debug-api"] }
+alloy-consensus = { version = "1.0.11", features = ["k256"] }
+alloy-rpc-types = "1.0.11"
+alloy-rpc-types-anvil = "1.0.11"
+alloy-pubsub = "1.0.11"
+alloy-rpc-client = "1.0.11"
+alloy-node-bindings = "1.0.11"
+alloy-network = "1.0.11"
+alloy-network-primitives = "1.0.11"
+alloy-signer = "1.0.11"
+alloy-signer-local = "1.0.11"
+alloy-transport = "1.0.11"
+alloy-transport-ws = "1.0.11"
+alloy-eips = "1.0.11"
+
+# alloy core
+alloy-primitives = { version = "1.1.0", features = ["getrandom"] }
+alloy-sol-types = "1.1.0"
+
+alloy = { version = "1.0.11", features = ["full", "node-bindings", "json-rpc", "rpc-client", "signer-local", "k256"] }
+alloy-dyn-abi = {version = "1.2.1", features = ["std"] }
+alloy-json-abi = "1.2.1"
+
+## alloy-evm
+alloy-evm = "0.10.0"
+
+# revm dependencies
+revm = { version = "24.0.1", features = ["serde"] }
+op-revm = { version = "5.0.1", default-features = false }
+
 jsonrpsee = { version = "0.24.7", features = ["client", "http-client", "server"] }
 moka = { version = "0.12.10", features = ["sync"] }
 enum-as-inner = "0.6.1"
 url = "2.5.4"
 criterion = { version = "0.5.1" }
+
 
 # Maxperf profile for absolute maximum performance
 # Only use for builds that are going to get used by end users
@@ -111,3 +123,5 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 incremental = false
+
+

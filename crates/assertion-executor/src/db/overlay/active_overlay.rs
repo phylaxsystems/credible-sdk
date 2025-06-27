@@ -1,5 +1,7 @@
 use crate::db::{
+    Database,
     DatabaseCommit,
+    DatabaseRef,
     NotFoundError,
     overlay::{
         ForkDb,
@@ -7,23 +9,18 @@ use crate::db::{
         TableValue,
     },
 };
+use crate::primitives::{
+    AccountInfo,
+    Address,
+    B256,
+    Bytecode,
+    EvmState,
+    U256,
+};
+
 use std::{
     cell::UnsafeCell,
     sync::Arc,
-};
-
-use alloy_primitives::{
-    Address,
-    B256,
-    U256,
-};
-use revm::{
-    Database,
-    DatabaseRef,
-    primitives::{
-        AccountInfo,
-        Bytecode,
-    },
 };
 
 use moka::sync::Cache;
@@ -80,11 +77,15 @@ impl<Db> ActiveOverlay<Db> {
 impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
     type Error = NotFoundError;
 
-    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+    fn basic_ref(
+        &self,
+        address: Address,
+    ) -> Result<Option<AccountInfo>, <Self as DatabaseRef>::Error> {
         let key = TableKey::Basic(address);
         if let Some(value) = self.overlay.get(&key) {
             // Found in cache
-            return Ok(value.as_basic().cloned());
+            let account_info = value.as_basic().unwrap();
+            return Ok(Some(account_info.clone()));
         }
 
         // Not in cache, query mandatory underlying DB
@@ -110,7 +111,7 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
         }
     }
 
-    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, <Self as DatabaseRef>::Error> {
         let key = TableKey::CodeByHash(code_hash);
         if let Some(value) = self.overlay.get(&key) {
             // Found in cache
@@ -132,7 +133,11 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
         }
     }
 
-    fn storage_ref(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+    fn storage_ref(
+        &self,
+        address: Address,
+        slot: U256,
+    ) -> Result<U256, <Self as DatabaseRef>::Error> {
         let key = TableKey::Storage(address, slot);
         if let Some(value) = self.overlay.get(&key) {
             // Found in cache, convert B256 back to U256
@@ -153,7 +158,7 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
         }
     }
 
-    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+    fn block_hash_ref(&self, number: u64) -> Result<B256, <Self as DatabaseRef>::Error> {
         let key = TableKey::BlockHash(number);
         if let Some(value) = self.overlay.get(&key) {
             // Found in cache
@@ -194,7 +199,7 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
 /// active_overlay.commit(state_changes);
 /// ```
 impl<Db> DatabaseCommit for ActiveOverlay<Db> {
-    fn commit(&mut self, changes: revm::primitives::EvmState) {
+    fn commit(&mut self, changes: EvmState) {
         for (address, account) in changes {
             // Skip untouched accounts
             if !account.is_touched() {
@@ -237,9 +242,11 @@ mod active_overlay_tests {
         bytes,
     };
     use moka::sync::Cache;
-    use revm::primitives::Bytecode;
 
     use crate::db::overlay::TableKey;
+    use crate::primitives::Bytecode;
+
+    use std::collections::HashMap;
 
     // Helper macro for accessing MockDb methods safely
     macro_rules! get_mock_db_field {
@@ -362,7 +369,7 @@ mod active_overlay_tests {
     #[test]
     fn test_active_code_hit_miss() {
         let code1_bytes = bytes!("30106000f3");
-        let code1 = Bytecode::new_raw(code1_bytes.clone());
+        let code1 = Bytecode::new_legacy(code1_bytes.clone());
         let hash1 = code1.hash_slow();
         let key1 = TableKey::CodeByHash(hash1);
 
@@ -387,14 +394,14 @@ mod active_overlay_tests {
 
         // 2. First read (miss)
         let result = active_overlay.code_by_hash_ref(hash1).unwrap();
-        assert_eq!(result.bytes(), code1_bytes);
+        assert_eq!(result.original_bytes(), code1_bytes);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_code_calls), 1);
         active_overlay.run_pending_tasks();
         assert!(active_overlay.is_cached(&key1));
 
         // 3. Second read (hit)
         let result2 = active_overlay.code_by_hash_ref(hash1).unwrap();
-        assert_eq!(result2.bytes(), code1_bytes);
+        assert_eq!(result2.original_bytes(), code1_bytes);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_code_calls), 1); // No new call
 
         // 4. Read non-existent code (miss) -> Expect Error
@@ -524,13 +531,13 @@ mod active_overlay_tests {
     // Test DatabaseCommit implementation
     #[test]
     fn test_active_database_commit() {
-        use revm::primitives::{
+        use crate::primitives::{
             Account,
             AccountStatus,
             EvmState,
             EvmStorageSlot,
-            HashMap,
         };
+        use std::collections::HashMap;
 
         let addr1 = address!("0000000000000000000000000000000000000001");
         let addr2 = address!("0000000000000000000000000000000000000002");
@@ -617,7 +624,10 @@ mod active_overlay_tests {
         // Verify code was committed
         assert!(active_overlay.is_cached(&TableKey::CodeByHash(code_hash)));
         assert_eq!(
-            active_overlay.code_by_hash_ref(code_hash).unwrap().bytes(),
+            active_overlay
+                .code_by_hash_ref(code_hash)
+                .unwrap()
+                .original_bytes(),
             code_bytes
         );
 
@@ -660,12 +670,11 @@ mod active_overlay_tests {
     // Test DatabaseCommit with shared cache across multiple overlays
     #[test]
     fn test_active_database_commit_shared_cache() {
-        use revm::primitives::{
+        use crate::primitives::{
             Account,
             AccountStatus,
             EvmState,
             EvmStorageSlot,
-            HashMap,
         };
 
         let addr1 = address!("f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1");

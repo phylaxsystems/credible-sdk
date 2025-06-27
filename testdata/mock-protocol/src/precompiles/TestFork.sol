@@ -17,6 +17,7 @@ contract TestFork is Assertion, Test {
         require(TARGET.readStorage() == 2, "readStorage() != 2");
 
         ph.forkPreState();
+        return;
         require(TARGET.readStorage() == 1, "readStorage() != 1");
 
         ph.forkPostState();

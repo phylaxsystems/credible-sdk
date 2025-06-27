@@ -3,16 +3,15 @@ use crate::db::NotFoundError;
 use crate::db::overlay::AccountInfo;
 use crate::primitives::EvmState;
 
+use crate::primitives::Bytecode;
 use alloy_primitives::Address;
 use alloy_primitives::B256;
+use alloy_primitives::KECCAK256_EMPTY;
 use alloy_primitives::U256;
 use moka::sync::Cache;
-use revm::db::CacheDB;
-use revm::db::EmptyDBTyped;
-use revm::primitives::{
-    Bytecode,
-    KECCAK_EMPTY,
-};
+use revm::database::CacheDB;
+use revm::database::EmptyDBTyped;
+use revm::database::InMemoryDB;
 use revm::{
     Database,
     DatabaseRef,
@@ -28,7 +27,7 @@ impl<Db> OverlayDb<Db> {
     pub fn new_test() -> OverlayDb<CacheDB<EmptyDBTyped<Infallible>>> {
         let cache = Cache::builder().max_capacity(10_000).build();
         OverlayDb::<CacheDB<EmptyDBTyped<Infallible>>> {
-            underlying_db: Some(Arc::new(revm::InMemoryDB::new(EmptyDBTyped::new()))),
+            underlying_db: Some(Arc::new(InMemoryDB::new(EmptyDBTyped::new()))),
             overlay: cache,
         }
     }
@@ -202,7 +201,7 @@ pub fn mock_account_info(balance: U256, nonce: u64, code: Option<Bytecode>) -> A
     AccountInfo {
         balance,
         nonce,
-        code_hash: code.as_ref().map_or(KECCAK_EMPTY, |c| c.hash_slow()),
+        code_hash: code.as_ref().map_or(KECCAK256_EMPTY, |c| c.hash_slow()),
         code,
     }
 }

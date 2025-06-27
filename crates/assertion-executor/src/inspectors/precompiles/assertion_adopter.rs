@@ -55,7 +55,7 @@ mod test {
         assert!(!encoded.is_empty());
 
         // Verify we can decode the result back to the original address
-        let decoded = Address::abi_decode(&encoded, true);
+        let decoded = Address::abi_decode(&encoded);
         assert!(decoded.is_ok());
         assert_eq!(decoded.unwrap(), adopter);
     }

@@ -1,28 +1,24 @@
 pub mod config;
 
 use std::{
-    fmt::{
-        Debug,
-        Display,
-    },
+    fmt::Debug,
     sync::atomic::AtomicU64,
 };
 
 use crate::{
     ExecutorConfig,
-    build_evm::{
-        new_phevm,
-        new_tx_fork_evm,
-    },
     db::{
         DatabaseCommit,
         DatabaseRef,
-        PhDB,
         fork_db::ForkDb,
         multi_fork_db::MultiForkDb,
     },
-    // Ensure ExecutorError is accessible
-    error::ExecutorError,
+    error::{
+        AssertionExecutionError,
+        ExecutorError,
+        ForkTxExecutionError,
+    },
+    evm::build_evm::evm_env,
     inspectors::{
         CallTracer,
         LogsAndTraces,
@@ -40,7 +36,6 @@ use crate::{
         AssertionFunctionExecutionResult,
         AssertionFunctionResult,
         BlockEnv,
-        EVMError,
         EvmState,
         EvmStorage,
         FixedBytes,
@@ -51,10 +46,15 @@ use crate::{
         U256,
         address,
     },
+    reprice_evm_storage,
     store::AssertionStore,
 };
 
-use revm::Database;
+use revm::{
+    Database,
+    InspectEvm,
+    context::ContextTr,
+};
 
 use rayon::prelude::{
     IntoParallelIterator,
@@ -63,14 +63,10 @@ use rayon::prelude::{
 
 use tracing::{
     debug,
-    error,
     instrument,
     trace,
     warn,
 };
-
-#[cfg(feature = "optimism")]
-use crate::executor::config::create_optimism_fields;
 
 /// Used to deploys the assertion contract to the forked db, and to call assertion functions.
 pub const CALLER: Address = address!("00000000000000000000000000000000000001A4");
@@ -81,21 +77,17 @@ pub const CALLER: Address = address!("00000000000000000000000000000000000001A4")
 pub const ASSERTION_CONTRACT: Address = address!("63f9abbe8aa6ba1261ef3b0cbfb25a5ff8eeed10");
 
 #[derive(Debug, Clone)]
-pub struct AssertionExecutor<DB> {
-    pub db: DB,
+pub struct AssertionExecutor {
     pub config: ExecutorConfig,
     pub store: AssertionStore,
 }
 
-impl<DB: PhDB> AssertionExecutor<DB> {
+impl AssertionExecutor {
     /// Creates a new assertion executor.
-    pub fn new(db: DB, config: ExecutorConfig, store: AssertionStore) -> Self {
-        Self { db, config, store }
+    pub fn new(config: ExecutorConfig, store: AssertionStore) -> Self {
+        Self { config, store }
     }
 }
-
-// Define the result type using the main DB error
-type ExecutorResult<T, DB> = Result<T, ExecutorError<<DB as DatabaseRef>::Error>>;
 
 /// Used for tracing outputs about state changes
 #[derive(Debug)]
@@ -121,10 +113,13 @@ struct AssertionExecutionParams<'a, Active> {
     context: &'a PhEvmContext<'a>,
 }
 
-impl<DB: PhDB> AssertionExecutor<DB>
-where
-    DB::Error: std::fmt::Debug + Send,
-{
+#[derive(Debug, Clone)]
+pub struct ExecuteForkedTxResult {
+    pub call_tracer: CallTracer,
+    pub result_and_state: ResultAndState,
+}
+
+impl AssertionExecutor {
     /// Executes a transaction against an external revm database, and runs the appropriate
     /// assertions.
     ///
@@ -140,39 +135,47 @@ where
         tx_env: TxEnv,
         fork_db: &mut ForkDb<Active>,
         external_db: &mut ExtDb,
-    ) -> ExecutorResult<TxValidationResult, DB>
+    ) -> Result<TxValidationResult, ExecutorError<Active, ExtDb>>
     where
-        ExtDb: Database,
-        ExtDb::Error: Display,
-        Active: DatabaseRef + Sync + Send,
-        Active::Error: Debug,
+        ExtDb: Database + Sync + Send + Debug,
+        ExtDb::Error: Debug + Send + Sync + 'static,
+        Active: DatabaseRef + Sync + Send + Debug,
+        Active::Error: Debug + Send + Sync + 'static,
     {
         let pre_tx_db = fork_db.clone();
         let mut post_tx_db = fork_db.clone();
 
         // This call relies on From<EVMError<ExtDb::Error>> for ExecutorError<DB::Error>
-        let (tx_traces, result_and_state) =
-            self.execute_forked_tx_ext_db(block_env.clone(), tx_env, &mut post_tx_db, external_db)?;
+        let forked_tx_result = self.execute_forked_tx_ext_db::<ExtDb, Active>(
+            block_env.clone(),
+            tx_env,
+            &mut post_tx_db,
+            external_db,
+        )?;
 
-        if !result_and_state.result.is_success() {
+        let exec_result = &forked_tx_result.result_and_state.result;
+        if !exec_result.is_success() {
             debug!(target: "assertion-executor::validate_tx", "Transaction execution failed, skipping assertions");
-            return Ok(TxValidationResult::new(true, result_and_state, vec![]));
+            return Ok(TxValidationResult::new(
+                true,
+                forked_tx_result.result_and_state,
+                vec![],
+            ));
         }
-        debug!(target: "assertion-executor::validate_tx", triggers=?tx_traces.triggers(), gas_used=result_and_state.result.gas_used(), "Transaction execution succeeded.");
+        debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
 
         let multi_fork_db = MultiForkDb::new(pre_tx_db, post_tx_db);
 
-        let logs_and_traces = LogsAndTraces {
-            tx_logs: result_and_state.result.logs(),
-            call_traces: &tx_traces,
-        };
-
-        let results = self.execute_assertions(block_env, multi_fork_db, logs_and_traces)?;
+        let results = self.execute_assertions(block_env, multi_fork_db, &forked_tx_result)?;
         if results.is_empty() {
             debug!(target: "assertion-executor::validate_tx", "No assertions were executed");
             trace!(target: "assertion-executor::validate_tx", "Comitting state changes to fork db");
-            fork_db.commit(result_and_state.state.clone());
-            return Ok(TxValidationResult::new(true, result_and_state, vec![]));
+            fork_db.commit(forked_tx_result.result_and_state.state.clone());
+            return Ok(TxValidationResult::new(
+                true,
+                forked_tx_result.result_and_state,
+                vec![],
+            ));
         }
 
         let invalid_assertions: Vec<AssertionFnId> = results
@@ -186,7 +189,7 @@ where
         if valid {
             debug!(target: "assertion-executor::validate_tx", gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(), "Tx validated");
             trace!(target: "assertion-executor::validate_tx", "Committing state changes to fork db");
-            fork_db.commit(result_and_state.state.clone());
+            fork_db.commit(forked_tx_result.result_and_state.state.clone());
         } else {
             debug!(target: "assertion-executor::validate_tx", gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(), ?invalid_assertions, "Tx invalidated by assertions");
             trace!(
@@ -195,22 +198,35 @@ where
             );
         }
 
-        Ok(TxValidationResult::new(valid, result_and_state, results))
+        Ok(TxValidationResult::new(
+            valid,
+            forked_tx_result.result_and_state,
+            results,
+        ))
     }
 
-    fn execute_assertions<'a, Active>(
-        &'a self,
+    fn execute_assertions<Active>(
+        &self,
         block_env: BlockEnv,
         multi_fork_db: MultiForkDb<ForkDb<Active>>,
-        logs_and_traces: LogsAndTraces<'a>,
-    ) -> ExecutorResult<Vec<AssertionContractExecution>, DB>
+        forked_tx_result: &ExecuteForkedTxResult,
+    ) -> Result<Vec<AssertionContractExecution>, AssertionExecutionError<Active>>
     where
-        Active: DatabaseRef + Sync + Send,
-        Active::Error: Debug,
+        Active: DatabaseRef + Sync + Send + Debug,
+        Active::Error: Debug + Send + Sync + 'static,
     {
+        let ExecuteForkedTxResult {
+            call_tracer,
+            result_and_state,
+        } = forked_tx_result;
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: result_and_state.result.logs(),
+            call_traces: call_tracer,
+        };
+
         let assertions = self
             .store
-            .read(logs_and_traces.call_traces, block_env.number)?;
+            .read(logs_and_traces.call_traces, U256::from(block_env.number))?;
 
         if assertions.is_empty() {
             return Ok(vec![]);
@@ -223,23 +239,27 @@ where
             "Retrieved Assertion contracts from Assertion store"
         );
 
-        let results: ExecutorResult<Vec<AssertionContractExecution>, DB> = assertions
-            .into_par_iter()
-            .map(
-                move |assertion_for_execution| -> ExecutorResult<AssertionContractExecution, DB> {
-                    let phevm_context =
-                        PhEvmContext::new(&logs_and_traces, assertion_for_execution.adopter);
+        let results: Result<Vec<AssertionContractExecution>, AssertionExecutionError<Active>> =
+            assertions
+                .into_par_iter()
+                .map(
+                    move |assertion_for_execution| -> Result<
+                        AssertionContractExecution,
+                        AssertionExecutionError<Active>,
+                    > {
+                        let phevm_context =
+                            PhEvmContext::new(&logs_and_traces, assertion_for_execution.adopter);
 
-                    self.run_assertion_contract(
-                        &assertion_for_execution.assertion_contract,
-                        &assertion_for_execution.selectors,
-                        block_env.clone(),
-                        multi_fork_db.clone(),
-                        &phevm_context,
-                    )
-                },
-            )
-            .collect();
+                        self.run_assertion_contract(
+                            &assertion_for_execution.assertion_contract,
+                            &assertion_for_execution.selectors,
+                            block_env.clone(),
+                            multi_fork_db.clone(),
+                            &phevm_context,
+                        )
+                    },
+                )
+                .collect();
         debug!(target: "assertion-executor::execute_assertions", ?results, "Assertion Execution Results");
         results
     }
@@ -252,10 +272,10 @@ where
         block_env: BlockEnv,
         mut multi_fork_db: MultiForkDb<ForkDb<Active>>,
         context: &PhEvmContext,
-    ) -> ExecutorResult<AssertionContractExecution, DB>
+    ) -> Result<AssertionContractExecution, AssertionExecutionError<Active>>
     where
-        Active: DatabaseRef + Sync + Send,
-        Active::Error: Debug,
+        Active: DatabaseRef + Sync + Send + Debug,
+        Active::Error: Debug + Send + Sync + 'static,
     {
         let AssertionContract { id, .. } = assertion_contract;
 
@@ -278,7 +298,7 @@ where
             fn_selectors
                 .into_par_iter()
                 .map(
-                    |fn_selector: &FixedBytes<4>| -> ExecutorResult<AssertionFunctionResult, DB> {
+                    |fn_selector: &FixedBytes<4>| -> Result<AssertionFunctionResult, AssertionExecutionError<Active>> {
                         self.execute_assertion_fn(AssertionExecutionParams {
                             assertion_contract,
                             fn_selector,
@@ -290,7 +310,7 @@ where
                         })
                     },
                 )
-                .collect::<Vec<ExecutorResult<AssertionFunctionResult, DB>>>()
+                .collect::<Vec<Result<AssertionFunctionResult, AssertionExecutionError<Active>>>>()
         });
 
         debug!(target: "assertion-executor::execute_assertions", execution_results=?results_vec.iter().map(|result| format!("{result:?}")).collect::<Vec<_>>(), "Assertion Execution Results");
@@ -316,10 +336,10 @@ where
     fn execute_assertion_fn<Active>(
         &self,
         params: AssertionExecutionParams<'_, Active>,
-    ) -> ExecutorResult<AssertionFunctionResult, DB>
+    ) -> Result<AssertionFunctionResult, AssertionExecutionError<Active>>
     where
         Active: DatabaseRef + Sync + Send,
-        Active::Error: Debug,
+        Active::Error: Debug + Send + Sync + 'static,
     {
         let AssertionExecutionParams {
             assertion_contract,
@@ -334,35 +354,39 @@ where
         let inspector = PhEvmInspector::new(self.config.spec_id, &mut multi_fork_db, context);
 
         let tx_env = TxEnv {
-            transact_to: TxKind::Call(ASSERTION_CONTRACT),
+            kind: TxKind::Call(ASSERTION_CONTRACT),
             caller: CALLER,
             data: (*fn_selector).into(),
             gas_limit: self.config.assertion_gas_limit,
-            gas_price: block_env.basefee,
-            #[cfg(feature = "optimism")]
-            optimism: create_optimism_fields(),
+            gas_price: block_env.basefee.into(),
+            nonce: 42,
             ..Default::default()
         };
+
         trace!(target: "assertion-executor::execute_assertions", ?tx_env, ?block_env, "Assertion Function Execution environment");
 
-        let mut evm = new_phevm(
-            tx_env,
-            block_env,
-            self.config.chain_id,
-            self.config.spec_id,
-            &mut multi_fork_db,
-            inspector,
-        );
+        let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
+
+        #[cfg(feature = "optimism")]
+        let (mut evm, tx_env) = {
+            let evm =
+                crate::evm::build_evm::build_optimism_evm(&mut multi_fork_db, &env, inspector);
+            (evm, op_revm::OpTransaction::new(tx_env))
+        };
+
+        #[cfg(not(feature = "optimism"))]
+        let mut evm = crate::evm::build_evm::build_eth_evm(&mut multi_fork_db, &env, inspector);
+
+        reprice_evm_storage!(evm);
+
         trace!(target: "assertion-executor::execute_assertions", "Executing assertion function");
-        let result_and_state = evm.transact();
+        let result_and_state = evm.inspect_with_tx(tx_env);
 
         let result = result_and_state
                         .map(|result_and_state| result_and_state.result)
                         .map_err(|e| {
                             warn!(target: "assertion-executor::execute_assertions", error = ?e, "Evm error executing assertions");
-                            // TODO(0xgregthedev): This is bad, we are losing the typed error, we need to fix it. 
-                            // Convert the error to the appropriate type
-                            ExecutorError::TxError(EVMError::Custom(format!("{e:?}")))
+                            e
                         })?;
 
         assertion_gas.fetch_add(result.gas_used(), std::sync::atomic::Ordering::Relaxed);
@@ -391,33 +415,32 @@ where
         tx_env: TxEnv,
         fork_db: &mut ForkDb<Active>,
         external_db: &mut ExtDb,
-    ) -> ExecutorResult<(CallTracer, ResultAndState), DB>
+    ) -> Result<ExecuteForkedTxResult, ForkTxExecutionError<ExtDb>>
     where
-        ExtDb: Database,
-        ExtDb::Error: Display,
-        Active: DatabaseRef,
+        ExtDb: Database + Sync + Send + Debug,
+        ExtDb::Error: Debug + Send + Sync + 'static,
+        Active: DatabaseRef + Sync + Send + Debug,
+        Active::Error: Debug + Send + Sync,
     {
-        let mut evm = new_tx_fork_evm(
-            tx_env,
-            block_env,
-            self.config.chain_id,
-            self.config.spec_id,
-            external_db,
-            CallTracer::default(),
-        );
+        let mut call_tracer = CallTracer::default();
+        let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
 
-        let result_and_state = evm.transact().map_err(|e| {
+        #[cfg(feature = "optimism")]
+        let (mut evm, tx_env) = {
+            let evm =
+                crate::evm::build_evm::build_optimism_evm(external_db, &env, &mut call_tracer);
+            (evm, op_revm::OpTransaction::new(tx_env))
+        };
+
+        #[cfg(not(feature = "optimism"))]
+        let (mut evm, tx_env) = {
+            let evm = crate::evm::build_evm::build_eth_evm(external_db, &env, &mut call_tracer);
+            (evm, tx_env)
+        };
+
+        let result_and_state = evm.inspect_with_tx(tx_env).map_err(|e| {
             debug!(target: "assertion-executor::execute_tx", error = %e, "Evm error in execute_forked_tx");
-            match e {
-                EVMError::Transaction(e) => ExecutorError::TxError(EVMError::Transaction(e)),
-                EVMError::Header(e) => ExecutorError::TxError(EVMError::Header(e)),
-                EVMError::Precompile(e) => ExecutorError::TxError(EVMError::Precompile(e)),
-                EVMError::Custom(e) => ExecutorError::TxError(EVMError::Custom(e)),
-                _ => {
-                    error!(target: "assertion-executor::execute_tx", error = %e, "Unknown error occurred");
-                    ExecutorError::TxError(EVMError::Custom(format!("Error: {e}")))
-                }
-            }
+            e
         })?;
 
         debug!(
@@ -435,12 +458,17 @@ where
             "Forked transaction state changes"
         );
 
-        let call_tracer = std::mem::take(&mut evm.context.external);
+        let _journal = evm.ctx.tx_journal().1.inner.clone();
+        let call_tracer = std::mem::take(evm.inspector);
         std::mem::drop(evm);
 
         // Commit changes to the ForkDb<Active>
         fork_db.commit(result_and_state.state.clone());
-        Ok((call_tracer, result_and_state))
+
+        Ok(ExecuteForkedTxResult {
+            call_tracer,
+            result_and_state,
+        })
     }
 
     /// Inserts pre-deployed assertion contract inside the multi-fork db.
@@ -529,18 +557,13 @@ mod test {
         },
         test_utils::*,
     };
-    use revm::db::CacheDB;
-    use revm::db::EmptyDBTyped;
+    use revm::database::CacheDB;
+    use revm::database::EmptyDBTyped;
     use std::convert::Infallible;
 
     // Define a concrete error type for tests if needed, or use Infallible
     type TestDbError = Infallible; // Or a custom test error enum
 
-    impl From<String> for ExecutorError<Infallible> {
-        fn from(s: String) -> Self {
-            ExecutorError::TxError(EVMError::Custom(s))
-        }
-    }
     // Define the DB type alias used in tests
     type TestDB = OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>;
     // Define the Fork DB type alias used in tests
@@ -554,7 +577,7 @@ mod test {
         let assertion_store = AssertionStore::new_ephemeral().unwrap();
 
         // Build uses TestDB
-        let executor = ExecutorConfig::default().build(test_db.clone(), assertion_store);
+        let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
         // Forks use TestDB
         let mut multi_fork_db = MultiForkDb::new(test_db.fork(), test_db.fork());
@@ -583,13 +606,13 @@ mod test {
         let assertion_store = AssertionStore::new_ephemeral().unwrap();
 
         // Build uses TestDB
-        let executor = ExecutorConfig::default().build(shared_db.clone(), assertion_store);
+        let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
         // Fork uses TestDB
         let mut fork_db: TestForkDB = shared_db.fork();
 
         // execute_forked_tx uses &mut ForkDb<TestDB>
-        let (traces, result_and_state) = executor
+        let result = executor
             .execute_forked_tx_ext_db(
                 BlockEnv::default(),
                 counter_call(),
@@ -600,12 +623,21 @@ mod test {
 
         //Traces should contain the call to the counter contract
         assert_eq!(
-            traces.calls().into_iter().collect::<Vec<Address>>(),
+            result
+                .call_tracer
+                .calls()
+                .into_iter()
+                .collect::<Vec<Address>>(),
             vec![COUNTER_ADDRESS]
         );
 
         // State changes should contain the counter contract and the caller accounts
-        let _accounts = result_and_state.state.keys().cloned().collect::<Vec<_>>();
+        let _accounts = result
+            .result_and_state
+            .state
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
 
         // Check storage on the TestForkDB
         assert_eq!(
@@ -615,7 +647,7 @@ mod test {
 
         // Check storage on the original TestDB via executor.db
         assert_eq!(
-            executor.db.storage_ref(COUNTER_ADDRESS, U256::ZERO),
+            shared_db.storage_ref(COUNTER_ADDRESS, U256::ZERO),
             Ok(U256::ZERO)
         );
     }
@@ -643,17 +675,18 @@ mod test {
         let config = ExecutorConfig::default();
 
         // Build uses TestDB
-        let mut executor = config.clone().build(test_db, assertion_store);
+        let mut executor = AssertionExecutor::new(config.clone(), assertion_store);
 
-        let basefee = uint!(10_U256);
+        let basefee = 10;
+        let number = 1;
         let block_env = BlockEnv {
-            number: uint!(1_U256),
+            number,
             basefee,
             ..Default::default()
         };
 
         let tx = TxEnv {
-            gas_price: basefee,
+            gas_price: basefee.into(),
             ..counter_call()
         };
 
@@ -666,7 +699,7 @@ mod test {
         );
 
         // Fork uses TestDB
-        let mut fork_db: TestForkDB = executor.db.fork();
+        let mut fork_db: TestForkDB = test_db.fork();
 
         for (expected_state_before, expected_state_after, expected_result) in [
             (uint!(0_U256), uint!(1_U256), true),  // Counter is incremented
@@ -679,11 +712,13 @@ mod test {
                 "Expected state before: {expected_state_before}",
             );
 
+            let mut tx = tx.clone();
+            tx.nonce = expected_state_before.try_into().unwrap();
             // validate_transaction uses &mut ForkDb<TestDB>
             let result = executor
                 .validate_transaction_ext_db::<_, _>(
                     block_env.clone(),
-                    tx.clone(),
+                    tx,
                     &mut fork_db,
                     &mut mock_db,
                 )
@@ -712,6 +747,6 @@ mod test {
         }
 
         // Check original TestDB via executor.db
-        assert_eq!(executor.db.basic_ref(ASSERTION_CONTRACT).unwrap(), None);
+        assert_eq!(test_db.basic_ref(ASSERTION_CONTRACT).unwrap(), None);
     }
 }

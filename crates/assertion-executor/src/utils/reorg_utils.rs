@@ -3,10 +3,7 @@ use alloy_provider::{
     Provider,
     RootProvider,
 };
-use alloy_rpc_types::{
-    BlockNumHash,
-    BlockTransactionsKind,
-};
+use alloy_rpc_types::BlockNumHash;
 
 use alloy_network::BlockResponse;
 
@@ -43,7 +40,7 @@ pub async fn check_if_reorged(
     let mut cursor_hash = update_block.parent_hash;
     loop {
         let cursor = provider
-            .get_block_by_hash(cursor_hash, BlockTransactionsKind::Hashes)
+            .get_block_by_hash(cursor_hash)
             .await?
             .ok_or(CheckIfReorgedError::ParentBlockNotFound)?;
 
@@ -76,7 +73,7 @@ mod tests {
 
         // Mine initial block
         let block0 = provider
-            .get_block_by_number(0.into(), Default::default())
+            .get_block_by_number(0.into())
             .await
             .unwrap()
             .unwrap();

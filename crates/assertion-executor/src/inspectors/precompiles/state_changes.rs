@@ -4,7 +4,8 @@ use crate::{
     primitives::{
         Address,
         Bytes,
-        JournaledState,
+        JournalEntry,
+        JournalInner,
         U256,
     },
 };
@@ -14,58 +15,51 @@ use alloy_sol_types::{
     SolValue,
 };
 
-use revm::{
-    JournalEntry,
-    interpreter::CallInputs,
-};
-
 #[derive(Debug, thiserror::Error)]
 pub enum GetStateChangesError {
     #[error("Error decoding call inputs")]
     CallDecodeError(#[from] alloy_sol_types::Error),
-    #[error("Journaled State Missing from Context. For some reason it was not captured.")]
-    JournaledStateMissing,
-    #[error("Slot not found in journaled state, but differences were found.")]
+    #[error("Journal Missing from Context. For some reason it was not captured.")]
+    JournalMissing,
+    #[error("Slot not found in journal, but differences were found.")]
     SlotNotFound,
-    #[error("Account not found in journaled state, but differences were found.")]
+    #[error("Account not found in journal, but differences were found.")]
     AccountNotFound,
 }
 
 /// Function for getting state changes for the PhEvm precompile.
 /// This returns a result type, which can be used to determine the success of the precompile call and include error messaging.
 pub fn get_state_changes(
-    inputs: &CallInputs,
+    input_bytes: &[u8],
     context: &PhEvmContext,
 ) -> Result<Bytes, GetStateChangesError> {
-    let event = PhEvm::getStateChangesCall::abi_decode(&inputs.input, true)?;
-    let journaled_state = context
-        .logs_and_traces
-        .call_traces
-        .journaled_state
-        .as_ref()
-        .ok_or(GetStateChangesError::JournaledStateMissing)?;
+    let event = PhEvm::getStateChangesCall::abi_decode(input_bytes)?;
 
-    let differences = get_differences(journaled_state, event.contractAddress, event.slot.into())?;
+    let differences = get_differences(
+        &context.logs_and_traces.call_traces.journal,
+        event.contractAddress,
+        event.slot.into(),
+    )?;
 
     Ok(Vec::<U256>::abi_encode(&differences).into())
 }
 
 /// Returns an array of different values for an account and slot, from the JournaledState passed.
 fn get_differences(
-    journaled_state: &JournaledState,
+    journal: &JournalInner<JournalEntry>,
     contract_address: Address,
     slot: U256,
 ) -> Result<Vec<U256>, GetStateChangesError> {
     let mut differences = Vec::new();
 
-    for entry in journaled_state.journal.iter().flatten() {
+    for entry in journal.journal.iter() {
         if let JournalEntry::StorageChanged {
             address,
             had_value,
             key,
         } = entry
-            && *address == **contract_address
-            && *key == slot
+            && *address == contract_address
+            && key == &slot
         {
             differences.push(*had_value);
         }
@@ -74,12 +68,12 @@ fn get_differences(
     // If any differences were found in the journal, check the state to get the current value.
     // The account should always exist in state if differences were found in the journal.
     if !differences.is_empty() {
-        let journaled_state_account = journaled_state
+        let journal_account = journal
             .state
             .get(&contract_address)
             .ok_or(GetStateChangesError::AccountNotFound)?;
 
-        let current_slot_value = journaled_state_account
+        let current_slot_value = journal_account
             .storage
             .get(&slot)
             .ok_or(GetStateChangesError::SlotNotFound)?
@@ -95,6 +89,7 @@ fn get_differences(
 mod test {
     use super::*;
     use crate::{
+        db::overlay::test_utils::MockDb,
         inspectors::{
             phevm::{
                 LogsAndTraces,
@@ -105,7 +100,8 @@ mod test {
         },
         primitives::{
             Account,
-            JournaledState,
+            AccountInfo,
+            AccountStatus,
         },
         test_utils::{
             random_address,
@@ -124,43 +120,23 @@ mod test {
         SolCall,
         SolValue,
     };
-    use revm::{
-        JournalEntry,
-        interpreter::{
-            CallInputs,
-            CallScheme,
-            CallValue,
-        },
-    };
-    use std::collections::HashSet;
+    use revm::JournalEntry;
 
-    fn create_call_inputs_for_state_changes(contract_address: Address, slot: U256) -> CallInputs {
-        let call = PhEvm::getStateChangesCall {
+    fn create_call_inputs_for_state_changes(contract_address: Address, slot: U256) -> Bytes {
+        PhEvm::getStateChangesCall {
             contractAddress: contract_address,
             slot: slot.into(),
-        };
-        let encoded = call.abi_encode();
-
-        CallInputs {
-            input: Bytes::from(encoded),
-            gas_limit: 1_000_000,
-            bytecode_address: Address::ZERO,
-            target_address: contract_address,
-            caller: Address::ZERO,
-            value: CallValue::Transfer(U256::ZERO),
-            scheme: CallScheme::Call,
-            is_static: false,
-            is_eof: false,
-            return_memory_offset: 0..0,
         }
+        .abi_encode()
+        .into()
     }
 
-    fn with_journaled_state_context<F, R>(journaled_state: Option<JournaledState>, f: F) -> R
+    fn with_journal_context<F, R>(journal: JournalInner<JournalEntry>, f: F) -> R
     where
         F: FnOnce(&PhEvmContext) -> R,
     {
         let mut call_tracer = CallTracer::new();
-        call_tracer.journaled_state = journaled_state;
+        call_tracer.journal = journal;
 
         let logs_and_traces = LogsAndTraces {
             tx_logs: &[],
@@ -174,69 +150,55 @@ mod test {
         f(&context)
     }
 
-    fn create_journaled_state_with_changes(
+    fn create_journal_with_changes(
         address: Address,
         slot: U256,
-        old_values: Vec<U256>,
         current_value: U256,
-    ) -> JournaledState {
-        let mut journaled_state =
-            JournaledState::new(revm::primitives::SpecId::LATEST, HashSet::default());
+        value_updates: Vec<U256>,
+        db: &mut MockDb,
+    ) -> JournalInner<JournalEntry> {
+        let mut journal = JournalInner::new();
+
+        db.insert_storage(address, slot, current_value);
+        journal.load_account(db, address).unwrap();
 
         // Add journal entries for storage changes
-        let mut journal_entries = Vec::new();
-        for old_value in old_values {
-            journal_entries.push(JournalEntry::StorageChanged {
-                address,
-                key: slot,
-                had_value: old_value,
-            });
+        for value_update in value_updates {
+            journal.sstore(db, address, slot, value_update).unwrap();
         }
-        journaled_state.journal = vec![journal_entries];
 
-        // Add the account to state with current storage value
-        let mut storage = std::collections::HashMap::default();
-        storage.insert(slot, revm::primitives::EvmStorageSlot::new(current_value));
-
-        let account = Account {
-            info: revm::primitives::AccountInfo::default(),
-            storage,
-            status: revm::primitives::AccountStatus::Loaded,
-        };
-
-        journaled_state.state.insert(address, account);
-
-        journaled_state
+        journal
     }
 
     #[test]
     fn test_get_state_changes_success() {
         let contract_address = random_address();
         let slot = random_u256();
-        let old_values = vec![U256::from(100), U256::from(200)];
-        let current_value = U256::from(300);
+        let value_updates = vec![U256::from(200), U256::from(300)];
+        let current_value = U256::from(100);
 
         let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
-        let journaled_state = create_journaled_state_with_changes(
+        let mut db = MockDb::new();
+        let journal = create_journal_with_changes(
             contract_address,
             slot,
-            old_values.clone(),
             current_value,
+            value_updates.clone(),
+            &mut db,
         );
-        let result = with_journaled_state_context(Some(journaled_state), |context| {
-            get_state_changes(&call_inputs, context)
-        });
+        let result =
+            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
-        let decoded = Vec::<U256>::abi_decode(&encoded, false);
+        let decoded = Vec::<U256>::abi_decode(&encoded);
         assert!(decoded.is_ok());
 
         let differences = decoded.unwrap();
         assert_eq!(differences.len(), 3); // 2 old values + 1 current value
-        assert_eq!(differences[0], U256::from(100));
-        assert_eq!(differences[1], U256::from(200));
-        assert_eq!(differences[2], current_value);
+        assert_eq!(differences[0], current_value);
+        assert_eq!(differences[1], value_updates[0]);
+        assert_eq!(differences[2], value_updates[1]);
     }
 
     #[test]
@@ -247,15 +209,13 @@ mod test {
         let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
 
         // Create empty journaled state with no changes
-        let journaled_state =
-            JournaledState::new(revm::primitives::SpecId::LATEST, HashSet::default());
-        let result = with_journaled_state_context(Some(journaled_state), |context| {
-            get_state_changes(&call_inputs, context)
-        });
+        let journal = JournalInner::new();
+        let result =
+            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
-        let decoded = Vec::<U256>::abi_decode(&encoded, false);
+        let decoded = Vec::<U256>::abi_decode(&encoded);
         assert!(decoded.is_ok());
 
         let differences = decoded.unwrap();
@@ -263,41 +223,12 @@ mod test {
     }
 
     #[test]
-    fn test_get_state_changes_missing_journaled_state() {
-        let contract_address = random_address();
-        let slot = random_u256();
-
-        let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
-        let result =
-            with_journaled_state_context(None, |context| get_state_changes(&call_inputs, context));
-        assert!(result.is_err());
-
-        match result.unwrap_err() {
-            GetStateChangesError::JournaledStateMissing => {}
-            other => panic!("Expected JournaledStateMissing, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn test_get_state_changes_invalid_input() {
         let invalid_input = Bytes::from(random_bytes::<10>()); // Too short for proper ABI decoding
-        let call_inputs = CallInputs {
-            input: invalid_input,
-            gas_limit: 1_000_000,
-            bytecode_address: Address::ZERO,
-            target_address: Address::ZERO,
-            caller: Address::ZERO,
-            value: CallValue::Transfer(U256::ZERO),
-            scheme: CallScheme::Call,
-            is_static: false,
-            is_eof: false,
-            return_memory_offset: 0..0,
-        };
 
-        let journaled_state =
-            JournaledState::new(revm::primitives::SpecId::LATEST, HashSet::default());
-        let result = with_journaled_state_context(Some(journaled_state), |context| {
-            get_state_changes(&call_inputs, context)
+        let journal = JournalInner::new();
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&invalid_input, context)
         });
         assert!(result.is_err());
 
@@ -315,21 +246,16 @@ mod test {
         let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
 
         // Create journaled state with journal entries but no account in state
-        let mut journaled_state =
-            JournaledState::new(revm::primitives::SpecId::LATEST, HashSet::default());
+        let mut journal = JournalInner::new();
 
-        // Add journal entry for storage change
-        let journal_entries = vec![JournalEntry::StorageChanged {
+        journal.journal.push(JournalEntry::StorageChanged {
             address: contract_address,
             key: slot,
             had_value: U256::from(100),
-        }];
-        journaled_state.journal = vec![journal_entries];
-        // Note: We don't add the account to state, which should cause AccountNotFound error
-
-        let result = with_journaled_state_context(Some(journaled_state), |context| {
-            get_state_changes(&call_inputs, context)
         });
+
+        let result =
+            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -346,28 +272,26 @@ mod test {
         let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
 
         // Create journaled state with journal entries and account but no slot in storage
-        let mut journaled_state =
-            JournaledState::new(revm::primitives::SpecId::LATEST, HashSet::default());
-
-        // Add journal entry for storage change
-        let journal_entries = vec![JournalEntry::StorageChanged {
+        let mut journal = JournalInner::new();
+        journal.journal.push(JournalEntry::StorageChanged {
             address: contract_address,
             key: slot,
             had_value: U256::from(100),
-        }];
-        journaled_state.journal = vec![journal_entries];
+        });
+        let mut db = MockDb::new();
 
         // Add account but without the requested slot
         let account = Account {
-            info: revm::primitives::AccountInfo::default(),
+            info: AccountInfo::default(),
             storage: std::collections::HashMap::default(), // Empty storage - slot not found
-            status: revm::primitives::AccountStatus::Loaded,
+            status: AccountStatus::Loaded,
         };
-        journaled_state.state.insert(contract_address, account);
+        journal.state.insert(contract_address, account);
 
-        let result = with_journaled_state_context(Some(journaled_state), |context| {
-            get_state_changes(&call_inputs, context)
-        });
+        journal.load_account(&mut db, contract_address).unwrap();
+
+        let result =
+            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -380,37 +304,39 @@ mod test {
     fn test_get_state_changes_multiple_changes_same_slot() {
         let contract_address = random_address();
         let slot = random_u256();
-        let old_values = vec![
-            U256::from(10),
+        let value_updates = vec![
             U256::from(20),
             U256::from(30),
             U256::from(40),
+            U256::from(50),
         ];
-        let current_value = U256::from(50);
+        let current_value = U256::from(10);
 
         let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
-        let journaled_state = create_journaled_state_with_changes(
+        let mut db = MockDb::new();
+        let journal = create_journal_with_changes(
             contract_address,
             slot,
-            old_values.clone(),
             current_value,
+            value_updates.clone(),
+            &mut db,
         );
-        let result = with_journaled_state_context(Some(journaled_state), |context| {
-            get_state_changes(&call_inputs, context)
-        });
+        let result =
+            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
-        let decoded = Vec::<U256>::abi_decode(&encoded, false);
+        let decoded = Vec::<U256>::abi_decode(&encoded);
         assert!(decoded.is_ok());
 
         let differences = decoded.unwrap();
-        assert_eq!(differences.len(), 5); // 4 old values + 1 current value
+        assert_eq!(differences.len(), 5); // 4 updated values + 1 current value
 
-        for (i, &old_value) in old_values.iter().enumerate() {
-            assert_eq!(differences[i], old_value);
+        assert_eq!(differences[0], current_value);
+
+        for (i, &value_update) in value_updates.iter().enumerate() {
+            assert_eq!(differences[i + 1], value_update);
         }
-        assert_eq!(differences[4], current_value);
     }
 
     #[test]
@@ -422,24 +348,19 @@ mod test {
         let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
 
         // Create journaled state with changes to different address (should not match)
-        let mut journaled_state =
-            JournaledState::new(revm::primitives::SpecId::LATEST, HashSet::default());
+        let mut journal = JournalInner::new();
+        let mut db = MockDb::new();
+        journal.load_account(&mut db, other_address).unwrap();
+        journal
+            .sstore(&mut db, other_address, slot, U256::from(50))
+            .unwrap();
 
-        // Add journal entry for different address
-        let journal_entries = vec![JournalEntry::StorageChanged {
-            address: other_address, // Different address
-            key: slot,
-            had_value: U256::from(50),
-        }];
-        journaled_state.journal = vec![journal_entries];
-
-        let result = with_journaled_state_context(Some(journaled_state), |context| {
-            get_state_changes(&call_inputs, context)
-        });
+        let result =
+            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
-        let decoded = Vec::<U256>::abi_decode(&encoded, false);
+        let decoded = Vec::<U256>::abi_decode(&encoded);
         assert!(decoded.is_ok());
 
         let differences = decoded.unwrap();
@@ -450,24 +371,26 @@ mod test {
     fn test_get_differences_function() {
         let contract_address = random_address();
         let slot = random_u256();
-        let old_values = vec![U256::from(1), U256::from(2)];
-        let current_value = U256::from(3);
+        let value_updates = vec![U256::from(2), U256::from(3)];
+        let current_value = U256::from(1);
 
-        let journaled_state = create_journaled_state_with_changes(
+        let mut db = MockDb::new();
+        let journal = create_journal_with_changes(
             contract_address,
             slot,
-            old_values.clone(),
             current_value,
+            value_updates.clone(),
+            &mut db,
         );
 
-        let result = get_differences(&journaled_state, contract_address, slot);
+        let result = get_differences(&journal, contract_address, slot);
         assert!(result.is_ok());
 
         let differences = result.unwrap();
         assert_eq!(differences.len(), 3);
-        assert_eq!(differences[0], U256::from(1));
-        assert_eq!(differences[1], U256::from(2));
-        assert_eq!(differences[2], current_value);
+        assert_eq!(differences[0], current_value);
+        assert_eq!(differences[1], value_updates[0]);
+        assert_eq!(differences[2], value_updates[1]);
     }
 
     #[test]
@@ -480,7 +403,7 @@ mod test {
             slot: slot.into(),
         };
         let encoded = call.abi_encode();
-        let decoded = PhEvm::getStateChangesCall::abi_decode(&encoded, true).unwrap();
+        let decoded = PhEvm::getStateChangesCall::abi_decode(&encoded).unwrap();
 
         assert_eq!(decoded.contractAddress, contract_address);
         assert_eq!(decoded.slot, FixedBytes::<32>::from(slot));

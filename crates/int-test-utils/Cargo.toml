@@ -9,18 +9,16 @@ repository.workspace = true
 [dependencies]
 thiserror.workspace = true
 alloy = { workspace = true, features = [
-    "full",
     "node-bindings",
     "json-rpc",
     "rpc-client",
     "signer-local",
     "k256",
-    "rand",
     "rlp",
 ] }
+rand.workspace = true
 assertion-da-server.workspace = true
 sled.workspace = true
-rand.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tempfile.workspace = true

@@ -271,7 +271,7 @@ mod tests {
     #[tokio::test]
     async fn test_active_at_block_is_expected() {
         for _ in 0..3 {
-            let time_lock_blocks = rand::thread_rng().gen_range(1..=1000);
+            let time_lock_blocks = rand::rng().random_range(1..=1000);
             let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
             let contract_address = Address::random();
             test_ctx
@@ -303,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn test_active_at_block_is_expected_diff_blocks() {
         for _ in 0..3 {
-            let time_lock_blocks = rand::thread_rng().gen_range(1..=1000);
+            let time_lock_blocks = rand::rng().random_range(1..=1000);
             let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
             let contract_address = Address::random();
             test_ctx

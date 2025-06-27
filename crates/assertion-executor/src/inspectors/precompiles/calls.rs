@@ -1,4 +1,8 @@
 use crate::{
+    db::{
+        DatabaseRef,
+        MultiForkDb,
+    },
     inspectors::phevm::PhEvmContext,
     inspectors::sol_primitives::PhEvm::{
         CallInputs as PhEvmCallInputs,
@@ -7,7 +11,13 @@ use crate::{
     primitives::Bytes,
 };
 
-use revm::interpreter::CallInputs;
+use revm::{
+    context::{
+        ContextTr,
+        Journal,
+    },
+    interpreter::CallInputs,
+};
 
 use alloy_sol_types::{
     SolCall,
@@ -18,31 +28,45 @@ use alloy_sol_types::{
 pub enum GetCallInputsError {
     #[error("Failed to decode getCallInputs call: {0:?}")]
     FailedToDecodeGetCallInputsCall(#[from] alloy_sol_types::Error),
+    #[error(
+        "Expected Bytes in CallInput input. This should be restricted to only CallInput::Bytes by the call tracer."
+    )]
+    ExpectedBytes,
 }
 
 /// Returns the call inputs of a transaction.
-pub fn get_call_inputs(
+pub fn get_call_inputs<'db, ExtDb: DatabaseRef + 'db, CTX>(
     inputs: &CallInputs,
-    context: &PhEvmContext,
-) -> Result<Bytes, GetCallInputsError> {
-    let get_call_inputs = getCallInputsCall::abi_decode(&inputs.input, true)?;
+    context: &mut CTX,
+    ph_context: &PhEvmContext,
+) -> Result<Bytes, GetCallInputsError>
+where
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let get_call_inputs = getCallInputsCall::abi_decode(&inputs.input.bytes(context))?;
 
     let target = get_call_inputs.target;
     let selector = get_call_inputs.selector;
 
     let binding = Vec::new();
 
-    let call_inputs = context
+    let call_inputs = ph_context
         .logs_and_traces
         .call_traces
-        .call_inputs
+        .call_inputs()
         .get(&(target, selector))
         .unwrap_or(&binding);
 
     let sol_call_inputs = call_inputs
         .iter()
         .map(|input| {
-            let original_input_data = input.input.clone();
+            let original_input_data = match &input.input {
+                revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
+                _ => panic!("Expected Bytes"),
+            };
+            //let original_input_data = input.input.bytes(context);
+            println!("Original input data: {original_input_data:#?}");
             let input_data_wo_selector = match original_input_data.len() >= 4 {
                 true => original_input_data.slice(4..),
                 false => Bytes::new(),
@@ -58,6 +82,8 @@ pub fn get_call_inputs(
         })
         .collect::<Vec<_>>();
 
+    println!("Sol call inputs: {sol_call_inputs:#?}");
+
     let encoded: Bytes =
         <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_encode(&sol_call_inputs).into();
 
@@ -68,6 +94,10 @@ pub fn get_call_inputs(
 mod test {
     use super::*;
     use crate::{
+        db::{
+            fork_db::ForkDb,
+            overlay::test_utils::MockDb,
+        },
         inspectors::{
             phevm::{
                 LogsAndTraces,
@@ -92,11 +122,16 @@ mod test {
             tx_logs: &[],
             call_traces: &call_tracer,
         };
-        let context = PhEvmContext {
+        let mock_db = MockDb::new();
+        let pre_tx_db = ForkDb::new(mock_db.clone());
+        let post_tx_db = ForkDb::new(mock_db);
+        let mut multi_fork_db = MultiForkDb::new(pre_tx_db, post_tx_db);
+        let mut context = revm::handler::MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        let ph_context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
             adopter: Address::ZERO,
         };
-        get_call_inputs(call_inputs, &context)
+        get_call_inputs(call_inputs, &mut context, &ph_context)
     }
     use alloy_primitives::{
         Address,
@@ -104,10 +139,14 @@ mod test {
         FixedBytes,
         U256,
     };
-    use revm::interpreter::{
-        CallInputs,
-        CallScheme,
-        CallValue,
+    use revm::{
+        interpreter::{
+            CallInput,
+            CallInputs,
+            CallScheme,
+            CallValue,
+        },
+        primitives::hardfork::SpecId,
     };
 
     fn create_get_call_input(target: Address, selector: FixedBytes<4>) -> CallInputs {
@@ -116,7 +155,7 @@ mod test {
         let input_data = get_call_inputs.abi_encode();
 
         CallInputs {
-            input: Bytes::from(input_data),
+            input: CallInput::Bytes(input_data.into()),
             gas_limit: 1_000_000,
             bytecode_address: Address::ZERO,
             target_address: Address::ZERO,
@@ -132,10 +171,10 @@ mod test {
     fn create_random_call_input<const INPUT_SIZE: usize>(
         target: Address,
         selector: FixedBytes<4>,
-    ) -> CallInputs {
+    ) -> (CallInputs, Bytes) {
         let input_data = [&selector[..], &random_bytes::<INPUT_SIZE>()[..]].concat();
-        CallInputs {
-            input: Bytes::from(input_data),
+        let call_inputs = CallInputs {
+            input: CallInput::Bytes(input_data.clone().into()),
             gas_limit: 100_000,
             bytecode_address: random_address(),
             target_address: target,
@@ -145,16 +184,17 @@ mod test {
             is_static: false,
             is_eof: false,
             return_memory_offset: 0..0,
-        }
+        };
+        (call_inputs, input_data.into())
     }
 
     fn create_call_tracer_with_inputs<I>(call_inputs: I) -> CallTracer
     where
-        I: IntoIterator<Item = CallInputs>,
+        I: IntoIterator<Item = (CallInputs, Bytes)>,
     {
         let mut call_tracer = CallTracer::new();
         for input in call_inputs {
-            call_tracer.record_call(input);
+            call_tracer.record_call(input.0, &input.1);
         }
         call_tracer
     }
@@ -175,18 +215,17 @@ mod test {
         let encoded = result.unwrap();
 
         // Verify we can decode the result
-        let decoded =
-            <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_decode(&encoded, false);
+        let decoded = <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_decode(&encoded);
 
         let decoded_array = decoded.unwrap();
         assert_eq!(decoded_array.len(), 1);
 
         assert_eq!(
             decoded_array[0].target_address,
-            mock_call_input.target_address
+            mock_call_input.0.target_address
         );
 
-        assert_eq!(decoded_array[0].input, mock_call_input.input.slice(4..));
+        assert_eq!(decoded_array[0].input, mock_call_input.1.slice(4..));
     }
 
     #[test]
@@ -205,8 +244,7 @@ mod test {
         let encoded = result.unwrap();
 
         // Should return empty array
-        let decoded =
-            <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_decode(&encoded, false);
+        let decoded = <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_decode(&encoded);
         assert!(decoded.is_ok());
         let decoded_array = decoded.unwrap();
         assert_eq!(decoded_array.len(), 0);
@@ -218,7 +256,7 @@ mod test {
         let selector = random_selector();
 
         let mut get_call_inputs = create_get_call_input(target, selector);
-        get_call_inputs.input = Bytes::from(random_bytes::<32>());
+        get_call_inputs.input = CallInput::Bytes(random_bytes::<32>().into());
 
         let call_tracer = CallTracer::new();
 
@@ -249,27 +287,26 @@ mod test {
 
         let encoded = result.unwrap();
         let decoded =
-            <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_decode(&encoded, true)
-                .unwrap();
+            <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_decode(&encoded).unwrap();
         assert_eq!(decoded.len(), 2);
 
         // Verify both results are present
         assert_eq!(
             decoded[0].target_address,
-            mock_call_inputs[0].target_address
+            mock_call_inputs[0].0.target_address
         );
-        assert_eq!(decoded[0].input, mock_call_inputs[0].input.slice(4..));
+        assert_eq!(decoded[0].input, mock_call_inputs[0].1.slice(4..));
         assert_eq!(
             decoded[1].target_address,
-            mock_call_inputs[1].target_address
+            mock_call_inputs[1].0.target_address
         );
-        assert_eq!(decoded[1].input, mock_call_inputs[1].input.slice(4..));
+        assert_eq!(decoded[1].input, mock_call_inputs[1].1.slice(4..));
     }
 
     #[tokio::test]
     async fn test_get_call_inputs_integration() {
         let result = run_precompile_test("TestGetCallInputs").await;
-        assert!(result.is_valid());
+        assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
     }
