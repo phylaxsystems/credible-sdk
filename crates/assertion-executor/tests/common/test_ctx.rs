@@ -19,10 +19,10 @@ use assertion_da_client::{
     DaSubmissionResponse,
 };
 use assertion_executor::primitives::{
-    bytes,
     Address,
     FixedBytes,
     U256,
+    bytes,
 };
 use assertion_executor::store::{
     AssertionStore,
@@ -30,19 +30,19 @@ use assertion_executor::store::{
     Indexer,
 };
 use int_test_utils::{
+    Contracts,
     assertion_src,
     deploy_contracts,
     deploy_test_da,
     get_anvil_deployer,
-    Contracts,
 };
 use rand::RngCore;
 use std::net::TcpListener;
 
 use alloy_provider::{
-    ext::AnvilApi,
     Provider,
     RootProvider,
+    ext::AnvilApi,
 };
 
 use alloy::sol_types::SolValue;

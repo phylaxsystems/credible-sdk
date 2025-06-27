@@ -10,13 +10,13 @@ use foundry_cli::{
     utils::LoadConfig,
 };
 use foundry_compilers::{
+    ProjectCompileOutput,
     flatten::{
         Flattener,
         FlattenerError,
     },
     info::ContractInfo,
     solc::SolcLanguage,
-    ProjectCompileOutput,
 };
 
 use alloy_json_abi::JsonAbi;

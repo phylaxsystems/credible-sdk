@@ -1,4 +1,5 @@
 use crate::{
+    ExecutorConfig,
     inspectors::{
         CallTracer,
         TriggerRecorder,
@@ -7,19 +8,18 @@ use crate::{
     primitives::{
         Address,
         AssertionContract,
+        B256,
         Bytes,
         FixedBytes,
-        B256,
         U256,
     },
     store::{
-        assertion_contract_extractor::{
-            extract_assertion_contract,
-            FnSelectorExtractorError,
-        },
         PendingModification,
+        assertion_contract_extractor::{
+            FnSelectorExtractorError,
+            extract_assertion_contract,
+        },
     },
-    ExecutorConfig,
 };
 
 use std::sync::{
@@ -334,22 +334,20 @@ impl AssertionStore {
                 }
 
                 // Add AllCalls selectors if needed
-                if has_call_trigger {
-                    if let Some(selectors) = a.trigger_recorder.triggers.get(&TriggerType::AllCalls)
-                    {
-                        all_selectors.extend(selectors.iter().cloned());
-                    }
+                if has_call_trigger
+                    && let Some(selectors) = a.trigger_recorder.triggers.get(&TriggerType::AllCalls)
+                {
+                    all_selectors.extend(selectors.iter().cloned());
                 }
 
                 // Add AllStorageChanges selectors if needed
-                if has_storage_trigger {
-                    if let Some(selectors) = a
+                if has_storage_trigger
+                    && let Some(selectors) = a
                         .trigger_recorder
                         .triggers
                         .get(&TriggerType::AllStorageChanges)
-                    {
-                        all_selectors.extend(selectors.iter().cloned());
-                    }
+                {
+                    all_selectors.extend(selectors.iter().cloned());
                 }
                 // Convert HashSet to Vec to match the expected return type
                 (a.assertion_contract, all_selectors.into_iter().collect())

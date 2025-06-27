@@ -6,9 +6,9 @@ use crate::{
     primitives::{
         AccountInfo,
         Address,
+        B256,
         Bytecode,
         EvmState,
-        B256,
         U256,
     },
 };
@@ -176,23 +176,23 @@ mod fork_db_tests {
 
     use crate::{
         db::{
-            overlay::OverlayDb,
             DatabaseRef,
+            overlay::OverlayDb,
         },
         primitives::{
-            uint,
             Account,
             AccountStatus,
             BlockChanges,
             EvmStorageSlot,
             U256,
+            uint,
         },
         test_utils::random_bytes,
     };
 
     use revm::primitives::{
-        keccak256,
         KECCAK_EMPTY,
+        keccak256,
     };
     use std::collections::HashMap;
 

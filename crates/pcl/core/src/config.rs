@@ -9,14 +9,14 @@ use colored::Colorize;
 use dirs::home_dir;
 use pcl_common::args::CliArgs;
 use serde::{
-    de::{
-        self,
-        Visitor,
-    },
     Deserialize,
     Deserializer,
     Serialize,
     Serializer,
+    de::{
+        self,
+        Visitor,
+    },
 };
 
 use std::{
@@ -460,7 +460,9 @@ mod tests {
     /// Helper function to set up a temporary config directory
     fn setup_config_dir() -> (PathBuf, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        unsafe { env::set_var("HOME", temp_dir.path()); }
+        unsafe {
+            env::set_var("HOME", temp_dir.path());
+        }
         (temp_dir.path().join(CONFIG_DIR), temp_dir)
     }
 
@@ -479,7 +481,6 @@ mod tests {
         perms.set_mode(0o444); // Read only
         fs::set_permissions(path, perms)
     }
-
 
     #[test]
     fn test_write_and_read_config() {
@@ -537,7 +538,7 @@ mod tests {
 
         // Test display format - check for key content rather than exact match due to color codes
         let formatted_cfg = format!("{read_config}");
-        
+
         // Check that all the important information is present
         assert!(formatted_cfg.contains("PCL Configuration"));
         assert!(formatted_cfg.contains("Config path:"));
@@ -656,10 +657,12 @@ mod tests {
         let result = config.write_to_file_at_dir(temp_dir.path().to_path_buf());
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Permission denied"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Permission denied")
+        );
     }
 
     #[test]
@@ -755,10 +758,12 @@ mod tests {
 
         let result = CliConfig::ensure_writable_directory(&config_dir);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Permission denied"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Permission denied")
+        );
     }
 
     #[test]
@@ -799,10 +804,12 @@ mod tests {
         let config = CliConfig::default();
         let result = config.write_to_file_at_dir(config_dir);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Permission denied"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Permission denied")
+        );
     }
 
     #[test]

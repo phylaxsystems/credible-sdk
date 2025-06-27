@@ -1,7 +1,7 @@
 use crate::{
+    AssertionExecutor,
     primitives::SpecId,
     store::AssertionStore,
-    AssertionExecutor,
 };
 
 #[cfg(feature = "optimism")]

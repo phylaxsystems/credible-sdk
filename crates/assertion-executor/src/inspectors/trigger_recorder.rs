@@ -4,17 +4,21 @@ use crate::{
         sol_primitives::ITriggerRecorder,
     },
     primitives::{
-        address,
-        bytes,
         Address,
         Bytecode,
         Bytes,
         FixedBytes,
         U256,
+        address,
+        bytes,
     },
 };
 
 use revm::{
+    Database,
+    EvmContext,
+    InMemoryDB,
+    Inspector,
     interpreter::{
         CallInputs,
         CallOutcome,
@@ -23,10 +27,6 @@ use revm::{
         Gas,
         Interpreter,
     },
-    Database,
-    EvmContext,
-    InMemoryDB,
-    Inspector,
 };
 
 use alloy_sol_types::SolCall;
@@ -225,10 +225,10 @@ mod test {
     use crate::{
         build_evm::new_evm,
         primitives::{
-            fixed_bytes,
             Bytecode,
             TxEnv,
             TxKind,
+            fixed_bytes,
         },
         store::triggersCall,
         test_utils::deployed_bytecode,
@@ -360,17 +360,21 @@ mod test {
         assert_eq!(recorder.triggers.len(), 5);
 
         assert!(recorder.triggers[&TriggerType::AllCalls].contains(&selector1));
-        assert!(recorder.triggers[&TriggerType::Call {
-            trigger_selector: fixed_bytes!("AAAAAAAA")
-        }]
-            .contains(&selector2));
+        assert!(
+            recorder.triggers[&TriggerType::Call {
+                trigger_selector: fixed_bytes!("AAAAAAAA")
+            }]
+                .contains(&selector2)
+        );
         assert!(recorder.triggers[&TriggerType::AllStorageChanges].contains(&selector3));
-        assert!(recorder.triggers[&TriggerType::StorageChange {
-            trigger_slot: fixed_bytes!(
-                "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
-            )
-        }]
-            .contains(&selector4));
+        assert!(
+            recorder.triggers[&TriggerType::StorageChange {
+                trigger_slot: fixed_bytes!(
+                    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+                )
+            }]
+                .contains(&selector4)
+        );
         assert!(recorder.triggers[&TriggerType::BalanceChange].contains(&selector5));
     }
 

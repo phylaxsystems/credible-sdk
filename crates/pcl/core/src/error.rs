@@ -45,7 +45,9 @@ pub enum DappSubmitError {
     ProjectSelectionFailed(#[from] inquire::InquireError),
 
     /// Error when no projects are found for the authenticated user
-    #[error("No projects found for the authenticated user.\nPlease run `pcl project new` or head to https://dapp.phylax.systems to create one.")]
+    #[error(
+        "No projects found for the authenticated user.\nPlease run `pcl project new` or head to https://dapp.phylax.systems to create one."
+    )]
     NoProjectsFound,
 
     /// Error when connection to the dApp API fails
@@ -100,7 +102,9 @@ pub enum AuthError {
     RequestFailed(#[from] reqwest::Error),
 
     /// Error when authentication times out
-    #[error("Authentication timed out after {0} attempts. Please try again and approve the wallet connection promptly.")]
+    #[error(
+        "Authentication timed out after {0} attempts. Please try again and approve the wallet connection promptly."
+    )]
     Timeout(u32),
 
     /// Error when authentication verification fails

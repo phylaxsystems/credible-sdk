@@ -6,8 +6,8 @@ pub use error::ExecutorError;
 
 mod executor;
 pub use executor::{
-    config::ExecutorConfig,
     AssertionExecutor,
+    config::ExecutorConfig,
 };
 
 pub mod primitives;

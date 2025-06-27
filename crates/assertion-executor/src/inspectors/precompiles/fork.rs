@@ -51,8 +51,8 @@ mod test {
     use super::*;
     use crate::{
         db::{
-            overlay::test_utils::MockDb,
             MultiForkDb,
+            overlay::test_utils::MockDb,
         },
         primitives::JournaledState,
         test_utils::{
@@ -66,17 +66,17 @@ mod test {
         U256,
     };
     use revm::{
+        DatabaseRef,
+        EvmContext,
         primitives::{
             AccountInfo,
             BlockEnv,
             CfgEnv,
             Env,
+            KECCAK_EMPTY,
             SpecId,
             TxEnv,
-            KECCAK_EMPTY,
         },
-        DatabaseRef,
-        EvmContext,
     };
     use std::collections::HashSet;
 

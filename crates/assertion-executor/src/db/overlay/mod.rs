@@ -22,11 +22,11 @@ use alloy_primitives::{
     U256,
 };
 use revm::{
+    DatabaseRef,
     primitives::{
         AccountInfo,
         Bytecode,
     },
-    DatabaseRef,
 };
 use std::cell::UnsafeCell;
 use std::sync::Arc;
@@ -350,14 +350,14 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
 mod overlay_db_tests {
     use super::*;
     use crate::db::overlay::test_utils::{
-        mock_account_info,
         MockDb,
+        mock_account_info,
     };
     use alloy_primitives::{
+        U256,
         address,
         b256,
         bytes,
-        U256,
     };
     use revm::primitives::Bytecode;
 

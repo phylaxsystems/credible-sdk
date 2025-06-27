@@ -1,6 +1,6 @@
 use color_eyre::{
-    eyre,
     Report,
+    eyre,
 };
 use foundry_compilers::{
     error::SolcError,

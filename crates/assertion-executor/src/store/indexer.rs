@@ -17,8 +17,8 @@ use alloy_network_primitives::HeaderResponse;
 use alloy_consensus::BlockHeader;
 
 use alloy_sol_types::{
-    sol,
     SolEvent,
+    sol,
 };
 
 use bincode::{
@@ -43,22 +43,22 @@ use alloy::primitives::{
 use clap::ValueEnum;
 
 use crate::{
+    ExecutorConfig,
     primitives::{
         Address,
-        UpdateBlock,
         B256,
+        UpdateBlock,
     },
     store::{
-        extract_assertion_contract,
         AssertionStore,
         AssertionStoreError,
         PendingModification,
+        extract_assertion_contract,
     },
     utils::reorg_utils::{
-        check_if_reorged,
         CheckIfReorgedError,
+        check_if_reorged,
     },
-    ExecutorConfig,
 };
 
 use assertion_da_client::{
@@ -567,9 +567,7 @@ impl Indexer {
 
         trace!(
             target = "assertion_executor::indexer",
-            from,
-            to,
-            "Building block hashes batch"
+            from, to, "Building block hashes batch"
         );
 
         // Build the block hashes batch
@@ -600,9 +598,7 @@ impl Indexer {
         self.write_block_num_hash_batch(block_hashes)?;
         trace!(
             target = "assertion_executor::indexer",
-            from,
-            to,
-            "Block hashes batch applied"
+            from, to, "Block hashes batch applied"
         );
 
         let block_to_move = self
@@ -615,16 +611,14 @@ impl Indexer {
 
         trace!(
             target = "assertion_executor::indexer",
-            block_to_move,
-            "Moving pending modifications to store"
+            block_to_move, "Moving pending modifications to store"
         );
 
         self.move_pending_modifications_to_store(block_to_move)
             .await?;
         trace!(
             target = "assertion_executor::indexer",
-            block_to_move,
-            "Pending modifications moved to store"
+            block_to_move, "Pending modifications moved to store"
         );
 
         Ok(())
@@ -816,8 +810,8 @@ mod test_indexer {
     use alloy_rpc_types_anvil::MineOptions;
     use alloy_signer_local::PrivateKeySigner;
     use alloy_sol_types::{
-        sol,
         SolCall,
+        sol,
     };
 
     sol! {
