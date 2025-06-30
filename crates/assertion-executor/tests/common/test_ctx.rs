@@ -174,7 +174,6 @@ impl TestCtx {
 
     pub async fn submit_to_da_no_args(&self) -> DaSubmissionResponse {
         let src = assertion_src();
-
         self.da_client
             .submit_assertion("SimpleCounterAssertion".into(), src, "0.8.28".to_string())
             .await
@@ -182,7 +181,6 @@ impl TestCtx {
     }
     pub async fn submit_to_da_with_args(&self) -> DaSubmissionResponse {
         let src = assertion_src();
-
         self.da_client
             .submit_assertion_with_args(
                 "SimpleCounterAssertionWithArgs".into(),
@@ -212,6 +210,7 @@ impl TestCtx {
             .await
             .unwrap()
     }
+
     pub async fn add_assertion_tx(&mut self, contract_address: Address) -> TransactionRequest {
         let da_submission_response = self.submit_to_da_no_args().await;
         self.assertion_ids.push(da_submission_response.id);
@@ -222,6 +221,7 @@ impl TestCtx {
             da_submission_response,
         )
     }
+
     pub async fn add_assertion_tx_with_args(
         &mut self,
         contract_address: Address,
@@ -235,6 +235,7 @@ impl TestCtx {
             da_submission_response,
         )
     }
+
     pub async fn add_assertion_tx_malformed(
         &mut self,
         contract_address: Address,

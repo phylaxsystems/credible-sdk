@@ -48,6 +48,7 @@ tokio-util = { workspace = true }
 moka = { workspace = true }
 enum-as-inner = { workspace = true }
 url = { workspace = true }
+evm-glue = { workspace = true }
 
 
 [features]
@@ -57,7 +58,7 @@ optimism = []
 test = ["serde_json", "rand"]
 serde_json = []
 
-[dev-dependencies]  
+[dev-dependencies]
 rand = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

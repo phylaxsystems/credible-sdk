@@ -1,0 +1,94 @@
+name: Release and Publish
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version matches tag
+        id: check
+        run: |
+          # github.ref_name holds the tag name that triggered the workflow
+          TAG_VERSION="${{ github.ref_name }}"
+          # Clean up the tag if it has a 'v' prefix
+          if [[ $TAG_VERSION == v* ]]; then
+            TAG_VERSION="${TAG_VERSION:1}"
+          fi
+          
+          # Get version from pcl package using cargo metadata
+          CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "pcl") | .version')
+          
+          echo "version=${CARGO_VERSION}" >> $GITHUB_OUTPUT
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "Version mismatch: Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+  build-pcl:
+    needs: check-version
+    uses: ./.github/workflows/build-rust-binary.yml
+    with:
+      binary-name: pcl
+      version: ${{ needs.check-version.outputs.version }}
+      artifact_name: pcl-binaries
+      rust-channel: "nightly"
+      package: "pcl-cli"
+  
+  build-assertion-da:
+    needs: check-version
+    uses: ./.github/workflows/build-rust-binary.yml
+    with:
+      binary-name: assertion-da
+      version: ${{ needs.check-version.outputs.version }}
+      artifact_name: assertion-da-binaries
+      rust-channel: "nightly"
+      package: "assertion-da"
+  
+  combine-artifacts:
+    needs: [build-pcl, build-assertion-da]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download PCL artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: pcl-binaries
+          path: pcl-artifacts/
+      
+      - name: Download assertion-da artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: assertion-da-binaries
+          path: assertion-da-artifacts/
+      
+      - name: Combine artifacts
+        run: |
+          mkdir -p release-artifacts
+          find pcl-artifacts -name "*.tar.gz" -exec cp {} release-artifacts/ \;
+          find assertion-da-artifacts -name "*.tar.gz" -exec cp {} release-artifacts/ \;
+          ls -la release-artifacts/
+      
+      - name: Upload combined artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: release-artifacts/
+          retention-days: 1
+  
+  release-github:
+    needs: combine-artifacts
+    uses: phylaxsystems/actions/.github/workflows/release-github.yaml@main
+    permissions:
+      contents: write
+    with:
+      artifact_name: release-artifacts
+      release_name: "${{ github.ref_name }}"
+      generate_release_notes: true
+      draft: false
+      prerelease: false
+    secrets:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
