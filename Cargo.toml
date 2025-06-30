@@ -114,6 +114,7 @@ moka = { version = "0.12.10", features = ["sync"] }
 enum-as-inner = "0.6.1"
 url = "2.5.4"
 criterion = { version = "0.5.1" }
+evm-glue = {git = "https://git@github.com/Philogy/evm-glue.git", rev = "6be3e8c89a7d193b591ca0415ec2a48b1540c01e"}
 
 
 # Maxperf profile for absolute maximum performance
