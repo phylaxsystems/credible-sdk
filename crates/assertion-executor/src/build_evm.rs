@@ -1,6 +1,15 @@
 use revm::{
+    Context,
+    Database,
+    Evm,
+    EvmContext,
+    Handler,
+    Inspector,
     inspector_handle_register,
     interpreter::{
+        Gas,
+        Host,
+        Interpreter,
         gas,
         instructions::host::{
             sload,
@@ -10,12 +19,8 @@ use revm::{
             SLOAD,
             SSTORE,
         },
-        Gas,
-        Host,
-        Interpreter,
     },
     primitives::{
-        spec_to_generic,
         BlockEnv,
         CfgEnv,
         Env,
@@ -24,13 +29,8 @@ use revm::{
         Spec,
         SpecId,
         TxEnv,
+        spec_to_generic,
     },
-    Context,
-    Database,
-    Evm,
-    EvmContext,
-    Handler,
-    Inspector,
 };
 
 use crate::inspectors::{
@@ -212,7 +212,6 @@ mod tests {
             PhEvmInspector,
         },
         primitives::{
-            keccak256,
             AccountInfo,
             Address,
             BlockEnv,
@@ -222,6 +221,7 @@ mod tests {
             TxEnv,
             TxKind,
             U256,
+            keccak256,
         },
         test_utils::deployed_bytecode,
     };

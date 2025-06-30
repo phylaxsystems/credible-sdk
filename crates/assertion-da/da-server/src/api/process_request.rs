@@ -25,14 +25,14 @@ use assertion_da_core::{
 
 use alloy::{
     primitives::{
-        keccak256,
-        Bytes,
         B256,
+        Bytes,
+        keccak256,
     },
     signers::{
-        local::PrivateKeySigner,
         Signature,
         Signer,
+        local::PrivateKeySigner,
     },
 };
 use anyhow::Result;
@@ -48,8 +48,8 @@ use serde::{
     Serialize,
 };
 use serde_json::{
-    json,
     Value,
+    json,
 };
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -346,10 +346,10 @@ where
                     .await;
 
             // Log success for get_assertion if not an error response
-            if let Ok(ref response) = res {
-                if !response.contains("\"error\"") {
-                    info!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Successfully retrieved assertion");
-                }
+            if let Ok(ref response) = res
+                && !response.contains("\"error\"")
+            {
+                info!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Successfully retrieved assertion");
             }
             histogram!(
                 "da_request_duration_seconds",

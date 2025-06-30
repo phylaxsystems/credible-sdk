@@ -10,9 +10,9 @@ use alloy::signers::local::PrivateKeySigner;
 use bollard::Docker;
 use http_body_util::Full;
 use hyper::{
-    body::Bytes,
     Error,
     Request,
+    body::Bytes,
 };
 
 macro_rules! rpc_response {

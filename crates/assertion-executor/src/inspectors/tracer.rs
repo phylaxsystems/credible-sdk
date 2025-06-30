@@ -10,6 +10,9 @@ use crate::{
 };
 
 use revm::{
+    Database,
+    EvmContext,
+    Inspector,
     interpreter::{
         CallInputs,
         CallOutcome,
@@ -17,9 +20,6 @@ use revm::{
         CreateOutcome,
         Interpreter,
     },
-    Database,
-    EvmContext,
-    Inspector,
 };
 use std::collections::{
     HashMap,
@@ -169,21 +169,21 @@ mod test {
     use crate::{
         build_evm::new_tx_fork_evm,
         primitives::{
-            address,
             Bytecode,
+            address,
         },
         test_utils::deployed_bytecode,
     };
     use revm::{
+        Evm,
+        InMemoryDB,
         inspector_handle_register,
         primitives::{
-            bytes,
             BlockEnv,
             SpecId,
             TxEnv,
+            bytes,
         },
-        Evm,
-        InMemoryDB,
     };
     #[test]
     fn call_tracing() {

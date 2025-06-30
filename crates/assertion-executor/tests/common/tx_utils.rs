@@ -1,6 +1,6 @@
 use alloy::sol_types::{
-    sol,
     SolCall,
+    sol,
 };
 use alloy_primitives::B256;
 use alloy_provider::network::TransactionBuilder;

@@ -1,10 +1,10 @@
 use crate::{
+    LEAF_FANOUT,
     api::types::{
         DbOperation,
         DbRequest,
         DbResponse,
     },
-    LEAF_FANOUT,
 };
 
 use sled::Db;

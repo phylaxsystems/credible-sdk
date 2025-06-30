@@ -16,8 +16,8 @@ mod tests {
     use rand::Rng;
 
     use alloy_provider::{
-        ext::AnvilApi,
         Provider,
+        ext::AnvilApi,
     };
 
     #[tokio::test]
@@ -155,7 +155,7 @@ mod tests {
 
     #[tokio::test]
     #[should_panic(expected = "return_value: 0x9969960a")] // cast sig 'AssertionAlreadyExists'
-                                                           // NOTE: Not possible to add an assertion after removal due to smart contract logic
+    // NOTE: Not possible to add an assertion after removal due to smart contract logic
     async fn test_add_remove_add_across_multiple_blocks() {
         let time_lock_blocks = 1;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Latest, time_lock_blocks).await;
@@ -192,7 +192,7 @@ mod tests {
 
     #[tokio::test]
     #[should_panic(expected = "Transaction receipt not found")] // cast sig 'AssertionAlreadyExists'
-                                                                // NOTE: Not possible to add an assertion after removal due to smart contract logic
+    // NOTE: Not possible to add an assertion after removal due to smart contract logic
     async fn test_add_remove_add_in_single_block() {
         let time_lock_blocks = 1;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Latest, time_lock_blocks).await;

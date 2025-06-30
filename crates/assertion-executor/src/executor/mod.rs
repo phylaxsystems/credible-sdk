@@ -9,16 +9,17 @@ use std::{
 };
 
 use crate::{
+    ExecutorConfig,
     build_evm::{
         new_phevm,
         new_tx_fork_evm,
     },
     db::{
-        fork_db::ForkDb,
-        multi_fork_db::MultiForkDb,
         DatabaseCommit,
         DatabaseRef,
         PhDB,
+        fork_db::ForkDb,
+        multi_fork_db::MultiForkDb,
     },
     // Ensure ExecutorError is accessible
     error::ExecutorError,
@@ -29,7 +30,6 @@ use crate::{
         PhEvmInspector,
     },
     primitives::{
-        address,
         Account,
         AccountInfo,
         AccountStatus,
@@ -49,9 +49,9 @@ use crate::{
         TxKind,
         TxValidationResult,
         U256,
+        address,
     },
     store::AssertionStore,
-    ExecutorConfig,
 };
 
 use revm::Database;
@@ -515,13 +515,13 @@ mod test {
     use crate::db::overlay::test_utils::MockDb;
     use crate::{
         db::{
-            overlay::OverlayDb,
             DatabaseRef,
+            overlay::OverlayDb,
         },
         primitives::{
-            uint,
             BlockEnv,
             U256,
+            uint,
         },
         store::{
             AssertionState,

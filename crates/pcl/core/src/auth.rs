@@ -17,8 +17,8 @@ use indicatif::{
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::time::{
-    sleep,
     Duration,
+    sleep,
 };
 
 /// Interval between authentication status checks

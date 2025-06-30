@@ -15,8 +15,8 @@ use alloy_sol_types::{
 };
 
 use revm::{
-    interpreter::CallInputs,
     JournalEntry,
+    interpreter::CallInputs,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -64,10 +64,10 @@ fn get_differences(
             had_value,
             key,
         } = entry
+            && *address == **contract_address
+            && *key == slot
         {
-            if *address == **contract_address && *key == slot {
-                differences.push(*had_value);
-            }
+            differences.push(*had_value);
         }
     }
 
@@ -125,12 +125,12 @@ mod test {
         SolValue,
     };
     use revm::{
+        JournalEntry,
         interpreter::{
             CallInputs,
             CallScheme,
             CallValue,
         },
-        JournalEntry,
     };
     use std::collections::HashSet;
 

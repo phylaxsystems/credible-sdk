@@ -14,10 +14,10 @@ use crate::{
     primitives::{
         AccountInfo,
         Address,
+        B256,
         Bytecode,
         EvmState,
         JournaledState,
-        B256,
         U256,
     },
 };
@@ -102,8 +102,8 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
             .inactive_forks
             .remove(&fork_id)
             .ok_or(ForkError::ForkNotFound(fork_id))?; //Should never happen. Currently we only
-                                                       //have two fork modes but in the future we
-                                                       //might have more.
+        //have two fork modes but in the future we
+        //might have more.
 
         // If the fork does not have a journaled state, initialize it.
         let mut target_fork_journaled_state = target_fork
@@ -236,11 +236,11 @@ mod test_multi_fork {
 
     use crate::{
         primitives::{
-            uint,
             Account,
             AccountStatus,
             Address,
             EvmState,
+            uint,
         },
         test_utils::random_bytes,
     };

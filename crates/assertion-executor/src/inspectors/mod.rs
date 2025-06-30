@@ -6,16 +6,16 @@ mod trigger_recorder;
 
 pub use phevm::{
     LogsAndTraces,
+    PRECOMPILE_ADDRESS,
     PhEvmContext,
     PhEvmInspector,
-    PRECOMPILE_ADDRESS,
 };
 
 pub use tracer::CallTracer;
 pub use trigger_recorder::{
-    insert_trigger_recorder_account,
     TriggerRecorder,
     TriggerType,
+    insert_trigger_recorder_account,
 };
 
 use sol_primitives::Error;

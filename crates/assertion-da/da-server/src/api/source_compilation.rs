@@ -1,4 +1,5 @@
 use anyhow::Result;
+use bollard::Docker;
 use bollard::container::{
     Config,
     CreateContainerOptions,
@@ -8,7 +9,6 @@ use bollard::container::{
     WaitContainerOptions,
 };
 use bollard::image::ListImagesOptions;
-use bollard::Docker;
 use futures::TryStreamExt;
 use futures_util::stream::StreamExt;
 use metrics;
@@ -17,14 +17,14 @@ use serde_json::Value;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::time::{
-    sleep,
     Duration,
+    sleep,
 };
 use tracing::warn;
 use tracing::{
+    Instrument,
     debug,
     instrument,
-    Instrument,
 };
 use uuid::Uuid;
 
