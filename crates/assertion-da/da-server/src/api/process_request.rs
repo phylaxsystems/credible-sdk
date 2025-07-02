@@ -94,6 +94,18 @@ where
     // Read body and parse as JSON-RPC request
     let headers = req.headers().clone();
     let body = req.into_body().collect().await?.to_bytes();
+
+    // Limit body size to 10MB
+    if body.len() > 10 * 1024 * 1024 {
+        warn!(target: "json_rpc", %request_id, %client_ip, "Request body too large");
+        return Ok(rpc_error_with_request_id(
+            &json!(""),
+            -32600,
+            "Request body too large",
+            &request_id,
+        ));
+    }
+
     let json_rpc: Value = serde_json::from_slice(&body)?;
     let method = json_rpc["method"].as_str().unwrap_or_default();
     let json_rpc_id = json_rpc["id"].clone();
@@ -873,5 +885,35 @@ mod tests {
         assert_eq!(response_json["id"], 1);
         assert_eq!(response_json["error"]["code"], -32601);
         assert_eq!(response_json["error"]["message"], "Method not found");
+    }
+
+    #[tokio::test]
+    async fn test_request_size_limit() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        // Create a large payload that exceeds the 10MB limit
+        let large_data = "x".repeat(11 * 1024 * 1024); // 11MB of data
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "da_submit_assertion",
+            "params": [large_data],
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .header("Content-Type", "application/json")
+            .body(request_body.to_string())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+
+        let response_json: Value = response.json().await.unwrap();
+        assert_eq!(response_json["jsonrpc"], "2.0");
+        assert_eq!(response_json["error"]["code"], -32600);
+        assert_eq!(response_json["error"]["message"], "Request body too large");
     }
 }
