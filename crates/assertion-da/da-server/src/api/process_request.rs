@@ -61,6 +61,7 @@ use hyper::{
 };
 use tracing::{
     debug,
+    error,
     info,
     error,
     trace,

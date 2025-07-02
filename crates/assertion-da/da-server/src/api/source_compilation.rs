@@ -341,6 +341,53 @@ impl ContainerManager {
     }
 }
 
+/// Custom Drop impl for `ContainerManager` so we clean up containers properly
+/// after they go out of scope
+impl Drop for ContainerManager {
+    fn drop(&mut self) {
+        // Check if we already cleaned up the container
+        if self.is_cleaned_up || self.container_id.is_none() {
+            return;
+        }
+
+        let container_id = self.container_id.as_ref().unwrap();
+
+        // Block on the async operations
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let _ = handle.block_on(async {
+                // Remove the container
+                let remove_options = Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                });
+
+                if let Err(e) = self
+                    .docker
+                    .remove_container(container_id, remove_options)
+                    .await
+                {
+                    warn!(
+                        target: "solidity_compilation",
+                        container_name = %self.container_name,
+                        error = %e,
+                        "Failed to remove container in Drop"
+                    );
+                }
+            });
+
+            // for good measure
+            self.is_cleaned_up = true;
+            return;
+        }
+
+        warn!(
+            target: "solidity_compilation",
+            container_name = %self.container_name,
+            "Failed to clean up container in Drop, couldnt get tokio runtime"
+        );
+    }
+}
+
 /// Manages a Solidity source file
 pub struct SoliditySourceFile {
     temp_dir: TempDir,
