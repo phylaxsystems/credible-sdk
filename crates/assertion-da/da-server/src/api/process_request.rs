@@ -155,7 +155,7 @@ where
         return Ok(rpc_error_with_request_id(
             &json_rpc,
             -32600,
-            "Invalid Request",
+            "Invalid JSON-RPC request format",
             &request_id,
         ));
     }
