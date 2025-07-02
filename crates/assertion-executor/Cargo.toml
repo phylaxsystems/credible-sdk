@@ -51,13 +51,13 @@ url = { workspace = true }
 
 
 [features]
-default = ["optimism"]
-#optimism = ["revm/optimism", "revm/optimism-default-handler"]
+default = ["optimism", "full-test"]
 optimism = []
 test = ["serde_json", "rand"]
 serde_json = []
+full-test = []
 
-[dev-dependencies]  
+[dev-dependencies]
 rand = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
