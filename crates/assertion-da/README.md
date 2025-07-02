@@ -128,7 +128,7 @@ curl -X POST -H "Content-Type: application/json" http://localhost:5001 -d '{
 
 ## JSON-RPC API
 
-The API follows the JSON-RPC 2.0 specification.
+The API follows the JSON-RPC 2.0 specification. The DA has a **max body request size of 10MB**.
 
 ### `da_submit_solidity_assertion`
 
