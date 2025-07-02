@@ -124,6 +124,18 @@ where
         "Received request"
     );
 
+    // define json schema to validate against
+    let schema = json!({"id": 5, "jsonrpc": "2.0", "method": "da_submit_assertion", "params": []});
+    if !jsonschema::is_valid(&schema, &json_rpc) {
+        warn!(target: "json_rpc", method = %method, %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid JSON-RPC request format");
+        return Ok(rpc_error_with_request_id(
+            &json_rpc,
+            -32600,
+            "Invalid Request",
+            &request_id,
+        ));
+    }
+
     let req_start = Instant::now();
     let result = match method {
         #[cfg(feature = "debug_assertions")]
