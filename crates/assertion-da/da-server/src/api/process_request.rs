@@ -999,7 +999,7 @@ mod tests {
         assert_eq!(response_json2["jsonrpc"], "2.0");
         assert_eq!(response_json2["id"], 2);
         assert_eq!(response_json2["error"]["code"], -32600);
-        assert_eq!(response_json2["error"]["message"], "Invalid Request");
+        assert_eq!(response_json2["error"]["message"], "Invalid JSON-RPC request format");
 
         // Test 3: Wrong jsonrpc version
         let request_body3 = json!({
@@ -1022,7 +1022,7 @@ mod tests {
         assert_eq!(response_json3["jsonrpc"], "2.0");
         assert_eq!(response_json3["id"], 3);
         assert_eq!(response_json3["error"]["code"], -32600);
-        assert_eq!(response_json3["error"]["message"], "Invalid Request");
+        assert_eq!(response_json3["error"]["message"], "Invalid JSON-RPC request format");
 
         // Test 4: Wrong params type (should be array)
         let request_body4 = json!({
@@ -1045,7 +1045,7 @@ mod tests {
         assert_eq!(response_json4["jsonrpc"], "2.0");
         assert_eq!(response_json4["id"], 4);
         assert_eq!(response_json4["error"]["code"], -32600);
-        assert_eq!(response_json4["error"]["message"], "Invalid Request");
+        assert_eq!(response_json4["error"]["message"], "Invalid JSON-RPC request format");
 
         // Test 5: Additional properties not allowed
         let request_body5 = json!({
@@ -1069,7 +1069,7 @@ mod tests {
         assert_eq!(response_json5["jsonrpc"], "2.0");
         assert_eq!(response_json5["id"], 5);
         assert_eq!(response_json5["error"]["code"], -32600);
-        assert_eq!(response_json5["error"]["message"], "Invalid Request");
+        assert_eq!(response_json5["error"]["message"], "Invalid JSON-RPC request format");
     }
 
     #[tokio::test]
