@@ -149,7 +149,7 @@ where
         "required": ["jsonrpc", "method", "id"],
         "additionalProperties": false
     });
-    
+
     if !jsonschema::is_valid(&schema, &json_rpc) {
         warn!(target: "json_rpc", method = %method, %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid JSON-RPC request format");
         return Ok(rpc_error_with_request_id(
@@ -952,7 +952,7 @@ mod tests {
         assert_eq!(response_json["error"]["code"], -32600);
         assert_eq!(response_json["error"]["message"], "Request body too large");
     }
-    
+
     #[tokio::test]
     async fn test_invalid_json_schema() {
         let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
@@ -1074,8 +1074,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_jsonschema_validation_behavior() {
-        // This test verifies the actual behavior of jsonschema::is_valid
-        // with the proper JSON Schema
         let schema = json!({
             "type": "object",
             "properties": {
@@ -1100,7 +1098,7 @@ mod tests {
             "required": ["jsonrpc", "method", "id"],
             "additionalProperties": false
         });
-        
+
         // Test various inputs
         let valid_request = json!({
             "jsonrpc": "2.0",
@@ -1108,21 +1106,21 @@ mod tests {
             "params": [],
             "id": 1
         });
-        
+
         let missing_method = json!({
             "jsonrpc": "2.0",
             "id": 1
         });
-        
+
         let wrong_params_type = json!({
             "jsonrpc": "2.0",
             "method": "da_submit_assertion",
             "params": "not_array",
             "id": 1
         });
-        
+
         let empty_object = json!({});
-        
+
         let extra_field = json!({
             "jsonrpc": "2.0",
             "method": "da_submit_assertion",
@@ -1130,14 +1128,29 @@ mod tests {
             "id": 1,
             "extra": "field"
         });
-        
+
         // With proper JSON Schema, validation should work correctly
-        println!("Valid request: {}", jsonschema::is_valid(&schema, &valid_request));
-        println!("Missing method: {}", jsonschema::is_valid(&schema, &missing_method));
-        println!("Wrong params type: {}", jsonschema::is_valid(&schema, &wrong_params_type));
-        println!("Empty object: {}", jsonschema::is_valid(&schema, &empty_object));
-        println!("Extra field: {}", jsonschema::is_valid(&schema, &extra_field));
-        
+        println!(
+            "Valid request: {}",
+            jsonschema::is_valid(&schema, &valid_request)
+        );
+        println!(
+            "Missing method: {}",
+            jsonschema::is_valid(&schema, &missing_method)
+        );
+        println!(
+            "Wrong params type: {}",
+            jsonschema::is_valid(&schema, &wrong_params_type)
+        );
+        println!(
+            "Empty object: {}",
+            jsonschema::is_valid(&schema, &empty_object)
+        );
+        println!(
+            "Extra field: {}",
+            jsonschema::is_valid(&schema, &extra_field)
+        );
+
         // Assertions for proper schema validation
         assert!(jsonschema::is_valid(&schema, &valid_request));
         assert!(!jsonschema::is_valid(&schema, &missing_method));
@@ -1145,5 +1158,4 @@ mod tests {
         assert!(!jsonschema::is_valid(&schema, &empty_object));
         assert!(!jsonschema::is_valid(&schema, &extra_field));
     }
-
 }
