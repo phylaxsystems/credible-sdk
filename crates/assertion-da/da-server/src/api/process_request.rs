@@ -928,4 +928,77 @@ mod tests {
         assert_eq!(response_json["error"]["code"], -32600);
         assert_eq!(response_json["error"]["message"], "Request body too large");
     }
+    
+    #[tokio::test]
+    async fn test_invalid_json_schema() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        // Test missing jsonrpc field
+        let request_body = json!({
+            "method": "da_submit_assertion",
+            "params": [],
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+
+        let response_json: Value = response.json().await.unwrap();
+        assert_eq!(response_json["jsonrpc"], "2.0");
+        assert_eq!(response_json["id"], 1);
+        assert_eq!(response_json["error"]["code"], -32600);
+        assert_eq!(response_json["error"]["message"], "Invalid Request");
+
+        // Test missing id field
+        let request_body_no_id = json!({
+            "jsonrpc": "2.0",
+            "method": "da_submit_assertion",
+            "params": []
+        });
+
+        let response_no_id = client
+            .post(&server_url)
+            .json(&request_body_no_id)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response_no_id.status(), 200);
+
+        let response_json_no_id: Value = response_no_id.json().await.unwrap();
+        assert_eq!(response_json_no_id["jsonrpc"], "2.0");
+        assert_eq!(response_json_no_id["error"]["code"], -32600);
+        assert_eq!(response_json_no_id["error"]["message"], "Invalid Request");
+
+        // Test wrong jsonrpc version
+        let request_body_wrong_version = json!({
+            "jsonrpc": "1.0",
+            "method": "da_submit_assertion",
+            "params": [],
+            "id": 1
+        });
+
+        let response_wrong_version = client
+            .post(&server_url)
+            .json(&request_body_wrong_version)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response_wrong_version.status(), 200);
+
+        let response_json_wrong_version: Value = response_wrong_version.json().await.unwrap();
+        assert_eq!(response_json_wrong_version["jsonrpc"], "2.0");
+        assert_eq!(response_json_wrong_version["id"], 1);
+        assert_eq!(response_json_wrong_version["error"]["code"], -32600);
+        assert_eq!(response_json_wrong_version["error"]["message"], "Invalid Request");
+    }
+
 }
