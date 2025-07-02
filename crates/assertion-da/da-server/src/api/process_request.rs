@@ -977,7 +977,7 @@ mod tests {
         assert_eq!(response_json["jsonrpc"], "2.0");
         assert_eq!(response_json["id"], 1);
         assert_eq!(response_json["error"]["code"], -32600);
-        assert_eq!(response_json["error"]["message"], "Invalid Request");
+        assert_eq!(response_json["error"]["message"], "Invalid JSON-RPC request format");
 
         // Test 2: Missing jsonrpc field
         let request_body2 = json!({
