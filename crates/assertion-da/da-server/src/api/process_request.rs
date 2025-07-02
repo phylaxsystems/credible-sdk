@@ -125,6 +125,42 @@ where
         "Received request"
     );
 
+    // define json schema to validate against
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "jsonrpc": {
+                "type": "string",
+                "const": "2.0"
+            },
+            "method": {
+                "type": "string"
+            },
+            "params": {
+                "type": "array"
+            },
+            "id": {
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "number"},
+                    {"type": "null"}
+                ]
+            }
+        },
+        "required": ["jsonrpc", "method", "id"],
+        "additionalProperties": false
+    });
+
+    if !jsonschema::is_valid(&schema, &json_rpc) {
+        warn!(target: "json_rpc", method = %method, %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid JSON-RPC request format");
+        return Ok(rpc_error_with_request_id(
+            &json_rpc,
+            -32600,
+            "Invalid JSON-RPC request format",
+            &request_id,
+        ));
+    }
+
     let req_start = Instant::now();
     let result = match method {
         #[cfg(feature = "debug_assertions")]
@@ -916,5 +952,211 @@ mod tests {
         assert_eq!(response_json["jsonrpc"], "2.0");
         assert_eq!(response_json["error"]["code"], -32600);
         assert_eq!(response_json["error"]["message"], "Request body too large");
+    }
+
+    #[tokio::test]
+    async fn test_invalid_json_schema() {
+        let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
+
+        // Test 1: Missing required field (method)
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 1
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&server_url)
+            .json(&request_body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+
+        let response_json: Value = response.json().await.unwrap();
+        assert_eq!(response_json["jsonrpc"], "2.0");
+        assert_eq!(response_json["id"], 1);
+        assert_eq!(response_json["error"]["code"], -32600);
+        assert_eq!(response_json["error"]["message"], "Invalid JSON-RPC request format");
+
+        // Test 2: Missing jsonrpc field
+        let request_body2 = json!({
+            "method": "da_submit_assertion",
+            "params": [],
+            "id": 2
+        });
+
+        let response2 = client
+            .post(&server_url)
+            .json(&request_body2)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response2.status(), 200);
+
+        let response_json2: Value = response2.json().await.unwrap();
+        assert_eq!(response_json2["jsonrpc"], "2.0");
+        assert_eq!(response_json2["id"], 2);
+        assert_eq!(response_json2["error"]["code"], -32600);
+        assert_eq!(response_json2["error"]["message"], "Invalid JSON-RPC request format");
+
+        // Test 3: Wrong jsonrpc version
+        let request_body3 = json!({
+            "jsonrpc": "1.0",
+            "method": "da_submit_assertion",
+            "params": [],
+            "id": 3
+        });
+
+        let response3 = client
+            .post(&server_url)
+            .json(&request_body3)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response3.status(), 200);
+
+        let response_json3: Value = response3.json().await.unwrap();
+        assert_eq!(response_json3["jsonrpc"], "2.0");
+        assert_eq!(response_json3["id"], 3);
+        assert_eq!(response_json3["error"]["code"], -32600);
+        assert_eq!(response_json3["error"]["message"], "Invalid JSON-RPC request format");
+
+        // Test 4: Wrong params type (should be array)
+        let request_body4 = json!({
+            "jsonrpc": "2.0",
+            "method": "da_submit_assertion",
+            "params": "not_an_array",
+            "id": 4
+        });
+
+        let response4 = client
+            .post(&server_url)
+            .json(&request_body4)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response4.status(), 200);
+
+        let response_json4: Value = response4.json().await.unwrap();
+        assert_eq!(response_json4["jsonrpc"], "2.0");
+        assert_eq!(response_json4["id"], 4);
+        assert_eq!(response_json4["error"]["code"], -32600);
+        assert_eq!(response_json4["error"]["message"], "Invalid JSON-RPC request format");
+
+        // Test 5: Additional properties not allowed
+        let request_body5 = json!({
+            "jsonrpc": "2.0",
+            "method": "da_submit_assertion",
+            "params": [],
+            "id": 5,
+            "extra": "field"
+        });
+
+        let response5 = client
+            .post(&server_url)
+            .json(&request_body5)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response5.status(), 200);
+
+        let response_json5: Value = response5.json().await.unwrap();
+        assert_eq!(response_json5["jsonrpc"], "2.0");
+        assert_eq!(response_json5["id"], 5);
+        assert_eq!(response_json5["error"]["code"], -32600);
+        assert_eq!(response_json5["error"]["message"], "Invalid JSON-RPC request format");
+    }
+
+    #[tokio::test]
+    async fn test_jsonschema_validation_behavior() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "jsonrpc": {
+                    "type": "string",
+                    "const": "2.0"
+                },
+                "method": {
+                    "type": "string"
+                },
+                "params": {
+                    "type": "array"
+                },
+                "id": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "number"},
+                        {"type": "null"}
+                    ]
+                }
+            },
+            "required": ["jsonrpc", "method", "id"],
+            "additionalProperties": false
+        });
+
+        // Test various inputs
+        let valid_request = json!({
+            "jsonrpc": "2.0",
+            "method": "da_submit_assertion",
+            "params": [],
+            "id": 1
+        });
+
+        let missing_method = json!({
+            "jsonrpc": "2.0",
+            "id": 1
+        });
+
+        let wrong_params_type = json!({
+            "jsonrpc": "2.0",
+            "method": "da_submit_assertion",
+            "params": "not_array",
+            "id": 1
+        });
+
+        let empty_object = json!({});
+
+        let extra_field = json!({
+            "jsonrpc": "2.0",
+            "method": "da_submit_assertion",
+            "params": [],
+            "id": 1,
+            "extra": "field"
+        });
+
+        // With proper JSON Schema, validation should work correctly
+        println!(
+            "Valid request: {}",
+            jsonschema::is_valid(&schema, &valid_request)
+        );
+        println!(
+            "Missing method: {}",
+            jsonschema::is_valid(&schema, &missing_method)
+        );
+        println!(
+            "Wrong params type: {}",
+            jsonschema::is_valid(&schema, &wrong_params_type)
+        );
+        println!(
+            "Empty object: {}",
+            jsonschema::is_valid(&schema, &empty_object)
+        );
+        println!(
+            "Extra field: {}",
+            jsonschema::is_valid(&schema, &extra_field)
+        );
+
+        // Assertions for proper schema validation
+        assert!(jsonschema::is_valid(&schema, &valid_request));
+        assert!(!jsonschema::is_valid(&schema, &missing_method));
+        assert!(!jsonschema::is_valid(&schema, &wrong_params_type));
+        assert!(!jsonschema::is_valid(&schema, &empty_object));
+        assert!(!jsonschema::is_valid(&schema, &extra_field));
     }
 }
