@@ -62,6 +62,7 @@ use hyper::{
 use tracing::{
     debug,
     info,
+    error,
     trace,
     warn,
 };
@@ -462,11 +463,11 @@ async fn process_add_assertion(
     let ser_assertion = match bincode::serialize(&stored_assertion) {
         Ok(ser) => ser,
         Err(err) => {
-            warn!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to serialize assertion for database storage");
+            error!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to serialize assertion for database storage");
             return Ok(rpc_error_with_request_id(
                 json_rpc,
                 -32603,
-                "Internal error d",
+                "Failed to deserialize assertion internally.",
                 &request_id,
             ));
         }
@@ -490,11 +491,11 @@ async fn process_add_assertion(
             Ok(rpc_response(json_rpc, result))
         }
         Err(err) => {
-            debug!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Database operation failed for assertion storage");
+            error!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Database operation failed for assertion storage");
             Ok(rpc_error_with_request_id(
                 json_rpc,
                 -32603,
-                "Internal error c",
+                "Failed to write to database. Please try again later.",
                 &request_id,
             ))
         }
