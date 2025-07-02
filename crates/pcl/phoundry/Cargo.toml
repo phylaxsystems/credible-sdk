@@ -9,10 +9,10 @@ repository.workspace = true
 
 [dependencies]
 # Foundry deps
-forge = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "7e1ed875f" }
-foundry-config = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "7e1ed875f" }
-foundry-cli = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "7e1ed875f" }
-foundry-common = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "7e1ed875f" }
+forge = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "0971d2ac7" }
+foundry-config = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "0971d2ac7" }
+foundry-cli = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "0971d2ac7" }
+foundry-common = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "0971d2ac7" }
 
 foundry-compilers = { version = "0.17.3", default-features = false }
 
