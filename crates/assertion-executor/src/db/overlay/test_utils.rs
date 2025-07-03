@@ -1,32 +1,41 @@
-use crate::db::DatabaseCommit;
-use crate::db::NotFoundError;
-use crate::db::overlay::AccountInfo;
-use crate::primitives::EvmState;
-
-use crate::primitives::Bytecode;
-use alloy_primitives::Address;
-use alloy_primitives::B256;
-use alloy_primitives::KECCAK256_EMPTY;
-use alloy_primitives::U256;
-use moka::sync::Cache;
-use revm::database::CacheDB;
-use revm::database::EmptyDBTyped;
-use revm::database::InMemoryDB;
-use revm::{
-    Database,
-    DatabaseRef,
+use crate::{
+    db::{
+        Database,
+        DatabaseCommit,
+        DatabaseRef,
+        NotFoundError,
+        overlay::AccountInfo,
+    },
+    primitives::{
+        Address,
+        B256,
+        Bytecode,
+        EvmState,
+        U256,
+    },
 };
-use std::collections::HashMap;
-use std::convert::Infallible;
-use std::sync::Arc;
-use std::sync::Mutex;
+use alloy_primitives::KECCAK256_EMPTY;
+use revm::database::{
+    EmptyDBTyped,
+    InMemoryDB,
+};
+
+use moka::sync::Cache;
+
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        Mutex,
+    },
+};
 
 use super::OverlayDb;
 
 impl<Db> OverlayDb<Db> {
-    pub fn new_test() -> OverlayDb<CacheDB<EmptyDBTyped<Infallible>>> {
+    pub fn new_test() -> OverlayDb<InMemoryDB> {
         let cache = Cache::builder().max_capacity(10_000).build();
-        OverlayDb::<CacheDB<EmptyDBTyped<Infallible>>> {
+        OverlayDb {
             underlying_db: Some(Arc::new(InMemoryDB::new(EmptyDBTyped::new()))),
             overlay: cache,
         }
