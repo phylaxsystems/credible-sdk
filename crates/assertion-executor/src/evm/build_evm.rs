@@ -53,6 +53,10 @@ use revm::{
     },
 };
 
+/// Builds an EVM environment.
+/// The `chain_id` is used to set the chain ID in the EVM environment.
+/// The `spec_id` is used to set the spec ID in the EVM environment.
+/// The `block_env` is used to set the block environment in the EVM environment.
 pub fn evm_env<Spec>(chain_id: u64, spec_id: Spec, block_env: BlockEnv) -> EvmEnv<Spec>
 where
     Spec: Default,
@@ -74,6 +78,10 @@ pub type OpCtx<'db, DB> = Context<
 type OpIns<'db, DB> = EthInstructions<EthInterpreter, OpCtx<'db, DB>>;
 type OpEvm<'db, DB, I> = Evm<OpCtx<'db, DB>, I, OpIns<'db, DB>, PrecompilesMap>;
 
+/// Builds an Optimism EVM, using all optimism related types.
+/// Passes the `db` as a mutable reference to the inspector.
+/// Any type that implements the inspector trait for the OpCtx can be used.
+/// The `env` is used to configure the EVM.
 pub fn build_optimism_evm<'db, DB, I>(
     db: &'db mut DB,
     env: &EvmEnv,
@@ -115,6 +123,10 @@ pub type EthCtx<'db, DB> =
 type EthIns<'db, DB> = EthInstructions<EthInterpreter, EthCtx<'db, DB>>;
 type EthEvm<'db, DB, I> = Evm<EthCtx<'db, DB>, I, EthIns<'db, DB>, PrecompilesMap>;
 
+/// Builds a mainnet Ethereum EVM, using all mainnet related types.
+/// Passes the `db` as a mutable reference to the inspector.
+/// Any type that implements the inspector trait for the EthCtx can be used.
+/// The `env` is used to configure the EVM.
 pub fn build_eth_evm<'db, DB, I>(db: &'db mut DB, env: &EvmEnv, inspector: I) -> EthEvm<'db, DB, I>
 where
     DB: Database,
