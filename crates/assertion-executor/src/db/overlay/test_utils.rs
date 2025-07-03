@@ -15,10 +15,7 @@ use crate::{
     },
 };
 use alloy_primitives::KECCAK256_EMPTY;
-use revm::database::{
-    EmptyDBTyped,
-    InMemoryDB,
-};
+use revm::database::InMemoryDB;
 
 use moka::sync::Cache;
 
@@ -36,7 +33,7 @@ impl<Db> OverlayDb<Db> {
     pub fn new_test() -> OverlayDb<InMemoryDB> {
         let cache = Cache::builder().max_capacity(10_000).build();
         OverlayDb {
-            underlying_db: Some(Arc::new(InMemoryDB::new(EmptyDBTyped::new()))),
+            underlying_db: Some(Arc::new(InMemoryDB::default())),
             overlay: cache,
         }
     }
