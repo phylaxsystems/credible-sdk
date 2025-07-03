@@ -1,5 +1,5 @@
 use crate::{
-    db::PhDB,
+    db::DatabaseRef,
     db::multi_fork_db::{
         ForkError,
         MultiForkDb,
@@ -51,10 +51,7 @@ use revm::{
     interpreter::{
         CallInputs,
         CallOutcome,
-        CreateInputs,
-        CreateOutcome,
         Gas,
-        Interpreter,
     },
     primitives::Log,
 };
@@ -109,7 +106,7 @@ pub struct PhEvmInspector<'a> {
 
 impl<'a> PhEvmInspector<'a> {
     /// Create a new PhEvmInspector.
-    pub fn new<ExtDb: PhDB>(
+    pub fn new<ExtDb: DatabaseRef>(
         spec_id: SpecId,
         db: &mut MultiForkDb<ExtDb>,
         context: &'a PhEvmContext<'a>,
@@ -125,7 +122,7 @@ impl<'a> PhEvmInspector<'a> {
     }
 
     /// Execute precompile functions for the PhEvm.
-    pub fn execute_precompile<'db, ExtDb: PhDB + 'db, CTX>(
+    pub fn execute_precompile<'db, ExtDb: DatabaseRef + 'db, CTX>(
         &self,
         context: &mut CTX,
         inputs: &mut CallInputs,
@@ -158,7 +155,7 @@ impl<'a> PhEvmInspector<'a> {
 }
 
 /// Insert the precompile account into the database.
-fn insert_precompile_account<DB: PhDB>(db: &mut MultiForkDb<DB>) {
+fn insert_precompile_account<DB: DatabaseRef>(db: &mut MultiForkDb<DB>) {
     let precompile_account = AccountInfo {
         nonce: 1,
         balance: U256::MAX,
@@ -180,7 +177,7 @@ fn insert_precompile_account<DB: PhDB>(db: &mut MultiForkDb<DB>) {
 macro_rules! impl_phevm_inspector {
     ($($context_type:ty),* $(,)?) => {
         $(
-            impl<ExtDb: PhDB> Inspector<$context_type> for PhEvmInspector<'_> {
+            impl<ExtDb: DatabaseRef> Inspector<$context_type> for PhEvmInspector<'_> {
                 fn call(&mut self, context: &mut $context_type, inputs: &mut CallInputs) -> Option<CallOutcome> {
                     if inputs.target_address == PRECOMPILE_ADDRESS {
                         let call_outcome = inspector_result_to_call_outcome(
