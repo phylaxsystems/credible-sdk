@@ -181,13 +181,6 @@ macro_rules! impl_phevm_inspector {
     ($($context_type:ty),* $(,)?) => {
         $(
             impl<ExtDb: PhDB> Inspector<$context_type> for PhEvmInspector<'_> {
-                fn initialize_interp(&mut self, _interp: &mut Interpreter, _context: &mut $context_type) {}
-                fn step(&mut self, _interp: &mut Interpreter, _context: &mut $context_type) {}
-                fn step_end(&mut self, _interp: &mut Interpreter, _context: &mut $context_type) {}
-                fn call_end(&mut self, _context: &mut $context_type, _inputs: &CallInputs, _outcome: &mut CallOutcome) {}
-                fn create_end(&mut self, _context: &mut $context_type, _inputs: &CreateInputs, _outcome: &mut CreateOutcome) {}
-                fn selfdestruct(&mut self, _contract: Address, _target: Address, _value: U256) {}
-
                 fn call(&mut self, context: &mut $context_type, inputs: &mut CallInputs) -> Option<CallOutcome> {
                     if inputs.target_address == PRECOMPILE_ADDRESS {
                         let call_outcome = inspector_result_to_call_outcome(
@@ -196,15 +189,8 @@ macro_rules! impl_phevm_inspector {
                             inputs.return_memory_offset.clone(),
                         );
 
-                        if call_outcome.result.is_revert() {
-                            println!("PhEvm precompile revert: {:#?}", call_outcome.result.output);
-                        }
                         return Some(call_outcome);
                     }
-                    None
-                }
-
-                fn create(&mut self, _context: &mut $context_type, _inputs: &mut CreateInputs) -> Option<CreateOutcome> {
                     None
                 }
             }
