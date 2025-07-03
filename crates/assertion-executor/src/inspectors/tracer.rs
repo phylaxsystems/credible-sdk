@@ -1,4 +1,8 @@
 use crate::{
+    evm::build_evm::{
+        EthCtx,
+        OpCtx,
+    },
     inspectors::TriggerType,
     primitives::{
         Address,
@@ -7,10 +11,10 @@ use crate::{
         JournalEntry,
     },
 };
-use revm::context::JournalInner;
 use revm::{
     Database,
     Inspector,
+    context::JournalInner,
     interpreter::{
         CallInputs,
         CallOutcome,
@@ -46,10 +50,7 @@ macro_rules! impl_call_tracer_inspector {
 }
 
 // Implement for both context types in one clean call
-impl_call_tracer_inspector!(
-    crate::evm::build_evm::EthCtx<'_, DB>,
-    crate::evm::build_evm::OpCtx<'_, DB>
-);
+impl_call_tracer_inspector!(EthCtx<'_, DB>, OpCtx<'_, DB>);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CallTracer {
@@ -85,6 +86,7 @@ impl CallTracer {
         };
 
         let mut inputs = inputs;
+        // Coerce the bytes at the time of recording the call, in case they are of the SharedBuffer variant
         inputs.input = revm::interpreter::CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
 
         self.call_inputs
