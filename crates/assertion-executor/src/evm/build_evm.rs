@@ -53,41 +53,6 @@ use revm::{
     },
 };
 
-// Create a new EVM instance for the specified parameters.
-// This is used to configure the EVM in a consistent way, with a basic inspector handle register
-// and default op codes.
-//pub fn new_evm<'db, DB, INSP, I, CTX, TX>(
-//    block_env: BlockEnv,
-//    chain_id: u64,
-//    spec_id: SpecId,
-//    db: &'db mut DB,
-//    inspector: INSP,
-//) -> Evm<
-//    Context<BlockEnv, TX, CfgEnv<SpecId>, &'db mut DB, Journal<&'db mut DB>, ()>,
-//    INSP,
-//    EthInstructions<
-//        EthInterpreter,
-//        Context<BlockEnv, TX, CfgEnv<SpecId>, &'db mut DB, Journal<&'db mut DB>, ()>,
-//    >,
-//    PrecompilesMap,
-//>
-//where
-//    DB: Database,
-//    DB::Error: Send + Sync + 'static,
-//{
-//    let mut cfg_env = CfgEnv::default();
-//    cfg_env.chain_id = chain_id;
-//    cfg_env.spec = spec_id;
-//    let env = EvmEnv { cfg_env, block_env };
-//
-//    #[cfg(feature = "optimism")]
-//    let evm = build_optimism_evm(db, &EvmEnv { cfg_env, block_env }, inspector);
-//    //let evm = build_eth_evm(db, &EvmEnv { cfg_env, block_env }, inspector);
-//    #[cfg(not(feature = "optimism"))]
-//    let evm = build_eth_evm(db, &EvmEnv { cfg_env, block_env }, inspector);
-//
-//    evm
-//}
 
 pub fn evm_env<Spec>(chain_id: u64, spec_id: Spec, block_env: BlockEnv) -> EvmEnv<Spec>
 where
@@ -200,83 +165,6 @@ macro_rules! reprice_evm_storage {
     }};
 }
 
-///// Create a new PhEvm instance for the specified parameters.
-///// This is used for executing assertions.
-//pub fn new_phevm<'evm, 'db, 'i, DB>(
-//    tx_env: TxEnv,
-//    block_env: BlockEnv,
-//    chain_id: u64,
-//    spec_id: SpecId,
-//    db: &'db mut MultiForkDb<DB>,
-//    inspector: PhEvmInspector<'i, DB>,
-//) -> Evm<'evm, PhEvmInspector<'i>, &'db mut MultiForkDb<DB>>
-//where
-//    PhEvmInspector<'i, DB>: Inspector<&'db mut DB>,
-//{
-//    let (context, handler_cfg) =
-//        new_ctx_and_handler_cfg(tx_env, block_env, chain_id, spec_id, db, inspector);
-//
-//    let mut handler: Handler<
-//        '_,
-//        Context<PhEvmInspector<'i>, &mut DB>,
-//        PhEvmInspector<'i>,
-//        &mut DB,
-//    > = Handler::new(handler_cfg);
-//
-//    handler.append_handler_register_plain(inspector_handle_register);
-//    handler
-//        .instruction_table
-//        .insert(SLOAD, spec_to_generic!(spec_id, ph_sload::<_, SPEC>));
-//
-//    handler
-//        .instruction_table
-//        .insert(SSTORE, spec_to_generic!(spec_id, ph_sstore::<_, SPEC>));
-//
-//    Evm::new(context, handler)
-//}
-
-/// Create a new context and handler configuration.
-///
-/// This is useful for creating a new EVM instance with a custom handler configuration.
-/// The configuration is determined by the provided spec_id, and potentially
-/// modified based on feature flags (e.g., `optimism`).
-///
-/// When the `optimism` feature is enabled, the handler configuration is modified
-/// to enable Optimism-specific behavior (`is_optimism = true`).
-//fn new_ctx_and_handler_cfg<'db, DB: Database, I: Inspector<&'db mut DB>>(
-//    tx_env: TxEnv,
-//    block_env: BlockEnv,
-//    chain_id: u64,
-//    spec_id: SpecId,
-//    db: &'db mut DB,
-//    inspector: I,
-//) -> (Context<I, &'db mut DB>, HandlerCfg) {
-//    let mut cfg_env = CfgEnv::default();
-//    cfg_env.chain_id = chain_id;
-//
-//    let env = Env {
-//        block: block_env,
-//        tx: tx_env,
-//        cfg: cfg_env,
-//    };
-//
-//    // Make handler_cfg mutable as we might modify it.
-//    #[allow(unused_mut)]
-//    let EnvWithHandlerCfg {
-//        env,
-//        mut handler_cfg,
-//    } = EnvWithHandlerCfg::new_with_spec_id(Box::new(env), spec_id);
-//
-//    #[cfg(feature = "optimism")]
-//    {
-//        handler_cfg.is_optimism = true;
-//    }
-//
-//    let evm_context = Context::new_with_env(db, env);
-//    let context = Context::new(evm_context, inspector);
-//
-//    (context, handler_cfg)
-//}
 /// Reprice the gas of an operation to a fixed cost.
 /// Will still run out of gas if the operation spends all gas intentionally.
 macro_rules! reprice_gas {
