@@ -53,7 +53,6 @@ use crate::{
 use revm::{
     Database,
     InspectEvm,
-    context::ContextTr,
 };
 
 use rayon::prelude::{

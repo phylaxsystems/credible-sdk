@@ -8,7 +8,6 @@ use crate::{
         Bytecode,
         Bytes,
         FixedBytes,
-        U256,
         address,
         bytes,
     },
@@ -24,10 +23,7 @@ use revm::{
     interpreter::{
         CallInputs,
         CallOutcome,
-        CreateInputs,
-        CreateOutcome,
         Gas,
-        Interpreter,
     },
 };
 
@@ -153,28 +149,6 @@ macro_rules! impl_trigger_recorder_inspector {
     ($($context_type:ty),* $(,)?) => {
         $(
             impl<DB: Database> Inspector<$context_type> for TriggerRecorder {
-                fn initialize_interp(&mut self, _interp: &mut Interpreter, _context: &mut $context_type) {}
-
-                fn step(&mut self, _interp: &mut Interpreter, _context: &mut $context_type) {}
-
-                fn step_end(&mut self, _interp: &mut Interpreter, _context: &mut $context_type) {}
-
-                fn call_end(
-                    &mut self,
-                    _context: &mut $context_type,
-                    _inputs: &CallInputs,
-                    _outcome: &mut CallOutcome,
-                ) {
-                }
-
-                fn create_end(
-                    &mut self,
-                    _context: &mut $context_type,
-                    _inputs: &CreateInputs,
-                    _outcome: &mut CreateOutcome,
-                ) {
-                }
-
                 fn call(
                     &mut self,
                     context: &mut $context_type,
@@ -192,16 +166,6 @@ macro_rules! impl_trigger_recorder_inspector {
                     }
                     None
                 }
-
-                fn create(
-                    &mut self,
-                    _context: &mut $context_type,
-                    _inputs: &mut CreateInputs,
-                ) -> Option<CreateOutcome> {
-                    None
-                }
-
-                fn selfdestruct(&mut self, _contract: Address, _target: Address, _value: U256) {}
             }
         )*
     };
