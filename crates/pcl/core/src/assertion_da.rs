@@ -5,18 +5,35 @@
 //! of building, flattening, and submitting assertions along with their source code
 //! to be stored in the DA layer.
 
-use clap::{Parser, ValueHint};
+use clap::{
+    Parser,
+    ValueHint,
+};
 use colored::Colorize;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{
+    ProgressBar,
+    ProgressStyle,
+};
 use pcl_common::args::CliArgs;
-use pcl_phoundry::build_and_flatten::{BuildAndFlatOutput, BuildAndFlattenArgs};
+use pcl_phoundry::build_and_flatten::{
+    BuildAndFlatOutput,
+    BuildAndFlattenArgs,
+};
 use serde_json::json;
 use tokio::time::Duration;
 
-use assertion_da_client::{DaClient, DaClientError, DaSubmissionResponse};
+use assertion_da_client::{
+    DaClient,
+    DaClientError,
+    DaSubmissionResponse,
+};
 
 use crate::{
-    config::{AssertionForSubmission, AssertionKey, CliConfig},
+    config::{
+        AssertionForSubmission,
+        AssertionKey,
+        CliConfig,
+    },
     error::DaSubmitError,
 };
 
@@ -213,33 +230,36 @@ impl DaStoreArgs {
             .await
         {
             Ok(res) => Ok(res),
-            Err(err) => match &err {
-                DaClientError::ReqwestError(reqwest_err) => {
-                    if let Some(status) = reqwest_err.status() {
-                        Self::handle_http_error(status.as_u16(), spinner)?;
+            Err(err) => {
+                match &err {
+                    DaClientError::ReqwestError(reqwest_err) => {
+                        if let Some(status) = reqwest_err.status() {
+                            Self::handle_http_error(status.as_u16(), spinner)?;
+                            Err(err.into())
+                        } else {
+                            Err(err.into())
+                        }
+                    }
+                    DaClientError::UrlParseError(_) => {
+                        spinner.finish_with_message("❌ Invalid DA server URL");
                         Err(err.into())
-                    } else {
+                    }
+                    DaClientError::JsonError(_) => {
+                        spinner.finish_with_message("❌ Failed to parse server response");
+                        Err(err.into())
+                    }
+                    DaClientError::JsonRpcError { code, message } => {
+                        spinner.finish_with_message(format!(
+                            "❌ Server error (code {code}): {message}"
+                        ));
+                        Err(err.into())
+                    }
+                    DaClientError::InvalidResponse(msg) => {
+                        spinner.finish_with_message(format!("❌ Invalid server response: {msg}"));
                         Err(err.into())
                     }
                 }
-                DaClientError::UrlParseError(_) => {
-                    spinner.finish_with_message("❌ Invalid DA server URL");
-                    Err(err.into())
-                }
-                DaClientError::JsonError(_) => {
-                    spinner.finish_with_message("❌ Failed to parse server response");
-                    Err(err.into())
-                }
-                DaClientError::JsonRpcError { code, message } => {
-                    spinner
-                        .finish_with_message(format!("❌ Server error (code {code}): {message}"));
-                    Err(err.into())
-                }
-                DaClientError::InvalidResponse(msg) => {
-                    spinner.finish_with_message(format!("❌ Invalid server response: {msg}"));
-                    Err(err.into())
-                }
-            },
+            }
         }
     }
 
@@ -333,7 +353,10 @@ mod tests {
     use clap::Parser;
     use mockito::Server;
     use std::io::Write;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{
+        SystemTime,
+        UNIX_EPOCH,
+    };
 
     /// Creates a test configuration with authentication
     fn create_test_config() -> CliConfig {

@@ -1,10 +1,27 @@
 use crate::db::{
-    Database, DatabaseCommit, DatabaseRef, NotFoundError,
-    overlay::{ForkDb, TableKey, TableValue},
+    Database,
+    DatabaseCommit,
+    DatabaseRef,
+    NotFoundError,
+    overlay::{
+        ForkDb,
+        TableKey,
+        TableValue,
+    },
 };
-use crate::primitives::{AccountInfo, Address, B256, Bytecode, EvmState, U256};
+use crate::primitives::{
+    AccountInfo,
+    Address,
+    B256,
+    Bytecode,
+    EvmState,
+    U256,
+};
 
-use std::{cell::UnsafeCell, sync::Arc};
+use std::{
+    cell::UnsafeCell,
+    sync::Arc,
+};
 
 use moka::sync::Cache;
 
@@ -218,7 +235,12 @@ mod active_overlay_tests {
     use super::*;
     use crate::db::overlay::test_utils::MockDb;
     use crate::db::overlay::test_utils::mock_account_info;
-    use alloy_primitives::{U256, address, b256, bytes};
+    use alloy_primitives::{
+        U256,
+        address,
+        b256,
+        bytes,
+    };
     use moka::sync::Cache;
 
     use crate::db::overlay::TableKey;
@@ -509,7 +531,12 @@ mod active_overlay_tests {
     // Test DatabaseCommit implementation
     #[test]
     fn test_active_database_commit() {
-        use crate::primitives::{Account, AccountStatus, EvmState, EvmStorageSlot};
+        use crate::primitives::{
+            Account,
+            AccountStatus,
+            EvmState,
+            EvmStorageSlot,
+        };
         use std::collections::HashMap;
 
         let addr1 = address!("0000000000000000000000000000000000000001");
@@ -643,7 +670,12 @@ mod active_overlay_tests {
     // Test DatabaseCommit with shared cache across multiple overlays
     #[test]
     fn test_active_database_commit_shared_cache() {
-        use crate::primitives::{Account, AccountStatus, EvmState, EvmStorageSlot};
+        use crate::primitives::{
+            Account,
+            AccountStatus,
+            EvmState,
+            EvmStorageSlot,
+        };
 
         let addr1 = address!("f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1");
         let addr2 = address!("f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2");

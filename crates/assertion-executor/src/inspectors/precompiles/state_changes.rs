@@ -1,10 +1,19 @@
 use crate::{
     inspectors::phevm::PhEvmContext,
     inspectors::sol_primitives::PhEvm,
-    primitives::{Address, Bytes, JournalEntry, JournalInner, U256},
+    primitives::{
+        Address,
+        Bytes,
+        JournalEntry,
+        JournalInner,
+        U256,
+    },
 };
 
-use alloy_sol_types::{SolCall, SolValue};
+use alloy_sol_types::{
+    SolCall,
+    SolValue,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GetStateChangesError {
@@ -82,15 +91,35 @@ mod test {
     use crate::{
         db::overlay::test_utils::MockDb,
         inspectors::{
-            phevm::{LogsAndTraces, PhEvmContext},
+            phevm::{
+                LogsAndTraces,
+                PhEvmContext,
+            },
             sol_primitives::PhEvm,
             tracer::CallTracer,
         },
-        primitives::{Account, AccountInfo, AccountStatus},
-        test_utils::{random_address, random_bytes, random_u256, run_precompile_test},
+        primitives::{
+            Account,
+            AccountInfo,
+            AccountStatus,
+        },
+        test_utils::{
+            random_address,
+            random_bytes,
+            random_u256,
+            run_precompile_test,
+        },
     };
-    use alloy_primitives::{Address, Bytes, FixedBytes, U256};
-    use alloy_sol_types::{SolCall, SolValue};
+    use alloy_primitives::{
+        Address,
+        Bytes,
+        FixedBytes,
+        U256,
+    };
+    use alloy_sol_types::{
+        SolCall,
+        SolValue,
+    };
     use revm::JournalEntry;
 
     fn create_call_inputs_for_state_changes(contract_address: Address, slot: U256) -> Bytes {

@@ -1,6 +1,15 @@
-use color_eyre::{Report, eyre};
-use foundry_compilers::{error::SolcError, flatten::FlattenerError};
-use std::{fmt::Debug, path::PathBuf};
+use color_eyre::{
+    Report,
+    eyre,
+};
+use foundry_compilers::{
+    error::SolcError,
+    flatten::FlattenerError,
+};
+use std::{
+    fmt::Debug,
+    path::PathBuf,
+};
 use thiserror::Error;
 
 use foundry_config::error::ExtractConfigError;

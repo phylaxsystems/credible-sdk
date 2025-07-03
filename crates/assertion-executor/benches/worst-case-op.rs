@@ -2,20 +2,49 @@ use Asm::*;
 use assertion_executor::{
     db::{
         MultiForkDb,
-        overlay::{OverlayDb, test_utils::MockDb},
+        overlay::{
+            OverlayDb,
+            test_utils::MockDb,
+        },
     },
-    evm::build_evm::{build_optimism_evm, evm_env},
-    inspectors::{CallTracer, LogsAndTraces, PhEvmContext, PhEvmInspector},
+    evm::build_evm::{
+        build_optimism_evm,
+        evm_env,
+    },
+    inspectors::{
+        CallTracer,
+        LogsAndTraces,
+        PhEvmContext,
+        PhEvmInspector,
+    },
     primitives::{
-        AccountInfo, Address, BlockEnv, Bytecode, EvmExecutionResult, HaltReason, SpecId, TxEnv,
-        TxKind, U256, hex as hx, keccak256,
+        AccountInfo,
+        Address,
+        BlockEnv,
+        Bytecode,
+        EvmExecutionResult,
+        HaltReason,
+        SpecId,
+        TxEnv,
+        TxKind,
+        U256,
+        hex as hx,
+        keccak256,
     },
     reprice_evm_storage,
 };
 use criterion::{
-    BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::Measurement,
+    BenchmarkGroup,
+    Criterion,
+    criterion_group,
+    criterion_main,
+    measurement::Measurement,
 };
-use evm_glue::{assembler::assemble_minimized, assembly::Asm, opcodes::Opcode::*};
+use evm_glue::{
+    assembler::assemble_minimized,
+    assembly::Asm,
+    opcodes::Opcode::*,
+};
 use op_revm::OpTransaction;
 use revm::ExecuteEvm;
 

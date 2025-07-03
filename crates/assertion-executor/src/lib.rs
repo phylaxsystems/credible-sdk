@@ -5,7 +5,10 @@ mod error;
 pub use error::ExecutorError;
 
 mod executor;
-pub use executor::{AssertionExecutor, config::ExecutorConfig};
+pub use executor::{
+    AssertionExecutor,
+    config::ExecutorConfig,
+};
 
 pub mod primitives;
 

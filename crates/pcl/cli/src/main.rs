@@ -1,4 +1,7 @@
-use clap::{Parser, command};
+use clap::{
+    Parser,
+    command,
+};
 use color_eyre::Result;
 use color_eyre::eyre::Report;
 use pcl_common::args::CliArgs;
@@ -6,9 +9,15 @@ use pcl_core::{
     assertion_da::DaStoreArgs,
     assertion_submission::DappSubmitArgs,
     auth::AuthCommand,
-    config::{CliConfig, ConfigArgs},
+    config::{
+        CliConfig,
+        ConfigArgs,
+    },
 };
-use pcl_phoundry::{build::BuildArgs, phorge_test::PhorgeTest};
+use pcl_phoundry::{
+    build::BuildArgs,
+    phorge_test::PhorgeTest,
+};
 use serde_json::json;
 
 const VERSION_MESSAGE: &str = concat!(

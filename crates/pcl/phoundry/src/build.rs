@@ -1,5 +1,11 @@
-use clap::{Parser, ValueHint};
-use foundry_cli::opts::{BuildOpts, ProjectPathOpts};
+use clap::{
+    Parser,
+    ValueHint,
+};
+use foundry_cli::opts::{
+    BuildOpts,
+    ProjectPathOpts,
+};
 
 use std::path::PathBuf;
 

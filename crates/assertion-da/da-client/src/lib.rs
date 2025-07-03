@@ -1,11 +1,18 @@
 use alloy::primitives::B256;
 use http::header;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 use url::Url;
 
-pub use assertion_da_core::{DaFetchResponse, DaSubmission, DaSubmissionResponse};
+pub use assertion_da_core::{
+    DaFetchResponse,
+    DaSubmission,
+    DaSubmissionResponse,
+};
 
 /// A client for interacting with the DA layer
 /// This client is responsible for fetching bytecode from the DA layer
@@ -219,14 +226,25 @@ mod tests {
     use std::sync::Arc;
 
     use alloy::{
-        primitives::{Bytes, hex, keccak256},
-        signers::{Signer, local::PrivateKeySigner},
+        primitives::{
+            Bytes,
+            hex,
+            keccak256,
+        },
+        signers::{
+            Signer,
+            local::PrivateKeySigner,
+        },
     };
     use assertion_da_server::api::{
         db::listen_for_db,
         process_request::StoredAssertion,
         serve,
-        types::{DbOperation, DbRequest, DbRequestSender},
+        types::{
+            DbOperation,
+            DbRequest,
+            DbRequestSender,
+        },
     };
     use bollard::Docker;
     use serde_json::json;
@@ -234,7 +252,10 @@ mod tests {
     use tempfile::TempDir;
     use tokio::{
         net::TcpListener,
-        sync::{mpsc, oneshot},
+        sync::{
+            mpsc,
+            oneshot,
+        },
     };
     use tokio_util::sync::CancellationToken;
 
@@ -535,7 +556,11 @@ mod tests {
     async fn test_json_rpc_validation() {
         use serde_json::json;
         use wiremock::matchers::method;
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{
+            Mock,
+            MockServer,
+            ResponseTemplate,
+        };
 
         // Test invalid JSON-RPC version
         {

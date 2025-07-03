@@ -6,18 +6,30 @@
 //! The overlay has a buffer it uses before commiting values to the underlying hashmap.
 //! The data structure can be modeled as follows:
 //! ```Buffer -> TinyLFU Hashmap -> Disk```
-//!
+//! 
 //! Eviction happens at the TinyLFU layer when commiting the buffer. The buffer can either
 //! be commited manually or when it becomes full. It is recommended to clear the buffer during
 //! downtime, i.e., when calculating the state root.
 
 use crate::{
-    db::{DatabaseCommit, DatabaseRef, NotFoundError},
-    primitives::{AccountInfo, Bytecode, EvmState},
+    db::{
+        DatabaseCommit,
+        DatabaseRef,
+        NotFoundError,
+    },
+    primitives::{
+        AccountInfo,
+        Bytecode,
+        EvmState,
+    },
 };
 
 use active_overlay::ActiveOverlay;
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{
+    Address,
+    B256,
+    U256,
+};
 use std::cell::UnsafeCell;
 use std::sync::Arc;
 
@@ -346,9 +358,16 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
 #[cfg(test)]
 mod overlay_db_tests {
     use super::*;
-    use crate::db::overlay::test_utils::{MockDb, mock_account_info};
+    use crate::db::overlay::test_utils::{
+        MockDb,
+        mock_account_info,
+    };
     use crate::primitives::Bytecode;
-    use alloy_primitives::{address, b256, bytes};
+    use alloy_primitives::{
+        address,
+        b256,
+        bytes,
+    };
 
     use std::collections::HashMap;
 
@@ -672,7 +691,12 @@ mod overlay_db_tests {
 
     #[test]
     fn test_database_commit() {
-        use crate::primitives::{Account, AccountStatus, EvmState, EvmStorageSlot};
+        use crate::primitives::{
+            Account,
+            AccountStatus,
+            EvmState,
+            EvmStorageSlot,
+        };
         use std::collections::HashMap;
 
         let addr1 = address!("0000000000000000000000000000000000000001");
@@ -786,7 +810,12 @@ mod overlay_db_tests {
 
     #[test]
     fn test_active_overlay_commit_propagates_to_parent() {
-        use crate::primitives::{Account, AccountStatus, EvmState, EvmStorageSlot};
+        use crate::primitives::{
+            Account,
+            AccountStatus,
+            EvmState,
+            EvmStorageSlot,
+        };
         use std::cell::UnsafeCell;
 
         let addr1 = address!("0000000000000000000000000000000000000010");

@@ -1,11 +1,20 @@
-use clap::{Parser, ValueHint};
+use clap::{
+    Parser,
+    ValueHint,
+};
 use foundry_cli::{
-    opts::{BuildOpts, ProjectPathOpts},
+    opts::{
+        BuildOpts,
+        ProjectPathOpts,
+    },
     utils::LoadConfig,
 };
 use foundry_compilers::{
     ProjectCompileOutput,
-    flatten::{Flattener, FlattenerError},
+    flatten::{
+        Flattener,
+        FlattenerError,
+    },
     info::ContractInfo,
     solc::SolcLanguage,
 };
@@ -112,9 +121,11 @@ impl BuildAndFlattenArgs {
         // Determine the full path to the contract
         let path = match &self.root {
             Some(root) => root.join(rel_source_path),
-            None => find_project_root(None)
-                .map_err(|_| PhoundryError::DirectoryNotFound(PathBuf::from(".")))?
-                .join(rel_source_path),
+            None => {
+                find_project_root(None)
+                    .map_err(|_| PhoundryError::DirectoryNotFound(PathBuf::from(".")))?
+                    .join(rel_source_path)
+            }
         };
 
         // Flatten the contract
