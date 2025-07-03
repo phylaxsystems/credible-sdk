@@ -1,34 +1,43 @@
 pub use revm::{
-    JournalEntry,
-    JournaledState,
-    db::AccountState,
+    context::journal::{
+        Journal,
+        JournalEntry,
+        JournalInner,
+    },
+    context::{
+        BlockEnv,
+        ContextTr,
+        TxEnv,
+    },
+    context_interface::result::{
+        EVMError,
+        ExecutionResult,
+        HaltReason,
+    },
+    database::AccountState,
     primitives::{
-        Account,
-        AccountInfo,
-        AccountStatus,
         Address,
         B256,
-        BlockEnv,
-        Bytecode,
         Bytes,
-        EVMError,
-        EvmState,
-        EvmStorage,
-        EvmStorageSlot,
-        ExecutionResult as EvmExecutionResult,
         FixedBytes,
-        Output,
-        SpecId,
-        TxEnv,
         TxKind,
         U256,
         address,
         bytes,
         fixed_bytes,
+        hardfork::SpecId,
         hex,
         keccak256,
-        result::ResultAndState,
         uint,
+    },
+    state::{
+        Account,
+        AccountInfo,
+        AccountStatus,
+        Bytecode,
+        EvmState,
+        EvmStorage,
+        EvmStorageSlot,
     },
 };
 
@@ -36,6 +45,9 @@ use serde::{
     Deserialize,
     Serialize,
 };
+
+pub type EvmExecutionResult = ExecutionResult<HaltReason>;
+pub type ResultAndState = revm::context::result::ResultAndState<HaltReason>;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssertionContract {
@@ -212,7 +224,7 @@ mod test_merge_state {
                 balance: U256::from(balance),
                 nonce,
                 code_hash: FixedBytes::<32>::default(),
-                code: Some(Bytecode::LegacyRaw(code.into())),
+                code: Some(Bytecode::new_legacy(code.into())),
             },
             status: AccountStatus::default(),
             storage: HashMap::from_iter([]),

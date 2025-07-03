@@ -18,7 +18,7 @@ pub mod inspectors;
 
 pub mod db;
 
-pub mod build_evm;
+pub mod evm;
 
 pub mod utils;
 

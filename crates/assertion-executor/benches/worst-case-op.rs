@@ -1,12 +1,15 @@
 use Asm::*;
 use assertion_executor::{
-    build_evm::new_phevm,
     db::{
         MultiForkDb,
         overlay::{
             OverlayDb,
             test_utils::MockDb,
         },
+    },
+    evm::build_evm::{
+        build_optimism_evm,
+        evm_env,
     },
     inspectors::{
         CallTracer,
@@ -20,6 +23,7 @@ use assertion_executor::{
         BlockEnv,
         Bytecode,
         EvmExecutionResult,
+        HaltReason,
         SpecId,
         TxEnv,
         TxKind,
@@ -27,6 +31,7 @@ use assertion_executor::{
         hex as hx,
         keccak256,
     },
+    reprice_evm_storage,
 };
 use criterion::{
     BenchmarkGroup,
@@ -35,10 +40,13 @@ use criterion::{
     criterion_main,
     measurement::Measurement,
 };
-use evm_glue::assembler::assemble_minimized;
-use evm_glue::assembly::Asm;
-use evm_glue::opcodes::Opcode::*;
-use revm::primitives::HaltReason;
+use evm_glue::{
+    assembler::assemble_minimized,
+    assembly::Asm,
+    opcodes::Opcode::*,
+};
+use op_revm::OpTransaction;
+use revm::ExecuteEvm;
 
 fn register_op<M: Measurement>(
     group: &mut BenchmarkGroup<M>,
@@ -48,7 +56,9 @@ fn register_op<M: Measurement>(
 ) {
     let runtime_bytecode = assemble_inf_loop(op);
 
-    std::env::set_var("FOUNDRY_DISABLE_NIGHTLY_WARNING", "1");
+    unsafe {
+        std::env::set_var("FOUNDRY_DISABLE_NIGHTLY_WARNING", "1");
+    }
 
     // Execute the future, blocking the current thread until completion
     let db = OverlayDb::<MockDb>::new_test();
@@ -63,15 +73,15 @@ fn register_op<M: Measurement>(
             nonce: 1,
             balance: U256::MAX,
             code_hash: keccak256(&runtime_bytecode),
-            code: Some(Bytecode::LegacyRaw(runtime_bytecode.into())),
+            code: Some(Bytecode::new_legacy(runtime_bytecode.into())),
         },
     );
 
-    let tx_env = TxEnv {
-        transact_to: TxKind::Call(addr),
+    let tx_env = OpTransaction::new(TxEnv {
+        kind: TxKind::Call(addr),
         gas_limit: 500_000,
         ..Default::default()
-    };
+    });
 
     let mut multi_fork_db = MultiForkDb::new(fork.clone(), fork);
     let call_tracer = CallTracer::default();
@@ -79,21 +89,16 @@ fn register_op<M: Measurement>(
         tx_logs: &[],
         call_traces: &call_tracer,
     };
-    let phevm_context = PhEvmContext::new(&logs_and_traces, Default::default());
+    let phevm_context = PhEvmContext::new(&logs_and_traces, Address::ZERO);
     let inspector = PhEvmInspector::new(SpecId::default(), &mut multi_fork_db, &phevm_context);
-    let mut evm = new_phevm(
-        tx_env,
-        BlockEnv::default(),
-        1,
-        SpecId::default(),
-        &mut multi_fork_db,
-        inspector,
-    );
+    let env = evm_env(1, SpecId::default(), BlockEnv::default());
+    let mut evm = build_optimism_evm(&mut multi_fork_db, &env, inspector);
+    reprice_evm_storage!(evm);
 
     // FIXME: This is a hacky abstraction to support testing the operation and benching it. An
     // abstraction that returns the evm has problems with lifetimes.
     if test_op {
-        let result = evm.transact().unwrap();
+        let result = evm.transact(tx_env).unwrap();
         match result.result {
             EvmExecutionResult::Halt { reason, .. } => {
                 if let HaltReason::OutOfGas(..) = reason {
@@ -107,7 +112,7 @@ fn register_op<M: Measurement>(
             }
         }
     } else {
-        group.bench_function(label, |b| b.iter(|| evm.transact().unwrap()));
+        group.bench_function(label, |b| b.iter(|| evm.transact(tx_env.clone()).unwrap()));
     }
 }
 
@@ -189,7 +194,9 @@ fn test_ecrecover() {
 
     let (_, runtime_bytecode) = assemble_minimized(&op, true).unwrap();
 
-    std::env::set_var("FOUNDRY_DISABLE_NIGHTLY_WARNING", "1");
+    unsafe {
+        std::env::set_var("FOUNDRY_DISABLE_NIGHTLY_WARNING", "1");
+    }
 
     // Execute the future, blocking the current thread until completion
     let db = OverlayDb::<MockDb>::new_test();
@@ -203,15 +210,15 @@ fn test_ecrecover() {
             nonce: 1,
             balance: U256::MAX,
             code_hash: keccak256(&runtime_bytecode),
-            code: Some(Bytecode::LegacyRaw(runtime_bytecode.into())),
+            code: Some(Bytecode::new_legacy(runtime_bytecode.into())),
         },
     );
 
-    let tx_env = TxEnv {
-        transact_to: TxKind::Call(addr),
+    let tx_env = OpTransaction::new(TxEnv {
+        kind: TxKind::Call(addr),
         gas_limit: 500_000,
         ..Default::default()
-    };
+    });
 
     let mut multi_fork_db = MultiForkDb::new(fork.clone(), fork);
     let call_tracer = CallTracer::default();
@@ -219,18 +226,12 @@ fn test_ecrecover() {
         tx_logs: &[],
         call_traces: &call_tracer,
     };
-    let phevm_context = PhEvmContext::new(&logs_and_traces, Default::default());
+    let phevm_context = PhEvmContext::new(&logs_and_traces, addr);
     let inspector = PhEvmInspector::new(SpecId::default(), &mut multi_fork_db, &phevm_context);
-    let mut evm = new_phevm(
-        tx_env,
-        BlockEnv::default(),
-        1,
-        SpecId::default(),
-        &mut multi_fork_db,
-        inspector,
-    );
+    let env = evm_env(1, SpecId::default(), BlockEnv::default());
+    let mut evm = build_optimism_evm(&mut multi_fork_db, &env, inspector);
 
-    let result = evm.transact().unwrap();
+    let result = evm.transact(tx_env).unwrap();
     let contract_state = result.state.get(&addr).unwrap();
 
     let storage_slot_0 = contract_state.storage.get(&U256::ZERO).unwrap();

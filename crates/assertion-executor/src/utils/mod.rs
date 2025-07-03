@@ -4,11 +4,9 @@ use crate::primitives::{
     Address,
     TxEnv,
     TxKind,
-    U256,
 };
 
 use alloy_consensus::TxEnvelope;
-use revm::primitives::AuthorizationList;
 
 /// Used to fill a TxEnv with the data from a TxEnvelope
 pub fn fill_tx_env(input_tx: TxEnvelope, tx_env: &mut TxEnv, sender: Address) {
@@ -17,62 +15,62 @@ pub fn fill_tx_env(input_tx: TxEnvelope, tx_env: &mut TxEnv, sender: Address) {
         TxEnvelope::Legacy(tx) => {
             let tx = tx.tx();
             tx_env.gas_limit = tx.gas_limit;
-            tx_env.gas_price = U256::from(tx.gas_price);
+            tx_env.gas_price = tx.gas_price;
             tx_env.gas_priority_fee = None;
-            tx_env.transact_to = tx.to;
+            tx_env.kind = tx.to;
             tx_env.value = tx.value;
             tx_env.data = tx.input.clone();
             tx_env.chain_id = tx.chain_id;
-            tx_env.nonce = Some(tx.nonce);
-            tx_env.access_list.clear();
+            tx_env.nonce = tx.nonce;
+            tx_env.access_list = vec![].into();
             tx_env.blob_hashes.clear();
-            tx_env.max_fee_per_blob_gas.take();
-            tx_env.authorization_list = None;
+            tx_env.max_fee_per_blob_gas = 0;
+            tx_env.authorization_list = vec![];
         }
         TxEnvelope::Eip2930(tx) => {
             let tx = tx.tx();
             tx_env.gas_limit = tx.gas_limit;
-            tx_env.gas_price = U256::from(tx.gas_price);
+            tx_env.gas_price = tx.gas_price;
             tx_env.gas_priority_fee = None;
-            tx_env.transact_to = tx.to;
+            tx_env.kind = tx.to;
             tx_env.value = tx.value;
             tx_env.data = tx.input.clone();
             tx_env.chain_id = Some(tx.chain_id);
-            tx_env.nonce = Some(tx.nonce);
-            tx_env.access_list.clone_from(&tx.access_list.0);
+            tx_env.nonce = tx.nonce;
+            tx_env.access_list = tx.access_list.0.clone().into();
             tx_env.blob_hashes.clear();
-            tx_env.max_fee_per_blob_gas.take();
-            tx_env.authorization_list = None;
+            tx_env.max_fee_per_blob_gas = 0;
+            tx_env.authorization_list = vec![];
         }
         TxEnvelope::Eip1559(tx) => {
             let tx = tx.tx();
             tx_env.gas_limit = tx.gas_limit;
-            tx_env.gas_price = U256::from(tx.max_fee_per_gas);
-            tx_env.gas_priority_fee = Some(U256::from(tx.max_priority_fee_per_gas));
-            tx_env.transact_to = tx.to;
+            tx_env.gas_price = tx.max_fee_per_gas;
+            tx_env.gas_priority_fee = Some(tx.max_priority_fee_per_gas);
+            tx_env.kind = tx.to;
             tx_env.value = tx.value;
             tx_env.data = tx.input.clone();
             tx_env.chain_id = Some(tx.chain_id);
-            tx_env.nonce = Some(tx.nonce);
-            tx_env.access_list.clone_from(&tx.access_list.0);
+            tx_env.nonce = tx.nonce;
+            tx_env.access_list = tx.access_list.0.clone().into();
             tx_env.blob_hashes.clear();
-            tx_env.max_fee_per_blob_gas.take();
-            tx_env.authorization_list = None;
+            tx_env.max_fee_per_blob_gas = 0;
+            tx_env.authorization_list = vec![];
         }
         TxEnvelope::Eip4844(tx) => {
             let tx = tx.tx().tx();
             tx_env.gas_limit = tx.gas_limit;
-            tx_env.gas_price = U256::from(tx.max_fee_per_gas);
-            tx_env.gas_priority_fee = Some(U256::from(tx.max_priority_fee_per_gas));
-            tx_env.transact_to = TxKind::Call(tx.to);
+            tx_env.gas_price = tx.max_fee_per_gas;
+            tx_env.gas_priority_fee = Some(tx.max_priority_fee_per_gas);
+            tx_env.kind = TxKind::Call(tx.to);
             tx_env.value = tx.value;
             tx_env.data = tx.input.clone();
             tx_env.chain_id = Some(tx.chain_id);
-            tx_env.nonce = Some(tx.nonce);
-            tx_env.access_list.clone_from(&tx.access_list.0);
+            tx_env.nonce = tx.nonce;
+            tx_env.access_list = tx.access_list.0.clone().into();
             tx_env.blob_hashes.clone_from(&tx.blob_versioned_hashes);
-            tx_env.max_fee_per_blob_gas = Some(U256::from(tx.max_fee_per_blob_gas));
-            tx_env.authorization_list = None;
+            tx_env.max_fee_per_blob_gas = tx.max_fee_per_blob_gas;
+            tx_env.authorization_list = vec![];
         }
         TxEnvelope::Eip7702(tx) => {
             let tx = tx.tx();
@@ -81,30 +79,31 @@ pub fn fill_tx_env(input_tx: TxEnvelope, tx_env: &mut TxEnv, sender: Address) {
                     .iter()
                     .cloned()
                     .fold(vec![], |mut auth_list, auth_item| {
-                        let auth_item_revm = revm::primitives::SignedAuthorization::new_unchecked(
+                        let auth_item_revm =
+                        revm::context_interface::transaction::SignedAuthorization::new_unchecked(
                             auth_item.inner().to_owned(),
                             auth_item.y_parity(),
                             auth_item.r(),
                             auth_item.s(),
                         );
 
-                        auth_list.push(auth_item_revm);
+                        auth_list.push(alloy_signer::Either::Left(auth_item_revm));
                         auth_list
                     });
 
-            tx_env.authorization_list = Some(AuthorizationList::Signed(auth_list));
+            tx_env.authorization_list = auth_list;
 
             tx_env.gas_limit = tx.gas_limit;
-            tx_env.gas_price = U256::from(tx.max_fee_per_gas);
-            tx_env.gas_priority_fee = Some(U256::from(tx.max_priority_fee_per_gas));
-            tx_env.transact_to = tx.to.into();
+            tx_env.gas_price = tx.max_fee_per_gas;
+            tx_env.gas_priority_fee = Some(tx.max_priority_fee_per_gas);
+            tx_env.kind = TxKind::Call(tx.to);
             tx_env.value = tx.value;
             tx_env.data = tx.input.clone();
             tx_env.chain_id = Some(tx.chain_id);
-            tx_env.nonce = Some(tx.nonce);
-            tx_env.access_list.clone_from(&tx.access_list.0);
+            tx_env.nonce = tx.nonce;
+            tx_env.access_list = tx.access_list.0.clone().into();
             tx_env.blob_hashes.clear();
-            tx_env.max_fee_per_blob_gas.take();
+            tx_env.max_fee_per_blob_gas = 0;
         }
     }
 }
@@ -124,14 +123,13 @@ mod tests {
         Signed,
         TxEip7702,
     };
-    use alloy_eip7702::{
+    use alloy_eips::eip7702::{
         Authorization,
         SignedAuthorization,
     };
     use rand::random;
 
-    #[allow(deprecated)]
-    use alloy::primitives::PrimitiveSignature;
+    use alloy::primitives::Signature;
 
     #[test]
     fn test_fill_tx_env_eip7702() {
@@ -183,7 +181,7 @@ mod tests {
         };
 
         let primitive_signature =
-            PrimitiveSignature::new(random_bytes().into(), random_bytes().into(), random());
+            Signature::new(random_bytes().into(), random_bytes().into(), random());
 
         let signed_tx = Signed::new_unchecked(tx.clone(), primitive_signature, random_bytes());
 
@@ -194,32 +192,22 @@ mod tests {
         fill_tx_env(tx_envelope, &mut tx_env, sender);
 
         assert_eq!(tx_env.gas_limit, tx.gas_limit);
-        assert_eq!(tx_env.gas_price, U256::from(tx.max_fee_per_gas));
-        assert_eq!(
-            tx_env.gas_priority_fee,
-            Some(U256::from(tx.max_priority_fee_per_gas))
-        );
+        assert_eq!(tx_env.gas_price, tx.max_fee_per_gas);
+        assert_eq!(tx_env.gas_priority_fee, Some(tx.max_priority_fee_per_gas));
         assert_eq!(tx_env.value, value);
         assert_eq!(tx_env.data, Bytes::default());
         assert_eq!(tx_env.chain_id, Some(chain_id));
-        assert_eq!(tx_env.max_fee_per_blob_gas, None);
+        assert_eq!(tx_env.max_fee_per_blob_gas, 0);
         for (i, auth_item) in tx.authorization_list.iter().enumerate() {
-            let tx_env_item = match &tx_env.authorization_list {
-                Some(AuthorizationList::Signed(authorization_list)) => {
-                    authorization_list[i].clone()
-                }
-                _ => panic!("AuthorizationList not found"),
-            };
+            let tx_env_item = tx_env.authorization_list[i].clone();
             assert_eq!(tx_env_item.address, auth_item.address);
             assert_eq!(tx_env_item.chain_id, auth_item.chain_id);
             assert_eq!(tx_env_item.nonce, auth_item.nonce);
 
-            let tx_env_item_sig = tx_env_item.signature().unwrap();
             let auth_item_sig = auth_item.signature().unwrap();
 
-            let expected_parity = auth_item_sig.v();
-
-            assert_eq!(tx_env_item_sig.v(), expected_parity);
+            let tx_env_item_sig = tx_env_item.unwrap_left().signature().unwrap();
+            assert_eq!(tx_env_item_sig.v(), auth_item_sig.v());
             assert_eq!(tx_env_item_sig.r(), auth_item_sig.r());
             assert_eq!(tx_env_item_sig.s(), auth_item_sig.s());
         }

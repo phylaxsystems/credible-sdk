@@ -17,7 +17,7 @@ use crate::{
         B256,
         Bytecode,
         EvmState,
-        JournaledState,
+        JournalEntry,
         U256,
     },
 };
@@ -27,19 +27,21 @@ use std::{
     sync::Arc,
 };
 
+use revm::context::JournalInner;
+
 /// Default persistent accounts.
 /// Journaled state of these accounts will be persisted across forks.
 const DEFAULT_PERSISTENT_ACCOUNTS: [Address; 3] = [ASSERTION_CONTRACT, CALLER, PRECOMPILE_ADDRESS];
 
 /// A fork of the database. Contains the underlying database and
-/// a reference to the [`revm::JournaledState`].
+/// a reference to the [`JournaledState`].
 #[derive(Debug, Clone)]
 pub(crate) struct Fork<ExtDb> {
     /// The database.
     pub db: Arc<ExtDb>,
     /// Journaled state of the fork.
     /// None if the fork has not been initialized.
-    pub journaled_state: Option<JournaledState>,
+    pub journal: Option<JournalInner<JournalEntry>>,
 }
 
 /// Represents the various forms of forks.
@@ -50,7 +52,7 @@ pub enum ForkId {
 }
 
 /// A multi-fork database for managing multiple forks.
-/// init_journaled_state must be set during initialization of the interpreter.
+/// init_journal must be set during initialization of the interpreter.
 #[derive(Debug, Clone)]
 pub struct MultiForkDb<ExtDb> {
     /// Active fork database.
@@ -74,7 +76,7 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
             ForkId::PreTx,
             Fork {
                 db: Arc::new(pre_tx_db),
-                journaled_state: None,
+                journal: None,
             },
         )]);
 
@@ -89,8 +91,8 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
     pub fn switch_fork(
         &mut self,
         fork_id: ForkId,
-        active_journaled_state: &mut JournaledState,
-        init_journaled_state: &JournaledState,
+        active_journal: &mut JournalInner<JournalEntry>,
+        init_journal: &JournalInner<JournalEntry>,
     ) -> Result<(), ForkError> {
         // If the fork is already active, do nothing.
         if fork_id == self.active_fork_id {
@@ -104,18 +106,20 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
             .ok_or(ForkError::ForkNotFound(fork_id))?; //Should never happen. Currently we only
         //have two fork modes but in the future we
         //might have more.
+        //have two fork modes but in the future we
+        //might have more.
 
         // If the fork does not have a journaled state, initialize it.
-        let mut target_fork_journaled_state = target_fork
-            .journaled_state
+        let mut target_fork_journal = target_fork
+            .journal
             .take()
-            .unwrap_or(init_journaled_state.clone());
+            .unwrap_or_else(|| init_journal.clone());
 
         // Update the target forks journaled state with the active fork's journaled state.
-        update_journaled_state(
+        update_journal(
             DEFAULT_PERSISTENT_ACCOUNTS, //TODO: Add a cheatcode to allow for custom persistent accounts
-            active_journaled_state,
-            &mut target_fork_journaled_state,
+            active_journal,
+            &mut target_fork_journal,
         )?;
 
         // Update the active fork_id.
@@ -125,53 +129,46 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         let prev_fork_db = self.active_db.replace_inner_db(target_fork.db);
 
         // Replace the active journaled state with the target fork journaled state.
-        let prev_journaled_state =
-            std::mem::replace(active_journaled_state, target_fork_journaled_state);
+        let prev_journal = std::mem::replace(active_journal, target_fork_journal);
 
         self.inactive_forks.insert(
             prev_fork_id,
             Fork {
                 db: prev_fork_db,
-                journaled_state: Some(prev_journaled_state),
+                journal: Some(prev_journal),
             },
         );
 
         Ok(())
     }
 }
-/// Clones the data of the given `accounts` from the `active_journaled_state` into the `target_journaled_state`.
-pub(crate) fn update_journaled_state(
+/// Clones the data of the given `accounts` from the `active_journal` into the `target_journal`.
+pub(crate) fn update_journal(
     accounts: impl IntoIterator<Item = Address>,
-    active_journaled_state: &mut JournaledState,
-    target_journaled_state: &mut JournaledState,
+    active_journal: &mut JournalInner<JournalEntry>,
+    target_journal: &mut JournalInner<JournalEntry>,
 ) -> Result<(), ForkError> {
     for addr in accounts.into_iter() {
-        merge_journaled_state_data(addr, active_journaled_state, target_journaled_state);
-    }
-
-    // need to mock empty journal entries in case the current checkpoint is higher than the existing
-    // journal entries
-    while active_journaled_state.journal.len() > target_journaled_state.journal.len() {
-        target_journaled_state.journal.push(Default::default());
+        merge_journal_data(addr, active_journal, target_journal);
     }
 
     // since all forks handle their state separately, the depth can drift
     // this is a handover where the target fork starts at the same depth where it was
     // selected. This ensures that there are no gaps in depth which could
     // otherwise cause issues with displaying traces.
-    target_journaled_state.depth = active_journaled_state.depth;
+    target_journal.depth = active_journal.depth;
 
     Ok(())
 }
 
-/// Clones the account data from the `active_journaled_state`  into the `fork_journaled_state`
-fn merge_journaled_state_data(
+/// Clones the account data from the `active_journal`  into the `fork_journal`
+fn merge_journal_data(
     addr: Address,
-    active_journaled_state: &JournaledState,
-    fork_journaled_state: &mut JournaledState,
+    active_journal: &mut JournalInner<JournalEntry>,
+    fork_journal: &mut JournalInner<JournalEntry>,
 ) {
-    if let Some(mut acc) = active_journaled_state.state.get(&addr).cloned() {
-        if let Some(fork_account) = fork_journaled_state.state.get_mut(&addr) {
+    if let Some(mut acc) = active_journal.state.get(&addr).cloned() {
+        if let Some(fork_account) = fork_journal.state.get_mut(&addr) {
             // This will merge the fork's tracked storage with active storage and update values
             fork_account
                 .storage
@@ -180,43 +177,56 @@ fn merge_journaled_state_data(
             // swap them so we can insert the account as whole in the next step
             std::mem::swap(&mut fork_account.storage, &mut acc.storage);
         }
-        fork_journaled_state.state.insert(addr, acc);
+        fork_journal.state.insert(addr, acc);
     }
 }
 
 impl<ExtDb: DatabaseRef> Database for MultiForkDb<ExtDb> {
-    type Error = ExtDb::Error;
-
-    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+    type Error = <ExtDb as DatabaseRef>::Error;
+    fn basic(
+        &mut self,
+        address: Address,
+    ) -> Result<Option<AccountInfo>, <ExtDb as DatabaseRef>::Error> {
         self.basic_ref(address)
     }
 
-    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, <ExtDb as DatabaseRef>::Error> {
         self.code_by_hash_ref(code_hash)
     }
 
-    fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+    fn storage(
+        &mut self,
+        address: Address,
+        index: U256,
+    ) -> Result<U256, <ExtDb as DatabaseRef>::Error> {
         self.storage_ref(address, index)
     }
 
     #[inline]
-    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+    fn block_hash(&mut self, number: u64) -> Result<B256, <ExtDb as DatabaseRef>::Error> {
         self.block_hash_ref(number)
     }
 }
 
 impl<ExtDb: DatabaseRef> DatabaseRef for MultiForkDb<ExtDb> {
-    type Error = ExtDb::Error;
-    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+    type Error = <ExtDb as DatabaseRef>::Error;
+    fn basic_ref(
+        &self,
+        address: Address,
+    ) -> Result<Option<AccountInfo>, <ExtDb as DatabaseRef>::Error> {
         self.active_db.basic_ref(address)
     }
-    fn storage_ref(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+    fn storage_ref(
+        &self,
+        address: Address,
+        slot: U256,
+    ) -> Result<U256, <ExtDb as DatabaseRef>::Error> {
         self.active_db.storage_ref(address, slot)
     }
-    fn code_by_hash_ref(&self, hash: B256) -> Result<Bytecode, Self::Error> {
+    fn code_by_hash_ref(&self, hash: B256) -> Result<Bytecode, <ExtDb as DatabaseRef>::Error> {
         self.active_db.code_by_hash_ref(hash)
     }
-    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+    fn block_hash_ref(&self, number: u64) -> Result<B256, <ExtDb as DatabaseRef>::Error> {
         self.active_db.block_hash_ref(number)
     }
 }
@@ -230,9 +240,7 @@ impl<ExtDb: DatabaseCommit> DatabaseCommit for MultiForkDb<ExtDb> {
 #[cfg(test)]
 mod test_multi_fork {
     use super::*;
-    use revm::InMemoryDB;
-
-    use std::collections::HashSet;
+    use revm::database::InMemoryDB;
 
     use crate::{
         primitives::{
@@ -273,13 +281,12 @@ mod test_multi_fork {
 
         let mut db = MultiForkDb::new(pre_tx_fork_db, post_tx_fork_db);
 
-        let mut journaled_state =
-            JournaledState::new(revm::primitives::SpecId::LATEST, HashSet::from_iter([]));
-        let init_journaled_state = journaled_state.clone();
+        let mut journal = JournalInner::new();
+        let init_journal = journal.clone();
 
         let pre_tx_fork = db.inactive_forks.get(&ForkId::PreTx).unwrap();
 
-        assert!(pre_tx_fork.journaled_state.is_none());
+        assert!(pre_tx_fork.journal.is_none());
 
         assert!(!db.inactive_forks.contains_key(&ForkId::PostTx));
         assert_eq!(db.active_fork_id, ForkId::PostTx);
@@ -289,12 +296,12 @@ mod test_multi_fork {
             uint!(1000_U256)
         );
 
-        db.switch_fork(ForkId::PreTx, &mut journaled_state, &init_journaled_state)
+        db.switch_fork(ForkId::PreTx, &mut journal, &init_journal)
             .unwrap();
 
         let post_tx_fork = db.inactive_forks.get(&ForkId::PostTx).unwrap();
 
-        assert!(post_tx_fork.journaled_state.is_some());
+        assert!(post_tx_fork.journal.is_some());
 
         assert!(!db.inactive_forks.contains_key(&ForkId::PreTx));
         assert_eq!(db.active_fork_id, ForkId::PreTx);
@@ -307,11 +314,11 @@ mod test_multi_fork {
             uint!(0_U256)
         );
 
-        db.switch_fork(ForkId::PostTx, &mut journaled_state, &init_journaled_state)
+        db.switch_fork(ForkId::PostTx, &mut journal, &init_journal)
             .unwrap();
 
         let pre_tx_fork = db.inactive_forks.get(&ForkId::PreTx).unwrap();
-        assert!(pre_tx_fork.journaled_state.is_some());
+        assert!(pre_tx_fork.journal.is_some());
 
         assert!(!db.inactive_forks.contains_key(&ForkId::PostTx));
         assert_eq!(db.active_fork_id, ForkId::PostTx);
@@ -323,14 +330,13 @@ mod test_multi_fork {
     }
 
     #[test]
-    fn test_journaled_state_persistence() {
+    fn test_journal_persistence() {
         // Test that journaled state is persisted across forks for
-        let init_journaled_state =
-            JournaledState::new(revm::primitives::SpecId::LATEST, HashSet::from_iter([]));
-        let mut active_journaled_state = init_journaled_state.clone();
+        let init_journal = JournalInner::new();
+        let mut active_journal = init_journal.clone();
 
         let address: Address = random_bytes::<20>().into();
-        active_journaled_state.state.insert(
+        active_journal.state.insert(
             address,
             Account {
                 info: AccountInfo {
@@ -344,7 +350,7 @@ mod test_multi_fork {
             },
         );
 
-        active_journaled_state.state.insert(
+        active_journal.state.insert(
             ASSERTION_CONTRACT,
             Account {
                 info: AccountInfo {
@@ -363,15 +369,11 @@ mod test_multi_fork {
 
         let mut db = MultiForkDb::new(pre_tx_fork_db, post_tx_fork_db);
 
-        db.switch_fork(
-            ForkId::PreTx,
-            &mut active_journaled_state,
-            &init_journaled_state,
-        )
-        .unwrap();
+        db.switch_fork(ForkId::PreTx, &mut active_journal, &init_journal)
+            .unwrap();
 
         assert_eq!(
-            active_journaled_state
+            active_journal
                 .state
                 .get(&ASSERTION_CONTRACT)
                 .unwrap()
@@ -379,17 +381,17 @@ mod test_multi_fork {
                 .balance,
             uint!(6900_U256)
         );
-        assert!(!active_journaled_state.state.contains_key(&address));
+        assert!(!active_journal.state.contains_key(&address));
 
-        let post_tx_journaled_state = db
+        let post_tx_journal = db
             .inactive_forks
             .get(&ForkId::PostTx)
             .unwrap()
-            .journaled_state
+            .journal
             .clone()
             .unwrap();
         assert_eq!(
-            post_tx_journaled_state
+            post_tx_journal
                 .state
                 .get(&ASSERTION_CONTRACT)
                 .unwrap()
@@ -398,12 +400,7 @@ mod test_multi_fork {
             uint!(6900_U256)
         );
         assert_eq!(
-            post_tx_journaled_state
-                .state
-                .get(&address)
-                .unwrap()
-                .info
-                .balance,
+            post_tx_journal.state.get(&address).unwrap().info.balance,
             uint!(1000_U256)
         );
     }

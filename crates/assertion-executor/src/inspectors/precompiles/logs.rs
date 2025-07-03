@@ -79,7 +79,7 @@ mod test {
         assert!(!encoded.is_empty());
 
         // Verify we can decode the result
-        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded, false);
+        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
         assert!(decoded.is_ok());
         let decoded_array = decoded.unwrap();
         assert_eq!(decoded_array.len(), 0);
@@ -102,7 +102,7 @@ mod test {
         let encoded = result.unwrap();
 
         // Verify we can decode the result
-        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded, false);
+        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
         assert!(decoded.is_ok());
         let decoded_array = decoded.unwrap();
         assert_eq!(decoded_array.len(), 1);
@@ -140,7 +140,7 @@ mod test {
         let encoded = result.unwrap();
 
         // Verify we can decode the result
-        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded, false);
+        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
         assert!(decoded.is_ok());
         let decoded_array = decoded.unwrap();
         assert_eq!(decoded_array.len(), 2);
@@ -179,7 +179,7 @@ mod test {
         let encoded = result.unwrap();
 
         // Verify we can decode the result
-        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded, false);
+        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
         assert!(decoded.is_ok());
         let decoded_array = decoded.unwrap();
         assert_eq!(decoded_array.len(), 1);
@@ -209,7 +209,7 @@ mod test {
         let encoded = result.unwrap();
 
         // Verify we can decode the result
-        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded, false);
+        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
         assert!(decoded.is_ok());
         let decoded_array = decoded.unwrap();
         assert_eq!(decoded_array.len(), 1);
@@ -236,7 +236,7 @@ mod test {
         let encoded = result.unwrap();
 
         // Verify we can decode the result
-        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded, false);
+        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
         assert!(decoded.is_ok());
         let decoded_array = decoded.unwrap();
         assert_eq!(decoded_array.len(), 1);
@@ -265,7 +265,7 @@ mod test {
         let encoded = result.unwrap();
 
         // Verify we can decode the result
-        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded, false);
+        let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
         assert!(decoded.is_ok());
         let decoded_array = decoded.unwrap();
         assert_eq!(decoded_array.len(), 1);

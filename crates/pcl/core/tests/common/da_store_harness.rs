@@ -1,6 +1,7 @@
 use alloy::{
     hex,
     signers::k256::ecdsa::SigningKey,
+    signers::k256::elliptic_curve::rand_core::OsRng,
 };
 use assertion_da_client::DaClient;
 use int_test_utils::deploy_test_da;
@@ -52,7 +53,7 @@ impl TestSetup {
     }
 
     pub async fn build(&self) -> Result<TestRunner, DaSubmitError> {
-        let (_handle, da_url) = deploy_test_da(SigningKey::random(&mut rand::thread_rng())).await;
+        let (_handle, da_url) = deploy_test_da(SigningKey::random(&mut OsRng)).await;
         let build_and_flatten_args = BuildAndFlattenArgs {
             root: Some(
                 self.root

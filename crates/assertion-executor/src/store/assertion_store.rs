@@ -203,7 +203,7 @@ impl AssertionStore {
     }
 
     /// Reads the assertions for the given block from the store, given the traces.
-    #[tracing::instrument(skip_all, name = "read_assertions_from_store", target = "assertion_store::read", fields(triggers=?traces.triggers(), block_num=?block_num), level="DEBUG")]
+    #[tracing::instrument(skip_all, name = "read_assertions_from_store", target = "assertion_store::read", fields(triggers, block_num=?block_num), level="DEBUG")]
     pub fn read(
         &self,
         traces: &CallTracer,
@@ -214,7 +214,11 @@ impl AssertionStore {
             .map_err(|_| AssertionStoreError::BlockNumberExceedsU64)?;
 
         let mut assertions = Vec::new();
-        for (contract_address, triggers) in traces.triggers() {
+
+        let triggers = traces.triggers();
+        tracing::Span::current().record("triggers", format!("{triggers:?}"));
+
+        for (contract_address, triggers) in &triggers {
             let contract_assertions = self.read_adopter(contract_address, triggers, block_num)?;
             let assertions_for_execution: Vec<AssertionsForExecution> = contract_assertions
                 .into_iter()
@@ -222,7 +226,7 @@ impl AssertionStore {
                     AssertionsForExecution {
                         assertion_contract,
                         selectors,
-                        adopter: contract_address,
+                        adopter: *contract_address,
                     }
                 })
                 .collect();
@@ -233,7 +237,7 @@ impl AssertionStore {
         if assertions.is_empty() {
             debug!(
                 target: "assertion-executor::assertion_store",
-                triggers=?traces.triggers(),
+                ?triggers,
                 "No assertions found based on triggers",
             );
         } else {
@@ -244,7 +248,7 @@ impl AssertionStore {
                     selectors: &assertion.selectors,
                     adopter: &assertion.adopter
                 })).collect::<Vec<_>>(),
-                triggers=?traces.triggers(),
+                ?triggers,
                 "Assertions found based on triggers",
             );
         }
@@ -260,8 +264,8 @@ impl AssertionStore {
     #[tracing::instrument(skip_all, name = "read_adopter_from_db", target = "assertion_store::read_adopter", fields(assertion_adopter=?assertion_adopter, triggers=?triggers, block=?block), level="trace")]
     fn read_adopter(
         &self,
-        assertion_adopter: Address,
-        triggers: HashSet<TriggerType>,
+        assertion_adopter: &Address,
+        triggers: &HashSet<TriggerType>,
         block: u64,
     ) -> Result<Vec<(AssertionContract, Vec<FixedBytes<4>>)>, AssertionStoreError> {
         let assertion_states = tracing::trace_span!(
@@ -320,7 +324,7 @@ impl AssertionStore {
                 let mut has_storage_trigger = false;
 
                 // Process specific triggers and detect trigger types
-                for trigger in &triggers {
+                for trigger in triggers {
                     if let Some(selectors) = a.trigger_recorder.triggers.get(trigger) {
                         all_selectors.extend(selectors.iter().cloned());
                     }
@@ -500,11 +504,7 @@ mod tests {
     use crate::primitives::{
         Address,
         JournalEntry,
-        JournaledState,
-        SpecId,
     };
-
-    use revm::primitives::HashSet as RevmHashSet;
     use std::collections::HashSet;
 
     fn create_test_assertion(
@@ -760,17 +760,9 @@ mod tests {
         // insert_trace inserts (address, 0x00000000) in call_inputs to pretend a call
         tracer.insert_trace(assertion_adopter);
 
-        tracer.journaled_state = Some(JournaledState::new(
-            SpecId::LONDON,
-            RevmHashSet::<Address>::default(),
-        ));
-
-        tracer
-            .journaled_state
-            .as_mut()
-            .unwrap()
-            .journal
-            .push(journal_entries);
+        for entry in journal_entries {
+            tracer.journal.journal.push(entry);
+        }
 
         store.read(&tracer, U256::from(100))
     }
@@ -1005,19 +997,27 @@ mod tests {
 
         let mut tracer = CallTracer::default();
         // Add call with the specific trigger selector
-        tracer.call_inputs.insert((aa, trigger_selector), vec![]);
+        tracer.record_call(
+            revm::interpreter::CallInputs {
+                input: revm::interpreter::CallInput::Bytes(Bytes::from(vec![
+                    0x12, 0x34, 0x56, 0x78,
+                ])),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: aa,
+                target_address: aa,
+                caller: Address::random(),
+                value: revm::interpreter::CallValue::Transfer(U256::from(100)),
+                scheme: revm::interpreter::CallScheme::Call,
+                is_static: false,
+                is_eof: false,
+            },
+            &[0x12, 0x34, 0x56, 0x78],
+        );
 
-        tracer.journaled_state = Some(JournaledState::new(
-            SpecId::LONDON,
-            RevmHashSet::<Address>::default(),
-        ));
-
-        tracer
-            .journaled_state
-            .as_mut()
-            .unwrap()
-            .journal
-            .push(journal_entries);
+        for entry in journal_entries {
+            tracer.journal.journal.push(entry);
+        }
 
         let assertions = store.read(&tracer, U256::from(100))?;
         assert_eq!(assertions.len(), 1);
@@ -1035,7 +1035,9 @@ mod tests {
             selector_all_storage,
             selector_balance,
         ];
+        println!("Expected selectors: {expected_selectors:#?}");
         expected_selectors.sort();
+        println!("Expected selectors: {expected_selectors:#?}");
 
         let mut matched_selectors = assertions[0].selectors.clone();
         matched_selectors.sort();

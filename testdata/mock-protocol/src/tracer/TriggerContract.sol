@@ -19,7 +19,8 @@ contract TriggerContract {
     }
 
     function transfer(address to) internal {
-        (bool success,) = to.call{value: 1}("");
+        (bool success, ) = to.call{value: 1}("");
         require(success, "Transfer failed");
     }
 }
+

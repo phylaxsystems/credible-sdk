@@ -73,7 +73,7 @@ async fn provider_from_anvil(anvil: &AnvilInstance) -> RootProvider {
     use alloy_provider::ProviderBuilder;
     use alloy_transport_ws::WsConnect;
     ProviderBuilder::new()
-        .on_ws(WsConnect::new(anvil.ws_endpoint()))
+        .connect_ws(WsConnect::new(anvil.ws_endpoint()))
         .await
         .unwrap()
         .root()
@@ -86,7 +86,7 @@ pub async fn setup_int_test_indexer(block_tag: BlockTag, time_lock_blocks: u64) 
     let deployer = get_anvil_deployer(&anvil);
 
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     let da_signer = SigningKey::from_bytes(&bytes.into()).unwrap();
 
     let contracts = deploy_contracts(
@@ -174,17 +174,16 @@ impl TestCtx {
 
     pub async fn submit_to_da_no_args(&self) -> DaSubmissionResponse {
         let src = assertion_src();
-        let resp = self
-            .da_client
+
+        self.da_client
             .submit_assertion("SimpleCounterAssertion".into(), src, "0.8.28".to_string())
             .await
-            .unwrap();
-        resp
+            .unwrap()
     }
     pub async fn submit_to_da_with_args(&self) -> DaSubmissionResponse {
         let src = assertion_src();
-        let resp = self
-            .da_client
+
+        self.da_client
             .submit_assertion_with_args(
                 "SimpleCounterAssertionWithArgs".into(),
                 src,
@@ -193,13 +192,11 @@ impl TestCtx {
                 vec!["3".to_string()],
             )
             .await
-            .unwrap();
-        resp
+            .unwrap()
     }
 
     pub async fn submit_to_da_malformed(&self) -> DaSubmissionResponse {
-        let resp = self
-            .da_client
+        self.da_client
             .submit_assertion_with_args(
                 "SimpleCounterAssertionMalformed".into(),
                 "contract SimpleCounterAssertionMalformed {
@@ -213,8 +210,7 @@ impl TestCtx {
                 vec!["3".to_string()],
             )
             .await
-            .unwrap();
-        resp
+            .unwrap()
     }
     pub async fn add_assertion_tx(&mut self, contract_address: Address) -> TransactionRequest {
         let da_submission_response = self.submit_to_da_no_args().await;

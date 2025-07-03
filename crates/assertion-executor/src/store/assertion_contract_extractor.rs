@@ -2,8 +2,8 @@ use std::convert::Infallible;
 
 use crate::{
     ExecutorConfig,
-    build_evm::new_evm,
     db::DatabaseCommit,
+    evm::build_evm::evm_env,
     executor::{
         ASSERTION_CONTRACT,
         CALLER,
@@ -26,8 +26,10 @@ use crate::{
 };
 
 use revm::{
-    db::InMemoryDB,
-    inspectors::NoOpInspector,
+    ExecuteEvm,
+    InspectEvm,
+    database::InMemoryDB,
+    inspector::NoOpInspector,
 };
 
 use alloy_sol_types::{
@@ -39,9 +41,6 @@ use tracing::{
     debug,
     warn,
 };
-
-#[cfg(feature = "optimism")]
-use crate::executor::config::create_optimism_fields;
 
 // Typing for the assertion fn selectors
 sol! {
@@ -87,27 +86,34 @@ pub fn extract_assertion_contract(
 
     // Deploy the contract first
     let tx_env = TxEnv {
-        transact_to: TxKind::Create,
+        kind: TxKind::Create,
         caller: CALLER,
         data: assertion_code.clone(),
         gas_limit: DEPLOYMENT_GAS_LIMIT,
-        #[cfg(feature = "optimism")]
-        optimism: create_optimism_fields(),
         ..Default::default()
     };
 
     let mut db = InMemoryDB::default();
 
-    let result_and_state = new_evm(
-        tx_env,
-        block_env.clone(),
-        config.chain_id,
-        config.spec_id,
-        &mut db,
-        NoOpInspector,
-    )
-    .transact()
-    .map_err(FnSelectorExtractorError::AssertionContractDeployError)?;
+    let env = evm_env(config.chain_id, config.spec_id, block_env.clone());
+
+    #[cfg(feature = "optimism")]
+    let (mut evm, tx_env) = {
+        use op_revm::OpTransaction;
+
+        let evm = crate::evm::build_evm::build_optimism_evm(&mut db, &env, NoOpInspector);
+        (evm, OpTransaction::new(tx_env))
+    };
+
+    #[cfg(not(feature = "optimism"))]
+    let (mut evm, tx_env) = {
+        let evm = crate::evm::build_evm::build_eth_evm(&mut db, &env, NoOpInspector);
+        (evm, tx_env)
+    };
+
+    let result_and_state = evm
+        .transact(tx_env)
+        .map_err(FnSelectorExtractorError::AssertionContractDeployError)?;
 
     if !result_and_state.result.is_success() {
         warn!(
@@ -130,26 +136,33 @@ pub fn extract_assertion_contract(
 
     insert_trigger_recorder_account(&mut db);
 
+    let tx_env = TxEnv {
+        kind: TxKind::Call(ASSERTION_CONTRACT),
+        caller: CALLER,
+        data: triggersCall::SELECTOR.into(),
+        gas_limit: DEPLOYMENT_GAS_LIMIT - result_and_state.result.gas_used(),
+        nonce: 1,
+        ..Default::default()
+    };
+
     // Set up and execute the call
-    let mut evm = new_evm(
-        TxEnv {
-            transact_to: TxKind::Call(ASSERTION_CONTRACT),
-            caller: CALLER,
-            data: triggersCall::SELECTOR.into(),
-            gas_limit: DEPLOYMENT_GAS_LIMIT - result_and_state.result.gas_used(),
-            #[cfg(feature = "optimism")]
-            optimism: create_optimism_fields(),
-            ..Default::default()
-        },
-        block_env,
-        config.chain_id,
-        config.spec_id,
-        &mut db,
-        TriggerRecorder::default(),
-    );
+    let mut trigger_recorder = TriggerRecorder::default();
+    #[cfg(feature = "optimism")]
+    let (mut evm, tx_env) = {
+        use op_revm::OpTransaction;
+
+        let evm = crate::evm::build_evm::build_optimism_evm(&mut db, &env, &mut trigger_recorder);
+        (evm, OpTransaction::new(tx_env))
+    };
+
+    #[cfg(not(feature = "optimism"))]
+    let (mut evm, tx_env) = {
+        let evm = crate::evm::build_evm::build_eth_evm(&mut db, &env, &mut trigger_recorder);
+        (evm, tx_env)
+    };
 
     let trigger_call_result = evm
-        .transact()
+        .inspect_with_tx(tx_env)
         .map_err(FnSelectorExtractorError::TriggersCallError)?;
 
     if !trigger_call_result.result.is_success() {
@@ -158,8 +171,10 @@ pub fn extract_assertion_contract(
         ));
     }
 
+    std::mem::drop(evm);
+
     // If the triggers function does not record any triggers,
-    if evm.context.external.triggers.is_empty() {
+    if trigger_recorder.triggers.is_empty() {
         return Err(FnSelectorExtractorError::NoTriggersRecorded);
     }
 
@@ -182,7 +197,7 @@ pub fn extract_assertion_contract(
             account_status: status,
             id: assertion_id,
         },
-        evm.context.external,
+        trigger_recorder,
     ))
 }
 
@@ -218,9 +233,10 @@ fn test_get_assertion_selectors() {
 fn test_endless_loop_constructor() {
     use crate::test_utils::*;
 
-    use crate::primitives::EvmExecutionResult;
-
-    use revm::primitives::HaltReason;
+    use crate::primitives::{
+        EvmExecutionResult,
+        HaltReason,
+    };
 
     let config = ExecutorConfig::default();
 
@@ -279,12 +295,30 @@ fn test_extract_all_trigger_types() {
             .triggers
             .contains_key(&TriggerType::BalanceChange)
     );
+    assert!(
+        trigger_recorder_any
+            .triggers
+            .contains_key(&TriggerType::AllCalls)
+    );
+    assert!(
+        trigger_recorder_any
+            .triggers
+            .contains_key(&TriggerType::AllStorageChanges)
+    );
+    assert!(
+        trigger_recorder_any
+            .triggers
+            .contains_key(&TriggerType::BalanceChange)
+    );
 
     // Each trigger should have the DEADBEEF selector
     let expected_selector = crate::primitives::fixed_bytes!("DEADBEEF");
     assert!(trigger_recorder_any.triggers[&TriggerType::AllCalls].contains(&expected_selector));
     assert!(
         trigger_recorder_any.triggers[&TriggerType::AllStorageChanges].contains(&expected_selector)
+    );
+    assert!(
+        trigger_recorder_any.triggers[&TriggerType::BalanceChange].contains(&expected_selector)
     );
     assert!(
         trigger_recorder_any.triggers[&TriggerType::BalanceChange].contains(&expected_selector)
@@ -315,8 +349,21 @@ fn test_extract_all_trigger_types() {
             .triggers
             .contains_key(&expected_storage_trigger)
     );
+    assert!(
+        trigger_recorder_specific
+            .triggers
+            .contains_key(&expected_call_trigger)
+    );
+    assert!(
+        trigger_recorder_specific
+            .triggers
+            .contains_key(&expected_storage_trigger)
+    );
 
     // Both should have the DEADBEEF selector
+    assert!(
+        trigger_recorder_specific.triggers[&expected_call_trigger].contains(&expected_selector)
+    );
     assert!(
         trigger_recorder_specific.triggers[&expected_call_trigger].contains(&expected_selector)
     );
