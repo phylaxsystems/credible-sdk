@@ -1,7 +1,4 @@
-use alloy::sol_types::{
-    SolCall,
-    sol,
-};
+use alloy::sol_types::{SolCall, sol};
 use alloy_primitives::B256;
 use alloy_provider::network::TransactionBuilder;
 use alloy_rpc_types::TransactionRequest;

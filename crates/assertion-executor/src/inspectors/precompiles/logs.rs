@@ -1,7 +1,5 @@
 use crate::{
-    inspectors::phevm::PhEvmContext,
-    inspectors::sol_primitives::PhEvm,
-    primitives::Bytes,
+    inspectors::phevm::PhEvmContext, inspectors::sol_primitives::PhEvm, primitives::Bytes,
 };
 
 use alloy_sol_types::SolType;
@@ -13,12 +11,10 @@ pub fn get_logs(context: &PhEvmContext) -> Result<Bytes, Infallible> {
         .logs_and_traces
         .tx_logs
         .iter()
-        .map(|log| {
-            PhEvm::Log {
-                topics: log.topics().to_vec(),
-                data: log.data.data.clone(),
-                emitter: log.address,
-            }
+        .map(|log| PhEvm::Log {
+            topics: log.topics().to_vec(),
+            data: log.data.data.clone(),
+            emitter: log.address,
         })
         .collect();
 
@@ -33,26 +29,13 @@ mod test {
     use super::*;
     use crate::{
         inspectors::{
-            phevm::{
-                LogsAndTraces,
-                PhEvmContext,
-            },
+            phevm::{LogsAndTraces, PhEvmContext},
             sol_primitives::PhEvm,
             tracer::CallTracer,
         },
-        test_utils::{
-            random_address,
-            random_bytes,
-            random_bytes32,
-            run_precompile_test,
-        },
+        test_utils::{random_address, random_bytes, random_bytes32, run_precompile_test},
     };
-    use alloy_primitives::{
-        Address,
-        Bytes,
-        Log,
-        LogData,
-    };
+    use alloy_primitives::{Address, Bytes, Log, LogData};
 
     fn with_logs_context<F, R>(logs: Vec<Log>, f: F) -> R
     where

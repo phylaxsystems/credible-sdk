@@ -1,71 +1,28 @@
 pub mod config;
 
-use std::{
-    fmt::Debug,
-    sync::atomic::AtomicU64,
-};
+use std::{fmt::Debug, sync::atomic::AtomicU64};
 
 use crate::{
     ExecutorConfig,
-    db::{
-        DatabaseCommit,
-        DatabaseRef,
-        fork_db::ForkDb,
-        multi_fork_db::MultiForkDb,
-    },
-    error::{
-        AssertionExecutionError,
-        ExecutorError,
-        ForkTxExecutionError,
-    },
+    db::{DatabaseCommit, DatabaseRef, fork_db::ForkDb, multi_fork_db::MultiForkDb},
+    error::{AssertionExecutionError, ExecutorError, ForkTxExecutionError},
     evm::build_evm::evm_env,
-    inspectors::{
-        CallTracer,
-        LogsAndTraces,
-        PhEvmContext,
-        PhEvmInspector,
-    },
+    inspectors::{CallTracer, LogsAndTraces, PhEvmContext, PhEvmInspector},
     primitives::{
-        Account,
-        AccountInfo,
-        AccountStatus,
-        Address,
-        AssertionContract,
-        AssertionContractExecution,
-        AssertionFnId,
-        AssertionFunctionExecutionResult,
-        AssertionFunctionResult,
-        BlockEnv,
-        EvmState,
-        EvmStorage,
-        FixedBytes,
-        ResultAndState,
-        TxEnv,
-        TxKind,
-        TxValidationResult,
-        U256,
-        address,
+        Account, AccountInfo, AccountStatus, Address, AssertionContract,
+        AssertionContractExecution, AssertionFnId, AssertionFunctionExecutionResult,
+        AssertionFunctionResult, BlockEnv, EvmState, EvmStorage, FixedBytes, ResultAndState, TxEnv,
+        TxKind, TxValidationResult, U256, address,
     },
     reprice_evm_storage,
     store::AssertionStore,
 };
 
-use revm::{
-    Database,
-    InspectEvm,
-};
+use revm::{Database, InspectEvm};
 
-use rayon::prelude::{
-    IntoParallelIterator,
-    ParallelIterator,
-};
+use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 
-use tracing::{
-    debug,
-    instrument,
-    trace,
-    warn,
-};
+use tracing::{debug, instrument, trace, warn};
 
 /// Used to deploys the assertion contract to the forked db, and to call assertion functions.
 pub const CALLER: Address = address!("00000000000000000000000000000000000001A4");
@@ -540,19 +497,9 @@ mod test {
     use super::*;
     use crate::db::overlay::test_utils::MockDb;
     use crate::{
-        db::{
-            DatabaseRef,
-            overlay::OverlayDb,
-        },
-        primitives::{
-            BlockEnv,
-            U256,
-            uint,
-        },
-        store::{
-            AssertionState,
-            AssertionStore,
-        },
+        db::{DatabaseRef, overlay::OverlayDb},
+        primitives::{BlockEnv, U256, uint},
+        store::{AssertionState, AssertionStore},
         test_utils::*,
     };
     use revm::database::CacheDB;

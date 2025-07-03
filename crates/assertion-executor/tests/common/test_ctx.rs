@@ -1,49 +1,22 @@
 use super::{
-    harness::{
-        execute_txs,
-        validate_tx_hashes,
-    },
-    tx_utils::{
-        add_assertion_tx,
-        register_assertion_adopter_tx,
-        remove_assertion_tx,
-    },
+    harness::{execute_txs, validate_tx_hashes},
+    tx_utils::{add_assertion_tx, register_assertion_adopter_tx, remove_assertion_tx},
 };
 use alloy_node_bindings::AnvilInstance;
 use alloy_primitives::B256;
 use alloy_rpc_types::TransactionRequest;
 use alloy_signer::k256::ecdsa::SigningKey;
 use alloy_signer_local::LocalSigner;
-use assertion_da_client::{
-    DaClient,
-    DaSubmissionResponse,
-};
-use assertion_executor::primitives::{
-    Address,
-    FixedBytes,
-    U256,
-    bytes,
-};
-use assertion_executor::store::{
-    AssertionStore,
-    BlockTag,
-    Indexer,
-};
+use assertion_da_client::{DaClient, DaSubmissionResponse};
+use assertion_executor::primitives::{Address, FixedBytes, U256, bytes};
+use assertion_executor::store::{AssertionStore, BlockTag, Indexer};
 use int_test_utils::{
-    Contracts,
-    assertion_src,
-    deploy_contracts,
-    deploy_test_da,
-    get_anvil_deployer,
+    Contracts, assertion_src, deploy_contracts, deploy_test_da, get_anvil_deployer,
 };
 use rand::RngCore;
 use std::net::TcpListener;
 
-use alloy_provider::{
-    Provider,
-    RootProvider,
-    ext::AnvilApi,
-};
+use alloy_provider::{Provider, RootProvider, ext::AnvilApi};
 
 use alloy::sol_types::SolValue;
 

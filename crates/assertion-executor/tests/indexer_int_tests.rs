@@ -3,22 +3,13 @@ mod common;
 #[cfg(test)]
 mod tests {
 
-    use super::common::{
-        harness::test_harness,
-        test_ctx::setup_int_test_indexer,
-    };
+    use super::common::{harness::test_harness, test_ctx::setup_int_test_indexer};
     use alloy_rpc_types_anvil::ReorgOptions;
-    use assertion_executor::primitives::{
-        Address,
-        U256,
-    };
+    use assertion_executor::primitives::{Address, U256};
     use assertion_executor::store::BlockTag;
     use rand::Rng;
 
-    use alloy_provider::{
-        Provider,
-        ext::AnvilApi,
-    };
+    use alloy_provider::{Provider, ext::AnvilApi};
 
     #[tokio::test]
     #[cfg(feature = "full-test")]

@@ -1,7 +1,4 @@
-use crate::api::{
-    process_request::match_method,
-    types::DbRequestSender,
-};
+use crate::api::{process_request::match_method, types::DbRequestSender};
 
 use core::convert::Infallible;
 use std::sync::Arc;
@@ -9,11 +6,7 @@ use std::sync::Arc;
 use alloy::signers::local::PrivateKeySigner;
 use bollard::Docker;
 use http_body_util::Full;
-use hyper::{
-    Error,
-    Request,
-    body::Bytes,
-};
+use hyper::{Error, Request, body::Bytes};
 
 macro_rules! rpc_response {
     (

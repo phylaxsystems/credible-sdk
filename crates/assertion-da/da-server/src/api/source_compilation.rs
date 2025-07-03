@@ -1,11 +1,7 @@
 use anyhow::Result;
 use bollard::Docker;
 use bollard::container::{
-    Config,
-    CreateContainerOptions,
-    LogsOptions,
-    RemoveContainerOptions,
-    StartContainerOptions,
+    Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions,
     WaitContainerOptions,
 };
 use bollard::image::ListImagesOptions;
@@ -16,16 +12,9 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::Arc;
 use tempfile::TempDir;
-use tokio::time::{
-    Duration,
-    sleep,
-};
+use tokio::time::{Duration, sleep};
 use tracing::warn;
-use tracing::{
-    Instrument,
-    debug,
-    instrument,
-};
+use tracing::{Instrument, debug, instrument};
 use uuid::Uuid;
 
 /// Maximum number of attempts to ensure image availability
@@ -259,15 +248,13 @@ impl ContainerManager {
 
         match wait_result {
             Ok(exit) => Ok(exit.status_code),
-            Err(e) => {
-                match e {
-                    bollard::errors::Error::DockerContainerWaitError { error: _, code: _ } => {
-                        tracing::error!(target: "solidity_compilation", "Compilation failed: {}", logs);
-                        Err(CompilationError::CompilationFailed(logs))
-                    }
-                    _ => Err(CompilationError::DockerError(e)),
+            Err(e) => match e {
+                bollard::errors::Error::DockerContainerWaitError { error: _, code: _ } => {
+                    tracing::error!(target: "solidity_compilation", "Compilation failed: {}", logs);
+                    Err(CompilationError::CompilationFailed(logs))
                 }
-            }
+                _ => Err(CompilationError::DockerError(e)),
+            },
         }
     }
 
@@ -293,14 +280,12 @@ impl ContainerManager {
 
         let log_messages = logs
             .iter()
-            .filter_map(|log| {
-                match log {
-                    bollard::container::LogOutput::StdOut { message }
-                    | bollard::container::LogOutput::StdErr { message } => {
-                        Some(String::from_utf8_lossy(message))
-                    }
-                    _ => None,
+            .filter_map(|log| match log {
+                bollard::container::LogOutput::StdOut { message }
+                | bollard::container::LogOutput::StdErr { message } => {
+                    Some(String::from_utf8_lossy(message))
                 }
+                _ => None,
             })
             .collect::<String>();
 

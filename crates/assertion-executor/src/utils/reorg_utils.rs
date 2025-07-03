@@ -1,8 +1,5 @@
 use alloy_consensus::BlockHeader;
-use alloy_provider::{
-    Provider,
-    RootProvider,
-};
+use alloy_provider::{Provider, RootProvider};
 use alloy_rpc_types::BlockNumHash;
 
 use alloy_network::BlockResponse;
@@ -60,10 +57,7 @@ pub async fn check_if_reorged(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{
-        anvil_provider,
-        mine_block,
-    };
+    use crate::test_utils::{anvil_provider, mine_block};
 
     use alloy_provider::ext::AnvilApi;
 

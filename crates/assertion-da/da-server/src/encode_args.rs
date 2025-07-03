@@ -1,13 +1,6 @@
 use alloy::primitives::Bytes;
-use alloy_dyn_abi::{
-    DynSolType,
-    DynSolValue,
-    JsonAbiExt,
-};
-use alloy_json_abi::{
-    Function,
-    Param,
-};
+use alloy_dyn_abi::{DynSolType, DynSolValue, JsonAbiExt};
+use alloy_json_abi::{Function, Param};
 
 #[derive(thiserror::Error, Debug)]
 pub enum EncodeArgsError {

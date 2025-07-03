@@ -1,7 +1,4 @@
-use crate::{
-    inspectors::phevm::PhEvmContext,
-    primitives::Bytes,
-};
+use crate::{inspectors::phevm::PhEvmContext, primitives::Bytes};
 
 use alloy_sol_types::SolValue;
 use std::convert::Infallible;
@@ -16,16 +13,10 @@ mod test {
     use super::*;
     use crate::{
         inspectors::{
-            phevm::{
-                LogsAndTraces,
-                PhEvmContext,
-            },
+            phevm::{LogsAndTraces, PhEvmContext},
             tracer::CallTracer,
         },
-        test_utils::{
-            random_address,
-            run_precompile_test,
-        },
+        test_utils::{random_address, run_precompile_test},
     };
     use alloy_primitives::Address;
     use alloy_sol_types::SolValue;

@@ -5,17 +5,10 @@ mod common;
 #[cfg(test)]
 mod tests {
     use super::common::da_store_harness::TestSetup;
-    use alloy::primitives::{
-        Address,
-        U256,
-    };
+    use alloy::primitives::{Address, U256};
     use assertion_da_client::DaClientError;
     use pcl_core::error::DaSubmitError;
-    use std::{
-        fs::File,
-        io::Write,
-        path::PathBuf,
-    };
+    use std::{fs::File, io::Write, path::PathBuf};
 
     // Build And flatten edges -
     #[tokio::test]

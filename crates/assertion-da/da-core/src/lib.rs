@@ -1,11 +1,5 @@
-use alloy::primitives::{
-    B256,
-    Bytes,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use alloy::primitives::{B256, Bytes};
+use serde::{Deserialize, Serialize};
 
 ///The submission payload for the DA layer.
 #[derive(Debug, Deserialize, Serialize, Clone)]

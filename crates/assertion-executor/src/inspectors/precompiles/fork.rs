@@ -1,16 +1,7 @@
 use crate::{
     db::DatabaseRef,
-    db::multi_fork_db::{
-        ForkError,
-        ForkId,
-        MultiForkDb,
-    },
-    primitives::{
-        Bytes,
-        Journal,
-        JournalEntry,
-        JournalInner,
-    },
+    db::multi_fork_db::{ForkError, ForkId, MultiForkDb},
+    primitives::{Bytes, Journal, JournalEntry, JournalInner},
 };
 
 use revm::context::ContextTr;
@@ -46,31 +37,14 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::primitives::{
-        AccountInfo,
-        SpecId,
-    };
+    use crate::primitives::{AccountInfo, SpecId};
     use crate::{
-        db::{
-            MultiForkDb,
-            fork_db::ForkDb,
-            overlay::test_utils::MockDb,
-        },
-        test_utils::{
-            random_address,
-            random_u256,
-            run_precompile_test,
-        },
+        db::{MultiForkDb, fork_db::ForkDb, overlay::test_utils::MockDb},
+        test_utils::{random_address, random_u256, run_precompile_test},
     };
-    use alloy_primitives::{
-        Address,
-        U256,
-    };
+    use alloy_primitives::{Address, U256};
     use revm::handler::MainnetContext;
-    use revm::{
-        DatabaseRef,
-        primitives::KECCAK_EMPTY,
-    };
+    use revm::{DatabaseRef, primitives::KECCAK_EMPTY};
 
     fn create_test_context_with_mock_db(
         pre_tx_storage: Vec<(Address, U256, U256)>,
