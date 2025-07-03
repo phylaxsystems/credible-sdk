@@ -214,10 +214,9 @@ impl AssertionStore {
             .map_err(|_| AssertionStoreError::BlockNumberExceedsU64)?;
 
         let mut assertions = Vec::new();
+
         let triggers = traces.triggers();
         tracing::Span::current().record("triggers", format!("{triggers:?}"));
-
-        debug!(target: "assertion-executor::assertion_store", ?triggers, "Triggers found in journal and call traces");
 
         for (contract_address, triggers) in &triggers {
             let contract_assertions = self.read_adopter(contract_address, triggers, block_num)?;
