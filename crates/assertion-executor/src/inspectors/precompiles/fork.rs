@@ -25,9 +25,7 @@ where
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     let Journal { database, inner } = context.journal();
-    println!("Forking to pre-tx state");
     database.switch_fork(ForkId::PreTx, inner, init_journal)?;
-    println!("Forked to pre-tx state");
     Ok(Bytes::default())
 }
 
@@ -41,9 +39,7 @@ where
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     let Journal { database, inner } = context.journal();
-    println!("Forking to post-tx state");
     database.switch_fork(ForkId::PostTx, inner, init_journal)?;
-    println!("Forked to post-tx state");
     Ok(Bytes::default())
 }
 

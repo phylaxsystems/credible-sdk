@@ -136,7 +136,6 @@ impl<'a> PhEvmInspector<'a> {
                 Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
             >,
     {
-        println!("Executing precompile");
         let input_bytes = inputs.input.bytes(context);
         let result = match input_bytes
             .get(0..4)
