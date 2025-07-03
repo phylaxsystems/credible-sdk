@@ -2,22 +2,56 @@
 
 use crate::{
     ExecutorConfig,
-    db::{DatabaseCommit, overlay::OverlayDb},
+    db::{
+        DatabaseCommit,
+        overlay::OverlayDb,
+    },
     inspectors::TriggerRecorder,
     primitives::{
-        AccountInfo, Address, AssertionContract, BlockEnv, Bytecode, Bytes, FixedBytes, TxEnv,
-        TxKind, TxValidationResult, U256, address, fixed_bytes, hex, keccak256,
+        AccountInfo,
+        Address,
+        AssertionContract,
+        BlockEnv,
+        Bytecode,
+        Bytes,
+        FixedBytes,
+        TxEnv,
+        TxKind,
+        TxValidationResult,
+        U256,
+        address,
+        fixed_bytes,
+        hex,
+        keccak256,
     },
-    store::{AssertionState, AssertionStore, extract_assertion_contract},
+    store::{
+        AssertionState,
+        AssertionStore,
+        extract_assertion_contract,
+    },
 };
-use revm::database::{CacheDB, EmptyDBTyped};
+use revm::database::{
+    CacheDB,
+    EmptyDBTyped,
+};
 use std::convert::Infallible;
 
-use alloy_rpc_types::{BlockId, Header};
+use alloy_rpc_types::{
+    BlockId,
+    Header,
+};
 
-use alloy_node_bindings::{Anvil, AnvilInstance};
+use alloy_node_bindings::{
+    Anvil,
+    AnvilInstance,
+};
 
-use alloy_provider::{Provider, ProviderBuilder, RootProvider, ext::AnvilApi};
+use alloy_provider::{
+    Provider,
+    ProviderBuilder,
+    RootProvider,
+    ext::AnvilApi,
+};
 
 use alloy_transport_ws::WsConnect;
 

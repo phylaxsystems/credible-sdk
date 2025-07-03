@@ -1,16 +1,28 @@
 use crate::{
-    db::{DatabaseRef, MultiForkDb},
+    db::{
+        DatabaseRef,
+        MultiForkDb,
+    },
     inspectors::phevm::PhEvmContext,
-    inspectors::sol_primitives::PhEvm::{CallInputs as PhEvmCallInputs, getCallInputsCall},
+    inspectors::sol_primitives::PhEvm::{
+        CallInputs as PhEvmCallInputs,
+        getCallInputsCall,
+    },
     primitives::Bytes,
 };
 
 use revm::{
-    context::{ContextTr, Journal},
+    context::{
+        ContextTr,
+        Journal,
+    },
     interpreter::CallInputs,
 };
 
-use alloy_sol_types::{SolCall, SolType};
+use alloy_sol_types::{
+    SolCall,
+    SolType,
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum GetCallInputsError {
@@ -76,13 +88,23 @@ where
 mod test {
     use super::*;
     use crate::{
-        db::{fork_db::ForkDb, overlay::test_utils::MockDb},
+        db::{
+            fork_db::ForkDb,
+            overlay::test_utils::MockDb,
+        },
         inspectors::{
-            phevm::{LogsAndTraces, PhEvmContext},
+            phevm::{
+                LogsAndTraces,
+                PhEvmContext,
+            },
             tracer::CallTracer,
         },
         test_utils::{
-            random_address, random_bytes, random_selector, random_u256, run_precompile_test,
+            random_address,
+            random_bytes,
+            random_selector,
+            random_u256,
+            run_precompile_test,
         },
     };
 
@@ -105,9 +127,19 @@ mod test {
         };
         get_call_inputs(call_inputs, &mut context, &ph_context)
     }
-    use alloy_primitives::{Address, Bytes, FixedBytes, U256};
+    use alloy_primitives::{
+        Address,
+        Bytes,
+        FixedBytes,
+        U256,
+    };
     use revm::{
-        interpreter::{CallInput, CallInputs, CallScheme, CallValue},
+        interpreter::{
+            CallInput,
+            CallInputs,
+            CallScheme,
+            CallValue,
+        },
         primitives::hardfork::SpecId,
     };
 

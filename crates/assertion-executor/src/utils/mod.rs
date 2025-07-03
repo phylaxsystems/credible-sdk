@@ -1,6 +1,10 @@
 pub mod reorg_utils;
 
-use crate::primitives::{Address, TxEnv, TxKind};
+use crate::primitives::{
+    Address,
+    TxEnv,
+    TxKind,
+};
 
 use alloy_consensus::TxEnvelope;
 
@@ -108,11 +112,21 @@ pub fn fill_tx_env(input_tx: TxEnvelope, tx_env: &mut TxEnv, sender: Address) {
 mod tests {
     use super::*;
     use crate::{
-        primitives::{Address, Bytes, U256},
+        primitives::{
+            Address,
+            Bytes,
+            U256,
+        },
         test_utils::random_bytes,
     };
-    use alloy_consensus::{Signed, TxEip7702};
-    use alloy_eips::eip7702::{Authorization, SignedAuthorization};
+    use alloy_consensus::{
+        Signed,
+        TxEip7702,
+    };
+    use alloy_eips::eip7702::{
+        Authorization,
+        SignedAuthorization,
+    };
     use rand::random;
 
     use alloy::primitives::Signature;

@@ -113,7 +113,10 @@ use crate::api::types::DbRequest;
 
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::{
+    net::TcpListener,
+    sync::mpsc,
+};
 
 use anyhow::Result;
 
@@ -183,7 +186,10 @@ mod tests {
     use alloy::signers::local::PrivateKeySigner;
     use bollard::Docker;
     use std::sync::Arc;
-    use tokio::{net::TcpListener, sync::mpsc};
+    use tokio::{
+        net::TcpListener,
+        sync::mpsc,
+    };
 
     #[tokio::test]
     async fn test_serve() {

@@ -1,20 +1,46 @@
 use crate::{
     ExecutorConfig,
-    inspectors::{CallTracer, TriggerRecorder, TriggerType},
-    primitives::{Address, AssertionContract, B256, Bytes, FixedBytes, U256},
+    inspectors::{
+        CallTracer,
+        TriggerRecorder,
+        TriggerType,
+    },
+    primitives::{
+        Address,
+        AssertionContract,
+        B256,
+        Bytes,
+        FixedBytes,
+        U256,
+    },
     store::{
         PendingModification,
-        assertion_contract_extractor::{FnSelectorExtractorError, extract_assertion_contract},
+        assertion_contract_extractor::{
+            FnSelectorExtractorError,
+            extract_assertion_contract,
+        },
     },
 };
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc,
+    Mutex,
+};
 
-use bincode::{deserialize as de, serialize as ser};
+use bincode::{
+    deserialize as de,
+    serialize as ser,
+};
 
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
-use tracing::{debug, error};
+use tracing::{
+    debug,
+    error,
+};
 
 use std::collections::HashSet;
 
@@ -196,10 +222,12 @@ impl AssertionStore {
             let contract_assertions = self.read_adopter(contract_address, triggers, block_num)?;
             let assertions_for_execution: Vec<AssertionsForExecution> = contract_assertions
                 .into_iter()
-                .map(|(assertion_contract, selectors)| AssertionsForExecution {
-                    assertion_contract,
-                    selectors,
-                    adopter: *contract_address,
+                .map(|(assertion_contract, selectors)| {
+                    AssertionsForExecution {
+                        assertion_contract,
+                        selectors,
+                        adopter: *contract_address,
+                    }
                 })
                 .collect();
 
@@ -473,7 +501,10 @@ impl AssertionStore {
 mod tests {
 
     use super::*;
-    use crate::primitives::{Address, JournalEntry};
+    use crate::primitives::{
+        Address,
+        JournalEntry,
+    };
     use std::collections::HashSet;
 
     fn create_test_assertion(

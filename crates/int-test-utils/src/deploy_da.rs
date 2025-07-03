@@ -1,5 +1,9 @@
 use alloy::signers::k256::ecdsa::SigningKey;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{
+    IpAddr,
+    Ipv4Addr,
+    SocketAddr,
+};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 /// Deploy a local DA server for testing to a random unused port.
@@ -37,7 +41,10 @@ pub async fn deploy_test_da(
 
 #[tokio::test]
 async fn test_deploy_da() {
-    use alloy::{primitives::B256, signers::k256::elliptic_curve::rand_core::OsRng};
+    use alloy::{
+        primitives::B256,
+        signers::k256::elliptic_curve::rand_core::OsRng,
+    };
     use assertion_da_client::DaClient;
 
     let (_handle, addr) = deploy_test_da(SigningKey::random(&mut OsRng)).await;

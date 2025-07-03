@@ -1,30 +1,70 @@
 use alloy_network::BlockResponse;
-use alloy_provider::{Provider, RootProvider};
-use alloy_rpc_types::{BlockId, BlockNumHash, BlockNumberOrTag, Filter};
+use alloy_provider::{
+    Provider,
+    RootProvider,
+};
+use alloy_rpc_types::{
+    BlockId,
+    BlockNumHash,
+    BlockNumberOrTag,
+    Filter,
+};
 use alloy_transport::TransportError;
 
 use alloy_network_primitives::HeaderResponse;
 
 use alloy_consensus::BlockHeader;
 
-use alloy_sol_types::{SolEvent, sol};
+use alloy_sol_types::{
+    SolEvent,
+    sol,
+};
 
-use bincode::{deserialize as de, serialize as ser};
+use bincode::{
+    deserialize as de,
+    serialize as ser,
+};
 
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{
+    debug,
+    error,
+    info,
+    instrument,
+    trace,
+    warn,
+};
 
-use alloy::primitives::{LogData, U256};
+use alloy::primitives::{
+    LogData,
+    U256,
+};
 
 use clap::ValueEnum;
 
 use crate::{
     ExecutorConfig,
-    primitives::{Address, B256, UpdateBlock},
-    store::{AssertionStore, AssertionStoreError, PendingModification, extract_assertion_contract},
-    utils::reorg_utils::{CheckIfReorgedError, check_if_reorged},
+    primitives::{
+        Address,
+        B256,
+        UpdateBlock,
+    },
+    store::{
+        AssertionStore,
+        AssertionStoreError,
+        PendingModification,
+        extract_assertion_contract,
+    },
+    utils::reorg_utils::{
+        CheckIfReorgedError,
+        check_if_reorged,
+    },
 };
 
-use assertion_da_client::{DaClient, DaClientError, DaFetchResponse};
+use assertion_da_client::{
+    DaClient,
+    DaClientError,
+    DaFetchResponse,
+};
 
 use std::collections::BTreeMap;
 
@@ -728,12 +768,27 @@ impl Indexer {
 mod test_indexer {
     use super::*;
     use crate::{
-        inspectors::{CallTracer, TriggerRecorder},
-        primitives::{Address, AssertionContract, U256},
-        test_utils::{anvil_provider, deployed_bytecode, mine_block},
+        inspectors::{
+            CallTracer,
+            TriggerRecorder,
+        },
+        primitives::{
+            Address,
+            AssertionContract,
+            U256,
+        },
+        test_utils::{
+            anvil_provider,
+            deployed_bytecode,
+            mine_block,
+        },
     };
     use alloy_primitives::FixedBytes;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::net::{
+        IpAddr,
+        Ipv4Addr,
+        SocketAddr,
+    };
     use std::str::FromStr;
 
     use sled::Config;
@@ -741,13 +796,19 @@ mod test_indexer {
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
-    use alloy_network::{EthereumWallet, TransactionBuilder};
+    use alloy_network::{
+        EthereumWallet,
+        TransactionBuilder,
+    };
     use alloy_node_bindings::AnvilInstance;
     use alloy_provider::ext::AnvilApi;
     use alloy_rpc_types::TransactionRequest;
     use alloy_rpc_types_anvil::MineOptions;
     use alloy_signer_local::PrivateKeySigner;
-    use alloy_sol_types::{SolCall, sol};
+    use alloy_sol_types::{
+        SolCall,
+        sol,
+    };
 
     sol! {
         function addAssertion(address contractAddress, bytes32 assertionId) public {}

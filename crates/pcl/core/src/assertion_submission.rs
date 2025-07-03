@@ -1,9 +1,16 @@
 use crate::{
-    config::{AssertionForSubmission, AssertionKey, CliConfig},
+    config::{
+        AssertionForSubmission,
+        AssertionKey,
+        CliConfig,
+    },
     error::DappSubmitError,
 };
 use clap::ValueHint;
-use inquire::{MultiSelect, Select};
+use inquire::{
+    MultiSelect,
+    Select,
+};
 use pcl_common::args::CliArgs;
 use serde::Deserialize;
 use serde_json::json;

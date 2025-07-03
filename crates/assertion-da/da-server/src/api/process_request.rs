@@ -1,31 +1,71 @@
-use std::{net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::Instant,
+};
 
 use crate::{
     api::{
         source_compilation::compile_solidity,
-        types::{DbOperation, DbRequest, DbRequestSender, DbResponse},
+        types::{
+            DbOperation,
+            DbRequest,
+            DbRequestSender,
+            DbResponse,
+        },
     },
     encode_args::encode_constructor_args,
 };
 
-use assertion_da_core::{DaFetchResponse, DaSubmission, DaSubmissionResponse};
+use assertion_da_core::{
+    DaFetchResponse,
+    DaSubmission,
+    DaSubmissionResponse,
+};
 
 use alloy::{
-    primitives::{B256, Bytes, keccak256},
-    signers::{Signature, Signer, local::PrivateKeySigner},
+    primitives::{
+        B256,
+        Bytes,
+        keccak256,
+    },
+    signers::{
+        Signature,
+        Signer,
+        local::PrivateKeySigner,
+    },
 };
 use anyhow::Result;
 
 use bollard::Docker;
-use metrics::{counter, gauge, histogram};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use metrics::{
+    counter,
+    gauge,
+    histogram,
+};
+use serde::{
+    Deserialize,
+    Serialize,
+};
+use serde_json::{
+    Value,
+    json,
+};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use http_body_util::BodyExt;
-use hyper::{Error, Request};
-use tracing::{debug, error, info, trace, warn};
+use hyper::{
+    Error,
+    Request,
+};
+use tracing::{
+    debug,
+    error,
+    info,
+    trace,
+    warn,
+};
 
 /// Matches the incoming method sent by a client to a corresponding function.
 #[tracing::instrument(
@@ -586,11 +626,17 @@ fn rpc_error_with_request_id(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{db::listen_for_db, serve};
+    use crate::api::{
+        db::listen_for_db,
+        serve,
+    };
     use alloy::primitives::hex;
     use sled::Config as DbConfig;
     use tempfile::TempDir;
-    use tokio::{net::TcpListener, sync::mpsc};
+    use tokio::{
+        net::TcpListener,
+        sync::mpsc,
+    };
     use tokio_util::sync::CancellationToken;
 
     async fn setup_test_env() -> (TempDir, DbRequestSender, PrivateKeySigner, String) {

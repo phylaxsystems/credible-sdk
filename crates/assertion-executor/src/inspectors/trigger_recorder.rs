@@ -1,20 +1,43 @@
 use crate::{
-    inspectors::{inspector_result_to_call_outcome, sol_primitives::ITriggerRecorder},
-    primitives::{Address, Bytecode, Bytes, FixedBytes, address, bytes},
+    inspectors::{
+        inspector_result_to_call_outcome,
+        sol_primitives::ITriggerRecorder,
+    },
+    primitives::{
+        Address,
+        Bytecode,
+        Bytes,
+        FixedBytes,
+        address,
+        bytes,
+    },
 };
 use alloy_evm::eth::EthEvmContext;
 use op_revm::OpContext;
 use revm::{
     Inspector,
-    database::{Database, InMemoryDB},
-    interpreter::{CallInputs, CallOutcome, Gas},
+    database::{
+        Database,
+        InMemoryDB,
+    },
+    interpreter::{
+        CallInputs,
+        CallOutcome,
+        Gas,
+    },
 };
 
 use alloy_sol_types::SolCall;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{
+    HashMap,
+    HashSet,
+};
 
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 /// Trigger recorder address
 /// address(uint160(uint256(keccak256("TriggerRecorder"))))
@@ -167,13 +190,26 @@ mod test {
     use super::*;
 
     use crate::{
-        evm::build_evm::{build_optimism_evm, evm_env},
-        primitives::{Bytecode, TxEnv, TxKind, fixed_bytes},
+        evm::build_evm::{
+            build_optimism_evm,
+            evm_env,
+        },
+        primitives::{
+            Bytecode,
+            TxEnv,
+            TxKind,
+            fixed_bytes,
+        },
         store::triggersCall,
         test_utils::deployed_bytecode,
     };
     use op_revm::OpTransaction;
-    use revm::{InspectEvm, context::BlockEnv, database::InMemoryDB, primitives::hardfork::SpecId};
+    use revm::{
+        InspectEvm,
+        context::BlockEnv,
+        database::InMemoryDB,
+        primitives::hardfork::SpecId,
+    };
 
     fn run_trigger_recorder_test(artifact: &str) -> TriggerRecorder {
         let assertion_contract = Address::random();
