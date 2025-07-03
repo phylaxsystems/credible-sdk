@@ -11,22 +11,24 @@
 //! be commited manually or when it becomes full. It is recommended to clear the buffer during
 //! downtime, i.e., when calculating the state root.
 
-use crate::db::{
-    DatabaseCommit,
-    NotFoundError,
+use crate::{
+    db::{
+        DatabaseCommit,
+        DatabaseRef,
+        NotFoundError,
+    },
+    primitives::{
+        AccountInfo,
+        Bytecode,
+        EvmState,
+    },
 };
+
 use active_overlay::ActiveOverlay;
 use alloy_primitives::{
     Address,
     B256,
     U256,
-};
-use revm::{
-    DatabaseRef,
-    primitives::{
-        AccountInfo,
-        Bytecode,
-    },
 };
 use std::cell::UnsafeCell;
 use std::sync::Arc;
@@ -180,8 +182,15 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let key = TableKey::Basic(address);
         if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
-            return Ok(value.as_basic().cloned()); // Clone AccountInfo from cache
+            match value.as_basic() {
+                Some(account_info) => {
+                    // Found in cache
+                    return Ok(Some(account_info.clone()));
+                }
+                None => {
+                    return Ok(None);
+                }
+            }
         }
 
         // Not in cache, try underlying DB if it exists
@@ -316,7 +325,7 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
 /// overlay_db.commit(state);
 /// ```
 impl<Db> DatabaseCommit for OverlayDb<Db> {
-    fn commit(&mut self, changes: revm::primitives::EvmState) {
+    fn commit(&mut self, changes: EvmState) {
         for (address, account) in changes {
             // Skip untouched accounts
             if !account.is_touched() {
@@ -353,13 +362,14 @@ mod overlay_db_tests {
         MockDb,
         mock_account_info,
     };
+    use crate::primitives::Bytecode;
     use alloy_primitives::{
-        U256,
         address,
         b256,
         bytes,
     };
-    use revm::primitives::Bytecode;
+
+    use std::collections::HashMap;
 
     #[test]
     fn test_basic_hit_miss() {
@@ -489,13 +499,13 @@ mod overlay_db_tests {
 
         // 2. First read (miss)
         let result = overlay_db.code_by_hash_ref(hash1).unwrap();
-        assert_eq!(result.bytes(), code1_bytes);
+        assert_eq!(result.original_bytes(), code1_bytes);
         assert_eq!(mock_db_arc.get_code_calls(), 1);
         assert!(overlay_db.is_cached(&key1));
 
         // 3. Second read (hit)
         let result2 = overlay_db.code_by_hash_ref(hash1).unwrap();
-        assert_eq!(result2.bytes(), code1_bytes);
+        assert_eq!(result2.original_bytes(), code1_bytes);
         assert_eq!(mock_db_arc.get_code_calls(), 1); // No new call
 
         // 4. Read non-existent code (miss)
@@ -681,13 +691,13 @@ mod overlay_db_tests {
 
     #[test]
     fn test_database_commit() {
-        use revm::primitives::{
+        use crate::primitives::{
             Account,
             AccountStatus,
             EvmState,
             EvmStorageSlot,
-            HashMap,
         };
+        use std::collections::HashMap;
 
         let addr1 = address!("0000000000000000000000000000000000000001");
         let addr2 = address!("0000000000000000000000000000000000000002");
@@ -759,7 +769,10 @@ mod overlay_db_tests {
         // Verify code was committed
         assert!(overlay_db.is_cached(&TableKey::CodeByHash(code_hash)));
         assert_eq!(
-            overlay_db.code_by_hash_ref(code_hash).unwrap().bytes(),
+            overlay_db
+                .code_by_hash_ref(code_hash)
+                .unwrap()
+                .original_bytes(),
             code_bytes
         );
 
@@ -797,12 +810,11 @@ mod overlay_db_tests {
 
     #[test]
     fn test_active_overlay_commit_propagates_to_parent() {
-        use revm::primitives::{
+        use crate::primitives::{
             Account,
             AccountStatus,
             EvmState,
             EvmStorageSlot,
-            HashMap,
         };
         use std::cell::UnsafeCell;
 
@@ -895,7 +907,7 @@ mod overlay_db_tests {
             parent_overlay_db
                 .code_by_hash_ref(code_hash)
                 .unwrap()
-                .bytes(),
+                .original_bytes(),
             code_bytes
         );
 

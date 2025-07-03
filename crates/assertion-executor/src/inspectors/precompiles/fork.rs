@@ -1,4 +1,5 @@
 use crate::{
+    db::DatabaseRef,
     db::multi_fork_db::{
         ForkError,
         ForkId,
@@ -6,55 +7,55 @@ use crate::{
     },
     primitives::{
         Bytes,
-        JournaledState,
+        Journal,
+        JournalEntry,
+        JournalInner,
     },
 };
 
-use revm::{
-    DatabaseRef,
-    EvmContext,
-    InnerEvmContext,
-};
+use revm::context::ContextTr;
 
 /// Fork to the state before the transaction.
-pub fn fork_pre_state(
-    init_journaled_state: &JournaledState,
-    context: &mut EvmContext<&mut MultiForkDb<impl DatabaseRef>>,
-) -> Result<Bytes, ForkError> {
-    let InnerEvmContext {
-        ref mut db,
-        ref mut journaled_state,
-        ..
-    } = context.inner;
-
-    db.switch_fork(ForkId::PreTx, journaled_state, init_journaled_state)?;
+pub fn fork_pre_state<'db, ExtDb: DatabaseRef + 'db, CTX>(
+    init_journal: &JournalInner<JournalEntry>,
+    context: &mut CTX,
+) -> Result<Bytes, ForkError>
+where
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let Journal { database, inner } = context.journal();
+    database.switch_fork(ForkId::PreTx, inner, init_journal)?;
     Ok(Bytes::default())
 }
 
 /// Fork to the state after the transaction.
-pub fn fork_post_state(
-    init_journaled_state: &JournaledState,
-    context: &mut EvmContext<&mut MultiForkDb<impl DatabaseRef>>,
-) -> Result<Bytes, ForkError> {
-    let InnerEvmContext {
-        ref mut db,
-        ref mut journaled_state,
-        ..
-    } = context.inner;
-
-    db.switch_fork(ForkId::PostTx, journaled_state, init_journaled_state)?;
+pub fn fork_post_state<'db, ExtDb: DatabaseRef + 'db, CTX>(
+    init_journal: &JournalInner<JournalEntry>,
+    context: &mut CTX,
+) -> Result<Bytes, ForkError>
+where
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let Journal { database, inner } = context.journal();
+    database.switch_fork(ForkId::PostTx, inner, init_journal)?;
     Ok(Bytes::default())
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::primitives::{
+        AccountInfo,
+        SpecId,
+    };
     use crate::{
         db::{
             MultiForkDb,
+            fork_db::ForkDb,
             overlay::test_utils::MockDb,
         },
-        primitives::JournaledState,
         test_utils::{
             random_address,
             random_u256,
@@ -65,25 +66,16 @@ mod test {
         Address,
         U256,
     };
+    use revm::handler::MainnetContext;
     use revm::{
         DatabaseRef,
-        EvmContext,
-        primitives::{
-            AccountInfo,
-            BlockEnv,
-            CfgEnv,
-            Env,
-            KECCAK_EMPTY,
-            SpecId,
-            TxEnv,
-        },
+        primitives::KECCAK_EMPTY,
     };
-    use std::collections::HashSet;
 
     fn create_test_context_with_mock_db(
         pre_tx_storage: Vec<(Address, U256, U256)>,
         post_tx_storage: Vec<(Address, U256, U256)>,
-    ) -> (MultiForkDb<MockDb>, JournaledState) {
+    ) -> (MultiForkDb<ForkDb<MockDb>>, JournalInner<JournalEntry>) {
         let mut pre_tx_db = MockDb::new();
         let mut post_tx_db = MockDb::new();
 
@@ -115,10 +107,10 @@ mod test {
             );
         }
 
-        let multi_fork_db = MultiForkDb::new(pre_tx_db, post_tx_db);
-        let journaled_state = JournaledState::new(SpecId::LATEST, HashSet::default());
+        let multi_fork_db = MultiForkDb::new(ForkDb::new(pre_tx_db), ForkDb::new(post_tx_db));
+        let journaled_inner = JournalInner::new();
 
-        (multi_fork_db, journaled_state)
+        (multi_fork_db, journaled_inner)
     }
 
     #[test]
@@ -128,30 +120,26 @@ mod test {
         let pre_value = U256::from(100);
         let post_value = U256::from(200);
 
-        let (mut multi_fork_db, journaled_state) = create_test_context_with_mock_db(
+        let (mut multi_fork_db, journal) = create_test_context_with_mock_db(
             vec![(address, slot, pre_value)],
             vec![(address, slot, post_value)],
         );
 
-        let init_journaled_state = journaled_state.clone();
+        let init_journal = journal.clone();
 
         // Create EvmContext
-        let env = Box::new(Env {
-            cfg: CfgEnv::default(),
-            block: BlockEnv::default(),
-            tx: TxEnv::default(),
+        let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        context.modify_journal(|journal| {
+            journal.inner = journal.inner.clone();
         });
 
-        let mut context = EvmContext::new_with_env(&mut multi_fork_db, env);
-        context.inner.journaled_state = journaled_state;
-
         // Test fork_pre_state function
-        let result = fork_pre_state(&init_journaled_state, &mut context);
+        let result = fork_pre_state(&init_journal, &mut context);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Bytes::default());
 
         // Verify that we're now on the pre-tx fork
-        let storage_value = context.db.storage_ref(address, slot).unwrap();
+        let storage_value = multi_fork_db.storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, pre_value);
     }
 
@@ -162,30 +150,26 @@ mod test {
         let pre_value = U256::from(300);
         let post_value = U256::from(400);
 
-        let (mut multi_fork_db, journaled_state) = create_test_context_with_mock_db(
+        let (mut multi_fork_db, test_journal) = create_test_context_with_mock_db(
             vec![(address, slot, pre_value)],
             vec![(address, slot, post_value)],
         );
 
-        let init_journaled_state = journaled_state.clone();
+        let init_journal = test_journal.clone();
 
         // Create EvmContext
-        let env = Box::new(Env {
-            cfg: CfgEnv::default(),
-            block: BlockEnv::default(),
-            tx: TxEnv::default(),
+        let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        context.modify_journal(|journal| {
+            journal.inner = test_journal;
         });
 
-        let mut context = EvmContext::new_with_env(&mut multi_fork_db, env);
-        context.inner.journaled_state = journaled_state;
-
         // Test fork_post_state function
-        let result = fork_post_state(&init_journaled_state, &mut context);
+        let result = fork_post_state(&init_journal, &mut context);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Bytes::default());
 
         // Verify that we're now on the post-tx fork
-        let storage_value = context.db.storage_ref(address, slot).unwrap();
+        let storage_value = multi_fork_db.storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, post_value);
     }
 
@@ -196,39 +180,35 @@ mod test {
         let pre_value = U256::from(500);
         let post_value = U256::from(600);
 
-        let (mut multi_fork_db, journaled_state) = create_test_context_with_mock_db(
+        let (mut multi_fork_db, test_journal) = create_test_context_with_mock_db(
             vec![(address, slot, pre_value)],
             vec![(address, slot, post_value)],
         );
 
-        let init_journaled_state = journaled_state.clone();
+        let init_journal = test_journal.clone();
 
         // Create EvmContext
-        let env = Box::new(Env {
-            cfg: CfgEnv::default(),
-            block: BlockEnv::default(),
-            tx: TxEnv::default(),
+        let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        context.modify_journal(|journal| {
+            journal.inner = test_journal;
         });
 
-        let mut context = EvmContext::new_with_env(&mut multi_fork_db, env);
-        context.inner.journaled_state = journaled_state;
-
         // Start with pre-tx state
-        let result = fork_pre_state(&init_journaled_state, &mut context);
+        let result = fork_pre_state(&init_journal, &mut context);
         assert!(result.is_ok());
-        let storage_value = context.db.storage_ref(address, slot).unwrap();
+        let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, pre_value);
 
         // Switch to post-tx state
-        let result = fork_post_state(&init_journaled_state, &mut context);
+        let result = fork_post_state(&init_journal, &mut context);
         assert!(result.is_ok());
-        let storage_value = context.db.storage_ref(address, slot).unwrap();
+        let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, post_value);
 
         // Switch back to pre-tx state
-        let result = fork_pre_state(&init_journaled_state, &mut context);
+        let result = fork_pre_state(&init_journal, &mut context);
         assert!(result.is_ok());
-        let storage_value = context.db.storage_ref(address, slot).unwrap();
+        let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, pre_value);
     }
 
@@ -248,44 +228,40 @@ mod test {
             (address2, slot2, U256::from(40)),
         ];
 
-        let (mut multi_fork_db, journaled_state) =
+        let (mut multi_fork_db, test_journal) =
             create_test_context_with_mock_db(pre_values.clone(), post_values.clone());
 
-        let init_journaled_state = journaled_state.clone();
+        let init_journal = test_journal.clone();
 
         // Create EvmContext
-        let env = Box::new(Env {
-            cfg: CfgEnv::default(),
-            block: BlockEnv::default(),
-            tx: TxEnv::default(),
+        let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        context.modify_journal(|journal| {
+            journal.inner = test_journal;
         });
 
-        let mut context = EvmContext::new_with_env(&mut multi_fork_db, env);
-        context.inner.journaled_state = journaled_state;
-
         // Test pre-tx state
-        let result = fork_pre_state(&init_journaled_state, &mut context);
+        let result = fork_pre_state(&init_journal, &mut context);
         assert!(result.is_ok());
 
-        let storage_value1 = context.db.storage_ref(address1, slot1).unwrap();
-        let storage_value2 = context.db.storage_ref(address2, slot2).unwrap();
+        let storage_value1 = context.db().storage_ref(address1, slot1).unwrap();
+        let storage_value2 = context.db().storage_ref(address2, slot2).unwrap();
         assert_eq!(storage_value1, U256::from(10));
         assert_eq!(storage_value2, U256::from(20));
 
         // Test post-tx state
-        let result = fork_post_state(&init_journaled_state, &mut context);
+        let result = fork_post_state(&init_journal, &mut context);
         assert!(result.is_ok());
 
-        let storage_value1 = context.db.storage_ref(address1, slot1).unwrap();
-        let storage_value2 = context.db.storage_ref(address2, slot2).unwrap();
+        let storage_value1 = context.db().storage_ref(address1, slot1).unwrap();
+        let storage_value2 = context.db().storage_ref(address2, slot2).unwrap();
         assert_eq!(storage_value1, U256::from(30));
         assert_eq!(storage_value2, U256::from(40));
     }
 
     #[tokio::test]
-    async fn test_fork_integration() {
+    async fn test_fork_inegration() {
         let result = run_precompile_test("TestFork").await;
-        assert!(result.is_valid());
+        assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
     }

@@ -1,5 +1,8 @@
 use crate::{
-    db::MultiForkDb,
+    db::{
+        DatabaseRef,
+        MultiForkDb,
+    },
     inspectors::sol_primitives::PhEvm::loadCall,
     primitives::{
         Address,
@@ -7,8 +10,10 @@ use crate::{
     },
 };
 use revm::{
-    DatabaseRef,
-    InnerEvmContext,
+    context::{
+        ContextTr,
+        Journal,
+    },
     interpreter::CallInputs,
 };
 
@@ -19,11 +24,15 @@ use alloy_sol_types::{
 use std::convert::Infallible;
 
 /// Returns a storage slot for a given address. Will return `0x0` if slot empty.
-pub fn load_external_slot(
-    context: &InnerEvmContext<&mut MultiForkDb<impl DatabaseRef>>,
+pub fn load_external_slot<'db, ExtDb: DatabaseRef + 'db, CTX>(
+    context: &mut CTX,
     call_inputs: &CallInputs,
-) -> Result<Bytes, Infallible> {
-    let call = match loadCall::abi_decode(&call_inputs.input, true) {
+) -> Result<Bytes, Infallible>
+where
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let call = match loadCall::abi_decode(&call_inputs.input.bytes(context)) {
         Ok(call) => call,
         Err(_) => return Ok(Bytes::default()),
     };
@@ -32,11 +41,11 @@ pub fn load_external_slot(
     // Load the account before reading the storage.
     // This prevents a bug with revm's State<Db> where it panics if reading the storage before
     // loading the account.
-    let _ = context.db.active_db.basic_ref(address);
+    let _ = context.db().active_db.basic_ref(address);
 
     let slot = call.slot;
 
-    let slot_value = match context.db.active_db.storage_ref(address, slot.into()) {
+    let slot_value = match context.db().active_db.storage_ref(address, slot.into()) {
         Ok(rax) => rax,
         Err(_) => return Ok(Bytes::default()),
     };
@@ -50,6 +59,7 @@ mod test {
         db::overlay::test_utils::MockDb,
         inspectors::sol_primitives::PhEvm::loadCall,
         primitives::{
+            AccountInfo,
             Bytecode,
             FixedBytes,
         },
@@ -59,22 +69,22 @@ mod test {
             run_precompile_test,
         },
     };
+    use alloy_evm::eth::EthEvmContext;
     use alloy_primitives::{
         Address,
-        Bytes,
         U256,
     };
     use alloy_sol_types::SolCall;
     use revm::{
-        InnerEvmContext,
         interpreter::{
+            CallInput,
             CallInputs,
             CallScheme,
             CallValue,
         },
         primitives::{
-            AccountInfo,
             KECCAK_EMPTY,
+            hardfork::SpecId,
         },
     };
 
@@ -88,7 +98,7 @@ mod test {
         let encoded = call.abi_encode();
 
         CallInputs {
-            input: Bytes::from(encoded),
+            input: CallInput::Bytes(encoded.into()),
             gas_limit: 1_000_000,
             bytecode_address: Address::ZERO,
             target_address: target,
@@ -127,7 +137,7 @@ mod test {
             slot: slot_bytes,
         };
         let encoded = call.abi_encode();
-        let decoded = loadCall::abi_decode(&encoded, true).unwrap();
+        let decoded = loadCall::abi_decode(&encoded).unwrap();
 
         assert_eq!(decoded.target, target);
         assert_eq!(decoded.slot, slot_bytes);
@@ -146,14 +156,11 @@ mod test {
         // Create context with storage value
         let mock_db = create_mock_db_with_storage(target, slot, expected_value);
         let mut multi_fork = MultiForkDb::new(MockDb::new(), mock_db);
-        let context = InnerEvmContext::new(&mut multi_fork);
+        let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
-        let result = load_external_slot(&context, &call_inputs);
-        let decoded = loadCall::abi_decode_returns(&result.unwrap(), true).unwrap();
-        assert_eq!(
-            decoded.data.0,
-            FixedBytes::from(expected_value.to_be_bytes())
-        );
+        let result = load_external_slot(&mut context, &call_inputs);
+        let decoded = loadCall::abi_decode_returns(&result.unwrap()).unwrap();
+        assert_eq!(decoded.0, FixedBytes::from(expected_value.to_be_bytes()));
     }
 
     #[test]
@@ -168,11 +175,11 @@ mod test {
         // Create context with account but no storage for this slot
         let mock_db = create_mock_db_with_storage(target, random_u256(), random_u256());
         let mut multi_fork = MultiForkDb::new(MockDb::new(), mock_db);
-        let context = InnerEvmContext::new(&mut multi_fork);
+        let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
-        let result = load_external_slot(&context, &call_inputs);
-        let decoded = loadCall::abi_decode_returns(&result.unwrap(), true).unwrap();
-        assert_eq!(decoded.data.0, FixedBytes::ZERO);
+        let result = load_external_slot(&mut context, &call_inputs);
+        let decoded = loadCall::abi_decode_returns(&result.unwrap()).unwrap();
+        assert_eq!(decoded.0, FixedBytes::ZERO);
     }
 
     #[test]
@@ -188,13 +195,13 @@ mod test {
         let mock_db = create_mock_db_with_storage(Address::ZERO, random_u256(), random_u256());
 
         let mut multi_fork = MultiForkDb::new(MockDb::new(), mock_db);
-        let context = InnerEvmContext::new(&mut multi_fork);
+        let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
-        let result = load_external_slot(&context, &call_inputs);
+        let result = load_external_slot(&mut context, &call_inputs);
 
         // parse the result
-        let decoded = loadCall::abi_decode_returns(&result.unwrap(), true).unwrap();
-        assert_eq!(decoded.data.0, FixedBytes::ZERO);
+        let decoded = loadCall::abi_decode_returns(&result.unwrap()).unwrap();
+        assert_eq!(decoded.0, FixedBytes::ZERO);
     }
 
     #[tokio::test]

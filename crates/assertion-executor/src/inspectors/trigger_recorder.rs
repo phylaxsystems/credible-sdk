@@ -8,24 +8,22 @@ use crate::{
         Bytecode,
         Bytes,
         FixedBytes,
-        U256,
         address,
         bytes,
     },
 };
-
+use alloy_evm::eth::EthEvmContext;
+use op_revm::OpContext;
 use revm::{
-    Database,
-    EvmContext,
-    InMemoryDB,
     Inspector,
+    database::{
+        Database,
+        InMemoryDB,
+    },
     interpreter::{
         CallInputs,
         CallOutcome,
-        CreateInputs,
-        CreateOutcome,
         Gas,
-        Interpreter,
     },
 };
 
@@ -82,10 +80,8 @@ pub enum RecordError {
 
 impl TriggerRecorder {
     /// Records a trigger call made to the trigger recorder address.
-    fn record_trigger(&mut self, inputs: &CallInputs) -> Result<Bytes, RecordError> {
-        match inputs
-            .input
-            .as_ref()
+    fn record_trigger(&mut self, input_bytes: &[u8]) -> Result<Bytes, RecordError> {
+        match input_bytes
             .get(0..4)
             .unwrap_or_default()
             .try_into()
@@ -93,14 +89,13 @@ impl TriggerRecorder {
         {
             ITriggerRecorder::registerCallTrigger_0Call::SELECTOR => {
                 let fn_selector =
-                    ITriggerRecorder::registerCallTrigger_0Call::abi_decode(&inputs.input, true)?
+                    ITriggerRecorder::registerCallTrigger_0Call::abi_decode(input_bytes)?
                         .fnSelector;
                 self.add_trigger(TriggerType::AllCalls, fn_selector);
             }
 
             ITriggerRecorder::registerCallTrigger_1Call::SELECTOR => {
-                let call =
-                    ITriggerRecorder::registerCallTrigger_1Call::abi_decode(&inputs.input, true)?;
+                let call = ITriggerRecorder::registerCallTrigger_1Call::abi_decode(input_bytes)?;
                 self.add_trigger(
                     TriggerType::Call {
                         trigger_selector: call.triggerSelector,
@@ -110,19 +105,15 @@ impl TriggerRecorder {
             }
 
             ITriggerRecorder::registerStorageChangeTrigger_0Call::SELECTOR => {
-                let fn_selector = ITriggerRecorder::registerStorageChangeTrigger_0Call::abi_decode(
-                    &inputs.input,
-                    true,
-                )?
-                .fnSelector;
+                let fn_selector =
+                    ITriggerRecorder::registerStorageChangeTrigger_0Call::abi_decode(input_bytes)?
+                        .fnSelector;
                 self.add_trigger(TriggerType::AllStorageChanges, fn_selector);
             }
 
             ITriggerRecorder::registerStorageChangeTrigger_1Call::SELECTOR => {
-                let call = ITriggerRecorder::registerStorageChangeTrigger_1Call::abi_decode(
-                    &inputs.input,
-                    true,
-                )?;
+                let call =
+                    ITriggerRecorder::registerStorageChangeTrigger_1Call::abi_decode(input_bytes)?;
                 self.add_trigger(
                     TriggerType::StorageChange {
                         trigger_slot: call.slot,
@@ -132,11 +123,9 @@ impl TriggerRecorder {
             }
 
             ITriggerRecorder::registerBalanceChangeTriggerCall::SELECTOR => {
-                let fn_selector = ITriggerRecorder::registerBalanceChangeTriggerCall::abi_decode(
-                    &inputs.input,
-                    true,
-                )?
-                .fnSelector;
+                let fn_selector =
+                    ITriggerRecorder::registerBalanceChangeTriggerCall::abi_decode(input_bytes)?
+                        .fnSelector;
                 self.add_trigger(TriggerType::BalanceChange, fn_selector);
             }
 
@@ -154,58 +143,36 @@ impl TriggerRecorder {
     }
 }
 
-impl<DB: Database> Inspector<DB> for TriggerRecorder {
-    fn initialize_interp(&mut self, _interp: &mut Interpreter, _context: &mut EvmContext<DB>) {}
-
-    fn step(&mut self, _interp: &mut Interpreter, _context: &mut EvmContext<DB>) {}
-
-    fn step_end(&mut self, _interp: &mut Interpreter, _context: &mut EvmContext<DB>) {}
-
-    fn call_end(
-        &mut self,
-        _context: &mut EvmContext<DB>,
-        _inputs: &CallInputs,
-        outcome: CallOutcome,
-    ) -> CallOutcome {
-        outcome
-    }
-
-    fn create_end(
-        &mut self,
-        _context: &mut EvmContext<DB>,
-        _inputs: &CreateInputs,
-        outcome: CreateOutcome,
-    ) -> CreateOutcome {
-        outcome
-    }
-
-    fn call(
-        &mut self,
-        _context: &mut EvmContext<DB>,
-        inputs: &mut CallInputs,
-    ) -> Option<CallOutcome> {
-        if inputs.target_address == TRIGGER_RECORDER {
-            let record_result = self.record_trigger(inputs);
-            let gas = Gas::new(inputs.gas_limit);
-            return Some(inspector_result_to_call_outcome(
-                record_result,
-                gas,
-                inputs.return_memory_offset.clone(),
-            ));
-        }
-        None
-    }
-
-    fn create(
-        &mut self,
-        _context: &mut EvmContext<DB>,
-        _inputs: &mut CreateInputs,
-    ) -> Option<CreateOutcome> {
-        None
-    }
-
-    fn selfdestruct(&mut self, _contract: Address, _target: Address, _value: U256) {}
+/// Macro to implement Inspector trait for multiple context types.
+/// This avoids duplicating the implementation and provides better maintainability.
+macro_rules! impl_trigger_recorder_inspector {
+    ($($context_type:ty),* $(,)?) => {
+        $(
+            impl<DB: Database> Inspector<$context_type> for TriggerRecorder {
+                fn call(
+                    &mut self,
+                    context: &mut $context_type,
+                    inputs: &mut CallInputs,
+                ) -> Option<CallOutcome> {
+                    if inputs.target_address == TRIGGER_RECORDER {
+                        let input_bytes = inputs.input.bytes(context);
+                        let record_result = self.record_trigger(&input_bytes);
+                        let gas = Gas::new(inputs.gas_limit);
+                        return Some(inspector_result_to_call_outcome(
+                            record_result,
+                            gas,
+                            inputs.return_memory_offset.clone(),
+                        ));
+                    }
+                    None
+                }
+            }
+        )*
+    };
 }
+
+// Implement Inspector for both context types using the macro
+impl_trigger_recorder_inspector!(EthEvmContext<DB>, OpContext<DB>,);
 
 /// Insert the trigger recorder account into the database.
 pub fn insert_trigger_recorder_account(db: &mut InMemoryDB) {
@@ -223,7 +190,10 @@ mod test {
     use super::*;
 
     use crate::{
-        build_evm::new_evm,
+        evm::build_evm::{
+            build_optimism_evm,
+            evm_env,
+        },
         primitives::{
             Bytecode,
             TxEnv,
@@ -233,10 +203,13 @@ mod test {
         store::triggersCall,
         test_utils::deployed_bytecode,
     };
-    use revm::InMemoryDB;
-
-    #[cfg(feature = "optimism")]
-    use crate::executor::config::create_optimism_fields;
+    use op_revm::OpTransaction;
+    use revm::{
+        InspectEvm,
+        context::BlockEnv,
+        database::InMemoryDB,
+        primitives::hardfork::SpecId,
+    };
 
     fn run_trigger_recorder_test(artifact: &str) -> TriggerRecorder {
         let assertion_contract = Address::random();
@@ -254,30 +227,27 @@ mod test {
         insert_trigger_recorder_account(&mut db);
 
         let tx_env = TxEnv {
-            transact_to: TxKind::Call(assertion_contract),
+            kind: TxKind::Call(assertion_contract),
             data: triggersCall::SELECTOR.into(),
-            #[cfg(feature = "optimism")]
-            optimism: create_optimism_fields(),
             ..Default::default()
         };
 
-        let mut evm = new_evm(
-            tx_env,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            &mut db,
-            TriggerRecorder::default(),
-        );
+        let tx_env = OpTransaction::new(tx_env);
 
-        let result = evm.transact().unwrap();
+        let mut trigger_recorder = TriggerRecorder::default();
+
+        let env = evm_env(1, SpecId::default(), BlockEnv::default());
+        let mut evm = build_optimism_evm(&mut db, &env, &mut trigger_recorder);
+
+        let result = evm.inspect_with_tx(tx_env).unwrap();
+        std::mem::drop(evm);
 
         assert!(
             result.result.is_success(),
             "Failed to transact: {result:#?}",
         );
 
-        evm.context.external
+        trigger_recorder
     }
 
     #[test]
@@ -366,7 +336,21 @@ mod test {
             }]
                 .contains(&selector2)
         );
+        assert!(
+            recorder.triggers[&TriggerType::Call {
+                trigger_selector: fixed_bytes!("AAAAAAAA")
+            }]
+                .contains(&selector2)
+        );
         assert!(recorder.triggers[&TriggerType::AllStorageChanges].contains(&selector3));
+        assert!(
+            recorder.triggers[&TriggerType::StorageChange {
+                trigger_slot: fixed_bytes!(
+                    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+                )
+            }]
+                .contains(&selector4)
+        );
         assert!(
             recorder.triggers[&TriggerType::StorageChange {
                 trigger_slot: fixed_bytes!(
@@ -404,21 +388,9 @@ mod test {
     fn test_record_trigger_invalid_selector() {
         let mut recorder = TriggerRecorder::default();
 
-        // Create invalid call inputs with wrong function selector
-        let call_inputs = CallInputs {
-            input: Bytes::from([0xFF, 0xFF, 0xFF, 0xFF]), // Invalid selector
-            gas_limit: 1000000,
-            target_address: TRIGGER_RECORDER,
-            bytecode_address: TRIGGER_RECORDER,
-            caller: Address::random(),
-            value: revm::interpreter::CallValue::Transfer(U256::ZERO),
-            scheme: revm::interpreter::CallScheme::Call,
-            is_static: false,
-            is_eof: false,
-            return_memory_offset: 0..0,
-        };
+        let input = Bytes::from([0xFF, 0xFF, 0xFF, 0xFF]);
 
-        let result = recorder.record_trigger(&call_inputs);
+        let result = recorder.record_trigger(&input);
         assert!(matches!(result, Err(RecordError::FnSelectorNotFound)));
     }
 
@@ -430,20 +402,7 @@ mod test {
         let mut invalid_data = ITriggerRecorder::registerCallTrigger_0Call::SELECTOR.to_vec();
         invalid_data.extend_from_slice(&[0xFF; 10]); // Add invalid data
 
-        let call_inputs = CallInputs {
-            input: invalid_data.into(),
-            gas_limit: 1000000,
-            target_address: TRIGGER_RECORDER,
-            bytecode_address: TRIGGER_RECORDER,
-            caller: Address::random(),
-            value: revm::interpreter::CallValue::Transfer(U256::ZERO),
-            scheme: revm::interpreter::CallScheme::Call,
-            is_static: false,
-            is_eof: false,
-            return_memory_offset: 0..0,
-        };
-
-        let result = recorder.record_trigger(&call_inputs);
+        let result = recorder.record_trigger(&invalid_data);
         assert!(matches!(result, Err(RecordError::CallDecodeError(_))));
     }
 }

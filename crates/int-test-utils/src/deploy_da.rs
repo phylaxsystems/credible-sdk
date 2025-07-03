@@ -41,9 +41,13 @@ pub async fn deploy_test_da(
 
 #[tokio::test]
 async fn test_deploy_da() {
-    use alloy::primitives::B256;
+    use alloy::{
+        primitives::B256,
+        signers::k256::elliptic_curve::rand_core::OsRng,
+    };
     use assertion_da_client::DaClient;
-    let (_handle, addr) = deploy_test_da(SigningKey::random(&mut rand::thread_rng())).await;
+
+    let (_handle, addr) = deploy_test_da(SigningKey::random(&mut OsRng)).await;
 
     let url = format!("http://{addr}");
 

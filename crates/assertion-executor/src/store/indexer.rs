@@ -7,7 +7,6 @@ use alloy_rpc_types::{
     BlockId,
     BlockNumHash,
     BlockNumberOrTag,
-    BlockTransactionsKind,
     Filter,
 };
 use alloy_transport::TransportError;
@@ -308,7 +307,7 @@ impl Indexer {
         );
         let latest_block = match self
             .provider
-            .get_block_by_number(BlockNumberOrTag::Latest, BlockTransactionsKind::Hashes)
+            .get_block_by_number(BlockNumberOrTag::Latest)
             .await?
         {
             Some(block) => block,
@@ -392,7 +391,7 @@ impl Indexer {
         loop {
             let cursor = self
                 .provider
-                .get_block_by_hash(cursor_hash, BlockTransactionsKind::Hashes)
+                .get_block_by_hash(cursor_hash)
                 .await?
                 .ok_or(IndexerError::ParentBlockNotFound)?;
             let cursor_header = cursor.header();
@@ -576,10 +575,7 @@ impl Indexer {
         for i in from..=to {
             let block_hash = self
                 .provider
-                .get_block(
-                    BlockId::Number(BlockNumberOrTag::Number(i)),
-                    BlockTransactionsKind::Hashes,
-                )
+                .get_block(BlockId::Number(BlockNumberOrTag::Number(i)))
                 .await?
                 .ok_or(IndexerError::BlockHashMissing)?
                 .header()
@@ -603,7 +599,7 @@ impl Indexer {
 
         let block_to_move = self
             .provider
-            .get_block_by_number(self.await_tag.into(), BlockTransactionsKind::Hashes)
+            .get_block_by_number(self.await_tag.into())
             .await?
             .ok_or(IndexerError::ParentBlockNotFound)?
             .header()
@@ -635,7 +631,7 @@ impl Indexer {
         let pending_mod_opt = match log.topics().first() {
             Some(&AssertionAdded::SIGNATURE_HASH) => {
                 let topics = AssertionAdded::decode_topics(log.topics())?;
-                let data = AssertionAdded::abi_decode_data(&log.data, true).map_err(|e| {
+                let data = AssertionAdded::abi_decode_data(&log.data).map_err(|e| {
                     debug!(target: "assertion_executor::indexer", ?e, "Failed to decode AssertionAdded event data");
                     e
                 })?;
@@ -704,7 +700,7 @@ impl Indexer {
                     "AssertionRemoved event signature detected."
                 );
                 let topics = AssertionRemoved::decode_topics(log.topics())?;
-                let data = AssertionRemoved::abi_decode_data(&log.data, true)?;
+                let data = AssertionRemoved::abi_decode_data(&log.data)?;
                 let event = AssertionRemoved::new(topics, data);
 
                 trace!(
@@ -1527,7 +1523,7 @@ mod test_indexer {
 
         let block = indexer
             .provider
-            .get_block_by_number(0.into(), Default::default())
+            .get_block_by_number(0.into())
             .await
             .unwrap()
             .unwrap();
@@ -1575,7 +1571,7 @@ mod test_indexer {
 
         let block = indexer
             .provider
-            .get_block_by_number(0.into(), Default::default())
+            .get_block_by_number(0.into())
             .await
             .unwrap()
             .unwrap();
@@ -1659,7 +1655,7 @@ mod test_indexer {
 
         let block = indexer
             .provider
-            .get_block_by_number(0.into(), Default::default())
+            .get_block_by_number(0.into())
             .await
             .unwrap()
             .unwrap();
@@ -1788,7 +1784,7 @@ mod test_indexer {
         // Set up initial state
         let block0 = indexer
             .provider
-            .get_block_by_number(0.into(), Default::default())
+            .get_block_by_number(0.into())
             .await
             .unwrap()
             .unwrap();
@@ -1957,7 +1953,7 @@ mod test_indexer {
         // Get the latest block
         let latest_block = indexer
             .provider
-            .get_block_by_number(BlockNumberOrTag::Latest, BlockTransactionsKind::Hashes)
+            .get_block_by_number(BlockNumberOrTag::Latest)
             .await
             .unwrap()
             .unwrap();
