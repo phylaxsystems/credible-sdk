@@ -8,7 +8,9 @@ name = "assertion-da"
 path = "bin/assertion-da.rs"
 
 [features]
+default = ["full-test"]
 debug_assertions = []
+full-test = []
 
 [dependencies]
 alloy.workspace = true
