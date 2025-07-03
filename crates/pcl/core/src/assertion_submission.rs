@@ -43,12 +43,13 @@ pub struct DappSubmitArgs {
     /// Base URL for the Credible Layer dApp API
     #[clap(
         short = 'u',
-        long,
+        long = "api-url",
+        env = "PCL_API_URL",
         value_hint = ValueHint::Url,
         value_name = "API Endpoint",
         default_value = "https://dapp.phylax.systems/api/v1"
     )]
-    pub dapp_url: String,
+    pub api_url: String,
 
     /// Optional project name to skip interactive selection
     #[clap(
@@ -182,7 +183,7 @@ impl DappSubmitArgs {
         let response = client
             .post(format!(
                 "{}/projects/{}/submitted-assertions",
-                self.dapp_url, project.project_id
+                self.api_url, project.project_id
             ))
             .header(
                 "Authorization",
@@ -272,7 +273,7 @@ impl DappSubmitArgs {
         let projects: Vec<Project> = client
             .get(format!(
                 "{}/projects?user={}",
-                self.dapp_url,
+                self.api_url,
                 config
                     .auth
                     .as_ref()
@@ -296,7 +297,7 @@ mod tests {
     #[test]
     fn test_provide_or_select_with_valid_input() {
         let args = DappSubmitArgs {
-            dapp_url: "".to_string(),
+            api_url: "".to_string(),
             project_name: Some("Project1".to_string()),
             assertion_keys: None,
         };
@@ -311,7 +312,7 @@ mod tests {
     #[test]
     fn test_no_stored_assertions() {
         let args = DappSubmitArgs {
-            dapp_url: "".to_string(),
+            api_url: "".to_string(),
             project_name: None,
             assertion_keys: None,
         };
@@ -328,7 +329,7 @@ mod tests {
     #[test]
     fn test_no_projects() {
         let args = DappSubmitArgs {
-            dapp_url: "".to_string(),
+            api_url: "".to_string(),
             project_name: None,
             assertion_keys: None,
         };
@@ -345,7 +346,7 @@ mod tests {
     #[test]
     fn test_select_assertions_with_preselected() {
         let args = DappSubmitArgs {
-            dapp_url: "".to_string(),
+            api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::new("assertion1".to_string(), vec![])]),
         };
@@ -369,7 +370,7 @@ mod tests {
     #[test]
     fn test_provide_or_multi_select_with_preselected() {
         let args = DappSubmitArgs {
-            dapp_url: "".to_string(),
+            api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::new("assertion1".to_string(), vec![])]),
         };
@@ -388,7 +389,7 @@ mod tests {
     #[test]
     fn test_provide_or_select_with_preselected() {
         let args = DappSubmitArgs {
-            dapp_url: "".to_string(),
+            api_url: "".to_string(),
             project_name: Some("Project1".to_string()),
             assertion_keys: None,
         };

@@ -72,7 +72,7 @@ Commands:
   status  Check current authentication status
 
 Options:
-      --base-url <BASE_URL>  Base URL for authentication service [env: AUTH_BASE_URL=] [default: https://dapp.phylax.systems]
+  -u, --auth-url <AUTH_URL>  Base URL for authentication service [env: PCL_AUTH_URL=] [default: https://dapp.phylax.systems]
   -h, --help                 Print help
 ```
 
@@ -100,6 +100,18 @@ Configuration is stored in `~/.pcl/config.toml` and includes:
 - Authentication token
 - Pending assertions for submission
 - Project settings
+
+### Building
+
+Build your assertion contracts:
+
+```bash
+pcl build [OPTIONS]
+
+Options:
+      --root <ROOT>  Root directory of the project
+  -h, --help         Print help
+```
 
 ### Testing
 
@@ -142,8 +154,8 @@ Arguments:
                          Format: <ARG0> <ARG1> <ARG2>
 
 Options:
-  -u, --url <URL>        URL of the assertion-DA server [default: https://demo-21-assertion-da.phylax.systems]
-  -r, --root <ROOT>      Root directory of the project
+  -u, --da-url <DA_URL>  URL of the assertion-DA server [env: PCL_DA_URL=] [default: https://demo-21-assertion-da.phylax.systems]
+      --root <ROOT>      Root directory of the project
   -h, --help             Print help (see a summary with '-h')
 ```
 
@@ -153,7 +165,7 @@ Options:
 pcl submit [OPTIONS]
 
 Options:
-  -u, --dapp-url <DAPP_URL>                 Base URL for the Credible Layer dApp API [default: https://dapp.phylax.systems/api/v1]
+  -u, --api-url <API_URL>                   Base URL for the Credible Layer dApp API [env: PCL_API_URL=] [default: https://dapp.phylax.systems/api/v1]
   -p, --project-name <PROJECT_NAME>         Optional project name to skip interactive selection
   -a, --assertion-keys <ASSERTION_KEYS>     Optional list of assertion name and constructor args to skip interactive selection
                                             Format: assertion_name OR 'assertion_name(constructor_arg0,constructor_arg1)'
