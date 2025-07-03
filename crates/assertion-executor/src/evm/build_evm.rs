@@ -53,7 +53,6 @@ use revm::{
     },
 };
 
-
 pub fn evm_env<Spec>(chain_id: u64, spec_id: Spec, block_env: BlockEnv) -> EvmEnv<Spec>
 where
     Spec: Default,

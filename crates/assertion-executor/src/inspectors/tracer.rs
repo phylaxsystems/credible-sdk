@@ -55,6 +55,12 @@ impl_call_tracer_inspector!(
 pub struct CallTracer {
     // Not public to prohibit inserting CallInputs with CallInput::SharedBuffer
     // If call_inputs with CallInput::SharedBuffer are inserted, then accessing the data without the previous context will be problematic
+    // This is problematic as you would be required to pass the Context as it was,
+    // at the start of the call,  to read the bytes of the CallInput,
+    // if they are of the SharedBuffer variant.
+    // You otherwise would no longer have access to this data in the future when
+    // you want to read call_inputs from the tracer.
+    // Because of this, we coerce the bytes at the time of recording the call.
     call_inputs: HashMap<(Address, FixedBytes<4>), Vec<CallInputs>>,
     pub journal: JournalInner<JournalEntry>,
 }
