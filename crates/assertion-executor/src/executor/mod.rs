@@ -458,7 +458,6 @@ impl AssertionExecutor {
             "Forked transaction state changes"
         );
 
-        let _journal = evm.ctx.tx_journal().1.inner.clone();
         let call_tracer = std::mem::take(evm.inspector);
         std::mem::drop(evm);
 
