@@ -6,7 +6,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-
 [dependencies]
 # workspace deps
 pcl-common = { workspace = true }
@@ -15,10 +14,8 @@ pcl-phoundry = { workspace = true }
 # alloy deps
 alloy-primitives = { workspace = true }
 
-
 # assertion-da deps
 assertion-da-client = { workspace = true }
-
 
 # other workspace deps
 clap = { workspace = true }
