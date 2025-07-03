@@ -1,31 +1,14 @@
 use crate::{
-    evm::build_evm::{
-        EthCtx,
-        OpCtx,
-    },
+    evm::build_evm::{EthCtx, OpCtx},
     inspectors::TriggerType,
-    primitives::{
-        Address,
-        Bytes,
-        FixedBytes,
-        JournalEntry,
-    },
+    primitives::{Address, Bytes, FixedBytes, JournalEntry},
 };
 use revm::{
-    Database,
-    Inspector,
+    Database, Inspector,
     context::JournalInner,
-    interpreter::{
-        CallInputs,
-        CallOutcome,
-        CreateInputs,
-        CreateOutcome,
-    },
+    interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome},
 };
-use std::collections::{
-    HashMap,
-    HashSet,
-};
+use std::collections::{HashMap, HashSet};
 
 /// Macro to implement Inspector trait for multiple context types.
 /// This is cleaner than duplicating the implementation and more reliable than generic bounds.
@@ -163,27 +146,12 @@ impl CallTracer {
 mod test {
     use super::*;
     use crate::{
-        evm::build_evm::{
-            build_optimism_evm,
-            evm_env,
-        },
-        primitives::{
-            BlockEnv,
-            Bytecode,
-            SpecId,
-            TxEnv,
-            TxKind,
-            U256,
-            address,
-            bytes,
-        },
+        evm::build_evm::{build_optimism_evm, evm_env},
+        primitives::{BlockEnv, Bytecode, SpecId, TxEnv, TxKind, U256, address, bytes},
         test_utils::deployed_bytecode,
     };
     use op_revm::OpTransaction;
-    use revm::{
-        InspectEvm,
-        database::InMemoryDB,
-    };
+    use revm::{InspectEvm, database::InMemoryDB};
 
     #[test]
     fn call_tracing() {
@@ -275,10 +243,7 @@ mod test {
 
     #[test]
     fn test_triggers_all_types() {
-        use crate::primitives::{
-            JournalEntry,
-            U256,
-        };
+        use crate::primitives::{JournalEntry, U256};
 
         let mut tracer = CallTracer::new();
         let addr1 = address!("1111111111111111111111111111111111111111");

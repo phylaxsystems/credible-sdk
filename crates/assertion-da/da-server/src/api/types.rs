@@ -1,7 +1,4 @@
-use tokio::sync::{
-    mpsc,
-    oneshot,
-};
+use tokio::sync::{mpsc, oneshot};
 
 /// `tokio` `mpsc` channel used to send requests to the DB.
 pub type DbRequestSender = mpsc::UnboundedSender<DbRequest>;

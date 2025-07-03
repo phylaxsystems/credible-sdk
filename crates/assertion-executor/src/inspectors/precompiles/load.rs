@@ -1,26 +1,14 @@
 use crate::{
-    db::{
-        DatabaseRef,
-        MultiForkDb,
-    },
+    db::{DatabaseRef, MultiForkDb},
     inspectors::sol_primitives::PhEvm::loadCall,
-    primitives::{
-        Address,
-        Bytes,
-    },
+    primitives::{Address, Bytes},
 };
 use revm::{
-    context::{
-        ContextTr,
-        Journal,
-    },
+    context::{ContextTr, Journal},
     interpreter::CallInputs,
 };
 
-use alloy_sol_types::{
-    SolCall,
-    SolValue,
-};
+use alloy_sol_types::{SolCall, SolValue};
 use std::convert::Infallible;
 
 /// Returns a storage slot for a given address. Will return `0x0` if slot empty.
@@ -58,34 +46,15 @@ mod test {
     use crate::{
         db::overlay::test_utils::MockDb,
         inspectors::sol_primitives::PhEvm::loadCall,
-        primitives::{
-            AccountInfo,
-            Bytecode,
-            FixedBytes,
-        },
-        test_utils::{
-            random_address,
-            random_u256,
-            run_precompile_test,
-        },
+        primitives::{AccountInfo, Bytecode, FixedBytes},
+        test_utils::{random_address, random_u256, run_precompile_test},
     };
     use alloy_evm::eth::EthEvmContext;
-    use alloy_primitives::{
-        Address,
-        U256,
-    };
+    use alloy_primitives::{Address, U256};
     use alloy_sol_types::SolCall;
     use revm::{
-        interpreter::{
-            CallInput,
-            CallInputs,
-            CallScheme,
-            CallValue,
-        },
-        primitives::{
-            KECCAK_EMPTY,
-            hardfork::SpecId,
-        },
+        interpreter::{CallInput, CallInputs, CallScheme, CallValue},
+        primitives::{KECCAK_EMPTY, hardfork::SpecId},
     };
 
     use super::*;

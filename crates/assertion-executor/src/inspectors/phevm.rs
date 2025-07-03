@@ -1,58 +1,29 @@
 use crate::{
     db::DatabaseRef,
-    db::multi_fork_db::{
-        ForkError,
-        MultiForkDb,
-    },
+    db::multi_fork_db::{ForkError, MultiForkDb},
     inspectors::{
         inspector_result_to_call_outcome,
         precompiles::{
             assertion_adopter::get_assertion_adopter,
-            calls::{
-                GetCallInputsError,
-                get_call_inputs,
-            },
-            fork::{
-                fork_post_state,
-                fork_pre_state,
-            },
+            calls::{GetCallInputsError, get_call_inputs},
+            fork::{fork_post_state, fork_pre_state},
             load::load_external_slot,
             logs::get_logs,
-            state_changes::{
-                GetStateChangesError,
-                get_state_changes,
-            },
+            state_changes::{GetStateChangesError, get_state_changes},
         },
         sol_primitives::PhEvm,
         tracer::CallTracer,
     },
     primitives::{
-        AccountInfo,
-        Address,
-        Bytecode,
-        Bytes,
-        FixedBytes,
-        Journal,
-        SpecId,
-        U256,
-        address,
-        bytes,
+        AccountInfo, Address, Bytecode, Bytes, FixedBytes, Journal, SpecId, U256, address, bytes,
     },
 };
 
 use op_revm::OpContext;
 use revm::{
-    Inspector,
-    JournalEntry,
-    context::{
-        ContextTr,
-        JournalInner,
-    },
-    interpreter::{
-        CallInputs,
-        CallOutcome,
-        Gas,
-    },
+    Inspector, JournalEntry,
+    context::{ContextTr, JournalInner},
+    interpreter::{CallInputs, CallOutcome, Gas},
     primitives::Log,
 };
 

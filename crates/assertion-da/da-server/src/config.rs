@@ -1,12 +1,5 @@
-use sled::{
-    Config as DbConfig,
-    Db,
-};
-use std::{
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Arc,
-};
+use sled::{Config as DbConfig, Db};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use bollard::Docker;
 use clap::Parser;

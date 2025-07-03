@@ -2,10 +2,7 @@ use super::test_ctx::TestCtx;
 use alloy_primitives::B256;
 use alloy_provider::{
     Provider,
-    ext::{
-        AnvilApi,
-        DebugApi,
-    },
+    ext::{AnvilApi, DebugApi},
 };
 use alloy_rpc_types::TransactionRequest;
 use assertion_executor::primitives::Address;

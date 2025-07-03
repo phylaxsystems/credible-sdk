@@ -1,21 +1,8 @@
 use crate::{
-    db::{
-        DatabaseCommit,
-        DatabaseRef,
-    },
-    primitives::{
-        AccountInfo,
-        Address,
-        B256,
-        Bytecode,
-        EvmState,
-        U256,
-    },
+    db::{DatabaseCommit, DatabaseRef},
+    primitives::{AccountInfo, Address, B256, Bytecode, EvmState, U256},
 };
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 /// Maps storage slots to their values.
 /// Also contains a flag to indicate if the account is self destructed.
@@ -177,32 +164,16 @@ mod fork_db_tests {
     use super::*;
     use crate::db::overlay::TableKey;
     use crate::db::overlay::TableValue;
-    use revm::database::{
-        CacheDB,
-        EmptyDBTyped,
-    };
+    use revm::database::{CacheDB, EmptyDBTyped};
     use std::convert::Infallible;
 
     use crate::{
-        db::{
-            DatabaseRef,
-            overlay::OverlayDb,
-        },
-        primitives::{
-            Account,
-            AccountStatus,
-            BlockChanges,
-            EvmStorageSlot,
-            U256,
-            uint,
-        },
+        db::{DatabaseRef, overlay::OverlayDb},
+        primitives::{Account, AccountStatus, BlockChanges, EvmStorageSlot, U256, uint},
         test_utils::random_bytes,
     };
 
-    use revm::primitives::{
-        KECCAK_EMPTY,
-        keccak256,
-    };
+    use revm::primitives::{KECCAK_EMPTY, keccak256};
     use std::collections::HashMap;
 
     #[tokio::test]

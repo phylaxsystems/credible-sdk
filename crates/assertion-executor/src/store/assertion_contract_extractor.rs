@@ -4,43 +4,19 @@ use crate::{
     ExecutorConfig,
     db::DatabaseCommit,
     evm::build_evm::evm_env,
-    executor::{
-        ASSERTION_CONTRACT,
-        CALLER,
-    },
-    inspectors::{
-        TriggerRecorder,
-        insert_trigger_recorder_account,
-    },
+    executor::{ASSERTION_CONTRACT, CALLER},
+    inspectors::{TriggerRecorder, insert_trigger_recorder_account},
     primitives::{
-        Account,
-        AssertionContract,
-        BlockEnv,
-        Bytes,
-        EVMError,
-        ResultAndState,
-        TxEnv,
-        TxKind,
+        Account, AssertionContract, BlockEnv, Bytes, EVMError, ResultAndState, TxEnv, TxKind,
         keccak256,
     },
 };
 
-use revm::{
-    ExecuteEvm,
-    InspectEvm,
-    database::InMemoryDB,
-    inspector::NoOpInspector,
-};
+use revm::{ExecuteEvm, InspectEvm, database::InMemoryDB, inspector::NoOpInspector};
 
-use alloy_sol_types::{
-    SolCall,
-    sol,
-};
+use alloy_sol_types::{SolCall, sol};
 
-use tracing::{
-    debug,
-    warn,
-};
+use tracing::{debug, warn};
 
 // Typing for the assertion fn selectors
 sol! {
@@ -233,10 +209,7 @@ fn test_get_assertion_selectors() {
 fn test_endless_loop_constructor() {
     use crate::test_utils::*;
 
-    use crate::primitives::{
-        EvmExecutionResult,
-        HaltReason,
-    };
+    use crate::primitives::{EvmExecutionResult, HaltReason};
 
     let config = ExecutorConfig::default();
 
@@ -268,10 +241,7 @@ fn test_endless_loop_constructor() {
 
 #[test]
 fn test_extract_all_trigger_types() {
-    use crate::{
-        inspectors::TriggerType,
-        test_utils::*,
-    };
+    use crate::{inspectors::TriggerType, test_utils::*};
 
     let config = ExecutorConfig::default();
 

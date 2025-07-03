@@ -1,8 +1,4 @@
-use crate::{
-    AssertionExecutor,
-    primitives::SpecId,
-    store::AssertionStore,
-};
+use crate::{AssertionExecutor, primitives::SpecId, store::AssertionStore};
 
 /// Contains the configuration for the assertion executor.
 #[derive(Debug, Clone)]

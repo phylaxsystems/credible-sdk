@@ -1,25 +1,13 @@
-use crate::config::{
-    CliConfig,
-    UserAuth,
-};
+use crate::config::{CliConfig, UserAuth};
 use crate::error::AuthError;
 use alloy_primitives::Address;
-use chrono::{
-    DateTime,
-    Utc,
-};
+use chrono::{DateTime, Utc};
 use color_eyre::Result;
 use colored::*;
-use indicatif::{
-    ProgressBar,
-    ProgressStyle,
-};
+use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use serde::Deserialize;
-use tokio::time::{
-    Duration,
-    sleep,
-};
+use tokio::time::{Duration, sleep};
 
 /// Interval between authentication status checks
 const POLL_INTERVAL: Duration = Duration::from_secs(2);

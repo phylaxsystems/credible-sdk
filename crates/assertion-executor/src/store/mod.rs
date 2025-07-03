@@ -1,43 +1,22 @@
 mod assertion_contract_extractor;
 pub use assertion_contract_extractor::{
-    FnSelectorExtractorError,
-    extract_assertion_contract,
-    triggersCall,
+    FnSelectorExtractorError, extract_assertion_contract, triggersCall,
 };
 
-pub use assertion_da_client::{
-    DaClient,
-    DaClientError,
-};
+pub use assertion_da_client::{DaClient, DaClientError};
 
 mod assertion_store;
-pub use assertion_store::{
-    AssertionState,
-    AssertionStore,
-    AssertionStoreError,
-};
+pub use assertion_store::{AssertionState, AssertionStore, AssertionStoreError};
 
 mod indexer;
-pub use indexer::{
-    BlockTag,
-    Indexer,
-    IndexerCfg,
-    IndexerError,
-};
+pub use indexer::{BlockTag, Indexer, IndexerCfg, IndexerError};
 
 use crate::{
     inspectors::TriggerRecorder,
-    primitives::{
-        Address,
-        AssertionContract,
-        B256,
-    },
+    primitives::{Address, AssertionContract, B256},
 };
 
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use serde::{Deserialize, Serialize};
 
 /// Information about an assertion modification event.
 /// These events are indexed from the state oracle contract logs.

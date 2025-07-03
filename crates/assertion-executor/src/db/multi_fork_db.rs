@@ -1,31 +1,13 @@
 use super::fork_db::ForkDb;
 
 use crate::{
-    db::{
-        Database,
-        DatabaseCommit,
-        DatabaseRef,
-    },
-    executor::{
-        ASSERTION_CONTRACT,
-        CALLER,
-    },
+    db::{Database, DatabaseCommit, DatabaseRef},
+    executor::{ASSERTION_CONTRACT, CALLER},
     inspectors::PRECOMPILE_ADDRESS,
-    primitives::{
-        AccountInfo,
-        Address,
-        B256,
-        Bytecode,
-        EvmState,
-        JournalEntry,
-        U256,
-    },
+    primitives::{AccountInfo, Address, B256, Bytecode, EvmState, JournalEntry, U256},
 };
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use revm::context::JournalInner;
 
@@ -243,13 +225,7 @@ mod test_multi_fork {
     use revm::database::InMemoryDB;
 
     use crate::{
-        primitives::{
-            Account,
-            AccountStatus,
-            Address,
-            EvmState,
-            uint,
-        },
+        primitives::{Account, AccountStatus, Address, EvmState, uint},
         test_utils::random_bytes,
     };
 

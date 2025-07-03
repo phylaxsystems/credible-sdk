@@ -1,10 +1,7 @@
 use clap::Parser;
 use forge::{
     cmd::test::TestArgs,
-    opts::{
-        Forge,
-        ForgeSubcommand,
-    },
+    opts::{Forge, ForgeSubcommand},
 };
 
 use tokio::task::spawn_blocking;

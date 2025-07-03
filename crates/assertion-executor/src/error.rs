@@ -1,14 +1,8 @@
-use crate::{
-    primitives::EVMError,
-    store::AssertionStoreError,
-};
+use crate::{primitives::EVMError, store::AssertionStoreError};
 
 use std::fmt::Debug;
 
-use revm::{
-    Database,
-    DatabaseRef,
-};
+use revm::{Database, DatabaseRef};
 use thiserror::Error;
 
 #[derive(Error, Debug)]

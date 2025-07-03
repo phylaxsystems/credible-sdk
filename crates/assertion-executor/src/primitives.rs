@@ -1,50 +1,16 @@
 pub use revm::{
-    context::journal::{
-        Journal,
-        JournalEntry,
-        JournalInner,
-    },
-    context::{
-        BlockEnv,
-        ContextTr,
-        TxEnv,
-    },
-    context_interface::result::{
-        EVMError,
-        ExecutionResult,
-        HaltReason,
-    },
+    context::journal::{Journal, JournalEntry, JournalInner},
+    context::{BlockEnv, ContextTr, TxEnv},
+    context_interface::result::{EVMError, ExecutionResult, HaltReason},
     database::AccountState,
     primitives::{
-        Address,
-        B256,
-        Bytes,
-        FixedBytes,
-        TxKind,
-        U256,
-        address,
-        bytes,
-        fixed_bytes,
-        hardfork::SpecId,
-        hex,
-        keccak256,
-        uint,
+        Address, B256, Bytes, FixedBytes, TxKind, U256, address, bytes, fixed_bytes,
+        hardfork::SpecId, hex, keccak256, uint,
     },
-    state::{
-        Account,
-        AccountInfo,
-        AccountStatus,
-        Bytecode,
-        EvmState,
-        EvmStorage,
-        EvmStorageSlot,
-    },
+    state::{Account, AccountInfo, AccountStatus, Bytecode, EvmState, EvmStorage, EvmStorageSlot},
 };
 
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use serde::{Deserialize, Serialize};
 
 pub type EvmExecutionResult = ExecutionResult<HaltReason>;
 pub type ResultAndState = revm::context::result::ResultAndState<HaltReason>;

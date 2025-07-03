@@ -1,18 +1,6 @@
 use crate::{
-    db::{
-        Database,
-        DatabaseCommit,
-        DatabaseRef,
-        NotFoundError,
-        overlay::AccountInfo,
-    },
-    primitives::{
-        Address,
-        B256,
-        Bytecode,
-        EvmState,
-        U256,
-    },
+    db::{Database, DatabaseCommit, DatabaseRef, NotFoundError, overlay::AccountInfo},
+    primitives::{Address, B256, Bytecode, EvmState, U256},
 };
 use alloy_primitives::KECCAK256_EMPTY;
 use revm::database::InMemoryDB;
@@ -21,10 +9,7 @@ use moka::sync::Cache;
 
 use std::{
     collections::HashMap,
-    sync::{
-        Arc,
-        Mutex,
-    },
+    sync::{Arc, Mutex},
 };
 
 use super::OverlayDb;

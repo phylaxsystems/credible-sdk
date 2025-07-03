@@ -8,11 +8,7 @@ pub mod overlay;
 mod error;
 pub use error::NotFoundError;
 
-pub use revm::database::{
-    Database,
-    DatabaseCommit,
-    DatabaseRef,
-};
+pub use revm::database::{Database, DatabaseCommit, DatabaseRef};
 
 pub trait PhDB: DatabaseRef + Sync + Send {}
 

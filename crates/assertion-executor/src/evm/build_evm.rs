@@ -1,56 +1,25 @@
 use crate::{
     db::Database,
-    primitives::{
-        BlockEnv,
-        Journal,
-        SpecId,
-        TxEnv,
-    },
+    primitives::{BlockEnv, Journal, SpecId, TxEnv},
 };
 
-use alloy_evm::{
-    EvmEnv,
-    eth::EthEvmContext,
-    precompiles::PrecompilesMap,
-};
+use alloy_evm::{EvmEnv, eth::EthEvmContext, precompiles::PrecompilesMap};
 
 use op_revm::{
-    L1BlockInfo,
-    OpContext,
-    OpSpecId,
-    precompiles::OpPrecompiles,
-    transaction::OpTransaction,
+    L1BlockInfo, OpContext, OpSpecId, precompiles::OpPrecompiles, transaction::OpTransaction,
 };
 
 use revm::{
-    Context,
-    Inspector,
-    MainnetEvm,
-    context::{
-        CfgEnv,
-        Evm,
-        JournalTr,
-        LocalContext,
-    },
-    handler::{
-        EthPrecompiles,
-        instructions::EthInstructions,
-    },
+    Context, Inspector, MainnetEvm,
+    context::{CfgEnv, Evm, JournalTr, LocalContext},
+    handler::{EthPrecompiles, instructions::EthInstructions},
     interpreter::{
-        Gas,
-        Host,
-        Interpreter,
-        instructions::host::{
-            sload,
-            sstore,
-        },
+        Gas, Host, Interpreter,
+        instructions::host::{sload, sstore},
         interpreter::EthInterpreter,
         interpreter_types::LoopControl,
     },
-    precompile::{
-        PrecompileSpecId,
-        Precompiles,
-    },
+    precompile::{PrecompileSpecId, Precompiles},
 };
 
 /// Builds an EVM environment.
@@ -216,30 +185,14 @@ mod tests {
     use super::*;
     use crate::{
         db::MultiForkDb,
-        inspectors::{
-            CallTracer,
-            LogsAndTraces,
-            PhEvmContext,
-            PhEvmInspector,
-        },
+        inspectors::{CallTracer, LogsAndTraces, PhEvmContext, PhEvmInspector},
         primitives::{
-            AccountInfo,
-            Address,
-            BlockEnv,
-            Bytecode,
-            Bytes,
-            EvmExecutionResult,
-            TxEnv,
-            TxKind,
-            U256,
-            keccak256,
+            AccountInfo, Address, BlockEnv, Bytecode, Bytes, EvmExecutionResult, TxEnv, TxKind,
+            U256, keccak256,
         },
         test_utils::deployed_bytecode,
     };
-    use revm::{
-        ExecuteEvm,
-        database::InMemoryDB,
-    };
+    use revm::{ExecuteEvm, database::InMemoryDB};
 
     fn insert_caller(db: &mut InMemoryDB, caller: Address) {
         db.insert_account_info(

@@ -1,29 +1,16 @@
 use crate::error::ConfigError;
 use alloy_primitives::Address;
-use chrono::{
-    DateTime,
-    Utc,
-};
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use colored::Colorize;
 use dirs::home_dir;
 use pcl_common::args::CliArgs;
 use serde::{
-    Deserialize,
-    Deserializer,
-    Serialize,
-    Serializer,
-    de::{
-        self,
-        Visitor,
-    },
+    Deserialize, Deserializer, Serialize, Serializer,
+    de::{self, Visitor},
 };
 
-use std::{
-    collections::HashMap,
-    fmt,
-    path::PathBuf,
-};
+use std::{collections::HashMap, fmt, path::PathBuf};
 
 /// Directory name for storing PCL configuration
 pub const CONFIG_DIR: &str = ".pcl";
