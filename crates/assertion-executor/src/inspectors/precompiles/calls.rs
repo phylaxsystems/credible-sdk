@@ -58,31 +58,25 @@ where
         .get(&(target, selector))
         .unwrap_or(&binding);
 
-    let sol_call_inputs = call_inputs
-        .iter()
-        .map(|input| {
-            let original_input_data = match &input.input {
-                revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
-                _ => panic!("Expected Bytes"),
-            };
-            //let original_input_data = input.input.bytes(context);
-            println!("Original input data: {original_input_data:#?}");
-            let input_data_wo_selector = match original_input_data.len() >= 4 {
-                true => original_input_data.slice(4..),
-                false => Bytes::new(),
-            };
-            PhEvmCallInputs {
-                input: input_data_wo_selector,
-                gas_limit: input.gas_limit,
-                bytecode_address: input.bytecode_address,
-                target_address: input.target_address,
-                caller: input.caller,
-                value: input.value.get(),
-            }
-        })
-        .collect::<Vec<_>>();
-
-    println!("Sol call inputs: {sol_call_inputs:#?}");
+    let mut sol_call_inputs = Vec::new();
+    for input in call_inputs {
+        let original_input_data = match &input.input {
+            revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
+            _ => return Err(GetCallInputsError::ExpectedBytes),
+        };
+        let input_data_wo_selector = match original_input_data.len() >= 4 {
+            true => original_input_data.slice(4..),
+            false => Bytes::new(),
+        };
+        sol_call_inputs.push(PhEvmCallInputs {
+            input: input_data_wo_selector,
+            gas_limit: input.gas_limit,
+            bytecode_address: input.bytecode_address,
+            target_address: input.target_address,
+            caller: input.caller,
+            value: input.value.get(),
+        });
+    }
 
     let encoded: Bytes =
         <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_encode(&sol_call_inputs).into();
