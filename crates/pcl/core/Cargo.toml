@@ -35,6 +35,10 @@ dirs = "6.0.0"
 indicatif = "0.17"
 anyhow = { version = "1.0.98" }
 
+[features]
+default = ["full-test"]
+full-test = []
+
 [dev-dependencies]
 mockito = "1.2"
 tempfile = "3.6.0"

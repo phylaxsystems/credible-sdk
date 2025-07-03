@@ -1,3 +1,5 @@
+#![cfg(feature = "full-test")]
+
 mod common;
 
 #[cfg(test)]
@@ -10,6 +12,7 @@ mod tests {
 
     // Build And flatten edges -
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_da_store_directory_does_not_exist() {
         let mut test_setup = TestSetup::new();
         test_setup.set_root(PathBuf::from("dir-does-not-exist"));
@@ -24,6 +27,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_da_store_no_source_files() {
         let mut test_setup = TestSetup::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -43,6 +47,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_da_store_invalid_contract() {
         let mut test_setup = TestSetup::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -66,6 +71,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_da_store_contract_does_not_exist() {
         let mut test_setup = TestSetup::new();
         test_setup.set_assertion_contract("ContractDoesNotExist".to_string());
@@ -81,6 +87,7 @@ mod tests {
 
     // No solidity files in directory.
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_da_store_no_solidity_files() {
         let mut test_setup = TestSetup::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -92,6 +99,7 @@ mod tests {
 
     // Test DA Submission
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_da_store_once() {
         let test_setup = TestSetup::new();
         let mut test_runner = test_setup.build().await.unwrap();
@@ -103,6 +111,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_da_store_already_exists() {
         let test_setup = TestSetup::new();
         let mut test_runner = test_setup.build().await.unwrap();
@@ -141,6 +150,7 @@ mod tests {
 
     // Test DA Submission with constructor args
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_da_submission_with_constructor_args_not_supplied() {
         let mut test_setup = TestSetup::new();
         test_setup.set_assertion_contract("MockAssertion".to_string());
@@ -153,6 +163,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_da_submission_with_constructor_args_supplied() {
         let mut test_setup = TestSetup::new();
         test_setup.set_assertion_contract("MockAssertion".to_string());
@@ -163,6 +174,7 @@ mod tests {
 
     //test submit with incorrect arg types
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_da_submission_with_constructor_args_supplied_invalid_type() {
         let mut test_setup = TestSetup::new();
         test_setup.set_assertion_contract("MockAssertion".to_string());

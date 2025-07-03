@@ -52,11 +52,11 @@ evm-glue = { workspace = true }
 
 
 [features]
-default = ["optimism"]
-#optimism = ["revm/optimism", "revm/optimism-default-handler"]
+default = ["optimism", "full-test"]
 optimism = []
 test = ["serde_json", "rand"]
 serde_json = []
+full-test = []
 
 [dev-dependencies]
 rand = { workspace = true }

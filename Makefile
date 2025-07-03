@@ -5,6 +5,10 @@ build:
 test:
 	cargo nextest run --all-features --workspace --locked  --cargo-profile release --no-tests=warn
 
+# Run tests without full tests (skips Docker-dependent tests and integration tests)
+test-no-full:
+	./scripts/test-no-full.sh
+
 # Validate formatting
 format:
 	cargo +nightly fmt --check
