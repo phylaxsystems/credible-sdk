@@ -52,13 +52,20 @@ impl<ExtDb> Clone for ForkDb<ExtDb> {
 
 impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
     type Error = <ExtDb as DatabaseRef>::Error;
-    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+    fn basic_ref(
+        &self,
+        address: Address,
+    ) -> Result<Option<AccountInfo>, <Self as DatabaseRef>::Error> {
         match self.basic.get(&address) {
             Some(b) => Ok(Some(b.clone())),
             None => Ok(self.inner_db.basic_ref(address)?),
         }
     }
-    fn storage_ref(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+    fn storage_ref(
+        &self,
+        address: Address,
+        slot: U256,
+    ) -> Result<U256, <Self as DatabaseRef>::Error> {
         match self.storage.get(&address) {
             Some(s) => {
                 // If the account is self destructed, do not read from inner db.
@@ -74,14 +81,14 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
             None => Ok(self.inner_db.storage_ref(address, slot)?),
         }
     }
-    fn code_by_hash_ref(&self, hash: B256) -> Result<Bytecode, Self::Error> {
+    fn code_by_hash_ref(&self, hash: B256) -> Result<Bytecode, <Self as DatabaseRef>::Error> {
         match self.code_by_hash.get(&hash) {
             Some(code) => Ok(code.clone()),
             None => Ok(self.inner_db.code_by_hash_ref(hash)?),
         }
     }
 
-    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+    fn block_hash_ref(&self, number: u64) -> Result<B256, <Self as DatabaseRef>::Error> {
         self.inner_db.block_hash_ref(number)
     }
 }
@@ -170,8 +177,10 @@ mod fork_db_tests {
     use super::*;
     use crate::db::overlay::TableKey;
     use crate::db::overlay::TableValue;
-    use revm::db::CacheDB;
-    use revm::db::EmptyDBTyped;
+    use revm::database::{
+        CacheDB,
+        EmptyDBTyped,
+    };
     use std::convert::Infallible;
 
     use crate::{

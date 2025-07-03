@@ -21,6 +21,7 @@ mod tests {
     };
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_indexer_with_latest_tag() {
         let time_lock_blocks = 1;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Latest, time_lock_blocks).await;
@@ -49,6 +50,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_indexer_with_ctor_args() {
         let time_lock_blocks = 1;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
@@ -77,6 +79,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_indexer_large_batch_single_block() {
         let time_lock_blocks = 1;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
@@ -103,6 +106,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_indexer_downtime() {
         let time_lock_blocks = 1;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
@@ -130,6 +134,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     #[ignore]
     // NOTE: Op talos bug not reproducible with anvil
     async fn test_indexer_over_100k_blocks() {
@@ -154,6 +159,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     #[should_panic(expected = "return_value: 0x9969960a")] // cast sig 'AssertionAlreadyExists'
     // NOTE: Not possible to add an assertion after removal due to smart contract logic
     async fn test_add_remove_add_across_multiple_blocks() {
@@ -191,6 +197,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     #[should_panic(expected = "Transaction receipt not found")] // cast sig 'AssertionAlreadyExists'
     // NOTE: Not possible to add an assertion after removal due to smart contract logic
     async fn test_add_remove_add_in_single_block() {
@@ -217,6 +224,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_storage_is_persisted() {
         let time_lock_blocks = 1;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
@@ -244,6 +252,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_triggers_are_persisted() {
         let time_lock_blocks = 1;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
@@ -269,9 +278,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_active_at_block_is_expected() {
         for _ in 0..3 {
-            let time_lock_blocks = rand::thread_rng().gen_range(1..=1000);
+            let time_lock_blocks = rand::rng().random_range(1..=1000);
             let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
             let contract_address = Address::random();
             test_ctx
@@ -301,9 +311,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_active_at_block_is_expected_diff_blocks() {
         for _ in 0..3 {
-            let time_lock_blocks = rand::thread_rng().gen_range(1..=1000);
+            let time_lock_blocks = rand::rng().random_range(1..=1000);
             let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
             let contract_address = Address::random();
             test_ctx
@@ -335,6 +346,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_assertion_not_indexed_before_finalization() {
         let time_lock_blocks = 5;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
@@ -370,6 +382,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     #[should_panic(expected = "NoCommonAncestor")]
     async fn test_indexer_with_reorgs_latest() {
         let time_lock_blocks = 1;
@@ -399,6 +412,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_indexer_with_reorgs_finalized() {
         for depth in [1, 10, 63] {
             let time_lock_blocks = 1;
@@ -435,6 +449,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_malformed_assertions() {
         let time_lock_blocks = 1;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Latest, time_lock_blocks).await;
@@ -455,6 +470,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "full-test")]
     async fn test_matching_oracle_signatures_ignored() {
         let time_lock_blocks = 1;
         let mut test_ctx = setup_int_test_indexer(BlockTag::Latest, time_lock_blocks).await;

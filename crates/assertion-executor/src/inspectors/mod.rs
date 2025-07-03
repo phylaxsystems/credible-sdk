@@ -22,6 +22,8 @@ use sol_primitives::Error;
 
 use crate::primitives::Bytes;
 
+pub use revm::inspector::NoOpInspector;
+
 use revm::interpreter::{
     CallOutcome,
     Gas,
@@ -55,7 +57,7 @@ fn inspector_result_to_call_outcome<E: std::fmt::Display>(
             CallOutcome {
                 result: InterpreterResult {
                     result: InstructionResult::Revert,
-                    output: Error::abi_encode(&Error { _0: e.to_string() }).into(),
+                    output: Error::abi_encode(&Error(e.to_string())).into(),
                     gas,
                 },
                 memory_offset,

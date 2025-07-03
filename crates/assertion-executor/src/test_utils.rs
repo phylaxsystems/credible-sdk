@@ -30,13 +30,14 @@ use crate::{
         extract_assertion_contract,
     },
 };
-use revm::db::CacheDB;
-use revm::db::EmptyDBTyped;
+use revm::database::{
+    CacheDB,
+    EmptyDBTyped,
+};
 use std::convert::Infallible;
 
 use alloy_rpc_types::{
     BlockId,
-    BlockTransactionsKind,
     Header,
 };
 
@@ -52,9 +53,6 @@ use alloy_provider::{
     ext::AnvilApi,
 };
 
-#[cfg(feature = "optimism")]
-use crate::executor::config::create_optimism_fields;
-
 use alloy_transport_ws::WsConnect;
 
 /// Deployed bytecode of contract-mocks/src/SimpleCounterAssertion.sol:Counter
@@ -63,10 +61,8 @@ pub const COUNTER_ADDRESS: Address = Address::new([1u8; 20]);
 
 pub fn counter_call() -> TxEnv {
     TxEnv {
-        transact_to: TxKind::Call(COUNTER_ADDRESS),
+        kind: TxKind::Call(COUNTER_ADDRESS),
         data: fixed_bytes!("d09de08a").into(),
-        #[cfg(feature = "optimism")]
-        optimism: create_optimism_fields(),
         ..TxEnv::default()
     }
 }
@@ -78,7 +74,7 @@ pub fn counter_acct_info() -> AccountInfo {
         balance: U256::ZERO,
         nonce: 1,
         code_hash,
-        code: Some(Bytecode::LegacyRaw(code)),
+        code: Some(Bytecode::new_legacy(code)),
     }
 }
 
@@ -176,15 +172,13 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
         .insert(target, AssertionState::new_test(assertion_code))
         .unwrap();
 
-    let mut executor = ExecutorConfig::default().build(db, assertion_store);
+    let mut executor = ExecutorConfig::default().build(assertion_store);
 
     // Deploy mock using bytecode of Target.sol:Target
     let target_deployment_tx = TxEnv {
         caller,
         data: bytecode("Target.sol:Target"),
-        transact_to: TxKind::Create,
-        #[cfg(feature = "optimism")]
-        optimism: create_optimism_fields(),
+        kind: TxKind::Create,
         ..Default::default()
     };
 
@@ -199,16 +193,15 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
             &mut mock_db,
         )
         .unwrap();
-    mock_db.commit(result.1.state.clone());
+    mock_db.commit(result.result_and_state.state.clone());
 
     // Deploy TriggeringTx contract using bytecode of
     // GetLogsTest.sol:TriggeringTx
     let trigger_tx = TxEnv {
         caller,
         data: bytecode(&format!("{}.sol:{}", artifact, "TriggeringTx")),
-        transact_to: TxKind::Create,
-        #[cfg(feature = "optimism")]
-        optimism: create_optimism_fields(),
+        kind: TxKind::Create,
+        nonce: 1,
         ..Default::default()
     };
 
@@ -221,7 +214,7 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
 pub async fn mine_block(provider: &RootProvider<alloy_network::Ethereum>) -> Header {
     let _ = provider.evm_mine(None).await;
     let block = provider
-        .get_block(BlockId::latest(), BlockTransactionsKind::Hashes)
+        .get_block(BlockId::latest())
         .await
         .unwrap()
         .unwrap();
@@ -233,7 +226,7 @@ pub async fn mine_block(provider: &RootProvider<alloy_network::Ethereum>) -> Hea
 pub async fn anvil_provider() -> (RootProvider<alloy_network::Ethereum>, AnvilInstance) {
     let anvil = Anvil::new().spawn();
     let provider = ProviderBuilder::new()
-        .on_ws(WsConnect::new(anvil.ws_endpoint()))
+        .connect_ws(WsConnect::new(anvil.ws_endpoint()))
         .await
         .unwrap();
     provider.anvil_set_auto_mine(false).await.unwrap();

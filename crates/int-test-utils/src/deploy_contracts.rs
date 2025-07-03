@@ -224,9 +224,11 @@ mod tests {
     fn test_deploy_contracts() -> Result<(), Box<dyn Error>> {
         let anvil = setup_anvil()?;
 
+        use alloy::signers::k256::elliptic_curve::rand_core::OsRng;
+
         let result = deploy_contracts(
             &anvil,
-            SigningKey::random(&mut rand::thread_rng()), // Using same key for both roles in test
+            SigningKey::random(&mut OsRng), // Using same key for both roles in test
             std::path::PathBuf::from("../../lib/credible-layer-contracts"),
             5,
         );
@@ -252,7 +254,7 @@ mod tests {
 
         // Send all funds to a different address
         let drain_to = Address::random();
-        let provider = ProviderBuilder::new().on_http(anvil.endpoint().parse()?);
+        let provider = ProviderBuilder::new().connect_http(anvil.endpoint().parse()?);
         let balance = provider.get_balance(deployer_address).await?;
 
         let wallet = LocalSigner::from(deployer_key.clone());

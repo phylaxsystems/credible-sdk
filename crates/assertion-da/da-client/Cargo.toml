@@ -25,6 +25,5 @@ alloy.workspace = true
 bincode.workspace = true
 sled.workspace = true
 tempfile.workspace = true
-mockall.workspace = true
 wiremock.workspace = true
 bollard.workspace = true

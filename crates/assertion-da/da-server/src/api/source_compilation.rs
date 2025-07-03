@@ -341,6 +341,53 @@ impl ContainerManager {
     }
 }
 
+/// Custom Drop impl for `ContainerManager` so we clean up containers properly
+/// after they go out of scope
+impl Drop for ContainerManager {
+    fn drop(&mut self) {
+        // Check if we already cleaned up the container
+        if self.is_cleaned_up || self.container_id.is_none() {
+            return;
+        }
+
+        let container_id = self.container_id.as_ref().unwrap();
+
+        // Block on the async operations
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let _ = handle.block_on(async {
+                // Remove the container
+                let remove_options = Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                });
+
+                if let Err(e) = self
+                    .docker
+                    .remove_container(container_id, remove_options)
+                    .await
+                {
+                    warn!(
+                        target: "solidity_compilation",
+                        container_name = %self.container_name,
+                        error = %e,
+                        "Failed to remove container in Drop"
+                    );
+                }
+            });
+
+            // for good measure
+            self.is_cleaned_up = true;
+            return;
+        }
+
+        warn!(
+            target: "solidity_compilation",
+            container_name = %self.container_name,
+            "Failed to clean up container in Drop, couldnt get tokio runtime"
+        );
+    }
+}
+
 /// Manages a Solidity source file
 pub struct SoliditySourceFile {
     temp_dir: TempDir,
@@ -639,19 +686,24 @@ pub enum CompilationError {
     InvalidJsonOutput,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "full-test"))]
 mod tests {
     use super::*;
+    
+    #[cfg(feature = "full-test")]
     use once_cell::sync::Lazy;
 
     // Shared Docker client for all tests
+    #[cfg(feature = "full-test")]
     static DOCKER: Lazy<Arc<Docker>> =
         Lazy::new(|| Arc::new(Docker::connect_with_local_defaults().unwrap()));
 
+    #[cfg(feature = "full-test")]
     fn setup_docker() -> Arc<Docker> {
         DOCKER.clone()
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_successful_compilation() {
         let docker = setup_docker();
@@ -678,6 +730,7 @@ mod tests {
         assert!(!bytecode.is_empty(), "Bytecode should not be empty");
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_invalid_compiler_version() {
         let docker = setup_docker();
@@ -687,6 +740,7 @@ mod tests {
         assert!(result.is_err(), "Should fail with invalid compiler version");
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_multiple_contracts() {
         let docker = setup_docker();
@@ -707,6 +761,7 @@ mod tests {
         assert!(result.is_ok(), "Should succeed with multiple contracts");
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_syntax_error() {
         let docker = setup_docker();
@@ -720,6 +775,7 @@ mod tests {
         assert!(result.is_err(), "Should fail with syntax error");
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_empty_source() {
         let docker = setup_docker();
@@ -727,6 +783,7 @@ mod tests {
         assert!(result.is_err(), "Should fail with empty source");
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_different_compiler_versions() {
         let docker = setup_docker();
@@ -753,6 +810,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_complex_contract() {
         let docker = setup_docker();
@@ -769,6 +827,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_concurrent_compilations() {
         let docker = setup_docker();
@@ -801,6 +860,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_docker_image_manager() {
         let docker = setup_docker();
@@ -842,6 +902,7 @@ mod tests {
         assert_eq!(binds.len(), 1, "Should have one bind mount");
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_container_cleanup() {
         let docker = setup_docker();
@@ -922,6 +983,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_container_cleanup_after_compilation() {
         let docker = setup_docker();
@@ -962,6 +1024,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_image_pull_mechanism() {
         let docker = setup_docker();
