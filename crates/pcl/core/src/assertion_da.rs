@@ -176,7 +176,9 @@ impl DaStoreArgs {
     /// * `Result<DaClient, DaClientError>` - The configured client or error
     fn create_da_client(&self, config: &CliConfig) -> Result<DaClient, DaClientError> {
         match &config.auth {
-            Some(auth) => DaClient::new_with_auth(&self.url, &auth.access_token),
+            Some(auth) => {
+                DaClient::new_with_auth(&self.url, &format!("Bearer {}", auth.access_token))
+            }
             None => DaClient::new(&self.url),
         }
     }
