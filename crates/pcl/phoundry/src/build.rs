@@ -18,7 +18,6 @@ use crate::error::PhoundryError;
 pub struct BuildArgs {
     /// Root directory of the project
     #[clap(
-        short = 'r',
         long,
         value_hint = ValueHint::DirPath,
         help = "Root directory of the project"

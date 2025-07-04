@@ -56,7 +56,6 @@ impl BuildAndFlatOutput {
 pub struct BuildAndFlattenArgs {
     /// Root directory of the project
     #[clap(
-        short = 'r',
         long,
         value_hint = ValueHint::DirPath,
         help = "Root directory of the project"

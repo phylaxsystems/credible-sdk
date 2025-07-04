@@ -59,13 +59,13 @@ pub const DEFAULT_DA_URL: &str = default_da_url!();
 pub struct DaStoreArgs {
     /// URL of the assertion-DA server
     #[clap(
-        long,
+        long = "da-url",
         short = 'u',
         env = "PCL_DA_URL",
         value_hint = ValueHint::Url,
         default_value = DEFAULT_DA_URL
     )]
-    pub url: String,
+    pub da_url: String,
 
     /// Build and flatten arguments for the assertion
     #[clap(flatten)]
@@ -135,7 +135,7 @@ impl DaStoreArgs {
             println!("\n\n{}", "Assertion Information".bold().green());
             println!("{}", "===================".green());
             println!("{assertion}");
-            println!("\nSubmitted to assertion DA: {}", self.url);
+            println!("\nSubmitted to assertion DA: {}", self.da_url);
 
             println!("\n{}", "Next Steps:".bold());
             println!("Submit this assertion to a project with:");
@@ -177,9 +177,9 @@ impl DaStoreArgs {
     fn create_da_client(&self, config: &CliConfig) -> Result<DaClient, DaClientError> {
         match &config.auth {
             Some(auth) => {
-                DaClient::new_with_auth(&self.url, &format!("Bearer {}", auth.access_token))
+                DaClient::new_with_auth(&self.da_url, &format!("Bearer {}", auth.access_token))
             }
-            None => DaClient::new(&self.url),
+            None => DaClient::new(&self.da_url),
         }
     }
 
@@ -414,7 +414,7 @@ mod tests {
 
         let mut config = create_test_config();
         let args = DaStoreArgs {
-            url: server.url(),
+            da_url: server.url(),
             args: create_test_build_args(),
             constructor_args: vec![Address::random().to_string()],
         };
@@ -446,7 +446,7 @@ mod tests {
 
         let mut config = create_test_config();
         let args = DaStoreArgs {
-            url: server.url(),
+            da_url: server.url(),
             args: create_test_build_args(),
             constructor_args: vec![Address::random().to_string()],
         };
@@ -492,7 +492,7 @@ mod tests {
 
         let mut config = create_test_config();
         let args = DaStoreArgs {
-            url: server.url(),
+            da_url: server.url(),
             args: create_test_build_args(),
             constructor_args: vec!["invalid_arg".to_string()],
         };
@@ -520,7 +520,7 @@ mod tests {
     #[tokio::test]
     async fn test_display_success_info() {
         let args = DaStoreArgs {
-            url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
             args: create_test_build_args(),
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
@@ -560,7 +560,7 @@ mod tests {
         let args = create_test_build_args();
 
         let args = DaStoreArgs {
-            url: server.url(),
+            da_url: server.url(),
             args,
             constructor_args: vec![Address::random().to_string()],
         };
@@ -592,7 +592,7 @@ mod tests {
 
         let mut config = create_test_config();
         let args = DaStoreArgs {
-            url: server.url(),
+            da_url: server.url(),
             args: create_test_build_args(),
             constructor_args: vec![Address::random().to_string()],
         };
@@ -614,7 +614,7 @@ mod tests {
         let mut config = create_test_config();
         config.auth = None; // Simulate no auth
         let args = DaStoreArgs {
-            url: server.url(),
+            da_url: server.url(),
             args: create_test_build_args(),
             constructor_args: vec![Address::random().to_string()],
         };
@@ -633,7 +633,7 @@ mod tests {
 
         let mut config = create_test_config();
         let args = DaStoreArgs {
-            url: server.url(),
+            da_url: server.url(),
             args: create_test_build_args(),
             constructor_args: vec![Address::random().to_string()],
         };
@@ -655,7 +655,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_da_client_with_auth() {
         let args = DaStoreArgs {
-            url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
             args: BuildAndFlattenArgs::default(),
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
@@ -677,7 +677,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_da_client_without_auth() {
         let args = DaStoreArgs {
-            url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
             args: BuildAndFlattenArgs::default(),
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
@@ -690,7 +690,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_config() {
         let args = DaStoreArgs {
-            url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
             args: BuildAndFlattenArgs {
                 assertion_contract: "test_assertion".to_string(),
                 ..BuildAndFlattenArgs::default()
@@ -719,7 +719,7 @@ mod tests {
         let mock = server.mock("POST", "/").with_status(401).create();
 
         let args = DaStoreArgs {
-            url: server.url(),
+            da_url: server.url(),
             args: create_test_build_args(),
             constructor_args: vec![Address::random().to_string()],
         };
@@ -744,7 +744,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_with_invalid_url() {
         let args = DaStoreArgs {
-            url: "invalid-url".to_string(),
+            da_url: "invalid-url".to_string(),
             args: BuildAndFlattenArgs::default(),
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
