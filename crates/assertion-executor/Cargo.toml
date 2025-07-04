@@ -48,6 +48,7 @@ tokio-util = { workspace = true }
 moka = { workspace = true }
 enum-as-inner = { workspace = true }
 url = { workspace = true }
+evm-glue = { workspace = true }
 
 
 [features]
@@ -69,7 +70,7 @@ int-test-utils = { workspace = true }
 assertion-executor = { path = ".", features = ["test"] }
 futures = { workspace = true }
 anyhow = { workspace = true }
-evm-glue = { git = "https://github.com/Philogy/evm-glue.git" }
+evm-glue = { workspace = true }
 
 [[bench]]
 name = "worst-case-op"

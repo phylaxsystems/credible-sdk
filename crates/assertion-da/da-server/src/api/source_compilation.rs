@@ -689,7 +689,7 @@ pub enum CompilationError {
 #[cfg(all(test, feature = "full-test"))]
 mod tests {
     use super::*;
-    
+
     #[cfg(feature = "full-test")]
     use once_cell::sync::Lazy;
 

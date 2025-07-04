@@ -56,9 +56,7 @@ fn register_op<M: Measurement>(
 ) {
     let runtime_bytecode = assemble_inf_loop(op);
 
-    unsafe {
-        std::env::set_var("FOUNDRY_DISABLE_NIGHTLY_WARNING", "1");
-    }
+    unsafe { std::env::set_var("FOUNDRY_DISABLE_NIGHTLY_WARNING", "1") };
 
     // Execute the future, blocking the current thread until completion
     let db = OverlayDb::<MockDb>::new_test();
