@@ -137,9 +137,9 @@ impl AssertionExecutor {
     ) -> Result<TxValidationResult, ExecutorError<Active, ExtDb>>
     where
         ExtDb: Database + Sync + Send + Debug,
-        ExtDb::Error: Debug + Send + Sync + 'static,
+        ExtDb::Error: Send,
         Active: DatabaseRef + Sync + Send + Debug,
-        Active::Error: Debug + Send + Sync + 'static,
+        Active::Error: Send,
     {
         let pre_tx_db = fork_db.clone();
         let mut post_tx_db = fork_db.clone();
@@ -212,7 +212,7 @@ impl AssertionExecutor {
     ) -> Result<Vec<AssertionContractExecution>, AssertionExecutionError<Active>>
     where
         Active: DatabaseRef + Sync + Send + Debug,
-        Active::Error: Debug + Send + Sync + 'static,
+        Active::Error: Send,
     {
         let ExecuteForkedTxResult {
             call_tracer,
@@ -274,7 +274,7 @@ impl AssertionExecutor {
     ) -> Result<AssertionContractExecution, AssertionExecutionError<Active>>
     where
         Active: DatabaseRef + Sync + Send + Debug,
-        Active::Error: Debug + Send + Sync + 'static,
+        Active::Error: Send,
     {
         let AssertionContract { id, .. } = assertion_contract;
 
@@ -338,7 +338,6 @@ impl AssertionExecutor {
     ) -> Result<AssertionFunctionResult, AssertionExecutionError<Active>>
     where
         Active: DatabaseRef + Sync + Send,
-        Active::Error: Debug + Send + Sync + 'static,
     {
         let AssertionExecutionParams {
             assertion_contract,
