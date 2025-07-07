@@ -417,9 +417,7 @@ impl AssertionExecutor {
     ) -> Result<ExecuteForkedTxResult, ForkTxExecutionError<ExtDb>>
     where
         ExtDb: Database + Sync + Send + Debug,
-        ExtDb::Error: Debug + Send + Sync + 'static,
         Active: DatabaseRef + Sync + Send + Debug,
-        Active::Error: Debug + Send + Sync,
     {
         let mut call_tracer = CallTracer::default();
         let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
