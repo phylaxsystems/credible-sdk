@@ -29,8 +29,8 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ForkTxExecutionError(e) => write!(f, "ForkTxExecutionError({:?})", e),
-            Self::AssertionExecutionError(e) => write!(f, "AssertionExecutionError({:?})", e),
+            Self::ForkTxExecutionError(e) => write!(f, "ForkTxExecutionError({e:?})"),
+            Self::AssertionExecutionError(e) => write!(f, "AssertionExecutionError({e:?})"),
         }
     }
 }
@@ -50,7 +50,7 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TxEvmError(e) => write!(f, "TxEvmError({:?})", e),
+            Self::TxEvmError(e) => write!(f, "TxEvmError({e:?})"),
         }
     }
 }
@@ -72,8 +72,8 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AssertionExecutionError(e) => write!(f, "AssertionExecutionError({:?})", e),
-            Self::AssertionReadError(e) => write!(f, "AssertionReadError({:?})", e),
+            Self::AssertionExecutionError(e) => write!(f, "AssertionExecutionError({e:?})"),
+            Self::AssertionReadError(e) => write!(f, "AssertionReadError({e:?})"),
         }
     }
 }
