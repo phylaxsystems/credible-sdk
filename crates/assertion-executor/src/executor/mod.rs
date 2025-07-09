@@ -136,9 +136,9 @@ impl AssertionExecutor {
         external_db: &mut ExtDb,
     ) -> Result<TxValidationResult, ExecutorError<Active, ExtDb>>
     where
-        ExtDb: Database + Sync + Send + Debug,
+        ExtDb: Database + Sync + Send,
         ExtDb::Error: Send,
-        Active: DatabaseRef + Sync + Send + Debug,
+        Active: DatabaseRef + Sync + Send,
         Active::Error: Send,
     {
         let pre_tx_db = fork_db.clone();
@@ -211,7 +211,7 @@ impl AssertionExecutor {
         forked_tx_result: &ExecuteForkedTxResult,
     ) -> Result<Vec<AssertionContractExecution>, AssertionExecutionError<Active>>
     where
-        Active: DatabaseRef + Sync + Send + Debug,
+        Active: DatabaseRef + Sync + Send,
         Active::Error: Send,
     {
         let ExecuteForkedTxResult {
@@ -273,7 +273,7 @@ impl AssertionExecutor {
         context: &PhEvmContext,
     ) -> Result<AssertionContractExecution, AssertionExecutionError<Active>>
     where
-        Active: DatabaseRef + Sync + Send + Debug,
+        Active: DatabaseRef + Sync + Send,
         Active::Error: Send,
     {
         let AssertionContract { id, .. } = assertion_contract;
@@ -415,8 +415,8 @@ impl AssertionExecutor {
         external_db: &mut ExtDb,
     ) -> Result<ExecuteForkedTxResult, ForkTxExecutionError<ExtDb>>
     where
-        ExtDb: Database + Sync + Send + Debug,
-        Active: DatabaseRef + Sync + Send + Debug,
+        ExtDb: Database + Sync + Send,
+        Active: DatabaseRef + Sync + Send,
     {
         let mut call_tracer = CallTracer::default();
         let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
