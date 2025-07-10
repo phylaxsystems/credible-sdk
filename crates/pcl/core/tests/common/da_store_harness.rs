@@ -67,7 +67,7 @@ impl TestSetup {
         };
 
         let da_store_args = DaStoreArgs {
-            url: format!("http://{da_url}"),
+            da_url: format!("http://{da_url}"),
             args: build_and_flatten_args,
             constructor_args: self.constructor_args.clone(),
         };

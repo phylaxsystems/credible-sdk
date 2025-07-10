@@ -11,7 +11,7 @@ use revm::{
 };
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error)]
 pub enum ExecutorError<Active: DatabaseRef, ExtDb: Database>
 where
     ExtDb::Error: Debug,
@@ -22,7 +22,20 @@ where
     AssertionExecutionError(#[from] AssertionExecutionError<Active>),
 }
 
-#[derive(Error, Debug)]
+impl<Active: DatabaseRef, ExtDb: Database> Debug for ExecutorError<Active, ExtDb>
+where
+    ExtDb::Error: Debug,
+    Active::Error: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ForkTxExecutionError(e) => write!(f, "ForkTxExecutionError({e:?})"),
+            Self::AssertionExecutionError(e) => write!(f, "AssertionExecutionError({e:?})"),
+        }
+    }
+}
+
+#[derive(Error)]
 pub enum ForkTxExecutionError<ExtDb: Database>
 where
     ExtDb::Error: Debug,
@@ -31,7 +44,18 @@ where
     TxEvmError(#[from] EVMError<ExtDb::Error>),
 }
 
-#[derive(Error, Debug)]
+impl<ExtDb: Database> Debug for ForkTxExecutionError<ExtDb>
+where
+    ExtDb::Error: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TxEvmError(e) => write!(f, "TxEvmError({e:?})"),
+        }
+    }
+}
+
+#[derive(Error)]
 pub enum AssertionExecutionError<Active: DatabaseRef>
 where
     Active::Error: Debug,
@@ -40,4 +64,16 @@ where
     AssertionExecutionError(#[from] EVMError<Active::Error>),
     #[error("Assertion store error: {0}")]
     AssertionReadError(#[from] AssertionStoreError),
+}
+
+impl<Active: DatabaseRef> Debug for AssertionExecutionError<Active>
+where
+    Active::Error: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AssertionExecutionError(e) => write!(f, "AssertionExecutionError({e:?})"),
+            Self::AssertionReadError(e) => write!(f, "AssertionReadError({e:?})"),
+        }
+    }
 }

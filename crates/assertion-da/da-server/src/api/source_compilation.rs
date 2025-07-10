@@ -354,7 +354,7 @@ impl Drop for ContainerManager {
 
         // Block on the async operations
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let _ = handle.block_on(async {
+            handle.block_on(async {
                 // Remove the container
                 let remove_options = Some(RemoveContainerOptions {
                     force: true,
@@ -689,7 +689,7 @@ pub enum CompilationError {
 #[cfg(all(test, feature = "full-test"))]
 mod tests {
     use super::*;
-    
+
     #[cfg(feature = "full-test")]
     use once_cell::sync::Lazy;
 

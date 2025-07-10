@@ -89,7 +89,6 @@ pub fn build_optimism_evm<'db, DB, I>(
 ) -> OpEvm<'db, DB, I>
 where
     DB: Database,
-    DB::Error: Send + Sync + 'static,
     I: Inspector<OpCtx<'db, DB>>,
 {
     let op_cfg = env.cfg_env.clone().with_spec(op_revm::OpSpecId::ISTHMUS);
@@ -130,7 +129,6 @@ type EthEvm<'db, DB, I> = Evm<EthCtx<'db, DB>, I, EthIns<'db, DB>, PrecompilesMa
 pub fn build_eth_evm<'db, DB, I>(db: &'db mut DB, env: &EvmEnv, inspector: I) -> EthEvm<'db, DB, I>
 where
     DB: Database,
-    DB::Error: Send + Sync + 'static,
     I: Inspector<EthCtx<'db, DB>>,
 {
     let spec = env.cfg_env.spec;
