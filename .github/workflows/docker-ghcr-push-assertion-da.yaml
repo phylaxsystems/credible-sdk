@@ -20,9 +20,9 @@ jobs:
       - name: Check version matches tag
         run: |
           TAG_VERSION=${GITHUB_REF#refs/tags/}
-          CARGO_VERSION=$(grep -m 1 '^version = ' crates/da-server/Cargo.toml | cut -d '"' -f2)
+          CARGO_VERSION=$(grep -m 1 '^version = ' Cargo.toml | cut -d '"' -f2)
           if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "Version mismatch: Tag version ($TAG_VERSION) does not match da-server Cargo.toml version ($CARGO_VERSION)"
+            echo "Version mismatch: Tag version ($TAG_VERSION) does not match workspace Cargo.toml version ($CARGO_VERSION)"
             exit 1
           fi
   docker-ghcr-push:
