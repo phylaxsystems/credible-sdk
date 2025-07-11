@@ -1,0 +1,52 @@
+[package]
+name = "dapp-api-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.85"
+description = "API client for interacting with dapp services"
+
+[dependencies]
+# HTTP client
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# OpenAPI client generation
+progenitor = "0.8"
+progenitor-client = "0.8"
+
+# Dependencies for generated code
+regress = "0.10"
+uuid = { version = "1.11", features = ["serde", "v4"] }
+chrono = { workspace = true, features = ["serde"] }
+
+[features]
+default = []
+regenerate = []
+
+[build-dependencies]
+reqwest = { workspace = true, features = ["blocking", "json"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+progenitor = "0.8"
+openapiv3 = "2.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
+httpmock = "0.7"
+assert_matches = "1.5"
+rstest = "0.24"
+pretty_assertions = "1.4"

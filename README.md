@@ -63,8 +63,10 @@ Common workflows include:
 pcl auth login                                     # Authenticate with wallet
 pcl build                                          # Compile Solidity assertions
 pcl test                                           # Run assertion tests  
-pcl store --assertion-contract AssertionName       # Upload to DA layer
-pcl submit -p "Project Name" -a "AssertionName"    # Submit to dApp
+pcl store AssertionName                            # Upload to DA layer (no constructor args)
+pcl store AssertionName 0x123... 100              # Upload to DA layer (with constructor args)
+pcl submit -p "Project Name" -a AssertionName      # Submit to dApp (new format)
+pcl submit -p "Project Name" -a 'AssertionName(0x123...,100)'  # Submit to dApp (legacy format)
 ```
 
 The CLI automatically detects assertion projects by looking for an `assertions/` directory or `foundry.toml` file.

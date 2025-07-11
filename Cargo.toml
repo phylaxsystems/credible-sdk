@@ -9,6 +9,7 @@ members = [
     "crates/pcl/core",
     "crates/int-test-utils",
     "crates/assertion-executor",
+    "crates/dapp-api-client",
 ]
 exclude = ["fuzz"]
 resolver = "2"
@@ -38,6 +39,9 @@ int-test-utils = { path = "crates/int-test-utils" }
 
 # assertion-executor
 assertion-executor = { path = "crates/assertion-executor" }
+
+# dapp-api-client
+dapp-api-client = { path = "crates/dapp-api-client" }
 
 anyhow = "1.0.86"
 clap = {version = "4.5.11", features = ["derive", "env"]}
