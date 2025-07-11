@@ -31,7 +31,7 @@ jobs:
           fi
   build-pcl:
     needs: check-version
-    uses: ./.github/workflows/build-rust-binary.yml
+    uses: phylaxsystems/actions/.github/workflows/rust-build-binary.yaml@main
     with:
       binary-name: pcl
       version: ${{ needs.check-version.outputs.version }}
@@ -41,13 +41,13 @@ jobs:
   
   build-assertion-da:
     needs: check-version
-    uses: ./.github/workflows/build-rust-binary.yml
+    uses: phylaxsystems/actions/.github/workflows/rust-build-binary.yaml@main
     with:
       binary-name: assertion-da
       version: ${{ needs.check-version.outputs.version }}
       artifact_name: assertion-da-binaries
       rust-channel: "nightly"
-      package: "assertion-da"
+      package: "assertion-da-server"
   
   combine-artifacts:
     needs: [build-pcl, build-assertion-da]
