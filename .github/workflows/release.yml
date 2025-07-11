@@ -37,7 +37,7 @@ jobs:
       version: ${{ needs.check-version.outputs.version }}
       artifact_name: pcl-binaries
       rust-channel: "nightly"
-      package: "pcl-cli"
+      package: "pcl"
   
   build-assertion-da:
     needs: check-version
