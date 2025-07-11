@@ -12,3 +12,33 @@
 # Claude code
 .claude
 *CLAUDE*
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+# Dependency directories
+node_modules/
+# Environment variables
+# Editor directories and files
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+.DS_Store
+
+# Task files
+tasks.json
+tasks/
+
+# OpenAPI cache
+crates/dapp-api-client/openapi/
+
+# Generated client code
+crates/dapp-api-client/src/generated/client.rs
