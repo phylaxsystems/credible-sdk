@@ -682,16 +682,16 @@ mod tests {
 
         let parsed = args.parse_assertion_keys().unwrap();
         assert_eq!(parsed.len(), 4);
-        
+
         assert_eq!(parsed[0].assertion_name, "AssertionName1");
         assert_eq!(parsed[0].constructor_args.len(), 0);
-        
+
         assert_eq!(parsed[1].assertion_name, "AssertionName2");
         assert_eq!(parsed[1].constructor_args.len(), 0);
-        
+
         assert_eq!(parsed[2].assertion_name, "AssertionName3");
         assert_eq!(parsed[2].constructor_args, vec!["arg1"]);
-        
+
         assert_eq!(parsed[3].assertion_name, "AssertionName4");
         assert_eq!(parsed[3].constructor_args, vec!["arg1", "arg2", "arg3"]);
     }
@@ -703,7 +703,7 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![
-                "TokenAssertion(0x1234567890123456789012345678901234567890)".to_string()
+                "TokenAssertion(0x1234567890123456789012345678901234567890)".to_string(),
             ]),
             assertion_name: None,
             constructor_args: vec![],
@@ -712,7 +712,10 @@ mod tests {
         let parsed = args.parse_assertion_keys().unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "TokenAssertion");
-        assert_eq!(parsed[0].constructor_args, vec!["0x1234567890123456789012345678901234567890"]);
+        assert_eq!(
+            parsed[0].constructor_args,
+            vec!["0x1234567890123456789012345678901234567890"]
+        );
     }
 
     #[test]
@@ -732,8 +735,13 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "ComplexAssertion");
         assert_eq!(
-            parsed[0].constructor_args, 
-            vec!["0x742d35Cc6634C0532925a3b844Bc9e7595f8b2dc", "1000000", "true", "ipfs://QmHash"]
+            parsed[0].constructor_args,
+            vec![
+                "0x742d35Cc6634C0532925a3b844Bc9e7595f8b2dc",
+                "1000000",
+                "true",
+                "ipfs://QmHash"
+            ]
         );
     }
 
@@ -755,7 +763,7 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "TokenAssertion");
         assert_eq!(
-            parsed[0].constructor_args, 
+            parsed[0].constructor_args,
             vec!["0x1234567890123456789012345678901234567890", "1000000"]
         );
     }
@@ -767,7 +775,7 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![
-                "FunctionAssertion(someFunc(uint256,address),100)".to_string()
+                "FunctionAssertion(someFunc(uint256,address),100)".to_string(),
             ]),
             assertion_name: None,
             constructor_args: vec![],
@@ -778,7 +786,7 @@ mod tests {
         assert_eq!(parsed[0].assertion_name, "FunctionAssertion");
         // The current parser splits on all commas, including those within parentheses
         assert_eq!(
-            parsed[0].constructor_args, 
+            parsed[0].constructor_args,
             vec!["someFunc(uint256", "address)", "100"]
         );
     }
@@ -790,7 +798,7 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![
-                r#"StringAssertion("hello, world","test string")"#.to_string()
+                r#"StringAssertion("hello, world","test string")"#.to_string(),
             ]),
             assertion_name: None,
             constructor_args: vec![],
@@ -800,7 +808,7 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "StringAssertion");
         assert_eq!(
-            parsed[0].constructor_args, 
+            parsed[0].constructor_args,
             vec![r#""hello"#, r#" world""#, r#""test string""#]
         );
     }
@@ -811,9 +819,7 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                "EmptyStringAssertion(,arg2,)".to_string()
-            ]),
+            assertion_keys: Some(vec!["EmptyStringAssertion(,arg2,)".to_string()]),
             assertion_name: None,
             constructor_args: vec![],
         };
@@ -821,10 +827,7 @@ mod tests {
         let parsed = args.parse_assertion_keys().unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "EmptyStringAssertion");
-        assert_eq!(
-            parsed[0].constructor_args, 
-            vec!["", "arg2", ""]
-        );
+        assert_eq!(parsed[0].constructor_args, vec!["", "arg2", ""]);
     }
 
     #[test]
@@ -834,7 +837,7 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![
-                "UrlAssertion(https://example.com/api,http://localhost:8080)".to_string()
+                "UrlAssertion(https://example.com/api,http://localhost:8080)".to_string(),
             ]),
             assertion_name: None,
             constructor_args: vec![],
@@ -844,7 +847,7 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "UrlAssertion");
         assert_eq!(
-            parsed[0].constructor_args, 
+            parsed[0].constructor_args,
             vec!["https://example.com/api", "http://localhost:8080"]
         );
     }
@@ -869,8 +872,13 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "SpecialAssertion");
         assert_eq!(
-            parsed[0].constructor_args, 
-            vec!["arg-with-dashes", "arg_with_underscores", "arg.with.dots", "arg/with/slashes"]
+            parsed[0].constructor_args,
+            vec![
+                "arg-with-dashes",
+                "arg_with_underscores",
+                "arg.with.dots",
+                "arg/with/slashes"
+            ]
         );
     }
 
@@ -881,7 +889,7 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![
-                r#"JsonAssertion({"key":"value"},["item1","item2"])"#.to_string()
+                r#"JsonAssertion({"key":"value"},["item1","item2"])"#.to_string(),
             ]),
             assertion_name: None,
             constructor_args: vec![],
@@ -892,7 +900,7 @@ mod tests {
         assert_eq!(parsed[0].assertion_name, "JsonAssertion");
         // The current parser splits on all commas, including those within JSON structures
         assert_eq!(
-            parsed[0].constructor_args, 
+            parsed[0].constructor_args,
             vec![r#"{"key":"value"}"#, r#"["item1""#, r#""item2"]"#]
         );
     }
@@ -904,9 +912,7 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                format!("LongAssertion({},short)", long_arg)
-            ]),
+            assertion_keys: Some(vec![format!("LongAssertion({},short)", long_arg)]),
             assertion_name: None,
             constructor_args: vec![],
         };
@@ -924,9 +930,7 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                "UnicodeAssertion(Hello🌍,测试,🚀🚀🚀)".to_string()
-            ]),
+            assertion_keys: Some(vec!["UnicodeAssertion(Hello🌍,测试,🚀🚀🚀)".to_string()]),
             assertion_name: None,
             constructor_args: vec![],
         };
@@ -935,7 +939,7 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "UnicodeAssertion");
         assert_eq!(
-            parsed[0].constructor_args, 
+            parsed[0].constructor_args,
             vec!["Hello🌍", "测试", "🚀🚀🚀"]
         );
     }
@@ -947,7 +951,7 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![
-                "MalformedAssertion(arg1,arg2".to_string()  // Missing closing parenthesis
+                "MalformedAssertion(arg1,arg2".to_string(), // Missing closing parenthesis
             ]),
             assertion_name: None,
             constructor_args: vec![],
@@ -996,8 +1000,14 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "MixedAssertion");
         assert_eq!(
-            parsed[0].constructor_args, 
-            vec!["0x742d35Cc6634C0532925a3b844Bc9e7595f8b2dc", "1000000", "true", "ipfs://QmHash", "https://example.com"]
+            parsed[0].constructor_args,
+            vec![
+                "0x742d35Cc6634C0532925a3b844Bc9e7595f8b2dc",
+                "1000000",
+                "true",
+                "ipfs://QmHash",
+                "https://example.com"
+            ]
         );
     }
 
@@ -1034,12 +1044,12 @@ mod tests {
 
         let parsed = args.parse_assertion_keys().unwrap();
         assert_eq!(parsed.len(), 2);
-        
+
         // Note: The current parser doesn't trim whitespace from assertion names
         assert_eq!(parsed[0].assertion_name, " SpacedAssertion ");
         // The parser includes the closing paren with the last arg when there's space before it
         assert_eq!(parsed[0].constructor_args, vec![" arg1 ", " arg2 ) "]);
-        
+
         assert_eq!(parsed[1].assertion_name, "\tTabbedAssertion\t");
         assert_eq!(parsed[1].constructor_args, vec!["\targ1\t", "\targ2\t)\t"]);
     }
@@ -1050,9 +1060,7 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                "ConsecutiveCommas(arg1,,arg3,,,arg6)".to_string()
-            ]),
+            assertion_keys: Some(vec!["ConsecutiveCommas(arg1,,arg3,,,arg6)".to_string()]),
             assertion_name: None,
             constructor_args: vec![],
         };
@@ -1060,7 +1068,10 @@ mod tests {
         let parsed = args.parse_assertion_keys().unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "ConsecutiveCommas");
-        assert_eq!(parsed[0].constructor_args, vec!["arg1", "", "arg3", "", "", "arg6"]);
+        assert_eq!(
+            parsed[0].constructor_args,
+            vec!["arg1", "", "arg3", "", "", "arg6"]
+        );
     }
 
     #[test]
@@ -1098,11 +1109,7 @@ mod tests {
         let values = vec!["assertion1".to_string(), "assertion2".to_string()];
         let preselected = vec!["assertion1".to_string(), "assertion3".to_string()];
         // This would normally prompt the user, but we can't test interactive behavior
-        let _ = args.provide_or_multi_select(
-            Some(preselected),
-            values,
-            "Select:".to_string(),
-        );
+        let _ = args.provide_or_multi_select(Some(preselected), values, "Select:".to_string());
     }
 
     #[test]
@@ -1122,13 +1129,13 @@ mod tests {
 
         let parsed = args.parse_assertion_keys().unwrap();
         assert_eq!(parsed.len(), 3);
-        
+
         assert_eq!(parsed[0].assertion_name, "camelCaseAssertion");
         assert_eq!(parsed[0].constructor_args, vec!["ARG1", "arg2", "Arg3"]);
-        
+
         assert_eq!(parsed[1].assertion_name, "UPPERCASE_ASSERTION");
         assert_eq!(parsed[1].constructor_args, vec!["PARAM1", "PARAM2"]);
-        
+
         assert_eq!(parsed[2].assertion_name, "lowercase_assertion");
         assert_eq!(parsed[2].constructor_args, vec!["value1", "value2"]);
     }
