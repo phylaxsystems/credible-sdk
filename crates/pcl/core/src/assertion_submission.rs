@@ -131,20 +131,19 @@ impl DappSubmitArgs {
             } else {
                 // If exact match not found, show error and allow selection
                 println!(
-                    "Warning: No stored assertion found for '{}' with the provided constructor arguments.",
-                    positional_key
+                    "Warning: No stored assertion found for '{positional_key}' with the provided constructor arguments."
                 );
                 println!("Please select from available stored assertions:");
                 self.select_assertions(keys.as_slice())?
                     .into_iter()
-                    .map(|s| AssertionKey::from(s))
+                    .map(AssertionKey::from)
                     .collect()
             }
         } else {
             // Use the existing selection logic for -a flag or interactive mode
             self.select_assertions(keys.as_slice())?
                 .into_iter()
-                .map(|s| AssertionKey::from(s))
+                .map(AssertionKey::from)
                 .collect()
         };
 
