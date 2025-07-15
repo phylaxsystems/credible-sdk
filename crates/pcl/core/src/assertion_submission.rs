@@ -960,8 +960,7 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(format!(
-                "LongAssertion({},short)",
-                long_arg
+                "LongAssertion({long_arg},short)"
             ))]),
             assertion_name: None,
             constructor_args: vec![],
