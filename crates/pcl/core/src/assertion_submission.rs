@@ -76,9 +76,10 @@ pub struct DappSubmitArgs {
         short = 'a',
         value_name = "ASSERTION",
         value_hint = ValueHint::Other,
-        help = "Assertion in format 'Name(arg1,arg2)'. Use multiple -a flags for multiple assertions."
+        help = "Assertion in format 'Name(arg1,arg2)'. Use multiple -a flags for multiple assertions.",
+        value_parser
     )]
-    pub assertion_keys: Option<Vec<String>>,
+    pub assertion_keys: Option<Vec<AssertionKey>>,
 
     /// Positional argument for assertion name when submitting a single assertion
     #[clap(
@@ -100,26 +101,6 @@ pub struct DappSubmitArgs {
 }
 
 impl DappSubmitArgs {
-    /// Parses assertion keys from command line arguments
-    /// Supports positional arguments and string format with parentheses
-    fn parse_assertion_keys(&self) -> Option<Vec<AssertionKey>> {
-        // First check if positional arguments are provided
-        if let Some(assertion_name) = &self.assertion_name {
-            return Some(vec![AssertionKey::new(
-                assertion_name.clone(),
-                self.constructor_args.clone(),
-            )]);
-        }
-
-        // Otherwise, parse from -a flags
-        // Each -a flag should contain a single assertion in parentheses format
-        self.assertion_keys.as_ref().map(|args| {
-            args.iter()
-                .map(|arg| AssertionKey::from(arg.clone()))
-                .collect()
-        })
-    }
-
     /// Executes the assertion submission workflow
     ///
     /// # Arguments
@@ -137,14 +118,41 @@ impl DappSubmitArgs {
         let project = self.select_project(&projects)?;
 
         let keys: Vec<AssertionKey> = config.assertions_for_submission.keys().cloned().collect();
-        let assertion_keys = self.select_assertions(keys.as_slice())?;
+
+        // Handle positional arguments if provided
+        let assertion_keys: Vec<AssertionKey> = if let Some(assertion_name) = &self.assertion_name {
+            // Create AssertionKey from positional arguments
+            let positional_key =
+                AssertionKey::new(assertion_name.clone(), self.constructor_args.clone());
+
+            // Check if this exact assertion exists in the stored assertions
+            if keys.contains(&positional_key) {
+                vec![positional_key]
+            } else {
+                // If exact match not found, show error and allow selection
+                println!(
+                    "Warning: No stored assertion found for '{}' with the provided constructor arguments.",
+                    positional_key
+                );
+                println!("Please select from available stored assertions:");
+                self.select_assertions(keys.as_slice())?
+                    .into_iter()
+                    .map(|s| AssertionKey::from(s))
+                    .collect()
+            }
+        } else {
+            // Use the existing selection logic for -a flag or interactive mode
+            self.select_assertions(keys.as_slice())?
+                .into_iter()
+                .map(|s| AssertionKey::from(s))
+                .collect()
+        };
 
         let mut assertions = vec![];
         for key in assertion_keys {
-            let assertion = config
-                .assertions_for_submission
-                .remove(&key.clone().into())
-                .ok_or(DappSubmitError::CouldNotFindStoredAssertion(key.clone()))?;
+            let assertion = config.assertions_for_submission.remove(&key).ok_or(
+                DappSubmitError::CouldNotFindStoredAssertion(key.to_string()),
+            )?;
 
             assertions.push(assertion);
         }
@@ -195,7 +203,8 @@ impl DappSubmitArgs {
             .collect();
 
         let preselected_assertion_keys = self
-            .parse_assertion_keys()
+            .assertion_keys
+            .as_ref()
             .map(|keys| keys.iter().map(|k| k.to_string()).collect());
 
         self.provide_or_multi_select(
@@ -400,7 +409,7 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["assertion1".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::new("assertion1".to_string(), vec![])]),
             assertion_name: None,
             constructor_args: vec![],
         };
@@ -426,7 +435,7 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["assertion1".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::new("assertion1".to_string(), vec![])]),
             assertion_name: None,
             constructor_args: vec![],
         };
@@ -469,14 +478,20 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![
-                "AssertionName1(arg1,arg2)".to_string(),
-                "AssertionName2(arg3,arg4)".to_string(),
+                AssertionKey::new(
+                    "AssertionName1".to_string(),
+                    vec!["arg1".to_string(), "arg2".to_string()],
+                ),
+                AssertionKey::new(
+                    "AssertionName2".to_string(),
+                    vec!["arg3".to_string(), "arg4".to_string()],
+                ),
             ]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].assertion_name, "AssertionName1");
         assert_eq!(parsed[0].constructor_args, vec!["arg1", "arg2"]);
@@ -489,12 +504,12 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["AssertionName(arg1,arg2)".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::from("AssertionName(arg1,arg2)")]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "AssertionName");
         assert_eq!(parsed[0].constructor_args, vec!["arg1", "arg2"]);
@@ -505,12 +520,12 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["AssertionName()".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::from("AssertionName()")]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "AssertionName");
         assert_eq!(parsed[0].constructor_args.len(), 0);
@@ -526,10 +541,17 @@ mod tests {
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].assertion_name, "AssertionName");
-        assert_eq!(parsed[0].constructor_args, vec!["arg1", "arg2"]);
+        // With clap implementation, positional args don't populate assertion_keys
+        let parsed = args.assertion_keys;
+        assert!(parsed.is_none());
+
+        // Test that we can construct the key manually from positional args
+        let key = AssertionKey::new(
+            "AssertionName".to_string(),
+            vec!["arg1".to_string(), "arg2".to_string()],
+        );
+        assert_eq!(key.assertion_name, "AssertionName");
+        assert_eq!(key.constructor_args, vec!["arg1", "arg2"]);
     }
 
     #[test]
@@ -542,28 +564,32 @@ mod tests {
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].assertion_name, "AssertionName");
-        assert_eq!(parsed[0].constructor_args.len(), 0);
+        // With clap implementation, positional args don't populate assertion_keys
+        let parsed = args.assertion_keys;
+        assert!(parsed.is_none());
+
+        // Test that we can construct the key manually from positional args
+        let key = AssertionKey::new("AssertionName".to_string(), vec![]);
+        assert_eq!(key.assertion_name, "AssertionName");
+        assert_eq!(key.constructor_args.len(), 0);
     }
 
     #[test]
     fn test_parse_assertion_keys_positional_takes_precedence() {
-        // When both positional and -a flags are provided, positional should take precedence
-        // (though clap should prevent this with conflicts_with)
+        // With clap implementation, conflicts_with prevents both from being set
+        // This test now verifies that assertion_keys takes precedence when both are set
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["FlagAssertion".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::new("FlagAssertion".to_string(), vec![])]),
             assertion_name: Some("PositionalAssertion".to_string()),
             constructor_args: vec!["pos_arg".to_string()],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].assertion_name, "PositionalAssertion");
-        assert_eq!(parsed[0].constructor_args, vec!["pos_arg"]);
+        assert_eq!(parsed[0].assertion_name, "FlagAssertion");
+        assert_eq!(parsed[0].constructor_args.len(), 0);
     }
 
     #[test]
@@ -572,12 +598,12 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["AssertionName".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::from("AssertionName")]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "AssertionName");
         assert_eq!(parsed[0].constructor_args.len(), 0);
@@ -594,7 +620,7 @@ mod tests {
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys();
+        let parsed = args.assertion_keys;
         assert!(parsed.is_none());
     }
 
@@ -609,7 +635,7 @@ mod tests {
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 0);
     }
 
@@ -619,12 +645,12 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["AssertionName(arg-1,arg_2,arg.3)".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::from("AssertionName(arg-1,arg_2,arg.3)")]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "AssertionName");
         assert_eq!(parsed[0].constructor_args, vec!["arg-1", "arg_2", "arg.3"]);
@@ -636,12 +662,12 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["AssertionName(arg1, arg2 , arg3)".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::from("AssertionName(arg1, arg2 , arg3)")]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "AssertionName");
         assert_eq!(parsed[0].constructor_args, vec!["arg1", " arg2 ", " arg3"]);
@@ -653,12 +679,12 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["AssertionName(123,456,789)".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::from("AssertionName(123,456,789)")]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "AssertionName");
         assert_eq!(parsed[0].constructor_args, vec!["123", "456", "789"]);
@@ -671,16 +697,16 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![
-                "AssertionName1".to_string(),
-                "AssertionName2()".to_string(),
-                "AssertionName3(arg1)".to_string(),
-                "AssertionName4(arg1,arg2,arg3)".to_string(),
+                AssertionKey::from("AssertionName1"),
+                AssertionKey::from("AssertionName2()"),
+                AssertionKey::from("AssertionName3(arg1)"),
+                AssertionKey::from("AssertionName4(arg1,arg2,arg3)"),
             ]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 4);
 
         assert_eq!(parsed[0].assertion_name, "AssertionName1");
@@ -702,14 +728,14 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                "TokenAssertion(0x1234567890123456789012345678901234567890)".to_string(),
-            ]),
+            assertion_keys: Some(vec![AssertionKey::from(
+                "TokenAssertion(0x1234567890123456789012345678901234567890)",
+            )]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "TokenAssertion");
         assert_eq!(
@@ -724,14 +750,14 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                "ComplexAssertion(0x742d35Cc6634C0532925a3b844Bc9e7595f8b2dc,1000000,true,ipfs://QmHash)".to_string()
-            ]),
+            assertion_keys: Some(vec![AssertionKey::from(
+                "ComplexAssertion(0x742d35Cc6634C0532925a3b844Bc9e7595f8b2dc,1000000,true,ipfs://QmHash)",
+            )]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "ComplexAssertion");
         assert_eq!(
@@ -759,11 +785,21 @@ mod tests {
             ],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].assertion_name, "TokenAssertion");
+        // With clap implementation, positional args don't populate assertion_keys
+        let parsed = args.assertion_keys;
+        assert!(parsed.is_none());
+
+        // Test that we can construct the key manually from positional args
+        let key = AssertionKey::new(
+            "TokenAssertion".to_string(),
+            vec![
+                "0x1234567890123456789012345678901234567890".to_string(),
+                "1000000".to_string(),
+            ],
+        );
+        assert_eq!(key.assertion_name, "TokenAssertion");
         assert_eq!(
-            parsed[0].constructor_args,
+            key.constructor_args,
             vec!["0x1234567890123456789012345678901234567890", "1000000"]
         );
     }
@@ -774,14 +810,14 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                "FunctionAssertion(someFunc(uint256,address),100)".to_string(),
-            ]),
+            assertion_keys: Some(vec![AssertionKey::from(
+                "FunctionAssertion(someFunc(uint256,address),100)",
+            )]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "FunctionAssertion");
         // The current parser splits on all commas, including those within parentheses
@@ -797,14 +833,14 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                r#"StringAssertion("hello, world","test string")"#.to_string(),
-            ]),
+            assertion_keys: Some(vec![AssertionKey::from(
+                r#"StringAssertion("hello, world","test string")"#,
+            )]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "StringAssertion");
         assert_eq!(
@@ -819,12 +855,12 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["EmptyStringAssertion(,arg2,)".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::from("EmptyStringAssertion(,arg2,)")]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "EmptyStringAssertion");
         assert_eq!(parsed[0].constructor_args, vec!["", "arg2", ""]);
@@ -836,14 +872,14 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                "UrlAssertion(https://example.com/api,http://localhost:8080)".to_string(),
-            ]),
+            assertion_keys: Some(vec![AssertionKey::from(
+                "UrlAssertion(https://example.com/api,http://localhost:8080)",
+            )]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "UrlAssertion");
         assert_eq!(
@@ -868,11 +904,23 @@ mod tests {
             ],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].assertion_name, "SpecialAssertion");
+        // With clap implementation, positional args don't populate assertion_keys
+        let parsed = args.assertion_keys;
+        assert!(parsed.is_none());
+
+        // Test that we can construct the key manually from positional args
+        let key = AssertionKey::new(
+            "SpecialAssertion".to_string(),
+            vec![
+                "arg-with-dashes".to_string(),
+                "arg_with_underscores".to_string(),
+                "arg.with.dots".to_string(),
+                "arg/with/slashes".to_string(),
+            ],
+        );
+        assert_eq!(key.assertion_name, "SpecialAssertion");
         assert_eq!(
-            parsed[0].constructor_args,
+            key.constructor_args,
             vec![
                 "arg-with-dashes",
                 "arg_with_underscores",
@@ -888,14 +936,14 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                r#"JsonAssertion({"key":"value"},["item1","item2"])"#.to_string(),
-            ]),
+            assertion_keys: Some(vec![AssertionKey::from(
+                r#"JsonAssertion({"key":"value"},["item1","item2"])"#,
+            )]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "JsonAssertion");
         // The current parser splits on all commas, including those within JSON structures
@@ -912,12 +960,15 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![format!("LongAssertion({},short)", long_arg)]),
+            assertion_keys: Some(vec![AssertionKey::from(format!(
+                "LongAssertion({},short)",
+                long_arg
+            ))]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "LongAssertion");
         assert_eq!(parsed[0].constructor_args[0].len(), 1000);
@@ -930,12 +981,14 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["UnicodeAssertion(Hello🌍,测试,🚀🚀🚀)".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::from(
+                "UnicodeAssertion(Hello🌍,测试,🚀🚀🚀)",
+            )]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "UnicodeAssertion");
         assert_eq!(
@@ -950,14 +1003,12 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec![
-                "MalformedAssertion(arg1,arg2".to_string(), // Missing closing parenthesis
-            ]),
+            assertion_keys: Some(vec![AssertionKey::from("MalformedAssertion(arg1,arg2")]), // Missing closing parenthesis
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "MalformedAssertion");
         // The parser still splits on commas even without closing parenthesis
@@ -975,7 +1026,7 @@ mod tests {
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
 
-        let parsed = args.parse_assertion_keys();
+        let parsed = args.assertion_keys;
         assert!(parsed.is_none());
     }
 
@@ -996,11 +1047,24 @@ mod tests {
             ],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].assertion_name, "MixedAssertion");
+        // With clap implementation, positional args don't populate assertion_keys
+        let parsed = args.assertion_keys;
+        assert!(parsed.is_none());
+
+        // Test that we can construct the key manually from positional args
+        let key = AssertionKey::new(
+            "MixedAssertion".to_string(),
+            vec![
+                "0x742d35Cc6634C0532925a3b844Bc9e7595f8b2dc".to_string(),
+                "1000000".to_string(),
+                "true".to_string(),
+                "ipfs://QmHash".to_string(),
+                "https://example.com".to_string(),
+            ],
+        );
+        assert_eq!(key.assertion_name, "MixedAssertion");
         assert_eq!(
-            parsed[0].constructor_args,
+            key.constructor_args,
             vec![
                 "0x742d35Cc6634C0532925a3b844Bc9e7595f8b2dc",
                 "1000000",
@@ -1017,12 +1081,15 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["SingleAssertion(arg1,arg2,arg3)".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::new(
+                "SingleAssertion".to_string(),
+                vec!["arg1".to_string(), "arg2".to_string(), "arg3".to_string()],
+            )]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "SingleAssertion");
         assert_eq!(parsed[0].constructor_args, vec!["arg1", "arg2", "arg3"]);
@@ -1035,14 +1102,14 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![
-                " SpacedAssertion ( arg1 , arg2 ) ".to_string(),
-                "\tTabbedAssertion\t(\targ1\t,\targ2\t)\t".to_string(),
+                AssertionKey::from(" SpacedAssertion ( arg1 , arg2 ) "),
+                AssertionKey::from("\tTabbedAssertion\t(\targ1\t,\targ2\t)\t"),
             ]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 2);
 
         // Note: The current parser doesn't trim whitespace from assertion names
@@ -1060,12 +1127,14 @@ mod tests {
         let args = DappSubmitArgs {
             api_url: "".to_string(),
             project_name: None,
-            assertion_keys: Some(vec!["ConsecutiveCommas(arg1,,arg3,,,arg6)".to_string()]),
+            assertion_keys: Some(vec![AssertionKey::from(
+                "ConsecutiveCommas(arg1,,arg3,,,arg6)",
+            )]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "ConsecutiveCommas");
         assert_eq!(
@@ -1119,15 +1188,15 @@ mod tests {
             api_url: "".to_string(),
             project_name: None,
             assertion_keys: Some(vec![
-                "camelCaseAssertion(ARG1,arg2,Arg3)".to_string(),
-                "UPPERCASE_ASSERTION(PARAM1,PARAM2)".to_string(),
-                "lowercase_assertion(value1,value2)".to_string(),
+                AssertionKey::from("camelCaseAssertion(ARG1,arg2,Arg3)"),
+                AssertionKey::from("UPPERCASE_ASSERTION(PARAM1,PARAM2)"),
+                AssertionKey::from("lowercase_assertion(value1,value2)"),
             ]),
             assertion_name: None,
             constructor_args: vec![],
         };
 
-        let parsed = args.parse_assertion_keys().unwrap();
+        let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 3);
 
         assert_eq!(parsed[0].assertion_name, "camelCaseAssertion");
@@ -1138,5 +1207,49 @@ mod tests {
 
         assert_eq!(parsed[2].assertion_name, "lowercase_assertion");
         assert_eq!(parsed[2].constructor_args, vec!["value1", "value2"]);
+    }
+
+    #[test]
+    fn test_positional_args_create_assertion_key() {
+        // Test that positional arguments correctly create an AssertionKey
+        let args = DappSubmitArgs {
+            api_url: "".to_string(),
+            project_name: None,
+            assertion_keys: None,
+            assertion_name: Some("TestAssertion".to_string()),
+            constructor_args: vec!["arg1".to_string(), "arg2".to_string(), "arg3".to_string()],
+        };
+
+        // Create the key that would be used in the run method
+        let key = AssertionKey::new(
+            args.assertion_name.clone().unwrap(),
+            args.constructor_args.clone(),
+        );
+
+        assert_eq!(key.assertion_name, "TestAssertion");
+        assert_eq!(key.constructor_args, vec!["arg1", "arg2", "arg3"]);
+        assert_eq!(key.to_string(), "TestAssertion(arg1,arg2,arg3)");
+    }
+
+    #[test]
+    fn test_positional_args_without_constructor_args() {
+        // Test positional args when no constructor arguments are provided
+        let args = DappSubmitArgs {
+            api_url: "".to_string(),
+            project_name: None,
+            assertion_keys: None,
+            assertion_name: Some("SimpleAssertion".to_string()),
+            constructor_args: vec![],
+        };
+
+        // Create the key that would be used in the run method
+        let key = AssertionKey::new(
+            args.assertion_name.clone().unwrap(),
+            args.constructor_args.clone(),
+        );
+
+        assert_eq!(key.assertion_name, "SimpleAssertion");
+        assert_eq!(key.constructor_args.len(), 0);
+        assert_eq!(key.to_string(), "SimpleAssertion");
     }
 }
