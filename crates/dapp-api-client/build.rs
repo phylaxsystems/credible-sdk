@@ -51,9 +51,7 @@ fn check_and_fetch_spec() -> anyhow::Result<()> {
 
     // Check if cache exists
     if !force_regenerate && std::path::Path::new(CACHE_FILE).exists() {
-        println!(
-            "cargo:warning=OpenAPI spec cache found at {CACHE_FILE}. Skipping fetch."
-        );
+        println!("cargo:warning=OpenAPI spec cache found at {CACHE_FILE}. Skipping fetch.");
         println!("cargo:warning=To force regeneration, set FORCE_SPEC_REGENERATE=true");
         return Ok(());
     }
@@ -216,7 +214,9 @@ fn generate_client_code() -> anyhow::Result<()> {
     if !std::path::Path::new(SPEC_FILE).exists() {
         // In CI environments, automatically fetch the spec if missing
         if std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok() {
-            println!("cargo:warning=OpenAPI spec not found in CI environment. Fetching automatically...");
+            println!(
+                "cargo:warning=OpenAPI spec not found in CI environment. Fetching automatically..."
+            );
             fetch_spec_for_ci()?;
         } else {
             anyhow::bail!(
@@ -296,13 +296,13 @@ fn generate_client_code() -> anyhow::Result<()> {
 /// This doesn't require the 'regenerate' feature and is always available
 fn fetch_spec_for_ci() -> anyhow::Result<()> {
     use std::time::Duration;
-    
+
     const OPENAPI_URL: &str = "https://dapp.phylax.systems/api/v1/openapi";
     const TIMEOUT_SECONDS: u64 = 30;
     const CACHE_DIR: &str = "openapi";
     const CACHE_FILE: &str = "openapi/spec.json";
 
-    println!("cargo:warning=Fetching OpenAPI spec from {}", OPENAPI_URL);
+    println!("cargo:warning=Fetching OpenAPI spec from {OPENAPI_URL}");
 
     // Create openapi directory if it doesn't exist
     std::fs::create_dir_all(CACHE_DIR)?;
@@ -326,23 +326,23 @@ fn fetch_spec_for_ci() -> anyhow::Result<()> {
 
     // Get the response text
     let spec_text = response.text()?;
-    
+
     // Parse as JSON to validate
     let spec_json: serde_json::Value = serde_json::from_str(&spec_text)?;
-    
+
     // Basic validation - check for required OpenAPI fields
     let openapi_version = spec_json
         .get("openapi")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'openapi' field"))?;
-    
+
     if !openapi_version.starts_with("3.") {
         anyhow::bail!("Unsupported OpenAPI version: {}", openapi_version);
     }
 
     // Write the spec to file
     std::fs::write(CACHE_FILE, &spec_text)?;
-    
+
     println!("cargo:warning=Successfully fetched OpenAPI spec for CI build");
 
     Ok(())

@@ -31,7 +31,7 @@ fn main() {
 
     // Test serialization (if serde_json is available)
     if let Ok(json) = serde_json::to_string(&Environment::Production) {
-        println!("✓ JSON serialization: {}", json);
+        println!("✓ JSON serialization: {json}");
 
         // Test deserialization
         if let Ok(deserialized) = serde_json::from_str::<Environment>(&json) {

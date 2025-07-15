@@ -45,7 +45,7 @@ async fn test_private_endpoint_without_auth_real_api() {
         result.is_ok(),
         "GET /projects/saved should succeed without auth"
     );
-    
+
     let response = result.unwrap().into_inner();
     assert_eq!(
         response.len(),

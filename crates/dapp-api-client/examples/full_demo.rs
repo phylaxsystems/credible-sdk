@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check if DAPP_ENV is set
     let env_setting = env::var("DAPP_ENV").unwrap_or_else(|_| "prod".to_string());
-    println!("   - Current DAPP_ENV: {}", env_setting);
+    println!("   - Current DAPP_ENV: {env_setting}");
 
     // Load config from environment
     let config = Config::from_env();
@@ -102,14 +102,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Err(e) => {
-                    println!("   ❌ Failed to get projects: {}", e);
+                    println!("   ❌ Failed to get projects: {e}");
 
                     // Show error details
-                    println!("   - Error details: {:?}", e);
+                    println!("   - Error details: {e:?}");
 
                     // Try to extract status code if available
                     if let Some(status) = e.status() {
-                        println!("   - HTTP Status: {}", status);
+                        println!("   - HTTP Status: {status}");
                     }
                 }
             }
@@ -167,12 +167,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Err(e) => {
-                    println!("   ❌ Failed to get projects: {}", e);
-                    println!("   - Error details: {:?}", e);
+                    println!("   ❌ Failed to get projects: {e}");
+                    println!("   - Error details: {e:?}");
 
                     // Try to extract status code if available
                     if let Some(status) = e.status() {
-                        println!("   - HTTP Status: {}", status);
+                        println!("   - HTTP Status: {status}");
                     }
                 }
             }

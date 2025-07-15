@@ -46,7 +46,7 @@ async fn test_public_endpoint_without_auth() {
 
     // Should succeed
     if let Err(ref e) = result {
-        eprintln!("Error calling get_projects: {:?}", e);
+        eprintln!("Error calling get_projects: {e:?}");
         eprintln!("Error status: {:?}", e.status());
     }
     assert!(result.is_ok(), "Public endpoint should work without auth");
@@ -222,7 +222,7 @@ async fn test_health_endpoint_without_auth() {
 
     // Should succeed
     if let Err(ref e) = result {
-        eprintln!("Error calling get_health: {:?}", e);
+        eprintln!("Error calling get_health: {e:?}");
         eprintln!("Error status: {:?}", e.status());
     }
     assert!(result.is_ok(), "Health endpoint should work without auth");
