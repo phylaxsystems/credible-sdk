@@ -2,6 +2,8 @@
 //!
 //! Run these tests with a local development server running:
 //! DAPP_ENV=development cargo test --test integration_auth_tests -- --nocapture
+//!
+//! TODO: Set up dapp dev server in CI to enable these integration tests to run automatically
 
 use dapp_api_client::{
     AuthConfig,
@@ -11,6 +13,7 @@ use dapp_api_client::{
 };
 
 #[tokio::test]
+#[ignore = "Requires dapp API server running at localhost:3000"]
 async fn test_public_endpoint_without_auth_real_api() {
     // Use development environment
     let config = Config::from_environment(Environment::Development);
@@ -28,6 +31,7 @@ async fn test_public_endpoint_without_auth_real_api() {
 }
 
 #[tokio::test]
+#[ignore = "Requires dapp API server running at localhost:3000"]
 async fn test_private_endpoint_without_auth_real_api() {
     // Use development environment
     let config = Config::from_environment(Environment::Development);
@@ -78,6 +82,7 @@ async fn test_private_endpoint_with_auth_real_api() {
 }
 
 #[tokio::test]
+#[ignore = "Requires dapp API server running at localhost:3000"]
 async fn test_public_endpoint_with_auth_real_api() {
     // Create a dummy auth token
     let config = Config::from_environment(Environment::Development);

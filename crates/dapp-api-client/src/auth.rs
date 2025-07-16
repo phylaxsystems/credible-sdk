@@ -56,7 +56,7 @@ pub struct Auth;
 impl Auth {
     /// Add bearer token to request headers
     ///
-    /// Formats the token according to RFC 6750 as "Bearer <token>"
+    /// Formats the token according to RFC 6750 as "Bearer ***"
     pub fn add_bearer_token(headers: &mut reqwest::header::HeaderMap, token: &str) -> Result<()> {
         use reqwest::header::{
             AUTHORIZATION,

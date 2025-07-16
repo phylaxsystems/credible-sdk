@@ -39,6 +39,3 @@ tasks/
 
 # OpenAPI cache
 crates/dapp-api-client/openapi/
-
-# Generated client code
-crates/dapp-api-client/src/generated/client.rs
