@@ -1,22 +1,34 @@
-//! Integration tests for authentication behavior against real API
+//! Integration tests for authentication behavior using mock API
 //!
-//! Run these tests with a local development server running:
-//! DAPP_ENV=development cargo test --test integration_auth_tests -- --nocapture
-//!
-//! TODO: Set up dapp dev server in CI to enable these integration tests to run automatically
+//! These tests use httpmock to simulate API responses and test client behavior.
+//! They test the same scenarios as the real API but without external dependencies.
 
 use dapp_api_client::{
     AuthConfig,
     Client,
     Config,
-    Environment,
 };
+use httpmock::prelude::*;
+use serde_json::json;
 
 #[tokio::test]
-#[ignore = "Requires dapp API server running at localhost:3000"]
 async fn test_public_endpoint_without_auth_real_api() {
-    // Use development environment
-    let config = Config::from_environment(Environment::Development);
+    let server = MockServer::start();
+
+    // Mock the health endpoint (should be public)
+    let mock = server.mock(|when, then| {
+        when.method(GET).path("/api/v1/health");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(json!({
+                "status": "ok",
+                "timestamp": "2025-01-01T00:00:00Z",
+                "environment": "test"
+            }));
+    });
+
+    // Create unauthenticated client
+    let config = Config::new(server.url("/api/v1"));
     let client = Client::new(config).expect("Failed to create client");
 
     // Call public endpoint without auth
@@ -28,13 +40,28 @@ async fn test_public_endpoint_without_auth_real_api() {
         result.is_ok(),
         "Health endpoint should work without auth against real API"
     );
+
+    mock.assert();
 }
 
 #[tokio::test]
-#[ignore = "Requires dapp API server running at localhost:3000"]
 async fn test_private_endpoint_without_auth_real_api() {
-    // Use development environment
-    let config = Config::from_environment(Environment::Development);
+    let server = MockServer::start();
+
+    // Mock the private endpoint returning empty array for unauthenticated requests
+    // (mimics real API behavior)
+    let mock = server.mock(|when, then| {
+        when.method(GET).path("/api/v1/projects/saved").query_param(
+            "wallet_address",
+            "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+        );
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(json!([])); // Empty array for unauthenticated requests
+    });
+
+    // Create unauthenticated client
+    let config = Config::new(server.url("/api/v1"));
     let client = Client::new(config).expect("Failed to create client");
 
     // Try to call a private endpoint without auth
@@ -56,16 +83,43 @@ async fn test_private_endpoint_without_auth_real_api() {
         0,
         "Should return empty array for unauthenticated request"
     );
+
+    mock.assert();
 }
 
 #[tokio::test]
-#[ignore = "Requires valid auth token in DAPP_API_TOKEN env var"]
 async fn test_private_endpoint_with_auth_real_api() {
-    // This test requires a valid token in DAPP_API_TOKEN
-    let token = std::env::var("DAPP_API_TOKEN").expect("DAPP_API_TOKEN must be set for this test");
+    let server = MockServer::start();
 
-    let config = Config::from_environment(Environment::Development);
-    let auth = AuthConfig::bearer_token(token).expect("Failed to create auth config");
+    // Mock the private endpoint with valid auth returning data
+    let mock = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/v1/projects/saved")
+            .query_param(
+                "wallet_address",
+                "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+            )
+            .header("authorization", "Bearer test-token");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(json!([
+                {
+                    "project_id": "c1e794ce-4030-487c-a4e6-917caeeb4875",
+                    "project_name": "Saved Project",
+                    "project_networks": ["1"],
+                    "project_manager": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+                    "created_at": "2025-01-01T00:00:00Z",
+                    "updated_at": "2025-01-01T00:00:00Z",
+                    "saved_count": 1,
+                    "saved_at": "2025-01-02T00:00:00Z"
+                }
+            ]));
+    });
+
+    // Create authenticated client
+    let config = Config::new(server.url("/api/v1"));
+    let auth =
+        AuthConfig::bearer_token("test-token".to_string()).expect("Failed to create auth config");
     let client = Client::new_with_auth(config, auth).expect("Failed to create client");
 
     // Call private endpoint with auth
@@ -79,13 +133,34 @@ async fn test_private_endpoint_with_auth_real_api() {
         result.is_ok(),
         "Private endpoint should work with valid auth"
     );
+
+    let response = result.unwrap().into_inner();
+    assert_eq!(response.len(), 1);
+    assert_eq!(response[0].project_name.as_str(), "Saved Project");
+
+    mock.assert();
 }
 
 #[tokio::test]
-#[ignore = "Requires dapp API server running at localhost:3000"]
 async fn test_public_endpoint_with_auth_real_api() {
-    // Create a dummy auth token
-    let config = Config::from_environment(Environment::Development);
+    let server = MockServer::start();
+
+    // Mock the health endpoint accepting auth (but not requiring it)
+    let mock = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/v1/health")
+            .header("authorization", "Bearer dummy-token");
+        then.status(200)
+            .header("content-type", "application/json")
+            .json_body(json!({
+                "status": "ok",
+                "timestamp": "2025-01-01T00:00:00Z",
+                "environment": "test"
+            }));
+    });
+
+    // Create authenticated client
+    let config = Config::new(server.url("/api/v1"));
     let auth =
         AuthConfig::bearer_token("dummy-token".to_string()).expect("Failed to create auth config");
     let client = Client::new_with_auth(config, auth).expect("Failed to create client");
@@ -99,4 +174,6 @@ async fn test_public_endpoint_with_auth_real_api() {
         result.is_ok(),
         "Public endpoint should work even with invalid auth token"
     );
+
+    mock.assert();
 }
