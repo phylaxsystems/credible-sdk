@@ -23,6 +23,7 @@ use std::{
     collections::HashMap,
     fmt,
     path::PathBuf,
+    str::FromStr,
 };
 
 /// Directory name for storing PCL configuration
@@ -104,6 +105,17 @@ impl From<String> for AssertionKey {
             assertion_name: assertion_name.to_string(),
             constructor_args,
         }
+    }
+}
+impl FromStr for AssertionKey {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(AssertionKey::from(s.to_string()))
+    }
+}
+impl From<&str> for AssertionKey {
+    fn from(s: &str) -> Self {
+        AssertionKey::from(s.to_string())
     }
 }
 // Custom Serialize implementation
