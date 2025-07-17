@@ -162,14 +162,27 @@ Options:
 #### Submit Assertions to dApps
 
 ```bash
-pcl submit [OPTIONS]
+pcl submit [OPTIONS] [ASSERTION_CONTRACT] [CONSTRUCTOR_ARGS]...
+
+Arguments:
+  [ASSERTION_CONTRACT]   Name of the assertion to submit (when submitting a single assertion)
+  [CONSTRUCTOR_ARGS]...  Constructor arguments for the assertion
 
 Options:
-  -u, --api-url <API_URL>                   Base URL for the Credible Layer dApp API [env: PCL_API_URL=] [default: https://dapp.phylax.systems/api/v1]
-  -p, --project-name <PROJECT_NAME>         Optional project name to skip interactive selection
-  -a, --assertion-keys <ASSERTION_KEYS>     Optional list of assertion name and constructor args to skip interactive selection
-                                            Format: assertion_name OR 'assertion_name(constructor_arg0,constructor_arg1)'
-  -h, --help                                Print help
+  -u, --api-url <API_URL>           Base URL for the Credible Layer dApp API [env: PCL_API_URL=] [default: https://dapp.phylax.systems/api/v1]
+  -p, --project-name <PROJECT_NAME> Optional project name to skip interactive selection
+  -a, --assertion <ASSERTION>       Assertion in format 'Name(arg1,arg2)'. Use multiple -a flags for multiple assertions.
+  -h, --help                        Print help
+
+EXAMPLES:
+    Submit a single assertion (positional args):
+        pcl submit AssertionName arg1 arg2 arg3
+
+    Submit multiple assertions (with -a flag):
+        pcl submit -a "AssertionName1(arg1,arg2,arg3)" -a "AssertionName2(arg1,arg2,arg3)"
+
+    Note: Positional arguments are for single assertions only.
+    The -a flag with parentheses format is for specifying assertions with arguments.
 ```
 
 ## Examples
@@ -186,8 +199,12 @@ pcl auth status
 # Store assertion
 pcl store my_assertion
 
-# Submit to dApp
-pcl submit -a my_assertion -p my_project
+# Submit single assertion (positional args)
+pcl submit my_assertion -p my_project
+pcl submit my_assertion arg1 arg2 -p my_project
+
+# Submit multiple assertions (with -a flag)
+pcl submit -a "my_assertion(arg1,arg2)" -a "other_assertion()" -p my_project
 
 # Logout when done
 pcl auth logout
@@ -199,9 +216,12 @@ pcl auth logout
 # Run tests
 pcl test
 
-# Store and submit assertion
-pcl store my_assertion
-pcl submit -a my_assertion -p my_project
+# Store and submit assertion with constructor args
+pcl store my_assertion arg1 arg2
+pcl submit my_assertion arg1 arg2 -p my_project
+
+# Or submit multiple assertions at once
+pcl submit -a "my_assertion(arg1,arg2)" -a "another_assertion()" -p my_project
 ```
 
 ## Troubleshooting
