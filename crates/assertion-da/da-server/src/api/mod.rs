@@ -97,6 +97,7 @@
 //! - -32603: Internal error
 
 pub mod accept;
+pub mod assertion_submission;
 pub mod db;
 pub mod process_request;
 pub mod source_compilation;
