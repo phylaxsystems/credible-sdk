@@ -67,39 +67,33 @@ use tracing::{
     warn,
 };
 
-/// Matches the incoming method sent by a client to a corresponding function.
+/// Filter requests for malformed JSON and other issues like being too large.
+///
+/// Returns the validated request or a JSON-RPC error response.
 #[tracing::instrument(
-    level = "debug",
+    level = "trace",
     skip_all,
-    target = "api::match_method",
+    target = "api::verify_request",
     fields(request_id, client_addr)
 )]
-pub async fn match_method<B>(
+async fn verify_request<B: hyper::body::Body<Error = Error>>(
     req: Request<B>,
-    db: &DbRequestSender,
-    signer: &PrivateKeySigner,
-    docker: Arc<Docker>,
-    client_addr: SocketAddr,
-) -> Result<String>
-where
-    B: hyper::body::Body<Error = Error>,
-{
-    // Generate unique request ID for correlation
-    let request_id = Uuid::new_v4();
-    let client_ip = client_addr.ip().to_string();
-
-    // Add request context to the current tracing span
-    tracing::Span::current().record("request_id", tracing::field::display(&request_id));
-    tracing::Span::current().record("client_addr", tracing::field::display(&client_addr));
-
+    request_id: &Uuid,
+    client_ip: &str,
+) -> Result<Value, String> {
     // Read body and parse as JSON-RPC request
-    let headers = req.headers().clone();
-    let body = req.into_body().collect().await?.to_bytes();
+    let body = match req.into_body().collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(err) => {
+            warn!(target: "json_rpc", "Failed to read request body: {}", err);
+            return Err(rpc_error(&json!({}), -32600, "Invalid JSON-RPC request format"));
+        }
+    };
 
     // Limit body size to 10MB
     if body.len() > 10 * 1024 * 1024 {
         warn!(target: "json_rpc", %request_id, %client_ip, "Request body too large");
-        return Ok(rpc_error_with_request_id(
+        return Err(rpc_error_with_request_id(
             &json!(""),
             -32600,
             "Request body too large",
@@ -107,23 +101,18 @@ where
         ));
     }
 
-    let json_rpc: Value = serde_json::from_slice(&body)?;
-    let method = json_rpc["method"].as_str().unwrap_or_default();
-    let json_rpc_id = json_rpc["id"].clone();
-    let labels = [("http_method", method.to_string())];
-
-    gauge!("api_requests_active", &labels).increment(1);
-    counter!("api_requests_count", &labels).increment(1);
-
-    info!(
-        target: "json_rpc",
-        %method,
-        %request_id,
-        %client_ip,
-        json_rpc_id = %json_rpc_id,
-        ?headers,
-        "Received request"
-    );
+    let json_rpc: Value = match serde_json::from_slice(&body) {
+        Ok(json_rpc) => json_rpc,
+        Err(err) => {
+            warn!(target: "json_rpc", %request_id, %client_ip, "Failed to parse JSON-RPC request: {}", err);
+            return Err(rpc_error_with_request_id(
+                &json!(""),
+                -32600,
+                "Invalid JSON-RPC request format",
+                &request_id,
+            ));
+        }
+    };
 
     // define json schema to validate against
     let schema = json!({
@@ -152,14 +141,70 @@ where
     });
 
     if !jsonschema::is_valid(&schema, &json_rpc) {
-        warn!(target: "json_rpc", method = %method, %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid JSON-RPC request format");
-        return Ok(rpc_error_with_request_id(
+        warn!(target: "json_rpc", %request_id, %client_ip, "Invalid JSON-RPC request format");
+        return Err(rpc_error_with_request_id(
             &json_rpc,
             -32600,
             "Invalid JSON-RPC request format",
             &request_id,
         ));
     }
+
+    Ok(json_rpc)
+}
+
+/// Matches the incoming method sent by a client to a corresponding function.
+#[tracing::instrument(
+    level = "debug",
+    skip_all,
+    target = "api::match_method",
+    fields(request_id, client_addr)
+)]
+pub async fn match_method<B>(
+    req: Request<B>,
+    db: &DbRequestSender,
+    signer: &PrivateKeySigner,
+    docker: Arc<Docker>,
+    client_addr: SocketAddr,
+) -> Result<String>
+where
+    B: hyper::body::Body<Error = Error>,
+{
+    // Generate unique request ID for correlation
+    let request_id = Uuid::new_v4();
+    let client_ip = client_addr.ip().to_string();
+
+    // Add request context to the current tracing span
+    tracing::Span::current().record("request_id", tracing::field::display(&request_id));
+    tracing::Span::current().record("client_addr", tracing::field::display(&client_addr));
+
+    let headers = req.headers().clone();
+
+    let json_rpc = match verify_request(req, &request_id, &client_ip).await {
+        Ok(json_rpc) => json_rpc,
+        Err(err) => {
+            // Log the error and return it
+            warn!(target: "json_rpc", %request_id, %client_ip, "Request verification failed: {}", err);
+            return Ok(err);
+        }
+    };
+
+    let method = json_rpc["method"].as_str().unwrap_or_default();
+    let json_rpc_id = json_rpc["id"].clone();
+    let labels = [("http_method", method.to_string())];
+
+    gauge!("api_requests_active", &labels).increment(1);
+    counter!("api_requests_count", &labels).increment(1);
+
+    info!(
+        target: "json_rpc",
+        %method,
+        %request_id,
+        %client_ip,
+        json_rpc_id = %json_rpc_id,
+        ?headers,
+        "Received request"
+    );
 
     let req_start = Instant::now();
     let result = match method {
