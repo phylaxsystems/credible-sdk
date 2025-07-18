@@ -86,7 +86,11 @@ async fn verify_request<B: hyper::body::Body<Error = Error>>(
         Ok(body) => body.to_bytes(),
         Err(err) => {
             warn!(target: "json_rpc", "Failed to read request body: {}", err);
-            return Err(rpc_error(&json!({}), -32600, "Invalid JSON-RPC request format"));
+            return Err(rpc_error(
+                &json!({}),
+                -32600,
+                "Invalid JSON-RPC request format",
+            ));
         }
     };
 
