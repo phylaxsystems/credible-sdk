@@ -72,10 +72,10 @@ pub async fn accept_bytecode_assertion(
         _ => {
             warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid params: missing or invalid bytecode parameter");
             return Ok(rpc_error_with_request_id(
-                &json_rpc,
+                json_rpc,
                 -32602,
                 "Invalid params",
-                &request_id,
+                request_id,
             ));
         }
     };
@@ -86,10 +86,10 @@ pub async fn accept_bytecode_assertion(
         _ => {
             warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, "Failed to decode hex bytecode");
             return Ok(rpc_error_with_request_id(
-                &json_rpc,
+                json_rpc,
                 500,
                 "Failed to decode hex",
-                &request_id,
+                request_id,
             ));
         }
     };
@@ -103,10 +103,10 @@ pub async fn accept_bytecode_assertion(
         Err(err) => {
             warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to sign assertion");
             return Ok(rpc_error_with_request_id(
-                &json_rpc,
+                json_rpc,
                 -32604,
                 "Internal Error: Failed to sign Assertion",
-                &request_id,
+                request_id,
             ));
         }
     };
@@ -128,10 +128,10 @@ pub async fn accept_bytecode_assertion(
         id,
         stored_assertion,
         db,
-        &json_rpc,
+        json_rpc,
         *request_id,
-        &client_ip,
-        &json_rpc_id,
+        client_ip,
+        json_rpc_id,
     )
     .await;
 
@@ -169,10 +169,10 @@ pub async fn accept_solidity_assertion(
         Err(err) => {
             warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to parse DaSubmission payload");
             return Ok(rpc_error_with_request_id(
-                &json_rpc,
+                json_rpc,
                 -32602,
                 format!("Invalid params: Failed to parse payload {err:?}").as_str(),
-                &request_id,
+                request_id,
             ));
         }
     };
@@ -191,10 +191,10 @@ pub async fn accept_solidity_assertion(
         Err(err) => {
             warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, compiler_version = da_submission.compiler_version, contract_name = da_submission.assertion_contract_name, "Solidity compilation failed");
             return Ok(rpc_error_with_request_id(
-                &json_rpc,
+                json_rpc,
                 -32603,
                 &format!("Solidity Compilation Error: {err}"),
-                &request_id,
+                request_id,
             ));
         }
     };
@@ -207,10 +207,10 @@ pub async fn accept_solidity_assertion(
         Err(err) => {
             warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, constructor_abi = da_submission.constructor_abi_signature, "Constructor args ABI encoding failed");
             return Ok(rpc_error_with_request_id(
-                &json_rpc,
+                json_rpc,
                 -32603,
                 &format!("Constructor args ABI Encoding Error: {err}"),
-                &request_id,
+                request_id,
             ));
         }
     };
@@ -225,10 +225,10 @@ pub async fn accept_solidity_assertion(
         Err(err) => {
             warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to sign assertion");
             return Ok(rpc_error_with_request_id(
-                &json_rpc,
+                json_rpc,
                 -32604,
                 "Internal Error: Failed to sign Assertion",
-                &request_id,
+                request_id,
             ));
         }
     };
@@ -248,10 +248,10 @@ pub async fn accept_solidity_assertion(
         id,
         stored_assertion,
         db,
-        &json_rpc,
+        json_rpc,
         *request_id,
-        &client_ip,
-        &json_rpc_id,
+        client_ip,
+        json_rpc_id,
     )
     .await;
 
@@ -285,10 +285,10 @@ pub async fn retreive_assertion(
         None => {
             warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid params: missing id parameter");
             return Ok(rpc_error_with_request_id(
-                &json_rpc,
+                json_rpc,
                 -32602,
                 "Invalid params: Didn't find id",
-                &request_id,
+                request_id,
             ));
         }
     };
@@ -299,17 +299,17 @@ pub async fn retreive_assertion(
         _ => {
             warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, id = id, "Failed to decode hex ID");
             return Ok(rpc_error_with_request_id(
-                &json_rpc,
+                json_rpc,
                 -32605,
                 "Internal Error: Failed to decode hex of id",
-                &request_id,
+                request_id,
             ));
         }
     };
 
     debug!(target: "json_rpc", ?id, "Getting assertion");
 
-    let res = process_get_assertion(id, db, &json_rpc, *request_id, &client_ip, &json_rpc_id).await;
+    let res = process_get_assertion(id, db, json_rpc, *request_id, client_ip, json_rpc_id).await;
 
     // Log success for get_assertion if not an error response
     if let Ok(ref response) = res

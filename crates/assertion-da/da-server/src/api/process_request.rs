@@ -83,7 +83,7 @@ async fn verify_request<B: hyper::body::Body<Error = Error>>(
             &json!(""),
             -32600,
             "Request body too large",
-            &request_id,
+            request_id,
         ));
     }
 
@@ -95,7 +95,7 @@ async fn verify_request<B: hyper::body::Body<Error = Error>>(
                 &json!(""),
                 -32600,
                 "Invalid JSON-RPC request format",
-                &request_id,
+                request_id,
             ));
         }
     };
@@ -132,7 +132,7 @@ async fn verify_request<B: hyper::body::Body<Error = Error>>(
             &json_rpc,
             -32600,
             "Invalid JSON-RPC request format",
-            &request_id,
+            request_id,
         ));
     }
 
