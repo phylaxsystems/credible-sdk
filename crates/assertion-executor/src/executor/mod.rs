@@ -128,8 +128,8 @@ impl AssertionExecutor {
     /// Returns the results of the assertions, as well as the state changes that should be
     /// committed if the assertions pass.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
-    pub fn validate_transaction_ext_db<'validation, ExtDb, Active>(
-        &'validation mut self,
+    pub fn validate_transaction_ext_db<ExtDb, Active>(
+        &mut self,
         block_env: BlockEnv,
         tx_env: TxEnv,
         fork_db: &mut ForkDb<Active>,
