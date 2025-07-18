@@ -1,4 +1,3 @@
-use crate::api::process_request::rpc_response;
 use std::sync::Arc;
 
 use crate::{
@@ -6,6 +5,7 @@ use crate::{
         process_request::{
             StoredAssertion,
             rpc_error_with_request_id,
+            rpc_response,
         },
         source_compilation::compile_solidity,
         types::{

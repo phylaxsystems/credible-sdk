@@ -1,13 +1,17 @@
-use crate::api::assertion_submission::accept_bytecode_assertion;
-use crate::api::assertion_submission::accept_solidity_assertion;
-use crate::api::assertion_submission::retreive_assertion;
 use std::{
     net::SocketAddr,
     sync::Arc,
     time::Instant,
 };
 
-use crate::api::types::DbRequestSender;
+use crate::api::{
+    assertion_submission::{
+        accept_bytecode_assertion,
+        accept_solidity_assertion,
+        retreive_assertion,
+    },
+    types::DbRequestSender,
+};
 
 use alloy::{
     primitives::Bytes,
@@ -364,15 +368,19 @@ pub fn rpc_error_with_request_id(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::DbRequest;
-    use crate::api::types::DbOperation;
     use crate::api::{
+        DbRequest,
         db::listen_for_db,
         serve,
+        types::DbOperation,
     };
-    use alloy::primitives::hex;
-    use alloy::primitives::keccak256;
-    use alloy::signers::Signer;
+    use alloy::{
+        primitives::{
+            hex,
+            keccak256,
+        },
+        signers::Signer,
+    };
     use sled::Config as DbConfig;
     use tempfile::TempDir;
     use tokio::sync::oneshot;
