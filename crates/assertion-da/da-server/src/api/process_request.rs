@@ -1,3 +1,4 @@
+use crate::api::assertion_submission::raw_bytecode_assertion;
 use std::{
     net::SocketAddr,
     sync::Arc,
@@ -214,82 +215,15 @@ where
     let result = match method {
         #[cfg(feature = "debug_assertions")]
         "da_submit_assertion" => {
-            let code = match json_rpc["params"][0].as_str() {
-                Some(code) => code,
-                _ => {
-                    warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid params: missing or invalid bytecode parameter");
-                    return Ok(rpc_error_with_request_id(
-                        &json_rpc,
-                        -32602,
-                        "Invalid params",
-                        &request_id,
-                    ));
-                }
-            };
-
-            // Validate hex inputs
-            let bytecode = match alloy::hex::decode(code.trim_start_matches("0x")) {
-                Ok(code) => code,
-                _ => {
-                    warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, "Failed to decode hex bytecode");
-                    return Ok(rpc_error_with_request_id(
-                        &json_rpc,
-                        500,
-                        "Failed to decode hex",
-                        &request_id,
-                    ));
-                }
-            };
-
-            debug!(target: "json_rpc", bytecode_len = bytecode.len(), "Submitting raw assertion bytecode");
-
-            // Hash to get ID
-            let id = keccak256(&bytecode);
-            let signature = match signer.sign_hash(&id).await {
-                Ok(sig) => sig,
-                Err(err) => {
-                    warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to sign assertion");
-                    return Ok(rpc_error_with_request_id(
-                        &json_rpc,
-                        -32604,
-                        "Internal Error: Failed to sign Assertion",
-                        &request_id,
-                    ));
-                }
-            };
-
-            trace!(target: "json_rpc", ?id, ?signature, bytecode_hex = hex::encode(&bytecode), "Raw submitted bytecode");
-            debug!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Processed raw assertion submission, proceeding to database storage");
-
-            let stored_assertion = StoredAssertion::new(
-                "NaN".to_string(),
-                "NaN".to_string(),
-                String::new(),
-                bytecode,
-                signature,
-                "constructor()".to_string(),
-                Bytes::new(),
-            );
-
-            let res = process_add_assertion(
-                id,
-                stored_assertion,
+            let rax = raw_bytecode_assertion(
+                json_rpc.clone(),
                 db,
-                &json_rpc,
-                request_id,
-                &client_ip,
+                signer,
+                &request_id,
                 &json_rpc_id,
+                &client_ip,
             )
             .await;
-
-            // Log success or failure based on response
-            if let Ok(ref response) = res {
-                if !response.contains("\"error\"") {
-                    info!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Successfully processed raw assertion submission");
-                } else {
-                    warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Failed to process raw assertion submission");
-                }
-            }
 
             histogram!(
                 "da_request_duration_seconds",
@@ -297,7 +231,8 @@ where
             )
             .record(req_start.elapsed().as_secs_f64());
             gauge!("api_requests_active", &labels).decrement(1);
-            res
+
+            rax
         }
         "da_submit_solidity_assertion" => {
             let da_submission: DaSubmission = match serde_json::from_value(
@@ -533,7 +468,7 @@ impl StoredAssertion {
     }
 }
 
-async fn process_add_assertion(
+pub async fn process_add_assertion(
     id: B256,
     stored_assertion: StoredAssertion,
     db: &DbRequestSender,
@@ -652,7 +587,7 @@ fn rpc_error(request: &Value, code: i128, message: &str) -> String {
     .to_string()
 }
 
-fn rpc_error_with_request_id(
+pub fn rpc_error_with_request_id(
     request: &Value,
     code: i128,
     message: &str,
