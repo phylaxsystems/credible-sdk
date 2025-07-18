@@ -53,7 +53,12 @@ use tracing::{
 
 /// Accepts, validates and stores a raw EVM bytecode assertion.
 #[cfg(feature = "debug_assertions")]
-#[instrument(skip_all, target = "assertion_submission::accept_bytecode_assertion", level = "debug", fields(request_id = %request_id, client_ip = %client_ip))]
+#[instrument(
+    skip_all,
+    target = "assertion_submission::accept_bytecode_assertion",
+    level = "debug",
+    fields(request_id = %request_id, client_ip = %client_ip)
+)]
 pub async fn accept_bytecode_assertion(
     json_rpc: &Value,
     db: &DbRequestSender,
@@ -144,7 +149,12 @@ pub async fn accept_bytecode_assertion(
 
 /// Accept assertion written in solidity. Compiles the source code and verifies
 /// it. Spins up a docker container as a part of the compilation job.
-#[instrument(skip_all, target = "assertion_submission::accept_solidity_assertion", level = "debug", fields(request_id = %request_id, client_ip = %client_ip))]
+#[instrument(
+    skip_all,
+    target = "assertion_submission::accept_solidity_assertion",
+    level = "debug",
+    fields(request_id = %request_id, client_ip = %client_ip)
+)]
 pub async fn accept_solidity_assertion(
     json_rpc: &Value,
     db: &DbRequestSender,
@@ -257,7 +267,12 @@ pub async fn accept_solidity_assertion(
 }
 
 /// Retrieves assertion from the database.
-#[instrument(skip_all, target = "assertion_submission::retreive_assertion", level = "debug", fields(request_id = %request_id, client_ip = %client_ip))]
+#[instrument(
+    skip_all,
+    target = "assertion_submission::retreive_assertion",
+    level = "debug",
+    fields(request_id = %request_id, client_ip = %client_ip)
+)]
 pub async fn retreive_assertion(
     json_rpc: &Value,
     db: &DbRequestSender,
@@ -306,7 +321,12 @@ pub async fn retreive_assertion(
     res
 }
 
-#[instrument(skip_all, target = "assertion_submission::process_add_assertion", level = "debug", fields(request_id = %request_id, client_ip = %client_ip, assertion_id = %id))]
+#[instrument(
+    skip_all,
+    target = "assertion_submission::process_add_assertion",
+    level = "debug",
+    fields(request_id = %request_id, client_ip = %client_ip, assertion_id = %id)
+)]
 async fn process_add_assertion(
     id: B256,
     stored_assertion: StoredAssertion,
@@ -361,7 +381,12 @@ async fn process_add_assertion(
     }
 }
 
-#[instrument(skip_all, target = "assertion_submission::process_get_assertion", level = "debug", fields(request_id = %request_id, client_ip = %client_ip, assertion_id = %id))]
+#[instrument(
+    skip_all,
+    target = "assertion_submission::process_get_assertion",
+    level = "debug",
+    fields(request_id = %request_id, client_ip = %client_ip, assertion_id = %id)
+)]
 async fn process_get_assertion(
     id: B256,
     db: &DbRequestSender,
