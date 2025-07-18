@@ -9,14 +9,23 @@ use dapp_api_client::{
     Config,
 };
 use httpmock::prelude::*;
+use httpmock::{Mock, When, Then};
 use serde_json::json;
+
+/// Helper function to create a mock with cleaner syntax
+fn setup_mock<F>(server: &MockServer, configure: F) -> Mock<'_>
+where
+    F: FnOnce(When, Then),
+{
+    server.mock(configure)
+}
 
 #[tokio::test]
 async fn test_public_endpoint_without_auth_real_api() {
     let server = MockServer::start();
 
     // Mock the health endpoint (should be public)
-    let mock = server.mock(|when, then| {
+    let mock = setup_mock(&server, |when, then| {
         when.method(GET).path("/api/v1/health");
         then.status(200)
             .header("content-type", "application/json")
@@ -50,7 +59,7 @@ async fn test_private_endpoint_without_auth_real_api() {
 
     // Mock the private endpoint returning empty array for unauthenticated requests
     // (mimics real API behavior)
-    let mock = server.mock(|when, then| {
+    let mock = setup_mock(&server, |when, then| {
         when.method(GET).path("/api/v1/projects/saved").query_param(
             "wallet_address",
             "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
@@ -92,7 +101,7 @@ async fn test_private_endpoint_with_auth_real_api() {
     let server = MockServer::start();
 
     // Mock the private endpoint with valid auth returning data
-    let mock = server.mock(|when, then| {
+    let mock = setup_mock(&server, |when, then| {
         when.method(GET)
             .path("/api/v1/projects/saved")
             .query_param(
@@ -146,7 +155,7 @@ async fn test_public_endpoint_with_auth_real_api() {
     let server = MockServer::start();
 
     // Mock the health endpoint accepting auth (but not requiring it)
-    let mock = server.mock(|when, then| {
+    let mock = setup_mock(&server, |when, then| {
         when.method(GET)
             .path("/api/v1/health")
             .header("authorization", "Bearer dummy-token");
