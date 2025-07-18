@@ -9,7 +9,11 @@ use dapp_api_client::{
     Config,
 };
 use httpmock::prelude::*;
-use httpmock::{Mock, When, Then};
+use httpmock::{
+    Mock,
+    Then,
+    When,
+};
 use serde_json::json;
 
 /// Helper function to create a mock with cleaner syntax
