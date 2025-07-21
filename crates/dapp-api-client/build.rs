@@ -24,7 +24,7 @@ fn main() {
             println!("cargo:warning=Failed to fetch OpenAPI spec: {e}");
             std::process::exit(1);
         }
-        
+
         // Always regenerate when feature is enabled
         if let Err(e) = codegen::generate_client_code() {
             println!("cargo:warning=Failed to generate client code: {e}");
@@ -53,7 +53,9 @@ fn main() {
         // Neither exists - error out
         (false, false) => {
             eprintln!("Error: Neither client.rs nor spec.json found.");
-            eprintln!("Please run with --features=regenerate to fetch the OpenAPI spec and generate the client.");
+            eprintln!(
+                "Please run with --features=regenerate to fetch the OpenAPI spec and generate the client."
+            );
             eprintln!("Example: cargo build --features=regenerate");
             std::process::exit(1);
         }

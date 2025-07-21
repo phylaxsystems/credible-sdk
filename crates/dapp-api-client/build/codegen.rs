@@ -87,7 +87,6 @@ pub fn generate_client_code() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 fn fix_exclusive_minimum(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
