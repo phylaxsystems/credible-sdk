@@ -11,7 +11,11 @@ import {console} from "../../lib/credible-std/lib/forge-std/src/console.sol";
 contract MockERC20 is ERC20 {
     uint8 private _decimals;
 
-    constructor(string memory name_, string memory symbol_, uint8 decimals_) ERC20(name_, symbol_) {
+    constructor(
+        string memory name_,
+        string memory symbol_,
+        uint8 decimals_
+    ) ERC20(name_, symbol_) {
         _decimals = decimals_;
     }
 
@@ -26,7 +30,6 @@ contract MockERC20 is ERC20 {
 
 contract TestSimpleLendingAssertion is CredibleTest, Test {
     SimpleLending public assertionAdopter;
-    SimpleLendingAssertion public assertion;
     MockPriceFeed public ethPriceFeed;
     MockTokenPriceFeed public tokenPriceFeed;
     IERC20 public borrowToken;
@@ -49,13 +52,15 @@ contract TestSimpleLendingAssertion is CredibleTest, Test {
         tokenPriceFeed.setPrice(INITIAL_TOKEN_PRICE);
 
         // Deploy lending protocol
-        assertionAdopter = new SimpleLending(address(borrowToken), address(ethPriceFeed), address(tokenPriceFeed));
+        assertionAdopter = new SimpleLending(
+            address(borrowToken),
+            address(ethPriceFeed),
+            address(tokenPriceFeed)
+        );
 
         // Mint tokens to lending protocol for borrowing
         token.mint(address(assertionAdopter), 1_000_000e18);
 
-        // Deploy assertion
-        assertion = new SimpleLendingAssertion(address(assertionAdopter));
 
         // Setup test user
         vm.deal(testUser, 10 ether);
@@ -69,23 +74,16 @@ contract TestSimpleLendingAssertion is CredibleTest, Test {
         // User borrows 1500 USDC (75% of collateral value at $2000/ETH)
         assertionAdopter.borrow(1500e18); // Max borrow based on 75% collateral ratio
 
-        // Register the assertion
-        cl.addAssertion(
-            "collateralBalance",
-            address(assertionAdopter),
-            type(SimpleLendingAssertion).creationCode,
-            abi.encode(address(assertionAdopter))
-        );
-
         // Try to withdraw 0.5 ETH - this should fail the assertion
         // because remaining collateral wouldn't cover the loan
-        vm.expectRevert("Assertions Reverted");
-        cl.validate(
-            "collateralBalance",
+        vm.expectRevert("Borrowed Tokens Exceeds Collateral");
+        cl.assertion(
             address(assertionAdopter),
-            0,
-            abi.encodeWithSelector(assertionAdopter.withdraw.selector, 0.5 ether)
+            type(SimpleLendingAssertion).creationCode,
+            SimpleLendingAssertion.assertionBorrowedInvariant.selector
         );
+        assertionAdopter.withdraw(.5 ether);
+
         vm.stopPrank();
     }
 
@@ -97,22 +95,14 @@ contract TestSimpleLendingAssertion is CredibleTest, Test {
         // User borrows only 500 USDC (25% of collateral value)
         assertionAdopter.borrow(500e18);
 
-        // Register the assertion
-        cl.addAssertion(
-            "borrowedInvariant",
-            address(assertionAdopter),
-            type(SimpleLendingAssertion).creationCode,
-            abi.encode(address(assertionAdopter))
-        );
-
         // Try to withdraw 0.5 ETH - this should succeed
         // because remaining collateral still covers the loan
-        cl.validate(
-            "borrowedInvariant",
+        cl.assertion(
             address(assertionAdopter),
-            0,
-            abi.encodeWithSelector(assertionAdopter.withdraw.selector, 0.5 ether)
+            type(SimpleLendingAssertion).creationCode,
+            SimpleLendingAssertion.assertionBorrowedInvariant.selector
         );
+        assertionAdopter.withdraw(0.5 ether);
 
         vm.stopPrank();
     }
@@ -131,12 +121,10 @@ contract TestSimpleLendingAssertion is CredibleTest, Test {
         // Total protocol collateral is now 10000 ETH
         assertEq(assertionAdopter.totalCollateral(), 10000 ether);
 
-        // Register the assertion
-        cl.addAssertion(
-            "ethDrain",
+        cl.assertion(
             address(assertionAdopter),
             type(SimpleLendingAssertion).creationCode,
-            abi.encode(address(assertionAdopter))
+            SimpleLendingAssertion.assertionEthDrain.selector
         );
 
         // Create attacker EOA
@@ -144,13 +132,8 @@ contract TestSimpleLendingAssertion is CredibleTest, Test {
 
         // Try to drain using the buggy function
         vm.prank(attacker);
-        vm.expectRevert("Assertions Reverted");
-        cl.validate(
-            "ethDrain",
-            address(assertionAdopter),
-            0,
-            abi.encodeWithSelector(assertionAdopter.buggyWithdraw.selector, 8000 ether)
-        );
+        vm.expectRevert("Withdrawal percentage too high");
+        assertionAdopter.buggyWithdraw(8000 ether);
     }
 
     function testAssertionAllowsNormalWithdrawals() public {
@@ -165,20 +148,14 @@ contract TestSimpleLendingAssertion is CredibleTest, Test {
         }
 
         // Register the assertion
-        cl.addAssertion(
-            "ethDrain",
+        cl.assertion(
             address(assertionAdopter),
             type(SimpleLendingAssertion).creationCode,
-            abi.encode(address(assertionAdopter))
+            SimpleLendingAssertion.assertionIndividualPosition.selector
         );
 
         // Normal withdrawal of 40% from one user should work
         vm.prank(users[0]);
-        cl.validate(
-            "ethDrain",
-            address(assertionAdopter),
-            0,
-            abi.encodeWithSelector(assertionAdopter.withdraw.selector, 800 ether)
-        );
+        assertionAdopter.withdraw(800 ether);
     }
 }

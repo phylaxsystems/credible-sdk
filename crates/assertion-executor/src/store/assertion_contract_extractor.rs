@@ -90,6 +90,7 @@ pub fn extract_assertion_contract(
         caller: CALLER,
         data: assertion_code.clone(),
         gas_limit: DEPLOYMENT_GAS_LIMIT,
+        chain_id: Some(config.chain_id),
         ..Default::default()
     };
 
@@ -142,6 +143,7 @@ pub fn extract_assertion_contract(
         data: triggersCall::SELECTOR.into(),
         gas_limit: DEPLOYMENT_GAS_LIMIT - result_and_state.result.gas_used(),
         nonce: 1,
+        chain_id: Some(config.chain_id),
         ..Default::default()
     };
 

@@ -54,6 +54,7 @@ evm-glue = { workspace = true }
 [features]
 default = ["optimism", "full-test"]
 optimism = []
+phoundry = []
 test = ["serde_json", "rand"]
 serde_json = []
 full-test = []

@@ -17,23 +17,21 @@ contract TestPriceFeedAssertion is CredibleTest, Test {
     }
 
     function testBatchPriceUpdates() public {
-        BatchTokenPriceUpdates updater = new BatchTokenPriceUpdates(address(assertionAdopter));
-
         vm.prank(address(0xdeadbeef));
         // Set initial token price
         assertionAdopter.setPrice(1 ether);
 
-        cl.addAssertion(
-            "PriceFeedAssertion",
-            address(assertionAdopter),
-            type(PriceFeedAssertion).creationCode,
-            abi.encode(address(assertionAdopter))
-        );
-
+        cl.assertion({
+            adopter: address(assertionAdopter),
+            createData: type(PriceFeedAssertion).creationCode,
+            fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector
+        });
         vm.prank(address(0xdeadbeef));
-        vm.expectRevert("Assertions Reverted");
+        vm.expectRevert("Price deviation exceeds 10% threshold");
         // Execute batch price updates in validate
-        cl.validate("PriceFeedAssertion", address(updater), 0, new bytes(0));
+        BatchTokenPriceUpdates updater = new BatchTokenPriceUpdates(
+            address(assertionAdopter)
+        );
     }
 
     function testAllowsSafePriceUpdate() public {
@@ -41,21 +39,14 @@ contract TestPriceFeedAssertion is CredibleTest, Test {
         // Set initial token price
         assertionAdopter.setPrice(1 ether);
 
-        cl.addAssertion(
-            "PriceFeedAssertion",
-            address(assertionAdopter),
-            type(PriceFeedAssertion).creationCode,
-            abi.encode(address(assertionAdopter))
-        );
-
         // Update price within allowed range (5% increase)
         vm.prank(address(0xdeadbeef));
-        cl.validate(
-            "PriceFeedAssertion",
+        cl.assertion(
             address(assertionAdopter),
-            0,
-            abi.encodeWithSelector(MockTokenPriceFeed.setPrice.selector, 1.05 ether)
+            type(PriceFeedAssertion).creationCode,
+            PriceFeedAssertion.assertionPriceDeviation.selector
         );
+        assertionAdopter.setPrice(1.05 ether);
     }
 }
 
@@ -64,12 +55,11 @@ contract BatchTokenPriceUpdates {
 
     constructor(address tokenPriceFeed_) {
         tokenPriceFeed = IPriceFeed(tokenPriceFeed_);
-    }
-
-    fallback() external {
         uint256 originalPrice = tokenPriceFeed.getPrice();
 
-        TempTokenPriceUpdater updater = new TempTokenPriceUpdater(address(tokenPriceFeed));
+        TempTokenPriceUpdater updater = new TempTokenPriceUpdater(
+            address(tokenPriceFeed)
+        );
 
         // Perform 10 token price updates (using realistic token/USD prices)
         updater.setPrice(0.95 ether); // $0.95

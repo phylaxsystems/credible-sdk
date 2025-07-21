@@ -358,6 +358,7 @@ impl AssertionExecutor {
             gas_limit: self.config.assertion_gas_limit,
             gas_price: block_env.basefee.into(),
             nonce: 42,
+            chain_id: Some(self.config.chain_id),
             ..Default::default()
         };
 
