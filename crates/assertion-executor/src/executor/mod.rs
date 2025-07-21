@@ -109,7 +109,7 @@ struct AssertionExecutionParams<'a, Active> {
     multi_fork_db: MultiForkDb<ForkDb<Active>>,
     assertion_gas: &'a AtomicU64,
     assertions_ran: &'a AtomicU64,
-    context: &'a PhEvmContext<'a>,
+    context: PhEvmContext<'a>,
 }
 
 #[derive(Debug, Clone)]
@@ -305,7 +305,7 @@ impl AssertionExecutor {
                             multi_fork_db: multi_fork_db.clone(),
                             assertion_gas: &assertion_gas,
                             assertions_ran: &assertions_ran,
-                            context,
+                            context: context.clone(),
                         })
                     },
                 )
@@ -346,7 +346,7 @@ impl AssertionExecutor {
             mut multi_fork_db,
             assertion_gas,
             assertions_ran,
-            context,
+            mut context,
         } = params;
 
         let inspector = PhEvmInspector::new(self.config.spec_id, &mut multi_fork_db, context);
@@ -398,6 +398,7 @@ impl AssertionExecutor {
                 assertion_contract_id: assertion_contract.id,
             },
             result: AssertionFunctionExecutionResult::AssertionExecutionResult(result),
+            console_logs: evm.inspector.context.console_logs.clone(),
         })
     }
 

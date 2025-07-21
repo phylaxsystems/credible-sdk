@@ -533,17 +533,15 @@ mod tests {
 
         for i in 0..10 {
             let results_clone = Arc::clone(&results);
-            let handle = thread::spawn(move || {
-                unsafe {
-                    if i % 2 == 0 {
-                        std::env::set_var("DAPP_ENV", "development");
-                    } else {
-                        std::env::set_var("DAPP_ENV", "production");
-                    }
-
-                    let env = Environment::from_env();
-                    results_clone.lock().unwrap().push(env);
+            let handle = thread::spawn(move || unsafe {
+                if i % 2 == 0 {
+                    std::env::set_var("DAPP_ENV", "development");
+                } else {
+                    std::env::set_var("DAPP_ENV", "production");
                 }
+
+                let env = Environment::from_env();
+                results_clone.lock().unwrap().push(env);
             });
             handles.push(handle);
         }

@@ -27,6 +27,7 @@ mod test {
             run_precompile_test,
         },
     };
+    use alloy::serde::quantity::vec;
     use alloy_primitives::Address;
     use alloy_sol_types::SolValue;
 
@@ -43,6 +44,7 @@ mod test {
         let context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
             adopter,
+            console_logs: vec![],
         };
         f(&context)
     }

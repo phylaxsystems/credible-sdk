@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.28;
+pragma solidity ^0.8.13;
 
 import {PriceFeedAssertion} from "../src/PriceFeedAssertion.a.sol";
 import {IPriceFeed} from "../../src/SimpleLending.sol";
@@ -8,45 +8,79 @@ import {Test} from "../../lib/credible-std/lib/forge-std/src/Test.sol";
 import {CredibleTest} from "../../lib/credible-std/src/CredibleTest.sol";
 
 contract TestPriceFeedAssertion is CredibleTest, Test {
-    BatchTokenPriceUpdates public batchTokenPriceUpdates;
     MockTokenPriceFeed public assertionAdopter;
 
     function setUp() public {
         assertionAdopter = new MockTokenPriceFeed();
         vm.deal(address(0xdeadbeef), 1 ether);
-    }
-
-    function testBatchPriceUpdates() public {
-        vm.prank(address(0xdeadbeef));
         // Set initial token price
         assertionAdopter.setPrice(1 ether);
+    }
 
+    function testValidPriceUpdate() public {
         cl.assertion({
+            label: "PriceFeedAssertion",
             adopter: address(assertionAdopter),
             createData: type(PriceFeedAssertion).creationCode,
             fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector
         });
-        vm.prank(address(0xdeadbeef));
-        vm.expectRevert("Price deviation exceeds 10% threshold");
-        // Execute batch price updates in validate
-        BatchTokenPriceUpdates updater = new BatchTokenPriceUpdates(
-            address(assertionAdopter)
-        );
-    }
-
-    function testAllowsSafePriceUpdate() public {
-        vm.prank(address(0xdeadbeef));
-        // Set initial token price
-        assertionAdopter.setPrice(1 ether);
 
         // Update price within allowed range (5% increase)
         vm.prank(address(0xdeadbeef));
-        cl.assertion(
-            address(assertionAdopter),
-            type(PriceFeedAssertion).creationCode,
-            PriceFeedAssertion.assertionPriceDeviation.selector
-        );
         assertionAdopter.setPrice(1.05 ether);
+    }
+
+    function testInvalidPriceUpdate() public {
+        cl.assertion({
+            label: "PriceFeedAssertion",
+            adopter: address(assertionAdopter),
+            createData: type(PriceFeedAssertion).creationCode,
+            fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector
+        });
+
+        vm.prank(address(0xdeadbeef));
+        vm.expectRevert("Price deviation exceeds 10% threshold");
+        // Update price beyond allowed range (15% decrease)
+        assertionAdopter.setPrice(0.85 ether);
+    }
+
+    function testBoundaryPriceUpdate() public {
+        cl.assertion({
+            label: "PriceFeedAssertion",
+            adopter: address(assertionAdopter),
+            createData: type(PriceFeedAssertion).creationCode,
+            fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector
+        });
+
+        // Test exactly at boundary (10% increase)
+        vm.prank(address(0xdeadbeef));
+        assertionAdopter.setPrice(1.1 ether);
+    }
+
+    function testBoundaryNegativePriceUpdate() public {
+        cl.assertion({
+            label: "PriceFeedAssertion",
+            adopter: address(assertionAdopter),
+            createData: type(PriceFeedAssertion).creationCode,
+            fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector
+        });
+
+        // Test exactly at boundary (10% decrease)
+        vm.prank(address(0xdeadbeef));
+        assertionAdopter.setPrice(0.9 ether);
+    }
+
+    function testBatchPriceUpdates() public {
+        cl.assertion({
+            label: "PriceFeedAssertion",
+            adopter: address(assertionAdopter),
+            createData: type(PriceFeedAssertion).creationCode,
+            fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector
+        });
+
+        vm.expectRevert("Price deviation exceeds 10% threshold");
+        // Execute batch price updates which includes a price that exceeds threshold
+        new BatchTokenPriceUpdates(address(assertionAdopter));
     }
 }
 

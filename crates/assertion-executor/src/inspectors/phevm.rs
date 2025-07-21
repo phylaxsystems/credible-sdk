@@ -1,8 +1,10 @@
 use crate::{
-    db::DatabaseRef,
-    db::multi_fork_db::{
-        ForkError,
-        MultiForkDb,
+    db::{
+        DatabaseRef,
+        multi_fork_db::{
+            ForkError,
+            MultiForkDb,
+        },
     },
     inspectors::{
         inspector_result_to_call_outcome,
@@ -12,12 +14,16 @@ use crate::{
                 GetCallInputsError,
                 get_call_inputs,
             },
+            console_log::{
+                ConsoleLogError,
+                console_log,
+            },
             fork::{
                 fork_post_state,
                 fork_pre_state,
             },
+            get_logs::get_logs,
             load::load_external_slot,
-            logs::get_logs,
             state_changes::{
                 GetStateChangesError,
                 get_state_changes,
@@ -69,10 +75,11 @@ pub struct LogsAndTraces<'a> {
     pub call_traces: &'a CallTracer,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PhEvmContext<'a> {
     pub logs_and_traces: &'a LogsAndTraces<'a>,
     pub adopter: Address,
+    pub console_logs: Vec<String>,
 }
 
 impl<'a> PhEvmContext<'a> {
@@ -80,6 +87,7 @@ impl<'a> PhEvmContext<'a> {
         Self {
             logs_and_traces,
             adopter,
+            console_logs: vec![],
         }
     }
 }
@@ -96,12 +104,14 @@ pub enum PrecompileError {
     GetCallInputsError(#[from] GetCallInputsError),
     #[error("Error switching forks: {0}")]
     ForkError(#[from] ForkError),
+    #[error("Error logging to console: {0}")]
+    ConsoleLogError(#[from] ConsoleLogError),
 }
 
 /// PhEvmInspector is an inspector for supporting the PhEvm precompiles.
 pub struct PhEvmInspector<'a> {
     init_journal: JournalInner<JournalEntry>,
-    context: &'a PhEvmContext<'a>,
+    pub context: PhEvmContext<'a>,
 }
 
 impl<'a> PhEvmInspector<'a> {
@@ -109,7 +119,7 @@ impl<'a> PhEvmInspector<'a> {
     pub fn new<ExtDb: DatabaseRef>(
         spec_id: SpecId,
         db: &mut MultiForkDb<ExtDb>,
-        context: &'a PhEvmContext<'a>,
+        context: PhEvmContext<'a>,
     ) -> Self {
         insert_precompile_account(db);
 
@@ -123,7 +133,7 @@ impl<'a> PhEvmInspector<'a> {
 
     /// Execute precompile functions for the PhEvm.
     pub fn execute_precompile<'db, ExtDb: DatabaseRef + 'db, CTX>(
-        &self,
+        &mut self,
         context: &mut CTX,
         inputs: &mut CallInputs,
     ) -> Result<Bytes, PrecompileError>
@@ -143,10 +153,11 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::forkPreStateCall::SELECTOR => fork_pre_state(&self.init_journal, context)?,
             PhEvm::forkPostStateCall::SELECTOR => fork_post_state(&self.init_journal, context)?,
             PhEvm::loadCall::SELECTOR => load_external_slot(context, inputs)?,
-            PhEvm::getLogsCall::SELECTOR => get_logs(self.context)?,
-            PhEvm::getCallInputsCall::SELECTOR => get_call_inputs(inputs, context, self.context)?,
-            PhEvm::getStateChangesCall::SELECTOR => get_state_changes(&input_bytes, self.context)?,
-            PhEvm::getAssertionAdopterCall::SELECTOR => get_assertion_adopter(self.context)?,
+            PhEvm::getLogsCall::SELECTOR => get_logs(&self.context)?,
+            PhEvm::getCallInputsCall::SELECTOR => get_call_inputs(inputs, context, &self.context)?,
+            PhEvm::getStateChangesCall::SELECTOR => get_state_changes(&input_bytes, &self.context)?,
+            PhEvm::getAssertionAdopterCall::SELECTOR => get_assertion_adopter(&self.context)?,
+            PhEvm::logCall::SELECTOR => console_log(&input_bytes, &mut self.context)?,
             selector => Err(PrecompileError::SelectorNotFound(selector.into()))?,
         };
 

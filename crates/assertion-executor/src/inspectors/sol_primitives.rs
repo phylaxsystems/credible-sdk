@@ -60,6 +60,9 @@ sol! {
 
         // Get assertion adopter contract address associated with the assertion triggering transaction.
         function getAssertionAdopter() external view returns (address);
+
+        // Log a message to the console.
+        function log(string message) external;
     }
 
     #[derive(Debug)]
