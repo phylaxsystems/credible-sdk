@@ -13,7 +13,10 @@ mod codegen;
 mod regenerate;
 
 fn main() {
-    // Only run spec fetching when 'regenerate' feature is enabled
+    const CLIENT_PATH: &str = "src/generated/client.rs";
+    const SPEC_PATH: &str = "openapi/spec.json";
+
+    // With regenerate feature: always fetch fresh spec and regenerate
     #[cfg(feature = "regenerate")]
     {
         println!("cargo:warning=Running OpenAPI spec regeneration...");
@@ -21,18 +24,38 @@ fn main() {
             println!("cargo:warning=Failed to fetch OpenAPI spec: {e}");
             std::process::exit(1);
         }
+        
+        // Always regenerate when feature is enabled
+        if let Err(e) = codegen::generate_client_code() {
+            println!("cargo:warning=Failed to generate client code: {e}");
+            std::process::exit(1);
+        }
+        return;
     }
 
-    #[cfg(not(feature = "regenerate"))]
-    {
-        println!(
-            "cargo:warning=Skipping OpenAPI spec regeneration (enable with --features regenerate)"
-        );
-    }
+    // Without regenerate feature: check what's available
+    let client_exists = std::path::Path::new(CLIENT_PATH).exists();
+    let spec_exists = std::path::Path::new(SPEC_PATH).exists();
 
-    // Always generate client code from cached spec
-    if let Err(e) = codegen::generate_client_code() {
-        println!("cargo:warning=Failed to generate client code: {e}");
-        std::process::exit(1);
+    match (client_exists, spec_exists) {
+        // Client exists - use it, no need for spec
+        (true, _) => {
+            println!("cargo:warning=Using existing client.rs");
+        }
+        // No client but spec exists - generate from cached spec
+        (false, true) => {
+            println!("cargo:warning=No client.rs found, generating from cached spec.json");
+            if let Err(e) = codegen::generate_client_code() {
+                println!("cargo:warning=Failed to generate client code: {e}");
+                std::process::exit(1);
+            }
+        }
+        // Neither exists - error out
+        (false, false) => {
+            eprintln!("Error: Neither client.rs nor spec.json found.");
+            eprintln!("Please run with --features=regenerate to fetch the OpenAPI spec and generate the client.");
+            eprintln!("Example: cargo build --features=regenerate");
+            std::process::exit(1);
+        }
     }
 }

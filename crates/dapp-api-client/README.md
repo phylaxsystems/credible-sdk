@@ -91,12 +91,12 @@ make regenerate-dev
 
 Or manually from the crate directory:
 
-1. **Basic regeneration** (uses cached spec if available):
+1. **Basic regeneration** (uses cached spec.json if it exists):
    ```bash
    cargo build --features regenerate
    ```
 
-2. **Force fetch latest spec** from the API:
+2. **Force fetch latest spec** (always fetches fresh from API):
    ```bash
    FORCE_SPEC_REGENERATE=true cargo build --features regenerate
    ```
