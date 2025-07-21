@@ -8,12 +8,6 @@ import {console} from "../../lib/credible-std/lib/forge-std/src/console.sol";
 import {PhEvm} from "../../lib/credible-std/src/PhEvm.sol";
 
 contract SimpleLendingAssertion is Assertion {
-    SimpleLending simpleLending;
-
-    constructor(address simpleLending_) {
-        simpleLending = SimpleLending(simpleLending_);
-    }
-
     function triggers() external view override {
         registerCallTrigger(this.assertionIndividualPosition.selector);
         registerCallTrigger(this.assertionBorrowedInvariant.selector);
@@ -22,6 +16,7 @@ contract SimpleLendingAssertion is Assertion {
 
     // Verify that total borrowed tokens never exceed total collateral value
     function assertionBorrowedInvariant() external {
+        SimpleLending simpleLending = SimpleLending(ph.getAssertionAdopter());
         ph.forkPostState();
 
         // Get price feeds directly from the lending contract
@@ -38,12 +33,13 @@ contract SimpleLendingAssertion is Assertion {
         // Must maintain 75% collateral ratio
         require(
             collateralValue * simpleLending.COLLATERAL_RATIO() >= borrowedValue * 100,
-            "Borrowed tokens exceed collateral value"
+            "Borrowed Tokens Exceeds Collateral"
         );
     }
 
     // Prevent large sudden drops in total collateral
     function assertionEthDrain() external {
+        SimpleLending simpleLending = SimpleLending(ph.getAssertionAdopter());
         uint256 MAX_WITHDRAWAL_PERCENT = 50; // 50%
         ph.forkPreState();
 
@@ -62,6 +58,7 @@ contract SimpleLendingAssertion is Assertion {
 
     // Verify individual position maintains required collateral ratio
     function assertionIndividualPosition() external {
+        SimpleLending simpleLending = SimpleLending(ph.getAssertionAdopter());
         ph.forkPostState();
 
         // Get the caller from call inputs

@@ -62,6 +62,12 @@ where
     Spec: Default,
 {
     let mut cfg_env = CfgEnv::default();
+
+    #[cfg(feature = "phoundry")]
+    {
+        cfg_env.disable_eip3607 = true;
+    }
+
     cfg_env.chain_id = chain_id;
     cfg_env.spec = spec_id;
     EvmEnv { cfg_env, block_env }
@@ -92,6 +98,7 @@ where
     I: Inspector<OpCtx<'db, DB>>,
 {
     let op_cfg = env.cfg_env.clone().with_spec(op_revm::OpSpecId::ISTHMUS);
+
     let op_context: Context<
         BlockEnv,
         OpTransaction<TxEnv>,

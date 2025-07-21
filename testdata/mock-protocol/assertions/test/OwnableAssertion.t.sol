@@ -21,28 +21,25 @@ contract TestOwnableAssertion is CredibleTest, Test {
 
     function test_assertionOwnershipChanged() public {
         address aaAddress = address(assertionAdopter);
-        string memory label = "Ownership has changed";
-
-        // Associate the assertion with the protocol
-        // cl will manage the correct assertion execution under the hood when the protocol is being called
-        cl.addAssertion(label, aaAddress, type(OwnableAssertion).creationCode, abi.encode(assertionAdopter));
-
         vm.prank(initialOwner);
-        vm.expectRevert("Assertions Reverted");
-        cl.validate(
-            label, aaAddress, 0, abi.encodePacked(assertionAdopter.transferOwnership.selector, abi.encode(newOwner))
+        cl.assertion(
+            aaAddress,
+            type(OwnableAssertion).creationCode,
+            OwnableAssertion.assertionOwnershipChange.selector
         );
+        vm.expectRevert("Ownership has changed");
+        assertionAdopter.transferOwnership(newOwner);
     }
 
     function test_assertionOwnershipNotChanged() public {
-        string memory label = "Ownership has not changed";
         address aaAddress = address(assertionAdopter);
 
-        cl.addAssertion(label, aaAddress, type(OwnableAssertion).creationCode, abi.encode(assertionAdopter));
-
         vm.prank(initialOwner);
-        cl.validate(
-            label, aaAddress, 0, abi.encodePacked(assertionAdopter.transferOwnership.selector, abi.encode(initialOwner))
+        cl.assertion(
+            aaAddress,
+            type(OwnableAssertion).creationCode,
+            OwnableAssertion.assertionOwnershipChange.selector
         ); // assert that the ownership has not changed
+        assertionAdopter.transferOwnership(initialOwner);
     }
 }

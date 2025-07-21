@@ -5,18 +5,17 @@ import {Assertion} from "../../lib/credible-std/src/Assertion.sol";
 import {IPriceFeed} from "../../src/SimpleLending.sol";
 
 contract PriceFeedAssertion is Assertion {
-    IPriceFeed tokenPriceFeed;
-
-    constructor(address tokenPriceFeed_) {
-        tokenPriceFeed = IPriceFeed(tokenPriceFeed_);
-    }
 
     function triggers() external view override {
         registerCallTrigger(this.assertionPriceDeviation.selector);
     }
 
     function assertionPriceDeviation() external {
-        uint256[] memory stateChanges = getStateChangesUint(address(tokenPriceFeed), 0x0);
+        IPriceFeed tokenPriceFeed = IPriceFeed(ph.getAssertionAdopter());
+        uint256[] memory stateChanges = getStateChangesUint(
+            address(tokenPriceFeed),
+            0x0
+        );
         ph.forkPreState();
         // Get price before the transaction
         uint256 preTokenPrice = tokenPriceFeed.getPrice();
