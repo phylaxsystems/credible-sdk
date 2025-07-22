@@ -9,15 +9,15 @@ repository.workspace = true
 
 [dependencies]
 # Foundry deps
-forge = { path = "../../../../phoundry/crates/forge" }
-foundry-config = { path = "../../../../phoundry/crates/config" }
-foundry-cli = { path = "../../../../phoundry/crates/cli" }
-foundry-common = { path = "../../../../phoundry/crates/common" }
+#forge = { path = "../../../../phoundry/crates/forge" }
+#foundry-config = { path = "../../../../phoundry/crates/config" }
+#foundry-cli = { path = "../../../../phoundry/crates/cli" }
+#foundry-common = { path = "../../../../phoundry/crates/common" }
 
-#forge = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "6eb03f7dff" }
-#foundry-config = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "6eb03f7dff" }
-#foundry-cli = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "6eb03f7dff" }
-#foundry-common = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "6eb03f7dff" }
+forge = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "ffc00a2c22" }
+foundry-config = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "ffc00a2c22" }
+foundry-cli = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "ffc00a2c22" }
+foundry-common = { git = "https://github.com/phylaxsystems/phoundry.git", rev = "ffc00a2c22" }
 
 foundry-compilers = { version = "0.17.3", default-features = false }
 
