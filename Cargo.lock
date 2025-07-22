@@ -3957,6 +3957,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 [[package]]
 name = "forge"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-chains",
  "alloy-dyn-abi",
@@ -4027,6 +4028,7 @@ dependencies = [
 [[package]]
 name = "forge-doc"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-primitives",
  "derive_more 2.0.1",
@@ -4050,6 +4052,7 @@ dependencies = [
 [[package]]
 name = "forge-fmt"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-primitives",
  "ariadne",
@@ -4063,6 +4066,7 @@ dependencies = [
 [[package]]
 name = "forge-lint"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "foundry-compilers",
  "foundry-config",
@@ -4077,6 +4081,7 @@ dependencies = [
 [[package]]
 name = "forge-script"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -4121,6 +4126,7 @@ dependencies = [
 [[package]]
 name = "forge-script-sequence"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-network",
  "alloy-primitives",
@@ -4137,6 +4143,7 @@ dependencies = [
 [[package]]
 name = "forge-sol-macro-gen"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-sol-macro-expander",
  "alloy-sol-macro-input",
@@ -4153,6 +4160,7 @@ dependencies = [
 [[package]]
 name = "forge-verify"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -4211,6 +4219,7 @@ dependencies = [
 [[package]]
 name = "foundry-cheatcodes"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -4263,6 +4272,7 @@ dependencies = [
 [[package]]
 name = "foundry-cheatcodes-spec"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-sol-types",
  "foundry-macros",
@@ -4272,6 +4282,7 @@ dependencies = [
 [[package]]
 name = "foundry-cli"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-chains",
  "alloy-dyn-abi",
@@ -4316,6 +4327,7 @@ dependencies = [
 [[package]]
 name = "foundry-common"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -4372,6 +4384,7 @@ dependencies = [
 [[package]]
 name = "foundry-common-fmt"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -4492,6 +4505,7 @@ dependencies = [
 [[package]]
 name = "foundry-config"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -4529,6 +4543,7 @@ dependencies = [
 [[package]]
 name = "foundry-debugger"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-primitives",
  "crossterm 0.28.1",
@@ -4547,6 +4562,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-evm",
@@ -4576,6 +4592,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-abi"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -4588,6 +4605,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-core"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -4624,6 +4642,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-coverage"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-primitives",
  "eyre",
@@ -4639,6 +4658,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-fuzz"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -4663,6 +4683,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-traces"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -4713,6 +4734,7 @@ dependencies = [
 [[package]]
 name = "foundry-linking"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-primitives",
  "foundry-compilers",
@@ -4723,6 +4745,7 @@ dependencies = [
 [[package]]
 name = "foundry-macros"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "proc-macro-error2",
  "proc-macro2",
@@ -4747,6 +4770,7 @@ dependencies = [
 [[package]]
 name = "foundry-wallets"
 version = "1.2.3"
+source = "git+https://github.com/phylaxsystems/phoundry.git?rev=ffc00a2c22#ffc00a2c226bc6d652ca34d66396eb2149bf5e72"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
