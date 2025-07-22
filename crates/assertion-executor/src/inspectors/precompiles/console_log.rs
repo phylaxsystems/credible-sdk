@@ -79,10 +79,10 @@ mod test {
             console_logs: vec![],
         };
         let result = console_log(
-            logCall {
+            &logCall {
                 message: "Hello, world!".to_string(),
             }
-            .abi_encode(),
+            .abi_encode().into(),
             &mut context,
         );
 
