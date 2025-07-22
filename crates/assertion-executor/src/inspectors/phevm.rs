@@ -14,10 +14,7 @@ use crate::{
                 GetCallInputsError,
                 get_call_inputs,
             },
-            console_log::{
-                ConsoleLogError,
-                console_log,
-            },
+            console_log::ConsoleLogError,
             fork::{
                 fork_post_state,
                 fork_pre_state,

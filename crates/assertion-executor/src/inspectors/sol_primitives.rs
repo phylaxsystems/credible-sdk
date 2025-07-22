@@ -65,6 +65,11 @@ sol! {
         function log(string message) external;
     }
 
+    interface Console {
+        // Log a message to the console.
+        function log(string message) external;
+    }
+
     #[derive(Debug)]
     error Error(string);
 }

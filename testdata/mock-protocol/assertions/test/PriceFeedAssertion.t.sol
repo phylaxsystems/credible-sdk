@@ -19,7 +19,6 @@ contract TestPriceFeedAssertion is CredibleTest, Test {
 
     function testValidPriceUpdate() public {
         cl.assertion({
-            label: "PriceFeedAssertion",
             adopter: address(assertionAdopter),
             createData: type(PriceFeedAssertion).creationCode,
             fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector
@@ -32,7 +31,6 @@ contract TestPriceFeedAssertion is CredibleTest, Test {
 
     function testInvalidPriceUpdate() public {
         cl.assertion({
-            label: "PriceFeedAssertion",
             adopter: address(assertionAdopter),
             createData: type(PriceFeedAssertion).creationCode,
             fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector
@@ -46,7 +44,6 @@ contract TestPriceFeedAssertion is CredibleTest, Test {
 
     function testBoundaryPriceUpdate() public {
         cl.assertion({
-            label: "PriceFeedAssertion",
             adopter: address(assertionAdopter),
             createData: type(PriceFeedAssertion).creationCode,
             fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector
@@ -59,7 +56,6 @@ contract TestPriceFeedAssertion is CredibleTest, Test {
 
     function testBoundaryNegativePriceUpdate() public {
         cl.assertion({
-            label: "PriceFeedAssertion",
             adopter: address(assertionAdopter),
             createData: type(PriceFeedAssertion).creationCode,
             fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector
@@ -72,7 +68,6 @@ contract TestPriceFeedAssertion is CredibleTest, Test {
 
     function testBatchPriceUpdates() public {
         cl.assertion({
-            label: "PriceFeedAssertion",
             adopter: address(assertionAdopter),
             createData: type(PriceFeedAssertion).creationCode,
             fnSelector: PriceFeedAssertion.assertionPriceDeviation.selector

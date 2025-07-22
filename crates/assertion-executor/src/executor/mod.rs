@@ -346,7 +346,7 @@ impl AssertionExecutor {
             mut multi_fork_db,
             assertion_gas,
             assertions_ran,
-            mut context,
+            context,
         } = params;
 
         let inspector = PhEvmInspector::new(self.config.spec_id, &mut multi_fork_db, context);

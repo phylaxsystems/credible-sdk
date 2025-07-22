@@ -1,9 +1,12 @@
 use crate::{
-    inspectors::phevm::PhEvmContext,
+    inspectors::{
+        phevm::PhEvmContext,
+        sol_primitives::Console::logCall,
+    },
     primitives::Bytes,
 };
 
-use alloy_sol_types::SolValue;
+use alloy_sol_types::SolCall;
 
 #[derive(Debug, thiserror::Error)]
 pub struct ConsoleLogError(#[from] alloy_sol_types::Error);
@@ -19,7 +22,9 @@ pub fn console_log(
     input_bytes: &Bytes,
     context: &mut PhEvmContext,
 ) -> Result<Bytes, ConsoleLogError> {
-    context.console_logs.push(String::abi_decode(input_bytes)?);
+    context
+        .console_logs
+        .push(logCall::abi_decode(input_bytes)?.message);
     Ok(Default::default())
 }
 
@@ -74,7 +79,10 @@ mod test {
             console_logs: vec![],
         };
         let result = console_log(
-            &"Hello, world!".abi_encode().into(),
+            logCall {
+                message: "Hello, world!".to_string(),
+            }
+            .abi_encode(),
             &mut context,
         );
 

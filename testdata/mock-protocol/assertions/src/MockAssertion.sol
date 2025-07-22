@@ -2,7 +2,6 @@
 pragma solidity 0.8.28;
 
 import {Assertion} from "credible-std/Assertion.sol";
-import {console} from "credible-std/Console.sol";
 import {MockProtocol} from "../../src/protocol.sol";
 
 contract MockAssertion is Assertion {
@@ -17,7 +16,6 @@ contract MockAssertion is Assertion {
     }
 
     function assertionCheckBool() external view returns (bool) {
-        console.log("test log");
         return protocol.checkBool();
     }
 }
