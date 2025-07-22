@@ -27,7 +27,6 @@ mod test {
             run_precompile_test,
         },
     };
-    use alloy::serde::quantity::vec;
     use alloy_primitives::Address;
     use alloy_sol_types::SolValue;
 

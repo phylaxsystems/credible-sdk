@@ -157,7 +157,13 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::getCallInputsCall::SELECTOR => get_call_inputs(inputs, context, &self.context)?,
             PhEvm::getStateChangesCall::SELECTOR => get_state_changes(&input_bytes, &self.context)?,
             PhEvm::getAssertionAdopterCall::SELECTOR => get_assertion_adopter(&self.context)?,
-            PhEvm::logCall::SELECTOR => console_log(&input_bytes, &mut self.context)?,
+            PhEvm::logCall::SELECTOR => {
+                #[cfg(feature = "phoundry")]
+                return console_log(&input_bytes, &mut self.context);
+
+                #[cfg(not(feature = "phoundry"))]
+                return Ok(Default::default());
+            }
             selector => Err(PrecompileError::SelectorNotFound(selector.into()))?,
         };
 

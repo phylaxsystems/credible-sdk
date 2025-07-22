@@ -34,15 +34,12 @@ mod test {
             },
             tracer::CallTracer,
         },
-        test_utils::{
-            random_address,
-            run_precompile_test,
-        },
+        test_utils::random_address,
     };
 
     use alloy_sol_types::SolValue;
 
-    fn test_logging(input_bytes: &Bytes) -> Result<Bytes, alloy_sol_types::Error> {
+    fn test_logging(input_bytes: &Bytes) -> Result<Bytes, ConsoleLogError> {
         let call_tracer = CallTracer::new();
         let logs_and_traces = LogsAndTraces {
             tx_logs: &[],
@@ -60,16 +57,29 @@ mod test {
     #[test]
     fn test_decode_failure() {
         let result = test_logging(&Bytes::from("DEAD"));
-        assert!(matches!(
-            result,
-            Err(alloy_sol_types::Error::DecodeError(_))
-        ));
+        assert!(matches!(result, Err(ConsoleLogError(_))));
     }
 
     fn test_logging_success() {
-        let result = test_logging("Hello, world!".abi_encode());
+        let call_tracer = CallTracer::new();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &call_tracer,
+        };
+        let adopter = random_address();
+
+        let mut context = PhEvmContext {
+            logs_and_traces: &logs_and_traces,
+            adopter,
+            console_logs: vec![],
+        };
+        let result = console_log(
+            &"Hello, world!".abi_encode().into(),
+            &mut context,
+        );
+
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Default::default());
+        assert_eq!(result.unwrap(), Bytes::new());
         assert_eq!(context.console_logs, vec!["Hello, world!"]);
     }
 }
