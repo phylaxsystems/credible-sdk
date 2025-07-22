@@ -82,7 +82,8 @@ mod test {
             &logCall {
                 message: "Hello, world!".to_string(),
             }
-            .abi_encode().into(),
+            .abi_encode()
+            .into(),
             &mut context,
         );
 
