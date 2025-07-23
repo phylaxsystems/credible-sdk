@@ -42,7 +42,6 @@ mod test {
         test_utils::random_address,
     };
 
-    use alloy_sol_types::SolValue;
 
     fn test_logging(input_bytes: &Bytes) -> Result<Bytes, ConsoleLogError> {
         let call_tracer = CallTracer::new();
@@ -65,6 +64,7 @@ mod test {
         assert!(matches!(result, Err(ConsoleLogError(_))));
     }
 
+    #[test]
     fn test_logging_success() {
         let call_tracer = CallTracer::new();
         let logs_and_traces = LogsAndTraces {
