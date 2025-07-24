@@ -14,7 +14,10 @@ use crate::{
 use revm::{
     Database,
     Inspector,
-    context::JournalInner,
+    context::{
+        JournalInner,
+        journaled_state::JournalCheckpoint,
+    },
     interpreter::{
         CallInputs,
         CallOutcome,
@@ -52,6 +55,18 @@ macro_rules! impl_call_tracer_inspector {
 // Implement for both context types in one clean call
 impl_call_tracer_inspector!(EthCtx<'_, DB>, OpCtx<'_, DB>);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TargetAndSelector {
+    pub target: Address,
+    pub selector: FixedBytes<4>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CallInputsWithId {
+    pub call_inputs: CallInputs,
+    pub id: u64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CallTracer {
     // Not public to prohibit inserting CallInputs with CallInput::SharedBuffer
@@ -62,8 +77,11 @@ pub struct CallTracer {
     // You otherwise would no longer have access to this data in the future when
     // you want to read call_inputs from the tracer.
     // Because of this, we coerce the bytes at the time of recording the call.
-    call_inputs: HashMap<(Address, FixedBytes<4>), Vec<CallInputs>>,
+    call_inputs: HashMap<TargetAndSelector, Vec<CallInputsWithId>>,
     pub journal: JournalInner<JournalEntry>,
+    pub pre_call_checkpoints: HashMap<u64, JournalCheckpoint>,
+    pub post_call_checkpoints: HashMap<u64, JournalCheckpoint>,
+    pub call_counter: u64,
 }
 
 impl CallTracer {
@@ -71,6 +89,9 @@ impl CallTracer {
         Self {
             call_inputs: HashMap::new(),
             journal: JournalInner::new(),
+            pre_call_checkpoints: HashMap::new(),
+            post_call_checkpoints: HashMap::new(),
+            call_counter: 0,
         }
     }
 
@@ -90,9 +111,16 @@ impl CallTracer {
         inputs.input = revm::interpreter::CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
 
         self.call_inputs
-            .entry((inputs.target_address, selector))
+            .entry(TargetAndSelector {
+                target: inputs.target_address,
+                selector,
+            })
             .or_default()
-            .push(inputs);
+            .push(CallInputsWithId {
+                call_inputs: inputs,
+                id: self.call_counter,
+            });
+        self.call_counter += 1;
     }
 
     pub fn calls(&self) -> HashSet<Address> {
@@ -101,7 +129,7 @@ impl CallTracer {
         self.call_inputs.keys().map(|(addr, _)| *addr).collect()
     }
 
-    pub fn call_inputs(&self) -> &HashMap<(Address, FixedBytes<4>), Vec<CallInputs>> {
+    pub fn call_inputs(&self) -> &HashMap<(Address, FixedBytes<4>), Vec<(CallInputs, u64)>> {
         &self.call_inputs
     }
 

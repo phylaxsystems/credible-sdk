@@ -26,7 +26,7 @@ use crate::{
                 get_state_changes,
             },
         },
-        sol_primitives::PhEvm,
+        sol_primitives::{PhEvm, console},
         tracer::CallTracer,
     },
     primitives::{
@@ -147,14 +147,14 @@ impl<'a> PhEvmInspector<'a> {
             .try_into()
             .unwrap_or_default()
         {
-            PhEvm::forkPreStateCall::SELECTOR => fork_pre_state(&self.init_journal, context)?,
-            PhEvm::forkPostStateCall::SELECTOR => fork_post_state(&self.init_journal, context)?,
+            PhEvm::forkPreTxCall::SELECTOR => fork_pre_state(&self.init_journal, context)?,
+            PhEvm::forkPostTxCall::SELECTOR => fork_post_state(&self.init_journal, context)?,
             PhEvm::loadCall::SELECTOR => load_external_slot(context, inputs)?,
             PhEvm::getLogsCall::SELECTOR => get_logs(&self.context)?,
             PhEvm::getCallInputsCall::SELECTOR => get_call_inputs(inputs, context, &self.context)?,
             PhEvm::getStateChangesCall::SELECTOR => get_state_changes(&input_bytes, &self.context)?,
             PhEvm::getAssertionAdopterCall::SELECTOR => get_assertion_adopter(&self.context)?,
-            PhEvm::logCall::SELECTOR => {
+            console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
                 return Ok(console_log(&input_bytes, &mut self.context)?);
 

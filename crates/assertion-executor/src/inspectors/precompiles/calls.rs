@@ -11,6 +11,7 @@ use crate::{
     primitives::Bytes,
 };
 
+use alloy_primitives::U256;
 use revm::{
     context::{
         ContextTr,
@@ -59,7 +60,7 @@ where
         .unwrap_or(&binding);
 
     let mut sol_call_inputs = Vec::new();
-    for input in call_inputs {
+    for (input, id) in call_inputs {
         let original_input_data = match &input.input {
             revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
             _ => return Err(GetCallInputsError::ExpectedBytes),
@@ -75,6 +76,7 @@ where
             target_address: input.target_address,
             caller: input.caller,
             value: input.value.get(),
+            id: U256::from(*id),
         });
     }
 
