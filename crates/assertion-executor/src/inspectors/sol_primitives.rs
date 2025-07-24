@@ -3,7 +3,6 @@ use alloy_sol_types::sol;
 sol! {
     interface PhEvm {
         // An Ethereum log
-        #[derive(Debug)]
         struct Log {
             // The topics of the log, including the signature, if any.
             bytes32[] topics;
@@ -14,7 +13,6 @@ sol! {
         }
 
         // Call inputs for the getCallInputs precompile
-        #[derive(Debug)]
         struct CallInputs {
             // The call data of the call.
             bytes input;
@@ -38,13 +36,24 @@ sol! {
             //
             // Previously `transfer.value` or `context.apparent_value`.
             uint256 value;
+            // id of the call, used to pass to forkCallPre and forkCallPost cheatcodes to access the state
+            // before and after the execution of the call.
+            uint256 id;
         }
 
         //Forks to the state prior to the assertion triggering transaction.
-        function forkPreState() external;
+        function forkPreTx() external;
 
         // Forks to the state after the assertion triggering transaction.
-        function forkPostState() external;
+        function forkPostTx() external;
+
+        // Forks to the state before the execution of the call.
+        // Id can be obtained from the CallInputs struct returned by getCallInputs.
+        function forkCallPre(uint256 id) external;
+
+        // Forks to the state after the execution of the call.
+        // Id can be obtained from the CallInputs struct returned by getCallInputs.
+        function forkCallPost(uint256 id) external;
 
         // Loads a storage slot from an address
         function load(address target, bytes32 slot) external view returns (bytes32 data);
@@ -56,13 +65,13 @@ sol! {
         function getCallInputs(address target, bytes4 selector) external view returns (CallInputs[] memory calls);
 
         // Get state changes for a given contract and storage slot.
-        function getStateChanges(address contractAddress, bytes32 slot) external returns (bytes32[] memory);
+        function getStateChanges(address contractAddress, bytes32 slot)
+            external
+            view
+            returns (bytes32[] memory stateChanges);
 
         // Get assertion adopter contract address associated with the assertion triggering transaction.
         function getAssertionAdopter() external view returns (address);
-
-        // Log a message to the console.
-        function log(string message) external;
     }
 
     interface Console {
@@ -102,5 +111,8 @@ sol! {
         function registerBalanceChangeTrigger(bytes4 fnSelector) external view;
 
 
+    }
+    interface console {
+        function log(string message) external;
     }
 }
