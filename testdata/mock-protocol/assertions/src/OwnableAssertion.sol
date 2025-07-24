@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Assertion} from "../../lib/credible-std/src/Assertion.sol"; // Credible Layer precompiles
+import {Assertion} from "credible-std/Assertion.sol"; // Credible Layer precompiles
+import {console} from "credible-std/Console.sol"; // Credible Layer precompiles
 import {Ownable} from "../../src/Ownable.sol"; // Ownable contract
 
 contract OwnableAssertion is Assertion {
@@ -17,6 +18,7 @@ contract OwnableAssertion is Assertion {
     function assertionOwnershipChange() external {
         Ownable ownable = Ownable(ph.getAssertionAdopter());
         ph.forkPreState(); // Fork the pre-state of the transaction
+        console.log("test log");
         address preOwner = ownable.owner(); // Get the owner of the contract before the transaction
         ph.forkPostState(); // Fork the post-state of the transaction
         address postOwner = ownable.owner(); // Get the owner of the contract after the transaction

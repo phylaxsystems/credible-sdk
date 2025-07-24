@@ -137,6 +137,8 @@ pub struct AssertionFunctionResult {
     pub id: AssertionFnId,
     /// The result of the assertion function execution
     pub result: AssertionFunctionExecutionResult,
+    /// Console logs
+    pub console_logs: Vec<String>,
 }
 
 #[derive(Debug)]

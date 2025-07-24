@@ -66,6 +66,7 @@ mod test {
         let context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
             adopter: Address::ZERO,
+            console_logs: vec![],
         };
         f(&context)
     }

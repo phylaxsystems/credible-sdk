@@ -12,7 +12,8 @@
 
 pub mod assertion_adopter;
 pub mod calls;
+pub mod console_log;
 pub mod fork;
+pub mod get_logs;
 pub mod load;
-pub mod logs;
 pub mod state_changes;

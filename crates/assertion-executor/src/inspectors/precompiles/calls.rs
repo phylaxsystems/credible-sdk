@@ -124,6 +124,7 @@ mod test {
         let ph_context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
             adopter: Address::ZERO,
+            console_logs: vec![],
         };
         get_call_inputs(call_inputs, &mut context, &ph_context)
     }
