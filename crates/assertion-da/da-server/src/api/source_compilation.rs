@@ -813,13 +813,19 @@ mod tests {
     #[cfg(feature = "full-test")]
     #[tokio::test]
     async fn test_complex_contract() {
+        use pcl_phoundry::build_and_flatten::BuildAndFlattenArgs;
         let docker = setup_docker();
-        let source_code = std::fs::read_to_string("../../../testdata/MockAssertion.sol").unwrap();
+        let build_and_flatten = BuildAndFlattenArgs {
+            root: Some(std::path::PathBuf::from("../../../testdata/mock-protocol")),
+            assertion_contract: "MockAssertion".to_string(),
+        };
+        let output = build_and_flatten.run().unwrap();
+        let source_code = output.flattened_source;
 
         let result = compile_solidity("MockAssertion", &source_code, "0.8.28", docker).await;
         assert!(
             result.is_ok(),
-            "Complex contract compilation should succeed"
+            "Complex contract compilation should succeed {result:#?}"
         );
         assert!(
             !result.unwrap().is_empty(),
