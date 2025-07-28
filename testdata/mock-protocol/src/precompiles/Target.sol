@@ -27,4 +27,14 @@ contract Target {
         writeStorage(value_);
         revert("revert from Target");
     }
+
+    function recursiveCalls() public {
+        value++;
+        while (value != 4) {
+            (bool success, ) = address(this).call(
+                abi.encodeWithSelector(this.recursiveCalls.selector)
+            );
+            (success);
+        }
+    }
 }
