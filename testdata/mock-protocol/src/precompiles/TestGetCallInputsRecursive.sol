@@ -4,7 +4,6 @@ pragma solidity ^0.8.13;
 import {Assertion} from "credible-std/Assertion.sol";
 import {PhEvm} from "credible-std/PhEvm.sol";
 import {Test} from "forge-std/Test.sol";
-import {console} from "credible-std/console.sol";
 
 import {Target, TARGET} from "./Target.sol";
 
@@ -14,7 +13,6 @@ contract TestGetCallInputsRecursive is Assertion, Test {
             address(TARGET),
             Target.recursiveCalls.selector
         );
-        console.log("b");
         require(callInputs.length == 3, "callInputs.length != 3");
 
         PhEvm.CallInputs memory callInput = callInputs[0];
