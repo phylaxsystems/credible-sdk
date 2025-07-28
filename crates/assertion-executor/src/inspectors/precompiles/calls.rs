@@ -3,10 +3,13 @@ use crate::{
         DatabaseRef,
         MultiForkDb,
     },
-    inspectors::phevm::PhEvmContext,
-    inspectors::sol_primitives::PhEvm::{
-        CallInputs as PhEvmCallInputs,
-        getCallInputsCall,
+    inspectors::{
+        phevm::PhEvmContext,
+        sol_primitives::PhEvm::{
+            CallInputs as PhEvmCallInputs,
+            getCallInputsCall,
+        },
+        tracer::CallInputsWithId,
     },
     primitives::Bytes,
 };
@@ -50,18 +53,14 @@ where
     let target = get_call_inputs.target;
     let selector = get_call_inputs.selector;
 
-    let binding = Vec::new();
-
     let call_inputs = ph_context
         .logs_and_traces
         .call_traces
-        .call_inputs()
-        .get(&(target, selector))
-        .unwrap_or(&binding);
+        .get_call_inputs(target, selector);
 
     let mut sol_call_inputs = Vec::new();
-    for (input, id) in call_inputs {
-        let original_input_data = match &input.input {
+    for CallInputsWithId { call_input, id } in call_inputs {
+        let original_input_data = match &call_input.input {
             revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
             _ => return Err(GetCallInputsError::ExpectedBytes),
         };
@@ -71,12 +70,12 @@ where
         };
         sol_call_inputs.push(PhEvmCallInputs {
             input: input_data_wo_selector,
-            gas_limit: input.gas_limit,
-            bytecode_address: input.bytecode_address,
-            target_address: input.target_address,
-            caller: input.caller,
-            value: input.value.get(),
-            id: U256::from(*id),
+            gas_limit: call_input.gas_limit,
+            bytecode_address: call_input.bytecode_address,
+            target_address: call_input.target_address,
+            caller: call_input.caller,
+            value: call_input.value.get(),
+            id: U256::from(id),
         });
     }
 
@@ -137,6 +136,7 @@ mod test {
         U256,
     };
     use revm::{
+        context::JournalInner,
         interpreter::{
             CallInput,
             CallInputs,
@@ -191,7 +191,12 @@ mod test {
     {
         let mut call_tracer = CallTracer::new();
         for input in call_inputs {
-            call_tracer.record_call(input.0, &input.1);
+            call_tracer
+                .record_call_start(input.0, &input.1, &mut JournalInner::new())
+                .unwrap();
+            call_tracer
+                .record_call_end(&mut JournalInner::new())
+                .unwrap();
         }
         call_tracer
     }
@@ -301,9 +306,37 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_get_call_inputs_integration() {
+    async fn test_get_call_inputs_create() {
+        let result = run_precompile_test("TestGetCallInputsCreate").await;
+        assert!(result.is_valid(), "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert!(result_and_state.result.is_success());
+        assert_eq!(result.assertions_executions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_call_inputs() {
         let result = run_precompile_test("TestGetCallInputs").await;
         assert!(result.is_valid(), "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert!(result_and_state.result.is_success());
+        assert_eq!(result.assertions_executions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_call_inputs_reverts() {
+        let result = run_precompile_test("TestGetCallInputsReverts").await;
+        assert!(result.is_valid(), "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert_eq!(result.assertions_executions.len(), 1);
+        assert!(result_and_state.result.is_success());
+    }
+
+    #[tokio::test]
+    async fn test_get_call_inputs_recursive() {
+        let result = run_precompile_test("TestGetCallInputsRecursive").await;
+        assert!(result.is_valid(), "{result:#?}");
+        assert_eq!(result.assertions_executions.len(), 1);
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
     }

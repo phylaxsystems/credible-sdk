@@ -26,7 +26,10 @@ use crate::{
                 get_state_changes,
             },
         },
-        sol_primitives::{PhEvm, console},
+        sol_primitives::{
+            PhEvm,
+            console,
+        },
         tracer::CallTracer,
     },
     primitives::{
