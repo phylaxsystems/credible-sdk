@@ -459,6 +459,11 @@ impl AssertionExecutor {
         let call_tracer = std::mem::take(evm.inspector);
         std::mem::drop(evm);
 
+        // Propogate potential errors from the inspector, if any
+        if let Err(err) = call_tracer.result {
+            return Err(ForkTxExecutionError::CallTracerError(err));
+        }
+
         // Commit changes to the ForkDb<Active>
         fork_db.commit(result_and_state.state.clone());
 
