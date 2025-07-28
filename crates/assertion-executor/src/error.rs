@@ -1,4 +1,5 @@
 use crate::{
+    inspectors::CallTracerError,
     primitives::EVMError,
     store::AssertionStoreError,
 };
@@ -42,6 +43,8 @@ where
 {
     #[error("Evm error executing transaction: {0}")]
     TxEvmError(#[from] EVMError<ExtDb::Error>),
+    #[error("Call tracer error: {0}")]
+    CallTracerError(#[from] CallTracerError),
 }
 
 impl<ExtDb: Database> Debug for ForkTxExecutionError<ExtDb>
@@ -51,6 +54,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TxEvmError(e) => write!(f, "TxEvmError({e:?})"),
+            Self::CallTracerError(e) => write!(f, "CallTracerError({e:?})"),
         }
     }
 }

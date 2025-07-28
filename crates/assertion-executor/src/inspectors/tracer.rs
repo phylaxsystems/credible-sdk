@@ -29,6 +29,7 @@ use std::collections::{
     HashMap,
     HashSet,
 };
+use tracing::error;
 
 /// Macro to implement Inspector trait for multiple context types.
 /// This is cleaner than duplicating the implementation and more reliable than generic bounds.
@@ -38,16 +39,12 @@ macro_rules! impl_call_tracer_inspector {
             impl<DB: Database> Inspector<$context_type> for CallTracer {
                 fn call(&mut self, context: &mut $context_type, inputs: &mut CallInputs) -> Option<CallOutcome> {
                     let input_bytes = inputs.input.bytes(context);
-                    //TODO: change this error handling, so that we log a trace, and ignore the transaction, instead of panicking.
-                    self.record_call_start(inputs.clone(), &input_bytes, &mut context.journaled_state.inner)
-                        .expect("Failed to record call start, if this occurs we can not execute assertions");
+                    self.record_call_start(inputs.clone(), &input_bytes, &mut context.journaled_state.inner);
                     None
                 }
                 fn call_end(&mut self, context: &mut $context_type, _inputs: &CallInputs, _outcome: &mut CallOutcome) {
                     self.journal = context.journaled_state.clone();
-                    //TODO: change this error handling, so that we log a trace, and ignore the transaction, instead of panicking.
-                    self.record_call_end(&mut context.journaled_state.inner)
-                        .expect("Failed to record call end, if this occurs we can not execute assertions");
+                    self.record_call_end(&mut context.journaled_state.inner);
                 }
                 fn create_end(&mut self, context: &mut $context_type, _inputs: &CreateInputs, _outcome: &mut CreateOutcome) {
                     self.journal = context.journaled_state.clone();
@@ -66,7 +63,7 @@ pub struct TargetAndSelector {
     pub selector: FixedBytes<4>,
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum CallTracerError {
     #[error(
         "Pending post call write already exists for depth {depth}. Index {index} should have been written to the post call checkpoint first."
@@ -95,6 +92,7 @@ pub struct CallTracer {
     // Map depth to the index of the call input that is awaiting a post_call_checkpoint
     pending_post_call_writes: HashMap<usize, usize>,
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
+    pub result: Result<(), CallTracerError>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +110,7 @@ impl CallTracer {
             post_call_checkpoints: Vec::new(),
             pending_post_call_writes: HashMap::new(),
             target_and_selector_indices: HashMap::new(),
+            result: Ok(()),
         }
     }
 
@@ -120,7 +119,7 @@ impl CallTracer {
         inputs: CallInputs,
         input_bytes: &[u8],
         journal_inner: &mut JournalInner<JournalEntry>,
-    ) -> Result<(), CallTracerError> {
+    ) {
         // If the input is at least 4 bytes long, use the first 4 bytes as the selector
         // Otherwise, use 0x00000000 as the default selector
         // Note: It doesn't mean that the selector is a valid function selector of the target contract
@@ -138,10 +137,12 @@ impl CallTracer {
         let index = self.call_inputs.len();
         let depth = journal_inner.depth;
         if let Some(existing_index) = self.pending_post_call_writes.insert(depth, index) {
-            return Err(CallTracerError::PendingPostCallWriteAlreadyExists {
+            error!(target: "assertion-executor::call_tracer", depth, existing_index, "Tried to insert pending_post_call_write, but pending post call write already exists.");
+            self.result = Err(CallTracerError::PendingPostCallWriteAlreadyExists {
                 depth,
                 index: existing_index,
             });
+            return;
         }
 
         let checkpoint = JournalCheckpoint {
@@ -161,13 +162,9 @@ impl CallTracer {
             .push(index);
 
         self.call_inputs.push(inputs);
-        Ok(())
     }
 
-    pub fn record_call_end(
-        &mut self,
-        journal_inner: &mut JournalInner<JournalEntry>,
-    ) -> Result<(), CallTracerError> {
+    pub fn record_call_end(&mut self, journal_inner: &mut JournalInner<JournalEntry>) {
         let checkpoint = JournalCheckpoint {
             log_i: journal_inner.logs.len(),
             journal_i: journal_inner.journal.len(),
@@ -176,15 +173,18 @@ impl CallTracer {
         match self.pending_post_call_writes.remove(&journal_inner.depth) {
             Some(index) => {
                 if self.post_call_checkpoints.len() <= index {
-                    return Err(CallTracerError::PostCallCheckpointNotInitialized { index });
+                    error!(target: "assertion-executor::call_tracer", index, "Post call checkpoint not initialized as None");
+                    self.result = Err(CallTracerError::PostCallCheckpointNotInitialized { index });
+                    return;
                 }
                 self.post_call_checkpoints[index] = Some(checkpoint);
-                Ok(())
             }
             None => {
-                Err(CallTracerError::PendingPostCallWriteNotFound {
+                error!(target: "assertion-executor::call_tracer", depth = journal_inner.depth, "Pending post call write not found");
+                self.result = Err(CallTracerError::PendingPostCallWriteNotFound {
                     depth: journal_inner.depth,
-                })
+                });
+                return;
             }
         }
     }
@@ -304,10 +304,7 @@ impl CallTracer {
 mod test {
     use super::*;
     use crate::{
-        evm::build_evm::{
-            build_optimism_evm,
-            evm_env,
-        },
+        evm::build_evm::evm_env,
         primitives::{
             BlockEnv,
             Bytecode,
