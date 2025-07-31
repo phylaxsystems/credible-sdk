@@ -79,3 +79,14 @@ The sidecar is a binary in the credible-sdk workspace, you can run it from the c
 
 ### Dockerfile
 
+Build:
+```docker build -f dockerfile/Dockerfile.sidecar -t sidecar .```
+
+Run:
+```docker run sidecar```
+
+If you need to pass arguments to the sidecar binary:
+```docker run sidecar [your-sidecar-args]```
+
+If the sidecar needs to expose ports (you'll need to check what port it uses), add -p flag:
+```docker run -p <host-port>:<container-port> sidecar```
