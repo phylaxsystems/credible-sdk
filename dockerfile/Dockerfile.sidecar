@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.2
+FROM rustlang/rust:nightly AS chef
+
+RUN cargo install cargo-chef
+
+WORKDIR /sidecar
+
+FROM chef AS planner
+
+COPY crates ./crates
+COPY Cargo.* .
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+
+COPY --from=planner /sidecar/recipe.json recipe.json
+
+# Build dependencies only, these remained cached
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Optional build flags
+ARG BUILD_FLAGS=""
+COPY crates ./crates
+COPY Cargo.* .
+RUN cargo build --release --locked --bin sidecar $BUILD_FLAGS
+
+FROM ubuntu:24.04
+WORKDIR /usr/local/bin
+
+COPY --from=builder /sidecar/target/release/sidecar /usr/local/bin/sidecar
+
+ENTRYPOINT ["/usr/local/bin/sidecar"]
