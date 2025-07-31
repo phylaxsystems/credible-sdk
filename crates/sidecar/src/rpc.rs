@@ -1,13 +1,16 @@
 //! JSON-RPC server implementation for the sidecar
 
 use axum::{
+    Router,
     extract::Json,
     http::StatusCode,
     response::Json as ResponseJson,
     routing::post,
-    Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -34,23 +37,29 @@ pub struct JsonRpcError {
     pub message: String,
 }
 
-async fn handle_rpc_request(Json(request): Json<JsonRpcRequest>) -> Result<ResponseJson<JsonRpcResponse>, StatusCode> {
+async fn handle_rpc_request(
+    Json(request): Json<JsonRpcRequest>,
+) -> Result<ResponseJson<JsonRpcResponse>, StatusCode> {
     let response = match request.method.as_str() {
-        "ping" => JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
-            result: Some(serde_json::json!("pong")),
-            error: None,
-            id: request.id,
-        },
-        _ => JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32601,
-                message: "Method not found".to_string(),
-            }),
-            id: request.id,
-        },
+        "ping" => {
+            JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!("pong")),
+                error: None,
+                id: request.id,
+            }
+        }
+        _ => {
+            JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32601,
+                    message: "Method not found".to_string(),
+                }),
+                id: request.id,
+            }
+        }
     };
 
     Ok(ResponseJson(response))
@@ -58,11 +67,10 @@ async fn handle_rpc_request(Json(request): Json<JsonRpcRequest>) -> Result<Respo
 
 /// Start the JSON-RPC server
 pub async fn start_rpc_server(addr: SocketAddr) -> anyhow::Result<()> {
-    let app = Router::new()
-        .route("/", post(handle_rpc_request));
+    let app = Router::new().route("/", post(handle_rpc_request));
 
     println!("Attempting to bind to address: {}", addr);
-    
+
     let listener = match TcpListener::bind(addr).await {
         Ok(listener) => {
             println!("Successfully bound to address: {}", addr);
@@ -78,6 +86,6 @@ pub async fn start_rpc_server(addr: SocketAddr) -> anyhow::Result<()> {
 
     println!("JSON-RPC server started successfully at {}", addr);
     axum::serve(listener, app).await?;
-    
+
     Ok(())
 }

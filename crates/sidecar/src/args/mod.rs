@@ -1,6 +1,9 @@
 //! Sidecar command arguments
-use assertion_executor::{primitives::Address, store::BlockTag,};
 use assertion_executor::primitives::SpecId;
+use assertion_executor::{
+    primitives::Address,
+    store::BlockTag,
+};
 use std::path::PathBuf;
 
 /// Wrapper for SpecId that implements clap::ValueEnum
@@ -42,11 +45,20 @@ pub struct ChainArgs {
     pub extra_block_deadline_secs: u64,
 
     /// What EVM specification to use. Only latest for now
-    #[arg(long = "chain.spec-id", default_value = "latest", env = "CHAIN_SPEC_ID", value_enum)]
+    #[arg(
+        long = "chain.spec-id",
+        default_value = "latest",
+        env = "CHAIN_SPEC_ID",
+        value_enum
+    )]
     pub spec_id: SpecIdArg,
 
     /// Transport JSON-RPC server URL and port
-    #[arg(long = "chain.transport-url", default_value = "http://127.0.0.1:8545", env = "CHAIN_RPC_URL")]
+    #[arg(
+        long = "chain.transport-url",
+        default_value = "http://127.0.0.1:8545",
+        env = "CHAIN_RPC_URL"
+    )]
     pub rpc_url: String,
 }
 
