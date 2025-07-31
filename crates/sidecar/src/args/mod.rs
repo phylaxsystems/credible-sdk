@@ -45,8 +45,8 @@ pub struct ChainArgs {
     #[arg(long = "chain.spec-id", default_value = "latest", env = "CHAIN_SPEC_ID", value_enum)]
     pub spec_id: SpecIdArg,
 
-    /// JSON-RPC server URL and port
-    #[arg(long = "chain.rpc-url", default_value = "http://localhost:8545", env = "CHAIN_RPC_URL")]
+    /// Transport JSON-RPC server URL and port
+    #[arg(long = "chain.transport-url", default_value = "http://127.0.0.1:8545", env = "CHAIN_RPC_URL")]
     pub rpc_url: String,
 }
 
