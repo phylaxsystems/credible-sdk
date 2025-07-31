@@ -10403,6 +10403,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "sidecar"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "assertion-executor 0.2.1",
+ "clap",
+ "revm",
+ "rust-tracing",
+]
+
+[[package]]
 name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
