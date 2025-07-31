@@ -21,12 +21,7 @@ async fn main() -> anyhow::Result<()> {
 		.strip_prefix("http://")
 		.unwrap_or(rpc_url)
 		.parse::<std::net::SocketAddr>()
-		.unwrap_or_else(|_| {
-			eprintln!("Failed to parse RPC URL '{}', using default 0.0.0.0:9545", rpc_url);
-			"0.0.0.0:9545".parse().unwrap()
-		});
-
-	println!("Attempting to bind RPC server to: {}", addr);
+		.unwrap_or_else(|_| "127.0.0.1:8545".parse().unwrap());
 
 	let running = Arc::new(AtomicBool::new(true));
 	let r = running.clone();
@@ -37,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
 	}).expect("Error setting Ctrl-C handler");
 
 	// Start the JSON-RPC server in a background task
-	let _server_running = running.clone();
+	let server_running = running.clone();
 	tokio::spawn(async move {
 		if let Err(e) = rpc::start_rpc_server(addr).await {
 			eprintln!("RPC server error: {}", e);
