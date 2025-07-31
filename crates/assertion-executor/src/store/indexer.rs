@@ -320,6 +320,7 @@ impl Indexer {
         let latest_block_header = latest_block.header();
         let latest_block_number = latest_block_header.number();
         let latest_block_hash = latest_block_header.hash();
+
         self.sync(
             UpdateBlock {
                 block_number: latest_block_number,
@@ -597,26 +598,30 @@ impl Indexer {
             from, to, "Block hashes batch applied"
         );
 
-        let block_to_move = self
+        let block_response = self
             .provider
             .get_block_by_number(self.await_tag.into())
-            .await?
-            .ok_or(IndexerError::ParentBlockNotFound)?
-            .header()
-            .number();
-
-        trace!(
-            target = "assertion_executor::indexer",
-            block_to_move, "Moving pending modifications to store"
-        );
-
-        self.move_pending_modifications_to_store(block_to_move)
             .await?;
-        trace!(
-            target = "assertion_executor::indexer",
-            block_to_move, "Pending modifications moved to store"
-        );
 
+        if let Some(block) = block_response {
+            let block_to_move = block.header().number();
+            trace!(
+                target = "assertion_executor::indexer",
+                block_to_move, "Moving pending modifications to store"
+            );
+
+            self.move_pending_modifications_to_store(block_to_move)
+                .await?;
+            trace!(
+                target = "assertion_executor::indexer",
+                block_to_move, "Pending modifications moved to store"
+            );
+        } else {
+            trace!(
+                target = "assertion_executor::indexer",
+                "No block to move, skipping"
+            );
+        }
         Ok(())
     }
 
