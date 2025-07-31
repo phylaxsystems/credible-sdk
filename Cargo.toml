@@ -1,5 +1,5 @@
 [workspace]
-members = [ 
+members = [
     "crates/assertion-da/da-client",
     "crates/assertion-da/da-server",
     "crates/assertion-da/da-core",
@@ -15,7 +15,7 @@ exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 authors = ["Phylax Systems"]
 license = "MIT OR Apache-2.0"
@@ -44,7 +44,7 @@ assertion-executor = { path = "crates/assertion-executor" }
 dapp-api-client = { path = "crates/dapp-api-client" }
 
 anyhow = "1.0.86"
-clap = {version = "4.5.11", features = ["derive", "env"]}
+clap = { version = "4.5.11", features = ["derive", "env"] }
 futures = "0.3.30"
 reqwest = { version = "0.12.5", features = ["json"] }
 serde = "1.0.204"
@@ -70,7 +70,7 @@ directories = "6.0.0"
 bollard = "0.18"
 
 tracing = "0.1.41"
-tracing-subscriber = {version = "0.3", features = ["std", "env-filter"]}
+tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }
 
 color-eyre = "0.6"
 thiserror = "2"
@@ -83,7 +83,12 @@ parking_lot = "0.12.1"
 
 
 # alloy dependencies
-alloy-provider = { version = "1.0.9", features = ["ws", "anvil-node", "trace-api", "debug-api"] }
+alloy-provider = { version = "1.0.9", features = [
+    "ws",
+    "anvil-node",
+    "trace-api",
+    "debug-api",
+] }
 alloy-consensus = { version = "1.0.9", features = ["k256"] }
 alloy-rpc-types = "1.0.9"
 alloy-rpc-types-anvil = "1.0.9"
@@ -102,8 +107,15 @@ alloy-eips = "1.0.9"
 alloy-primitives = { version = "1.1.0", features = ["getrandom"] }
 alloy-sol-types = "1.1.0"
 
-alloy = { version = "1.0.9", features = ["full", "node-bindings", "json-rpc", "rpc-client", "signer-local", "k256"] }
-alloy-dyn-abi = {version = "1.2.1", features = ["std"] }
+alloy = { version = "1.0.9", features = [
+    "full",
+    "node-bindings",
+    "json-rpc",
+    "rpc-client",
+    "signer-local",
+    "k256",
+] }
+alloy-dyn-abi = { version = "1.2.1", features = ["std"] }
 alloy-json-abi = "1.2.1"
 
 ## alloy-evm
@@ -113,7 +125,11 @@ alloy-evm = "0.10.0"
 revm = { version = "24.0.1", features = ["serde"] }
 op-revm = { version = "5.0.1", default-features = false }
 
-jsonrpsee = { version = "0.24.7", features = ["client", "http-client", "server"] }
+jsonrpsee = { version = "0.24.7", features = [
+    "client",
+    "http-client",
+    "server",
+] }
 moka = { version = "0.12.10", features = ["sync"] }
 enum-as-inner = "0.6.1"
 url = "2.5.4"
@@ -128,5 +144,3 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 incremental = false
-
-
