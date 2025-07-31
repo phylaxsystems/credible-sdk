@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod args;
+mod rpc;
 use args::SidecarArgs;
 
 #[tokio::main]
