@@ -41,9 +41,13 @@ pub struct ChainArgs {
     #[arg(long = "chain.extra-block-deadline-secs", default_value = "20")]
     pub extra_block_deadline_secs: u64,
 
-    /// What EVM specification to use
+    /// What EVM specification to use. Only latest for now
     #[arg(long = "chain.spec-id", default_value = "latest", env = "CHAIN_SPEC_ID", value_enum)]
     pub spec_id: SpecIdArg,
+
+    /// JSON-RPC server URL and port
+    #[arg(long = "chain.rpc-url", default_value = "http://localhost:8545", env = "CHAIN_RPC_URL")]
+    pub rpc_url: String,
 }
 
 /// Parameters for telemetry configuration
