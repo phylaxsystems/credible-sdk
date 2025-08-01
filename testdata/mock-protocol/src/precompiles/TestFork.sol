@@ -17,6 +17,7 @@ contract TestFork is Assertion, Test {
         require(TARGET.readStorage() == 2, "readStorage() != 2");
 
         ph.forkPreTx();
+
         require(TARGET.readStorage() == 1, "readStorage() != 1");
 
         ph.forkPostTx();
@@ -35,6 +36,7 @@ contract TestFork is Assertion, Test {
         sum += TARGET.readStorage();
 
         ph.forkPreTx();
+
         require(TARGET.readStorage() == 1, "readStorage != 1");
         expectedSum += TARGET.readStorage();
         sum += TARGET.readStorage();

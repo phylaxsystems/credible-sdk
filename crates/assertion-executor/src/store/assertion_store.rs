@@ -1017,10 +1017,11 @@ mod tests {
                 },
                 &[0x12, 0x34, 0x56, 0x78],
                 &mut JournalInner::new(),
-            )
-            .unwrap();
+            );
+            tracer.result.clone().unwrap();
 
-        tracer.record_call_end(&mut JournalInner::new()).unwrap();
+        tracer.record_call_end(&mut JournalInner::new());
+        tracer.result.clone().unwrap();
 
         for entry in journal_entries {
             tracer.journal.journal.push(entry);

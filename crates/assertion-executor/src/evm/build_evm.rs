@@ -287,7 +287,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut multi_fork_db = MultiForkDb::new(db.clone(), db.clone());
+        let mut multi_fork_db = MultiForkDb::new(db);
 
         let tracer = CallTracer::default();
         let logs_and_traces = LogsAndTraces {
@@ -296,7 +296,7 @@ mod tests {
         };
         let phvem_context = PhEvmContext::new(&logs_and_traces, address);
 
-        let inspector = PhEvmInspector::new(Default::default(), &mut multi_fork_db, phvem_context);
+        let inspector = PhEvmInspector::new(Default::default(), &mut Default::default(), phvem_context);
 
         #[cfg(feature = "optimism")]
         let (mut evm, tx_env) = {

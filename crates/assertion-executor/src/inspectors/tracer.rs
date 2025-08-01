@@ -63,7 +63,7 @@ pub struct TargetAndSelector {
     pub selector: FixedBytes<4>,
 }
 
-#[derive(thiserror::Error, Debug, Clone)]
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum CallTracerError {
     #[error(
         "Pending post call write already exists for depth {depth}. Index {index} should have been written to the post call checkpoint first."
@@ -75,7 +75,7 @@ pub enum CallTracerError {
     PostCallCheckpointNotInitialized { index: usize },
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallTracer {
     // Not public to prohibit inserting CallInputs with CallInput::SharedBuffer
     // If call_inputs with CallInput::SharedBuffer are inserted, then accessing the data without the previous context will be problematic
@@ -93,6 +93,19 @@ pub struct CallTracer {
     pending_post_call_writes: HashMap<usize, usize>,
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
     pub result: Result<(), CallTracerError>,
+}
+impl Default for CallTracer {
+    fn default() -> Self {
+        Self {
+            call_inputs: Vec::new(),
+            journal: JournalInner::new(),
+            pre_call_checkpoints: Vec::new(),
+            post_call_checkpoints: Vec::new(),
+            pending_post_call_writes: HashMap::new(),
+            target_and_selector_indices: HashMap::new(),
+            result: Ok(()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -304,16 +317,9 @@ impl CallTracer {
 mod test {
     use super::*;
     use crate::{
-        evm::build_evm::evm_env,
+        evm::build_evm::{build_optimism_evm, evm_env},
         primitives::{
-            BlockEnv,
-            Bytecode,
-            SpecId,
-            TxEnv,
-            TxKind,
-            U256,
-            address,
-            bytes,
+            address, bytes, BlockEnv, Bytecode, SpecId, TxEnv, TxKind, U256
         },
         test_utils::deployed_bytecode,
     };
@@ -548,25 +554,25 @@ mod test {
         let selector2 = FixedBytes::<4>::from([0xAB, 0xCD, 0xEF, 0x00]);
         for (address, selector) in [(addr1, selector1), (addr2, selector2)] {
             let input_bytes: Bytes = selector.into();
-            tracer
-                .record_call_start(
-                    CallInputs {
-                        input: CallInput::Bytes(input_bytes.clone()),
-                        return_memory_offset: 0..0,
-                        gas_limit: 0,
-                        bytecode_address: address,
-                        target_address: address,
-                        caller: address,
-                        value: CallValue::default(),
-                        scheme: CallScheme::Call,
-                        is_static: false,
-                        is_eof: false,
-                    },
-                    &input_bytes,
-                    &mut JournalInner::new(),
-                )
-                .unwrap();
-            tracer.record_call_end(&mut JournalInner::new()).unwrap();
+            tracer.record_call_start(
+                CallInputs {
+                    input: CallInput::Bytes(input_bytes.clone()),
+                    return_memory_offset: 0..0,
+                    gas_limit: 0,
+                    bytecode_address: address,
+                    target_address: address,
+                    caller: address,
+                    value: CallValue::default(),
+                    scheme: CallScheme::Call,
+                    is_static: false,
+                    is_eof: false,
+                },
+                &input_bytes,
+                &mut JournalInner::new(),
+            );
+            tracer.result.clone().unwrap();
+            tracer.record_call_end(&mut JournalInner::new());
+            tracer.result.clone().unwrap();
         }
 
         // Test with journaled state for balance and storage changes
@@ -653,10 +659,12 @@ mod test {
                 },
                 &input_bytes,
                 &mut JournalInner::new(),
-            )
-            .unwrap();
+            );
+        tracer.result.clone().unwrap();
 
-        tracer.record_call_end(&mut JournalInner::new()).unwrap();
+        tracer.record_call_end(&mut JournalInner::new());
+        tracer.result.clone().unwrap();
+
         println!("Tracer: {tracer:#?}");
 
         let triggers = tracer.triggers();

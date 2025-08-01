@@ -118,9 +118,8 @@ mod test {
             call_traces: &call_tracer,
         };
         let mock_db = MockDb::new();
-        let pre_tx_db = ForkDb::new(mock_db.clone());
-        let post_tx_db = ForkDb::new(mock_db);
-        let mut multi_fork_db = MultiForkDb::new(pre_tx_db, post_tx_db);
+        let pre_tx_db = ForkDb::new(mock_db);
+        let mut multi_fork_db = MultiForkDb::new(pre_tx_db);
         let mut context = revm::handler::MainnetContext::new(&mut multi_fork_db, SpecId::default());
         let ph_context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
@@ -192,11 +191,12 @@ mod test {
         let mut call_tracer = CallTracer::new();
         for input in call_inputs {
             call_tracer
-                .record_call_start(input.0, &input.1, &mut JournalInner::new())
-                .unwrap();
+                .record_call_start(input.0, &input.1, &mut JournalInner::new());
+            call_tracer.result.clone().unwrap();
+
             call_tracer
-                .record_call_end(&mut JournalInner::new())
-                .unwrap();
+                .record_call_end(&mut JournalInner::new());
+            call_tracer.result.clone().unwrap();
         }
         call_tracer
     }
