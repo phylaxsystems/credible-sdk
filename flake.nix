@@ -75,10 +75,6 @@
 
             export LIBCLANG_PATH="${llvm.libclang.lib}/lib"
 
-            export PATH=$HOME/.cargo/bin:$PATH
-
-            rustup default nightly 2>/dev/null || true
-
             ${if pkgs.stdenv.isDarwin then ''
               export DYLD_LIBRARY_PATH="${pkgs.openssl.out}/lib:$DYLD_LIBRARY_PATH"
               export LIBRARY_PATH="${pkgs.openssl.out}/lib:$LIBRARY_PATH"
