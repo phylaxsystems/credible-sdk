@@ -17,10 +17,10 @@ contract OwnableAssertion is Assertion {
     // Return false if the owner has changed, true if it has not
     function assertionOwnershipChange() external {
         Ownable ownable = Ownable(ph.getAssertionAdopter());
-        ph.forkPreState(); // Fork the pre-state of the transaction
+        ph.forkPreTx(); // Fork the pre-state of the transaction
         console.log("test log");
         address preOwner = ownable.owner(); // Get the owner of the contract before the transaction
-        ph.forkPostState(); // Fork the post-state of the transaction
+        ph.forkPostTx(); // Fork the post-state of the transaction
         address postOwner = ownable.owner(); // Get the owner of the contract after the transaction
         require(postOwner == preOwner, "Ownership has changed"); // Return true if the owner has not changed, false if it has
     }

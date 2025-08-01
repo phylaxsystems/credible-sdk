@@ -11,7 +11,10 @@ pub use phevm::{
     PhEvmInspector,
 };
 
-pub use tracer::CallTracer;
+pub use tracer::{
+    CallTracer,
+    CallTracerError,
+};
 pub use trigger_recorder::{
     TriggerRecorder,
     TriggerType,

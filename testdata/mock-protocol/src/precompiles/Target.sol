@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-Target constant TARGET = Target(address(0x118DD24a3b0D02F90D8896E242D3838B4D37c181));
+Target constant TARGET = Target(
+    address(0x118DD24a3b0D02F90D8896E242D3838B4D37c181)
+);
 
 contract Target {
     event Log(uint256 value);
     event Log2(uint256 value);
 
     uint256 value;
+    Reverts public reverts;
 
     constructor() payable {
         value = 1;
@@ -26,5 +29,26 @@ contract Target {
     function writeStorageAndRevert(uint256 value_) external {
         writeStorage(value_);
         revert("revert from Target");
+    }
+
+    function recursiveCalls() public {
+        value++;
+        while (value != 4) {
+            (bool success, ) = address(this).call(
+                abi.encodeWithSelector(this.recursiveCalls.selector)
+            );
+            (success);
+        }
+    }
+    function unhandledRevert() external {
+        reverts = new Reverts();
+        (bool success, ) = address(reverts).call("");
+        (success);
+    }
+}
+
+contract Reverts {
+    fallback() external {
+        revert("revert");
     }
 }

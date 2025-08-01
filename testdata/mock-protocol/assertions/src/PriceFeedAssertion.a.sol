@@ -16,10 +16,10 @@ contract PriceFeedAssertion is Assertion {
             address(tokenPriceFeed),
             0x0
         );
-        ph.forkPreState();
+        ph.forkPreTx();
         // Get price before the transaction
         uint256 preTokenPrice = tokenPriceFeed.getPrice();
-        ph.forkPostState();
+        ph.forkPostTx();
 
         // Maximum allowed price deviation is 10% up or down
         uint256 maxPrice = (preTokenPrice * 110) / 100; // +10%

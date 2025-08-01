@@ -1,6 +1,9 @@
 build:
 	cargo build --verbose --release --locked
 
+build-contracts:
+	forge build --root testdata/mock-protocol 
+
 # Run the rust tests
 test:
 	cargo nextest run --all-features --workspace --locked  --cargo-profile release --no-tests=warn
