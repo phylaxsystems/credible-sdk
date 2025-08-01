@@ -21,7 +21,7 @@
         llvm = pkgs.llvmPackages_latest;
         clangStdenv = llvm.stdenv;
 
-        rustNightly = pkgs.rust-bin.nightly.latest.default.override {
+        rustNightly = pkgs.rust-bin.nightly."2025-07-26".default.override {
           extensions = [ "rust-src" "rust-analyzer" "cargo" ];
         };
 
