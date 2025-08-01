@@ -1,10 +1,7 @@
 use crate::{
     db::{
         DatabaseRef,
-        multi_fork_db::{
-            ForkError,
-            MultiForkDb,
-        },
+        multi_fork_db::MultiForkDb,
     },
     inspectors::{
         inspector_result_to_call_outcome,
@@ -16,8 +13,11 @@ use crate::{
             },
             console_log::ConsoleLogError,
             fork::{
-                fork_post_state,
-                fork_pre_state,
+                ForkError,
+                fork_post_call,
+                fork_post_tx,
+                fork_pre_call,
+                fork_pre_tx,
             },
             get_logs::get_logs,
             load::{
@@ -157,17 +157,33 @@ impl<'a> PhEvmInspector<'a> {
             .unwrap_or_default()
         {
             PhEvm::forkPreTxCall::SELECTOR => {
-                fork_pre_state(
+                fork_pre_tx(
                     &self.init_journal,
                     context,
                     self.context.logs_and_traces.call_traces,
                 )?
             }
             PhEvm::forkPostTxCall::SELECTOR => {
-                fork_post_state(
+                fork_post_tx(
                     &self.init_journal,
                     context,
                     self.context.logs_and_traces.call_traces,
+                )?
+            }
+            PhEvm::forkPreCallCall::SELECTOR => {
+                fork_pre_call(
+                    &self.init_journal,
+                    context,
+                    self.context.logs_and_traces.call_traces,
+                    input_bytes,
+                )?
+            }
+            PhEvm::forkPostCallCall::SELECTOR => {
+                fork_post_call(
+                    &self.init_journal,
+                    context,
+                    self.context.logs_and_traces.call_traces,
+                    input_bytes,
                 )?
             }
             PhEvm::loadCall::SELECTOR => load_external_slot(context, inputs)?,

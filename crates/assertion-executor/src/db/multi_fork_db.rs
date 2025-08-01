@@ -51,7 +51,7 @@ pub struct MultiForkDb<ExtDb> {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum ForkError {
+pub enum MultiForkError {
     #[error("Post tx journal not found.")]
     PostTxJournalNotFound,
 }
@@ -73,7 +73,7 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         active_journal: &mut JournalInner<JournalEntry>,
         call_tracer: &CallTracer,
         init_journal: &JournalInner<JournalEntry>,
-    ) -> Result<(), ForkError> {
+    ) -> Result<(), MultiForkError> {
         // If the fork is already active, do nothing.
         if fork_id == self.active_fork_id {
             return Ok(());
@@ -85,7 +85,7 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
             None => {
                 match fork_id {
                     ForkId::PreTx => init_journal.clone(), // Initialize to init journal if pre tx
-                    ForkId::PostTx => return Err(ForkError::PostTxJournalNotFound), //Error post should always be present in inactive_journals if it is not currently the active journal,
+                    ForkId::PostTx => return Err(MultiForkError::PostTxJournalNotFound), //Error post should always be present in inactive_journals if it is not currently the active journal,
                     ForkId::PreCall(call_id) => {
                         let mut pre_call_journal = self.get_post_tx_journal(active_journal)?;
 
@@ -133,13 +133,13 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
     fn get_post_tx_journal(
         &self,
         active_journal: &mut JournalInner<JournalEntry>,
-    ) -> Result<JournalInner<JournalEntry>, ForkError> {
+    ) -> Result<JournalInner<JournalEntry>, MultiForkError> {
         let post_tx_journal = if self.active_fork_id == ForkId::PostTx {
             active_journal
         } else {
             self.inactive_journals
                 .get(&ForkId::PostTx)
-                .ok_or(ForkError::PostTxJournalNotFound)?
+                .ok_or(MultiForkError::PostTxJournalNotFound)?
         }
         .clone();
         Ok(post_tx_journal)
@@ -151,7 +151,7 @@ pub(crate) fn update_journal(
     accounts: impl IntoIterator<Item = Address>,
     active_journal: &mut JournalInner<JournalEntry>,
     target_journal: &mut JournalInner<JournalEntry>,
-) -> Result<(), ForkError> {
+) -> Result<(), MultiForkError> {
     for addr in accounts.into_iter() {
         merge_journal_data(addr, active_journal, target_journal);
     }

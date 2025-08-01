@@ -49,11 +49,11 @@ sol! {
 
         // Forks to the state before the execution of the call.
         // Id can be obtained from the CallInputs struct returned by getCallInputs.
-        function forkCallPre(uint256 id) external;
+        function forkPreCall(uint256 id) external;
 
         // Forks to the state after the execution of the call.
         // Id can be obtained from the CallInputs struct returned by getCallInputs.
-        function forkCallPost(uint256 id) external;
+        function forkPostCall(uint256 id) external;
 
         // Loads a storage slot from an address
         function load(address target, bytes32 slot) external view returns (bytes32 data);

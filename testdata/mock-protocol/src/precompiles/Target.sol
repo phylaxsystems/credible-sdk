@@ -20,6 +20,11 @@ contract Target {
         return value;
     }
 
+    function incrementStorage() public {
+        uint256 _value = value + 1;
+        writeStorage(_value);
+    }
+
     function writeStorage(uint256 value_) public {
         value = value_;
         emit Log(value);

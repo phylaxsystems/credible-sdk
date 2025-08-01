@@ -2,12 +2,16 @@ use crate::{
     db::{
         DatabaseRef,
         multi_fork_db::{
-            ForkError,
             ForkId,
             MultiForkDb,
+            MultiForkError,
         },
     },
     inspectors::CallTracer,
+    inspectors::{
+        CallTracer,
+        sol_primitives::PhEvm::forkPreCallCall,
+    },
     primitives::{
         Bytes,
         Journal,
@@ -16,10 +20,22 @@ use crate::{
     },
 };
 
+use alloy_primitives::ruint::FromUintError;
+use alloy_sol_types::SolCall;
 use revm::context::ContextTr;
 
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ForkError {
+    #[error("MultiForkDb error: {0}")]
+    MultiForkDbError(#[from] MultiForkError),
+    #[error("Error decoding cheatcode input: {0}")]
+    DecodeError(#[from] alloy_sol_types::Error),
+    #[error("ID exceeds usize")]
+    IdExceedsUsize(#[from] FromUintError<usize>),
+}
+
 /// Fork to the state before the transaction.
-pub fn fork_pre_state<'db, ExtDb: DatabaseRef + 'db, CTX>(
+pub fn fork_pre_tx<'db, ExtDb: DatabaseRef + 'db, CTX>(
     init_journal: &JournalInner<JournalEntry>,
     context: &mut CTX,
     call_tracer: &CallTracer,
@@ -34,7 +50,7 @@ where
 }
 
 /// Fork to the state after the transaction.
-pub fn fork_post_state<'db, ExtDb: DatabaseRef + 'db, CTX>(
+pub fn fork_post_tx<'db, ExtDb: DatabaseRef + 'db, CTX>(
     init_journal: &JournalInner<JournalEntry>,
     context: &mut CTX,
     call_tracer: &CallTracer,
@@ -45,6 +61,52 @@ where
 {
     let Journal { database, inner } = context.journal();
     database.switch_fork(ForkId::PostTx, inner, call_tracer, init_journal)?;
+    Ok(Bytes::default())
+}
+
+/// Fork to the state before the call.
+pub fn fork_pre_call<'db, ExtDb: DatabaseRef + 'db, CTX>(
+    init_journal: &JournalInner<JournalEntry>,
+    context: &mut CTX,
+    call_tracer: &CallTracer,
+    input_bytes: Bytes,
+) -> Result<Bytes, ForkError>
+where
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let call_id = forkPreCallCall::abi_decode(&input_bytes)?.id;
+
+    let Journal { database, inner } = context.journal();
+    database.switch_fork(
+        ForkId::PreCall(call_id.try_into()?),
+        inner,
+        call_tracer,
+        init_journal,
+    )?;
+    Ok(Bytes::default())
+}
+
+/// Fork to the state after the call.
+pub fn fork_post_call<'db, ExtDb: DatabaseRef + 'db, CTX>(
+    init_journal: &JournalInner<JournalEntry>,
+    context: &mut CTX,
+    call_tracer: &CallTracer,
+    input_bytes: Bytes,
+) -> Result<Bytes, ForkError>
+where
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let call_id = forkPreCallCall::abi_decode(&input_bytes)?.id;
+
+    let Journal { database, inner } = context.journal();
+    database.switch_fork(
+        ForkId::PostCall(call_id.try_into()?),
+        inner,
+        call_tracer,
+        init_journal,
+    )?;
     Ok(Bytes::default())
 }
 
@@ -138,7 +200,7 @@ mod test {
         });
 
         // Test fork_pre_state function
-        let result = fork_pre_state(&init_journal, &mut context, &CallTracer::new());
+        let result = fork_pre_tx(&init_journal, &mut context, &CallTracer::new());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Bytes::default());
 
@@ -170,7 +232,7 @@ mod test {
         });
 
         // Test fork_post_state function
-        let result = fork_post_state(&init_journal, &mut context, &CallTracer::new());
+        let result = fork_post_tx(&init_journal, &mut context, &CallTracer::new());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Bytes::default());
 
@@ -200,20 +262,20 @@ mod test {
         });
 
         // Start with pre-tx state
-        let result = fork_pre_state(&init_journal, &mut context, &CallTracer::new());
+        let result = fork_pre_tx(&init_journal, &mut context, &CallTracer::new());
         assert!(result.is_ok());
         context.journal().load_account(address).unwrap();
         let storage_value = context.sload(address, slot).unwrap().data;
         assert_eq!(storage_value, pre_value);
 
         // Switch to post-tx state
-        let result = fork_post_state(&init_journal, &mut context, &CallTracer::new());
+        let result = fork_post_tx(&init_journal, &mut context, &CallTracer::new());
         assert!(result.is_ok());
         let storage_value = context.sload(address, slot).unwrap().data;
         assert_eq!(storage_value, post_value);
 
         // Switch back to pre-tx state
-        let result = fork_pre_state(&init_journal, &mut context, &CallTracer::new());
+        let result = fork_pre_tx(&init_journal, &mut context, &CallTracer::new());
         assert!(result.is_ok());
         let storage_value = context.sload(address, slot).unwrap().data;
         assert_eq!(storage_value, pre_value);
@@ -246,8 +308,8 @@ mod test {
             journal.inner = test_journal;
         });
 
-        // Test pre-tx state
-        let result = fork_pre_state(&init_journal, &mut context, &CallTracer::new());
+        // Test pre-tx stats
+        let result = fork_pre_tx(&init_journal, &mut context, &CallTracer::new());
         assert!(result.is_ok());
 
         context.journal().load_account(address1).unwrap();
@@ -259,7 +321,7 @@ mod test {
         assert_eq!(storage_value2, U256::from(20));
 
         // Test post-tx state
-        let result = fork_post_state(&init_journal, &mut context, &CallTracer::new());
+        let result = fork_post_tx(&init_journal, &mut context, &CallTracer::new());
         assert!(result.is_ok());
 
         let storage_value1 = context.sload(address1, slot1).unwrap().data;
@@ -269,8 +331,16 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_fork_inegration() {
+    async fn test_tx_fork_integration() {
         let result = run_precompile_test("TestFork").await;
+        assert!(result.is_valid(), "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert!(result_and_state.result.is_success());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_call_fork_integration() {
+        let result = run_precompile_test("TestCallFrameForking").await;
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
