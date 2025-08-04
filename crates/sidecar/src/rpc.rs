@@ -69,22 +69,22 @@ async fn handle_rpc_request(
 pub async fn start_rpc_server(addr: SocketAddr) -> anyhow::Result<()> {
     let app = Router::new().route("/", post(handle_rpc_request));
 
-    println!("Attempting to bind to address: {}", addr);
+    println!("Attempting to bind to address: {addr}");
 
     let listener = match TcpListener::bind(addr).await {
         Ok(listener) => {
-            println!("Successfully bound to address: {}", addr);
+            println!("Successfully bound to address: {addr}");
             listener
         }
         Err(e) => {
-            eprintln!("Failed to bind to address {}: {}", addr, e);
-            eprintln!("Error details: {:#?}", e);
+            eprintln!("Failed to bind to address {addr}: {e}");
+            eprintln!("Error details: {e:#?}");
 
             return Err(anyhow::anyhow!("Failed to bind to {}: {}", addr, e));
         }
     };
 
-    println!("JSON-RPC server started successfully at {}", addr);
+    println!("JSON-RPC server started successfully at {addr}");
     axum::serve(listener, app).await?;
 
     Ok(())

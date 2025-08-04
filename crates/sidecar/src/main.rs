@@ -15,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
     trace();
 
     let args = SidecarArgs::parse();
-    println!("Sidecar started with args: {:#?}", args);
+    println!("Sidecar started with args: {args:#?}");
 
     // Parse the RPC URL to get the socket address
     let rpc_url = &args.rollup.rpc_url;
@@ -25,13 +25,12 @@ async fn main() -> anyhow::Result<()> {
         .parse::<std::net::SocketAddr>()
         .unwrap_or_else(|_| {
             eprintln!(
-                "Failed to parse RPC URL '{}', using default 0.0.0.0:9545",
-                rpc_url
+                "Failed to parse RPC URL '{rpc_url}', using default 0.0.0.0:9545"
             );
             "0.0.0.0:9545".parse().unwrap()
         });
 
-    println!("Attempting to bind RPC server to: {}", addr);
+    println!("Attempting to bind RPC server to: {addr}");
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -46,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
     let _server_running = running.clone();
     tokio::spawn(async move {
         if let Err(e) = rpc::start_rpc_server(addr).await {
-            eprintln!("RPC server error: {}", e);
+            eprintln!("RPC server error: {e}");
         }
     });
 
