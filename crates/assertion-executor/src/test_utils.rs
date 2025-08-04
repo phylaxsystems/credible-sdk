@@ -186,14 +186,10 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
 
     // Execute target deployment tx
     let result = executor
-        .execute_forked_tx_ext_db(
-            BlockEnv::default(),
-            target_deployment_tx,
-            &mut fork_db,
-            &mut mock_db,
-        )
+        .execute_forked_tx_ext_db(BlockEnv::default(), target_deployment_tx, &mut mock_db)
         .unwrap();
     mock_db.commit(result.result_and_state.state.clone());
+    fork_db.commit(result.result_and_state.state.clone());
 
     // Deploy TriggeringTx contract using bytecode of
     // GetLogsTest.sol:TriggeringTx
