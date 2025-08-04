@@ -104,12 +104,9 @@ mod test {
         let mut journaled_inner = JournalInner::new();
         // Set up post-tx state
         for (address, slot, value) in post_tx_storage {
-            let mut state_load = journaled_inner
+            journaled_inner
                 .load_account(&mut pre_tx_db, address)
                 .unwrap();
-            if state_load.is_cold {
-                state_load.mark_warm();
-            }
             journaled_inner
                 .sstore(&mut pre_tx_db, address, slot, value)
                 .unwrap();
