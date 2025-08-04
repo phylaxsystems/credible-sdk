@@ -342,7 +342,6 @@ mod test_multi_fork {
         )
         .unwrap();
 
-
         //Assert currently on pre call 0
         assert_eq!(db.active_fork_id, ForkId::PreCall(0));
         assert_eq!(
