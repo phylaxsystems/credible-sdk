@@ -46,7 +46,10 @@ use evm_glue::{
     opcodes::Opcode::*,
 };
 use op_revm::OpTransaction;
-use revm::{context::JournalInner, ExecuteEvm};
+use revm::{
+    ExecuteEvm,
+    context::JournalInner,
+};
 
 fn register_op<M: Measurement>(
     group: &mut BenchmarkGroup<M>,
@@ -64,7 +67,6 @@ fn register_op<M: Measurement>(
     // Insert runtime bytecode into the database
     let mut fork = db.fork();
     let addr = Address::random();
-
 
     fork.insert_account_info(
         addr,

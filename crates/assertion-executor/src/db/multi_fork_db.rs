@@ -1,9 +1,6 @@
-use super::fork_db::ForkDb;
-
 use crate::{
     db::{
         Database,
-        DatabaseCommit,
         DatabaseRef,
     },
     executor::{
@@ -19,21 +16,14 @@ use crate::{
         Address,
         B256,
         Bytecode,
-        EvmState,
         JournalEntry,
         U256,
     },
 };
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::collections::HashMap;
 
-use revm::context::{
-    JournalInner,
-    JournalTr,
-};
+use revm::context::JournalInner;
 
 /// Default persistent accounts.
 /// Journaled state of these accounts will be persisted across forks.
@@ -98,6 +88,9 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
                     ForkId::PostTx => return Err(ForkError::PostTxJournalNotFound), //Error post should always be present in inactive_journals if it is not currently the active journal,
                     ForkId::PreCall(call_id) => {
                         let mut pre_call_journal = self.get_post_tx_journal(active_journal)?;
+
+                        //TODO: Should we store the depth with the checkpoint?
+                        pre_call_journal.depth += 1;
                         pre_call_journal
                             .checkpoint_revert(call_tracer.pre_call_checkpoints[call_id]);
 
@@ -106,6 +99,9 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
 
                     ForkId::PostCall(call_id) => {
                         let mut post_call_journal = self.get_post_tx_journal(active_journal)?;
+
+                        //TODO: Should we store the depth with the checkpoint?
+                        post_call_journal.depth += 1;
                         post_call_journal
                             .checkpoint_revert(call_tracer.post_call_checkpoints[call_id].unwrap());
 
@@ -256,17 +252,14 @@ mod test_multi_fork {
             CallInputs,
             CallValue,
         },
-        primitives::hardfork::SpecId,
     };
 
     use crate::{
-        db::multi_fork_db,
         primitives::{
             Account,
             AccountStatus,
             Address,
             Bytes,
-            EvmState,
             uint,
         },
         test_utils::random_bytes,
@@ -308,7 +301,6 @@ mod test_multi_fork {
             return_memory_offset: 0..0,
         };
         //Call 0
-        println!("creating checkpoint");
         active_journal.checkpoint();
         call_tracer.record_call_start(call_inputs.clone(), &Bytes::from(""), &mut active_journal);
 
@@ -319,7 +311,6 @@ mod test_multi_fork {
 
         call_tracer.record_call_end(&mut active_journal);
         active_journal.checkpoint_commit();
-        println!("checkpoint over");
 
         let call_inputs = CallInputs {
             value: CallValue::Transfer(U256::from(100)),
@@ -338,7 +329,6 @@ mod test_multi_fork {
 
         call_tracer.record_call_end(&mut active_journal);
         active_journal.checkpoint_commit();
-        println!("checkpoint over");
 
         //Test options are preserved and underlying db is read correctly
 
@@ -352,7 +342,6 @@ mod test_multi_fork {
         )
         .unwrap();
 
-        println!("fork pre call 0");
 
         //Assert currently on pre call 0
         assert_eq!(db.active_fork_id, ForkId::PreCall(0));
@@ -365,7 +354,7 @@ mod test_multi_fork {
         db.switch_fork(
             ForkId::PostCall(0),
             &mut active_journal,
-            &CallTracer::new(),
+            &call_tracer,
             &init_journal,
         )
         .unwrap();

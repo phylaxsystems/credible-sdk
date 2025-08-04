@@ -190,12 +190,10 @@ mod test {
     {
         let mut call_tracer = CallTracer::new();
         for input in call_inputs {
-            call_tracer
-                .record_call_start(input.0, &input.1, &mut JournalInner::new());
+            call_tracer.record_call_start(input.0, &input.1, &mut JournalInner::new());
             call_tracer.result.clone().unwrap();
 
-            call_tracer
-                .record_call_end(&mut JournalInner::new());
+            call_tracer.record_call_end(&mut JournalInner::new());
             call_tracer.result.clone().unwrap();
         }
         call_tracer

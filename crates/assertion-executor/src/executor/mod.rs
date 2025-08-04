@@ -36,7 +36,6 @@ use crate::{
         AssertionFunctionExecutionResult,
         AssertionFunctionResult,
         BlockEnv,
-        EvmState,
         EvmStorage,
         FixedBytes,
         ResultAndState,
@@ -53,12 +52,8 @@ use crate::{
 use revm::{
     Database,
     InspectEvm,
-    Journal,
     JournalEntry,
-    context::{
-        JournalInner,
-        journaled_state::JournalCheckpoint,
-    },
+    context::JournalInner,
 };
 
 use rayon::prelude::{
@@ -561,9 +556,6 @@ mod test {
 
     #[test]
     fn test_deploy_assertion_contract() {
-        // Use the TestDB type
-        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
-
         let assertion_store = AssertionStore::new_ephemeral().unwrap();
 
         // Build uses TestDB
@@ -593,7 +585,7 @@ mod test {
         let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
         // execute_forked_tx uses &mut ForkDb<TestDB>
-        let mut result = executor
+        let result = executor
             .execute_forked_tx_ext_db(BlockEnv::default(), counter_call(), &mut mock_db)
             .unwrap();
 

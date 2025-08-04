@@ -71,13 +71,12 @@ mod test {
         Address,
         U256,
     };
-    use revm::handler::MainnetContext;
     use revm::{
-        DatabaseRef,
         context::{
             ContextTr,
             JournalTr,
         },
+        handler::MainnetContext,
         interpreter::Host,
         primitives::KECCAK_EMPTY,
     };
@@ -275,7 +274,6 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_fork_inegration() {
         let result = run_precompile_test("TestFork").await;
-        println!("result: {:#?}", result);
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());

@@ -197,7 +197,6 @@ impl CallTracer {
                 self.result = Err(CallTracerError::PendingPostCallWriteNotFound {
                     depth: journal_inner.depth,
                 });
-                return;
             }
         }
     }
@@ -317,9 +316,19 @@ impl CallTracer {
 mod test {
     use super::*;
     use crate::{
-        evm::build_evm::{build_optimism_evm, evm_env},
+        evm::build_evm::{
+            build_optimism_evm,
+            evm_env,
+        },
         primitives::{
-            address, bytes, BlockEnv, Bytecode, SpecId, TxEnv, TxKind, U256
+            BlockEnv,
+            Bytecode,
+            SpecId,
+            TxEnv,
+            TxKind,
+            U256,
+            address,
+            bytes,
         },
         test_utils::deployed_bytecode,
     };
@@ -643,23 +652,22 @@ mod test {
         let input_bytes: Bytes = selector.into();
 
         // Only call triggers, no journaled state
-        tracer
-            .record_call_start(
-                CallInputs {
-                    input: CallInput::Bytes(input_bytes.clone()),
-                    return_memory_offset: 0..0,
-                    gas_limit: 0,
-                    bytecode_address: addr,
-                    target_address: addr,
-                    caller: addr,
-                    value: CallValue::default(),
-                    scheme: CallScheme::Call,
-                    is_static: false,
-                    is_eof: false,
-                },
-                &input_bytes,
-                &mut JournalInner::new(),
-            );
+        tracer.record_call_start(
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+                is_eof: false,
+            },
+            &input_bytes,
+            &mut JournalInner::new(),
+        );
         tracer.result.clone().unwrap();
 
         tracer.record_call_end(&mut JournalInner::new());

@@ -1,6 +1,5 @@
 use crate::{
     db::{
-        Database,
         DatabaseRef,
         multi_fork_db::{
             ForkError,
@@ -128,7 +127,7 @@ impl<'a> PhEvmInspector<'a> {
         journal: &mut JournalInner<JournalEntry>,
         context: PhEvmContext<'a>,
     ) -> Self {
-        //insert_precompile_account(journal);
+        insert_precompile_account(journal);
 
         let mut init_journal = JournalInner::new();
         init_journal.set_spec_id(spec_id);
@@ -150,7 +149,6 @@ impl<'a> PhEvmInspector<'a> {
                 Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
             >,
     {
-        println!("executing precompile contract");
         let input_bytes = inputs.input.bytes(context);
         let result = match input_bytes
             .get(0..4)
@@ -162,14 +160,14 @@ impl<'a> PhEvmInspector<'a> {
                 fork_pre_state(
                     &self.init_journal,
                     context,
-                    &self.context.logs_and_traces.call_traces,
+                    self.context.logs_and_traces.call_traces,
                 )?
             }
             PhEvm::forkPostTxCall::SELECTOR => {
                 fork_post_state(
                     &self.init_journal,
                     context,
-                    &self.context.logs_and_traces.call_traces,
+                    self.context.logs_and_traces.call_traces,
                 )?
             }
             PhEvm::loadCall::SELECTOR => load_external_slot(context, inputs)?,
@@ -213,7 +211,6 @@ macro_rules! impl_phevm_inspector {
         $(
             impl<ExtDb: DatabaseRef> Inspector<$context_type> for PhEvmInspector<'_> {
                 fn call(&mut self, context: &mut $context_type, inputs: &mut CallInputs) -> Option<CallOutcome> {
-                    println!("call");
                     if inputs.target_address == PRECOMPILE_ADDRESS {
                         let call_outcome = inspector_result_to_call_outcome(
                             self.execute_precompile(context, inputs),

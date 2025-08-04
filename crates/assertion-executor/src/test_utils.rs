@@ -156,7 +156,6 @@ pub fn deployed_bytecode(input: &str) -> Bytes {
 }
 
 pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
-    println!("Running precompile test for {}", artifact);
     let caller = address!("5fdcca53617f4d2b9134b29090c87d01058e27e9");
     let target = address!("118dd24a3b0d02f90d8896e242d3838b4d37c181");
 
@@ -185,7 +184,6 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
 
     let mut mock_db = crate::db::overlay::test_utils::MockDb::new();
 
-    println!("Running executor for deployment");
     // Execute target deployment tx
     let result = executor
         .execute_forked_tx_ext_db(BlockEnv::default(), target_deployment_tx, &mut mock_db)
@@ -203,7 +201,6 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
         ..Default::default()
     };
 
-    println!("Running assertion");
     //Execute triggering tx.
     executor
         .validate_transaction_ext_db(BlockEnv::default(), trigger_tx, &mut fork_db, &mut mock_db)
