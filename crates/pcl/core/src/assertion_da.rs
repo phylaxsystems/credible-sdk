@@ -455,6 +455,7 @@ mod tests {
 
         // Run the command and capture the output
         let result = args.run(&cli_args, &mut config).await;
+        println!("Result: {:?}", result);
         assert!(result.is_ok());
 
         // Verify the config was updated correctly
