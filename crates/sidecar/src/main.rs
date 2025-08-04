@@ -24,9 +24,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(rpc_url)
         .parse::<std::net::SocketAddr>()
         .unwrap_or_else(|_| {
-            eprintln!(
-                "Failed to parse RPC URL '{rpc_url}', using default 0.0.0.0:9545"
-            );
+            eprintln!("Failed to parse RPC URL '{rpc_url}', using default 0.0.0.0:9545");
             "0.0.0.0:9545".parse().unwrap()
         });
 
