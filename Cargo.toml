@@ -1,5 +1,5 @@
 [workspace]
-members = [
+members = [ 
     "crates/assertion-da/da-client",
     "crates/assertion-da/da-server",
     "crates/assertion-da/da-core",
@@ -10,6 +10,7 @@ members = [
     "crates/int-test-utils",
     "crates/assertion-executor",
     "crates/dapp-api-client",
+    "crates/sidecar"
 ]
 exclude = ["fuzz"]
 resolver = "2"
