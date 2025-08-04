@@ -13,21 +13,28 @@ use revm::{
     context::{
         ContextTr,
         Journal,
+        JournalTr,
     },
-    interpreter::CallInputs,
+    interpreter::{
+        CallInputs,
+        Host,
+    },
 };
 
 use alloy_sol_types::{
     SolCall,
     SolValue,
 };
-use std::convert::Infallible;
+
+#[derive(Debug, thiserror::Error)]
+#[error("Error loading external slot: {0}")]
+pub struct LoadExternalSlotError<ExtDb: DatabaseRef>(pub ExtDb::Error);
 
 /// Returns a storage slot for a given address. Will return `0x0` if slot empty.
 pub fn load_external_slot<'db, ExtDb: DatabaseRef + 'db, CTX>(
     context: &mut CTX,
     call_inputs: &CallInputs,
-) -> Result<Bytes, Infallible>
+) -> Result<Bytes, LoadExternalSlotError<ExtDb>>
 where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
@@ -41,14 +48,13 @@ where
     // Load the account before reading the storage.
     // This prevents a bug with revm's State<Db> where it panics if reading the storage before
     // loading the account.
-    let _ = context.db().active_db.basic_ref(address);
+    context
+        .journal()
+        .load_account(address)
+        .map_err(LoadExternalSlotError)?;
 
-    let slot = call.slot;
-
-    let slot_value = match context.db().active_db.storage_ref(address, slot.into()) {
-        Ok(rax) => rax,
-        Err(_) => return Ok(Bytes::default()),
-    };
+    let value_opt = context.sload(address, call.slot.into());
+    let slot_value = value_opt.unwrap_or_default().data;
 
     Ok(SolValue::abi_encode(&slot_value).into())
 }
@@ -155,7 +161,7 @@ mod test {
 
         // Create context with storage value
         let mock_db = create_mock_db_with_storage(target, slot, expected_value);
-        let mut multi_fork = MultiForkDb::new(MockDb::new(), mock_db);
+        let mut multi_fork = MultiForkDb::new(mock_db);
         let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
         let result = load_external_slot(&mut context, &call_inputs);
@@ -174,7 +180,7 @@ mod test {
 
         // Create context with account but no storage for this slot
         let mock_db = create_mock_db_with_storage(target, random_u256(), random_u256());
-        let mut multi_fork = MultiForkDb::new(MockDb::new(), mock_db);
+        let mut multi_fork = MultiForkDb::new(mock_db);
         let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
         let result = load_external_slot(&mut context, &call_inputs);
@@ -194,7 +200,7 @@ mod test {
         // Create context with no accounts
         let mock_db = create_mock_db_with_storage(Address::ZERO, random_u256(), random_u256());
 
-        let mut multi_fork = MultiForkDb::new(MockDb::new(), mock_db);
+        let mut multi_fork = MultiForkDb::new(mock_db);
         let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
         let result = load_external_slot(&mut context, &call_inputs);

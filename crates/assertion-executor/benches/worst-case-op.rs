@@ -46,7 +46,10 @@ use evm_glue::{
     opcodes::Opcode::*,
 };
 use op_revm::OpTransaction;
-use revm::ExecuteEvm;
+use revm::{
+    ExecuteEvm,
+    context::JournalInner,
+};
 
 fn register_op<M: Measurement>(
     group: &mut BenchmarkGroup<M>,
@@ -81,15 +84,15 @@ fn register_op<M: Measurement>(
         ..Default::default()
     });
 
-    let mut multi_fork_db = MultiForkDb::new(fork.clone(), fork);
     let call_tracer = CallTracer::default();
     let logs_and_traces = LogsAndTraces {
         tx_logs: &[],
         call_traces: &call_tracer,
     };
     let phevm_context = PhEvmContext::new(&logs_and_traces, Address::ZERO);
-    let inspector = PhEvmInspector::new(SpecId::default(), &mut multi_fork_db, phevm_context);
+    let inspector = PhEvmInspector::new(SpecId::default(), &mut JournalInner::new(), phevm_context);
     let env = evm_env(1, SpecId::default(), BlockEnv::default());
+    let mut multi_fork_db = MultiForkDb::new(fork);
     let mut evm = build_optimism_evm(&mut multi_fork_db, &env, inspector);
     reprice_evm_storage!(evm);
 
@@ -218,14 +221,14 @@ fn test_ecrecover() {
         ..Default::default()
     });
 
-    let mut multi_fork_db = MultiForkDb::new(fork.clone(), fork);
+    let mut multi_fork_db = MultiForkDb::new(fork);
     let call_tracer = CallTracer::default();
     let logs_and_traces = LogsAndTraces {
         tx_logs: &[],
         call_traces: &call_tracer,
     };
     let phevm_context = PhEvmContext::new(&logs_and_traces, addr);
-    let inspector = PhEvmInspector::new(SpecId::default(), &mut multi_fork_db, phevm_context);
+    let inspector = PhEvmInspector::new(SpecId::default(), &mut JournalInner::new(), phevm_context);
     let env = evm_env(1, SpecId::default(), BlockEnv::default());
     let mut evm = build_optimism_evm(&mut multi_fork_db, &env, inspector);
 

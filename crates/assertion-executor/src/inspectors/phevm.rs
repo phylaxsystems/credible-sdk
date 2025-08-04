@@ -1,10 +1,7 @@
 use crate::{
     db::{
         DatabaseRef,
-        multi_fork_db::{
-            ForkError,
-            MultiForkDb,
-        },
+        multi_fork_db::MultiForkDb,
     },
     inspectors::{
         inspector_result_to_call_outcome,
@@ -16,11 +13,17 @@ use crate::{
             },
             console_log::ConsoleLogError,
             fork::{
-                fork_post_state,
-                fork_pre_state,
+                ForkError,
+                fork_post_call,
+                fork_post_tx,
+                fork_pre_call,
+                fork_pre_tx,
             },
             get_logs::get_logs,
-            load::load_external_slot,
+            load::{
+                LoadExternalSlotError,
+                load_external_slot,
+            },
             state_changes::{
                 GetStateChangesError,
                 get_state_changes,
@@ -93,7 +96,7 @@ impl<'a> PhEvmContext<'a> {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PrecompileError {
+pub enum PrecompileError<ExtDb: DatabaseRef> {
     #[error("Precompile selector not found: {0:#?}")]
     SelectorNotFound(FixedBytes<4>),
     #[error("Unexpected error, should be Infallible: {0}")]
@@ -106,9 +109,12 @@ pub enum PrecompileError {
     ForkError(#[from] ForkError),
     #[error("Error logging to console: {0}")]
     ConsoleLogError(#[from] ConsoleLogError),
+    #[error("Error loading external slot: {0}")]
+    LoadExternalSlotError(#[from] LoadExternalSlotError<ExtDb>),
 }
 
 /// PhEvmInspector is an inspector for supporting the PhEvm precompiles.
+#[derive(Debug, Clone)]
 pub struct PhEvmInspector<'a> {
     init_journal: JournalInner<JournalEntry>,
     pub context: PhEvmContext<'a>,
@@ -116,12 +122,12 @@ pub struct PhEvmInspector<'a> {
 
 impl<'a> PhEvmInspector<'a> {
     /// Create a new PhEvmInspector.
-    pub fn new<ExtDb: DatabaseRef>(
+    pub fn new(
         spec_id: SpecId,
-        db: &mut MultiForkDb<ExtDb>,
+        journal: &mut JournalInner<JournalEntry>,
         context: PhEvmContext<'a>,
     ) -> Self {
-        insert_precompile_account(db);
+        insert_precompile_account(journal);
 
         let mut init_journal = JournalInner::new();
         init_journal.set_spec_id(spec_id);
@@ -136,7 +142,7 @@ impl<'a> PhEvmInspector<'a> {
         &mut self,
         context: &mut CTX,
         inputs: &mut CallInputs,
-    ) -> Result<Bytes, PrecompileError>
+    ) -> Result<Bytes, PrecompileError<ExtDb>>
     where
         CTX: ContextTr<
                 Db = &'db mut MultiForkDb<ExtDb>,
@@ -150,8 +156,36 @@ impl<'a> PhEvmInspector<'a> {
             .try_into()
             .unwrap_or_default()
         {
-            PhEvm::forkPreTxCall::SELECTOR => fork_pre_state(&self.init_journal, context)?,
-            PhEvm::forkPostTxCall::SELECTOR => fork_post_state(&self.init_journal, context)?,
+            PhEvm::forkPreTxCall::SELECTOR => {
+                fork_pre_tx(
+                    &self.init_journal,
+                    context,
+                    self.context.logs_and_traces.call_traces,
+                )?
+            }
+            PhEvm::forkPostTxCall::SELECTOR => {
+                fork_post_tx(
+                    &self.init_journal,
+                    context,
+                    self.context.logs_and_traces.call_traces,
+                )?
+            }
+            PhEvm::forkPreCallCall::SELECTOR => {
+                fork_pre_call(
+                    &self.init_journal,
+                    context,
+                    self.context.logs_and_traces.call_traces,
+                    input_bytes,
+                )?
+            }
+            PhEvm::forkPostCallCall::SELECTOR => {
+                fork_post_call(
+                    &self.init_journal,
+                    context,
+                    self.context.logs_and_traces.call_traces,
+                    input_bytes,
+                )?
+            }
             PhEvm::loadCall::SELECTOR => load_external_slot(context, inputs)?,
             PhEvm::getLogsCall::SELECTOR => get_logs(&self.context)?,
             PhEvm::getCallInputsCall::SELECTOR => get_call_inputs(inputs, context, &self.context)?,
@@ -172,21 +206,18 @@ impl<'a> PhEvmInspector<'a> {
 }
 
 /// Insert the precompile account into the database.
-fn insert_precompile_account<DB: DatabaseRef>(db: &mut MultiForkDb<DB>) {
+fn insert_precompile_account(journal: &mut JournalInner<JournalEntry>) {
     let precompile_account = AccountInfo {
         nonce: 1,
         balance: U256::MAX,
         code: Some(Bytecode::new_raw(bytes!("DEAD"))),
+        //Code needed to hit 'call(..)' fn of the inspector trait
         ..Default::default()
     };
 
-    db.active_db
-        .insert_account_info(PRECOMPILE_ADDRESS, precompile_account);
-    db.active_db
-        .storage
-        .entry(PRECOMPILE_ADDRESS)
-        .or_default()
-        .dont_read_from_inner_db = true;
+    journal
+        .state
+        .insert(PRECOMPILE_ADDRESS, precompile_account.into());
 }
 
 /// Macro to implement Inspector trait for multiple context types.
