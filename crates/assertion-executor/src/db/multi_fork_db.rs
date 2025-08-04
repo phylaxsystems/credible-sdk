@@ -89,7 +89,9 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
                     ForkId::PreCall(call_id) => {
                         let mut pre_call_journal = self.get_post_tx_journal(active_journal)?;
 
-                        //TODO: Should we store the depth with the checkpoint?
+                        //TODO: Here we increment the depth so we are sure it doesn't underflow when we revert once.
+                        // Is there any reason we should store the depth with the checkpoint so that we can accurately set the depth
+                        // when we revert it?. It seems like it's fine to have an innacurate depth in the journal here.
                         pre_call_journal.depth += 1;
                         pre_call_journal
                             .checkpoint_revert(call_tracer.pre_call_checkpoints[call_id]);
