@@ -10,4 +10,9 @@ contract MockContract {
     function  setState() external {
         state = true;
     }
+
+    function returnsValue() external pure returns (bool) {
+        return true;
+    }
+
 }
