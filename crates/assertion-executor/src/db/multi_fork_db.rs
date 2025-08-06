@@ -239,12 +239,6 @@ impl<ExtDb: DatabaseRef> DatabaseRef for MultiForkDb<ExtDb> {
     }
 }
 
-//impl<ExtDb: DatabaseCommit> DatabaseCommit for MultiForkDb<ExtDb> {
-//    fn commit(&mut self, changes: EvmState) {
-//        self.underlying_db.commit(changes)
-//    }
-//}
-
 #[cfg(test)]
 mod test_multi_fork {
     use super::*;
@@ -319,7 +313,6 @@ mod test_multi_fork {
             ..call_inputs
         };
 
-        println!("creating checkpoint");
         //Call 1
         active_journal.checkpoint();
         call_tracer.record_call_start(call_inputs, &Bytes::from(""), &mut active_journal);

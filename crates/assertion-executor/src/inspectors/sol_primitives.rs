@@ -49,7 +49,7 @@ sol! {
 
         // Forks to the state before the execution of the call.
         // Id can be obtained from the CallInputs struct returned by getCallInputs.
-        function forkPreCall(uint256 id) external;
+       function forkPreCall(uint256 id) external;
 
         // Forks to the state after the execution of the call.
         // Id can be obtained from the CallInputs struct returned by getCallInputs.

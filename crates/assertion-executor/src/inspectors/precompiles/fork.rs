@@ -9,7 +9,10 @@ use crate::{
     },
     inspectors::{
         CallTracer,
-        sol_primitives::PhEvm::forkPreCallCall,
+        sol_primitives::PhEvm::{
+            forkPostCallCall,
+            forkPreCallCall,
+        },
     },
     primitives::{
         Bytes,
@@ -97,7 +100,7 @@ where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
-    let call_id = forkPreCallCall::abi_decode(&input_bytes)?.id;
+    let call_id = forkPostCallCall::abi_decode(&input_bytes)?.id;
 
     let Journal { database, inner } = context.journal();
     database.switch_fork(
@@ -334,7 +337,11 @@ mod test {
         let result = run_precompile_test("TestFork").await;
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
-        assert!(result_and_state.result.is_success());
+        assert!(
+            result_and_state.result.is_success(),
+            "{:#?}",
+            result_and_state.result
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -342,6 +349,10 @@ mod test {
         let result = run_precompile_test("TestCallFrameForking").await;
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
-        assert!(result_and_state.result.is_success());
+        assert!(
+            result_and_state.result.is_success(),
+            "{:#?}",
+            result_and_state.result
+        );
     }
 }
