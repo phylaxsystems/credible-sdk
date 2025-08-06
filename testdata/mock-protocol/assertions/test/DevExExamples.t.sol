@@ -17,6 +17,16 @@ contract DevExExamplesAssertionTest is CredibleTest, Test {
         adopter.setInvalidate(false);
     }
 
+    function test_validate_returns() public {
+        cl.assertion({
+            adopter: address(adopter),
+            createData: type(DevExExamplesAssertion).creationCode,
+            fnSelector: DevExExamplesAssertion.assertion.selector
+        });
+        bool value = adopter.returnsValue();
+        require(value, "Value should be true");
+    }
+
     function test_validate_state_persist() public {
         cl.assertion({
             adopter: address(adopter),
@@ -36,7 +46,6 @@ contract DevExExamplesAssertionTest is CredibleTest, Test {
         vm.expectRevert("Some invalidation reason");
         adopter.setInvalidate(true);
         require(!adopter.invalidate(), "State should not have persisted");
-
     }
 
     function test_no_assertions_executed() public {
