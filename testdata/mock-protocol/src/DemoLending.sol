@@ -56,7 +56,7 @@ contract DemoLendingAssertion is Credible, Test {
     function testWithdraw() public {
         uint256 balance_now = address(0x4545454545454545454545454545454545454545).balance;
 
-        ph.forkPreState();
+        ph.forkPreTx();
         uint256 borrow_before = target.getDebt();
         uint256 balance_before = address(0x4545454545454545454545454545454545454545).balance;
 

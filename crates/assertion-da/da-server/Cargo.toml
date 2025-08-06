@@ -47,6 +47,7 @@ metrics = "0.24"
 
 thiserror = "2"
 regex = "1"
+pcl-phoundry.workspace = true
 
 assertion-da-core = { path = "../da-core" }
 jsonschema = "0.30.0"

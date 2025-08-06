@@ -8,10 +8,8 @@ import {console} from "forge-std/console.sol";
 
 import {Target, TARGET} from "./Target.sol";
 
-contract TestGetCallInputs is Assertion, Test {
-    constructor() payable {}
-
-    function testGetCallInputs() external view {
+contract TestGetCallInputsCreate is Assertion, Test {
+    function testGetCallInputsCreate() external view {
         PhEvm.CallInputs[] memory callInputs = ph.getCallInputs(
             address(TARGET),
             Target.readStorage.selector
@@ -25,7 +23,7 @@ contract TestGetCallInputs is Assertion, Test {
         );
         require(callInput.input.length == 0, "callInput.input.length != 0");
         require(callInput.value == 0, "callInput.value != 0");
-        require(callInput.id == 3, "callInput.id != 3");
+        require(callInput.id == 2, "callInput.id != 2");
 
         callInputs = ph.getCallInputs(
             address(TARGET),
@@ -42,7 +40,7 @@ contract TestGetCallInputs is Assertion, Test {
         uint256 param = abi.decode(callInput.input, (uint256));
         require(param == 1, "First writeStorage param should be 1");
         require(callInput.value == 0, "callInput.value != 0");
-        require(callInput.id == 1, "callInput.id != 1");
+        require(callInput.id == 0, "callInput.id != 0");
 
         callInput = callInputs[1];
         require(
@@ -50,26 +48,19 @@ contract TestGetCallInputs is Assertion, Test {
             "callInput.target_address != target"
         );
         require(callInput.input.length == 32, "callInput.input.length != 32");
-        require(callInput.id == 2, "callInput.id != 2");
+        require(callInput.id == 1, "callInput.id != 1");
         param = abi.decode(callInput.input, (uint256));
         require(param == 2, "Second writeStorage param should be 2");
         require(callInput.value == 0, "callInput.value != 0");
     }
 
     function triggers() external view override {
-        registerCallTrigger(this.testGetCallInputs.selector);
+        registerCallTrigger(this.testGetCallInputsCreate.selector);
     }
 }
 
 contract TriggeringTx {
     constructor() payable {
-        TriggeringCall callee = new TriggeringCall();
-        callee.trigger();
-    }
-}
-
-contract TriggeringCall {
-    function trigger() external {
         TARGET.writeStorage(1);
         TARGET.writeStorage(2);
         TARGET.readStorage();

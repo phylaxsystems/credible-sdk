@@ -16,13 +16,14 @@ contract TestFork is Assertion, Test {
         //Test fork switching reads from underlying state
         require(TARGET.readStorage() == 2, "readStorage() != 2");
 
-        ph.forkPreState();
+        ph.forkPreTx();
+
         require(TARGET.readStorage() == 1, "readStorage() != 1");
 
-        ph.forkPostState();
+        ph.forkPostTx();
         require(TARGET.readStorage() == 2, "readStorage() != 2");
 
-        ph.forkPreState();
+        ph.forkPreTx();
         require(TARGET.readStorage() == 1, "readStorage() != 1");
     }
 
@@ -34,17 +35,18 @@ contract TestFork is Assertion, Test {
         expectedSum += TARGET.readStorage();
         sum += TARGET.readStorage();
 
-        ph.forkPreState();
+        ph.forkPreTx();
+
         require(TARGET.readStorage() == 1, "readStorage != 1");
         expectedSum += TARGET.readStorage();
         sum += TARGET.readStorage();
 
-        ph.forkPostState();
+        ph.forkPostTx();
         require(TARGET.readStorage() == 2, "val != 2");
         expectedSum += TARGET.readStorage();
         sum += TARGET.readStorage();
 
-        ph.forkPreState();
+        ph.forkPreTx();
         require(TARGET.readStorage() == 1, "val != 1");
         expectedSum += TARGET.readStorage();
         sum += TARGET.readStorage();

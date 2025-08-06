@@ -455,7 +455,7 @@ mod tests {
 
         // Run the command and capture the output
         let result = args.run(&cli_args, &mut config).await;
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "{result:#?}");
 
         // Verify the config was updated correctly
         let assertion = config.assertions_for_submission.values().next().unwrap();

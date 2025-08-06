@@ -500,6 +500,8 @@ impl AssertionStore {
 #[cfg(test)]
 mod tests {
 
+    use revm::context::JournalInner;
+
     use super::*;
     use crate::primitives::{
         Address,
@@ -997,7 +999,7 @@ mod tests {
 
         let mut tracer = CallTracer::default();
         // Add call with the specific trigger selector
-        tracer.record_call(
+        tracer.record_call_start(
             revm::interpreter::CallInputs {
                 input: revm::interpreter::CallInput::Bytes(Bytes::from(vec![
                     0x12, 0x34, 0x56, 0x78,
@@ -1013,7 +1015,12 @@ mod tests {
                 is_eof: false,
             },
             &[0x12, 0x34, 0x56, 0x78],
+            &mut JournalInner::new(),
         );
+        tracer.result.clone().unwrap();
+
+        tracer.record_call_end(&mut JournalInner::new());
+        tracer.result.clone().unwrap();
 
         for entry in journal_entries {
             tracer.journal.journal.push(entry);
@@ -1035,9 +1042,7 @@ mod tests {
             selector_all_storage,
             selector_balance,
         ];
-        println!("Expected selectors: {expected_selectors:#?}");
         expected_selectors.sort();
-        println!("Expected selectors: {expected_selectors:#?}");
 
         let mut matched_selectors = assertions[0].selectors.clone();
         matched_selectors.sort();

@@ -36,7 +36,6 @@ use crate::{
         AssertionFunctionExecutionResult,
         AssertionFunctionResult,
         BlockEnv,
-        EvmState,
         EvmStorage,
         FixedBytes,
         ResultAndState,
@@ -53,6 +52,8 @@ use crate::{
 use revm::{
     Database,
     InspectEvm,
+    JournalEntry,
+    context::JournalInner,
 };
 
 use rayon::prelude::{
@@ -109,7 +110,8 @@ struct AssertionExecutionParams<'a, Active> {
     multi_fork_db: MultiForkDb<ForkDb<Active>>,
     assertion_gas: &'a AtomicU64,
     assertions_ran: &'a AtomicU64,
-    context: PhEvmContext<'a>,
+    inspector: PhEvmInspector<'a>,
+    assertion_journal: JournalInner<JournalEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -141,16 +143,11 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send,
         Active::Error: Send,
     {
-        let pre_tx_db = fork_db.clone();
-        let mut post_tx_db = fork_db.clone();
+        let tx_fork_db = fork_db.clone();
 
         // This call relies on From<EVMError<ExtDb::Error>> for ExecutorError<DB::Error>
-        let forked_tx_result = self.execute_forked_tx_ext_db::<ExtDb, Active>(
-            block_env.clone(),
-            tx_env,
-            &mut post_tx_db,
-            external_db,
-        )?;
+        let forked_tx_result =
+            self.execute_forked_tx_ext_db::<ExtDb>(block_env.clone(), tx_env, external_db)?;
 
         let exec_result = &forked_tx_result.result_and_state.result;
         if !exec_result.is_success() {
@@ -163,7 +160,7 @@ impl AssertionExecutor {
         }
         debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
 
-        let multi_fork_db = MultiForkDb::new(pre_tx_db, post_tx_db);
+        let multi_fork_db = MultiForkDb::new(tx_fork_db);
 
         let results = self.execute_assertions(block_env, multi_fork_db, &forked_tx_result)?;
         if results.is_empty() {
@@ -269,7 +266,7 @@ impl AssertionExecutor {
         assertion_contract: &AssertionContract,
         fn_selectors: &[FixedBytes<4>],
         block_env: BlockEnv,
-        mut multi_fork_db: MultiForkDb<ForkDb<Active>>,
+        multi_fork_db: MultiForkDb<ForkDb<Active>>,
         context: &PhEvmContext,
     ) -> Result<AssertionContractExecution, AssertionExecutionError<Active>>
     where
@@ -286,13 +283,18 @@ impl AssertionExecutor {
             "Executing assertion contract"
         );
 
-        self.insert_assertion_contract(assertion_contract, &mut multi_fork_db);
+        let mut post_tx_assertion_journal = context.logs_and_traces.call_traces.journal.clone();
+        self.insert_assertion_contract(assertion_contract, &mut post_tx_assertion_journal);
+        let inspector = PhEvmInspector::new(
+            self.config.spec_id,
+            &mut post_tx_assertion_journal,
+            context.clone(),
+        );
 
         let assertion_gas = AtomicU64::new(0);
         let assertions_ran = AtomicU64::new(0);
 
         let current_span = tracing::Span::current();
-
         let results_vec = current_span.in_scope(|| {
             fn_selectors
                 .into_par_iter()
@@ -305,7 +307,8 @@ impl AssertionExecutor {
                             multi_fork_db: multi_fork_db.clone(),
                             assertion_gas: &assertion_gas,
                             assertions_ran: &assertions_ran,
-                            context: context.clone(),
+                            assertion_journal: post_tx_assertion_journal.clone(),
+                            inspector: inspector.clone(),
                         })
                     },
                 )
@@ -346,10 +349,9 @@ impl AssertionExecutor {
             mut multi_fork_db,
             assertion_gas,
             assertions_ran,
-            context,
+            assertion_journal,
+            inspector,
         } = params;
-
-        let inspector = PhEvmInspector::new(self.config.spec_id, &mut multi_fork_db, context);
 
         let tx_env = TxEnv {
             kind: TxKind::Call(ASSERTION_CONTRACT),
@@ -377,6 +379,8 @@ impl AssertionExecutor {
         let mut evm = crate::evm::build_evm::build_eth_evm(&mut multi_fork_db, &env, inspector);
 
         reprice_evm_storage!(evm);
+
+        evm.journaled_state.inner = assertion_journal;
 
         trace!(target: "assertion-executor::execute_assertions", "Executing assertion function");
         let result_and_state = evm.inspect_with_tx(tx_env);
@@ -409,16 +413,14 @@ impl AssertionExecutor {
         target = "assertion-executor::execute_tx",
         fields(tx_env, block_env)
     )]
-    pub fn execute_forked_tx_ext_db<ExtDb, Active>(
+    pub fn execute_forked_tx_ext_db<ExtDb>(
         &self,
         block_env: BlockEnv,
         tx_env: TxEnv,
-        fork_db: &mut ForkDb<Active>,
         external_db: &mut ExtDb,
     ) -> Result<ExecuteForkedTxResult, ForkTxExecutionError<ExtDb>>
     where
         ExtDb: Database + Sync + Send,
-        Active: DatabaseRef + Sync + Send,
     {
         let mut call_tracer = CallTracer::default();
         let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
@@ -459,8 +461,10 @@ impl AssertionExecutor {
         let call_tracer = std::mem::take(evm.inspector);
         std::mem::drop(evm);
 
-        // Commit changes to the ForkDb<Active>
-        fork_db.commit(result_and_state.state.clone());
+        // Propogate potential errors from the inspector, if any
+        if let Err(err) = call_tracer.result {
+            return Err(ForkTxExecutionError::CallTracerError(err));
+        }
 
         Ok(ExecuteForkedTxResult {
             call_tracer,
@@ -469,13 +473,11 @@ impl AssertionExecutor {
     }
 
     /// Inserts pre-deployed assertion contract inside the multi-fork db.
-    pub fn insert_assertion_contract<Active>(
+    pub fn insert_assertion_contract(
         &self,
         assertion_contract: &AssertionContract,
-        multi_fork_db: &mut MultiForkDb<ForkDb<Active>>,
-    ) where
-        Active: DatabaseRef,
-    {
+        journal: &mut JournalInner<JournalEntry>,
+    ) {
         let AssertionContract {
             deployed_code,
             code_hash,
@@ -509,27 +511,13 @@ impl AssertionExecutor {
             ..Default::default()
         };
 
-        let mut state = EvmState::default();
-        state.insert(ASSERTION_CONTRACT, account);
-        state.insert(CALLER, caller_account);
-        multi_fork_db.commit(state);
-        multi_fork_db
-            .active_db
-            .storage
-            .entry(ASSERTION_CONTRACT)
-            .or_default()
-            .dont_read_from_inner_db = true;
-        multi_fork_db
-            .active_db
-            .storage
-            .entry(CALLER)
-            .or_default()
-            .dont_read_from_inner_db = true;
+        journal.state.insert(ASSERTION_CONTRACT, account);
+        journal.state.insert(CALLER, caller_account);
 
         trace!(
             target: "assertion-executor::insert_assertion_contract",
             assertion_id = ?id,
-            "Inserted assertion contract into multi fork db"
+            "Inserted assertion contract into assertion journal"
         );
     }
 }
@@ -568,26 +556,17 @@ mod test {
 
     #[test]
     fn test_deploy_assertion_contract() {
-        // Use the TestDB type
-        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
-
         let assertion_store = AssertionStore::new_ephemeral().unwrap();
 
         // Build uses TestDB
         let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
-        // Forks use TestDB
-        let mut multi_fork_db = MultiForkDb::new(test_db.fork(), test_db.fork());
-
         let counter_assertion = counter_assertion();
 
+        let mut journal = JournalInner::new();
         // insert_assertion_contract is generic, works with MultiForkDb<ForkDb<TestDB>>
-        executor.insert_assertion_contract(&counter_assertion, &mut multi_fork_db);
-
-        let account_info = multi_fork_db
-            .basic_ref(ASSERTION_CONTRACT)
-            .unwrap()
-            .unwrap();
+        executor.insert_assertion_contract(&counter_assertion, &mut journal);
+        let account_info = journal.state.get(&ASSERTION_CONTRACT).unwrap().info.clone();
 
         assert_eq!(account_info.code.unwrap(), counter_assertion.deployed_code);
     }
@@ -605,17 +584,9 @@ mod test {
         // Build uses TestDB
         let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
-        // Fork uses TestDB
-        let mut fork_db: TestForkDB = shared_db.fork();
-
         // execute_forked_tx uses &mut ForkDb<TestDB>
         let result = executor
-            .execute_forked_tx_ext_db(
-                BlockEnv::default(),
-                counter_call(),
-                &mut fork_db,
-                &mut mock_db,
-            )
+            .execute_forked_tx_ext_db(BlockEnv::default(), counter_call(), &mut mock_db)
             .unwrap();
 
         //Traces should contain the call to the counter contract
@@ -638,8 +609,18 @@ mod test {
 
         // Check storage on the TestForkDB
         assert_eq!(
-            fork_db.storage_ref(COUNTER_ADDRESS, U256::ZERO),
-            Ok(uint!(1_U256))
+            result
+                .call_tracer
+                .journal
+                .state
+                .get(&COUNTER_ADDRESS)
+                .unwrap()
+                .storage
+                .get(&U256::ZERO)
+                .cloned()
+                .unwrap()
+                .present_value,
+            uint!(1_U256)
         );
 
         // Check storage on the original TestDB via executor.db

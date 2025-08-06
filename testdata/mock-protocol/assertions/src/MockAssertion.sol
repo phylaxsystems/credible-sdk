@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.28;
+pragma solidity ^0.8.28;
 
 import {Assertion} from "credible-std/Assertion.sol";
 import {MockProtocol} from "../../src/protocol.sol";
