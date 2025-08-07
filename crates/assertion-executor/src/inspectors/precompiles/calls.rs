@@ -20,7 +20,10 @@ use revm::{
         ContextTr,
         Journal,
     },
-    interpreter::CallInputs,
+    interpreter::{
+        CallInputs,
+        CallScheme,
+    },
 };
 
 use alloy_sol_types::{
@@ -39,10 +42,11 @@ pub enum GetCallInputsError {
 }
 
 /// Returns the call inputs of a transaction.
-pub fn get_call_inputs<'db, ExtDb: DatabaseRef + 'db, CTX>(
+pub fn get_call_inputs_by_scheme<'db, ExtDb: DatabaseRef + 'db, CTX>(
     inputs: &CallInputs,
     context: &mut CTX,
     ph_context: &PhEvmContext,
+    scheme: CallScheme,
 ) -> Result<Bytes, GetCallInputsError>
 where
     CTX:
@@ -60,6 +64,9 @@ where
 
     let mut sol_call_inputs = Vec::new();
     for CallInputsWithId { call_input, id } in call_inputs {
+        if call_input.scheme != scheme {
+            continue;
+        }
         let original_input_data = match &call_input.input {
             revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
             _ => return Err(GetCallInputsError::ExpectedBytes),
@@ -126,7 +133,7 @@ mod test {
             adopter: Address::ZERO,
             console_logs: vec![],
         };
-        get_call_inputs(call_inputs, &mut context, &ph_context)
+        get_call_inputs_by_scheme(call_inputs, &mut context, &ph_context, CallScheme::Call)
     }
     use alloy_primitives::{
         Address,
@@ -338,4 +345,14 @@ mod test {
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
     }
+
+    #[tokio::test]
+    async fn test_get_call_inputs_proxy() {
+        let result = run_precompile_test("TestGetCallInputsProxy").await;
+        assert!(result.is_valid(), "{result:#?}");
+        assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert!(result_and_state.result.is_success());
+    }
 }
+
