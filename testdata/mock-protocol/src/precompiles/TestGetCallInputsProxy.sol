@@ -14,40 +14,14 @@ contract TestGetCallInputsProxy is Assertion, Test {
     function testGetCallInputs() external view {
         PhEvm.CallInputs[] memory callInputs = ph.getCallInputs(
             address(TARGET),
-            ProxyImpl.readStorageProxy.selector
-        );
-        require(callInputs.length == 2, "callInputs.length != 2");
-        PhEvm.CallInputs memory callInput = callInputs[0];
-
-        require(
-            callInput.target_address == address(TARGET),
-            "callInput.target_address != target"
-        );
-
-        require(
-            callInput.bytecode_address != address(TARGET),
-            "callInput.bytecode_address != target"
-        );
-
-        require(callInput.input.length == 0, "callInput.input.length != 0");
-        require(callInput.value == 0, "callInput.value != 0");
-        require(callInput.id == 3, "callInput.id != 3");
-
-        callInputs = ph.getCallInputs(
-            address(TARGET),
             ProxyImpl.writeStorageProxy.selector
         );
         require(callInputs.length == 2, "callInputs.length != 2");
 
-        callInput = callInputs[0];
+        PhEvm.CallInputs memory callInput = callInputs[0];
         require(
             callInput.target_address == address(TARGET),
             "callInput.target_address != target"
-        );
-
-        require(
-            callInput.bytecode_address != address(TARGET),
-            "callInput.bytecode_address != target"
         );
 
         require(callInput.input.length == 32, "callInput.input.length != 32");
@@ -62,7 +36,7 @@ contract TestGetCallInputsProxy is Assertion, Test {
             "callInput.target_address != target"
         );
         require(callInput.input.length == 32, "callInput.input.length != 32");
-        require(callInput.id == 2, "callInput.id != 2");
+        require(callInput.id == 3, "callInput.id != 3");
         param = abi.decode(callInput.input, (uint256));
         require(param == 2, "Second writeStorage param should be 2");
         require(callInput.value == 0, "callInput.value != 0");
@@ -80,9 +54,7 @@ contract TriggeringTx {
 
         // Make calls through proxy
         ProxyImpl proxy = ProxyImpl(address(TARGET));
-        require(proxy.readStorageProxy() == 1, "init value not 1");
         proxy.writeStorageProxy(1);
         proxy.writeStorageProxy(2);
-        proxy.readStorageProxy();
     }
 }

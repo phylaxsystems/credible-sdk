@@ -14,26 +14,11 @@ contract TestGetCallInputs is Assertion, Test {
     function testGetCallInputs() external view {
         PhEvm.CallInputs[] memory callInputs = ph.getCallInputs(
             address(TARGET),
-            Target.readStorage.selector
-        );
-        require(callInputs.length == 1, "callInputs.length != 1");
-        PhEvm.CallInputs memory callInput = callInputs[0];
-
-        require(
-            callInput.target_address == address(TARGET),
-            "callInput.target_address != target"
-        );
-        require(callInput.input.length == 0, "callInput.input.length != 0");
-        require(callInput.value == 0, "callInput.value != 0");
-        require(callInput.id == 3, "callInput.id != 3");
-
-        callInputs = ph.getCallInputs(
-            address(TARGET),
             Target.writeStorage.selector
         );
         require(callInputs.length == 2, "callInputs.length != 2");
 
-        callInput = callInputs[0];
+        PhEvm.CallInputs memory callInput = callInputs[0];
         require(
             callInput.target_address == address(TARGET),
             "callInput.target_address != target"

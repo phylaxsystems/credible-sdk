@@ -51,12 +51,19 @@ use crate::{
 
 use op_revm::OpContext;
 use revm::{
+    Inspector,
+    JournalEntry,
     context::{
         ContextTr,
         JournalInner,
-    }, interpreter::{
-        CallInputs, CallOutcome, CallScheme, Gas
-    }, primitives::Log, Inspector, JournalEntry
+    },
+    interpreter::{
+        CallInputs,
+        CallOutcome,
+        CallScheme,
+        Gas,
+    },
+    primitives::Log,
 };
 
 use alloy_evm::eth::EthEvmContext;
@@ -182,7 +189,9 @@ impl<'a> PhEvmInspector<'a> {
             }
             PhEvm::loadCall::SELECTOR => load_external_slot(context, inputs)?,
             PhEvm::getLogsCall::SELECTOR => get_logs(&self.context)?,
-            PhEvm::getCallInputsCall::SELECTOR => get_call_inputs_by_scheme(inputs, context, &self.context, CallScheme::Call)?,
+            PhEvm::getCallInputsCall::SELECTOR => {
+                get_call_inputs_by_scheme(inputs, context, &self.context, CallScheme::Call)?
+            }
             PhEvm::getStateChangesCall::SELECTOR => get_state_changes(&input_bytes, &self.context)?,
             PhEvm::getAssertionAdopterCall::SELECTOR => get_assertion_adopter(&self.context)?,
             console::logCall::SELECTOR => {

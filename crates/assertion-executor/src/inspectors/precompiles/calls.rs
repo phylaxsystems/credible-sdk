@@ -355,4 +355,3 @@ mod test {
         assert!(result_and_state.result.is_success());
     }
 }
-
