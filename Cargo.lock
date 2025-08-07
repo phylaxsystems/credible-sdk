@@ -1431,10 +1431,10 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-client"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "alloy",
- "assertion-da-core 0.2.2",
+ "assertion-da-core 0.2.3",
  "assertion-da-server",
  "bincode",
  "bollard",
@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "alloy",
  "serde",
@@ -1470,14 +1470,14 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-server"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "alloy",
  "alloy-dyn-abi",
  "alloy-json-abi",
  "anyhow",
- "assertion-da-client 0.2.2",
- "assertion-da-core 0.2.2",
+ "assertion-da-client 0.2.3",
+ "assertion-da-core 0.2.3",
  "bincode",
  "bollard",
  "clap",
@@ -1557,7 +1557,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-executor"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -1578,9 +1578,9 @@ dependencies = [
  "alloy-transport",
  "alloy-transport-ws",
  "anyhow",
- "assertion-da-client 0.2.2",
+ "assertion-da-client 0.2.3",
  "assertion-da-server",
- "assertion-executor 0.2.2",
+ "assertion-executor 0.2.3",
  "bincode",
  "bollard",
  "clap",
@@ -3139,7 +3139,7 @@ dependencies = [
 
 [[package]]
 name = "dapp-api-client"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -6717,11 +6717,11 @@ dependencies = [
 
 [[package]]
 name = "int-test-utils"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "alloy",
  "anyhow",
- "assertion-da-client 0.2.2",
+ "assertion-da-client 0.2.3",
  "assertion-da-server",
  "bollard",
  "rand 0.9.1",
@@ -8314,7 +8314,7 @@ dependencies = [
 
 [[package]]
 name = "pcl"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -8329,7 +8329,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-common"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "clap",
  "serde_json",
@@ -8337,12 +8337,12 @@ dependencies = [
 
 [[package]]
 name = "pcl-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "alloy",
  "alloy-primitives",
  "anyhow",
- "assertion-da-client 0.2.2",
+ "assertion-da-client 0.2.3",
  "chrono",
  "clap",
  "color-eyre",
@@ -8367,7 +8367,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-phoundry"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "alloy-json-abi",
  "clap",
@@ -10476,10 +10476,10 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sidecar"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
- "assertion-executor 0.2.2",
+ "assertion-executor 0.2.3",
  "axum 0.7.9",
  "clap",
  "ctrlc",
