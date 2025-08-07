@@ -193,7 +193,10 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::getAssertionAdopterCall::SELECTOR => get_assertion_adopter(&self.context)?,
             console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
-                return Ok(console_log(&input_bytes, &mut self.context)?);
+                return Ok(crate::inspectors::precompiles::console_log::console_log(
+                    &input_bytes,
+                    &mut self.context,
+                )?);
 
                 #[cfg(not(feature = "phoundry"))]
                 return Ok(Default::default());

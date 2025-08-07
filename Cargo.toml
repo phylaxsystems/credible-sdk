@@ -16,7 +16,7 @@ exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 authors = ["Phylax Systems"]
 license = "MIT OR Apache-2.0"
