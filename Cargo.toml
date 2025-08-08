@@ -17,7 +17,7 @@ resolver = "2"
 
 [workspace.package]
 version = "0.4.0"
-tion = "2024"
+edition = "2024"
 authors = ["Phylax Systems"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/phylaxsystems/credible-sdk"
