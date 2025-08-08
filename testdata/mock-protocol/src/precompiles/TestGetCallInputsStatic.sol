@@ -6,15 +6,15 @@ import {PhEvm} from "credible-std/PhEvm.sol";
 import {Test} from "forge-std/Test.sol";
 import {console} from "forge-std/console.sol";
 
-import {Target, TARGET, ProxyImpl, CallType} from "./Target.sol";
+import {Target, TARGET} from "./Target.sol";
 
-contract TestGetCallInputsProxy is Assertion, Test {
+contract TestGetCallInputsStatic is Assertion, Test {
     constructor() payable {}
 
     function testGetCallInputs() external view {
-        PhEvm.CallInputs[] memory callInputs = ph.getCallInputs(
+        PhEvm.CallInputs[] memory callInputs = ph.getStaticCallInputs(
             address(TARGET),
-            ProxyImpl.writeStorageProxy.selector
+            Target.readStorage.selector
         );
         require(callInputs.length == 2, "callInputs.length != 2");
 
@@ -23,11 +23,7 @@ contract TestGetCallInputsProxy is Assertion, Test {
             callInput.target_address == address(TARGET),
             "callInput.target_address != target"
         );
-
-        require(callInput.input.length == 32, "callInput.input.length != 32");
-        uint256 param = abi.decode(callInput.input, (uint256));
-        require(param == 1, "First writeStorage param should be 1");
-        require(callInput.value == 0, "callInput.value != 0");
+        require(callInput.input.length == 0, "callInput.input.length != 0");
         require(callInput.id == 1, "callInput.id != 1");
 
         callInput = callInputs[1];
@@ -35,11 +31,8 @@ contract TestGetCallInputsProxy is Assertion, Test {
             callInput.target_address == address(TARGET),
             "callInput.target_address != target"
         );
-        require(callInput.input.length == 32, "callInput.input.length != 32");
+        require(callInput.input.length == 0, "callInput.input.length != 0");
         require(callInput.id == 3, "callInput.id != 3");
-        param = abi.decode(callInput.input, (uint256));
-        require(param == 2, "Second writeStorage param should be 2");
-        require(callInput.value == 0, "callInput.value != 0");
     }
 
     function triggers() external view override {
@@ -49,12 +42,15 @@ contract TestGetCallInputsProxy is Assertion, Test {
 
 contract TriggeringTx {
     constructor() payable {
-        // Create proxy contract
-        TARGET.initProxy(CallType.DelegateCall);
+        TriggeringCall callee = new TriggeringCall();
+        callee.trigger();
+    }
+}
 
-        // Make calls through proxy
-        ProxyImpl proxy = ProxyImpl(address(TARGET));
-        proxy.writeStorageProxy(1);
-        proxy.writeStorageProxy(2);
+contract TriggeringCall {
+    function trigger() external {
+        TARGET.readStorage();
+        TARGET.writeStorage(2);
+        TARGET.readStorage();
     }
 }

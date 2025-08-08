@@ -1,35 +1,20 @@
 use crate::{
-    db::{
-        DatabaseRef,
-        MultiForkDb,
-    },
     inspectors::{
         phevm::PhEvmContext,
-        sol_primitives::PhEvm::{
-            CallInputs as PhEvmCallInputs,
-            getCallInputsCall,
-        },
+        sol_primitives::PhEvm::CallInputs as PhEvmCallInputs,
         tracer::CallInputsWithId,
     },
     primitives::Bytes,
 };
 
-use alloy_primitives::U256;
-use revm::{
-    context::{
-        ContextTr,
-        Journal,
-    },
-    interpreter::{
-        CallInputs,
-        CallScheme,
-    },
+use alloy_primitives::{
+    Address,
+    FixedBytes,
+    U256,
 };
+use revm::interpreter::CallScheme;
 
-use alloy_sol_types::{
-    SolCall,
-    SolType,
-};
+use alloy_sol_types::SolType;
 
 #[derive(thiserror::Error, Debug)]
 pub enum GetCallInputsError {
@@ -42,31 +27,23 @@ pub enum GetCallInputsError {
 }
 
 /// Returns the call inputs of a transaction.
-pub fn get_call_inputs_by_scheme<'db, ExtDb: DatabaseRef + 'db, CTX>(
-    inputs: &CallInputs,
-    context: &mut CTX,
+pub fn get_call_inputs(
     ph_context: &PhEvmContext,
-    scheme: CallScheme,
-) -> Result<Bytes, GetCallInputsError>
-where
-    CTX:
-        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
-{
-    let get_call_inputs = getCallInputsCall::abi_decode(&inputs.input.bytes(context))?;
-
-    let target = get_call_inputs.target;
-    let selector = get_call_inputs.selector;
-
-    let call_inputs = ph_context
+    target: Address,
+    selector: FixedBytes<4>,
+    scheme_filter: Option<CallScheme>,
+) -> Result<Bytes, GetCallInputsError> {
+    let mut call_inputs = ph_context
         .logs_and_traces
         .call_traces
         .get_call_inputs(target, selector);
 
+    if let Some(scheme_filter) = scheme_filter {
+        call_inputs.retain(|call_input| call_input.call_input.scheme == scheme_filter);
+    }
+
     let mut sol_call_inputs = Vec::new();
     for CallInputsWithId { call_input, id } in call_inputs {
-        if call_input.scheme != scheme {
-            continue;
-        }
         let original_input_data = match &call_input.input {
             revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
             _ => return Err(GetCallInputsError::ExpectedBytes),
@@ -97,6 +74,7 @@ mod test {
     use super::*;
     use crate::{
         db::{
+            MultiForkDb,
             fork_db::ForkDb,
             overlay::test_utils::MockDb,
         },
@@ -105,6 +83,7 @@ mod test {
                 LogsAndTraces,
                 PhEvmContext,
             },
+            sol_primitives::PhEvm::getCallInputsCall,
             tracer::CallTracer,
         },
         test_utils::{
@@ -115,6 +94,8 @@ mod test {
             run_precompile_test,
         },
     };
+
+    use alloy_sol_types::SolCall;
 
     fn test_with_inputs_and_tracer(
         call_inputs: &CallInputs,
@@ -133,7 +114,9 @@ mod test {
             adopter: Address::ZERO,
             console_logs: vec![],
         };
-        get_call_inputs_by_scheme(call_inputs, &mut context, &ph_context, CallScheme::Call)
+        let input = call_inputs.input.bytes(&mut context);
+        let inputs = getCallInputsCall::abi_decode(&input).unwrap();
+        get_call_inputs(&ph_context, inputs.target, inputs.selector, None)
     }
     use alloy_primitives::{
         Address,
@@ -258,23 +241,6 @@ mod test {
     }
 
     #[test]
-    fn test_get_call_inputs_invalid_input_length() {
-        let target = random_address();
-        let selector = random_selector();
-
-        let mut get_call_inputs = create_get_call_input(target, selector);
-        get_call_inputs.input = CallInput::Bytes(random_bytes::<32>().into());
-
-        let call_tracer = CallTracer::new();
-
-        let result = test_with_inputs_and_tracer(&get_call_inputs, call_tracer);
-        assert!(matches!(
-            result,
-            Err(GetCallInputsError::FailedToDecodeGetCallInputsCall(_))
-        ));
-    }
-
-    #[test]
     fn test_get_call_inputs_multiple_results() {
         let target = random_address();
         let selector = random_selector();
@@ -347,8 +313,44 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_get_call_inputs_static() {
+        let result = run_precompile_test("TestGetCallInputsStatic").await;
+        assert!(result.is_valid(), "{result:#?}");
+        assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert!(result_and_state.result.is_success());
+    }
+
+    #[tokio::test]
     async fn test_get_call_inputs_proxy() {
         let result = run_precompile_test("TestGetCallInputsProxy").await;
+        assert!(result.is_valid(), "{result:#?}");
+        assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert!(result_and_state.result.is_success());
+    }
+
+    #[tokio::test]
+    async fn test_get_call_inputs_call_code() {
+        let result = run_precompile_test("TestGetCallInputsCallCode").await;
+        assert!(result.is_valid(), "{result:#?}");
+        assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert!(result_and_state.result.is_success());
+    }
+
+    #[tokio::test]
+    async fn test_get_call_inputs_delegate() {
+        let result = run_precompile_test("TestGetCallInputsDelegate").await;
+        assert!(result.is_valid(), "{result:#?}");
+        assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert!(result_and_state.result.is_success());
+    }
+
+    #[tokio::test]
+    async fn test_get_call_inputs_all_calls() {
+        let result = run_precompile_test("TestGetCallInputsAllCalls").await;
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
         let result_and_state = result.result_and_state;

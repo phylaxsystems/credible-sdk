@@ -49,7 +49,7 @@ sol! {
 
         // Forks to the state before the execution of the call.
         // Id can be obtained from the CallInputs struct returned by getCallInputs.
-       function forkPreCall(uint256 id) external;
+        function forkPreCall(uint256 id) external;
 
         // Forks to the state after the execution of the call.
         // Id can be obtained from the CallInputs struct returned by getCallInputs.
@@ -61,8 +61,40 @@ sol! {
         // Get the logs from the assertion triggering transaction.
         function getLogs() external returns (Log[] memory logs);
 
-        // Get the call inputs for a given target and selector
-        function getCallInputs(address target, bytes4 selector) external view returns (CallInputs[] memory calls);
+        // Get all call inputs for a given target and selector.
+        // Includes calls made using all call opcodes('CALL', 'STATICCALL', 'DELEGATECALL', 'CALLCODE').
+        function getAllCallInputs(
+            address target,
+            bytes4 selector
+        ) external view returns (CallInputs[] memory calls);
+
+        // Get the call inputs for a given target and selector.
+        // Only includes calls made using 'CALL' opcode.
+        function getCallInputs(
+            address target,
+            bytes4 selector
+        ) external view returns (CallInputs[] memory calls);
+
+        // Get the static call inputs for a given target and selector.
+        // Only includes calls made using 'STATICCALL' opcode.
+        function getStaticCallInputs(
+            address target,
+            bytes4 selector
+        ) external view returns (CallInputs[] memory calls);
+
+        // Get the delegate call inputs for a given target(proxy) and selector.
+        // Only includes calls made using 'DELEGATECALL' opcode.
+        function getDelegateCallInputs(
+            address target,
+            bytes4 selector
+        ) external view returns (CallInputs[] memory calls);
+
+        // Get the call code inputs for a given target and selector.
+        // Only includes calls made using 'CALLCODE' opcode.
+        function getCallCodeInputs(
+            address target,
+            bytes4 selector
+        ) external view returns (CallInputs[] memory calls);
 
         // Get state changes for a given contract and storage slot.
         function getStateChanges(address contractAddress, bytes32 slot)

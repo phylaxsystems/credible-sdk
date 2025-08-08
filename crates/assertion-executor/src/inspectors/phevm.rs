@@ -9,7 +9,7 @@ use crate::{
             assertion_adopter::get_assertion_adopter,
             calls::{
                 GetCallInputsError,
-                get_call_inputs_by_scheme,
+                get_call_inputs,
             },
             console_log::ConsoleLogError,
             fork::{
@@ -189,8 +189,57 @@ impl<'a> PhEvmInspector<'a> {
             }
             PhEvm::loadCall::SELECTOR => load_external_slot(context, inputs)?,
             PhEvm::getLogsCall::SELECTOR => get_logs(&self.context)?,
+            PhEvm::getAllCallInputsCall::SELECTOR => {
+                let inputs = PhEvm::getAllCallInputsCall::abi_decode(&inputs.input.bytes(context))
+                    .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
+                get_call_inputs(&self.context, inputs.target, inputs.selector, None)
+                    .map_err(|err| PrecompileError::GetCallInputsError(err))?
+            }
             PhEvm::getCallInputsCall::SELECTOR => {
-                get_call_inputs_by_scheme(inputs, context, &self.context, CallScheme::Call)?
+                let inputs = PhEvm::getCallInputsCall::abi_decode(&inputs.input.bytes(context))
+                    .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
+                get_call_inputs(
+                    &self.context,
+                    inputs.target,
+                    inputs.selector,
+                    Some(CallScheme::Call),
+                )
+                .map_err(|err| PrecompileError::GetCallInputsError(err))?
+            }
+            PhEvm::getStaticCallInputsCall::SELECTOR => {
+                let inputs =
+                    PhEvm::getStaticCallInputsCall::abi_decode(&inputs.input.bytes(context))
+                        .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
+                get_call_inputs(
+                    &self.context,
+                    inputs.target,
+                    inputs.selector,
+                    Some(CallScheme::StaticCall),
+                )
+                .map_err(|err| PrecompileError::GetCallInputsError(err))?
+            }
+            PhEvm::getDelegateCallInputsCall::SELECTOR => {
+                let inputs =
+                    PhEvm::getDelegateCallInputsCall::abi_decode(&inputs.input.bytes(context))
+                        .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
+                get_call_inputs(
+                    &self.context,
+                    inputs.target,
+                    inputs.selector,
+                    Some(CallScheme::DelegateCall),
+                )
+                .map_err(|err| PrecompileError::GetCallInputsError(err))?
+            }
+            PhEvm::getCallCodeInputsCall::SELECTOR => {
+                let inputs = PhEvm::getCallCodeInputsCall::abi_decode(&inputs.input.bytes(context))
+                    .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
+                get_call_inputs(
+                    &self.context,
+                    inputs.target,
+                    inputs.selector,
+                    Some(CallScheme::CallCode),
+                )
+                .map_err(|err| PrecompileError::GetCallInputsError(err))?
             }
             PhEvm::getStateChangesCall::SELECTOR => get_state_changes(&input_bytes, &self.context)?,
             PhEvm::getAssertionAdopterCall::SELECTOR => get_assertion_adopter(&self.context)?,
