@@ -49,7 +49,6 @@ use crate::{
     },
 };
 
-use alloy_signer::k256::elliptic_curve::subtle::ConstantTimeGreater;
 use op_revm::OpContext;
 use revm::{
     Inspector,
@@ -194,7 +193,7 @@ impl<'a> PhEvmInspector<'a> {
                 let inputs = PhEvm::getAllCallInputsCall::abi_decode(&inputs.input.bytes(context))
                     .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
                 get_call_inputs(&self.context, inputs.target, inputs.selector, None)
-                    .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?
+                    .map_err(|err| PrecompileError::GetCallInputsError(err))?
             }
             PhEvm::getCallInputsCall::SELECTOR => {
                 let inputs = PhEvm::getCallInputsCall::abi_decode(&inputs.input.bytes(context))
@@ -205,7 +204,7 @@ impl<'a> PhEvmInspector<'a> {
                     inputs.selector,
                     Some(CallScheme::Call),
                 )
-                .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?
+                .map_err(|err| PrecompileError::GetCallInputsError(err))?
             }
             PhEvm::getStaticCallInputsCall::SELECTOR => {
                 let inputs =
@@ -217,7 +216,7 @@ impl<'a> PhEvmInspector<'a> {
                     inputs.selector,
                     Some(CallScheme::StaticCall),
                 )
-                .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?
+                .map_err(|err| PrecompileError::GetCallInputsError(err))?
             }
             PhEvm::getDelegateCallInputsCall::SELECTOR => {
                 let inputs =
@@ -229,7 +228,7 @@ impl<'a> PhEvmInspector<'a> {
                     inputs.selector,
                     Some(CallScheme::DelegateCall),
                 )
-                .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?
+                .map_err(|err| PrecompileError::GetCallInputsError(err))?
             }
             PhEvm::getCallCodeInputsCall::SELECTOR => {
                 let inputs = PhEvm::getCallCodeInputsCall::abi_decode(&inputs.input.bytes(context))
@@ -240,7 +239,7 @@ impl<'a> PhEvmInspector<'a> {
                     inputs.selector,
                     Some(CallScheme::CallCode),
                 )
-                .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?
+                .map_err(|err| PrecompileError::GetCallInputsError(err))?
             }
             PhEvm::getStateChangesCall::SELECTOR => get_state_changes(&input_bytes, &self.context)?,
             PhEvm::getAssertionAdopterCall::SELECTOR => get_assertion_adopter(&self.context)?,

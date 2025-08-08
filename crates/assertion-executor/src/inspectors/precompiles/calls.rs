@@ -1,14 +1,7 @@
 use crate::{
-    db::{
-        DatabaseRef,
-        MultiForkDb,
-    },
     inspectors::{
         phevm::PhEvmContext,
-        sol_primitives::PhEvm::{
-            CallInputs as PhEvmCallInputs,
-            getCallInputsCall,
-        },
+        sol_primitives::PhEvm::CallInputs as PhEvmCallInputs,
         tracer::CallInputsWithId,
     },
     primitives::Bytes,
@@ -19,21 +12,9 @@ use alloy_primitives::{
     FixedBytes,
     U256,
 };
-use revm::{
-    context::{
-        ContextTr,
-        Journal,
-    },
-    interpreter::{
-        CallInputs,
-        CallScheme,
-    },
-};
+use revm::interpreter::CallScheme;
 
-use alloy_sol_types::{
-    SolCall,
-    SolType,
-};
+use alloy_sol_types::SolType;
 
 #[derive(thiserror::Error, Debug)]
 pub enum GetCallInputsError {
@@ -93,6 +74,7 @@ mod test {
     use super::*;
     use crate::{
         db::{
+            MultiForkDb,
             fork_db::ForkDb,
             overlay::test_utils::MockDb,
         },
@@ -101,6 +83,7 @@ mod test {
                 LogsAndTraces,
                 PhEvmContext,
             },
+            sol_primitives::PhEvm::getCallInputsCall,
             tracer::CallTracer,
         },
         test_utils::{
@@ -111,6 +94,8 @@ mod test {
             run_precompile_test,
         },
     };
+
+    use alloy_sol_types::SolCall;
 
     fn test_with_inputs_and_tracer(
         call_inputs: &CallInputs,
