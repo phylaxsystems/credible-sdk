@@ -8,7 +8,7 @@ import {console} from "forge-std/console.sol";
 
 import {Target, TARGET, ProxyImpl, CallType} from "./Target.sol";
 
-contract TestGetCallInputsProxy is Assertion, Test {
+contract TestGetCallInputsCallCode is Assertion, Test {
     constructor() payable {}
 
     function testGetCallInputs() external view {
@@ -50,7 +50,7 @@ contract TestGetCallInputsProxy is Assertion, Test {
 contract TriggeringTx {
     constructor() payable {
         // Create proxy contract
-        TARGET.initProxy(CallType.DelegateCall);
+        TARGET.initProxy(CallType.CallCode);
 
         // Make calls through proxy
         ProxyImpl proxy = ProxyImpl(address(TARGET));

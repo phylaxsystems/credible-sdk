@@ -5,6 +5,11 @@ Target constant TARGET = Target(
     address(0x118DD24a3b0D02F90D8896E242D3838B4D37c181)
 );
 
+enum CallType {
+    DelegateCall,
+    CallCode
+}
+
 contract Target {
     event Log(uint256 value);
     event Log2(uint256 value);
@@ -13,13 +18,15 @@ contract Target {
     Reverts public reverts;
 
     address public impl;
+    CallType public callType;
 
     constructor() payable {
         value = 1;
     }
 
-    function initProxy() external {
+    function initProxy(CallType callType_) external {
         impl = address(new ProxyImpl());
+        callType = callType_;
     }
 
     function readStorage() external view returns (uint256) {
@@ -51,16 +58,43 @@ contract Target {
             (success);
         }
     }
+
     function unhandledRevert() external {
         reverts = new Reverts();
         (bool success, ) = address(reverts).call("");
         (success);
     }
+
     fallback(bytes calldata) external returns (bytes memory data) {
         if (impl != address(0)) {
-            (bool success, bytes memory retData) = impl.delegatecall(msg.data);
+            bool success;
+            bytes memory retData;
+            if (callType == CallType.DelegateCall) {
+                (success, retData) = impl.delegatecall(msg.data);
+            }
+            if (callType == CallType.CallCode) {
+                assembly {
+                    let ptr := mload(0x40)
+
+                    calldatacopy(ptr, 0, calldatasize())
+
+                    let loaded_impl := sload(impl.slot)
+
+                    success := callcode(
+                        gas(),
+                        loaded_impl,
+                        0,
+                        ptr,
+                        calldatasize(),
+                        retData,
+                        returndatasize()
+                    )
+                }
+                (success, retData) = (success, retData);
+            }
+
             if (!success) {
-                revert("delegatecall failed");
+                revert("proxy call failed");
             } else {
                 return retData;
             }
