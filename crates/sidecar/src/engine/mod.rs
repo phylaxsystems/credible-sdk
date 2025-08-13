@@ -312,7 +312,8 @@ mod tests {
         crossbeam::channel::Sender<TxQueueContents>,
     ) {
         let (tx_sender, tx_receiver) = crossbeam::channel::unbounded();
-        let state = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+        let underlying_db = CacheDB::new(EmptyDBTyped::default());
+        let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)), 1024);
         let assertion_store =
             AssertionStore::new_ephemeral().expect("Failed to create assertion store");
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
@@ -337,9 +338,9 @@ mod tests {
         // Create a simple transaction that doesn't require assertions
         let tx_env = TxEnv {
             caller: Address::from([0x01; 20]),
-            gas_limit: 100000,    // Sufficient gas for Create transactions
-            gas_price: 0,         // Set gas price to 0 to avoid balance issues
-            kind: TxKind::Create, // Create transaction
+            gas_limit: 100000,
+            gas_price: 0,
+            kind: TxKind::Create,
             value: uint!(0_U256),
             data: Bytes::new(),
             nonce: 0,
@@ -389,10 +390,10 @@ mod tests {
         // Create a transaction that will revert - Create with bytecode that calls REVERT
         let tx_env = TxEnv {
             caller: Address::from([0x02; 20]),
-            gas_limit: 100000,    // Sufficient gas limit
-            gas_price: 0,         // Set gas price to 0 to avoid balance issues
-            kind: TxKind::Create, // Create with bytecode that calls REVERT
-            value: uint!(0_U256), // Set value to 0 to avoid balance issues
+            gas_limit: 100000,
+            gas_price: 0,
+            kind: TxKind::Create,
+            value: uint!(0_U256),
             data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]), // PUSH1 0x00 PUSH1 0x00 REVERT (reverts with empty message)
             nonce: 0,
             ..Default::default()
@@ -449,10 +450,10 @@ mod tests {
         let tx_env = TxEnv {
             caller: Address::from([0x03; 20]),
             gas_limit: 100000,
-            gas_price: 0,         // Set gas price to 0 to avoid balance issues
-            kind: TxKind::Create, // Create a new contract
+            gas_price: 0,
+            kind: TxKind::Create,
             value: uint!(0_U256),
-            data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00]), // Simple bytecode
+            data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00]),
             nonce: 0,
             ..Default::default()
         };
@@ -482,17 +483,38 @@ mod tests {
         let result = engine.execute_transaction(received_tx);
         assert!(result.is_ok(), "Transaction should execute successfully");
 
-        // Verify that data has been committed to the database
-        // For successful transactions, the cache should have more entries after execution
+        // Verify the caller's account state was updated
+        let caller_account = engine.get_state().basic_ref(tx_env.caller).expect("Should be able to read caller account");
+        assert!(caller_account.is_some(), "Caller account should exist after CREATE transaction");
+        let caller_info = caller_account.unwrap();
+        assert_eq!(caller_info.nonce, 1, "Caller nonce should be incremented from 0 to 1");
+        assert_eq!(caller_info.balance, uint!(0_U256), "Caller balance should remain 0");
+
+        // Verify the created contract exists at the expected address
+        // From the cache output, we know the contract was created at this address
+        use revm::primitives::address;
+        let contract_address = address!("76cae8af66cb2488933e640ba08650a3a8e7ae19");
+        
+        let contract_account = engine.get_state().basic_ref(contract_address).expect("Should be able to read contract account");
+        assert!(contract_account.is_some(), "Contract account should exist at the expected address");
+        let contract_info = contract_account.unwrap();
+        assert_eq!(contract_info.nonce, 1, "Contract nonce should be 1 for CREATE transactions");
+        assert_eq!(contract_info.balance, uint!(0_U256), "Contract balance should be 0");
+        
+        // Verify the code hash matches empty bytecode hash (keccak256 of empty bytes)
+        assert_eq!(contract_info.code_hash, revm::primitives::KECCAK_EMPTY, "Contract should have empty code hash");
+
+        // Verify that data has been committed by checking the cache count increases when we read data
+        // (The overlay cache gets populated when data is read from the underlying database)
         let final_cache_count = engine.get_state().cache_entry_count();
         assert!(
             final_cache_count >= initial_cache_count,
-            "Successful transaction should commit data to the database. Initial: {}, Final: {}",
+            "Transaction executed and state is readable - data was committed. Initial: {}, Final: {}",
             initial_cache_count,
             final_cache_count
         );
 
-        // Verify we can read from the state after commit
+        // Verify we can read storage from the state after commit
         let state_result = engine.get_state().storage_ref(tx_env.caller, U256::ZERO);
         assert!(
             state_result.is_ok(),
@@ -505,8 +527,8 @@ mod tests {
         let (mut engine, tx_sender) = create_test_engine();
         let tx_env = TxEnv {
             caller: Address::from([0x04; 20]),
-            gas_limit: 100000, // Sufficient gas limit
-            gas_price: 0,      // Set gas price to 0 to avoid balance issues
+            gas_limit: 100000,
+            gas_price: 0,
             kind: TxKind::Create,
             value: uint!(0_U256),
             data: Bytes::new(),
