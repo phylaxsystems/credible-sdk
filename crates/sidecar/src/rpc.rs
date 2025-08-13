@@ -73,7 +73,7 @@ pub async fn start_rpc_server(args: &SidecarArgs) -> anyhow::Result<()> {
     let rpc_url = &args.rollup.rpc_url;
     let addr = rpc_url
         .strip_prefix("http://")
-        .unwrap_or(&rpc_url)
+        .unwrap_or(rpc_url)
         .parse::<std::net::SocketAddr>()
         .unwrap_or_else(|_| {
             eprintln!("Failed to parse RPC URL '{rpc_url}', using default 0.0.0.0:9545");
