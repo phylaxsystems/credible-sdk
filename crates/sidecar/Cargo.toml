@@ -11,7 +11,7 @@ clap = { workspace = true }
 revm = { workspace = true }
 anyhow = {workspace =  true }
 thiserror = { workspace = true }
-assertion-executor = { workspace = true }
+assertion-executor = { workspace = true, features = ["test"] }
 rust-tracing = { workspace = true }
 tokio = { workspace = true }
 axum = "0.7"
