@@ -1,5 +1,5 @@
 //! # `utils`
-//! 
+//!
 //! Contains various shared utilities we use across the sidecar `mod`s:
 //! - `test_util` test utilites to set up and run tests.
 

@@ -284,23 +284,39 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::TestDbError;
     use assertion_executor::{
         ExecutorConfig,
         store::AssertionStore,
     };
     use revm::{
-        context::{TxEnv, BlockEnv},
-        primitives::{Address, U256, TxKind, Bytes, uint},
-        database::{CacheDB, EmptyDBTyped},
+        context::{
+            BlockEnv,
+            TxEnv,
+        },
+        database::{
+            CacheDB,
+            EmptyDBTyped,
+        },
+        primitives::{
+            Address,
+            Bytes,
+            TxKind,
+            U256,
+            uint,
+        },
     };
-    use crate::utils::TestDbError;
 
-    fn create_test_engine() -> (CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>, crossbeam::channel::Sender<TxQueueContents>) {
+    fn create_test_engine() -> (
+        CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+        crossbeam::channel::Sender<TxQueueContents>,
+    ) {
         let (tx_sender, tx_receiver) = crossbeam::channel::unbounded();
         let state = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
-        let assertion_store = AssertionStore::new_ephemeral().expect("Failed to create assertion store");
+        let assertion_store =
+            AssertionStore::new_ephemeral().expect("Failed to create assertion store");
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
-        
+
         let engine = CoreEngine::new(state, tx_receiver, assertion_executor);
         (engine, tx_sender)
     }
@@ -313,17 +329,16 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_successful_transaction_execution() {
         let (mut engine, tx_sender) = create_test_engine();
         let block_env = create_test_block_env();
-        
+
         // Create a simple transaction that doesn't require assertions
         let tx_env = TxEnv {
             caller: Address::from([0x01; 20]),
-            gas_limit: 100000, // Sufficient gas for Create transactions
-            gas_price: 0, // Set gas price to 0 to avoid balance issues
+            gas_limit: 100000,    // Sufficient gas for Create transactions
+            gas_price: 0,         // Set gas price to 0 to avoid balance issues
             kind: TxKind::Create, // Create transaction
             value: uint!(0_U256),
             data: Bytes::new(),
@@ -332,8 +347,10 @@ mod tests {
         };
 
         // Send block environment first
-        tx_sender.send(TxQueueContents::Block(block_env.clone())).unwrap();
-        
+        tx_sender
+            .send(TxQueueContents::Block(block_env.clone()))
+            .unwrap();
+
         // Send the transaction
         tx_sender.send(TxQueueContents::Tx(tx_env.clone())).unwrap();
 
@@ -351,9 +368,16 @@ mod tests {
 
         // Execute the transaction
         let result = engine.execute_transaction(received_tx);
-        
-        assert!(result.is_ok(), "Transaction should execute successfully: {:?}", result);
-        assert!(engine.get_block_env().is_some(), "Block environment should be set");
+
+        assert!(
+            result.is_ok(),
+            "Transaction should execute successfully: {:?}",
+            result
+        );
+        assert!(
+            engine.get_block_env().is_some(),
+            "Block environment should be set"
+        );
         assert_eq!(engine.get_block_env().unwrap().number, 1);
     }
 
@@ -361,12 +385,12 @@ mod tests {
     fn test_reverting_transaction_no_state_update() {
         let (mut engine, tx_sender) = create_test_engine();
         let block_env = create_test_block_env();
-        
+
         // Create a transaction that will revert - Create with bytecode that calls REVERT
         let tx_env = TxEnv {
             caller: Address::from([0x02; 20]),
-            gas_limit: 100000, // Sufficient gas limit
-            gas_price: 0, // Set gas price to 0 to avoid balance issues
+            gas_limit: 100000,    // Sufficient gas limit
+            gas_price: 0,         // Set gas price to 0 to avoid balance issues
             kind: TxKind::Create, // Create with bytecode that calls REVERT
             value: uint!(0_U256), // Set value to 0 to avoid balance issues
             data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]), // PUSH1 0x00 PUSH1 0x00 REVERT (reverts with empty message)
@@ -378,8 +402,10 @@ mod tests {
         let initial_cache_count = engine.get_state().cache_entry_count();
 
         // Send block environment first
-        tx_sender.send(TxQueueContents::Block(block_env.clone())).unwrap();
-        
+        tx_sender
+            .send(TxQueueContents::Block(block_env.clone()))
+            .unwrap();
+
         // Send the reverting transaction
         tx_sender.send(TxQueueContents::Tx(tx_env.clone())).unwrap();
 
@@ -397,26 +423,33 @@ mod tests {
 
         // Execute the reverting transaction
         let result = engine.execute_transaction(received_tx);
-        
+
         // The transaction execution should complete successfully even if the transaction reverts
-        assert!(result.is_ok(), "Engine should handle reverting transactions gracefully: {:?}", result);
-        
+        assert!(
+            result.is_ok(),
+            "Engine should handle reverting transactions gracefully: {:?}",
+            result
+        );
+
         // Verify that no state changes were committed to the underlying database
         // Since the transaction reverted, the cache entry count should remain the same
-        assert_eq!(engine.get_state().cache_entry_count(), initial_cache_count,
-                   "Reverting transaction should not add entries to the state cache");
+        assert_eq!(
+            engine.get_state().cache_entry_count(),
+            initial_cache_count,
+            "Reverting transaction should not add entries to the state cache"
+        );
     }
 
     #[test]
     fn test_database_commit_verification() {
         let (mut engine, tx_sender) = create_test_engine();
         let block_env = create_test_block_env();
-        
+
         // Create a simple create transaction that will succeed
         let tx_env = TxEnv {
             caller: Address::from([0x03; 20]),
             gas_limit: 100000,
-            gas_price: 0, // Set gas price to 0 to avoid balance issues
+            gas_price: 0,         // Set gas price to 0 to avoid balance issues
             kind: TxKind::Create, // Create a new contract
             value: uint!(0_U256),
             data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00]), // Simple bytecode
@@ -428,7 +461,9 @@ mod tests {
         let initial_cache_count = engine.get_state().cache_entry_count();
 
         // Send block environment and transaction
-        tx_sender.send(TxQueueContents::Block(block_env.clone())).unwrap();
+        tx_sender
+            .send(TxQueueContents::Block(block_env.clone()))
+            .unwrap();
         tx_sender.send(TxQueueContents::Tx(tx_env.clone())).unwrap();
 
         // Process the block environment
@@ -450,13 +485,19 @@ mod tests {
         // Verify that data has been committed to the database
         // For successful transactions, the cache should have more entries after execution
         let final_cache_count = engine.get_state().cache_entry_count();
-        assert!(final_cache_count >= initial_cache_count,
-                "Successful transaction should commit data to the database. Initial: {}, Final: {}",
-                initial_cache_count, final_cache_count);
+        assert!(
+            final_cache_count >= initial_cache_count,
+            "Successful transaction should commit data to the database. Initial: {}, Final: {}",
+            initial_cache_count,
+            final_cache_count
+        );
 
         // Verify we can read from the state after commit
         let state_result = engine.get_state().storage_ref(tx_env.caller, U256::ZERO);
-        assert!(state_result.is_ok(), "Should be able to read from committed state");
+        assert!(
+            state_result.is_ok(),
+            "Should be able to read from committed state"
+        );
     }
 
     #[test]
@@ -465,7 +506,7 @@ mod tests {
         let tx_env = TxEnv {
             caller: Address::from([0x04; 20]),
             gas_limit: 100000, // Sufficient gas limit
-            gas_price: 0, // Set gas price to 0 to avoid balance issues
+            gas_price: 0,      // Set gas price to 0 to avoid balance issues
             kind: TxKind::Create,
             value: uint!(0_U256),
             data: Bytes::new(),
@@ -483,8 +524,11 @@ mod tests {
 
         // Execute transaction without block environment
         let result = engine.execute_transaction(received_tx);
-        
-        assert!(result.is_err(), "Engine should require block environment before processing transactions");
+
+        assert!(
+            result.is_err(),
+            "Engine should require block environment before processing transactions"
+        );
         match result.unwrap_err() {
             EngineError::TransactionError => {
                 // This is the expected error when no block environment is set
@@ -506,23 +550,27 @@ mod tests {
         };
 
         // Send first block
-        tx_sender.send(TxQueueContents::Block(block_env1.clone())).unwrap();
+        tx_sender
+            .send(TxQueueContents::Block(block_env1.clone()))
+            .unwrap();
         let received_block1 = match engine.tx_receiver.try_recv().unwrap() {
             TxQueueContents::Block(block) => block,
             _ => panic!("Expected block environment"),
         };
         engine.block_env = Some(received_block1);
-        
+
         assert_eq!(engine.get_block_env().unwrap().number, 1);
 
         // Send second block
-        tx_sender.send(TxQueueContents::Block(block_env2.clone())).unwrap();
+        tx_sender
+            .send(TxQueueContents::Block(block_env2.clone()))
+            .unwrap();
         let received_block2 = match engine.tx_receiver.try_recv().unwrap() {
             TxQueueContents::Block(block) => block,
             _ => panic!("Expected block environment"),
         };
         engine.block_env = Some(received_block2);
-        
+
         assert_eq!(engine.get_block_env().unwrap().number, 2);
     }
 }

@@ -3,7 +3,10 @@
 /// optional feature.
 #[ctor::ctor]
 fn init_tests() {
-    use tracing_subscriber::{filter::filter_fn, prelude::*};
+    use tracing_subscriber::{
+        filter::filter_fn,
+        prelude::*,
+    };
     if let Ok(v) = std::env::var("TEST_TRACE") {
         let level = match v.as_str() {
             "false" | "off" => return,
@@ -34,5 +37,5 @@ fn init_tests() {
 // Test database type definitions
 use std::convert::Infallible;
 
-/// Error type used in tests - infallible for simplicity
+/// Error type used in tests, infallible for simplicity
 pub type TestDbError = Infallible;
