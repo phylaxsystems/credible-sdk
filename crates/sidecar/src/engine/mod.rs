@@ -61,8 +61,12 @@ use revm::{
         BlockEnv,
         TxEnv,
     },
-    primitives::Address,
+    primitives::{
+        Address,
+        B256,
+    },
 };
+use std::collections::HashMap;
 use tracing::{
     debug,
     error,
@@ -84,6 +88,13 @@ pub enum EngineError {
     ChannelClosed,
 }
 
+/// Result of transaction execution
+#[derive(Debug, Clone)]
+pub struct TransactionResult {
+    pub execution_result: ExecutionResult,
+    pub passed_assertions: bool,
+}
+
 /// The engine processes blocks and appends transactions to them.
 #[derive(Debug, Clone)]
 pub struct CoreEngine<DB> {
@@ -91,6 +102,8 @@ pub struct CoreEngine<DB> {
     tx_receiver: TransactionQueueReceiver,
     assertion_executor: AssertionExecutor,
     block_env: Option<BlockEnv>,
+    /// TODO: move this out of the core engine when we add proper state.
+    transaction_results: HashMap<B256, TransactionResult>,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -105,6 +118,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             tx_receiver,
             assertion_executor,
             block_env: None,
+            transaction_results: HashMap::new(),
         }
     }
 
@@ -127,6 +141,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 AssertionStore::new_ephemeral().expect("REASON"),
             ),
             block_env: None,
+            transaction_results: HashMap::new(),
         }
     }
 
@@ -143,8 +158,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     }
 
     /// Execute transaction with the core engines blockenv.
-    #[instrument(name = "execute_transaction", skip(self, tx_env), fields(caller = %tx_env.caller, gas_limit = tx_env.gas_limit), level = "debug")]
-    fn execute_transaction(&mut self, tx_env: TxEnv) -> Result<(), EngineError> {
+    #[instrument(name = "execute_transaction", skip(self, tx_env), fields(tx_hash = %tx_hash, caller = %tx_env.caller, gas_limit = tx_env.gas_limit), level = "debug")]
+    fn execute_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), EngineError> {
         let mut fork_db = self.state.fork();
         let block_env = self.block_env.as_ref().ok_or_else(|| {
             error!("No block environment set for transaction execution");
@@ -152,8 +167,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         })?;
 
         debug!(
-            "Validating transaction against assertions at block {}",
-            block_env.number
+            "Validating transaction {} against assertions at block {}",
+            tx_hash, block_env.number
         );
 
         // Note: does not actually run assertions because we instantiate a test store with no way to add them.
@@ -170,32 +185,58 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 EngineError::AssertionError
             })?;
 
-        if rax.is_valid() {
-            debug!("Transaction passed all assertions, processing result");
+        let passed_assertions = rax.is_valid();
+        let execution_result = rax.result_and_state.result.clone();
+
+        if passed_assertions {
+            debug!(
+                "Transaction {} passed all assertions, processing result",
+                tx_hash
+            );
             // Transaction valid, passed assertions, commit
-            match rax.result_and_state.result {
+            match &execution_result {
                 ExecutionResult::Success { gas_used, .. } => {
-                    info!("Transaction executed successfully, gas used: {}", gas_used);
+                    info!(
+                        "Transaction {} executed successfully, gas used: {}",
+                        tx_hash, gas_used
+                    );
                     self.state.commit(rax.result_and_state.state);
                 }
                 ExecutionResult::Revert { gas_used, .. } => {
-                    warn!("Transaction reverted, gas used: {}", gas_used);
+                    warn!("Transaction {} reverted, gas used: {}", tx_hash, gas_used);
                 }
                 ExecutionResult::Halt { reason, gas_used } => {
                     error!(
-                        "Transaction halted with reason: {:?}, gas used: {}",
-                        reason, gas_used
+                        "Transaction {} halted with reason: {:?}, gas used: {}",
+                        tx_hash, reason, gas_used
+                    );
+                    // Store the result before returning error
+                    self.transaction_results.insert(
+                        tx_hash,
+                        TransactionResult {
+                            execution_result,
+                            passed_assertions,
+                        },
                     );
                     return Err(EngineError::TransactionError);
                 }
             }
         } else {
-            warn!("Transaction failed assertion validation!");
+            warn!("Transaction {} failed assertion validation!", tx_hash);
             trace!(
-                "Transaction details: {:?} Assertions ran: {:?}",
-                tx_env, rax.assertions_executions,
+                "Transaction {} details: {:?} Assertions ran: {:?}",
+                tx_hash, tx_env, rax.assertions_executions,
             );
         }
+
+        // Store the transaction result
+        self.transaction_results.insert(
+            tx_hash,
+            TransactionResult {
+                execution_result,
+                passed_assertions,
+            },
+        );
 
         trace!("Transaction execution completed");
         Ok(())
@@ -211,6 +252,17 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[cfg(test)]
     pub fn get_block_env(&self) -> Option<&BlockEnv> {
         self.block_env.as_ref()
+    }
+
+    /// Get transaction result by hash.
+    pub fn get_transaction_result(&self, tx_hash: &B256) -> Option<&TransactionResult> {
+        self.transaction_results.get(tx_hash)
+    }
+
+    /// Get all transaction results for testing purposes.
+    #[cfg(test)]
+    pub fn get_all_transaction_results(&self) -> &HashMap<B256, TransactionResult> {
+        &self.transaction_results
     }
 
     /// Run the engine and process transactions and blocks received
@@ -242,21 +294,22 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
                     self.block_env = Some(block_env);
                 }
-                TxQueueContents::Tx(tx) => {
+                TxQueueContents::Tx { tx_hash, tx_env } => {
                     processed_txs += 1;
 
                     if self.block_env.is_none() {
                         error!(
-                            "Received transaction without first receiving a BlockEnv! caller={}, processed_txs={}",
-                            tx.caller, processed_txs
+                            "Received transaction {} without first receiving a BlockEnv! caller={}, processed_txs={}",
+                            tx_hash, tx_env.caller, processed_txs
                         );
                         return Err(EngineError::TransactionError);
                     }
 
                     debug!(
-                        "Processing transaction: caller={}, gas_limit={}, processed_txs={}, current_block={}",
-                        tx.caller,
-                        tx.gas_limit,
+                        "Processing transaction: tx_hash={}, caller={}, gas_limit={}, processed_txs={}, current_block={}",
+                        tx_hash,
+                        tx_env.caller,
+                        tx_env.gas_limit,
                         processed_txs,
                         self.block_env
                             .as_ref()
@@ -265,7 +318,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     );
 
                     // Process the transaction with the current block environment
-                    self.execute_transaction(tx)?;
+                    self.execute_transaction(tx_hash, tx_env)?;
                 }
             }
 
@@ -300,6 +353,7 @@ mod tests {
         },
         primitives::{
             Address,
+            B256,
             Bytes,
             TxKind,
             U256,
@@ -347,13 +401,21 @@ mod tests {
             ..Default::default()
         };
 
+        // Generate a random transaction hash for testing
+        let tx_hash = B256::from([0x11; 32]);
+
         // Send block environment first
         tx_sender
             .send(TxQueueContents::Block(block_env.clone()))
             .unwrap();
 
         // Send the transaction
-        tx_sender.send(TxQueueContents::Tx(tx_env.clone())).unwrap();
+        tx_sender
+            .send(TxQueueContents::Tx {
+                tx_hash,
+                tx_env: tx_env.clone(),
+            })
+            .unwrap();
 
         // Process one iteration of the engine loop manually for testing
         let received_block = match engine.tx_receiver.try_recv().unwrap() {
@@ -362,13 +424,13 @@ mod tests {
         };
         engine.block_env = Some(received_block);
 
-        let received_tx = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx(tx) => tx,
+        let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
+            TxQueueContents::Tx { tx_hash, tx_env } => (tx_hash, tx_env),
             _ => panic!("Expected transaction"),
         };
 
         // Execute the transaction
-        let result = engine.execute_transaction(received_tx);
+        let result = engine.execute_transaction(received_tx_hash, received_tx_env);
 
         assert!(
             result.is_ok(),
@@ -380,6 +442,14 @@ mod tests {
             "Block environment should be set"
         );
         assert_eq!(engine.get_block_env().unwrap().number, 1);
+
+        // Verify transaction result is stored
+        let tx_result = engine.get_transaction_result(&tx_hash);
+        assert!(tx_result.is_some(), "Transaction result should be stored");
+        assert!(
+            tx_result.unwrap().passed_assertions,
+            "Transaction should pass assertions"
+        );
     }
 
     #[test]
@@ -399,6 +469,9 @@ mod tests {
             ..Default::default()
         };
 
+        // Generate a random transaction hash for testing
+        let tx_hash = B256::from([0x22; 32]);
+
         // Get initial state snapshot
         let initial_cache_count = engine.get_state().cache_entry_count();
 
@@ -408,7 +481,12 @@ mod tests {
             .unwrap();
 
         // Send the reverting transaction
-        tx_sender.send(TxQueueContents::Tx(tx_env.clone())).unwrap();
+        tx_sender
+            .send(TxQueueContents::Tx {
+                tx_hash,
+                tx_env: tx_env.clone(),
+            })
+            .unwrap();
 
         // Process the block environment
         let received_block = match engine.tx_receiver.try_recv().unwrap() {
@@ -417,13 +495,13 @@ mod tests {
         };
         engine.block_env = Some(received_block);
 
-        let received_tx = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx(tx) => tx,
+        let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
+            TxQueueContents::Tx { tx_hash, tx_env } => (tx_hash, tx_env),
             _ => panic!("Expected transaction"),
         };
 
         // Execute the reverting transaction
-        let result = engine.execute_transaction(received_tx);
+        let result = engine.execute_transaction(received_tx_hash, received_tx_env);
 
         // The transaction execution should complete successfully even if the transaction reverts
         assert!(
@@ -439,6 +517,21 @@ mod tests {
             initial_cache_count,
             "Reverting transaction should not add entries to the state cache"
         );
+
+        // Verify transaction result is stored and shows it reverted
+        let tx_result = engine.get_transaction_result(&tx_hash);
+        assert!(tx_result.is_some(), "Transaction result should be stored");
+        let result_data = tx_result.unwrap();
+        assert!(
+            result_data.passed_assertions,
+            "Transaction should pass assertions (no assertions to fail)"
+        );
+        match &result_data.execution_result {
+            assertion_executor::primitives::ExecutionResult::Revert { .. } => {
+                // Expected - transaction reverted
+            }
+            other => panic!("Expected Revert result, got {:?}", other),
+        }
     }
 
     #[test]
@@ -458,6 +551,9 @@ mod tests {
             ..Default::default()
         };
 
+        // Generate a random transaction hash for testing
+        let tx_hash = B256::from([0x33; 32]);
+
         // Get initial cache state
         let initial_cache_count = engine.get_state().cache_entry_count();
 
@@ -465,7 +561,12 @@ mod tests {
         tx_sender
             .send(TxQueueContents::Block(block_env.clone()))
             .unwrap();
-        tx_sender.send(TxQueueContents::Tx(tx_env.clone())).unwrap();
+        tx_sender
+            .send(TxQueueContents::Tx {
+                tx_hash,
+                tx_env: tx_env.clone(),
+            })
+            .unwrap();
 
         // Process the block environment
         let received_block = match engine.tx_receiver.try_recv().unwrap() {
@@ -474,35 +575,65 @@ mod tests {
         };
         engine.block_env = Some(received_block);
 
-        let received_tx = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx(tx) => tx,
+        let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
+            TxQueueContents::Tx { tx_hash, tx_env } => (tx_hash, tx_env),
             _ => panic!("Expected transaction"),
         };
 
         // Execute the transaction
-        let result = engine.execute_transaction(received_tx);
+        let result = engine.execute_transaction(received_tx_hash, received_tx_env);
         assert!(result.is_ok(), "Transaction should execute successfully");
 
         // Verify the caller's account state was updated
-        let caller_account = engine.get_state().basic_ref(tx_env.caller).expect("Should be able to read caller account");
-        assert!(caller_account.is_some(), "Caller account should exist after CREATE transaction");
+        let caller_account = engine
+            .get_state()
+            .basic_ref(tx_env.caller)
+            .expect("Should be able to read caller account");
+        assert!(
+            caller_account.is_some(),
+            "Caller account should exist after CREATE transaction"
+        );
         let caller_info = caller_account.unwrap();
-        assert_eq!(caller_info.nonce, 1, "Caller nonce should be incremented from 0 to 1");
-        assert_eq!(caller_info.balance, uint!(0_U256), "Caller balance should remain 0");
+        assert_eq!(
+            caller_info.nonce, 1,
+            "Caller nonce should be incremented from 0 to 1"
+        );
+        assert_eq!(
+            caller_info.balance,
+            uint!(0_U256),
+            "Caller balance should remain 0"
+        );
 
         // Verify the created contract exists at the expected address
         // From the cache output, we know the contract was created at this address
         use revm::primitives::address;
         let contract_address = address!("76cae8af66cb2488933e640ba08650a3a8e7ae19");
-        
-        let contract_account = engine.get_state().basic_ref(contract_address).expect("Should be able to read contract account");
-        assert!(contract_account.is_some(), "Contract account should exist at the expected address");
+
+        let contract_account = engine
+            .get_state()
+            .basic_ref(contract_address)
+            .expect("Should be able to read contract account");
+        assert!(
+            contract_account.is_some(),
+            "Contract account should exist at the expected address"
+        );
         let contract_info = contract_account.unwrap();
-        assert_eq!(contract_info.nonce, 1, "Contract nonce should be 1 for CREATE transactions");
-        assert_eq!(contract_info.balance, uint!(0_U256), "Contract balance should be 0");
-        
+        assert_eq!(
+            contract_info.nonce, 1,
+            "Contract nonce should be 1 for CREATE transactions"
+        );
+        assert_eq!(
+            contract_info.balance,
+            uint!(0_U256),
+            "Contract balance should be 0"
+        );
+
         // Verify the code hash matches empty bytecode hash (keccak256 of empty bytes)
-        assert_eq!(contract_info.code_hash, revm::primitives::KECCAK_EMPTY, "Contract should have empty code hash");
+        assert_eq!(
+            contract_info.code_hash,
+            revm::primitives::KECCAK_EMPTY,
+            "Contract should have empty code hash"
+        );
 
         // Verify that data has been committed by checking the cache count increases when we read data
         // (The overlay cache gets populated when data is read from the underlying database)
@@ -520,6 +651,21 @@ mod tests {
             state_result.is_ok(),
             "Should be able to read from committed state"
         );
+
+        // Verify transaction result is stored and succeeded
+        let tx_result = engine.get_transaction_result(&tx_hash);
+        assert!(tx_result.is_some(), "Transaction result should be stored");
+        let result_data = tx_result.unwrap();
+        assert!(
+            result_data.passed_assertions,
+            "Transaction should pass assertions"
+        );
+        match &result_data.execution_result {
+            assertion_executor::primitives::ExecutionResult::Success { .. } => {
+                // Expected - transaction succeeded
+            }
+            other => panic!("Expected Success result, got {:?}", other),
+        }
     }
 
     #[test]
@@ -536,16 +682,24 @@ mod tests {
             ..Default::default()
         };
 
-        // Send transaction without block environment first
-        tx_sender.send(TxQueueContents::Tx(tx_env.clone())).unwrap();
+        // Generate a random transaction hash for testing
+        let tx_hash = B256::from([0x44; 32]);
 
-        let received_tx = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx(tx) => tx,
+        // Send transaction without block environment first
+        tx_sender
+            .send(TxQueueContents::Tx {
+                tx_hash,
+                tx_env: tx_env.clone(),
+            })
+            .unwrap();
+
+        let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
+            TxQueueContents::Tx { tx_hash, tx_env } => (tx_hash, tx_env),
             _ => panic!("Expected transaction"),
         };
 
         // Execute transaction without block environment
-        let result = engine.execute_transaction(received_tx);
+        let result = engine.execute_transaction(received_tx_hash, received_tx_env);
 
         assert!(
             result.is_err(),
