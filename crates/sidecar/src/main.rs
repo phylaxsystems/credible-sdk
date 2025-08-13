@@ -2,6 +2,7 @@ mod args;
 #[allow(dead_code)] // TODO: rm when engine fully impld and connected to transport
 mod engine;
 mod rpc;
+mod utils;
 
 use assertion_executor::{
     AssertionExecutor,
