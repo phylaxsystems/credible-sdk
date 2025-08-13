@@ -46,6 +46,7 @@ use super::engine::queue::{
 };
 
 use assertion_executor::{
+    primitives::ExecutionResult,
     AssertionExecutor,
     db::overlay::OverlayDb,
     store::{
@@ -54,8 +55,12 @@ use assertion_executor::{
     },
 };
 use revm::{
+    DatabaseCommit,
     DatabaseRef,
-    context::BlockEnv,
+    context::{
+        BlockEnv,
+        TxEnv,
+    },
     primitives::Address,
 };
 
@@ -80,7 +85,7 @@ pub struct CoreEngine<DB> {
     block_env: Option<BlockEnv>,
 }
 
-impl<DB: DatabaseRef> CoreEngine<DB> {
+impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     pub fn new(
         state: OverlayDb<DB>,
         tx_receiver: TransactionQueueReceiver,
@@ -128,6 +133,32 @@ impl<DB: DatabaseRef> CoreEngine<DB> {
             .map(|_| ())
     }
 
+    /// Execute transaction with the core engines blockenv.
+    fn execute_transaction(&mut self, tx_env: TxEnv) -> Result<(), EngineError> {
+        let mut fork_db = self.state.fork();
+        let block_env = self
+            .block_env
+            .as_ref()
+            .ok_or(EngineError::TransactionError)?;
+        // Note: does not actually run assertions because we instantiate a test store with no way to add them.
+        let rax = self
+            .assertion_executor
+            .validate_transaction_ext_db(block_env.clone(), tx_env, &mut fork_db, &mut self.state)
+            .map_err(|_| EngineError::AssertionError)?;
+
+        if rax.is_valid() {
+            // Transaction valid, passed assertions, commit
+            match rax.result_and_state.result {
+                ExecutionResult::Success { reason, gas_used, gas_refunded, logs, output } => self.state.commit(rax.result_and_state.state),
+                ExecutionResult::Revert { gas_used, output } => {},
+                ExecutionResult::Halt { reason, gas_used } => return Err(EngineError::TransactionError),
+            }
+
+        }
+
+        Ok(())
+    }
+
     /// Run the engine and process transactions and blocks received
     /// via the transaction queue.
     // TODO: fn should probably not be async but we do it because
@@ -143,13 +174,13 @@ impl<DB: DatabaseRef> CoreEngine<DB> {
                 TxQueueContents::Block(block_env) => {
                     self.block_env = Some(block_env);
                 }
-                TxQueueContents::Tx(_tx) => {
+                TxQueueContents::Tx(tx) => {
                     if self.block_env.is_none() {
                         tracing::error!("Received transaction without first receiving a BlockEnv!");
                         return Err(EngineError::TransactionError);
                     }
                     // Process the transaction with the current block environment
-                    unimplemented!()
+                    self.execute_transaction(tx)?;
                 }
             }
         }

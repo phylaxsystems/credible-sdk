@@ -247,10 +247,7 @@ impl<Db> DatabaseCommit for ActiveOverlay<Db> {
 impl<Db: Database> Database for ActiveOverlay<Db> {
     type Error = NotFoundError;
 
-    fn basic(
-        &mut self,
-        address: Address,
-    ) -> Result<Option<AccountInfo>, Self::Error> {
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let key = TableKey::Basic(address);
         if let Some(value) = self.overlay.get(&key) {
             // Found in cache
@@ -281,10 +278,7 @@ impl<Db: Database> Database for ActiveOverlay<Db> {
         }
     }
 
-    fn code_by_hash(
-        &mut self,
-        code_hash: B256,
-    ) -> Result<Bytecode, Self::Error> {
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
         let key = TableKey::CodeByHash(code_hash);
         if let Some(value) = self.overlay.get(&key) {
             // Found in cache
@@ -306,11 +300,7 @@ impl<Db: Database> Database for ActiveOverlay<Db> {
         }
     }
 
-    fn storage(
-        &mut self,
-        address: Address,
-        index: U256,
-    ) -> Result<U256, Self::Error> {
+    fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
         let key = TableKey::Storage(address, index);
         if let Some(value) = self.overlay.get(&key) {
             // Found in cache, convert B256 back to U256
