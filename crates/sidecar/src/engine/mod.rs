@@ -46,9 +46,9 @@ use super::engine::queue::{
 };
 
 use assertion_executor::{
-    primitives::ExecutionResult,
     AssertionExecutor,
     db::overlay::OverlayDb,
+    primitives::ExecutionResult,
     store::{
         AssertionState,
         AssertionStoreError,
@@ -99,7 +99,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         state: OverlayDb<DB>,
         tx_receiver: TransactionQueueReceiver,
         assertion_executor: AssertionExecutor,
-    ) -> Self {        
+    ) -> Self {
         Self {
             state,
             tx_receiver,
@@ -146,20 +146,25 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[instrument(name = "execute_transaction", skip(self, tx_env), fields(caller = %tx_env.caller, gas_limit = tx_env.gas_limit), level = "debug")]
     fn execute_transaction(&mut self, tx_env: TxEnv) -> Result<(), EngineError> {
         let mut fork_db = self.state.fork();
-        let block_env = self
-            .block_env
-            .as_ref()
-            .ok_or_else(|| {
-                error!("No block environment set for transaction execution");
-                EngineError::TransactionError
-            })?;
-        
-        debug!("Validating transaction against assertions at block {}", block_env.number);
-        
+        let block_env = self.block_env.as_ref().ok_or_else(|| {
+            error!("No block environment set for transaction execution");
+            EngineError::TransactionError
+        })?;
+
+        debug!(
+            "Validating transaction against assertions at block {}",
+            block_env.number
+        );
+
         // Note: does not actually run assertions because we instantiate a test store with no way to add them.
         let rax = self
             .assertion_executor
-            .validate_transaction_ext_db(block_env.clone(), tx_env.clone(), &mut fork_db, &mut self.state)
+            .validate_transaction_ext_db(
+                block_env.clone(),
+                tx_env.clone(),
+                &mut fork_db,
+                &mut self.state,
+            )
             .map_err(|e| {
                 error!("Assertion validation failed: {:?}", e);
                 EngineError::AssertionError
@@ -172,18 +177,24 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 ExecutionResult::Success { gas_used, .. } => {
                     info!("Transaction executed successfully, gas used: {}", gas_used);
                     self.state.commit(rax.result_and_state.state);
-                },
+                }
                 ExecutionResult::Revert { gas_used, .. } => {
                     warn!("Transaction reverted, gas used: {}", gas_used);
-                },
+                }
                 ExecutionResult::Halt { reason, gas_used } => {
-                    error!("Transaction halted with reason: {:?}, gas used: {}", reason, gas_used);
+                    error!(
+                        "Transaction halted with reason: {:?}, gas used: {}",
+                        reason, gas_used
+                    );
                     return Err(EngineError::TransactionError);
-                },
+                }
             }
         } else {
             warn!("Transaction failed assertion validation!");
-            trace!("Transaction details: {:?} Assertions ran: {:?}", tx_env, rax.assertions_executions,);
+            trace!(
+                "Transaction details: {:?} Assertions ran: {:?}",
+                tx_env, rax.assertions_executions,
+            );
         }
 
         trace!("Transaction execution completed");
@@ -198,15 +209,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     pub async fn run(&mut self) -> Result<(), EngineError> {
         let mut processed_blocks = 0u64;
         let mut processed_txs = 0u64;
-        
+
         loop {
-            let event = self
-                .tx_receiver
-                .try_recv()
-                .map_err(|e| {
-                    error!("Transaction queue channel closed: {:?}", e);
-                    EngineError::ChannelClosed
-                })?;
+            let event = self.tx_receiver.try_recv().map_err(|e| {
+                error!("Transaction queue channel closed: {:?}", e);
+                EngineError::ChannelClosed
+            })?;
 
             match event {
                 TxQueueContents::Block(block_env) => {
@@ -219,12 +227,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         "Block details: timestamp={}, gas_limit={}, base_fee={:?}",
                         block_env.timestamp, block_env.gas_limit, block_env.basefee
                     );
-                    
+
                     self.block_env = Some(block_env);
                 }
                 TxQueueContents::Tx(tx) => {
                     processed_txs += 1;
-                    
+
                     if self.block_env.is_none() {
                         error!(
                             "Received transaction without first receiving a BlockEnv! caller={}, processed_txs={}",
@@ -232,22 +240,29 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         );
                         return Err(EngineError::TransactionError);
                     }
-                    
+
                     debug!(
                         "Processing transaction: caller={}, gas_limit={}, processed_txs={}, current_block={}",
-                        tx.caller, tx.gas_limit, processed_txs, 
-                        self.block_env.as_ref().map(|b| b.number.to_string()).unwrap_or_else(|| "None".to_string())
+                        tx.caller,
+                        tx.gas_limit,
+                        processed_txs,
+                        self.block_env
+                            .as_ref()
+                            .map(|b| b.number.to_string())
+                            .unwrap_or_else(|| "None".to_string())
                     );
-                    
+
                     // Process the transaction with the current block environment
                     self.execute_transaction(tx)?;
                 }
             }
-            
+
             if processed_blocks > 0 && processed_blocks % 100 == 0 {
                 info!(
                     "Engine processing stats: blocks={}, transactions={}, cache_entries={}",
-                    processed_blocks, processed_txs, self.state.cache_entry_count()
+                    processed_blocks,
+                    processed_txs,
+                    self.state.cache_entry_count()
                 );
             }
         }
