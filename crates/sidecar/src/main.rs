@@ -2,6 +2,7 @@ use clap::Parser;
 use rust_tracing::trace;
 
 mod args;
+mod engine;
 mod rpc;
 use args::SidecarArgs;
 
