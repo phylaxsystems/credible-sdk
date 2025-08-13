@@ -40,7 +40,10 @@
 
 pub mod queue;
 
-use super::engine::queue::TransactionQueueReceiver;
+use super::engine::queue::{
+    TransactionQueueReceiver,
+    TxQueueContents,
+};
 
 use assertion_executor::{
     AssertionExecutor,
@@ -64,6 +67,8 @@ pub enum EngineError {
     TransactionError,
     #[error("Assertion error")]
     AssertionError,
+    #[error("Transaction queue channel closed")]
+    ChannelClosed,
 }
 
 /// The engine processes blocks and appends transactions to them.
@@ -125,7 +130,28 @@ impl<DB: DatabaseRef> CoreEngine<DB> {
 
     /// Run the engine and process transactions and blocks received
     /// via the transaction queue.
-    pub async fn run(mut self) -> Result<(), EngineError> {
-        unimplemented!()
+    // TODO: fn should probably not be async but we do it because
+    // so we can easily select on result in main. too bad!
+    pub async fn run(&mut self) -> Result<(), EngineError> {
+        loop {
+            let event = self
+                .tx_receiver
+                .try_recv()
+                .map_err(|_| EngineError::ChannelClosed)?;
+
+            match event {
+                TxQueueContents::Block(block_env) => {
+                    self.block_env = Some(block_env);
+                }
+                TxQueueContents::Tx(_tx) => {
+                    if self.block_env.is_none() {
+                        tracing::error!("Received transaction without first receiving a BlockEnv!");
+                        return Err(EngineError::TransactionError);
+                    }
+                    // Process the transaction with the current block environment
+                    unimplemented!()
+                }
+            }
+        }
     }
 }

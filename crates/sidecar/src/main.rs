@@ -1,4 +1,5 @@
 mod args;
+#[allow(dead_code)] // TODO: rm when engine fully impld and connected to transport
 mod engine;
 mod rpc;
 
@@ -36,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
         AssertionStore::new_ephemeral().expect("REASON"),
     );
 
-    let engine = CoreEngine::new(state, tx_receiver, assertion_executor);
+    let mut engine = CoreEngine::new(state, tx_receiver, assertion_executor);
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
