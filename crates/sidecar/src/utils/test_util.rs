@@ -30,3 +30,9 @@ fn init_tests() {
             .init();
     }
 }
+
+// Test database type definitions
+use std::convert::Infallible;
+
+/// Error type used in tests - infallible for simplicity
+pub type TestDbError = Infallible;

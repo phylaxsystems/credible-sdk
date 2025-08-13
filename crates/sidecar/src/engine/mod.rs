@@ -293,10 +293,7 @@ mod tests {
         primitives::{Address, U256, TxKind, Bytes, uint},
         database::{CacheDB, EmptyDBTyped},
     };
-    use std::convert::Infallible;
-    
-    type TestDbError = Infallible;
-    type TestDB = OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>;
+    use crate::utils::TestDbError;
 
     fn create_test_engine() -> (CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>, crossbeam::channel::Sender<TxQueueContents>) {
         let (tx_sender, tx_receiver) = crossbeam::channel::unbounded();

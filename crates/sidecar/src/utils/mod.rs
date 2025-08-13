@@ -5,3 +5,6 @@
 
 #[cfg(test)]
 mod test_util;
+
+#[cfg(test)]
+pub use test_util::TestDbError;
