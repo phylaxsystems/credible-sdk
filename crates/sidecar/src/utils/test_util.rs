@@ -16,7 +16,7 @@ fn init_tests() {
         };
 
         let prefix_blacklist = &[
-            "sled",
+            "sled", // we dont want sled tree tracing
         ];
 
         tracing_subscriber::registry()
