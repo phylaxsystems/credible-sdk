@@ -10,6 +10,7 @@ repository.workspace = true
 clap = { workspace = true }
 revm = { workspace = true }
 anyhow = {workspace =  true }
+thiserror = { workspace = true }
 assertion-executor = { workspace = true }
 rust-tracing = { workspace = true }
 tokio = { workspace = true }
