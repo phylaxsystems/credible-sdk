@@ -294,7 +294,7 @@ mod tests {
         database::{CacheDB, EmptyDBTyped},
     };
     use std::convert::Infallible;
-
+    
     type TestDbError = Infallible;
     type TestDB = OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>;
 
@@ -311,7 +311,7 @@ mod tests {
     fn create_test_block_env() -> BlockEnv {
         BlockEnv {
             number: 1,
-            basefee: 10,
+            basefee: 0, // Set basefee to 0 to avoid balance issues
             ..Default::default()
         }
     }
@@ -325,9 +325,9 @@ mod tests {
         // Create a simple transaction that doesn't require assertions
         let tx_env = TxEnv {
             caller: Address::from([0x01; 20]),
-            gas_limit: 21000,
-            gas_price: 10,
-            kind: TxKind::Create, // Create transaction to avoid assertion validation
+            gas_limit: 100000, // Sufficient gas for Create transactions
+            gas_price: 0, // Set gas price to 0 to avoid balance issues
+            kind: TxKind::Create, // Create transaction
             value: uint!(0_U256),
             data: Bytes::new(),
             nonce: 0,
@@ -365,14 +365,14 @@ mod tests {
         let (mut engine, tx_sender) = create_test_engine();
         let block_env = create_test_block_env();
         
-        // Create a transaction that will revert (e.g., trying to send value with insufficient balance)
+        // Create a transaction that will revert - Create with bytecode that calls REVERT
         let tx_env = TxEnv {
             caller: Address::from([0x02; 20]),
-            gas_limit: 21000,
-            gas_price: 10,
-            kind: TxKind::Call(Address::from([0xFF; 20])), // Call to non-existent contract
-            value: uint!(1000_U256), // Trying to send value with no balance
-            data: Bytes::new(),
+            gas_limit: 100000, // Sufficient gas limit
+            gas_price: 0, // Set gas price to 0 to avoid balance issues
+            kind: TxKind::Create, // Create with bytecode that calls REVERT
+            value: uint!(0_U256), // Set value to 0 to avoid balance issues
+            data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]), // PUSH1 0x00 PUSH1 0x00 REVERT (reverts with empty message)
             nonce: 0,
             ..Default::default()
         };
@@ -419,7 +419,7 @@ mod tests {
         let tx_env = TxEnv {
             caller: Address::from([0x03; 20]),
             gas_limit: 100000,
-            gas_price: 10,
+            gas_price: 0, // Set gas price to 0 to avoid balance issues
             kind: TxKind::Create, // Create a new contract
             value: uint!(0_U256),
             data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00]), // Simple bytecode
@@ -467,8 +467,8 @@ mod tests {
         let (mut engine, tx_sender) = create_test_engine();
         let tx_env = TxEnv {
             caller: Address::from([0x04; 20]),
-            gas_limit: 21000,
-            gas_price: 10,
+            gas_limit: 100000, // Sufficient gas limit
+            gas_price: 0, // Set gas price to 0 to avoid balance issues
             kind: TxKind::Create,
             value: uint!(0_U256),
             data: Bytes::new(),
