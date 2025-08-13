@@ -230,6 +230,128 @@ impl<Db> DatabaseCommit for ActiveOverlay<Db> {
     }
 }
 
+/// This implementation allows `ActiveOverlay` to be used directly as a mutable database.
+/// Unlike `DatabaseRef`, this provides mutable access to the database methods,
+/// which is required by some parts of the revm ecosystem.
+///
+/// The implementation works by:
+/// - Checking the overlay cache first for any cached values  
+/// - If not cached, delegating to the active underlying database using unsafe access
+/// - Caching the results in the shared overlay for future access
+/// - Using the same error mapping and caching strategy as the `DatabaseRef` implementation
+///
+/// # Safety
+/// This implementation uses `unsafe` code to access the active database through `UnsafeCell`.
+/// Theres nothing preventing the active database from being mutated while the overlay is in use.
+/// Please ensure that the active database is not modified while in use.
+impl<Db: Database> Database for ActiveOverlay<Db> {
+    type Error = NotFoundError;
+
+    fn basic(
+        &mut self,
+        address: Address,
+    ) -> Result<Option<AccountInfo>, Self::Error> {
+        let key = TableKey::Basic(address);
+        if let Some(value) = self.overlay.get(&key) {
+            // Found in cache
+            let account_info = value.as_basic().unwrap();
+            return Ok(Some(account_info.clone()));
+        }
+
+        // Not in cache, query mandatory underlying DB
+        // Map potential underlying DB error to NotFoundError
+        unsafe {
+            match self
+                .active_db
+                .as_mut_unchecked()
+                .basic(address)
+                .map_err(|_| NotFoundError)?
+            {
+                Some(account_info) => {
+                    // Found in DB, cache it
+                    self.overlay
+                        .insert(key, TableValue::Basic(account_info.clone()));
+                    Ok(Some(account_info)) // Return the found info
+                }
+                None => {
+                    // Not found in DB, do not cache absence
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    fn code_by_hash(
+        &mut self,
+        code_hash: B256,
+    ) -> Result<Bytecode, Self::Error> {
+        let key = TableKey::CodeByHash(code_hash);
+        if let Some(value) = self.overlay.get(&key) {
+            // Found in cache
+            return Ok(value.as_code_by_hash().cloned().unwrap()); // unwrap safe, Clone Bytecode
+        }
+
+        // Not in cache, query mandatory underlying DB
+        // Map error if needed
+        unsafe {
+            let bytecode = self
+                .active_db
+                .as_mut_unchecked()
+                .code_by_hash(code_hash)
+                .map_err(|_| NotFoundError)?;
+            // Found in DB, cache it
+            self.overlay
+                .insert(key, TableValue::CodeByHash(bytecode.clone()));
+            Ok(bytecode)
+        }
+    }
+
+    fn storage(
+        &mut self,
+        address: Address,
+        index: U256,
+    ) -> Result<U256, Self::Error> {
+        let key = TableKey::Storage(address, index);
+        if let Some(value) = self.overlay.get(&key) {
+            // Found in cache, convert B256 back to U256
+            return Ok((*value.as_storage().unwrap()).into()); // unwrap safe
+        }
+
+        // Not in cache, query mandatory underlying DB
+        unsafe {
+            let value_u256 = self
+                .active_db
+                .as_mut_unchecked()
+                .storage(address, index)
+                .map_err(|_| NotFoundError)?;
+            // Found in DB (even if zero), cache it as B256
+            let value_b256: B256 = value_u256.to_be_bytes().into();
+            self.overlay.insert(key, TableValue::Storage(value_b256));
+            Ok(value_u256) // Return the U256 value
+        }
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        let key = TableKey::BlockHash(number);
+        if let Some(value) = self.overlay.get(&key) {
+            // Found in cache
+            return Ok(*value.as_block_hash().unwrap()); // unwrap safe
+        }
+
+        // Not in cache, query mandatory underlying DB
+        unsafe {
+            let block_hash = self
+                .active_db
+                .as_mut_unchecked()
+                .block_hash(number)
+                .map_err(|_| NotFoundError)?;
+            // Found in DB, cache it
+            self.overlay.insert(key, TableValue::BlockHash(block_hash));
+            Ok(block_hash)
+        }
+    }
+}
+
 #[cfg(test)]
 mod active_overlay_tests {
     use super::*;
