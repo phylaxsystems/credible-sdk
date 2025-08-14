@@ -13,6 +13,7 @@
 
 use crate::{
     db::{
+        Database,
         DatabaseCommit,
         DatabaseRef,
         NotFoundError,
@@ -350,6 +351,120 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
                 let value_b256: B256 = storage_slot.present_value().to_be_bytes().into();
                 self.overlay
                     .insert(storage_key, TableValue::Storage(value_b256));
+            }
+        }
+    }
+}
+
+impl<Db: DatabaseRef> Database for OverlayDb<Db> {
+    type Error = NotFoundError;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        let key = TableKey::Basic(address);
+        if let Some(value) = self.overlay.get(&key) {
+            match value.as_basic() {
+                Some(account_info) => {
+                    // Found in cache
+                    return Ok(Some(account_info.clone()));
+                }
+                None => {
+                    return Ok(None);
+                }
+            }
+        }
+
+        // Not in cache, try underlying DB if it exists
+        match self.underlying_db.as_ref() {
+            Some(db) => {
+                // Map potential underlying DB error to NotFoundError
+                match db.basic_ref(address).map_err(|_| NotFoundError)? {
+                    Some(account_info) => {
+                        // Found in DB, cache it
+                        self.overlay
+                            .insert(key, TableValue::Basic(account_info.clone()));
+                        Ok(Some(account_info)) // Return the found info
+                    }
+                    None => {
+                        // Not found in DB, do not cache absence explicitly here
+                        Ok(None)
+                    }
+                }
+            }
+            None => {
+                // No underlying DB and not in cache
+                Ok(None)
+            }
+        }
+    }
+
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        let key = TableKey::CodeByHash(code_hash);
+        if let Some(value) = self.overlay.get(&key) {
+            // Found in cache
+            return Ok(value.as_code_by_hash().cloned().unwrap()); // unwrap safe, Clone Bytecode
+        }
+
+        // Not in cache, try underlying DB
+        match self.underlying_db.as_ref() {
+            Some(db) => {
+                // Underlying DB returns Result<Bytecode, Error>
+                // Map error if needed
+                let bytecode = db.code_by_hash_ref(code_hash).map_err(|_| NotFoundError)?;
+                // Found in DB, cache it
+                self.overlay
+                    .insert(key, TableValue::CodeByHash(bytecode.clone()));
+                Ok(bytecode)
+            }
+            None => {
+                // No underlying DB and not in cache
+                Err(NotFoundError) // Indicate not found
+            }
+        }
+    }
+
+    fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        let key = TableKey::Storage(address, index);
+        if let Some(value) = self.overlay.get(&key) {
+            // Found in cache, convert B256 back to U256
+            return Ok((*value.as_storage().unwrap()).into()); // unwrap safe
+        }
+
+        // Not in cache, try underlying DB
+        match self.underlying_db.as_ref() {
+            Some(db) => {
+                // Underlying DB returns Result<U256, Error>
+                let value_u256 = db.storage_ref(address, index).map_err(|_| NotFoundError)?;
+                // Found in DB (even if zero), cache it as B256
+                let value_b256: B256 = value_u256.to_be_bytes().into();
+                self.overlay.insert(key, TableValue::Storage(value_b256));
+                Ok(value_u256) // Return the U256 value
+            }
+            None => {
+                // No underlying DB, slot not cached. REVM expects U256::ZERO.
+                Ok(U256::ZERO)
+            }
+        }
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        let key = TableKey::BlockHash(number);
+        if let Some(value) = self.overlay.get(&key) {
+            // Found in cache
+            return Ok(*value.as_block_hash().unwrap()); // unwrap safe
+        }
+
+        // Not in cache, try underlying DB
+        match self.underlying_db.as_ref() {
+            Some(db) => {
+                // Underlying DB returns Result<B256, Error>
+                let block_hash = db.block_hash_ref(number).map_err(|_| NotFoundError)?;
+                // Found in DB, cache it
+                self.overlay.insert(key, TableValue::BlockHash(block_hash));
+                Ok(block_hash)
+            }
+            None => {
+                // No underlying DB and not in cache
+                Err(NotFoundError) // Indicate not found
             }
         }
     }

@@ -10,10 +10,20 @@ repository.workspace = true
 clap = { workspace = true }
 revm = { workspace = true }
 anyhow = {workspace =  true }
-assertion-executor = { workspace = true }
+thiserror = { workspace = true }
+assertion-executor = { workspace = true, features = ["test"] }
 rust-tracing = { workspace = true }
-ctrlc = "3.4.7"
 tokio = { workspace = true }
 axum = "0.7"
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
+ctor = { version = "0.5.0", optional = true }
+tracing-subscriber.workspace = true
+
+[features]
+testing = ["ctor"]
+
+[dev-dependencies]
+ctor = "0.5.0"

@@ -128,7 +128,7 @@ impl AssertionExecutor {
     /// transactions couldnt be properly commited if they weren't touched by the database beforehand.
     ///
     /// Returns the results of the assertions, as well as the state changes that should be
-    /// committed if the assertions pass.
+    /// committed if the assertions pass. Errors if the tx execution encounters an internal error.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
     pub fn validate_transaction_ext_db<ExtDb, Active>(
         &mut self,

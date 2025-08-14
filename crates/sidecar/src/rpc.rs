@@ -1,5 +1,6 @@
 //! JSON-RPC server implementation for the sidecar
 
+use crate::SidecarArgs;
 use axum::{
     Router,
     extract::Json,
@@ -11,7 +12,6 @@ use serde::{
     Deserialize,
     Serialize,
 };
-use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
 #[derive(Debug, Deserialize)]
@@ -66,7 +66,22 @@ async fn handle_rpc_request(
 }
 
 /// Start the JSON-RPC server
-pub async fn start_rpc_server(addr: SocketAddr) -> anyhow::Result<()> {
+pub async fn start_rpc_server(args: &SidecarArgs) -> anyhow::Result<()> {
+    println!("Sidecar started with args: {args:#?}");
+
+    // Parse the RPC URL to get the socket address
+    let rpc_url = &args.rollup.rpc_url;
+    let addr = rpc_url
+        .strip_prefix("http://")
+        .unwrap_or(rpc_url)
+        .parse::<std::net::SocketAddr>()
+        .unwrap_or_else(|_| {
+            eprintln!("Failed to parse RPC URL '{rpc_url}', using default 0.0.0.0:9545");
+            "0.0.0.0:9545".parse().unwrap()
+        });
+
+    println!("Attempting to bind RPC server to: {addr}");
+
     let app = Router::new().route("/", post(handle_rpc_request));
 
     println!("Attempting to bind to address: {addr}");
