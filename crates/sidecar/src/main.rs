@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let (_, mock_receiver) = unbounded();
-    let mock_transport = MockTransport::new(tx_sender, mock_receiver);
+    let mock_transport = MockTransport::with_receiver(tx_sender, mock_receiver);
 
     let mut engine = CoreEngine::new(state, tx_receiver, assertion_executor);
 

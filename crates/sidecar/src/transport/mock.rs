@@ -25,10 +25,9 @@ pub struct MockTransport {
 }
 
 impl MockTransport {
-    /// Create a new mock transport.
-    /// - `tx_sender`: The sender to the core engine transaction queue.
-    /// - `mock_receiver`: The receiver for transactions sent to the mock transport.
-    pub fn new(tx_sender: TransactionQueueSender, mock_receiver: TransactionQueueReceiver) -> Self {
+    /// Create a new mock transport with explicit receiver.
+    /// This is for backwards compatibility and testing.
+    pub fn with_receiver(tx_sender: TransactionQueueSender, mock_receiver: TransactionQueueReceiver) -> Self {
         Self {
             tx_sender,
             mock_receiver,
@@ -38,6 +37,16 @@ impl MockTransport {
 
 impl Transport for MockTransport {
     type Error = MockTransportError;
+    type Config = ();
+
+    fn new(_config: (), tx_sender: TransactionQueueSender) -> Result<Self, Self::Error> {
+        // Create a dummy receiver channel for the trait implementation
+        let (_, mock_receiver) = crossbeam::channel::unbounded();
+        Ok(Self {
+            tx_sender,
+            mock_receiver,
+        })
+    }
     async fn run(&self) -> Result<(), MockTransportError> {
         loop {
             let rax = self.mock_receiver.recv().unwrap();
