@@ -23,13 +23,13 @@ pub trait Transport: Send + Sync {
 
     /// Create a new transport instance with the given configuration and queue sender.
     fn new(config: Self::Config, tx_sender: TransactionQueueSender) -> Result<Self, Self::Error>
-    where 
+    where
         Self: Sized;
 
     /// Start the transport. The transport is supposed to connect to the
     /// external driver and start as a background service.
     async fn run(&self) -> Result<(), Self::Error>;
-    
+
     /// Graceful shutdown.
     async fn stop(&mut self) -> Result<(), Self::Error>;
 }

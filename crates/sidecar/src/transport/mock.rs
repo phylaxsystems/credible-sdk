@@ -27,7 +27,10 @@ pub struct MockTransport {
 impl MockTransport {
     /// Create a new mock transport with explicit receiver.
     /// This is for backwards compatibility and testing.
-    pub fn with_receiver(tx_sender: TransactionQueueSender, mock_receiver: TransactionQueueReceiver) -> Self {
+    pub fn with_receiver(
+        tx_sender: TransactionQueueSender,
+        mock_receiver: TransactionQueueReceiver,
+    ) -> Self {
         Self {
             tx_sender,
             mock_receiver,
@@ -47,6 +50,7 @@ impl Transport for MockTransport {
             mock_receiver,
         })
     }
+
     async fn run(&self) -> Result<(), MockTransportError> {
         loop {
             let rax = self.mock_receiver.recv().unwrap();
@@ -55,6 +59,7 @@ impl Transport for MockTransport {
                 .map_err(|_| MockTransportError::CoreSendError)?;
         }
     }
+
     async fn stop(&mut self) -> Result<(), MockTransportError> {
         // We dont have anything to cleanup
         Ok(())
