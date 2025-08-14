@@ -322,7 +322,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 }
             }
 
-            if processed_blocks > 0 && processed_blocks % 100 == 0 {
+            if processed_blocks > 0 && processed_blocks.is_multiple_of(100) {
                 info!(
                     "Engine processing stats: blocks={}, transactions={}, cache_entries={}",
                     processed_blocks,
