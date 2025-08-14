@@ -53,11 +53,19 @@ impl Transport for MockTransport {
 
     async fn run(&self) -> Result<(), MockTransportError> {
         loop {
-            let rax = self.mock_receiver.recv().unwrap();
-            self.tx_sender
-                .send(rax)
-                .map_err(|_| MockTransportError::CoreSendError)?;
+            match self.mock_receiver.recv() {
+                Ok(rax) => {
+                    self.tx_sender
+                        .send(rax)
+                        .map_err(|_| MockTransportError::CoreSendError)?;
+                }
+                Err(_) => {
+                    // Channel closed, exit gracefully
+                    break;
+                }
+            }
         }
+        Ok(())
     }
 
     async fn stop(&mut self) -> Result<(), MockTransportError> {
