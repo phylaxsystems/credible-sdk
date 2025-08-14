@@ -230,20 +230,6 @@ impl<Db> DatabaseCommit for ActiveOverlay<Db> {
     }
 }
 
-/// This implementation allows `ActiveOverlay` to be used directly as a mutable database.
-/// Unlike `DatabaseRef`, this provides mutable access to the database methods,
-/// which is required by some parts of the revm ecosystem.
-///
-/// The implementation works by:
-/// - Checking the overlay cache first for any cached values  
-/// - If not cached, delegating to the active underlying database using unsafe access
-/// - Caching the results in the shared overlay for future access
-/// - Using the same error mapping and caching strategy as the `DatabaseRef` implementation
-///
-/// # Safety
-/// This implementation uses `unsafe` code to access the active database through `UnsafeCell`.
-/// Theres nothing preventing the active database from being mutated while the overlay is in use.
-/// Please ensure that the active database is not modified while in use.
 impl<Db: Database> Database for ActiveOverlay<Db> {
     type Error = NotFoundError;
 
