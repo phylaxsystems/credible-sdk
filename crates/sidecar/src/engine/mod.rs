@@ -523,18 +523,21 @@ mod tests {
 
         // Capture comprehensive state snapshot before transaction execution
         let initial_cache_count = engine.get_state().cache_entry_count();
-        
+
         // Verify no initial state exists for caller or contract addresses
         let caller_before = engine.get_state().basic_ref(tx_env.caller).unwrap();
         assert!(
             caller_before.is_none(),
             "Caller account should not exist before transaction"
         );
-        
+
         // For CREATE transactions, calculate the expected contract address
         use revm::primitives::address;
         let expected_contract_address = address!("76cae8af66cb2488933e640ba08650a3a8e7ae19");
-        let contract_before = engine.get_state().basic_ref(expected_contract_address).unwrap();
+        let contract_before = engine
+            .get_state()
+            .basic_ref(expected_contract_address)
+            .unwrap();
         assert!(
             contract_before.is_none(),
             "Contract account should not exist before transaction"
@@ -578,11 +581,9 @@ mod tests {
         // Verify comprehensive state verification: overlay should be unchanged
         let final_cache_count = engine.get_state().cache_entry_count();
         assert_eq!(
-            final_cache_count,
-            initial_cache_count,
+            final_cache_count, initial_cache_count,
             "Reverting transaction should not add entries to the state cache. Initial: {}, Final: {}",
-            initial_cache_count,
-            final_cache_count
+            initial_cache_count, final_cache_count
         );
 
         // Verify specific account states remain unchanged
@@ -591,8 +592,11 @@ mod tests {
             caller_after.is_none(),
             "Caller account should not exist after reverting transaction"
         );
-        
-        let contract_after = engine.get_state().basic_ref(expected_contract_address).unwrap();
+
+        let contract_after = engine
+            .get_state()
+            .basic_ref(expected_contract_address)
+            .unwrap();
         assert!(
             contract_after.is_none(),
             "Contract account should not exist after reverting transaction"
@@ -613,11 +617,19 @@ mod tests {
         // Verify the overlay cache itself shows no contamination
         // by checking that no keys are cached for our transaction addresses
         assert!(
-            !engine.get_state().is_cached(&assertion_executor::db::overlay::TableKey::Basic(tx_env.caller)),
+            !engine
+                .get_state()
+                .is_cached(&assertion_executor::db::overlay::TableKey::Basic(
+                    tx_env.caller
+                )),
             "Caller account should not be cached in overlay after revert"
         );
         assert!(
-            !engine.get_state().is_cached(&assertion_executor::db::overlay::TableKey::Basic(expected_contract_address)),
+            !engine
+                .get_state()
+                .is_cached(&assertion_executor::db::overlay::TableKey::Basic(
+                    expected_contract_address
+                )),
             "Contract account should not be cached in overlay after revert"
         );
 
