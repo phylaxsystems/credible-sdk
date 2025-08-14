@@ -356,17 +356,6 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
     }
 }
 
-/// Implementation of `Database` for `OverlayDb`.
-///
-/// This implementation allows `OverlayDb` to be used directly as a mutable database.
-/// Unlike `DatabaseRef`, this provides mutable access to the database methods,
-/// which is required by some parts of the revm ecosystem.
-///
-/// The implementation works by:
-/// - Checking the overlay cache first for any cached values
-/// - If not cached, delegating to the underlying database (if present)
-/// - Caching the results for future access
-/// - For cases where there's no underlying database, providing sensible defaults
 impl<Db: DatabaseRef> Database for OverlayDb<Db> {
     type Error = NotFoundError;
 
