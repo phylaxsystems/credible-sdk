@@ -179,24 +179,37 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         // Note: does not actually run assertions because we instantiate a test store with no way to add them.
-        let rax = self
+        let rax = match self
             .assertion_executor
             .validate_transaction_ext_db(
                 block_env.clone(),
                 tx_env.clone(),
                 &mut fork_db,
                 &mut self.state,
-            )
-            .map_err(|e| {
-                error!(
-                    target = "engine",
-                    error = ?e,
-                    tx_hash = %tx_hash,
-                    tx_env= ?tx_env,
-                    "Transaction execution failed"
-                );
-                EngineError::AssertionError
-            })?;
+            ) {
+                Ok(rax) => rax,
+                Err(e) => {
+                    error!(
+                        target = "engine",
+                        error = ?e,
+                        tx_hash = %tx_hash,
+                        tx_env= ?tx_env,
+                        "Transaction execution failed"
+                    );
+                    // Store a failed result before returning error
+                    self.transaction_results.insert(
+                        tx_hash,
+                        TransactionResult {
+                            execution_result: ExecutionResult::Revert {
+                                output: Default::default(),
+                                gas_used: 0,
+                            },
+                            passed_assertions: false,
+                        },
+                    );
+                    return Err(EngineError::AssertionError);
+                }
+            };
 
         let passed_assertions = rax.is_valid();
         let execution_result = rax.result_and_state.result.clone();
@@ -1019,9 +1032,10 @@ mod tests {
         let item = engine.tx_receiver.try_recv().unwrap();
         match item { TxQueueContents::Tx(queue_tx) => engine.execute_transaction(queue_tx.tx_hash, queue_tx.tx_env).unwrap(), _ => panic!() }
 
-        // Clean up
+        // Clean up - close the channel to stop the transport
         drop(mock_sender);
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(10), transport_handle).await;
+        transport_handle.abort();
+        let _ = transport_handle.await;
 
         // Verify both transactions were processed
         let tx1_result = engine.get_transaction_result(&tx1_hash);
@@ -1039,60 +1053,59 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_driver_balance_decrements_with_fee_transaction() {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let (mut engine, mock_transport, mock_sender) = create_test_setup();
-            
-            let block_env = create_test_block_env();
-            let caller = Address::from([0x05; 20]);
-            
-            // Create transaction with gas price that should decrement balance
-            let tx_env = TxEnv {
-                caller,
-                gas_limit: 50000,
-                gas_price: 1000, // Non-zero gas price
-                kind: TxKind::Create,
-                value: uint!(0_U256),
-                data: Bytes::new(),
-                nonce: 0,
-                ..Default::default()
-            };
-            let tx_hash = B256::from([0x55; 32]);
+        let (mut engine, mock_transport, mock_sender) = create_test_setup();
+        
+        let block_env = create_test_block_env();
+        let caller = Address::from([0x05; 20]);
+        
+        // Create transaction with gas price that should decrement balance
+        let tx_env = TxEnv {
+            caller,
+            gas_limit: 50000,
+            gas_price: 1000, // Non-zero gas price
+            kind: TxKind::Create,
+            value: uint!(0_U256),
+            data: Bytes::new(),
+            nonce: 0,
+            ..Default::default()
+        };
+        let tx_hash = B256::from([0x55; 32]);
 
-            // Send block and transaction
-            mock_sender.send(TxQueueContents::Block(block_env)).unwrap();
-            mock_sender.send(TxQueueContents::Tx(queue::QueueTransaction {
-                tx_hash,
-                tx_env: tx_env.clone(),
-            })).unwrap();
+        // Send block and transaction
+        mock_sender.send(TxQueueContents::Block(block_env)).unwrap();
+        mock_sender.send(TxQueueContents::Tx(queue::QueueTransaction {
+            tx_hash,
+            tx_env: tx_env.clone(),
+        })).unwrap();
 
-            // Start transport in background
-            let transport_handle = tokio::spawn(async move {
-                let _ = mock_transport.run().await;
-            });
+        // Start transport in background
+        let transport_handle = tokio::spawn(async move {
+            let _ = mock_transport.run().await;
+        });
 
-            // Give transport a moment to forward the data
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        // Give transport a moment to forward the data
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-            // Process items manually
-            let block_item = engine.tx_receiver.try_recv().unwrap();
-            match block_item { TxQueueContents::Block(block) => engine.block_env = Some(block), _ => panic!() }
+        // Process items manually
+        let block_item = engine.tx_receiver.try_recv().unwrap();
+        match block_item { TxQueueContents::Block(block) => engine.block_env = Some(block), _ => panic!() }
 
-            let tx_item = engine.tx_receiver.try_recv().unwrap();
-            match tx_item {
-                TxQueueContents::Tx(queue_tx) => {
-                    // This might fail due to insufficient balance, which is expected
-                    let _result = engine.execute_transaction(queue_tx.tx_hash, queue_tx.tx_env);
-                },
-                _ => panic!()
-            }
+        let tx_item = engine.tx_receiver.try_recv().unwrap();
+        match tx_item {
+            TxQueueContents::Tx(queue_tx) => {
+                // This might fail due to insufficient balance, which is expected
+                let _result = engine.execute_transaction(queue_tx.tx_hash, queue_tx.tx_env);
+            },
+            _ => panic!()
+        }
 
-            // Clean up
-            drop(mock_sender);
-            let _ = tokio::time::timeout(std::time::Duration::from_millis(10), transport_handle).await;
+        // Clean up - close the channel to stop the transport
+        drop(mock_sender);
+        transport_handle.abort();
+        let _ = transport_handle.await;
 
-            // Check the transaction result - it should exist even if transaction failed
-            let tx_result = engine.get_transaction_result(&tx_hash);
-            assert!(tx_result.is_some(), "Transaction result should be stored even if transaction failed");
-        }).await.expect("Test timed out");
+        // Check the transaction result - it should exist even if transaction failed
+        let tx_result = engine.get_transaction_result(&tx_hash);
+        assert!(tx_result.is_some(), "Transaction result should be stored even if transaction failed");
     }
 }

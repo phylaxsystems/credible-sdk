@@ -53,13 +53,21 @@ impl Transport for MockTransport {
 
     async fn run(&self) -> Result<(), MockTransportError> {
         loop {
-            match self.mock_receiver.recv() {
+            // Use tokio::task::yield_now() to make this async-friendly
+            tokio::task::yield_now().await;
+            
+            match self.mock_receiver.try_recv() {
                 Ok(rax) => {
                     self.tx_sender
                         .send(rax)
                         .map_err(|_| MockTransportError::CoreSendError)?;
                 }
-                Err(_) => {
+                Err(crossbeam::channel::TryRecvError::Empty) => {
+                    // No data yet, yield and try again
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    continue;
+                }
+                Err(crossbeam::channel::TryRecvError::Disconnected) => {
                     // Channel closed, exit gracefully
                     break;
                 }
