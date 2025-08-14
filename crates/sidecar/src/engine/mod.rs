@@ -341,7 +341,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
                     self.block_env = Some(block_env);
                 }
-                TxQueueContents::Tx { tx_hash, tx_env } => {
+                TxQueueContents::Tx(queue_transaction) => {
+                    let tx_hash = queue_transaction.tx_hash;
+                    let tx_env = queue_transaction.tx_env;
                     processed_txs += 1;
 
                     if self.block_env.is_none() {
@@ -460,10 +462,10 @@ mod tests {
 
         // Send the transaction
         tx_sender
-            .send(TxQueueContents::Tx {
+            .send(TxQueueContents::Tx(queue::QueueTransaction {
                 tx_hash,
                 tx_env: tx_env.clone(),
-            })
+            }))
             .unwrap();
 
         // Process one iteration of the engine loop manually for testing
@@ -474,7 +476,9 @@ mod tests {
         engine.block_env = Some(received_block);
 
         let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx { tx_hash, tx_env } => (tx_hash, tx_env),
+            TxQueueContents::Tx(queue_transaction) => {
+                (queue_transaction.tx_hash, queue_transaction.tx_env)
+            }
             _ => panic!("Expected transaction"),
         };
 
@@ -523,18 +527,21 @@ mod tests {
 
         // Capture comprehensive state snapshot before transaction execution
         let initial_cache_count = engine.get_state().cache_entry_count();
-        
+
         // Verify no initial state exists for caller or contract addresses
         let caller_before = engine.get_state().basic_ref(tx_env.caller).unwrap();
         assert!(
             caller_before.is_none(),
             "Caller account should not exist before transaction"
         );
-        
+
         // For CREATE transactions, calculate the expected contract address
         use revm::primitives::address;
         let expected_contract_address = address!("76cae8af66cb2488933e640ba08650a3a8e7ae19");
-        let contract_before = engine.get_state().basic_ref(expected_contract_address).unwrap();
+        let contract_before = engine
+            .get_state()
+            .basic_ref(expected_contract_address)
+            .unwrap();
         assert!(
             contract_before.is_none(),
             "Contract account should not exist before transaction"
@@ -547,10 +554,10 @@ mod tests {
 
         // Send the reverting transaction
         tx_sender
-            .send(TxQueueContents::Tx {
+            .send(TxQueueContents::Tx(queue::QueueTransaction {
                 tx_hash,
                 tx_env: tx_env.clone(),
-            })
+            }))
             .unwrap();
 
         // Process the block environment
@@ -561,7 +568,9 @@ mod tests {
         engine.block_env = Some(received_block);
 
         let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx { tx_hash, tx_env } => (tx_hash, tx_env),
+            TxQueueContents::Tx(queue_transaction) => {
+                (queue_transaction.tx_hash, queue_transaction.tx_env)
+            }
             _ => panic!("Expected transaction"),
         };
 
@@ -578,11 +587,9 @@ mod tests {
         // Verify comprehensive state verification: overlay should be unchanged
         let final_cache_count = engine.get_state().cache_entry_count();
         assert_eq!(
-            final_cache_count,
-            initial_cache_count,
+            final_cache_count, initial_cache_count,
             "Reverting transaction should not add entries to the state cache. Initial: {}, Final: {}",
-            initial_cache_count,
-            final_cache_count
+            initial_cache_count, final_cache_count
         );
 
         // Verify specific account states remain unchanged
@@ -591,8 +598,11 @@ mod tests {
             caller_after.is_none(),
             "Caller account should not exist after reverting transaction"
         );
-        
-        let contract_after = engine.get_state().basic_ref(expected_contract_address).unwrap();
+
+        let contract_after = engine
+            .get_state()
+            .basic_ref(expected_contract_address)
+            .unwrap();
         assert!(
             contract_after.is_none(),
             "Contract account should not exist after reverting transaction"
@@ -613,11 +623,19 @@ mod tests {
         // Verify the overlay cache itself shows no contamination
         // by checking that no keys are cached for our transaction addresses
         assert!(
-            !engine.get_state().is_cached(&assertion_executor::db::overlay::TableKey::Basic(tx_env.caller)),
+            !engine
+                .get_state()
+                .is_cached(&assertion_executor::db::overlay::TableKey::Basic(
+                    tx_env.caller
+                )),
             "Caller account should not be cached in overlay after revert"
         );
         assert!(
-            !engine.get_state().is_cached(&assertion_executor::db::overlay::TableKey::Basic(expected_contract_address)),
+            !engine
+                .get_state()
+                .is_cached(&assertion_executor::db::overlay::TableKey::Basic(
+                    expected_contract_address
+                )),
             "Contract account should not be cached in overlay after revert"
         );
 
@@ -665,10 +683,10 @@ mod tests {
             .send(TxQueueContents::Block(block_env.clone()))
             .unwrap();
         tx_sender
-            .send(TxQueueContents::Tx {
+            .send(TxQueueContents::Tx(queue::QueueTransaction {
                 tx_hash,
                 tx_env: tx_env.clone(),
-            })
+            }))
             .unwrap();
 
         // Process the block environment
@@ -679,7 +697,9 @@ mod tests {
         engine.block_env = Some(received_block);
 
         let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx { tx_hash, tx_env } => (tx_hash, tx_env),
+            TxQueueContents::Tx(queue_transaction) => {
+                (queue_transaction.tx_hash, queue_transaction.tx_env)
+            }
             _ => panic!("Expected transaction"),
         };
 
@@ -790,14 +810,16 @@ mod tests {
 
         // Send transaction without block environment first
         tx_sender
-            .send(TxQueueContents::Tx {
+            .send(TxQueueContents::Tx(queue::QueueTransaction {
                 tx_hash,
                 tx_env: tx_env.clone(),
-            })
+            }))
             .unwrap();
 
         let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx { tx_hash, tx_env } => (tx_hash, tx_env),
+            TxQueueContents::Tx(queue_transaction) => {
+                (queue_transaction.tx_hash, queue_transaction.tx_env)
+            }
             _ => panic!("Expected transaction"),
         };
 

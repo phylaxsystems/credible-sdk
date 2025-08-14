@@ -10,6 +10,19 @@ use revm::{
     primitives::B256,
 };
 
+/// Represents a transaction to be processed by the sidecar engine.
+///
+/// This struct encapsulates both the transaction hash for identification/tracing
+/// and the transaction environment containing the actual transaction data needed
+/// for EVM execution. The hash enables transaction tracking throughout the
+/// execution pipeline, while the TxEnv provides the EVM with all necessary
+/// transaction context (sender, recipient, value, data, gas, etc.).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueueTransaction {
+    pub tx_hash: B256,
+    pub tx_env: TxEnv,
+}
+
 /// Contains the two possible types that can be sent in the transaction queue.
 /// `Block` is a new block being processed, while `Tx` is a new transaction.
 ///
@@ -21,7 +34,7 @@ use revm::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TxQueueContents {
     Block(BlockEnv),
-    Tx { tx_hash: B256, tx_env: TxEnv },
+    Tx(QueueTransaction),
 }
 
 /// `crossbeam` sender for the transaction queue. Sends data to tx queue.
