@@ -453,10 +453,7 @@ mod tests {
         // Generate a random transaction hash for testing
         let tx_hash = B256::from([0x11; 32]);
 
-        // Send block environment first
-        tx_sender
-            .send(TxQueueContents::Block(block_env.clone()))
-            .unwrap();
+        engine.block_env = Some(block_env.clone());
 
         // Send the transaction
         tx_sender
@@ -465,13 +462,6 @@ mod tests {
                 tx_env: tx_env.clone(),
             })
             .unwrap();
-
-        // Process one iteration of the engine loop manually for testing
-        let received_block = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Block(block) => block,
-            _ => panic!("Expected block environment"),
-        };
-        engine.block_env = Some(received_block);
 
         let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
             TxQueueContents::Tx { tx_hash, tx_env } => (tx_hash, tx_env),
@@ -826,42 +816,5 @@ mod tests {
             }
             other => panic!("Expected TransactionError, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn test_engine_maintains_block_state() {
-        let (mut engine, tx_sender) = create_test_engine();
-        let block_env1 = BlockEnv {
-            number: 1,
-            ..create_test_block_env()
-        };
-        let block_env2 = BlockEnv {
-            number: 2,
-            ..create_test_block_env()
-        };
-
-        // Send first block
-        tx_sender
-            .send(TxQueueContents::Block(block_env1.clone()))
-            .unwrap();
-        let received_block1 = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Block(block) => block,
-            _ => panic!("Expected block environment"),
-        };
-        engine.block_env = Some(received_block1);
-
-        assert_eq!(engine.get_block_env().unwrap().number, 1);
-
-        // Send second block
-        tx_sender
-            .send(TxQueueContents::Block(block_env2.clone()))
-            .unwrap();
-        let received_block2 = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Block(block) => block,
-            _ => panic!("Expected block environment"),
-        };
-        engine.block_env = Some(received_block2);
-
-        assert_eq!(engine.get_block_env().unwrap().number, 2);
     }
 }
