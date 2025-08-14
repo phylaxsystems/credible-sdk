@@ -1,21 +1,39 @@
-//! `transport`
+//! # `transport`
 //!
-//! The transport mod contains generics and primitives for the sidecar to communicate with external
-//! builders.
+//! The transport module provides abstractions for communication between the sidecar and external
+//! transaction sources (e.g., sequencers, builders, or test harnesses).
 //!
-//! The sidecar is driven by external builders sending transactions and blockenvs which drives it to
-//! *build blocks* and respond with results.
+//! ## Overview
+//!
+//! The sidecar operates as a listener-based system where external drivers send transactions and
+//! block envs that drive the core engine to build blocks and validate assertions.
+//! Transports act as the bridge between these external systems and the internal engine.
+//!
+//! ```text
+//! ┌─────────────┐    ┌───────────┐    ┌────────────┐
+//! │ External    │───▶│ Transport │───▶│ Core       │
+//! │ Driver      │    │           │    │ Engine     │
+//! │ (Sequencer) │    │           │    │            │
+//! └─────────────┘    └───────────┘    └────────────┘
+//! ```
 
 pub mod mock;
 
 use crate::engine::queue::TransactionQueueSender;
 
-/// The `Transport` trait defines what methods transports that want to send transactions
-/// to the engine must implement.
+/// The `Transport` trait defines the interface for external communication adapters that
+/// forward transactions and block environments to the core engine.
 ///
-/// Transports are used to establish communication between the sidecar and an external driver
-/// of a chain (i.e., the sequencer). Transports are also used as a general entrypoint for
-/// communication with the core engine.
+/// ## Associated Types
+///
+/// - `Error`: Transport-specific error type for connection and protocol failures
+/// - `Config`: Configuration type for transport initialization
+///
+/// ## Lifecycle
+///
+/// 1. **Creation**: Use `new()` with configuration and queue sender
+/// 2. **Execution**: Call `run()` to start the transport (typically in a background task)
+/// 3. **Shutdown**: Call `stop()` for graceful cleanup
 #[allow(async_fn_in_trait)]
 pub trait Transport: Send + Sync {
     type Error: std::error::Error + Send;
