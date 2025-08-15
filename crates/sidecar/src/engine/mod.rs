@@ -257,7 +257,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         tx_hash,
                         TransactionResult {
                             execution_result,
-                            is_valid,
+                            passed_assertions: is_valid,
                         },
                     );
                     return Err(EngineError::TransactionError);
@@ -283,7 +283,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             tx_hash,
             TransactionResult {
                 execution_result,
-                is_valid,
+                passed_assertions: is_valid,
             },
         );
 
