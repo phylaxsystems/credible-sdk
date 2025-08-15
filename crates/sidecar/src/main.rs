@@ -1,4 +1,5 @@
 mod args;
+mod config;
 #[allow(dead_code)] // TODO: rm when engine fully impld and connected to transport
 pub mod engine;
 mod rpc;
@@ -6,6 +7,10 @@ pub mod transport;
 mod utils;
 
 use crate::{
+    config::{
+        init_assertion_store,
+        init_executor_config,
+    },
     engine::CoreEngine,
     transport::{
         Transport,
@@ -14,9 +19,7 @@ use crate::{
 };
 use assertion_executor::{
     AssertionExecutor,
-    ExecutorConfig,
     db::overlay::OverlayDb,
-    store::AssertionStore,
 };
 use crossbeam::channel::unbounded;
 use std::convert::Infallible;
@@ -38,12 +41,16 @@ async fn main() -> anyhow::Result<()> {
     let args = SidecarArgs::parse();
 
     let (tx_sender, tx_receiver) = unbounded();
-    let state: OverlayDb<CacheDB<EmptyDBTyped<Infallible>>> =
-        OverlayDb::new(None, 128 * 1024 * 1024);
-    let assertion_executor = AssertionExecutor::new(
-        ExecutorConfig::default(),
-        AssertionStore::new_ephemeral().unwrap(),
+    let state: OverlayDb<CacheDB<EmptyDBTyped<Infallible>>> = OverlayDb::new(
+        None,
+        args.credible
+            .overlay_cache_capacity_bytes
+            .unwrap_or(1024 * 1024 * 1024) as u64,
     );
+
+    let executor_config = init_executor_config(&args);
+    let assertion_store = init_assertion_store(&args)?;
+    let assertion_executor = AssertionExecutor::new(executor_config, assertion_store);
 
     let (_, mock_receiver) = unbounded();
     let mock_transport = MockTransport::with_receiver(tx_sender, mock_receiver);

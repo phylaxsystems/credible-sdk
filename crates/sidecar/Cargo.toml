@@ -21,6 +21,7 @@ tracing = { workspace = true }
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 ctor = { version = "0.5.0", optional = true }
 tracing-subscriber.workspace = true
+sled = { workspace = true }
 
 [features]
 testing = ["ctor"]

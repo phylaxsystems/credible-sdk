@@ -10522,6 +10522,7 @@ dependencies = [
  "rust-tracing",
  "serde",
  "serde_json",
+ "sled",
  "thiserror 2.0.12",
  "tokio",
  "tracing",

@@ -166,7 +166,8 @@ pub struct CredibleArgs {
     #[arg(
         long = "ae.oracle_contract",
         default_value = DEFAULT_STATE_ORACLE_ADDRESS,
-        env = "AE_ORACLE_CONTRACT"
+        env = "AE_ORACLE_CONTRACT",
+        required = true
     )]
     pub oracle_contract: Address,
 }
