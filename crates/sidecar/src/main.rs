@@ -1,9 +1,17 @@
 mod args;
 #[allow(dead_code)] // TODO: rm when engine fully impld and connected to transport
-mod engine;
+pub mod engine;
 mod rpc;
+pub mod transport;
 mod utils;
 
+use crate::{
+    engine::CoreEngine,
+    transport::{
+        Transport,
+        mock::MockTransport,
+    },
+};
 use assertion_executor::{
     AssertionExecutor,
     ExecutorConfig,
@@ -11,7 +19,6 @@ use assertion_executor::{
     store::AssertionStore,
 };
 use crossbeam::channel::unbounded;
-use engine::CoreEngine;
 use std::convert::Infallible;
 
 use revm::database::{
@@ -30,13 +37,16 @@ async fn main() -> anyhow::Result<()> {
 
     let args = SidecarArgs::parse();
 
-    let (_, tx_receiver) = unbounded();
+    let (tx_sender, tx_receiver) = unbounded();
     let state: OverlayDb<CacheDB<EmptyDBTyped<Infallible>>> =
         OverlayDb::new(None, 128 * 1024 * 1024);
     let assertion_executor = AssertionExecutor::new(
         ExecutorConfig::default(),
-        AssertionStore::new_ephemeral().expect("REASON"),
+        AssertionStore::new_ephemeral().unwrap(),
     );
+
+    let (_, mock_receiver) = unbounded();
+    let mock_transport = MockTransport::with_receiver(tx_sender, mock_receiver);
 
     let mut engine = CoreEngine::new(state, tx_receiver, assertion_executor);
 
@@ -50,9 +60,10 @@ async fn main() -> anyhow::Result<()> {
         _ = engine.run() => {
             println!("Engine run completed, shutting down...");
         }
+        _ = mock_transport.run() => {
+            println!("Engine run completed, shutting down...");
+        }
     }
-
-    println!("Sidecar running. Press Ctrl+C to stop.");
 
     println!("Sidecar shutdown complete.");
     Ok(())

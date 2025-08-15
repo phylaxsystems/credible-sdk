@@ -88,11 +88,16 @@ pub enum EngineError {
     ChannelClosed,
 }
 
-/// Result of transaction execution
+/// Represents either a successful transaction validation or an internal validation error
 #[derive(Debug, Clone)]
-pub struct TransactionResult {
-    pub execution_result: ExecutionResult,
-    pub passed_assertions: bool,
+pub enum TransactionResult {
+    /// Transaction was processed successfully (may have reverted/halted, but validation completed)
+    ValidationCompleted {
+        execution_result: ExecutionResult,
+        is_valid: bool,
+    },
+    /// Internal error occurred during validation process
+    ValidationError(String),
 }
 
 /// The engine processes blocks and appends transactions to them.
@@ -178,35 +183,49 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             "Validating transaction against assertions"
         );
 
-        // Note: does not actually run assertions because we instantiate a test store with no way to add them.
-        let rax = self
-            .assertion_executor
-            .validate_transaction_ext_db(
-                block_env.clone(),
-                tx_env.clone(),
-                &mut fork_db,
-                &mut self.state,
-            )
-            .map_err(|e| {
+        // Validate transaction and run assertions
+        let rax = match self.assertion_executor.validate_transaction_ext_db(
+            block_env.clone(),
+            tx_env.clone(),
+            &mut fork_db,
+            &mut self.state,
+        ) {
+            Ok(rax) => rax,
+            Err(e) => {
                 error!(
                     target = "engine",
                     error = ?e,
                     tx_hash = %tx_hash,
                     tx_env= ?tx_env,
-                    "Transaction execution failed"
+                    "Internal validation error occurred"
                 );
-                EngineError::AssertionError
-            })?;
+                // Store the validation error result
+                self.transaction_results.insert(
+                    tx_hash,
+                    TransactionResult::ValidationError(format!("{:?}", e)),
+                );
+                return Err(EngineError::AssertionError);
+            }
+        };
 
-        let passed_assertions = rax.is_valid();
+        let is_valid = rax.is_valid();
         let execution_result = rax.result_and_state.result.clone();
 
-        if passed_assertions {
+        info!(
+            target = "engine",
+            tx_hash = %tx_hash,
+            is_valid,
+            execution_result = ?execution_result,
+            "Transaction processed"
+        );
+
+        if is_valid {
+            // Transaction valid, passed assertions, commit state for successful transactions
             debug!(
                 target = "engine",
                 tx_hash = %tx_hash,
                 tx_env= ?tx_env,
-                "Transaction passed all assertions, processing result"
+                "Transaction does not invalidate assertions, processing result"
             );
             trace!(
                 target = "engine",
@@ -214,43 +233,14 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 assertions_ran = ?rax.assertions_executions,
                 "Assertions execution details"
             );
-            // Transaction valid, passed assertions, commit
-            match &execution_result {
-                ExecutionResult::Success { gas_used, .. } => {
-                    info!(
-                        target = "engine",
-                        tx_hash = %tx_hash,
-                        gas_used,
-                        "Transaction executed successfully"
-                    );
-                    self.state.commit(rax.result_and_state.state);
-                }
-                ExecutionResult::Revert { gas_used, .. } => {
-                    warn!(
-                        target = "engine",
-                        tx_hash = %tx_hash,
-                        gas_used,
-                        "Transaction reverted"
-                    );
-                }
-                ExecutionResult::Halt { reason, gas_used } => {
-                    error!(
-                        target = "engine",
-                        tx_hash = %tx_hash,
-                        reason = ?reason,
-                        gas_used,
-                        "Transaction halted"
-                    );
-                    // Store the result before returning error
-                    self.transaction_results.insert(
-                        tx_hash,
-                        TransactionResult {
-                            execution_result,
-                            passed_assertions,
-                        },
-                    );
-                    return Err(EngineError::TransactionError);
-                }
+
+            if execution_result.is_success() {
+                trace!(
+                    target = "engine",
+                    tx_hash = %tx_hash,
+                    "Commiting state of successful tx"
+                );
+                self.state.commit(rax.result_and_state.state);
             }
         } else {
             warn!(
@@ -270,9 +260,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         // Store the transaction result
         self.transaction_results.insert(
             tx_hash,
-            TransactionResult {
+            TransactionResult::ValidationCompleted {
                 execution_result,
-                passed_assertions,
+                is_valid,
             },
         );
 
@@ -341,7 +331,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
                     self.block_env = Some(block_env);
                 }
-                TxQueueContents::Tx { tx_hash, tx_env } => {
+                TxQueueContents::Tx(queue_transaction) => {
+                    let tx_hash = queue_transaction.tx_hash;
+                    let tx_env = queue_transaction.tx_env;
                     processed_txs += 1;
 
                     if self.block_env.is_none() {
@@ -386,7 +378,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::TestDbError;
+    use crate::{
+        transport::{
+            Transport,
+            mock::MockTransport,
+        },
+        utils::TestDbError,
+    };
     use assertion_executor::{
         ExecutorConfig,
         store::AssertionStore,
@@ -423,6 +421,29 @@ mod tests {
 
         let engine = CoreEngine::new(state, tx_receiver, assertion_executor);
         (engine, tx_sender)
+    }
+
+    /// Create a complete test setup with engine, mock transport, and driver sender
+    fn create_test_setup() -> (
+        CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+        MockTransport,
+        crossbeam::channel::Sender<TxQueueContents>,
+    ) {
+        let (engine_tx, engine_rx) = crossbeam::channel::unbounded();
+        let (mock_tx, mock_rx) = crossbeam::channel::unbounded();
+
+        // Create engine
+        let underlying_db = CacheDB::new(EmptyDBTyped::default());
+        let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)), 1024);
+        let assertion_store =
+            AssertionStore::new_ephemeral().expect("Failed to create assertion store");
+        let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
+        let engine = CoreEngine::new(state, engine_rx, assertion_executor);
+
+        // Create mock transport with the receiver
+        let mock_transport = MockTransport::with_receiver(engine_tx, mock_rx);
+
+        (engine, mock_transport, mock_tx)
     }
 
     fn create_test_block_env() -> BlockEnv {
@@ -472,10 +493,14 @@ mod tests {
         // Verify transaction result is stored
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        assert!(
-            tx_result.unwrap().passed_assertions,
-            "Transaction should pass assertions"
-        );
+        match tx_result.unwrap() {
+            TransactionResult::ValidationCompleted { is_valid, .. } => {
+                assert!(is_valid, "Transaction should pass assertions");
+            }
+            TransactionResult::ValidationError(e) => {
+                panic!("Unexpected validation error: {:?}", e);
+            }
+        }
     }
 
     #[test]
@@ -590,16 +615,25 @@ mod tests {
         // Verify transaction result is stored and shows it reverted
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        let result_data = tx_result.unwrap();
-        assert!(
-            result_data.passed_assertions,
-            "Transaction should pass assertions (no assertions to fail)"
-        );
-        match &result_data.execution_result {
-            assertion_executor::primitives::ExecutionResult::Revert { .. } => {
-                // Expected - transaction reverted
+        match tx_result.unwrap() {
+            TransactionResult::ValidationCompleted {
+                execution_result,
+                is_valid,
+            } => {
+                assert!(
+                    *is_valid,
+                    "Transaction should pass assertions (no assertions to fail)"
+                );
+                match execution_result {
+                    ExecutionResult::Revert { .. } => {
+                        // Expected - transaction reverted
+                    }
+                    other => panic!("Expected Revert result, got {:?}", other),
+                }
             }
-            other => panic!("Expected Revert result, got {:?}", other),
+            TransactionResult::ValidationError(e) => {
+                panic!("Unexpected validation error: {:?}", e);
+            }
         }
     }
 
@@ -703,16 +737,22 @@ mod tests {
         // Verify transaction result is stored and succeeded
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        let result_data = tx_result.unwrap();
-        assert!(
-            result_data.passed_assertions,
-            "Transaction should pass assertions"
-        );
-        match &result_data.execution_result {
-            assertion_executor::primitives::ExecutionResult::Success { .. } => {
-                // Expected - transaction succeeded
+        match tx_result.unwrap() {
+            TransactionResult::ValidationCompleted {
+                execution_result,
+                is_valid,
+            } => {
+                assert!(*is_valid, "Transaction should pass assertions");
+                match execution_result {
+                    ExecutionResult::Success { .. } => {
+                        // Expected - transaction succeeded
+                    }
+                    other => panic!("Expected Success result, got {:?}", other),
+                }
             }
-            other => panic!("Expected Success result, got {:?}", other),
+            TransactionResult::ValidationError(e) => {
+                panic!("Unexpected validation error: {:?}", e);
+            }
         }
     }
 
@@ -746,5 +786,212 @@ mod tests {
             }
             other => panic!("Expected TransactionError, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_end_to_end_transaction_flow() {
+        // Use the simpler create_test_engine helper to get direct access to sender
+        let (mut engine, queue_sender) = create_test_engine();
+
+        // Create test block and transaction
+        let block_env = create_test_block_env();
+        let tx_env = TxEnv {
+            caller: Address::from([0x01; 20]),
+            gas_limit: 100000,
+            gas_price: 0,
+            kind: TxKind::Create,
+            value: uint!(0_U256),
+            data: Bytes::new(),
+            nonce: 0,
+            ..Default::default()
+        };
+        let tx_hash = B256::from([0x11; 32]);
+
+        // Send block environment and transaction directly to engine queue
+        queue_sender
+            .send(TxQueueContents::Block(block_env))
+            .unwrap();
+        queue_sender
+            .send(TxQueueContents::Tx(queue::QueueTransaction {
+                tx_hash,
+                tx_env: tx_env.clone(),
+            }))
+            .unwrap();
+
+        // Process the items manually (simulating what engine.run() would do)
+        // Process block first
+        let block_item = engine.tx_receiver.try_recv().unwrap();
+        match block_item {
+            TxQueueContents::Block(block) => engine.block_env = Some(block),
+            _ => panic!("Expected block"),
+        }
+
+        // Process transaction
+        let tx_item = engine.tx_receiver.try_recv().unwrap();
+        match tx_item {
+            TxQueueContents::Tx(queue_tx) => {
+                engine
+                    .execute_transaction(queue_tx.tx_hash, queue_tx.tx_env)
+                    .unwrap();
+            }
+            _ => panic!("Expected transaction"),
+        }
+
+        // Verify the transaction was processed
+        let result = engine.get_transaction_result(&tx_hash);
+        assert!(result.is_some(), "Transaction result should be stored");
+        match result.unwrap() {
+            TransactionResult::ValidationCompleted { is_valid, .. } => {
+                assert!(is_valid, "Transaction should pass assertions");
+            }
+            TransactionResult::ValidationError(e) => {
+                panic!("Unexpected validation error: {:?}", e);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mock_driver_multiple_blocks_and_transactions() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (mut engine, mock_transport, mock_sender) = create_test_setup();
+
+            // Prepare test data
+            let block1 = BlockEnv {
+                number: 1,
+                ..create_test_block_env()
+            };
+            let block2 = BlockEnv {
+                number: 2,
+                ..create_test_block_env()
+            };
+
+            let tx1_env = TxEnv {
+                caller: Address::from([0x01; 20]),
+                gas_limit: 100000,
+                gas_price: 0,
+                kind: TxKind::Create,
+                value: uint!(0_U256),
+                data: Bytes::new(),
+                nonce: 0,
+                ..Default::default()
+            };
+            let tx1_hash = B256::from([0x11; 32]);
+
+            let tx2_env = TxEnv {
+                caller: Address::from([0x02; 20]),
+                gas_limit: 100000,
+                gas_price: 0,
+                kind: TxKind::Create,
+                value: uint!(0_U256),
+                data: Bytes::new(),
+                nonce: 0,
+                ..Default::default()
+            };
+            let tx2_hash = B256::from([0x22; 32]);
+
+            // Send sequence: Block1 -> Tx1 -> Block2 -> Tx2
+            mock_sender.send(TxQueueContents::Block(block1)).unwrap();
+            mock_sender
+                .send(TxQueueContents::Tx(queue::QueueTransaction {
+                    tx_hash: tx1_hash,
+                    tx_env: tx1_env,
+                }))
+                .unwrap();
+            mock_sender.send(TxQueueContents::Block(block2)).unwrap();
+            mock_sender
+                .send(TxQueueContents::Tx(queue::QueueTransaction {
+                    tx_hash: tx2_hash,
+                    tx_env: tx2_env,
+                }))
+                .unwrap();
+
+            // Start transport in background
+            let transport_handle = tokio::spawn(async move {
+                let _ = mock_transport.run().await;
+            });
+
+            // Give transport a moment to forward the data
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+            // Process items manually in sequence
+            // Block 1
+            let item = engine.tx_receiver.try_recv().unwrap();
+            match item {
+                TxQueueContents::Block(block) => engine.block_env = Some(block),
+                _ => panic!(),
+            }
+
+            // Transaction 1
+            let item = engine.tx_receiver.try_recv().unwrap();
+            match item {
+                TxQueueContents::Tx(queue_tx) => {
+                    engine
+                        .execute_transaction(queue_tx.tx_hash, queue_tx.tx_env)
+                        .unwrap()
+                }
+                _ => panic!(),
+            }
+
+            // Block 2
+            let item = engine.tx_receiver.try_recv().unwrap();
+            match item {
+                TxQueueContents::Block(block) => engine.block_env = Some(block),
+                _ => panic!(),
+            }
+
+            // Transaction 2
+            let item = engine.tx_receiver.try_recv().unwrap();
+            match item {
+                TxQueueContents::Tx(queue_tx) => {
+                    engine
+                        .execute_transaction(queue_tx.tx_hash, queue_tx.tx_env)
+                        .unwrap()
+                }
+                _ => panic!(),
+            }
+
+            // Clean up - close the channel to stop the transport
+            drop(mock_sender);
+            transport_handle.abort();
+            let _ = transport_handle.await;
+
+            // Verify both transactions were processed
+            let tx1_result = engine.get_transaction_result(&tx1_hash);
+            let tx2_result = engine.get_transaction_result(&tx2_hash);
+
+            assert!(
+                tx1_result.is_some(),
+                "Transaction 1 result should be stored"
+            );
+            assert!(
+                tx2_result.is_some(),
+                "Transaction 2 result should be stored"
+            );
+            match tx1_result.unwrap() {
+                TransactionResult::ValidationCompleted { is_valid, .. } => {
+                    assert!(is_valid, "Transaction 1 should pass assertions");
+                }
+                TransactionResult::ValidationError(e) => {
+                    panic!("Transaction 1 unexpected validation error: {:?}", e);
+                }
+            }
+            match tx2_result.unwrap() {
+                TransactionResult::ValidationCompleted { is_valid, .. } => {
+                    assert!(is_valid, "Transaction 2 should pass assertions");
+                }
+                TransactionResult::ValidationError(e) => {
+                    panic!("Transaction 2 unexpected validation error: {:?}", e);
+                }
+            }
+
+            // Verify final block state
+            assert_eq!(
+                engine.get_block_env().unwrap().number,
+                2,
+                "Should be on block 2"
+            );
+        })
+        .await
+        .expect("Test timed out");
     }
 }
