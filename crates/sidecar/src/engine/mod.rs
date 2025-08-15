@@ -233,7 +233,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 assertions_ran = ?rax.assertions_executions,
                 "Assertions execution details"
             );
-            
+
             if execution_result.is_success() {
                 trace!(
                     target = "engine",
@@ -616,7 +616,10 @@ mod tests {
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
         match tx_result.unwrap() {
-            TransactionResult::ValidationCompleted { execution_result, is_valid } => {
+            TransactionResult::ValidationCompleted {
+                execution_result,
+                is_valid,
+            } => {
                 assert!(
                     *is_valid,
                     "Transaction should pass assertions (no assertions to fail)"
@@ -735,11 +738,11 @@ mod tests {
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
         match tx_result.unwrap() {
-            TransactionResult::ValidationCompleted { execution_result, is_valid } => {
-                assert!(
-                    *is_valid,
-                    "Transaction should pass assertions"
-                );
+            TransactionResult::ValidationCompleted {
+                execution_result,
+                is_valid,
+            } => {
+                assert!(*is_valid, "Transaction should pass assertions");
                 match execution_result {
                     ExecutionResult::Success { .. } => {
                         // Expected - transaction succeeded
