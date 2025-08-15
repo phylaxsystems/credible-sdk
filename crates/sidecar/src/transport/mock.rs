@@ -55,7 +55,7 @@ impl Transport for MockTransport {
         loop {
             // Use tokio::task::yield_now() to make this async-friendly
             tokio::task::yield_now().await;
-            
+
             match self.mock_receiver.try_recv() {
                 Ok(rax) => {
                     self.tx_sender

@@ -179,37 +179,35 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         // Note: does not actually run assertions because we instantiate a test store with no way to add them.
-        let rax = match self
-            .assertion_executor
-            .validate_transaction_ext_db(
-                block_env.clone(),
-                tx_env.clone(),
-                &mut fork_db,
-                &mut self.state,
-            ) {
-                Ok(rax) => rax,
-                Err(e) => {
-                    error!(
-                        target = "engine",
-                        error = ?e,
-                        tx_hash = %tx_hash,
-                        tx_env= ?tx_env,
-                        "Transaction execution failed"
-                    );
-                    // Store a failed result before returning error
-                    self.transaction_results.insert(
-                        tx_hash,
-                        TransactionResult {
-                            execution_result: ExecutionResult::Revert {
-                                output: Default::default(),
-                                gas_used: 0,
-                            },
-                            passed_assertions: false,
+        let rax = match self.assertion_executor.validate_transaction_ext_db(
+            block_env.clone(),
+            tx_env.clone(),
+            &mut fork_db,
+            &mut self.state,
+        ) {
+            Ok(rax) => rax,
+            Err(e) => {
+                error!(
+                    target = "engine",
+                    error = ?e,
+                    tx_hash = %tx_hash,
+                    tx_env= ?tx_env,
+                    "Transaction execution failed"
+                );
+                // Store a failed result before returning error
+                self.transaction_results.insert(
+                    tx_hash,
+                    TransactionResult {
+                        execution_result: ExecutionResult::Revert {
+                            output: Default::default(),
+                            gas_used: 0,
                         },
-                    );
-                    return Err(EngineError::AssertionError);
-                }
-            };
+                        passed_assertions: false,
+                    },
+                );
+                return Err(EngineError::AssertionError);
+            }
+        };
 
         let passed_assertions = rax.is_valid();
         let execution_result = rax.result_and_state.result.clone();
@@ -402,8 +400,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 mod tests {
     use super::*;
     use crate::{
+        transport::{
+            Transport,
+            mock::MockTransport,
+        },
         utils::TestDbError,
-        transport::{Transport, mock::MockTransport},
     };
     use assertion_executor::{
         ExecutorConfig,
@@ -451,17 +452,18 @@ mod tests {
     ) {
         let (engine_tx, engine_rx) = crossbeam::channel::unbounded();
         let (mock_tx, mock_rx) = crossbeam::channel::unbounded();
-        
+
         // Create engine
         let underlying_db = CacheDB::new(EmptyDBTyped::default());
         let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)), 1024);
-        let assertion_store = AssertionStore::new_ephemeral().expect("Failed to create assertion store");
+        let assertion_store =
+            AssertionStore::new_ephemeral().expect("Failed to create assertion store");
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
         let engine = CoreEngine::new(state, engine_rx, assertion_executor);
-        
+
         // Create mock transport with the receiver
         let mock_transport = MockTransport::with_receiver(engine_tx, mock_rx);
-        
+
         (engine, mock_transport, mock_tx)
     }
 
@@ -788,11 +790,11 @@ mod tests {
         }
     }
 
-    #[tokio::test] 
+    #[tokio::test]
     async fn test_end_to_end_transaction_flow() {
         // Use the simpler create_test_engine helper to get direct access to sender
         let (mut engine, queue_sender) = create_test_engine();
-        
+
         // Create test block and transaction
         let block_env = create_test_block_env();
         let tx_env = TxEnv {
@@ -808,11 +810,15 @@ mod tests {
         let tx_hash = B256::from([0x11; 32]);
 
         // Send block environment and transaction directly to engine queue
-        queue_sender.send(TxQueueContents::Block(block_env)).unwrap();
-        queue_sender.send(TxQueueContents::Tx(queue::QueueTransaction {
-            tx_hash,
-            tx_env: tx_env.clone(),
-        })).unwrap();
+        queue_sender
+            .send(TxQueueContents::Block(block_env))
+            .unwrap();
+        queue_sender
+            .send(TxQueueContents::Tx(queue::QueueTransaction {
+                tx_hash,
+                tx_env: tx_env.clone(),
+            }))
+            .unwrap();
 
         // Process the items manually (simulating what engine.run() would do)
         // Process block first
@@ -826,103 +832,156 @@ mod tests {
         let tx_item = engine.tx_receiver.try_recv().unwrap();
         match tx_item {
             TxQueueContents::Tx(queue_tx) => {
-                engine.execute_transaction(queue_tx.tx_hash, queue_tx.tx_env).unwrap();
-            },
+                engine
+                    .execute_transaction(queue_tx.tx_hash, queue_tx.tx_env)
+                    .unwrap();
+            }
             _ => panic!("Expected transaction"),
         }
 
         // Verify the transaction was processed
         let result = engine.get_transaction_result(&tx_hash);
         assert!(result.is_some(), "Transaction result should be stored");
-        assert!(result.unwrap().passed_assertions, "Transaction should pass assertions");
+        assert!(
+            result.unwrap().passed_assertions,
+            "Transaction should pass assertions"
+        );
     }
 
     #[tokio::test]
     async fn test_mock_driver_multiple_blocks_and_transactions() {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let (mut engine, mock_transport, mock_sender) = create_test_setup();
-        
-        // Prepare test data
-        let block1 = BlockEnv { number: 1, ..create_test_block_env() };
-        let block2 = BlockEnv { number: 2, ..create_test_block_env() };
-        
-        let tx1_env = TxEnv {
-            caller: Address::from([0x01; 20]),
-            gas_limit: 100000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value: uint!(0_U256),
-            data: Bytes::new(),
-            nonce: 0,
-            ..Default::default()
-        };
-        let tx1_hash = B256::from([0x11; 32]);
-        
-        let tx2_env = TxEnv {
-            caller: Address::from([0x02; 20]),
-            gas_limit: 100000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value: uint!(0_U256),
-            data: Bytes::new(),
-            nonce: 0,
-            ..Default::default()
-        };
-        let tx2_hash = B256::from([0x22; 32]);
+            let (mut engine, mock_transport, mock_sender) = create_test_setup();
 
-        // Send sequence: Block1 -> Tx1 -> Block2 -> Tx2
-        mock_sender.send(TxQueueContents::Block(block1)).unwrap();
-        mock_sender.send(TxQueueContents::Tx(queue::QueueTransaction {
-            tx_hash: tx1_hash,
-            tx_env: tx1_env,
-        })).unwrap();
-        mock_sender.send(TxQueueContents::Block(block2)).unwrap();
-        mock_sender.send(TxQueueContents::Tx(queue::QueueTransaction {
-            tx_hash: tx2_hash,
-            tx_env: tx2_env,
-        })).unwrap();
+            // Prepare test data
+            let block1 = BlockEnv {
+                number: 1,
+                ..create_test_block_env()
+            };
+            let block2 = BlockEnv {
+                number: 2,
+                ..create_test_block_env()
+            };
 
-        // Start transport in background
-        let transport_handle = tokio::spawn(async move {
-            let _ = mock_transport.run().await;
-        });
+            let tx1_env = TxEnv {
+                caller: Address::from([0x01; 20]),
+                gas_limit: 100000,
+                gas_price: 0,
+                kind: TxKind::Create,
+                value: uint!(0_U256),
+                data: Bytes::new(),
+                nonce: 0,
+                ..Default::default()
+            };
+            let tx1_hash = B256::from([0x11; 32]);
 
-        // Give transport a moment to forward the data
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let tx2_env = TxEnv {
+                caller: Address::from([0x02; 20]),
+                gas_limit: 100000,
+                gas_price: 0,
+                kind: TxKind::Create,
+                value: uint!(0_U256),
+                data: Bytes::new(),
+                nonce: 0,
+                ..Default::default()
+            };
+            let tx2_hash = B256::from([0x22; 32]);
 
-        // Process items manually in sequence
-        // Block 1
-        let item = engine.tx_receiver.try_recv().unwrap();
-        match item { TxQueueContents::Block(block) => engine.block_env = Some(block), _ => panic!() }
-        
-        // Transaction 1
-        let item = engine.tx_receiver.try_recv().unwrap();
-        match item { TxQueueContents::Tx(queue_tx) => engine.execute_transaction(queue_tx.tx_hash, queue_tx.tx_env).unwrap(), _ => panic!() }
-        
-        // Block 2
-        let item = engine.tx_receiver.try_recv().unwrap();
-        match item { TxQueueContents::Block(block) => engine.block_env = Some(block), _ => panic!() }
-        
-        // Transaction 2
-        let item = engine.tx_receiver.try_recv().unwrap();
-        match item { TxQueueContents::Tx(queue_tx) => engine.execute_transaction(queue_tx.tx_hash, queue_tx.tx_env).unwrap(), _ => panic!() }
+            // Send sequence: Block1 -> Tx1 -> Block2 -> Tx2
+            mock_sender.send(TxQueueContents::Block(block1)).unwrap();
+            mock_sender
+                .send(TxQueueContents::Tx(queue::QueueTransaction {
+                    tx_hash: tx1_hash,
+                    tx_env: tx1_env,
+                }))
+                .unwrap();
+            mock_sender.send(TxQueueContents::Block(block2)).unwrap();
+            mock_sender
+                .send(TxQueueContents::Tx(queue::QueueTransaction {
+                    tx_hash: tx2_hash,
+                    tx_env: tx2_env,
+                }))
+                .unwrap();
 
-        // Clean up - close the channel to stop the transport
-        drop(mock_sender);
-        transport_handle.abort();
-        let _ = transport_handle.await;
+            // Start transport in background
+            let transport_handle = tokio::spawn(async move {
+                let _ = mock_transport.run().await;
+            });
 
-        // Verify both transactions were processed
-        let tx1_result = engine.get_transaction_result(&tx1_hash);
-        let tx2_result = engine.get_transaction_result(&tx2_hash);
-        
-        assert!(tx1_result.is_some(), "Transaction 1 result should be stored");
-        assert!(tx2_result.is_some(), "Transaction 2 result should be stored");
-        assert!(tx1_result.unwrap().passed_assertions, "Transaction 1 should pass assertions");
-        assert!(tx2_result.unwrap().passed_assertions, "Transaction 2 should pass assertions");
-        
-        // Verify final block state
-        assert_eq!(engine.get_block_env().unwrap().number, 2, "Should be on block 2");
-        }).await.expect("Test timed out");
+            // Give transport a moment to forward the data
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+            // Process items manually in sequence
+            // Block 1
+            let item = engine.tx_receiver.try_recv().unwrap();
+            match item {
+                TxQueueContents::Block(block) => engine.block_env = Some(block),
+                _ => panic!(),
+            }
+
+            // Transaction 1
+            let item = engine.tx_receiver.try_recv().unwrap();
+            match item {
+                TxQueueContents::Tx(queue_tx) => {
+                    engine
+                        .execute_transaction(queue_tx.tx_hash, queue_tx.tx_env)
+                        .unwrap()
+                }
+                _ => panic!(),
+            }
+
+            // Block 2
+            let item = engine.tx_receiver.try_recv().unwrap();
+            match item {
+                TxQueueContents::Block(block) => engine.block_env = Some(block),
+                _ => panic!(),
+            }
+
+            // Transaction 2
+            let item = engine.tx_receiver.try_recv().unwrap();
+            match item {
+                TxQueueContents::Tx(queue_tx) => {
+                    engine
+                        .execute_transaction(queue_tx.tx_hash, queue_tx.tx_env)
+                        .unwrap()
+                }
+                _ => panic!(),
+            }
+
+            // Clean up - close the channel to stop the transport
+            drop(mock_sender);
+            transport_handle.abort();
+            let _ = transport_handle.await;
+
+            // Verify both transactions were processed
+            let tx1_result = engine.get_transaction_result(&tx1_hash);
+            let tx2_result = engine.get_transaction_result(&tx2_hash);
+
+            assert!(
+                tx1_result.is_some(),
+                "Transaction 1 result should be stored"
+            );
+            assert!(
+                tx2_result.is_some(),
+                "Transaction 2 result should be stored"
+            );
+            assert!(
+                tx1_result.unwrap().passed_assertions,
+                "Transaction 1 should pass assertions"
+            );
+            assert!(
+                tx2_result.unwrap().passed_assertions,
+                "Transaction 2 should pass assertions"
+            );
+
+            // Verify final block state
+            assert_eq!(
+                engine.get_block_env().unwrap().number,
+                2,
+                "Should be on block 2"
+            );
+        })
+        .await
+        .expect("Test timed out");
     }
 }
