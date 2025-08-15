@@ -94,7 +94,7 @@ pub enum TransactionResult {
     /// Transaction was processed successfully (may have reverted/halted, but validation completed)
     ValidationCompleted {
         execution_result: ExecutionResult,
-        passed_assertions: bool,
+        is_valid: bool,
     },
     /// Internal error occurred during validation process
     ValidationError(String),
@@ -211,12 +211,21 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let is_valid = rax.is_valid();
         let execution_result = rax.result_and_state.result.clone();
 
+        info!(
+            target = "engine",
+            tx_hash = %tx_hash,
+            is_valid,
+            execution_result = ?execution_result,
+            "Transaction processed"
+        );
+
         if is_valid {
+            // Transaction valid, passed assertions, commit state for successful transactions
             debug!(
                 target = "engine",
                 tx_hash = %tx_hash,
                 tx_env= ?tx_env,
-                "Transaction passed all assertions, processing result"
+                "Transaction does not invalidate assertions, processing result"
             );
             trace!(
                 target = "engine",
@@ -224,44 +233,14 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 assertions_ran = ?rax.assertions_executions,
                 "Assertions execution details"
             );
-            // Transaction valid, passed assertions, commit state for successful transactions
-            match &execution_result {
-                ExecutionResult::Success { gas_used, .. } => {
-                    info!(
-                        target = "engine",
-                        tx_hash = %tx_hash,
-                        gas_used,
-                        "Transaction executed successfully"
-                    );
-                    self.state.commit(rax.result_and_state.state);
-                }
-                ExecutionResult::Revert { gas_used, .. } => {
-                    debug!(
-                        target = "engine",
-                        tx_hash = %tx_hash,
-                        gas_used,
-                        "Transaction reverted but passed assertions - normal execution outcome"
-                    );
-                    // Reverts are normal transaction outcomes, don't commit state changes
-                }
-                ExecutionResult::Halt { reason, gas_used } => {
-                    debug!(
-                        target = "engine",
-                        tx_hash = %tx_hash,
-                        reason = ?reason,
-                        gas_used,
-                        "Transaction halted but passed assertions - normal execution outcome"
-                    );
-                    // Store the result before returning error
-                    self.transaction_results.insert(
-                        tx_hash,
-                        TransactionResult {
-                            execution_result,
-                            passed_assertions: is_valid,
-                        },
-                    );
-                    return Err(EngineError::TransactionError);
-                }
+            
+            if execution_result.is_success() {
+                trace!(
+                    target = "engine",
+                    tx_hash = %tx_hash,
+                    "Commiting state of successful tx"
+                );
+                self.state.commit(rax.result_and_state.state);
             }
         } else {
             warn!(
@@ -283,7 +262,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             tx_hash,
             TransactionResult::ValidationCompleted {
                 execution_result,
-                passed_assertions: is_valid,
+                is_valid,
             },
         );
 
@@ -515,8 +494,8 @@ mod tests {
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
         match tx_result.unwrap() {
-            TransactionResult::ValidationCompleted { passed_assertions, .. } => {
-                assert!(passed_assertions, "Transaction should pass assertions");
+            TransactionResult::ValidationCompleted { is_valid, .. } => {
+                assert!(is_valid, "Transaction should pass assertions");
             }
             TransactionResult::ValidationError(e) => {
                 panic!("Unexpected validation error: {:?}", e);
@@ -637,9 +616,9 @@ mod tests {
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
         match tx_result.unwrap() {
-            TransactionResult::ValidationCompleted { execution_result, passed_assertions } => {
+            TransactionResult::ValidationCompleted { execution_result, is_valid } => {
                 assert!(
-                    *passed_assertions,
+                    *is_valid,
                     "Transaction should pass assertions (no assertions to fail)"
                 );
                 match execution_result {
@@ -756,9 +735,9 @@ mod tests {
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
         match tx_result.unwrap() {
-            TransactionResult::ValidationCompleted { execution_result, passed_assertions } => {
+            TransactionResult::ValidationCompleted { execution_result, is_valid } => {
                 assert!(
-                    *passed_assertions,
+                    *is_valid,
                     "Transaction should pass assertions"
                 );
                 match execution_result {
@@ -859,8 +838,8 @@ mod tests {
         let result = engine.get_transaction_result(&tx_hash);
         assert!(result.is_some(), "Transaction result should be stored");
         match result.unwrap() {
-            TransactionResult::ValidationCompleted { passed_assertions, .. } => {
-                assert!(passed_assertions, "Transaction should pass assertions");
+            TransactionResult::ValidationCompleted { is_valid, .. } => {
+                assert!(is_valid, "Transaction should pass assertions");
             }
             TransactionResult::ValidationError(e) => {
                 panic!("Unexpected validation error: {:?}", e);
@@ -986,16 +965,16 @@ mod tests {
                 "Transaction 2 result should be stored"
             );
             match tx1_result.unwrap() {
-                TransactionResult::ValidationCompleted { passed_assertions, .. } => {
-                    assert!(passed_assertions, "Transaction 1 should pass assertions");
+                TransactionResult::ValidationCompleted { is_valid, .. } => {
+                    assert!(is_valid, "Transaction 1 should pass assertions");
                 }
                 TransactionResult::ValidationError(e) => {
                     panic!("Transaction 1 unexpected validation error: {:?}", e);
                 }
             }
             match tx2_result.unwrap() {
-                TransactionResult::ValidationCompleted { passed_assertions, .. } => {
-                    assert!(passed_assertions, "Transaction 2 should pass assertions");
+                TransactionResult::ValidationCompleted { is_valid, .. } => {
+                    assert!(is_valid, "Transaction 2 should pass assertions");
                 }
                 TransactionResult::ValidationError(e) => {
                     panic!("Transaction 2 unexpected validation error: {:?}", e);
