@@ -88,11 +88,16 @@ pub enum EngineError {
     ChannelClosed,
 }
 
-/// Result of transaction execution
+/// Represents either a successful transaction validation or an internal validation error
 #[derive(Debug, Clone)]
-pub struct TransactionResult {
-    pub execution_result: ExecutionResult,
-    pub passed_assertions: bool,
+pub enum TransactionResult {
+    /// Transaction was processed successfully (may have reverted/halted, but validation completed)
+    ValidationCompleted {
+        execution_result: ExecutionResult,
+        passed_assertions: bool,
+    },
+    /// Internal error occurred during validation process
+    ValidationError(String),
 }
 
 /// The engine processes blocks and appends transactions to them.
@@ -178,7 +183,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             "Validating transaction against assertions"
         );
 
-        // Note: does not actually run assertions because we instantiate a test store with no way to add them.
+        // Validate transaction and run assertions
         let rax = match self.assertion_executor.validate_transaction_ext_db(
             block_env.clone(),
             tx_env.clone(),
@@ -192,18 +197,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     error = ?e,
                     tx_hash = %tx_hash,
                     tx_env= ?tx_env,
-                    "Transaction execution failed"
+                    "Internal validation error occurred"
                 );
-                // Store a failed result before returning error
+                // Store the validation error result
                 self.transaction_results.insert(
                     tx_hash,
-                    TransactionResult {
-                        execution_result: ExecutionResult::Revert {
-                            output: Default::default(),
-                            gas_used: 0,
-                        },
-                        passed_assertions: false,
-                    },
+                    TransactionResult::ValidationError(format!("{:?}", e)),
                 );
                 return Err(EngineError::AssertionError);
             }
@@ -225,7 +224,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 assertions_ran = ?rax.assertions_executions,
                 "Assertions execution details"
             );
-            // Transaction valid, passed assertions, commit
+            // Transaction valid, passed assertions, commit state for successful transactions
             match &execution_result {
                 ExecutionResult::Success { gas_used, .. } => {
                     info!(
@@ -237,20 +236,21 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     self.state.commit(rax.result_and_state.state);
                 }
                 ExecutionResult::Revert { gas_used, .. } => {
-                    warn!(
+                    debug!(
                         target = "engine",
                         tx_hash = %tx_hash,
                         gas_used,
-                        "Transaction reverted"
+                        "Transaction reverted but passed assertions - normal execution outcome"
                     );
+                    // Reverts are normal transaction outcomes, don't commit state changes
                 }
                 ExecutionResult::Halt { reason, gas_used } => {
-                    error!(
+                    debug!(
                         target = "engine",
                         tx_hash = %tx_hash,
                         reason = ?reason,
                         gas_used,
-                        "Transaction halted"
+                        "Transaction halted but passed assertions - normal execution outcome"
                     );
                     // Store the result before returning error
                     self.transaction_results.insert(
@@ -281,7 +281,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         // Store the transaction result
         self.transaction_results.insert(
             tx_hash,
-            TransactionResult {
+            TransactionResult::ValidationCompleted {
                 execution_result,
                 passed_assertions: is_valid,
             },
@@ -514,10 +514,14 @@ mod tests {
         // Verify transaction result is stored
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        assert!(
-            tx_result.unwrap().passed_assertions,
-            "Transaction should pass assertions"
-        );
+        match tx_result.unwrap() {
+            TransactionResult::ValidationCompleted { passed_assertions, .. } => {
+                assert!(passed_assertions, "Transaction should pass assertions");
+            }
+            TransactionResult::ValidationError(e) => {
+                panic!("Unexpected validation error: {:?}", e);
+            }
+        }
     }
 
     #[test]
@@ -632,16 +636,22 @@ mod tests {
         // Verify transaction result is stored and shows it reverted
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        let result_data = tx_result.unwrap();
-        assert!(
-            result_data.passed_assertions,
-            "Transaction should pass assertions (no assertions to fail)"
-        );
-        match &result_data.execution_result {
-            assertion_executor::primitives::ExecutionResult::Revert { .. } => {
-                // Expected - transaction reverted
+        match tx_result.unwrap() {
+            TransactionResult::ValidationCompleted { execution_result, passed_assertions } => {
+                assert!(
+                    *passed_assertions,
+                    "Transaction should pass assertions (no assertions to fail)"
+                );
+                match execution_result {
+                    ExecutionResult::Revert { .. } => {
+                        // Expected - transaction reverted
+                    }
+                    other => panic!("Expected Revert result, got {:?}", other),
+                }
             }
-            other => panic!("Expected Revert result, got {:?}", other),
+            TransactionResult::ValidationError(e) => {
+                panic!("Unexpected validation error: {:?}", e);
+            }
         }
     }
 
@@ -745,16 +755,22 @@ mod tests {
         // Verify transaction result is stored and succeeded
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        let result_data = tx_result.unwrap();
-        assert!(
-            result_data.passed_assertions,
-            "Transaction should pass assertions"
-        );
-        match &result_data.execution_result {
-            assertion_executor::primitives::ExecutionResult::Success { .. } => {
-                // Expected - transaction succeeded
+        match tx_result.unwrap() {
+            TransactionResult::ValidationCompleted { execution_result, passed_assertions } => {
+                assert!(
+                    *passed_assertions,
+                    "Transaction should pass assertions"
+                );
+                match execution_result {
+                    ExecutionResult::Success { .. } => {
+                        // Expected - transaction succeeded
+                    }
+                    other => panic!("Expected Success result, got {:?}", other),
+                }
             }
-            other => panic!("Expected Success result, got {:?}", other),
+            TransactionResult::ValidationError(e) => {
+                panic!("Unexpected validation error: {:?}", e);
+            }
         }
     }
 
@@ -842,10 +858,14 @@ mod tests {
         // Verify the transaction was processed
         let result = engine.get_transaction_result(&tx_hash);
         assert!(result.is_some(), "Transaction result should be stored");
-        assert!(
-            result.unwrap().passed_assertions,
-            "Transaction should pass assertions"
-        );
+        match result.unwrap() {
+            TransactionResult::ValidationCompleted { passed_assertions, .. } => {
+                assert!(passed_assertions, "Transaction should pass assertions");
+            }
+            TransactionResult::ValidationError(e) => {
+                panic!("Unexpected validation error: {:?}", e);
+            }
+        }
     }
 
     #[tokio::test]
@@ -965,14 +985,22 @@ mod tests {
                 tx2_result.is_some(),
                 "Transaction 2 result should be stored"
             );
-            assert!(
-                tx1_result.unwrap().passed_assertions,
-                "Transaction 1 should pass assertions"
-            );
-            assert!(
-                tx2_result.unwrap().passed_assertions,
-                "Transaction 2 should pass assertions"
-            );
+            match tx1_result.unwrap() {
+                TransactionResult::ValidationCompleted { passed_assertions, .. } => {
+                    assert!(passed_assertions, "Transaction 1 should pass assertions");
+                }
+                TransactionResult::ValidationError(e) => {
+                    panic!("Transaction 1 unexpected validation error: {:?}", e);
+                }
+            }
+            match tx2_result.unwrap() {
+                TransactionResult::ValidationCompleted { passed_assertions, .. } => {
+                    assert!(passed_assertions, "Transaction 2 should pass assertions");
+                }
+                TransactionResult::ValidationError(e) => {
+                    panic!("Transaction 2 unexpected validation error: {:?}", e);
+                }
+            }
 
             // Verify final block state
             assert_eq!(
