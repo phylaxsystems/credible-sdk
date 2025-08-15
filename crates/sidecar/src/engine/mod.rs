@@ -209,10 +209,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             }
         };
 
-        let passed_assertions = rax.is_valid();
+        let is_valid = rax.is_valid();
         let execution_result = rax.result_and_state.result.clone();
 
-        if passed_assertions {
+        if is_valid {
             debug!(
                 target = "engine",
                 tx_hash = %tx_hash,
@@ -257,7 +257,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         tx_hash,
                         TransactionResult {
                             execution_result,
-                            passed_assertions,
+                            is_valid,
                         },
                     );
                     return Err(EngineError::TransactionError);
@@ -283,7 +283,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             tx_hash,
             TransactionResult {
                 execution_result,
-                passed_assertions,
+                is_valid,
             },
         );
 
