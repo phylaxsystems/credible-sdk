@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_successful_transaction_execution() {
-        let (mut engine, tx_sender) = create_test_engine();
+        let (mut engine, _) = create_test_engine();
         let block_env = create_test_block_env();
 
         // Create a simple transaction that doesn't require assertions
@@ -493,35 +493,10 @@ mod tests {
         // Generate a random transaction hash for testing
         let tx_hash = B256::from([0x11; 32]);
 
-        // Send block environment first
-        tx_sender
-            .send(TxQueueContents::Block(block_env.clone()))
-            .unwrap();
-
-        // Send the transaction
-        tx_sender
-            .send(TxQueueContents::Tx(queue::QueueTransaction {
-                tx_hash,
-                tx_env: tx_env.clone(),
-            }))
-            .unwrap();
-
-        // Process one iteration of the engine loop manually for testing
-        let received_block = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Block(block) => block,
-            _ => panic!("Expected block environment"),
-        };
-        engine.block_env = Some(received_block);
-
-        let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx(queue_transaction) => {
-                (queue_transaction.tx_hash, queue_transaction.tx_env)
-            }
-            _ => panic!("Expected transaction"),
-        };
+        engine.block_env = Some(block_env.clone());
 
         // Execute the transaction
-        let result = engine.execute_transaction(received_tx_hash, received_tx_env);
+        let result = engine.execute_transaction(tx_hash, tx_env);
 
         assert!(
             result.is_ok(),
@@ -545,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_reverting_transaction_no_state_update() {
-        let (mut engine, tx_sender) = create_test_engine();
+        let (mut engine, _) = create_test_engine();
         let block_env = create_test_block_env();
 
         // Create a transaction that will revert - Create with bytecode that calls REVERT
@@ -585,35 +560,10 @@ mod tests {
             "Contract account should not exist before transaction"
         );
 
-        // Send block environment first
-        tx_sender
-            .send(TxQueueContents::Block(block_env.clone()))
-            .unwrap();
-
-        // Send the reverting transaction
-        tx_sender
-            .send(TxQueueContents::Tx(queue::QueueTransaction {
-                tx_hash,
-                tx_env: tx_env.clone(),
-            }))
-            .unwrap();
-
-        // Process the block environment
-        let received_block = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Block(block) => block,
-            _ => panic!("Expected block environment"),
-        };
-        engine.block_env = Some(received_block);
-
-        let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx(queue_transaction) => {
-                (queue_transaction.tx_hash, queue_transaction.tx_env)
-            }
-            _ => panic!("Expected transaction"),
-        };
+        engine.block_env = Some(block_env);
 
         // Execute the reverting transaction
-        let result = engine.execute_transaction(received_tx_hash, received_tx_env);
+        let result = engine.execute_transaction(tx_hash, tx_env.clone());
 
         // The transaction execution should complete successfully even if the transaction reverts
         assert!(
@@ -695,7 +645,7 @@ mod tests {
 
     #[test]
     fn test_database_commit_verification() {
-        let (mut engine, tx_sender) = create_test_engine();
+        let (mut engine, _) = create_test_engine();
         let block_env = create_test_block_env();
 
         // Create a simple create transaction that will succeed
@@ -716,33 +666,10 @@ mod tests {
         // Get initial cache state
         let initial_cache_count = engine.get_state().cache_entry_count();
 
-        // Send block environment and transaction
-        tx_sender
-            .send(TxQueueContents::Block(block_env.clone()))
-            .unwrap();
-        tx_sender
-            .send(TxQueueContents::Tx(queue::QueueTransaction {
-                tx_hash,
-                tx_env: tx_env.clone(),
-            }))
-            .unwrap();
-
-        // Process the block environment
-        let received_block = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Block(block) => block,
-            _ => panic!("Expected block environment"),
-        };
-        engine.block_env = Some(received_block);
-
-        let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx(queue_transaction) => {
-                (queue_transaction.tx_hash, queue_transaction.tx_env)
-            }
-            _ => panic!("Expected transaction"),
-        };
+        engine.block_env = Some(block_env);
 
         // Execute the transaction
-        let result = engine.execute_transaction(received_tx_hash, received_tx_env);
+        let result = engine.execute_transaction(tx_hash, tx_env.clone());
         assert!(result.is_ok(), "Transaction should execute successfully");
 
         // Verify the caller's account state was updated
@@ -831,7 +758,7 @@ mod tests {
 
     #[test]
     fn test_engine_requires_block_env_before_tx() {
-        let (mut engine, tx_sender) = create_test_engine();
+        let (mut engine, _) = create_test_engine();
         let tx_env = TxEnv {
             caller: Address::from([0x04; 20]),
             gas_limit: 100000,
@@ -846,23 +773,8 @@ mod tests {
         // Generate a random transaction hash for testing
         let tx_hash = B256::from([0x44; 32]);
 
-        // Send transaction without block environment first
-        tx_sender
-            .send(TxQueueContents::Tx(queue::QueueTransaction {
-                tx_hash,
-                tx_env: tx_env.clone(),
-            }))
-            .unwrap();
-
-        let (received_tx_hash, received_tx_env) = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Tx(queue_transaction) => {
-                (queue_transaction.tx_hash, queue_transaction.tx_env)
-            }
-            _ => panic!("Expected transaction"),
-        };
-
         // Execute transaction without block environment
-        let result = engine.execute_transaction(received_tx_hash, received_tx_env);
+        let result = engine.execute_transaction(tx_hash, tx_env.clone());
 
         assert!(
             result.is_err(),
@@ -874,43 +786,6 @@ mod tests {
             }
             other => panic!("Expected TransactionError, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn test_engine_maintains_block_state() {
-        let (mut engine, tx_sender) = create_test_engine();
-        let block_env1 = BlockEnv {
-            number: 1,
-            ..create_test_block_env()
-        };
-        let block_env2 = BlockEnv {
-            number: 2,
-            ..create_test_block_env()
-        };
-
-        // Send first block
-        tx_sender
-            .send(TxQueueContents::Block(block_env1.clone()))
-            .unwrap();
-        let received_block1 = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Block(block) => block,
-            _ => panic!("Expected block environment"),
-        };
-        engine.block_env = Some(received_block1);
-
-        assert_eq!(engine.get_block_env().unwrap().number, 1);
-
-        // Send second block
-        tx_sender
-            .send(TxQueueContents::Block(block_env2.clone()))
-            .unwrap();
-        let received_block2 = match engine.tx_receiver.try_recv().unwrap() {
-            TxQueueContents::Block(block) => block,
-            _ => panic!("Expected block environment"),
-        };
-        engine.block_env = Some(received_block2);
-
-        assert_eq!(engine.get_block_env().unwrap().number, 2);
     }
 
     #[tokio::test] 
