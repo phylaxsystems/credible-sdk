@@ -37,25 +37,17 @@ use crate::{
         tracer::CallTracer,
     },
     primitives::{
-        AccountInfo,
         Address,
-        Bytecode,
         Bytes,
         FixedBytes,
         Journal,
-        U256,
-        bytes,
     },
 };
 
 use op_revm::OpContext;
 use revm::{
     Inspector,
-    JournalEntry,
-    context::{
-        ContextTr,
-        JournalInner,
-    },
+    context::ContextTr,
     interpreter::{
         CallInputs,
         CallOutcome,
@@ -117,9 +109,7 @@ pub struct PhEvmInspector<'a> {
 
 impl<'a> PhEvmInspector<'a> {
     /// Create a new PhEvmInspector.
-    pub fn new(journal: &mut JournalInner<JournalEntry>, context: PhEvmContext<'a>) -> Self {
-        insert_precompile_account(journal);
-
+    pub fn new(context: PhEvmContext<'a>) -> Self {
         PhEvmInspector { context }
     }
 
@@ -233,21 +223,6 @@ impl<'a> PhEvmInspector<'a> {
 
         Ok(result)
     }
-}
-
-/// Insert the precompile account into the database.
-fn insert_precompile_account(journal: &mut JournalInner<JournalEntry>) {
-    let precompile_account = AccountInfo {
-        nonce: 1,
-        balance: U256::MAX,
-        code: Some(Bytecode::new_raw(bytes!("DEAD"))),
-        //Code needed to hit 'call(..)' fn of the inspector trait
-        ..Default::default()
-    };
-
-    journal
-        .state
-        .insert(PRECOMPILE_ADDRESS, precompile_account.into());
 }
 
 /// Macro to implement Inspector trait for multiple context types.

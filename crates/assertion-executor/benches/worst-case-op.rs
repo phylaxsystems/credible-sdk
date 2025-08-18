@@ -46,10 +46,7 @@ use evm_glue::{
     opcodes::Opcode::*,
 };
 use op_revm::OpTransaction;
-use revm::{
-    ExecuteEvm,
-    context::JournalInner,
-};
+use revm::ExecuteEvm;
 
 fn register_op<M: Measurement>(
     group: &mut BenchmarkGroup<M>,
@@ -90,7 +87,7 @@ fn register_op<M: Measurement>(
         call_traces: &call_tracer,
     };
     let phevm_context = PhEvmContext::new(&logs_and_traces, Address::ZERO);
-    let inspector = PhEvmInspector::new(SpecId::default(), &mut JournalInner::new(), phevm_context);
+    let inspector = PhEvmInspector::new(phevm_context);
     let env = evm_env(1, SpecId::default(), BlockEnv::default());
     let mut multi_fork_db = MultiForkDb::new(fork);
     let mut evm = build_optimism_evm(&mut multi_fork_db, &env, inspector);
@@ -228,7 +225,7 @@ fn test_ecrecover() {
         call_traces: &call_tracer,
     };
     let phevm_context = PhEvmContext::new(&logs_and_traces, addr);
-    let inspector = PhEvmInspector::new(SpecId::default(), &mut JournalInner::new(), phevm_context);
+    let inspector = PhEvmInspector::new(phevm_context);
     let env = evm_env(1, SpecId::default(), BlockEnv::default());
     let mut evm = build_optimism_evm(&mut multi_fork_db, &env, inspector);
 

@@ -10,6 +10,7 @@ use crate::{
     constants::{
         ASSERTION_CONTRACT,
         CALLER,
+        PRECOMPILE_ADDRESS,
     },
     db::{
         DatabaseCommit,
@@ -40,6 +41,7 @@ use crate::{
         AssertionFunctionExecutionResult,
         AssertionFunctionResult,
         BlockEnv,
+        Bytecode,
         EvmStorage,
         FixedBytes,
         ResultAndState,
@@ -47,6 +49,7 @@ use crate::{
         TxKind,
         TxValidationResult,
         U256,
+        bytes,
     },
     reprice_evm_storage,
     store::AssertionStore,
@@ -281,7 +284,19 @@ impl AssertionExecutor {
         let mut post_tx_assertion_journal = context.logs_and_traces.call_traces.journal.clone();
         self.insert_assertion_contract(assertion_contract, &mut post_tx_assertion_journal);
 
-        let inspector = PhEvmInspector::new(&mut post_tx_assertion_journal, context.clone());
+        let precompile_account = AccountInfo {
+            nonce: 1,
+            balance: U256::MAX,
+            code: Some(Bytecode::new_raw(bytes!("DEAD"))),
+            //Code needed to hit 'call(..)' fn of the inspector trait
+            ..Default::default()
+        };
+
+        post_tx_assertion_journal
+            .state
+            .insert(PRECOMPILE_ADDRESS, precompile_account.into());
+
+        let inspector = PhEvmInspector::new(context.clone());
         let assertion_gas = AtomicU64::new(0);
         let assertions_ran = AtomicU64::new(0);
 
