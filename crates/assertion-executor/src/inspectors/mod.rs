@@ -6,7 +6,6 @@ mod trigger_recorder;
 
 pub use phevm::{
     LogsAndTraces,
-    PRECOMPILE_ADDRESS,
     PhEvmContext,
     PhEvmInspector,
 };

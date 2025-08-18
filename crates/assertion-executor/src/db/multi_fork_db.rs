@@ -1,16 +1,10 @@
 use crate::{
+    constants::DEFAULT_PERSISTENT_ACCOUNTS,
     db::{
         Database,
         DatabaseRef,
     },
-    executor::{
-        ASSERTION_CONTRACT,
-        CALLER,
-    },
-    inspectors::{
-        CallTracer,
-        PRECOMPILE_ADDRESS,
-    },
+    inspectors::CallTracer,
     primitives::{
         AccountInfo,
         Address,
@@ -24,10 +18,6 @@ use crate::{
 use std::collections::HashMap;
 
 use revm::context::JournalInner;
-
-/// Default persistent accounts.
-/// Journaled state of these accounts will be persisted across forks.
-const DEFAULT_PERSISTENT_ACCOUNTS: [Address; 3] = [ASSERTION_CONTRACT, CALLER, PRECOMPILE_ADDRESS];
 
 /// Represents the various forms of forks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -240,6 +230,7 @@ impl<ExtDb: DatabaseRef> DatabaseRef for MultiForkDb<ExtDb> {
 #[cfg(test)]
 mod test_multi_fork {
     use super::*;
+    use crate::constants::ASSERTION_CONTRACT;
     use revm::{
         database::InMemoryDB,
         interpreter::{

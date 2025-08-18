@@ -1,4 +1,5 @@
 use crate::{
+    constants::PRECOMPILE_ADDRESS,
     db::{
         DatabaseRef,
         multi_fork_db::MultiForkDb,
@@ -43,7 +44,6 @@ use crate::{
         FixedBytes,
         Journal,
         U256,
-        address,
         bytes,
     },
 };
@@ -67,10 +67,6 @@ use revm::{
 
 use alloy_evm::eth::EthEvmContext;
 use alloy_sol_types::SolCall;
-
-/// Precompile address
-/// address(uint160(uint256(keccak256("Kim Jong Un Sucks"))))
-pub const PRECOMPILE_ADDRESS: Address = address!("4461812e00718ff8D80929E3bF595AEaaa7b881E");
 
 #[derive(Debug, Clone)]
 pub struct LogsAndTraces<'a> {

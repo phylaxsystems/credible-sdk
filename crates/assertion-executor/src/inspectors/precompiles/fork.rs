@@ -120,8 +120,10 @@ mod test {
         U256,
     };
     use revm::{
+        JournalEntry,
         context::{
             ContextTr,
+            JournalInner,
             JournalTr,
         },
         handler::MainnetContext,
