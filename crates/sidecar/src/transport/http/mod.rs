@@ -31,6 +31,8 @@ pub struct HttpTransport {
     tx_sender: TransactionQueueSender,
     /// HTTP client for outbound requests
     client: reqwest::Client,
+    /// URL to use for making requests to the driver
+    driver_url: SocketAddr,
     /// Server bind address
     bind_addr: SocketAddr,
     /// Server task handle (set when running)
@@ -55,6 +57,7 @@ impl Transport for HttpTransport {
             tx_sender,
             client,
             bind_addr: config.bind_addr,
+            driver_url: config.driver_addr,
             server_handle: None,
         })
     }
