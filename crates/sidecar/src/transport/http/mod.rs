@@ -123,7 +123,6 @@ impl Transport for HttpTransport {
                 .with_graceful_shutdown(async move { shutdown_token.cancelled().await })
                 .await
         });
-
         tokio::select! {
             result = server_task => {
                 match result {
