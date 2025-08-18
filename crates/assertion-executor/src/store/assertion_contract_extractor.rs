@@ -2,12 +2,12 @@ use std::convert::Infallible;
 
 use crate::{
     ExecutorConfig,
-    db::DatabaseCommit,
-    evm::build_evm::evm_env,
-    executor::{
+    constants::{
         ASSERTION_CONTRACT,
         CALLER,
     },
+    db::DatabaseCommit,
+    evm::build_evm::evm_env,
     inspectors::{
         TriggerRecorder,
         insert_trigger_recorder_account,

@@ -7,6 +7,11 @@ use std::{
 
 use crate::{
     ExecutorConfig,
+    constants::{
+        ASSERTION_CONTRACT,
+        CALLER,
+        PRECOMPILE_ADDRESS,
+    },
     db::{
         DatabaseCommit,
         DatabaseRef,
@@ -36,6 +41,7 @@ use crate::{
         AssertionFunctionExecutionResult,
         AssertionFunctionResult,
         BlockEnv,
+        Bytecode,
         EvmStorage,
         FixedBytes,
         ResultAndState,
@@ -43,7 +49,7 @@ use crate::{
         TxKind,
         TxValidationResult,
         U256,
-        address,
+        bytes,
     },
     reprice_evm_storage,
     store::AssertionStore,
@@ -67,14 +73,6 @@ use tracing::{
     trace,
     warn,
 };
-
-/// Used to deploys the assertion contract to the forked db, and to call assertion functions.
-pub const CALLER: Address = address!("00000000000000000000000000000000000001A4");
-
-/// The address of the assertion contract.
-/// This is a fixed address that is used to deploy assertion contracts.
-/// Deploying assertion contracts via the caller address @ nonce 0 results in this address
-pub const ASSERTION_CONTRACT: Address = address!("63f9abbe8aa6ba1261ef3b0cbfb25a5ff8eeed10");
 
 #[derive(Debug, Clone)]
 pub struct AssertionExecutor {
@@ -285,12 +283,20 @@ impl AssertionExecutor {
 
         let mut post_tx_assertion_journal = context.logs_and_traces.call_traces.journal.clone();
         self.insert_assertion_contract(assertion_contract, &mut post_tx_assertion_journal);
-        let inspector = PhEvmInspector::new(
-            self.config.spec_id,
-            &mut post_tx_assertion_journal,
-            context.clone(),
-        );
 
+        let precompile_account = AccountInfo {
+            nonce: 1,
+            balance: U256::MAX,
+            code: Some(Bytecode::new_raw(bytes!("DEAD"))),
+            //Code needed to hit 'call(..)' fn of the inspector trait
+            ..Default::default()
+        };
+
+        post_tx_assertion_journal
+            .state
+            .insert(PRECOMPILE_ADDRESS, precompile_account.into());
+
+        let inspector = PhEvmInspector::new(context.clone());
         let assertion_gas = AtomicU64::new(0);
         let assertions_ran = AtomicU64::new(0);
 
