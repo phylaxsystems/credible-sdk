@@ -10518,6 +10518,7 @@ dependencies = [
  "clap",
  "crossbeam",
  "ctor",
+ "reqwest",
  "revm",
  "rust-tracing",
  "serde",
