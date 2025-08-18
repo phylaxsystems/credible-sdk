@@ -11,7 +11,7 @@ use axum::{
 };
 use std::{
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicBool, Arc, Mutex},
 };
 use tokio::sync::oneshot;
 
@@ -40,6 +40,8 @@ pub struct HttpTransport {
     bind_addr: SocketAddr,
     /// Shutdown signal sender
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    /// Signal if the transport has seen a blockenv, will respond to txs with errors if not
+    has_blockenv: AtomicBool,
 }
 
 /// Health check endpoint
@@ -73,6 +75,7 @@ impl Transport for HttpTransport {
             bind_addr: config.bind_addr,
             driver_url: config.driver_addr,
             shutdown_tx: Arc::new(Mutex::new(None)),
+            has_blockenv: AtomicBool::new(false),
         })
     }
 
