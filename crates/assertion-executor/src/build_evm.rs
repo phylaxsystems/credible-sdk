@@ -302,7 +302,7 @@ mod tests {
         };
         let phvem_context = PhEvmContext::new(&logs_and_traces, address);
 
-        let inspector = PhEvmInspector::new(Default::default(), &mut multi_fork_db, &phvem_context);
+        let inspector = PhEvmInspector::new(&mut Default::default(), &phvem_context);
 
         let mut evm = setup_phevm(&mut multi_fork_db, inspector, tx_env.clone(), with_reprice);
         evm.transact().unwrap().result

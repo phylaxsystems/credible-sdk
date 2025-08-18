@@ -296,8 +296,7 @@ mod tests {
         };
         let phvem_context = PhEvmContext::new(&logs_and_traces, address);
 
-        let inspector =
-            PhEvmInspector::new(Default::default(), &mut Default::default(), phvem_context);
+        let inspector = PhEvmInspector::new(&mut Default::default(), phvem_context);
 
         #[cfg(feature = "optimism")]
         let (mut evm, tx_env) = {

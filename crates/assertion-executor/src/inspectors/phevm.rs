@@ -42,7 +42,6 @@ use crate::{
         Bytes,
         FixedBytes,
         Journal,
-        SpecId,
         U256,
         address,
         bytes,
@@ -117,25 +116,15 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
 /// PhEvmInspector is an inspector for supporting the PhEvm precompiles.
 #[derive(Debug, Clone)]
 pub struct PhEvmInspector<'a> {
-    init_journal: JournalInner<JournalEntry>,
     pub context: PhEvmContext<'a>,
 }
 
 impl<'a> PhEvmInspector<'a> {
     /// Create a new PhEvmInspector.
-    pub fn new(
-        spec_id: SpecId,
-        journal: &mut JournalInner<JournalEntry>,
-        context: PhEvmContext<'a>,
-    ) -> Self {
+    pub fn new(journal: &mut JournalInner<JournalEntry>, context: PhEvmContext<'a>) -> Self {
         insert_precompile_account(journal);
 
-        let mut init_journal = JournalInner::new();
-        init_journal.set_spec_id(spec_id);
-        PhEvmInspector {
-            init_journal,
-            context,
-        }
+        PhEvmInspector { context }
     }
 
     /// Execute precompile functions for the PhEvm.
@@ -158,22 +147,13 @@ impl<'a> PhEvmInspector<'a> {
             .unwrap_or_default()
         {
             PhEvm::forkPreTxCall::SELECTOR => {
-                fork_pre_tx(
-                    &self.init_journal,
-                    context,
-                    self.context.logs_and_traces.call_traces,
-                )?
+                fork_pre_tx(context, self.context.logs_and_traces.call_traces)?
             }
             PhEvm::forkPostTxCall::SELECTOR => {
-                fork_post_tx(
-                    &self.init_journal,
-                    context,
-                    self.context.logs_and_traces.call_traces,
-                )?
+                fork_post_tx(context, self.context.logs_and_traces.call_traces)?
             }
             PhEvm::forkPreCallCall::SELECTOR => {
                 fork_pre_call(
-                    &self.init_journal,
                     context,
                     self.context.logs_and_traces.call_traces,
                     input_bytes,
@@ -181,7 +161,6 @@ impl<'a> PhEvmInspector<'a> {
             }
             PhEvm::forkPostCallCall::SELECTOR => {
                 fork_post_call(
-                    &self.init_journal,
                     context,
                     self.context.logs_and_traces.call_traces,
                     input_bytes,

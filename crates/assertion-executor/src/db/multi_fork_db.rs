@@ -39,7 +39,6 @@ pub enum ForkId {
 }
 
 /// A multi-fork database for managing multiple forks.
-/// init_journal must be set during initialization of the interpreter.
 #[derive(Debug, Clone)]
 pub struct MultiForkDb<ExtDb> {
     /// Underlying database used for accounts not present in the journaled state.
@@ -72,7 +71,6 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         fork_id: ForkId,
         active_journal: &mut JournalInner<JournalEntry>,
         call_tracer: &CallTracer,
-        init_journal: &JournalInner<JournalEntry>,
     ) -> Result<(), MultiForkError> {
         // If the fork is already active, do nothing.
         if fork_id == self.active_fork_id {
@@ -84,7 +82,7 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
             Some(target_fork_journal) => target_fork_journal,
             None => {
                 match fork_id {
-                    ForkId::PreTx => init_journal.clone(), // Initialize to init journal if pre tx
+                    ForkId::PreTx => JournalInner::new(), // Initialize to init journal if pre tx
                     ForkId::PostTx => return Err(MultiForkError::PostTxJournalNotFound), //Error post should always be present in inactive_journals if it is not currently the active journal,
                     ForkId::PreCall(call_id) => {
                         let mut pre_call_journal = self.get_post_tx_journal(active_journal)?;
@@ -327,15 +325,8 @@ mod test_multi_fork {
 
         //Test options are preserved and underlying db is read correctly
 
-        let init_journal = JournalInner::new();
-
-        db.switch_fork(
-            ForkId::PreCall(0),
-            &mut active_journal,
-            &call_tracer,
-            &init_journal,
-        )
-        .unwrap();
+        db.switch_fork(ForkId::PreCall(0), &mut active_journal, &call_tracer)
+            .unwrap();
 
         //Assert currently on pre call 0
         assert_eq!(db.active_fork_id, ForkId::PreCall(0));
@@ -345,13 +336,8 @@ mod test_multi_fork {
         );
         assert_eq!(active_journal.account(account).info.balance, uint!(0_U256));
 
-        db.switch_fork(
-            ForkId::PostCall(0),
-            &mut active_journal,
-            &call_tracer,
-            &init_journal,
-        )
-        .unwrap();
+        db.switch_fork(ForkId::PostCall(0), &mut active_journal, &call_tracer)
+            .unwrap();
 
         //Assert currently on post call 0
         assert_eq!(db.active_fork_id, ForkId::PostCall(0));
@@ -361,26 +347,16 @@ mod test_multi_fork {
             uint!(1000_U256)
         );
 
-        db.switch_fork(
-            ForkId::PreCall(1),
-            &mut active_journal,
-            &call_tracer,
-            &init_journal,
-        )
-        .unwrap();
+        db.switch_fork(ForkId::PreCall(1), &mut active_journal, &call_tracer)
+            .unwrap();
         assert_eq!(active_journal.account(caller).info.balance, uint!(100_U256));
         assert_eq!(
             active_journal.account(account).info.balance,
             uint!(1000_U256)
         );
 
-        db.switch_fork(
-            ForkId::PostCall(1),
-            &mut active_journal,
-            &call_tracer,
-            &init_journal,
-        )
-        .unwrap();
+        db.switch_fork(ForkId::PostCall(1), &mut active_journal, &call_tracer)
+            .unwrap();
 
         assert_eq!(active_journal.account(caller).info.balance, uint!(0_U256));
         assert_eq!(
@@ -415,8 +391,6 @@ mod test_multi_fork {
 
         //Test options are preserved and underlying db is read correctly
 
-        let init_journal = JournalInner::new();
-
         assert!(!db.inactive_journals.contains_key(&ForkId::PreTx));
         assert!(!db.inactive_journals.contains_key(&ForkId::PostTx));
 
@@ -428,13 +402,8 @@ mod test_multi_fork {
             uint!(1000_U256)
         );
 
-        db.switch_fork(
-            ForkId::PreTx,
-            &mut active_journal,
-            &CallTracer::new(),
-            &init_journal,
-        )
-        .unwrap();
+        db.switch_fork(ForkId::PreTx, &mut active_journal, &CallTracer::new())
+            .unwrap();
 
         // should have post tx state in inactive
         let post_tx_journal: &JournalInner<JournalEntry> =
@@ -457,13 +426,8 @@ mod test_multi_fork {
         assert!(!db.inactive_journals.contains_key(&ForkId::PreTx));
         assert_eq!(db.active_fork_id, ForkId::PreTx);
 
-        db.switch_fork(
-            ForkId::PostTx,
-            &mut active_journal,
-            &CallTracer::new(),
-            &init_journal,
-        )
-        .unwrap();
+        db.switch_fork(ForkId::PostTx, &mut active_journal, &CallTracer::new())
+            .unwrap();
 
         let pre_tx_fork = db.inactive_journals.get(&ForkId::PreTx).unwrap();
         assert_eq!(pre_tx_fork.account(caller).info.balance, U256::from(1000));
@@ -484,8 +448,8 @@ mod test_multi_fork {
     #[test]
     fn test_journal_persistence() {
         // Test that journaled state is persisted across forks for
-        let init_journal = JournalInner::new();
-        let mut active_journal = init_journal.clone();
+
+        let mut active_journal = JournalInner::new();
 
         let address: Address = random_bytes::<20>().into();
         active_journal.state.insert(
@@ -520,13 +484,8 @@ mod test_multi_fork {
 
         let mut db = MultiForkDb::new(pre_tx_fork_db);
 
-        db.switch_fork(
-            ForkId::PreTx,
-            &mut active_journal,
-            &CallTracer::new(),
-            &init_journal,
-        )
-        .unwrap();
+        db.switch_fork(ForkId::PreTx, &mut active_journal, &CallTracer::new())
+            .unwrap();
 
         assert_eq!(
             active_journal

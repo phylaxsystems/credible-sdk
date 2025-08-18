@@ -285,11 +285,7 @@ impl AssertionExecutor {
 
         let mut post_tx_assertion_journal = context.logs_and_traces.call_traces.journal.clone();
         self.insert_assertion_contract(assertion_contract, &mut post_tx_assertion_journal);
-        let inspector = PhEvmInspector::new(
-            self.config.spec_id,
-            &mut post_tx_assertion_journal,
-            context.clone(),
-        );
+        let inspector = PhEvmInspector::new(&mut post_tx_assertion_journal, context.clone());
 
         let assertion_gas = AtomicU64::new(0);
         let assertions_ran = AtomicU64::new(0);
