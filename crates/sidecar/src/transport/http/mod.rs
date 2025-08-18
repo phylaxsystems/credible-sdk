@@ -9,8 +9,11 @@ use axum::{
     Router,
     routing::get,
 };
-use std::net::SocketAddr;
-use tokio::task::JoinHandle;
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
+use tokio::sync::oneshot;
 
 pub mod config;
 
@@ -35,13 +38,24 @@ pub struct HttpTransport {
     driver_url: SocketAddr,
     /// Server bind address
     bind_addr: SocketAddr,
-    /// Server task handle (set when running)
-    server_handle: Option<JoinHandle<()>>,
+    /// Shutdown signal sender
+    shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
-// Health check endpoint
+/// Health check endpoint
 async fn health() -> &'static str {
     "OK"
+}
+
+/// Create health check routes
+fn health_routes() -> Router {
+    Router::new().route("/health", get(health))
+}
+
+/// Create transaction submission routes
+fn transaction_routes() -> Router {
+    // TODO: Add transaction submission endpoints
+    Router::new()
 }
 
 impl Transport for HttpTransport {
@@ -58,13 +72,14 @@ impl Transport for HttpTransport {
             client,
             bind_addr: config.bind_addr,
             driver_url: config.driver_addr,
-            server_handle: None,
+            shutdown_tx: Arc::new(Mutex::new(None)),
         })
     }
 
     async fn run(&self) -> Result<(), Self::Error> {
-        // TODO: Add transaction submission endpoints
-        let app = Router::new().route("/health", get(health));
+        let app = Router::new()
+            .merge(health_routes())
+            .merge(transaction_routes());
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
             .await
@@ -76,17 +91,40 @@ impl Transport for HttpTransport {
             })?;
 
         tracing::info!("HTTP transport server starting on {}", self.bind_addr);
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| HttpTransportError::ServerError(format!("Server error: {}", e)))?;
+        
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        *self.shutdown_tx.lock().unwrap() = Some(shutdown_tx);
+        
+        let server_task = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    shutdown_rx.await.ok();
+                })
+                .await
+        });
 
-        Ok(())
+        tokio::select! {
+            result = server_task => {
+                match result {
+                    Ok(server_result) => {
+                        server_result.map_err(|e| HttpTransportError::ServerError(format!("Server error: {}", e)))
+                    }
+                    Err(e) => {
+                        Err(HttpTransportError::ServerError(format!("Server task error: {}", e)))
+                    }
+                }
+            }
+            // Add other tasks here as needed
+        }
     }
 
     async fn stop(&mut self) -> Result<(), Self::Error> {
-        if let Some(handle) = self.server_handle.take() {
-            handle.abort();
+        tracing::info!("Stopping HTTP transport");
+        
+        if let Some(shutdown_tx) = self.shutdown_tx.lock().unwrap().take() {
+            let _ = shutdown_tx.send(());
         }
+        
         Ok(())
     }
 }
