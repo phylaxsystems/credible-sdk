@@ -1,4 +1,5 @@
 //! JSON-RPC server implementation for the sidecar
+//! **FIXME: PLACEHOLDER, TO BE DEPRECATED WHEN PROPER HTTP JSON TRANSPORT IS IMPLEMENTED**
 
 use crate::SidecarArgs;
 use axum::{

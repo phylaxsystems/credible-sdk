@@ -1,3 +1,5 @@
+//! # The credible layer sidecar
+
 mod args;
 mod config;
 #[allow(dead_code)] // TODO: rm when engine fully impld and connected to transport

@@ -24,6 +24,12 @@ use crate::engine::queue::TransactionQueueSender;
 /// The `Transport` trait defines the interface for external communication adapters that
 /// forward transactions and block environments to the core engine.
 ///
+/// A transport should be implemented when implementing a new communication interface
+/// between the sidecar and driver (or sequencer). A transport should be entirely self contained
+/// spawning all services it needs to communicate inside of itself. The only way it should
+/// interact with the rest of the sidecar code is via the `TransactionQueueSender` passed to
+/// the driver on creation.
+///
 /// ## Associated Types
 ///
 /// - `Error`: Transport-specific error type for connection and protocol failures
@@ -37,6 +43,7 @@ use crate::engine::queue::TransactionQueueSender;
 #[allow(async_fn_in_trait)]
 pub trait Transport: Send + Sync {
     type Error: std::error::Error + Send;
+    /// Optional config type. Intended to be used to configure the transport (i.e., ports, paths, etc...)
     type Config: Send;
 
     /// Create a new transport instance with the given configuration and queue sender.
