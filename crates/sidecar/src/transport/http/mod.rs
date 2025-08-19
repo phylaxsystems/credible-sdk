@@ -1,3 +1,4 @@
+//! HTTP JSON-RPC transport
 use crate::{
     engine::queue::TransactionQueueSender,
     transport::{
@@ -11,9 +12,9 @@ use axum::{
 };
 use std::{
     net::SocketAddr,
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::atomic::AtomicBool,
 };
-use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 pub mod config;
 
@@ -27,6 +28,26 @@ pub enum HttpTransportError {
     ClientError(#[from] reqwest::Error),
 }
 
+/// Implementation of the HTTP `Transport`.
+/// Contains server for accepting transaction events, and server to call
+/// the driver when missing state.
+///
+/// ## Initializing
+///
+/// Initializing the transport should be done via the `new()` function.
+/// One of the arguments is the `HttpTransportConfig`. The config contains
+/// endpoints to which the transport should either listen on or connect to.
+/// The transport will error on init if it tries to open a server on an occupied port.
+///
+/// ## Running
+///
+/// After initialization, the transport should be ran via `run`. It will proceed to spawn
+/// multiple tasks needed for both the server, client and for its own operational purposes.
+///
+/// ## Cleaning up
+///
+/// The transport will attempt to clean up as well as it can when gracefully shutting down with
+/// `stop`. This means severing client/server connections and performing database flushes if aplicable.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct HttpTransport {
@@ -38,8 +59,8 @@ pub struct HttpTransport {
     driver_url: SocketAddr,
     /// Server bind address
     bind_addr: SocketAddr,
-    /// Shutdown signal sender
-    shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    /// Shutdown cancellation token
+    shutdown_token: CancellationToken,
     /// Signal if the transport has seen a blockenv, will respond to txs with errors if not
     has_blockenv: AtomicBool,
 }
@@ -74,7 +95,7 @@ impl Transport for HttpTransport {
             client,
             bind_addr: config.bind_addr,
             driver_url: config.driver_addr,
-            shutdown_tx: Arc::new(Mutex::new(None)),
+            shutdown_token: CancellationToken::new(),
             has_blockenv: AtomicBool::new(false),
         })
     }
@@ -95,13 +116,11 @@ impl Transport for HttpTransport {
 
         tracing::info!("HTTP transport server starting on {}", self.bind_addr);
         
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        *self.shutdown_tx.lock().unwrap() = Some(shutdown_tx);
-        
+        let shutdown_token = self.shutdown_token.clone();
         let server_task = tokio::spawn(async move {
             axum::serve(listener, app)
-                .with_graceful_shutdown(async {
-                    shutdown_rx.await.ok();
+                .with_graceful_shutdown(async move {
+                    shutdown_token.cancelled().await
                 })
                 .await
         });
@@ -123,11 +142,7 @@ impl Transport for HttpTransport {
 
     async fn stop(&mut self) -> Result<(), Self::Error> {
         tracing::info!("Stopping HTTP transport");
-        
-        if let Some(shutdown_tx) = self.shutdown_tx.lock().unwrap().take() {
-            let _ = shutdown_tx.send(());
-        }
-        
+        self.shutdown_token.cancel();
         Ok(())
     }
 }

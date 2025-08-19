@@ -10526,6 +10526,7 @@ dependencies = [
  "sled",
  "thiserror 2.0.12",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber 0.3.19",
 ]
