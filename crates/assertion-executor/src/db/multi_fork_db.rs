@@ -56,8 +56,8 @@ pub struct MultiForkDb<ExtDb> {
 pub enum MultiForkError {
     #[error("Post tx journal not found.")]
     PostTxJournalNotFound,
-    #[error("Target fork's journal should never be None at this point")]
-    TargetForkJournalNotFound,
+    #[error("Target fork's journal should never be None when switching to it")]
+    TargetForkJournalNotFound(ForkId),
 }
 
 impl<ExtDb: Clone + DatabaseCommit> MultiForkDb<ExtDb> {
@@ -153,7 +153,7 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         *active_journal = target_fork
             .journal
             .take()
-            .ok_or(MultiForkError::TargetForkJournalNotFound)?;
+            .ok_or(MultiForkError::TargetForkJournalNotFound(fork_id))?;
 
         self.active_fork_id = fork_id;
 
