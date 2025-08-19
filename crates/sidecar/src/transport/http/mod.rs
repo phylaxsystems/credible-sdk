@@ -48,6 +48,7 @@ pub enum HttpTransportError {
 ///
 /// The transport will attempt to clean up as well as it can when gracefully shutting down with
 /// `stop`. This means severing client/server connections and performing database flushes if aplicable.
+// TODO: this is a WIP and is not actually functional for now.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct HttpTransport {
