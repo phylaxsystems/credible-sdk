@@ -1,7 +1,7 @@
 use crate::{
     db::{
         DatabaseRef,
-        MultiForkDb,
+        multi_fork_db::MultiForkDb,
     },
     inspectors::sol_primitives::PhEvm::loadCall,
     primitives::{
@@ -62,7 +62,10 @@ where
 #[cfg(test)]
 mod test {
     use crate::{
-        db::overlay::test_utils::MockDb,
+        db::{
+            fork_db::ForkDb,
+            overlay::test_utils::MockDb,
+        },
         inspectors::sol_primitives::PhEvm::loadCall,
         primitives::{
             AccountInfo,
@@ -81,6 +84,7 @@ mod test {
         U256,
     };
     use alloy_sol_types::SolCall;
+    use revm::context::JournalInner;
     use revm::{
         interpreter::{
             CallInput,
@@ -161,7 +165,8 @@ mod test {
 
         // Create context with storage value
         let mock_db = create_mock_db_with_storage(target, slot, expected_value);
-        let mut multi_fork = MultiForkDb::new(mock_db);
+        let mut multi_fork = MultiForkDb::new(ForkDb::new(mock_db), &JournalInner::new());
+
         let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
         let result = load_external_slot(&mut context, &call_inputs);
@@ -180,7 +185,7 @@ mod test {
 
         // Create context with account but no storage for this slot
         let mock_db = create_mock_db_with_storage(target, random_u256(), random_u256());
-        let mut multi_fork = MultiForkDb::new(mock_db);
+        let mut multi_fork = MultiForkDb::new(ForkDb::new(mock_db), &JournalInner::new());
         let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
         let result = load_external_slot(&mut context, &call_inputs);
@@ -199,8 +204,7 @@ mod test {
 
         // Create context with no accounts
         let mock_db = create_mock_db_with_storage(Address::ZERO, random_u256(), random_u256());
-
-        let mut multi_fork = MultiForkDb::new(mock_db);
+        let mut multi_fork = MultiForkDb::new(ForkDb::new(mock_db), &JournalInner::new());
         let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
         let result = load_external_slot(&mut context, &call_inputs);

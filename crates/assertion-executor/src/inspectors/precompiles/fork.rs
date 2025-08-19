@@ -1,5 +1,6 @@
 use crate::{
     db::{
+        DatabaseCommit,
         DatabaseRef,
         multi_fork_db::{
             ForkId,
@@ -35,7 +36,7 @@ pub enum ForkError {
 }
 
 /// Fork to the state before the transaction.
-pub fn fork_pre_tx<'db, ExtDb: DatabaseRef + 'db, CTX>(
+pub fn fork_pre_tx<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
 ) -> Result<Bytes, ForkError>
@@ -49,7 +50,7 @@ where
 }
 
 /// Fork to the state after the transaction.
-pub fn fork_post_tx<'db, ExtDb: DatabaseRef + 'db, CTX>(
+pub fn fork_post_tx<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
 ) -> Result<Bytes, ForkError>
@@ -63,7 +64,7 @@ where
 }
 
 /// Fork to the state before the call.
-pub fn fork_pre_call<'db, ExtDb: DatabaseRef + 'db, CTX>(
+pub fn fork_pre_call<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
     input_bytes: Bytes,
@@ -80,7 +81,7 @@ where
 }
 
 /// Fork to the state after the call.
-pub fn fork_post_call<'db, ExtDb: DatabaseRef + 'db, CTX>(
+pub fn fork_post_call<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
     input_bytes: Bytes,
@@ -151,20 +152,19 @@ mod test {
             );
         }
 
-        let mut journaled_inner = JournalInner::new();
+        let mut journal_inner = JournalInner::new();
         // Set up post-tx state
         for (address, slot, value) in post_tx_storage {
-            journaled_inner
-                .load_account(&mut pre_tx_db, address)
-                .unwrap();
-            journaled_inner
+            journal_inner.load_account(&mut pre_tx_db, address).unwrap();
+            journal_inner
                 .sstore(&mut pre_tx_db, address, slot, value)
                 .unwrap();
+            journal_inner.touch(address); // Mark account as touched so changes get committed
         }
 
-        let multi_fork_db = MultiForkDb::new(ForkDb::new(pre_tx_db));
+        let multi_fork_db = MultiForkDb::new(ForkDb::new(pre_tx_db), &journal_inner);
 
-        (multi_fork_db, journaled_inner)
+        (multi_fork_db, journal_inner)
     }
 
     #[test]
@@ -246,20 +246,19 @@ mod test {
         // Start with pre-tx state
         let result = fork_pre_tx(&mut context, &CallTracer::new());
         assert!(result.is_ok());
-        context.journal().load_account(address).unwrap();
-        let storage_value = context.sload(address, slot).unwrap().data;
+        let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, pre_value);
 
         // Switch to post-tx state
         let result = fork_post_tx(&mut context, &CallTracer::new());
         assert!(result.is_ok());
-        let storage_value = context.sload(address, slot).unwrap().data;
+        let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, post_value);
 
         // Switch back to pre-tx state
         let result = fork_pre_tx(&mut context, &CallTracer::new());
         assert!(result.is_ok());
-        let storage_value = context.sload(address, slot).unwrap().data;
+        let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, pre_value);
     }
 
@@ -288,15 +287,12 @@ mod test {
             journal.inner = test_journal;
         });
 
-        // Test pre-tx stats
+        // Test pre-tx state
         let result = fork_pre_tx(&mut context, &CallTracer::new());
         assert!(result.is_ok());
 
-        context.journal().load_account(address1).unwrap();
-        context.journal().load_account(address2).unwrap();
-
-        let storage_value1 = context.sload(address1, slot1).unwrap().data;
-        let storage_value2 = context.sload(address2, slot2).unwrap().data;
+        let storage_value1 = context.db().storage_ref(address1, slot1).unwrap();
+        let storage_value2 = context.db().storage_ref(address2, slot2).unwrap();
         assert_eq!(storage_value1, U256::from(10));
         assert_eq!(storage_value2, U256::from(20));
 
@@ -304,8 +300,8 @@ mod test {
         let result = fork_post_tx(&mut context, &CallTracer::new());
         assert!(result.is_ok());
 
-        let storage_value1 = context.sload(address1, slot1).unwrap().data;
-        let storage_value2 = context.sload(address2, slot2).unwrap().data;
+        let storage_value1 = context.db().storage_ref(address1, slot1).unwrap();
+        let storage_value2 = context.db().storage_ref(address2, slot2).unwrap();
         assert_eq!(storage_value1, U256::from(30));
         assert_eq!(storage_value2, U256::from(40));
     }
@@ -313,6 +309,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tx_fork_integration() {
         let result = run_precompile_test("TestFork").await;
+        println!("result: {:?}", result);
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(

@@ -1,6 +1,7 @@
 use crate::{
     constants::PRECOMPILE_ADDRESS,
     db::{
+        DatabaseCommit,
         DatabaseRef,
         multi_fork_db::MultiForkDb,
     },
@@ -41,6 +42,8 @@ use crate::{
         Bytes,
         FixedBytes,
         Journal,
+        JournalEntry,
+        JournalInner,
     },
 };
 
@@ -81,6 +84,11 @@ impl<'a> PhEvmContext<'a> {
             console_logs: vec![],
         }
     }
+
+    #[inline]
+    pub fn post_tx_journal(&self) -> &JournalInner<JournalEntry> {
+        &self.logs_and_traces.call_traces.journal
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -114,7 +122,7 @@ impl<'a> PhEvmInspector<'a> {
     }
 
     /// Execute precompile functions for the PhEvm.
-    pub fn execute_precompile<'db, ExtDb: DatabaseRef + 'db, CTX>(
+    pub fn execute_precompile<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
         &mut self,
         context: &mut CTX,
         inputs: &mut CallInputs,
@@ -230,7 +238,7 @@ impl<'a> PhEvmInspector<'a> {
 macro_rules! impl_phevm_inspector {
     ($($context_type:ty),* $(,)?) => {
         $(
-            impl<ExtDb: DatabaseRef> Inspector<$context_type> for PhEvmInspector<'_> {
+            impl<ExtDb: DatabaseRef + Clone + DatabaseCommit> Inspector<$context_type> for PhEvmInspector<'_> {
                 fn call(&mut self, context: &mut $context_type, inputs: &mut CallInputs) -> Option<CallOutcome> {
                     if inputs.target_address == PRECOMPILE_ADDRESS {
                         let call_outcome = inspector_result_to_call_outcome(
