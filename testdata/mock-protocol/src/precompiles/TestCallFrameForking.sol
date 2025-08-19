@@ -35,19 +35,9 @@ contract TestCallFrameForking is Assertion {
         }
     }
 
-    function callFrameForkingRevertAfterFork() external {
-        PhEvm.CallInputs[] memory callInputs = ph.getCallInputs(address(TARGET), Target.incrementStorage.selector);
-        for (uint256 i = 0; i < callInputs.length; i++) {
-            PhEvm.CallInputs memory callInput = callInputs[i];
-            ph.forkPreCall(callInput.id);
-            require(false, "revert after fork");
-        }
-    }
-
     function triggers() external view override {
         registerCallTrigger(this.callFrameForkingWriteStorage.selector);
         registerCallTrigger(this.callFrameForkingIncrementStorage.selector);
-        registerCallTrigger(this.callFrameForkingRevertAfterFork.selector);
     }
 }
 

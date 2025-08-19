@@ -330,4 +330,16 @@ mod test {
             result_and_state.result
         );
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_call_fork_revert_integration() {
+        let result = run_precompile_test("TestCallFrameForkingRevert").await;
+        assert!(!result.is_valid(), "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert!(
+            result_and_state.result.is_success(),
+            "{:#?}",
+            result_and_state.result
+        );
+    }
 }

@@ -193,6 +193,23 @@ pub(crate) fn update_journal(
             merge_journal_data(addr, active_journal, target_journal_inner);
         }
 
+        // if the target journal is empty we need to copy over the first two entries of active_journal
+        // FIXME(fredo): this is a hack to fill the journal with the entries up to the point
+        // where the assertion call frame was created. This is needed to ensure proper handling
+        // of a revert. We should find a better way to handle this because any change in behavior
+        // of revm could break this.
+        if target_journal_inner.journal.is_empty() {
+            if active_journal.journal.len() >= 2 {
+                target_journal_inner
+                    .journal
+                    .extend_from_slice(&active_journal.journal[0..2]);
+            } else {
+                target_journal_inner
+                    .journal
+                    .extend_from_slice(&active_journal.journal);
+            }
+        }
+
         // since all forks handle their state separately, the depth can drift
         // this is a handover where the target fork starts at the same depth where it was
         // selected. This ensures that there are no gaps in depth which could
