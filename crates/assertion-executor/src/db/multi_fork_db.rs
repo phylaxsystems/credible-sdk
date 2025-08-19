@@ -86,7 +86,7 @@ impl<ExtDb: Clone + DatabaseCommit> MultiForkDb<ExtDb> {
 
 impl<ExtDb> MultiForkDb<ExtDb> {
     #[inline]
-    pub(crate) fn active_fork(&self) -> &Fork<ExtDb> {
+    pub(crate) fn active_fork_ref(&self) -> &Fork<ExtDb> {
         &self.forks[&self.active_fork_id]
     }
 }
@@ -281,20 +281,20 @@ impl<ExtDb: DatabaseRef> DatabaseRef for MultiForkDb<ExtDb> {
         &self,
         address: Address,
     ) -> Result<Option<AccountInfo>, <ExtDb as DatabaseRef>::Error> {
-        self.active_fork().db.basic_ref(address)
+        self.active_fork_ref().db.basic_ref(address)
     }
     fn storage_ref(
         &self,
         address: Address,
         slot: U256,
     ) -> Result<U256, <ExtDb as DatabaseRef>::Error> {
-        self.active_fork().db.storage_ref(address, slot)
+        self.active_fork_ref().db.storage_ref(address, slot)
     }
     fn code_by_hash_ref(&self, hash: B256) -> Result<Bytecode, <ExtDb as DatabaseRef>::Error> {
-        self.active_fork().db.code_by_hash_ref(hash)
+        self.active_fork_ref().db.code_by_hash_ref(hash)
     }
     fn block_hash_ref(&self, number: u64) -> Result<B256, <ExtDb as DatabaseRef>::Error> {
-        self.active_fork().db.block_hash_ref(number)
+        self.active_fork_ref().db.block_hash_ref(number)
     }
 }
 
