@@ -115,13 +115,11 @@ impl Transport for HttpTransport {
             })?;
 
         tracing::info!("HTTP transport server starting on {}", self.bind_addr);
-        
+
         let shutdown_token = self.shutdown_token.clone();
         let server_task = tokio::spawn(async move {
             axum::serve(listener, app)
-                .with_graceful_shutdown(async move {
-                    shutdown_token.cancelled().await
-                })
+                .with_graceful_shutdown(async move { shutdown_token.cancelled().await })
                 .await
         });
 
