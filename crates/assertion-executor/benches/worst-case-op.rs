@@ -24,6 +24,7 @@ use assertion_executor::{
         Bytecode,
         EvmExecutionResult,
         HaltReason,
+        JournalInner,
         SpecId,
         TxEnv,
         TxKind,

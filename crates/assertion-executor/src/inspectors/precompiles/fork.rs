@@ -309,7 +309,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_tx_fork_integration() {
         let result = run_precompile_test("TestFork").await;
-        println!("result: {:?}", result);
+        println!("result: {result:?}");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(

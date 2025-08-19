@@ -329,8 +329,7 @@ mod test_multi_fork {
             let account_info = db.basic_ref(*address).unwrap().unwrap();
             assert_eq!(
                 account_info.balance, *expected_balance,
-                "Balance mismatch for address {:?}",
-                address
+                "Balance mismatch for address {address:?}"
             );
         }
         assert_eq!(db.active_fork_id, fork_id);
@@ -344,7 +343,7 @@ mod test_multi_fork {
     fn test_fork_pre_and_post_call() {
         let sender: Address = random_bytes::<20>().into();
         let receiver: Address = random_bytes::<20>().into();
-        let mut pre_tx_fork_db = setup_fork_db(sender.clone());
+        let mut pre_tx_fork_db = setup_fork_db(sender);
         let mut active_journal = JournalInner::new();
 
         let mut call_tracer = CallTracer::new();
@@ -426,7 +425,7 @@ mod test_multi_fork {
     fn test_fork_pre_and_post() {
         let sender: Address = random_bytes::<20>().into();
         let receiver: Address = random_bytes::<20>().into();
-        let mut pre_tx_fork_db = setup_fork_db(sender.clone());
+        let mut pre_tx_fork_db = setup_fork_db(sender);
         let mut active_journal = JournalInner::new();
 
         active_journal
@@ -478,7 +477,7 @@ mod test_multi_fork {
 
         let address: Address = random_bytes::<20>().into();
 
-        let pre_tx_fork_db = setup_fork_db(address.clone());
+        let pre_tx_fork_db = setup_fork_db(address);
         let mut active_journal = JournalInner::new();
         let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
         db.switch_fork(ForkId::PreTx, &mut active_journal, &CallTracer::new())
