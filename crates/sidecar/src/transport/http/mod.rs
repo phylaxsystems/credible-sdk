@@ -13,6 +13,7 @@ use axum::{
         post,
     },
 };
+use serde::{Deserialize, Serialize};
 use std::{
     net::SocketAddr,
     sync::{
@@ -80,12 +81,65 @@ pub struct HttpTransport {
     has_blockenv: Arc<AtomicBool>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct JsonRpcRequest {
+    pub jsonrpc: String,
+    pub method: String,
+    pub params: Option<serde_json::Value>,
+    pub id: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JsonRpcResponse {
+    pub jsonrpc: String,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<JsonRpcError>,
+    pub id: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JsonRpcError {
+    pub code: i32,
+    pub message: String,
+}
+
 /// Health check endpoint
 // TODO: add readiness endpoint
 #[instrument(name = "http_server::health", level = "trace")]
 async fn health() -> &'static str {
     trace!("Health check requested");
     "OK"
+}
+
+/// Handle JSON-RPC requests for transactions
+async fn handle_transaction_rpc(
+    Json(request): Json<JsonRpcRequest>,
+) -> Result<ResponseJson<JsonRpcResponse>, StatusCode> {
+    let response = match request.method.as_str() {
+        "sendTransaction" => {
+            JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({
+                    "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+                })),
+                error: None,
+                id: request.id,
+            }
+        }
+        _ => {
+            JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32601,
+                    message: "Method not found".to_string(),
+                }),
+                id: request.id,
+            }
+        }
+    };
+
+    Ok(ResponseJson(response))
 }
 
 /// Create health check routes
