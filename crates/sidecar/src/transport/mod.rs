@@ -17,6 +17,7 @@
 //! └─────────────┘    └───────────┘    └────────────┘
 //! ```
 
+pub mod decoder;
 pub mod http;
 pub mod mock;
 

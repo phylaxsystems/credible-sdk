@@ -50,7 +50,7 @@ pub struct SendTransactionsParams {
     pub transactions: Vec<Transaction>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
     pub method: String,
