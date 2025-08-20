@@ -57,6 +57,10 @@ impl Decoder for HttpTransactionDecoder {
     type Error = HttpDecoderError;
 
     fn to_transaction(req: Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error> {
+    	if req.method != "sendTransactions" {
+    		return Err(HttpDecoderError::SchemaError);
+    	}
+
         let params = req.params.ok_or(HttpDecoderError::MissingParams)?;
         let send_params: SendTransactionsParams =
             serde_json::from_value(params).map_err(|_| HttpDecoderError::SchemaError)?;
@@ -115,7 +119,6 @@ impl Decoder for HttpTransactionDecoder {
                 data,
                 nonce: transaction.tx_env.nonce,
                 chain_id: Some(transaction.tx_env.chain_id),
-                access_list: vec![].into(),
                 ..Default::default()
             };
 
