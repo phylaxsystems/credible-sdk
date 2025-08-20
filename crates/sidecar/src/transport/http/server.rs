@@ -167,7 +167,6 @@ impl ServerState {
     }
 }
 
-
 /// Handle JSON-RPC requests for transactions
 #[instrument(
     name = "http_server::handle_transaction_rpc",
@@ -205,17 +204,17 @@ pub async fn handle_transaction_rpc(
 
                                 // Send each decoded transaction to the queue
                                 for queue_tx in queue_transactions {
-                                    if let Err(e) = state.tx_sender.send(TxQueueContents::Tx(queue_tx)) {
+                                    if let Err(e) =
+                                        state.tx_sender.send(TxQueueContents::Tx(queue_tx))
+                                    {
                                         error!(
                                             error = %e,
                                             "Failed to send transaction to queue from transport server"
                                         );
-                                        return Ok(ResponseJson(
-                                            JsonRpcResponse::internal_error(
-                                                &request,
-                                                "Internal error: failed to queue transaction",
-                                            ),
-                                        ));
+                                        return Ok(ResponseJson(JsonRpcResponse::internal_error(
+                                            &request,
+                                            "Internal error: failed to queue transaction",
+                                        )));
                                     }
                                     processed_count += 1;
                                 }
@@ -243,7 +242,7 @@ pub async fn handle_transaction_rpc(
 
                                 JsonRpcResponse::internal_error(
                                     &request,
-                                    &format!("Failed to decode transactions: {}", e)
+                                    &format!("Failed to decode transactions: {}", e),
                                 )
                             }
                         }

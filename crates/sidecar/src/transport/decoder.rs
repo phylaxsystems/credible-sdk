@@ -14,9 +14,16 @@ use crate::{
 };
 use assertion_executor::primitives::hex;
 use revm::{
-    context::{BlockEnv, TxEnv},
+    context::{
+        BlockEnv,
+        TxEnv,
+    },
     primitives::{
-        Address, Bytes, TxKind, B256, U256
+        Address,
+        B256,
+        Bytes,
+        TxKind,
+        U256,
     },
 };
 use std::str::FromStr;
@@ -53,9 +60,9 @@ impl Decoder for HttpTransactionDecoder {
     type Error = HttpDecoderError;
 
     fn to_transaction(req: Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error> {
-    	if req.method != "sendTransactions" {
-    		return Err(HttpDecoderError::SchemaError);
-    	}
+        if req.method != "sendTransactions" {
+            return Err(HttpDecoderError::SchemaError);
+        }
 
         let params = req.params.ok_or(HttpDecoderError::MissingParams)?;
         let send_params: SendTransactionsParams =
@@ -66,7 +73,7 @@ impl Decoder for HttpTransactionDecoder {
         }
 
         let mut queue_transactions = Vec::new();
-        
+
         for transaction in send_params.transactions {
             let tx_hash = B256::from_str(&transaction.hash)
                 .map_err(|_| HttpDecoderError::InvalidHash(transaction.hash.clone()))?;
@@ -88,27 +95,25 @@ impl Decoder for HttpTransactionDecoder {
             let value = U256::from_str(&transaction.tx_env.value)
                 .map_err(|_| HttpDecoderError::InvalidHex(transaction.tx_env.value.clone()))?;
 
-            let gas_price: u128 = transaction
-                .tx_env
-                .gas_price
-                .parse()
-                .map_err(|_| HttpDecoderError::InvalidHex(transaction.tx_env.gas_price.clone()))?;
+            let gas_price: u128 =
+                transaction.tx_env.gas_price.parse().map_err(|_| {
+                    HttpDecoderError::InvalidHex(transaction.tx_env.gas_price.clone())
+                })?;
 
-            let data = if transaction.tx_env.data.is_empty() {
-                Bytes::new()
-            } else if transaction.tx_env.data.starts_with("0x") {
-                let hex_data = &transaction.tx_env.data[2..];
-                Bytes::from(
-                    hex::decode(hex_data)
-                        .map_err(|_| HttpDecoderError::InvalidHex(transaction.tx_env.data.clone()))?,
-                )
-            } else {
-                // Try to decode without 0x prefix
-                Bytes::from(
-                    hex::decode(&transaction.tx_env.data)
-                        .map_err(|_| HttpDecoderError::InvalidHex(transaction.tx_env.data.clone()))?,
-                )
-            };
+            let data =
+                if transaction.tx_env.data.is_empty() {
+                    Bytes::new()
+                } else if transaction.tx_env.data.starts_with("0x") {
+                    let hex_data = &transaction.tx_env.data[2..];
+                    Bytes::from(hex::decode(hex_data).map_err(|_| {
+                        HttpDecoderError::InvalidHex(transaction.tx_env.data.clone())
+                    })?)
+                } else {
+                    // Try to decode without 0x prefix
+                    Bytes::from(hex::decode(&transaction.tx_env.data).map_err(|_| {
+                        HttpDecoderError::InvalidHex(transaction.tx_env.data.clone())
+                    })?)
+                };
 
             let tx_env = TxEnv {
                 caller,
@@ -136,8 +141,18 @@ impl Decoder for HttpTransactionDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::http::server::{JsonRpcRequest, SendTransactionsParams, Transaction, TransactionEnv};
-    use revm::primitives::{Address, TxKind, U256, bytes};
+    use crate::transport::http::server::{
+        JsonRpcRequest,
+        SendTransactionsParams,
+        Transaction,
+        TransactionEnv,
+    };
+    use revm::primitives::{
+        Address,
+        TxKind,
+        U256,
+        bytes,
+    };
     use std::str::FromStr;
 
     fn create_test_transaction(
@@ -208,7 +223,7 @@ mod tests {
     fn test_single_transaction_success() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -218,7 +233,7 @@ mod tests {
             21000,
             "20000000000",
             42, // nonce
-            1, // mainnet
+            1,  // mainnet
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
@@ -231,15 +246,19 @@ mod tests {
         let decoded_tx = &transactions[0];
         assert_eq!(
             decoded_tx.tx_hash,
-            B256::from_str("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").unwrap()
+            B256::from_str("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
+                .unwrap()
         );
         assert_eq!(decoded_tx.tx_env.caller, caller);
-        assert_eq!(decoded_tx.tx_env.value, U256::from_str("1000000000000000000").unwrap());
+        assert_eq!(
+            decoded_tx.tx_env.value,
+            U256::from_str("1000000000000000000").unwrap()
+        );
         assert_eq!(decoded_tx.tx_env.gas_limit, 21000);
         assert_eq!(decoded_tx.tx_env.gas_price, 20000000000);
         assert_eq!(decoded_tx.tx_env.nonce, 42);
         assert_eq!(decoded_tx.tx_env.chain_id, Some(1));
-        
+
         if let TxKind::Call(to_addr) = decoded_tx.tx_env.kind {
             assert_eq!(to_addr, to);
         } else {
@@ -289,26 +308,37 @@ mod tests {
         let first_tx = &transactions[0];
         assert_eq!(
             first_tx.tx_hash,
-            B256::from_str("0x1111111111111111111111111111111111111111111111111111111111111111").unwrap()
+            B256::from_str("0x1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap()
         );
         assert_eq!(first_tx.tx_env.caller, caller1);
-        assert_eq!(first_tx.tx_env.value, U256::from_str("1000000000000000000").unwrap());
+        assert_eq!(
+            first_tx.tx_env.value,
+            U256::from_str("1000000000000000000").unwrap()
+        );
 
         // Verify second transaction
         let second_tx = &transactions[1];
         assert_eq!(
             second_tx.tx_hash,
-            B256::from_str("0x2222222222222222222222222222222222222222222222222222222222222222").unwrap()
+            B256::from_str("0x2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap()
         );
         assert_eq!(second_tx.tx_env.caller, caller2);
-        assert_eq!(second_tx.tx_env.value, U256::from_str("2000000000000000000").unwrap());
-        assert_eq!(second_tx.tx_env.data, revm::primitives::Bytes::from(vec![0x12, 0x34]));
+        assert_eq!(
+            second_tx.tx_env.value,
+            U256::from_str("2000000000000000000").unwrap()
+        );
+        assert_eq!(
+            second_tx.tx_env.data,
+            revm::primitives::Bytes::from(vec![0x12, 0x34])
+        );
     }
 
     #[test]
     fn test_contract_creation_transaction() {
         let caller = Address::random();
-        
+
         let transaction = create_test_transaction(
             "0x3333333333333333333333333333333333333333333333333333333333333333",
             caller,
@@ -337,7 +367,7 @@ mod tests {
     fn test_contract_call_transaction() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x4444444444444444444444444444444444444444444444444444444444444444",
             caller,
@@ -370,7 +400,7 @@ mod tests {
     fn test_wrong_method_error() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -401,7 +431,10 @@ mod tests {
 
         let result = HttpTransactionDecoder::to_transaction(request);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), HttpDecoderError::MissingParams));
+        assert!(matches!(
+            result.unwrap_err(),
+            HttpDecoderError::MissingParams
+        ));
     }
 
     #[test]
@@ -410,14 +443,17 @@ mod tests {
         let result = HttpTransactionDecoder::to_transaction(request);
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), HttpDecoderError::NoTransactions));
+        assert!(matches!(
+            result.unwrap_err(),
+            HttpDecoderError::NoTransactions
+        ));
     }
 
     #[test]
     fn test_invalid_hash_error() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "invalid_hash", // invalid hash format
             caller,
@@ -473,7 +509,7 @@ mod tests {
     fn test_invalid_value_error() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -501,7 +537,7 @@ mod tests {
     fn test_invalid_gas_price_error() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -529,7 +565,7 @@ mod tests {
     fn test_invalid_data_error() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -571,7 +607,7 @@ mod tests {
     fn test_zero_value_transaction() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -598,7 +634,7 @@ mod tests {
     fn test_empty_data_transaction() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -624,7 +660,7 @@ mod tests {
     #[test]
     fn test_0x_prefix_contract_creation() {
         let caller = Address::random();
-        
+
         let transaction = create_test_transaction(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -651,16 +687,16 @@ mod tests {
     fn test_large_values() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
             to,
             &U256::MAX.to_string(),
             "0x",
-            8000000, // high gas limit
+            8000000,        // high gas limit
             "100000000000", // high gas price
-            999999999, // high nonce
+            999999999,      // high nonce
             1,
         );
 
@@ -670,7 +706,7 @@ mod tests {
         assert!(result.is_ok());
         let transactions = result.unwrap();
         assert_eq!(transactions.len(), 1);
-        
+
         let decoded_tx = &transactions[0];
         assert_eq!(decoded_tx.tx_env.caller, caller);
         assert_eq!(decoded_tx.tx_env.gas_limit, 8000000);
@@ -713,7 +749,10 @@ mod tests {
         let result = HttpTransactionDecoder::to_transaction(request);
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), HttpDecoderError::InvalidHash(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidHash(_)
+        ));
     }
 
     #[test]
@@ -721,7 +760,7 @@ mod tests {
         let caller = Address::random();
         let to = Address::random();
         let long_data = "0x".to_string() + &"a".repeat(2000);
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -748,7 +787,7 @@ mod tests {
     fn test_malformed_hex_data() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -776,7 +815,7 @@ mod tests {
     fn test_calldata_without_0x_prefix() {
         let caller = Address::random();
         let to = Address::random();
-        
+
         let transaction = create_test_transaction_with_to(
             "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
             caller,
@@ -798,10 +837,11 @@ mod tests {
 
         let decoded_tx = &transactions[0];
         assert_eq!(decoded_tx.tx_env.caller, caller);
-        
-        let expected_bytes = bytes!("a9059cbb0000000000000000000000000000000000000000000000000000000000000001");
+
+        let expected_bytes =
+            bytes!("a9059cbb0000000000000000000000000000000000000000000000000000000000000001");
         assert_eq!(decoded_tx.tx_env.data, expected_bytes);
-        
+
         if let TxKind::Call(to_addr) = decoded_tx.tx_env.kind {
             assert_eq!(to_addr, to);
         } else {
@@ -829,7 +869,7 @@ mod tests {
             1,
         );
 
-        // Transaction without 0x prefix  
+        // Transaction without 0x prefix
         let tx_without_prefix = create_test_transaction_with_to(
             "0x2222222222222222222222222222222222222222222222222222222222222222",
             caller2,
@@ -842,7 +882,8 @@ mod tests {
             1,
         );
 
-        let request = create_test_request("sendTransactions", vec![tx_with_prefix, tx_without_prefix]);
+        let request =
+            create_test_request("sendTransactions", vec![tx_with_prefix, tx_without_prefix]);
         let result = HttpTransactionDecoder::to_transaction(request);
 
         assert!(result.is_ok());
@@ -853,7 +894,7 @@ mod tests {
         let expected_bytes = bytes!("1234abcd");
         assert_eq!(transactions[0].tx_env.data, expected_bytes);
         assert_eq!(transactions[1].tx_env.data, expected_bytes);
-        
+
         // Verify callers are different but data is the same
         assert_eq!(transactions[0].tx_env.caller, caller1);
         assert_eq!(transactions[1].tx_env.caller, caller2);
