@@ -8,15 +8,30 @@ use crate::{
 };
 use axum::{
     Router,
-    routing::get,
+    routing::{
+        get,
+        post,
+    },
 };
 use std::{
     net::SocketAddr,
-    sync::atomic::AtomicBool,
+    sync::{
+        Arc,
+        atomic::AtomicBool,
+    },
 };
 use tokio_util::sync::CancellationToken;
+use tracing::{
+    debug,
+    error,
+    info,
+    instrument,
+    trace,
+    warn,
+};
 
 pub mod config;
+pub mod server;
 
 #[derive(thiserror::Error, Debug)]
 pub enum HttpTransportError {
@@ -48,7 +63,6 @@ pub enum HttpTransportError {
 ///
 /// The transport will attempt to clean up as well as it can when gracefully shutting down with
 /// `stop`. This means severing client/server connections and performing database flushes if aplicable.
-// TODO: this is a WIP and is not actually functional for now.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct HttpTransport {
@@ -63,11 +77,14 @@ pub struct HttpTransport {
     /// Shutdown cancellation token
     shutdown_token: CancellationToken,
     /// Signal if the transport has seen a blockenv, will respond to txs with errors if not
-    has_blockenv: AtomicBool,
+    has_blockenv: Arc<AtomicBool>,
 }
 
 /// Health check endpoint
+// TODO: add readiness endpoint
+#[instrument(name = "http_server::health", level = "trace")]
 async fn health() -> &'static str {
+    trace!("Health check requested");
     "OK"
 }
 
@@ -77,19 +94,27 @@ fn health_routes() -> Router {
 }
 
 /// Create transaction submission routes
-fn transaction_routes() -> Router {
-    // TODO: Add transaction submission endpoints
+fn transaction_routes(state: server::ServerState) -> Router {
     Router::new()
+        .route("/tx", post(server::handle_transaction_rpc))
+        .with_state(state)
 }
 
 impl Transport for HttpTransport {
     type Error = HttpTransportError;
     type Config = HttpTransportConfig;
 
+    #[instrument(name = "http_transport::new", skip_all, level = "debug")]
     fn new(
         config: HttpTransportConfig,
         tx_sender: TransactionQueueSender,
     ) -> Result<Self, Self::Error> {
+        debug!(
+            bind_addr = %config.bind_addr,
+            driver_addr = %config.driver_addr,
+            "Creating HTTP transport"
+        );
+
         let client = reqwest::Client::new();
         Ok(Self {
             tx_sender,
@@ -97,25 +122,35 @@ impl Transport for HttpTransport {
             bind_addr: config.bind_addr,
             driver_url: config.driver_addr,
             shutdown_token: CancellationToken::new(),
-            has_blockenv: AtomicBool::new(false),
+            has_blockenv: Arc::new(AtomicBool::new(false)),
         })
     }
 
+    #[instrument(name = "http_transport::run", skip(self), fields(bind_addr = %self.bind_addr), level = "info")]
     async fn run(&self) -> Result<(), Self::Error> {
+        let state = server::ServerState::new(self.has_blockenv.clone());
         let app = Router::new()
             .merge(health_routes())
-            .merge(transaction_routes());
+            .merge(transaction_routes(state));
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
             .await
             .map_err(|e| {
+                error!(
+                    bind_addr = %self.bind_addr,
+                    error = %e,
+                    "Failed to bind HTTP transport listener"
+                );
                 HttpTransportError::ServerError(format!(
                     "Failed to bind to {}: {}",
                     self.bind_addr, e
                 ))
             })?;
 
-        tracing::info!("HTTP transport server starting on {}", self.bind_addr);
+        info!(
+            bind_addr = %self.bind_addr,
+            "HTTP transport server starting"
+        );
 
         let shutdown_token = self.shutdown_token.clone();
         let server_task = tokio::spawn(async move {
@@ -123,14 +158,17 @@ impl Transport for HttpTransport {
                 .with_graceful_shutdown(async move { shutdown_token.cancelled().await })
                 .await
         });
-
         tokio::select! {
             result = server_task => {
                 match result {
                     Ok(server_result) => {
-                        server_result.map_err(|e| HttpTransportError::ServerError(format!("Server error: {}", e)))
+                        server_result.map_err(|e| {
+                            error!(error = %e, "HTTP server error");
+                            HttpTransportError::ServerError(format!("Server error: {}", e))
+                        })
                     }
                     Err(e) => {
+                        error!(error = %e, "HTTP server task error");
                         Err(HttpTransportError::ServerError(format!("Server task error: {}", e)))
                     }
                 }
@@ -139,8 +177,9 @@ impl Transport for HttpTransport {
         }
     }
 
+    #[instrument(name = "http_transport::stop", skip(self), level = "info")]
     async fn stop(&mut self) -> Result<(), Self::Error> {
-        tracing::info!("Stopping HTTP transport");
+        info!("Stopping HTTP transport");
         self.shutdown_token.cancel();
         Ok(())
     }
