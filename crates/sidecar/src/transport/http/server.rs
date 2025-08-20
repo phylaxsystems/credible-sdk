@@ -1,5 +1,15 @@
 //! JSON-RPC server handlers for HTTP transport
 
+use crate::{
+    engine::queue::{
+        TransactionQueueSender,
+        TxQueueContents,
+    },
+    transport::decoder::{
+        Decoder,
+        HttpTransactionDecoder,
+    },
+};
 use axum::{
     extract::{
         Json,
@@ -21,11 +31,12 @@ use std::sync::{
 };
 use tracing::{
     debug,
+    error,
     instrument,
     trace,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TransactionEnv {
     pub caller: String,
     pub gas_limit: u64,
@@ -38,7 +49,7 @@ pub struct TransactionEnv {
     pub access_list: Vec<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Transaction {
     #[serde(rename = "txEnv")]
     pub tx_env: TransactionEnv,
@@ -96,11 +107,15 @@ impl JsonRpcResponse {
 #[derive(Clone, Debug)]
 pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
+    pub tx_sender: TransactionQueueSender,
 }
 
 impl ServerState {
-    pub fn new(has_blockenv: Arc<AtomicBool>) -> Self {
-        Self { has_blockenv }
+    pub fn new(has_blockenv: Arc<AtomicBool>, tx_sender: TransactionQueueSender) -> Self {
+        Self {
+            has_blockenv,
+            tx_sender,
+        }
     }
 }
 
@@ -130,27 +145,81 @@ pub async fn handle_transaction_rpc(
                 debug!("Rejecting transaction - no block environment available");
                 JsonRpcResponse::block_not_available(&request)
             } else {
-                trace!("Block environment available, parsing transaction parameters");
-
                 // Parse the params to validate the schema
                 match request.params {
                     Some(params) => {
-                        match serde_json::from_value::<SendTransactionsParams>(params) {
+                        match serde_json::from_value::<SendTransactionsParams>(params.clone()) {
                             Ok(send_params) => {
                                 let transaction_count = send_params.transactions.len();
+                                let mut processed_count = 0;
+
+                                // Process each transaction individually
+                                for _raw_tx in &send_params.transactions {
+                                    // Create a temporary JsonRpcRequest for each transaction
+                                    let tx_request = JsonRpcRequest {
+                                        jsonrpc: request.jsonrpc.clone(),
+                                        method: request.method.clone(),
+                                        params: Some(serde_json::json!({
+                                            "transactions": vec![_raw_tx]
+                                        })),
+                                        id: request.id.clone(),
+                                    };
+
+                                    match HttpTransactionDecoder::to_transaction(tx_request) {
+                                        Ok(queue_tx) => {
+                                            // Send the decoded transaction to the queue
+                                            if let Err(e) =
+                                                state.tx_sender.send(TxQueueContents::Tx(queue_tx))
+                                            {
+                                                error!(
+                                                    error = %e,
+                                                    "Failed to send transaction to queue from transport server"
+                                                );
+                                                return Ok(ResponseJson(JsonRpcResponse {
+                                                    jsonrpc: "2.0".to_string(),
+                                                    result: None,
+                                                    error: Some(JsonRpcError {
+                                                        code: -32603,
+                                                        message: "Internal error: failed to queue transaction".to_string(),
+                                                    }),
+                                                    id: request.id,
+                                                }));
+                                            }
+                                            processed_count += 1;
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                error = %e,
+                                                "Failed to decode transaction"
+                                            );
+                                            return Ok(ResponseJson(JsonRpcResponse {
+                                                jsonrpc: "2.0".to_string(),
+                                                result: None,
+                                                error: Some(JsonRpcError {
+                                                    code: -32602,
+                                                    message: format!(
+                                                        "Failed to decode transaction: {}",
+                                                        e
+                                                    ),
+                                                }),
+                                                id: request.id,
+                                            }));
+                                        }
+                                    }
+                                }
+
                                 debug!(
                                     transaction_count = transaction_count,
-                                    "Successfully parsed transaction batch"
+                                    processed_count = processed_count,
+                                    "Successfully processed transaction batch"
                                 );
-
-                                // TODO: Process the transactions
 
                                 JsonRpcResponse {
                                     jsonrpc: "2.0".to_string(),
                                     result: Some(serde_json::json!({
                                         "status": "accepted",
-                                        "transaction_count": transaction_count,
-                                        "message": format!("Successfully received {} transactions", transaction_count)
+                                        "transaction_count": processed_count,
+                                        "message": format!("Successfully processed {} transactions", processed_count)
                                     })),
                                     error: None,
                                     id: request.id,

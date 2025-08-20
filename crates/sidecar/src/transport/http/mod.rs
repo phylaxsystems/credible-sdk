@@ -13,6 +13,7 @@ use axum::{
         post,
     },
 };
+use std::marker::PhantomData;
 use std::{
     net::SocketAddr,
     sync::{
@@ -29,6 +30,8 @@ use tracing::{
     trace,
     warn,
 };
+
+use super::decoder::HttpTransactionDecoder;
 
 pub mod config;
 pub mod server;
@@ -128,7 +131,7 @@ impl Transport for HttpTransport {
 
     #[instrument(name = "http_transport::run", skip(self), fields(bind_addr = %self.bind_addr), level = "info")]
     async fn run(&self) -> Result<(), Self::Error> {
-        let state = server::ServerState::new(self.has_blockenv.clone());
+        let state = server::ServerState::new(self.has_blockenv.clone(), self.tx_sender.clone());
         let app = Router::new()
             .merge(health_routes())
             .merge(transaction_routes(state));

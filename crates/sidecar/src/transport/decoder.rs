@@ -25,7 +25,7 @@ use revm::{
 };
 use std::str::FromStr;
 
-trait Decoder {
+pub trait Decoder {
     type RawEvent: Send + Clone;
     type Error: std::error::Error + Send + Clone;
 
@@ -34,7 +34,7 @@ trait Decoder {
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
-enum HttpDecoderError {
+pub enum HttpDecoderError {
     #[error("Request not in proper schema")]
     SchemaError,
     #[error("Invalid address format: {0}")]
@@ -50,7 +50,7 @@ enum HttpDecoderError {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-struct HttpTransactionDecoder;
+pub struct HttpTransactionDecoder;
 
 impl Decoder for HttpTransactionDecoder {
     type RawEvent = JsonRpcRequest;
