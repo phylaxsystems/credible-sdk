@@ -68,6 +68,9 @@ pub struct JsonRpcError {
 }
 
 /// Server state containing shared data
+// FIXME: i dont like how we have to have a seprate data structure
+// for holding server state but i dont have a better solution if we
+// use axum. we can use other frameworks but id rather not
 #[derive(Clone, Debug)]
 pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
