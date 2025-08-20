@@ -19,6 +19,11 @@ use std::sync::{
         Ordering,
     },
 };
+use tracing::{
+    debug,
+    instrument,
+    trace,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct TransactionEnv {
@@ -83,14 +88,29 @@ impl ServerState {
 }
 
 /// Handle JSON-RPC requests for transactions
+#[instrument(
+    name = "http_server::handle_transaction_rpc",
+    skip(state),
+    fields(
+        method = %request.method,
+        jsonrpc = %request.jsonrpc,
+        request_id = ?request.id
+    ),
+    level = "debug"
+)]
 pub async fn handle_transaction_rpc(
     State(state): State<ServerState>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Result<ResponseJson<JsonRpcResponse>, StatusCode> {
+    debug!("Processing JSON-RPC request");
+
     let response = match request.method.as_str() {
         "sendTransactions" => {
+            trace!("Processing sendTransactions request");
+
             // Check if we have block environment before processing transactions
             if !state.has_blockenv.load(Ordering::Relaxed) {
+                debug!("Rejecting transaction - no block environment available");
                 JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     result: None,
@@ -101,13 +121,20 @@ pub async fn handle_transaction_rpc(
                     id: request.id,
                 }
             } else {
+                trace!("Block environment available, parsing transaction parameters");
+
                 // Parse the params to validate the schema
                 match request.params {
                     Some(params) => {
                         match serde_json::from_value::<SendTransactionsParams>(params) {
                             Ok(send_params) => {
-                                // TODO: Process the transactions
                                 let transaction_count = send_params.transactions.len();
+                                debug!(
+                                    transaction_count = transaction_count,
+                                    "Successfully parsed transaction batch"
+                                );
+
+                                // TODO: Process the transactions
 
                                 JsonRpcResponse {
                                     jsonrpc: "2.0".to_string(),
@@ -121,6 +148,11 @@ pub async fn handle_transaction_rpc(
                                 }
                             }
                             Err(e) => {
+                                debug!(
+                                    error = %e,
+                                    "Failed to parse sendTransactions parameters"
+                                );
+
                                 JsonRpcResponse {
                                     jsonrpc: "2.0".to_string(),
                                     result: None,
@@ -134,6 +166,8 @@ pub async fn handle_transaction_rpc(
                         }
                     }
                     None => {
+                        debug!("sendTransactions request missing required parameters");
+
                         JsonRpcResponse {
                             jsonrpc: "2.0".to_string(),
                             result: None,
@@ -148,6 +182,11 @@ pub async fn handle_transaction_rpc(
             }
         }
         _ => {
+            debug!(
+                method = %request.method,
+                "Unknown JSON-RPC method requested"
+            );
+
             JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: None,
@@ -159,6 +198,11 @@ pub async fn handle_transaction_rpc(
             }
         }
     };
+
+    debug!(
+        has_error = response.error.is_some(),
+        "Sending JSON-RPC response"
+    );
 
     Ok(ResponseJson(response))
 }

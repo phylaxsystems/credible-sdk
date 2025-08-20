@@ -21,6 +21,14 @@ use std::{
     },
 };
 use tokio_util::sync::CancellationToken;
+use tracing::{
+    debug,
+    error,
+    info,
+    instrument,
+    trace,
+    warn,
+};
 
 pub mod config;
 pub mod server;
@@ -74,7 +82,9 @@ pub struct HttpTransport {
 }
 
 /// Health check endpoint
+#[instrument(name = "http_server::health", level = "trace")]
 async fn health() -> &'static str {
+    trace!("Health check requested");
     "OK"
 }
 
@@ -94,10 +104,17 @@ impl Transport for HttpTransport {
     type Error = HttpTransportError;
     type Config = HttpTransportConfig;
 
+    #[instrument(name = "http_transport::new", skip_all, level = "debug")]
     fn new(
         config: HttpTransportConfig,
         tx_sender: TransactionQueueSender,
     ) -> Result<Self, Self::Error> {
+        debug!(
+            bind_addr = %config.bind_addr,
+            driver_addr = %config.driver_addr,
+            "Creating HTTP transport"
+        );
+
         let client = reqwest::Client::new();
         Ok(Self {
             tx_sender,
@@ -109,6 +126,7 @@ impl Transport for HttpTransport {
         })
     }
 
+    #[instrument(name = "http_transport::run", skip(self), fields(bind_addr = %self.bind_addr), level = "info")]
     async fn run(&self) -> Result<(), Self::Error> {
         let state = server::ServerState::new(self.has_blockenv.clone());
         let app = Router::new()
@@ -118,13 +136,21 @@ impl Transport for HttpTransport {
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
             .await
             .map_err(|e| {
+                error!(
+                    bind_addr = %self.bind_addr,
+                    error = %e,
+                    "Failed to bind HTTP transport listener"
+                );
                 HttpTransportError::ServerError(format!(
                     "Failed to bind to {}: {}",
                     self.bind_addr, e
                 ))
             })?;
 
-        tracing::info!("HTTP transport server starting on {}", self.bind_addr);
+        info!(
+            bind_addr = %self.bind_addr,
+            "HTTP transport server starting"
+        );
 
         let shutdown_token = self.shutdown_token.clone();
         let server_task = tokio::spawn(async move {
@@ -136,9 +162,13 @@ impl Transport for HttpTransport {
             result = server_task => {
                 match result {
                     Ok(server_result) => {
-                        server_result.map_err(|e| HttpTransportError::ServerError(format!("Server error: {}", e)))
+                        server_result.map_err(|e| {
+                            error!(error = %e, "HTTP server error");
+                            HttpTransportError::ServerError(format!("Server error: {}", e))
+                        })
                     }
                     Err(e) => {
+                        error!(error = %e, "HTTP server task error");
                         Err(HttpTransportError::ServerError(format!("Server task error: {}", e)))
                     }
                 }
@@ -147,8 +177,9 @@ impl Transport for HttpTransport {
         }
     }
 
+    #[instrument(name = "http_transport::stop", skip(self), level = "info")]
     async fn stop(&mut self) -> Result<(), Self::Error> {
-        tracing::info!("Stopping HTTP transport");
+        info!("Stopping HTTP transport");
         self.shutdown_token.cancel();
         Ok(())
     }
