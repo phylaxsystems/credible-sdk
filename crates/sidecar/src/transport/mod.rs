@@ -17,6 +17,7 @@
 //! └─────────────┘    └───────────┘    └────────────┘
 //! ```
 
+pub mod http;
 pub mod mock;
 
 use crate::engine::queue::TransactionQueueSender;
