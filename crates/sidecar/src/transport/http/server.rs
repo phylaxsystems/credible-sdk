@@ -56,7 +56,7 @@ pub struct Transaction {
     pub hash: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SendTransactionsParams {
     pub transactions: Vec<Transaction>,
 }
