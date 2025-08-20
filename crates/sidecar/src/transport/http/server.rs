@@ -98,6 +98,51 @@ impl JsonRpcResponse {
             id: request.id.clone(),
         }
     }
+
+    pub fn internal_error(request: &JsonRpcRequest, message: &str) -> Self {
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32603,
+                message: message.to_string(),
+            }),
+            id: request.id.clone(),
+        }
+    }
+
+    pub fn invalid_params(request: &JsonRpcRequest, message: &str) -> Self {
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: message.to_string(),
+            }),
+            id: request.id.clone(),
+        }
+    }
+
+    pub fn method_not_found(request: &JsonRpcRequest) -> Self {
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32601,
+                message: "Method not found".to_string(),
+            }),
+            id: request.id.clone(),
+        }
+    }
+
+    pub fn success(request: &JsonRpcRequest, result: serde_json::Value) -> Self {
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(result),
+            error: None,
+            id: request.id.clone(),
+        }
+    }
 }
 
 /// Server state containing shared data
@@ -146,7 +191,7 @@ pub async fn handle_transaction_rpc(
                 JsonRpcResponse::block_not_available(&request)
             } else {
                 // Parse the params to validate the schema
-                match request.params {
+                match &request.params {
                     Some(params) => {
                         match serde_json::from_value::<SendTransactionsParams>(params.clone()) {
                             Ok(send_params) => {
@@ -175,15 +220,12 @@ pub async fn handle_transaction_rpc(
                                                     error = %e,
                                                     "Failed to send transaction to queue from transport server"
                                                 );
-                                                return Ok(ResponseJson(JsonRpcResponse {
-                                                    jsonrpc: "2.0".to_string(),
-                                                    result: None,
-                                                    error: Some(JsonRpcError {
-                                                        code: -32603,
-                                                        message: "Internal error: failed to queue transaction".to_string(),
-                                                    }),
-                                                    id: request.id,
-                                                }));
+                                                return Ok(ResponseJson(
+                                                    JsonRpcResponse::internal_error(
+                                                        &request,
+                                                        "Internal error: failed to queue transaction",
+                                                    ),
+                                                ));
                                             }
                                             processed_count += 1;
                                         }
@@ -192,18 +234,12 @@ pub async fn handle_transaction_rpc(
                                                 error = %e,
                                                 "Failed to decode transaction"
                                             );
-                                            return Ok(ResponseJson(JsonRpcResponse {
-                                                jsonrpc: "2.0".to_string(),
-                                                result: None,
-                                                error: Some(JsonRpcError {
-                                                    code: -32602,
-                                                    message: format!(
-                                                        "Failed to decode transaction: {}",
-                                                        e
-                                                    ),
-                                                }),
-                                                id: request.id,
-                                            }));
+                                            return Ok(ResponseJson(
+                                                JsonRpcResponse::invalid_params(
+                                                    &request,
+                                                    &format!("Failed to decode transaction: {}", e),
+                                                ),
+                                            ));
                                         }
                                     }
                                 }
@@ -214,16 +250,14 @@ pub async fn handle_transaction_rpc(
                                     "Successfully processed transaction batch"
                                 );
 
-                                JsonRpcResponse {
-                                    jsonrpc: "2.0".to_string(),
-                                    result: Some(serde_json::json!({
+                                JsonRpcResponse::success(
+                                    &request,
+                                    serde_json::json!({
                                         "status": "accepted",
                                         "transaction_count": processed_count,
                                         "message": format!("Successfully processed {} transactions", processed_count)
-                                    })),
-                                    error: None,
-                                    id: request.id,
-                                }
+                                    }),
+                                )
                             }
                             Err(e) => {
                                 debug!(
@@ -231,30 +265,20 @@ pub async fn handle_transaction_rpc(
                                     "Failed to parse sendTransactions parameters"
                                 );
 
-                                JsonRpcResponse {
-                                    jsonrpc: "2.0".to_string(),
-                                    result: None,
-                                    error: Some(JsonRpcError {
-                                        code: -32602,
-                                        message: format!("Invalid params: {}", e),
-                                    }),
-                                    id: request.id,
-                                }
+                                JsonRpcResponse::invalid_params(
+                                    &request,
+                                    &format!("Invalid params: {}", e),
+                                )
                             }
                         }
                     }
                     None => {
                         debug!("sendTransactions request missing required parameters");
 
-                        JsonRpcResponse {
-                            jsonrpc: "2.0".to_string(),
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32602,
-                                message: "Missing params for sendTransactions".to_string(),
-                            }),
-                            id: request.id,
-                        }
+                        JsonRpcResponse::invalid_params(
+                            &request,
+                            "Missing params for sendTransactions",
+                        )
                     }
                 }
             }
@@ -265,15 +289,7 @@ pub async fn handle_transaction_rpc(
                 "Unknown JSON-RPC method requested"
             );
 
-            JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                result: None,
-                error: Some(JsonRpcError {
-                    code: -32601,
-                    message: "Method not found".to_string(),
-                }),
-                id: request.id,
-            }
+            JsonRpcResponse::method_not_found(&request)
         }
     };
 

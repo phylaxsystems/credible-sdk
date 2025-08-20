@@ -13,7 +13,6 @@ use axum::{
         post,
     },
 };
-use std::marker::PhantomData;
 use std::{
     net::SocketAddr,
     sync::{
@@ -30,8 +29,6 @@ use tracing::{
     trace,
     warn,
 };
-
-use super::decoder::HttpTransactionDecoder;
 
 pub mod config;
 pub mod server;
