@@ -8,11 +8,17 @@ use crate::{
 };
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{
+        get,
+        post,
+    },
 };
 use std::{
     net::SocketAddr,
-    sync::atomic::AtomicBool,
+    sync::{
+        Arc,
+        atomic::AtomicBool,
+    },
 };
 use tokio_util::sync::CancellationToken;
 
@@ -64,7 +70,7 @@ pub struct HttpTransport {
     /// Shutdown cancellation token
     shutdown_token: CancellationToken,
     /// Signal if the transport has seen a blockenv, will respond to txs with errors if not
-    has_blockenv: AtomicBool,
+    has_blockenv: Arc<AtomicBool>,
 }
 
 /// Health check endpoint
@@ -78,9 +84,10 @@ fn health_routes() -> Router {
 }
 
 /// Create transaction submission routes
-fn transaction_routes() -> Router {
+fn transaction_routes(state: server::ServerState) -> Router {
     Router::new()
         .route("/tx", post(server::handle_transaction_rpc))
+        .with_state(state)
 }
 
 impl Transport for HttpTransport {
@@ -98,14 +105,15 @@ impl Transport for HttpTransport {
             bind_addr: config.bind_addr,
             driver_url: config.driver_addr,
             shutdown_token: CancellationToken::new(),
-            has_blockenv: AtomicBool::new(false),
+            has_blockenv: Arc::new(AtomicBool::new(false)),
         })
     }
 
     async fn run(&self) -> Result<(), Self::Error> {
+        let state = server::ServerState::new(self.has_blockenv.clone());
         let app = Router::new()
             .merge(health_routes())
-            .merge(transaction_routes());
+            .merge(transaction_routes(state));
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
             .await
