@@ -198,6 +198,7 @@ Retrieves transaction results by hash. Can retrieve one or many transactions at 
 - `"success"` - completed successfully, assertions passed. Also includes reverting transactions
 - `"assertion_failed"` - completed but assertions failed
 - `"failed"` - execution failed (internal error, does not concern reverted transactions)
+- `"reverted"` - transaction, executed but reverted
 - `"halted"` - transaction halted (invalid opcode, out of gas, etc...)
 - `"not_found"` - hash not found (pruned or never existed)
 
@@ -392,7 +393,7 @@ Retrieves bytecode for multiple code hashes.
 
 | Code | Message | Description |
 | --- | --- | --- |
-| -32000 | Sidecar unavailable | Sidecar is not responding |
-| -32001 | Transaction validation failed | Transaction execution failed |
-| -32002 | State unavailable | Required state not accessible |
+| -32000 | Transaction validation failed | Transaction execution failed |
+| -32001 | State unavailable | Required state not accessible |
+| -32002 | No BlockEnv | Received a transaction but no blockenv|
 | -32003 | Internal error | Unexpected sidecar error |

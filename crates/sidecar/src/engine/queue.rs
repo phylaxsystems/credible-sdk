@@ -4,7 +4,7 @@
 //! to the core engine. The queue is an unbounded crossbeam channel that we sequentially
 //! take transactions from and execute inside the core engine. The flow from the
 //! transport to the core engine looks like this:
-//! 1. Received by transport from driver
+//! 1. Received by transport from external driver
 //! 2. Processed inside of transport and converted to `TxQueueContents`
 //! 3. Sent via the `TransactionQueueSender` to the engine
 //! 4. Received by engine and executed.
@@ -15,7 +15,7 @@
 //! - New blocks,
 //! - New transactions.
 //!
-//! New block events contain `BlockEnv`s of the next block the sidcar should build on top of.
+//! New block events contain `BlockEnv`s of the next block the sidecar should build on top of.
 //! At least one new block event is needed for the sidecar to accept transactions.
 //!
 //! New transaction events are transactions that should be executed and included for the
