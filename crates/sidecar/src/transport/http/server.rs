@@ -75,6 +75,20 @@ pub struct JsonRpcError {
     pub message: String,
 }
 
+impl JsonRpcResponse {
+    pub fn block_not_available(request: &JsonRpcRequest) -> Self {
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32003,
+                message: "Block environment not available".to_string(),
+            }),
+            id: request.id.clone(),
+        }
+    }
+}
+
 /// Server state containing shared data
 // FIXME: i dont like how we have to have a seprate data structure
 // for holding server state but i dont have a better solution if we
@@ -114,15 +128,7 @@ pub async fn handle_transaction_rpc(
             // Check if we have block environment before processing transactions
             if !state.has_blockenv.load(Ordering::Relaxed) {
                 debug!("Rejecting transaction - no block environment available");
-                JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32003,
-                        message: "Block environment not available".to_string(),
-                    }),
-                    id: request.id,
-                }
+                JsonRpcResponse::block_not_available(&request)
             } else {
                 trace!("Block environment available, parsing transaction parameters");
 
