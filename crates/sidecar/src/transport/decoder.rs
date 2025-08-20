@@ -14,13 +14,9 @@ use crate::{
 };
 use assertion_executor::primitives::hex;
 use revm::{
-    context::TxEnv,
+    context::{BlockEnv, TxEnv},
     primitives::{
-        Address,
-        B256,
-        Bytes,
-        TxKind,
-        U256,
+        Address, Bytes, TxKind, B256, U256
     },
 };
 use std::str::FromStr;
@@ -30,7 +26,7 @@ pub trait Decoder {
     type Error: std::error::Error + Send + Clone;
 
     fn to_transaction(raw_event: Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error>;
-    fn to_blockenv(raw_event: Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error>;
+    fn to_blockenv(raw_event: Self::RawEvent) -> Result<BlockEnv, Self::Error>;
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
@@ -132,7 +128,7 @@ impl Decoder for HttpTransactionDecoder {
         Ok(queue_transactions)
     }
 
-    fn to_blockenv(_req: Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error> {
+    fn to_blockenv(_req: Self::RawEvent) -> Result<BlockEnv, Self::Error> {
         unimplemented!()
     }
 }
