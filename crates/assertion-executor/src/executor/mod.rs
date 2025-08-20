@@ -42,6 +42,7 @@ use crate::{
         AssertionFunctionResult,
         BlockEnv,
         Bytecode,
+        EvmState,
         EvmStorage,
         FixedBytes,
         ResultAndState,
@@ -58,8 +59,6 @@ use crate::{
 use revm::{
     Database,
     InspectEvm,
-    JournalEntry,
-    context::JournalInner,
 };
 
 use rayon::prelude::{
@@ -109,7 +108,6 @@ struct AssertionExecutionParams<'a, Active> {
     assertion_gas: &'a AtomicU64,
     assertions_ran: &'a AtomicU64,
     inspector: PhEvmInspector<'a>,
-    assertion_journal: JournalInner<JournalEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -138,7 +136,7 @@ impl AssertionExecutor {
     where
         ExtDb: Database + Sync + Send,
         ExtDb::Error: Send,
-        Active: DatabaseRef + Sync + Send,
+        Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
         let tx_fork_db = fork_db.clone();
@@ -158,9 +156,8 @@ impl AssertionExecutor {
         }
         debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
 
-        let multi_fork_db = MultiForkDb::new(tx_fork_db);
+        let results = self.execute_assertions(block_env, tx_fork_db, &forked_tx_result)?;
 
-        let results = self.execute_assertions(block_env, multi_fork_db, &forked_tx_result)?;
         if results.is_empty() {
             debug!(target: "assertion-executor::validate_tx", "No assertions were executed");
             trace!(target: "assertion-executor::validate_tx", "Comitting state changes to fork db");
@@ -202,11 +199,11 @@ impl AssertionExecutor {
     fn execute_assertions<Active>(
         &self,
         block_env: BlockEnv,
-        multi_fork_db: MultiForkDb<ForkDb<Active>>,
+        tx_fork_db: ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
     ) -> Result<Vec<AssertionContractExecution>, AssertionExecutionError<Active>>
     where
-        Active: DatabaseRef + Sync + Send,
+        Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
         let ExecuteForkedTxResult {
@@ -248,7 +245,7 @@ impl AssertionExecutor {
                             &assertion_for_execution.assertion_contract,
                             &assertion_for_execution.selectors,
                             block_env.clone(),
-                            multi_fork_db.clone(),
+                            tx_fork_db.clone(),
                             &phevm_context,
                         )
                     },
@@ -264,11 +261,11 @@ impl AssertionExecutor {
         assertion_contract: &AssertionContract,
         fn_selectors: &[FixedBytes<4>],
         block_env: BlockEnv,
-        multi_fork_db: MultiForkDb<ForkDb<Active>>,
+        mut tx_fork_db: ForkDb<Active>,
         context: &PhEvmContext,
     ) -> Result<AssertionContractExecution, AssertionExecutionError<Active>>
     where
-        Active: DatabaseRef + Sync + Send,
+        Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
         let AssertionContract { id, .. } = assertion_contract;
@@ -281,20 +278,8 @@ impl AssertionExecutor {
             "Executing assertion contract"
         );
 
-        let mut post_tx_assertion_journal = context.logs_and_traces.call_traces.journal.clone();
-        self.insert_assertion_contract(assertion_contract, &mut post_tx_assertion_journal);
-
-        let precompile_account = AccountInfo {
-            nonce: 1,
-            balance: U256::MAX,
-            code: Some(Bytecode::new_raw(bytes!("DEAD"))),
-            //Code needed to hit 'call(..)' fn of the inspector trait
-            ..Default::default()
-        };
-
-        post_tx_assertion_journal
-            .state
-            .insert(PRECOMPILE_ADDRESS, precompile_account.into());
+        self.insert_persistent_accounts(assertion_contract, &mut tx_fork_db);
+        let multi_fork_db = MultiForkDb::new(tx_fork_db, context.post_tx_journal());
 
         let inspector = PhEvmInspector::new(context.clone());
         let assertion_gas = AtomicU64::new(0);
@@ -313,7 +298,6 @@ impl AssertionExecutor {
                             multi_fork_db: multi_fork_db.clone(),
                             assertion_gas: &assertion_gas,
                             assertions_ran: &assertions_ran,
-                            assertion_journal: post_tx_assertion_journal.clone(),
                             inspector: inspector.clone(),
                         })
                     },
@@ -355,7 +339,6 @@ impl AssertionExecutor {
             mut multi_fork_db,
             assertion_gas,
             assertions_ran,
-            assertion_journal,
             inspector,
         } = params;
 
@@ -385,8 +368,6 @@ impl AssertionExecutor {
         let mut evm = crate::evm::build_evm::build_eth_evm(&mut multi_fork_db, &env, inspector);
 
         reprice_evm_storage!(evm);
-
-        evm.journaled_state.inner = assertion_journal;
 
         trace!(target: "assertion-executor::execute_assertions", "Executing assertion function");
         let result_and_state = evm.inspect_with_tx(tx_env);
@@ -479,11 +460,14 @@ impl AssertionExecutor {
     }
 
     /// Inserts pre-deployed assertion contract inside the multi-fork db.
-    pub fn insert_assertion_contract(
+    pub fn insert_persistent_accounts<Active>(
         &self,
         assertion_contract: &AssertionContract,
-        journal: &mut JournalInner<JournalEntry>,
-    ) {
+        tx_fork_db: &mut ForkDb<Active>,
+    ) where
+        Active: DatabaseRef + Sync + Send,
+        Active::Error: Send,
+    {
         let AssertionContract {
             deployed_code,
             code_hash,
@@ -493,7 +477,7 @@ impl AssertionExecutor {
             ..
         } = assertion_contract;
 
-        let account_info = AccountInfo {
+        let assertion_account_info = AccountInfo {
             nonce: 1,
             // TODO(Odysseas) Why do we need to set the balance to max?
             balance: U256::MAX,
@@ -501,8 +485,8 @@ impl AssertionExecutor {
             code_hash: *code_hash,
         };
 
-        let account = Account {
-            info: account_info,
+        let assertion_account = Account {
+            info: assertion_account_info,
             storage: storage.clone(),
             status: *account_status,
         };
@@ -517,11 +501,38 @@ impl AssertionExecutor {
             ..Default::default()
         };
 
-        journal.state.insert(ASSERTION_CONTRACT, account);
-        journal.state.insert(CALLER, caller_account);
+        let precompile_account = Account {
+            info: AccountInfo {
+                nonce: 1,
+                balance: U256::MAX,
+                code: Some(Bytecode::new_raw(bytes!("DEAD"))),
+                //Code needed to hit 'call(..)' fn of the inspector trait
+                ..Default::default()
+            },
+            status: AccountStatus::Touched,
+            ..Default::default()
+        };
 
+        let mut state = EvmState::default();
+
+        for (address, account) in [
+            (ASSERTION_CONTRACT, assertion_account),
+            (CALLER, caller_account),
+            (PRECOMPILE_ADDRESS, precompile_account),
+        ] {
+            state.insert(address, account);
+        }
+
+        tx_fork_db.commit(state);
+        for address in [ASSERTION_CONTRACT, CALLER, PRECOMPILE_ADDRESS] {
+            tx_fork_db
+                .storage
+                .entry(address)
+                .or_default()
+                .dont_read_from_inner_db = true;
+        }
         trace!(
-            target: "assertion-executor::insert_assertion_contract",
+            target: "assertion-executor::insert_persistent_accounts",
             assertion_id = ?id,
             "Inserted assertion contract into assertion journal"
         );
@@ -548,6 +559,7 @@ mod test {
         },
         test_utils::*,
     };
+    use revm::context::JournalInner;
     use revm::database::CacheDB;
     use revm::database::EmptyDBTyped;
     use std::convert::Infallible;
@@ -562,6 +574,10 @@ mod test {
 
     #[test]
     fn test_deploy_assertion_contract() {
+        // Use the TestDB type
+        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+        let mut fork_db: TestForkDB = test_db.fork();
+
         let assertion_store = AssertionStore::new_ephemeral().unwrap();
 
         // Build uses TestDB
@@ -569,10 +585,20 @@ mod test {
 
         let counter_assertion = counter_assertion();
 
-        let mut journal = JournalInner::new();
         // insert_assertion_contract is generic, works with MultiForkDb<ForkDb<TestDB>>
-        executor.insert_assertion_contract(&counter_assertion, &mut journal);
-        let account_info = journal.state.get(&ASSERTION_CONTRACT).unwrap().info.clone();
+        executor.insert_persistent_accounts(&counter_assertion, &mut fork_db);
+        let multi_fork_db = MultiForkDb::new(fork_db, &JournalInner::new());
+        trace!(
+            target: "assertion-executor::insert_persistent_accounts",
+            assertion_id = ?counter_assertion.id,
+            "Inserted assertion contract into assertion journal"
+        );
+
+        let account_info = multi_fork_db
+            .basic_ref(ASSERTION_CONTRACT)
+            .unwrap()
+            .unwrap()
+            .clone();
 
         assert_eq!(account_info.code.unwrap(), counter_assertion.deployed_code);
     }

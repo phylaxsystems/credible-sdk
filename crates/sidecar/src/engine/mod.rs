@@ -202,7 +202,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 // Store the validation error result
                 self.transaction_results.insert(
                     tx_hash,
-                    TransactionResult::ValidationError(format!("{:?}", e)),
+                    TransactionResult::ValidationError(format!("{e:?}")),
                 );
                 return Err(EngineError::AssertionError);
             }
@@ -481,8 +481,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "Transaction should execute successfully: {:?}",
-            result
+            "Transaction should execute successfully: {result:?}"
         );
         assert!(
             engine.get_block_env().is_some(),
@@ -498,7 +497,7 @@ mod tests {
                 assert!(is_valid, "Transaction should pass assertions");
             }
             TransactionResult::ValidationError(e) => {
-                panic!("Unexpected validation error: {:?}", e);
+                panic!("Unexpected validation error: {e:?}");
             }
         }
     }
@@ -553,16 +552,14 @@ mod tests {
         // The transaction execution should complete successfully even if the transaction reverts
         assert!(
             result.is_ok(),
-            "Engine should handle reverting transactions gracefully: {:?}",
-            result
+            "Engine should handle reverting transactions gracefully: {result:?}"
         );
 
         // Verify comprehensive state verification: overlay should be unchanged
         let final_cache_count = engine.get_state().cache_entry_count();
         assert_eq!(
             final_cache_count, initial_cache_count,
-            "Reverting transaction should not add entries to the state cache. Initial: {}, Final: {}",
-            initial_cache_count, final_cache_count
+            "Reverting transaction should not add entries to the state cache. Initial: {initial_cache_count}, Final: {final_cache_count}"
         );
 
         // Verify specific account states remain unchanged
@@ -628,11 +625,11 @@ mod tests {
                     ExecutionResult::Revert { .. } => {
                         // Expected - transaction reverted
                     }
-                    other => panic!("Expected Revert result, got {:?}", other),
+                    other => panic!("Expected Revert result, got {other:?}"),
                 }
             }
             TransactionResult::ValidationError(e) => {
-                panic!("Unexpected validation error: {:?}", e);
+                panic!("Unexpected validation error: {e:?}");
             }
         }
     }
@@ -722,9 +719,7 @@ mod tests {
         let final_cache_count = engine.get_state().cache_entry_count();
         assert!(
             final_cache_count >= initial_cache_count,
-            "Transaction executed and state is readable - data was committed. Initial: {}, Final: {}",
-            initial_cache_count,
-            final_cache_count
+            "Transaction executed and state is readable - data was committed. Initial: {initial_cache_count}, Final: {final_cache_count}"
         );
 
         // Verify we can read storage from the state after commit
@@ -747,11 +742,11 @@ mod tests {
                     ExecutionResult::Success { .. } => {
                         // Expected - transaction succeeded
                     }
-                    other => panic!("Expected Success result, got {:?}", other),
+                    other => panic!("Expected Success result, got {other:?}"),
                 }
             }
             TransactionResult::ValidationError(e) => {
-                panic!("Unexpected validation error: {:?}", e);
+                panic!("Unexpected validation error: {e:?}");
             }
         }
     }
@@ -784,7 +779,7 @@ mod tests {
             EngineError::TransactionError => {
                 // This is the expected error when no block environment is set
             }
-            other => panic!("Expected TransactionError, got {:?}", other),
+            other => panic!("Expected TransactionError, got {other:?}"),
         }
     }
 
@@ -845,7 +840,7 @@ mod tests {
                 assert!(is_valid, "Transaction should pass assertions");
             }
             TransactionResult::ValidationError(e) => {
-                panic!("Unexpected validation error: {:?}", e);
+                panic!("Unexpected validation error: {e:?}");
             }
         }
     }
@@ -972,7 +967,7 @@ mod tests {
                     assert!(is_valid, "Transaction 1 should pass assertions");
                 }
                 TransactionResult::ValidationError(e) => {
-                    panic!("Transaction 1 unexpected validation error: {:?}", e);
+                    panic!("Transaction 1 unexpected validation error: {e:?}");
                 }
             }
             match tx2_result.unwrap() {
@@ -980,7 +975,7 @@ mod tests {
                     assert!(is_valid, "Transaction 2 should pass assertions");
                 }
                 TransactionResult::ValidationError(e) => {
-                    panic!("Transaction 2 unexpected validation error: {:?}", e);
+                    panic!("Transaction 2 unexpected validation error: {e:?}");
                 }
             }
 

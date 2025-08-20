@@ -24,6 +24,7 @@ use assertion_executor::{
         Bytecode,
         EvmExecutionResult,
         HaltReason,
+        JournalInner,
         SpecId,
         TxEnv,
         TxKind,
@@ -89,7 +90,7 @@ fn register_op<M: Measurement>(
     let phevm_context = PhEvmContext::new(&logs_and_traces, Address::ZERO);
     let inspector = PhEvmInspector::new(phevm_context);
     let env = evm_env(1, SpecId::default(), BlockEnv::default());
-    let mut multi_fork_db = MultiForkDb::new(fork);
+    let mut multi_fork_db = MultiForkDb::new(fork, &JournalInner::new());
     let mut evm = build_optimism_evm(&mut multi_fork_db, &env, inspector);
     reprice_evm_storage!(evm);
 
@@ -218,7 +219,7 @@ fn test_ecrecover() {
         ..Default::default()
     });
 
-    let mut multi_fork_db = MultiForkDb::new(fork);
+    let mut multi_fork_db = MultiForkDb::new(fork, &JournalInner::new());
     let call_tracer = CallTracer::default();
     let logs_and_traces = LogsAndTraces {
         tx_logs: &[],

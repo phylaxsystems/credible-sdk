@@ -9,28 +9,19 @@ contract TestCallFrameForking is Assertion {
     constructor() payable {}
 
     function callFrameForkingWriteStorage() external {
-        PhEvm.CallInputs[] memory callInputs = ph.getCallInputs(
-            address(TARGET),
-            Target.writeStorage.selector
-        );
+        PhEvm.CallInputs[] memory callInputs = ph.getCallInputs(address(TARGET), Target.writeStorage.selector);
         for (uint256 i = 0; i < callInputs.length; i++) {
             PhEvm.CallInputs memory callInput = callInputs[i];
             uint256 param = abi.decode(callInput.input, (uint256));
             ph.forkPostCall(callInput.id);
 
             uint256 value = TARGET.readStorage();
-            require(
-                param == value,
-                "writeStorage param should be equal to value after call frame"
-            );
+            require(param == value, "writeStorage param should be equal to value after call frame");
         }
     }
 
     function callFrameForkingIncrementStorage() external {
-        PhEvm.CallInputs[] memory callInputs = ph.getCallInputs(
-            address(TARGET),
-            Target.incrementStorage.selector
-        );
+        PhEvm.CallInputs[] memory callInputs = ph.getCallInputs(address(TARGET), Target.incrementStorage.selector);
         for (uint256 i = 0; i < callInputs.length; i++) {
             PhEvm.CallInputs memory callInput = callInputs[i];
 
@@ -40,10 +31,7 @@ contract TestCallFrameForking is Assertion {
             ph.forkPostCall(callInput.id);
             uint256 postValue = TARGET.readStorage();
 
-            require(
-                preValue + 1 == postValue,
-                "incrementStorage should increment value"
-            );
+            require(preValue + 1 == postValue, "incrementStorage should increment value");
         }
     }
 

@@ -243,6 +243,7 @@ mod tests {
     };
     use revm::{
         ExecuteEvm,
+        context::JournalInner,
         database::InMemoryDB,
     };
 
@@ -287,7 +288,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut multi_fork_db = MultiForkDb::new(db);
+        let mut multi_fork_db = MultiForkDb::new(db, &JournalInner::new());
 
         let tracer = CallTracer::default();
         let logs_and_traces = LogsAndTraces {

@@ -107,7 +107,7 @@ mod test {
         };
         let mock_db = MockDb::new();
         let pre_tx_db = ForkDb::new(mock_db);
-        let mut multi_fork_db = MultiForkDb::new(pre_tx_db);
+        let mut multi_fork_db = MultiForkDb::new(pre_tx_db, &JournalInner::new());
         let mut context = revm::handler::MainnetContext::new(&mut multi_fork_db, SpecId::default());
         let ph_context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
