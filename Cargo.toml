@@ -1,5 +1,5 @@
 [workspace]
-members = [ 
+members = [
     "crates/assertion-da/da-client",
     "crates/assertion-da/da-server",
     "crates/assertion-da/da-core",
@@ -10,13 +10,13 @@ members = [
     "crates/int-test-utils",
     "crates/assertion-executor",
     "crates/dapp-api-client",
-    "crates/sidecar"
+    "crates/sidecar",
 ]
 exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 authors = ["Phylax Systems"]
 license = "MIT OR Apache-2.0"
