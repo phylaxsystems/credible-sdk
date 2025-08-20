@@ -41,6 +41,22 @@ pub enum ForkId {
 }
 
 /// A multi-fork database for managing multiple forks.
+///
+/// MultiForkDb holds the underlying DB (pre-tx DB) and the post-tx journal.
+/// During construction, creates a new post-tx DB by committing the state to the DB. Every new Fork
+/// creates a new DB applying a checkpoint-reverted journal to the state (that's why we need to hold
+/// the post-tx journal).
+/// Each Fork consists of the corresponding DB and an empty journal at first.
+///
+/// FIXME(fredo): We need to add copy the first two entries in the journal to each new journal to
+/// rebuild the journal as the ETHFrame has seen it, when entering the assertion. This is needed
+/// for reverts to work properly on forked state.
+///
+/// Each active fork moves its journal into the EVM and its own variable remains None.
+/// Upon switching, old journals are moved back into the MultiForkDb.
+///
+/// Persistent accounts are committed to the underlying DB hence they are available throughout all forks.
+/// Persistent account changes are copied from fork journal to fork journal -> hence the name persistent.
 #[derive(Debug, Clone)]
 pub struct MultiForkDb<ExtDb> {
     /// All forks including active one. The key is the fork id.
