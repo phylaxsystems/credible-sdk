@@ -80,6 +80,9 @@ pub struct JsonRpcResponse {
     pub id: Option<serde_json::Value>,
 }
 
+const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
+const INTERNAL_ERROR: i32 = -32003;
+
 #[derive(Debug, Serialize)]
 pub struct JsonRpcError {
     pub code: i32,
@@ -92,7 +95,7 @@ impl JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             result: None,
             error: Some(JsonRpcError {
-                code: -32003,
+                code: INTERNAL_ERROR,
                 message: "Block environment not available".to_string(),
             }),
             id: request.id.clone(),
@@ -104,7 +107,7 @@ impl JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             result: None,
             error: Some(JsonRpcError {
-                code: -32603,
+                code: INTERNAL_ERROR,
                 message: message.to_string(),
             }),
             id: request.id.clone(),
@@ -116,7 +119,7 @@ impl JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             result: None,
             error: Some(JsonRpcError {
-                code: -32602,
+                code: INTERNAL_ERROR,
                 message: message.to_string(),
             }),
             id: request.id.clone(),
@@ -128,7 +131,7 @@ impl JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             result: None,
             error: Some(JsonRpcError {
-                code: -32601,
+                code: JSON_RPC_METHOD_NOT_FOUND,
                 message: "Method not found".to_string(),
             }),
             id: request.id.clone(),
@@ -238,7 +241,7 @@ pub async fn handle_transaction_rpc(
                                     "Failed to decode transactions"
                                 );
 
-                                JsonRpcResponse::invalid_params(
+                                JsonRpcResponse::internal_error(
                                     &request,
                                     &format!("Failed to decode transactions: {}", e)
                                 )
@@ -248,7 +251,7 @@ pub async fn handle_transaction_rpc(
                     None => {
                         debug!("sendTransactions request missing required parameters");
 
-                        JsonRpcResponse::invalid_params(
+                        JsonRpcResponse::internal_error(
                             &request,
                             "Missing params for sendTransactions",
                         )
