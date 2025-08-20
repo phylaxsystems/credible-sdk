@@ -82,6 +82,7 @@ pub struct HttpTransport {
 }
 
 /// Health check endpoint
+// TODO: add readiness endpoint
 #[instrument(name = "http_server::health", level = "trace")]
 async fn health() -> &'static str {
     trace!("Health check requested");
