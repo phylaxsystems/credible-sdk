@@ -23,7 +23,7 @@ use revm::context::JournalInner;
 /// A fork of the database. Contains the underlying database and
 /// a reference to the [`Journal`].
 #[derive(Debug, Clone)]
-pub(crate) struct Fork<ExtDb> {
+struct InternalFork<ExtDb> {
     /// The database.
     pub db: ExtDb,
     /// Journaled state of the fork.
@@ -60,13 +60,13 @@ pub enum ForkId {
 #[derive(Debug, Clone)]
 pub struct MultiForkDb<ExtDb> {
     /// All forks including active one. The key is the fork id.
-    pub(crate) forks: HashMap<ForkId, Fork<ExtDb>>,
+    forks: HashMap<ForkId, InternalFork<ExtDb>>,
     /// Active fork id.
-    pub(crate) active_fork_id: ForkId,
+    active_fork_id: ForkId,
     /// Underlying database.
-    pub(crate) underlying_db: ExtDb,
+    underlying_db: ExtDb,
     /// Post tx journal.
-    pub(crate) post_tx_journal: JournalInner<JournalEntry>,
+    post_tx_journal: JournalInner<JournalEntry>,
 }
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum MultiForkError {
@@ -85,7 +85,7 @@ impl<ExtDb: Clone + DatabaseCommit> MultiForkDb<ExtDb> {
         let mut forks = HashMap::new();
         forks.insert(
             ForkId::PostTx,
-            Fork {
+            InternalFork {
                 db: post_tx_db,
                 journal: None, // Active fork has no journal (it's in the EVM)
             },
@@ -102,7 +102,7 @@ impl<ExtDb: Clone + DatabaseCommit> MultiForkDb<ExtDb> {
 
 impl<ExtDb> MultiForkDb<ExtDb> {
     #[inline]
-    pub(crate) fn active_fork_ref(&self) -> &Fork<ExtDb> {
+    fn active_fork_ref(&self) -> &InternalFork<ExtDb> {
         &self.forks[&self.active_fork_id]
     }
 }
@@ -179,14 +179,14 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
     fn create_fork(
         &mut self,
         journal: JournalInner<JournalEntry>,
-    ) -> Result<Fork<ExtDb>, MultiForkError>
+    ) -> Result<InternalFork<ExtDb>, MultiForkError>
     where
         ExtDb: Clone + DatabaseCommit,
     {
         let mut fork_db = self.underlying_db.clone();
         fork_db.commit(journal.state.clone());
 
-        let fork = Fork {
+        let fork = InternalFork {
             db: fork_db,
             journal: Some(JournalInner {
                 spec: journal.spec,
