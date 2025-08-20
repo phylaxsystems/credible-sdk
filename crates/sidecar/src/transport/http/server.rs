@@ -164,6 +164,7 @@ impl ServerState {
     }
 }
 
+
 /// Handle JSON-RPC requests for transactions
 #[instrument(
     name = "http_server::handle_transaction_rpc",
@@ -190,58 +191,30 @@ pub async fn handle_transaction_rpc(
                 debug!("Rejecting transaction - no block environment available");
                 JsonRpcResponse::block_not_available(&request)
             } else {
-                // Parse the params to validate the schema
+                // Use the decoder to decode all transactions
                 match &request.params {
-                    Some(params) => {
-                        match serde_json::from_value::<SendTransactionsParams>(params.clone()) {
-                            Ok(send_params) => {
-                                let transaction_count = send_params.transactions.len();
+                    Some(_) => {
+                        // Use the decoder to decode all transactions at once
+                        match HttpTransactionDecoder::to_transaction(request.clone()) {
+                            Ok(queue_transactions) => {
+                                let transaction_count = queue_transactions.len();
                                 let mut processed_count = 0;
 
-                                // Process each transaction individually
-                                for _raw_tx in &send_params.transactions {
-                                    // Create a temporary JsonRpcRequest for each transaction
-                                    let tx_request = JsonRpcRequest {
-                                        jsonrpc: request.jsonrpc.clone(),
-                                        method: request.method.clone(),
-                                        params: Some(serde_json::json!({
-                                            "transactions": vec![_raw_tx]
-                                        })),
-                                        id: request.id.clone(),
-                                    };
-
-                                    match HttpTransactionDecoder::to_transaction(tx_request) {
-                                        Ok(queue_tx) => {
-                                            // Send the decoded transaction to the queue
-                                            if let Err(e) =
-                                                state.tx_sender.send(TxQueueContents::Tx(queue_tx))
-                                            {
-                                                error!(
-                                                    error = %e,
-                                                    "Failed to send transaction to queue from transport server"
-                                                );
-                                                return Ok(ResponseJson(
-                                                    JsonRpcResponse::internal_error(
-                                                        &request,
-                                                        "Internal error: failed to queue transaction",
-                                                    ),
-                                                ));
-                                            }
-                                            processed_count += 1;
-                                        }
-                                        Err(e) => {
-                                            error!(
-                                                error = %e,
-                                                "Failed to decode transaction"
-                                            );
-                                            return Ok(ResponseJson(
-                                                JsonRpcResponse::invalid_params(
-                                                    &request,
-                                                    &format!("Failed to decode transaction: {}", e),
-                                                ),
-                                            ));
-                                        }
+                                // Send each decoded transaction to the queue
+                                for queue_tx in queue_transactions {
+                                    if let Err(e) = state.tx_sender.send(TxQueueContents::Tx(queue_tx)) {
+                                        error!(
+                                            error = %e,
+                                            "Failed to send transaction to queue from transport server"
+                                        );
+                                        return Ok(ResponseJson(
+                                            JsonRpcResponse::internal_error(
+                                                &request,
+                                                "Internal error: failed to queue transaction",
+                                            ),
+                                        ));
                                     }
+                                    processed_count += 1;
                                 }
 
                                 debug!(
@@ -260,14 +233,14 @@ pub async fn handle_transaction_rpc(
                                 )
                             }
                             Err(e) => {
-                                debug!(
+                                error!(
                                     error = %e,
-                                    "Failed to parse sendTransactions parameters"
+                                    "Failed to decode transactions"
                                 );
 
                                 JsonRpcResponse::invalid_params(
                                     &request,
-                                    &format!("Invalid params: {}", e),
+                                    &format!("Failed to decode transactions: {}", e)
                                 )
                             }
                         }
