@@ -98,16 +98,20 @@ impl Decoder for HttpTransactionDecoder {
                 .parse()
                 .map_err(|_| HttpDecoderError::InvalidHex(transaction.tx_env.gas_price.clone()))?;
 
-            let data = if transaction.tx_env.data.starts_with("0x") {
+            let data = if transaction.tx_env.data.is_empty() {
+                Bytes::new()
+            } else if transaction.tx_env.data.starts_with("0x") {
                 let hex_data = &transaction.tx_env.data[2..];
                 Bytes::from(
                     hex::decode(hex_data)
                         .map_err(|_| HttpDecoderError::InvalidHex(transaction.tx_env.data.clone()))?,
                 )
-            } else if transaction.tx_env.data.is_empty() {
-                Bytes::new()
             } else {
-                return Err(HttpDecoderError::InvalidHex(transaction.tx_env.data));
+                // Try to decode without 0x prefix
+                Bytes::from(
+                    hex::decode(&transaction.tx_env.data)
+                        .map_err(|_| HttpDecoderError::InvalidHex(transaction.tx_env.data.clone()))?,
+                )
             };
 
             let tx_env = TxEnv {
@@ -137,7 +141,7 @@ impl Decoder for HttpTransactionDecoder {
 mod tests {
     use super::*;
     use crate::transport::http::server::{JsonRpcRequest, SendTransactionsParams, Transaction, TransactionEnv};
-    use revm::primitives::{Address, TxKind, U256};
+    use revm::primitives::{Address, TxKind, U256, bytes};
     use std::str::FromStr;
 
     fn create_test_transaction(
@@ -535,7 +539,7 @@ mod tests {
             caller,
             to,
             "1000000000000000000",
-            "invalid_hex_data", // invalid hex data (no 0x prefix)
+            "invalid_hex_data_with_non_hex_chars",
             21000,
             "20000000000",
             42,
@@ -547,7 +551,7 @@ mod tests {
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHex(data) = result.unwrap_err() {
-            assert_eq!(data, "invalid_hex_data");
+            assert_eq!(data, "invalid_hex_data_with_non_hex_chars");
         } else {
             panic!("Expected InvalidHex error");
         }
@@ -770,5 +774,92 @@ mod tests {
         } else {
             panic!("Expected InvalidHex error");
         }
+    }
+
+    #[test]
+    fn test_calldata_without_0x_prefix() {
+        let caller = Address::random();
+        let to = Address::random();
+        
+        let transaction = create_test_transaction_with_to(
+            "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            caller,
+            to,
+            "0",
+            "a9059cbb0000000000000000000000000000000000000000000000000000000000000001",
+            100000,
+            "20000000000",
+            45,
+            1,
+        );
+
+        let request = create_test_request("sendTransactions", vec![transaction]);
+        let result = HttpTransactionDecoder::to_transaction(request);
+
+        assert!(result.is_ok());
+        let transactions = result.unwrap();
+        assert_eq!(transactions.len(), 1);
+
+        let decoded_tx = &transactions[0];
+        assert_eq!(decoded_tx.tx_env.caller, caller);
+        
+        let expected_bytes = bytes!("a9059cbb0000000000000000000000000000000000000000000000000000000000000001");
+        assert_eq!(decoded_tx.tx_env.data, expected_bytes);
+        
+        if let TxKind::Call(to_addr) = decoded_tx.tx_env.kind {
+            assert_eq!(to_addr, to);
+        } else {
+            panic!("Expected Call transaction kind");
+        }
+    }
+
+    #[test]
+    fn test_calldata_both_with_and_without_prefix() {
+        let caller1 = Address::random();
+        let to1 = Address::random();
+        let caller2 = Address::random();
+        let to2 = Address::random();
+
+        // Transaction with 0x prefix
+        let tx_with_prefix = create_test_transaction_with_to(
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+            caller1,
+            to1,
+            "0",
+            "0x1234abcd", // with 0x prefix
+            100000,
+            "20000000000",
+            45,
+            1,
+        );
+
+        // Transaction without 0x prefix  
+        let tx_without_prefix = create_test_transaction_with_to(
+            "0x2222222222222222222222222222222222222222222222222222222222222222",
+            caller2,
+            to2,
+            "0",
+            "1234abcd", // without 0x prefix
+            100000,
+            "20000000000",
+            46,
+            1,
+        );
+
+        let request = create_test_request("sendTransactions", vec![tx_with_prefix, tx_without_prefix]);
+        let result = HttpTransactionDecoder::to_transaction(request);
+
+        assert!(result.is_ok());
+        let transactions = result.unwrap();
+        assert_eq!(transactions.len(), 2);
+
+        // Both transactions should decode to the same data
+        let expected_bytes = bytes!("1234abcd");
+        assert_eq!(transactions[0].tx_env.data, expected_bytes);
+        assert_eq!(transactions[1].tx_env.data, expected_bytes);
+        
+        // Verify callers are different but data is the same
+        assert_eq!(transactions[0].tx_env.caller, caller1);
+        assert_eq!(transactions[1].tx_env.caller, caller2);
     }
 }
