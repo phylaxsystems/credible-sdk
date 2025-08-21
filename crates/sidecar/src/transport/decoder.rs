@@ -135,6 +135,7 @@ impl Decoder for HttpTransactionDecoder {
     }
 
     fn to_blockenv(_req: Self::RawEvent) -> Result<BlockEnv, Self::Error> {
+        // TODO: this is on purpose, decoding of blockenv events to be done later!
         unimplemented!()
     }
 }
