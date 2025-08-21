@@ -101,6 +101,8 @@ pub enum TransactionResult {
 }
 
 /// The engine processes blocks and appends transactions to them.
+/// It accepts transaction events sent from a transport via the `TransactionQueueReceiver`
+/// and processes them accordingly.
 #[derive(Debug, Clone)]
 pub struct CoreEngine<DB> {
     state: OverlayDb<DB>,
