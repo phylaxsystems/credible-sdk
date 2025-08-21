@@ -89,10 +89,14 @@ pub struct JsonRpcError {
     pub message: String,
 }
 
+lazy_static::lazy_static! {
+    static ref JSONRPCVER: String = "2.0".to_string();
+}
+
 impl JsonRpcResponse {
     pub fn block_not_available(request: &JsonRpcRequest) -> Self {
         JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPCVER.clone(),
             result: None,
             error: Some(JsonRpcError {
                 code: INTERNAL_ERROR,
@@ -104,7 +108,7 @@ impl JsonRpcResponse {
 
     pub fn internal_error(request: &JsonRpcRequest, message: &str) -> Self {
         JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPCVER.clone(),
             result: None,
             error: Some(JsonRpcError {
                 code: INTERNAL_ERROR,
@@ -116,7 +120,7 @@ impl JsonRpcResponse {
 
     pub fn invalid_params(request: &JsonRpcRequest, message: &str) -> Self {
         JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPCVER.clone(),
             result: None,
             error: Some(JsonRpcError {
                 code: INTERNAL_ERROR,
@@ -128,7 +132,7 @@ impl JsonRpcResponse {
 
     pub fn method_not_found(request: &JsonRpcRequest) -> Self {
         JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPCVER.clone(),
             result: None,
             error: Some(JsonRpcError {
                 code: JSON_RPC_METHOD_NOT_FOUND,
@@ -140,7 +144,7 @@ impl JsonRpcResponse {
 
     pub fn success(request: &JsonRpcRequest, result: serde_json::Value) -> Self {
         JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPCVER.clone(),
             result: Some(result),
             error: None,
             id: request.id.clone(),

@@ -72,7 +72,7 @@ impl Decoder for HttpTransactionDecoder {
             return Err(HttpDecoderError::NoTransactions);
         }
 
-        let mut queue_transactions = Vec::new();
+        let mut queue_transactions = Vec::with_capacity(send_params.transactions.len());
 
         for transaction in send_params.transactions {
             let tx_hash = B256::from_str(&transaction.hash)
@@ -104,6 +104,7 @@ impl Decoder for HttpTransactionDecoder {
                 if transaction.tx_env.data.is_empty() {
                     Bytes::new()
                 } else if transaction.tx_env.data.starts_with("0x") {
+                    // we check beforehand that we have at least 2 chars before skipping below
                     let hex_data = &transaction.tx_env.data[2..];
                     Bytes::from(hex::decode(hex_data).map_err(|_| {
                         HttpDecoderError::InvalidHex(transaction.tx_env.data.clone())
