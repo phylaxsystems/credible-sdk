@@ -155,6 +155,7 @@ mod tests {
     };
     use std::str::FromStr;
 
+    #[allow(clippy::too_many_arguments)]
     fn create_test_transaction(
         hash: &str,
         caller: Address,
@@ -182,6 +183,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_test_transaction_with_to(
         hash: &str,
         caller: Address,
