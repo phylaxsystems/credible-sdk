@@ -67,13 +67,13 @@ fn parse_hex_data(data: &str) -> Result<Bytes, HttpDecoderError> {
     if data.is_empty() {
         return Ok(Bytes::new());
     }
-    
+
     let hex_data = if let Some(stripped) = data.strip_prefix("0x") {
         stripped
     } else {
         data
     };
-    
+
     hex::decode(hex_data)
         .map(Bytes::from)
         .map_err(|_| HttpDecoderError::InvalidHex(data.to_string()))
@@ -85,17 +85,19 @@ impl TryFrom<&TransactionEnv> for TxEnv {
     fn try_from(tx_env: &TransactionEnv) -> Result<Self, Self::Error> {
         let caller = Address::from_str(&tx_env.caller)
             .map_err(|_| HttpDecoderError::InvalidAddress(tx_env.caller.clone()))?;
-        
-        let gas_price: u128 = tx_env.gas_price.parse()
+
+        let gas_price: u128 = tx_env
+            .gas_price
+            .parse()
             .map_err(|_| HttpDecoderError::InvalidHex(tx_env.gas_price.clone()))?;
-        
+
         let kind = parse_tx_kind(&tx_env.transact_to)?;
-        
+
         let value = U256::from_str(&tx_env.value)
             .map_err(|_| HttpDecoderError::InvalidHex(tx_env.value.clone()))?;
-        
+
         let data = parse_hex_data(&tx_env.data)?;
-        
+
         Ok(Self {
             caller,
             gas_limit: tx_env.gas_limit,
