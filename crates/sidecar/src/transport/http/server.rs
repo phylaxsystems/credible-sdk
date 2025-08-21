@@ -177,8 +177,6 @@ impl ServerState {
     skip(state),
     fields(
         method = %request.method,
-        jsonrpc = %request.jsonrpc,
-        request_id = ?request.id
     ),
     level = "debug"
 )]
@@ -206,6 +204,11 @@ pub async fn handle_transaction_rpc(
     Ok(ResponseJson(response))
 }
 
+#[instrument(
+    name = "http_server::handle_send_transactions",
+    skip_all,
+    level = "debug"
+)]
 async fn handle_send_transactions(
     state: &ServerState,
     request: &JsonRpcRequest,
