@@ -7,6 +7,7 @@ pub mod engine;
 mod rpc;
 pub mod transport;
 mod utils;
+mod indexer;
 
 use crate::{
     config::{
@@ -52,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
 
     let executor_config = init_executor_config(&args);
     let assertion_store = init_assertion_store(&args)?;
-    let assertion_executor = AssertionExecutor::new(executor_config, assertion_store);
+    let assertion_executor = AssertionExecutor::new(executor_config, assertion_store.clone());
 
     let (_, mock_receiver) = unbounded();
     let mock_transport = MockTransport::with_receiver(tx_sender, mock_receiver);
@@ -61,19 +62,22 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
-            println!("Received Ctrl+C, shutting down...");
+            tracing::info!("Received Ctrl+C, shutting down...");
         }
         _ = rpc::start_rpc_server(&args) => {
-            println!("rpc server exited, shutting down...");
+            tracing::info!("rpc server exited, shutting down...");
         }
         _ = engine.run() => {
-            println!("Engine run completed, shutting down...");
+            tracing::info!("Engine run completed, shutting down...");
         }
         _ = mock_transport.run() => {
-            println!("Engine run completed, shutting down...");
+            tracing::info!("Engine run completed, shutting down...");
+        }
+        _ = indexer::run_indexer(assertion_store) => {
+            tracing::info!("Indexer exited, shutting down...");
         }
     }
 
-    println!("Sidecar shutdown complete.");
+    tracing::info!("Sidecar shutdown complete.");
     Ok(())
 }
