@@ -128,7 +128,7 @@ impl Transport for HttpTransport {
 
     #[instrument(name = "http_transport::run", skip(self), fields(bind_addr = %self.bind_addr), level = "info")]
     async fn run(&self) -> Result<(), Self::Error> {
-        let state = server::ServerState::new(self.has_blockenv.clone());
+        let state = server::ServerState::new(self.has_blockenv.clone(), self.tx_sender.clone());
         let app = Router::new()
             .merge(health_routes())
             .merge(transaction_routes(state));
@@ -164,12 +164,12 @@ impl Transport for HttpTransport {
                     Ok(server_result) => {
                         server_result.map_err(|e| {
                             error!(error = %e, "HTTP server error");
-                            HttpTransportError::ServerError(format!("Server error: {}", e))
+                            HttpTransportError::ServerError(format!("Server error: {e}"))
                         })
                     }
                     Err(e) => {
                         error!(error = %e, "HTTP server task error");
-                        Err(HttpTransportError::ServerError(format!("Server task error: {}", e)))
+                        Err(HttpTransportError::ServerError(format!("Server task error: {e}")))
                     }
                 }
             }
