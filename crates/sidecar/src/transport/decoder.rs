@@ -5,6 +5,7 @@
 //! of the decoders to convert them into events that can be passed down to
 //! the core engine.
 
+use crate::engine::queue::TxQueueContents;
 use crate::{
     engine::queue::QueueTransaction,
     transport::http::server::{
@@ -33,8 +34,9 @@ pub trait Decoder {
     type RawEvent: Send + Clone + Sized;
     type Error: std::error::Error + Send + Clone;
 
-    fn to_transaction(raw_event: &Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error>;
-    fn to_blockenv(raw_event: &Self::RawEvent) -> Result<BlockEnv, Self::Error>;
+    fn to_tx_queue_contents(
+        raw_event: &Self::RawEvent,
+    ) -> Result<Vec<TxQueueContents>, Self::Error>;
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
@@ -115,15 +117,12 @@ impl TryFrom<&TransactionEnv> for TxEnv {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HttpTransactionDecoder;
 
-impl Decoder for HttpTransactionDecoder {
-    type RawEvent = JsonRpcRequest;
-    type Error = HttpDecoderError;
+impl HttpTransactionDecoder {
+    const METHOD_SEND_TRANSACTIONS: &'static str = "sendTransactions";
+    const METHOD_BLOCK_ENV: &'static str = "sendBlockEnv
+";
 
-    fn to_transaction(req: &Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error> {
-        if req.method != "sendTransactions" {
-            return Err(HttpDecoderError::SchemaError);
-        }
-
+    fn to_transaction(req: &JsonRpcRequest) -> Result<Vec<TxQueueContents>, HttpDecoderError> {
         let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
         let send_params: SendTransactionsParams =
             serde_json::from_value(params.clone()).map_err(|_| HttpDecoderError::SchemaError)?;
@@ -140,15 +139,28 @@ impl Decoder for HttpTransactionDecoder {
 
             let tx_env = TxEnv::try_from(&transaction.tx_env)?;
 
-            queue_transactions.push(QueueTransaction { tx_hash, tx_env });
+            queue_transactions.push(TxQueueContents::Tx(QueueTransaction { tx_hash, tx_env }));
         }
 
         Ok(queue_transactions)
     }
+}
 
-    fn to_blockenv(_req: &Self::RawEvent) -> Result<BlockEnv, Self::Error> {
-        // TODO: this is on purpose, decoding of blockenv events to be done later!
-        unimplemented!()
+impl Decoder for HttpTransactionDecoder {
+    type RawEvent = JsonRpcRequest;
+    type Error = HttpDecoderError;
+
+    fn to_tx_queue_contents(req: &Self::RawEvent) -> Result<Vec<TxQueueContents>, Self::Error> {
+        match req.method.as_str() {
+            Self::METHOD_SEND_TRANSACTIONS => Self::to_transaction(req),
+            Self::METHOD_BLOCK_ENV => {
+                let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
+                let block = serde_json::from_value::<BlockEnv>(params.clone())
+                    .map_err(|_| HttpDecoderError::SchemaError)?;
+                Ok(vec![TxQueueContents::Block(block)])
+            }
+            _ => Err(HttpDecoderError::SchemaError),
+        }
     }
 }
 
@@ -161,12 +173,14 @@ mod tests {
         Transaction,
         TransactionEnv,
     };
+    use revm::context_interface::block::BlobExcessGasAndPrice;
     use revm::primitives::{
         Address,
         TxKind,
         U256,
         bytes,
     };
+    use serde_json::json;
     use std::str::FromStr;
 
     #[allow(clippy::too_many_arguments)]
@@ -253,10 +267,19 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 1);
 
         let decoded_tx = &transactions[0];
@@ -314,10 +337,19 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![tx1, tx2]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 2);
 
         // Verify first transaction
@@ -368,10 +400,19 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 1);
 
         let decoded_tx = &transactions[0];
@@ -397,10 +438,19 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 1);
 
         let decoded_tx = &transactions[0];
@@ -430,7 +480,7 @@ mod tests {
         );
 
         let request = create_test_request("wrongMethod", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpDecoderError::SchemaError));
@@ -445,7 +495,7 @@ mod tests {
             id: Some(serde_json::Value::Number(serde_json::Number::from(1))),
         };
 
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -456,7 +506,7 @@ mod tests {
     #[test]
     fn test_empty_transactions_error() {
         let request = create_test_request("sendTransactions", vec![]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_err());
         assert!(matches!(
@@ -483,7 +533,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHash(hash) = result.unwrap_err() {
@@ -511,7 +561,7 @@ mod tests {
         };
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidAddress(addr) = result.unwrap_err() {
@@ -539,7 +589,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHex(value) = result.unwrap_err() {
@@ -567,7 +617,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHex(gas_price) = result.unwrap_err() {
@@ -595,7 +645,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHex(data) = result.unwrap_err() {
@@ -614,7 +664,7 @@ mod tests {
             id: Some(serde_json::Value::Number(serde_json::Number::from(1))),
         };
 
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpDecoderError::SchemaError));
     }
@@ -637,10 +687,19 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].tx_env.caller, caller);
         assert_eq!(transactions[0].tx_env.value, U256::ZERO);
@@ -664,10 +723,19 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].tx_env.caller, caller);
         assert!(transactions[0].tx_env.data.is_empty());
@@ -690,10 +758,19 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].tx_env.caller, caller);
         assert!(matches!(transactions[0].tx_env.kind, TxKind::Create));
@@ -717,10 +794,19 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 1);
 
         let decoded_tx = &transactions[0];
@@ -762,7 +848,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![valid_tx, invalid_tx]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_err());
         assert!(matches!(
@@ -790,10 +876,19 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].tx_env.caller, caller);
         assert_eq!(transactions[0].tx_env.data.len(), 1000);
@@ -817,7 +912,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHex(data) = result.unwrap_err() {
@@ -845,10 +940,19 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 1);
 
         let decoded_tx = &transactions[0];
@@ -900,10 +1004,19 @@ mod tests {
 
         let request =
             create_test_request("sendTransactions", vec![tx_with_prefix, tx_without_prefix]);
-        let result = HttpTransactionDecoder::to_transaction(&request);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
         assert!(result.is_ok());
-        let transactions = result.unwrap();
+        let transactions = result
+            .unwrap()
+            .into_iter()
+            .filter_map(|queue_content| {
+                match queue_content {
+                    TxQueueContents::Tx(tx) => Some(tx),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(transactions.len(), 2);
 
         // Both transactions should decode to the same data
@@ -914,5 +1027,646 @@ mod tests {
         // Verify callers are different but data is the same
         assert_eq!(transactions[0].tx_env.caller, caller1);
         assert_eq!(transactions[1].tx_env.caller, caller2);
+    }
+
+    #[test]
+    fn test_decode_valid_block_env() {
+        let valid_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "0x0000000000000000000000000000000000000000000000000000000000000000"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(valid_request).unwrap();
+
+        // Test direct deserialization of BlockEnv from params
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_ok(),
+            "Should successfully deserialize valid BlockEnv: {:?}",
+            block_env_result.err()
+        );
+
+        let block_env = block_env_result.unwrap();
+        assert_eq!(block_env.number, 123456u64);
+        assert_eq!(block_env.basefee, 1000000000u64);
+        assert_eq!(block_env.gas_limit, 30000000u64);
+        assert_eq!(block_env.timestamp, 1234567890u64);
+    }
+
+    #[test]
+    fn test_decode_minimal_block_env() {
+        let minimal_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 1u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(minimal_request).unwrap();
+
+        // Test that minimal BlockEnv works
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_ok(),
+            "Should successfully deserialize minimal BlockEnv"
+        );
+
+        let block_env = block_env_result.unwrap();
+        assert_eq!(block_env.number, 1u64);
+        assert_eq!(block_env.basefee, 0u64);
+        assert_eq!(block_env.gas_limit, 0u64);
+        assert_eq!(block_env.timestamp, 0u64);
+    }
+
+    #[test]
+    fn test_decode_block_env_with_blob_excess_gas() {
+        let with_blob_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x1234567890123456789012345678901234567890",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "blob_excess_gas_and_price": {
+                    "excess_blob_gas": 1000u64,
+                    "blob_gasprice": 2000u128
+                }
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(with_blob_request).unwrap();
+
+        // Test that blob excess gas is properly deserialized
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_ok(),
+            "Should successfully deserialize BlockEnv with blob excess gas"
+        );
+
+        let block_env = block_env_result.unwrap();
+        assert!(
+            block_env.blob_excess_gas_and_price.is_some(),
+            "blob_excess_gas_and_price should be present"
+        );
+        let blob_data = block_env.blob_excess_gas_and_price.unwrap();
+        assert_eq!(blob_data.excess_blob_gas, 1000u64);
+        assert_eq!(blob_data.blob_gasprice, 2000u128);
+    }
+
+    #[test]
+    fn test_decode_block_env_missing_params() {
+        let no_params_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(no_params_request).unwrap();
+
+        // Should handle missing params gracefully
+        assert!(request.params.is_none(), "Request should have no params");
+    }
+
+    #[test]
+    fn test_decode_block_env_invalid_number_type() {
+        let invalid_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": "invalid_number",  // String instead of u64
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(invalid_request).unwrap();
+
+        // Test that invalid number type fails deserialization
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_err(),
+            "Should fail to deserialize BlockEnv with invalid number type"
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_invalid_address() {
+        let invalid_address_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "invalid_address",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(invalid_address_request).unwrap();
+
+        // Test that invalid address format fails deserialization
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_err(),
+            "Should fail to deserialize BlockEnv with invalid address format"
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_invalid_hash() {
+        let invalid_hash_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x0",
+                "prevrandao": "invalid_hash"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(invalid_hash_request).unwrap();
+
+        // Test that invalid hash format fails deserialization
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_err(),
+            "Should fail to deserialize BlockEnv with invalid hash format"
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_negative_values() {
+        let negative_values_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": -1i64,  // Negative number
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(negative_values_request).unwrap();
+
+        // Test that negative values fail deserialization for u64 fields
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_err(),
+            "Should fail to deserialize BlockEnv with negative values for u64 fields"
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_extra_fields() {
+        let extra_fields_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "extra_field": "should_be_ignored",
+                "another_extra": 42
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(extra_fields_request).unwrap();
+
+        // Test that extra fields are ignored during deserialization
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_ok(),
+            "Should successfully deserialize BlockEnv ignoring extra fields"
+        );
+
+        let block_env = block_env_result.unwrap();
+        assert_eq!(block_env.number, 123456u64);
+        assert_eq!(block_env.basefee, 1000000000u64);
+        assert_eq!(block_env.timestamp, 1234567890u64);
+    }
+
+    #[test]
+    fn test_decode_block_env_hex_values() {
+        let hex_values_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x1234567890123456789012345678901234567890",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x1e240", // 123456 in hex for U256
+                "prevrandao": "0x1234567890123456789012345678901234567890123456789012345678901234"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(hex_values_request).unwrap();
+
+        // Test that valid hex values are properly deserialized
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_ok(),
+            "Should successfully deserialize BlockEnv with hex values"
+        );
+
+        let block_env = block_env_result.unwrap();
+        assert_eq!(block_env.number, 123456u64);
+        assert_eq!(block_env.timestamp, 1234567890u64);
+        assert!(
+            block_env.prevrandao.is_some(),
+            "prevrandao should be present"
+        );
+        assert_eq!(block_env.difficulty, U256::from(123456u64));
+    }
+
+    #[test]
+    fn test_decode_block_env_zero_values() {
+        let zero_values_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 0u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(zero_values_request).unwrap();
+
+        // Test that zero values are valid
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_ok(),
+            "Should successfully deserialize BlockEnv with zero values"
+        );
+
+        let block_env = block_env_result.unwrap();
+        assert_eq!(block_env.number, 0u64);
+        assert_eq!(block_env.basefee, 0u64);
+        assert_eq!(block_env.gas_limit, 0u64);
+        assert_eq!(block_env.timestamp, 0u64);
+        assert_eq!(block_env.difficulty, U256::ZERO);
+        assert_eq!(block_env.beneficiary, Address::ZERO);
+    }
+
+    #[test]
+    fn test_decode_block_env_max_values() {
+        let max_values_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": u64::MAX,
+                "beneficiary": "0xffffffffffffffffffffffffffffffffffffffff",
+                "timestamp": u64::MAX,
+                "gas_limit": u64::MAX,
+                "basefee": u64::MAX,
+                "difficulty": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" // U256::MAX
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(max_values_request).unwrap();
+
+        // Test that maximum values are handled correctly
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_ok(),
+            "Should successfully deserialize BlockEnv with maximum values"
+        );
+
+        let block_env = block_env_result.unwrap();
+        assert_eq!(block_env.number, u64::MAX);
+        assert_eq!(block_env.basefee, u64::MAX);
+        assert_eq!(block_env.gas_limit, u64::MAX);
+        assert_eq!(block_env.timestamp, u64::MAX);
+        assert_eq!(block_env.difficulty, U256::MAX);
+    }
+
+    #[test]
+    fn test_decode_block_env_with_prevrandao() {
+        let with_prevrandao_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x1234567890123456789012345678901234567890",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "0x1234567890123456789012345678901234567890123456789012345678901234"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(with_prevrandao_request).unwrap();
+
+        // Test that prevrandao is properly deserialized
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_ok(),
+            "Should successfully deserialize BlockEnv with prevrandao"
+        );
+
+        let block_env = block_env_result.unwrap();
+        assert!(
+            block_env.prevrandao.is_some(),
+            "prevrandao should be present"
+        );
+        assert_eq!(block_env.number, 123456u64);
+        assert_eq!(block_env.basefee, 1000000000u64);
+    }
+
+    #[test]
+    fn test_decode_block_env_without_prevrandao() {
+        let without_prevrandao_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x1234567890123456789012345678901234567890",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(without_prevrandao_request).unwrap();
+
+        // Test that BlockEnv works without prevrandao (should be None)
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_ok(),
+            "Should successfully deserialize BlockEnv without prevrandao"
+        );
+
+        let block_env = block_env_result.unwrap();
+        assert!(
+            block_env.prevrandao.is_none(),
+            "prevrandao should be None when not provided"
+        );
+        assert_eq!(block_env.number, 123456u64);
+    }
+
+    #[test]
+    fn test_decode_block_env_invalid_blob_excess_gas() {
+        let invalid_blob_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x0",
+                "blob_excess_gas_and_price": {
+                    "excess_blob_gas": "invalid", // Should be u64
+                    "blob_gasprice": 2000u128
+                }
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(invalid_blob_request).unwrap();
+
+        // Test that invalid blob excess gas fails deserialization
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_err(),
+            "Should fail to deserialize BlockEnv with invalid blob excess gas"
+        );
+    }
+
+    #[test]
+    fn test_json_rpc_request_structure() {
+        let valid_json_rpc = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x0"
+            },
+            "id": "test-id"
+        });
+
+        let request_result = serde_json::from_value::<JsonRpcRequest>(valid_json_rpc);
+        assert!(
+            request_result.is_ok(),
+            "Should successfully deserialize valid JSON-RPC request"
+        );
+
+        let request = request_result.unwrap();
+        assert_eq!(request.jsonrpc, "2.0");
+        assert_eq!(request.method, "sendBlockEnv");
+        assert!(request.params.is_some());
+        assert!(request.id.is_some());
+    }
+
+    #[test]
+    fn test_json_rpc_request_missing_fields() {
+        let minimal_json_rpc = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv"
+        });
+
+        let request_result = serde_json::from_value::<JsonRpcRequest>(minimal_json_rpc);
+        assert!(
+            request_result.is_ok(),
+            "Should successfully deserialize JSON-RPC request with optional fields missing"
+        );
+
+        let request = request_result.unwrap();
+        assert_eq!(request.jsonrpc, "2.0");
+        assert_eq!(request.method, "sendBlockEnv");
+        assert!(request.params.is_none());
+        assert!(request.id.is_none());
+    }
+
+    #[test]
+    fn test_debug_block_env_serialization() {
+        // Create a BlockEnv and serialize it to see the expected format
+        let block_env = BlockEnv {
+            number: 123456u64,
+            beneficiary: Address::ZERO,
+            timestamp: 1234567890u64,
+            gas_limit: 30000000u64,
+            basefee: 1000000000u64,
+            difficulty: U256::ZERO,
+            prevrandao: Some(B256::ZERO),
+            blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
+                excess_blob_gas: 1000u64,
+                blob_gasprice: 2000u128,
+            }),
+        };
+
+        // Serialize and then deserialize to ensure round-trip works
+        let serialized = serde_json::to_value(&block_env).unwrap();
+        let deserialized = serde_json::from_value::<BlockEnv>(serialized).unwrap();
+
+        assert_eq!(block_env.number, deserialized.number);
+        assert_eq!(block_env.beneficiary, deserialized.beneficiary);
+        assert_eq!(block_env.timestamp, deserialized.timestamp);
+        assert_eq!(block_env.gas_limit, deserialized.gas_limit);
+        assert_eq!(block_env.basefee, deserialized.basefee);
+        assert_eq!(block_env.difficulty, deserialized.difficulty);
+        assert_eq!(block_env.prevrandao, deserialized.prevrandao);
+        assert_eq!(
+            block_env.blob_excess_gas_and_price,
+            deserialized.blob_excess_gas_and_price
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_missing_required_fields() {
+        let missing_fields_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64
+                // Missing required fields like beneficiary, timestamp, etc.
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(missing_fields_request).unwrap();
+
+        // Test that missing required fields cause deserialization to fail
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_err(),
+            "Should fail to deserialize BlockEnv with missing required fields"
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_partial_blob_data() {
+        let partial_blob_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x0",
+                "blob_excess_gas_and_price": {
+                    "excess_blob_gas": 1000u64
+                    // Missing blob_gasprice
+                }
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(partial_blob_request).unwrap();
+
+        // Test that partial blob data fails deserialization
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_err(),
+            "Should fail to deserialize BlockEnv with partial blob excess gas data"
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_u256_difficulty_variants() {
+        // Test small U256 value
+        let small_difficulty_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x64" // 100 in hex
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(small_difficulty_request).unwrap();
+        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        assert!(
+            block_env_result.is_ok(),
+            "Should handle small U256 difficulty"
+        );
+        assert_eq!(block_env_result.unwrap().difficulty, U256::from(100u64));
+
+        // Test large U256 value
+        let large_difficulty_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x1000000000000000000000000000000000000000000000000000000000000000"
+            },
+            "id": 1
+        });
+
+        let request2: JsonRpcRequest = serde_json::from_value(large_difficulty_request).unwrap();
+        let block_env_result2 = serde_json::from_value::<BlockEnv>(request2.params.unwrap());
+        assert!(
+            block_env_result2.is_ok(),
+            "Should handle large U256 difficulty"
+        );
     }
 }
