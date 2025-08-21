@@ -391,4 +391,5 @@ Retrieves bytecode for multiple code hashes.
 | --- | --- | --- |
 | -32000 | Transaction validation failed | Transaction execution failed |
 | -32001 | State unavailable | Required state not accessible |
-| -32002 | Internal error | Unexpected sidecar error |
+| -32002 | No BlockEnv | Received a transaction but no blockenv|
+| -32003 | Internal error | Unexpected sidecar error |
