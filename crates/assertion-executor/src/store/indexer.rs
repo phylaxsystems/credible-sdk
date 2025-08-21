@@ -107,9 +107,7 @@ sol! {
 ///
 ///    let config = IndexerCfg {
 ///         provider,
-///         block_hash_tree: db.open_tree("block_hashes").unwrap(),
-///         pending_modifications_tree: db.open_tree("pending_modifications").unwrap(),
-///         latest_block_tree: db.open_tree("latest_block").unwrap(),
+///         db,
 ///         store,
 ///         da_client,
 ///         state_oracle,
@@ -126,13 +124,8 @@ sol! {
 pub struct Indexer {
     /// The provider for fetching blocks and logs
     provider: PubSubProvider,
-    /// The sled db tree for storing block hashes
-    block_hash_tree: sled::Tree,
-    /// The sled db tree for storing the latest block. Required for tracking progress if not
-    /// awaiting(AwaitTag::Latest)
-    latest_block_tree: sled::Tree,
-    /// The sled db tree for storing pending modifications
-    pending_modifications_tree: sled::Tree,
+    /// The sled database instance
+    db: sled::Db,
     /// The Assertion Store
     store: AssertionStore,
     /// The DA Client
@@ -224,16 +217,9 @@ pub struct IndexerCfg {
     pub store: AssertionStore,
     /// Rpc Provider
     pub provider: PubSubProvider,
-    /// Block hash tree
-    /// Used to store block hashes for reorg detection
-    pub block_hash_tree: sled::Tree,
-    /// The sled db tree for storing the latest block. Required for tracking progress if not
-    /// awaiting(AwaitTag::Latest)
-    pub latest_block_tree: sled::Tree,
-    /// Pending modifications tree
-    /// Used to store pending modifications for blocks before moving
-    /// them to the store
-    pub pending_modifications_tree: sled::Tree,
+    /// Sled database instance
+    /// Subtables will be opened on demand from this database
+    pub db: sled::Db,
     /// Tag to use as the upper bound of pending modifications which should be applied to the
     /// store.
     pub await_tag: BlockTag,
@@ -244,9 +230,7 @@ impl Indexer {
     pub fn new(cfg: IndexerCfg) -> Self {
         let IndexerCfg {
             provider,
-            block_hash_tree,
-            pending_modifications_tree,
-            latest_block_tree,
+            db,
             store,
             da_client,
             state_oracle,
@@ -256,9 +240,7 @@ impl Indexer {
 
         Self {
             provider,
-            block_hash_tree,
-            latest_block_tree,
-            pending_modifications_tree,
+            db,
             store,
             da_client,
             state_oracle,
@@ -266,6 +248,21 @@ impl Indexer {
             is_synced: false,
             await_tag,
         }
+    }
+
+    /// Get the block hash tree, opening it on demand
+    fn block_hash_tree(&self) -> Result<sled::Tree, std::io::Error> {
+        self.db.open_tree("block_hashes")
+    }
+
+    /// Get the latest block tree, opening it on demand
+    fn latest_block_tree(&self) -> Result<sled::Tree, std::io::Error> {
+        self.db.open_tree("latest_block")
+    }
+
+    /// Get the pending modifications tree, opening it on demand
+    fn pending_modifications_tree(&self) -> Result<sled::Tree, std::io::Error> {
+        self.db.open_tree("pending_modifications")
     }
 
     /// Create a new Indexer and sync it to the latest block
@@ -347,10 +344,13 @@ impl Indexer {
     fn prune_to(&self, to: u64) -> IndexerResult<Vec<PendingModification>> {
         let mut pending_modifications = Vec::new();
         let ser_to = ser(&U256::from(to))?;
+        
+        let block_hash_tree = self.block_hash_tree()?;
+        let pending_modifications_tree = self.pending_modifications_tree()?;
 
-        while let Some((key, _)) = self.block_hash_tree.pop_first_in_range(..ser_to.clone())? {
-            if let Some(pending_mods) = self.pending_modifications_tree.remove(&key)? {
-                let pending_mods: Vec<PendingModification> = de(&pending_mods)?;
+        while let Some((key, _)) = block_hash_tree.pop_first_in_range(..ser_to.clone())? {
+            if let Some(pending_mods) = pending_modifications_tree.remove(&key)? {
+                let pending_mods: Vec<PendingModification> = de(&pending_mods.to_vec())?;
                 pending_modifications.extend(pending_mods);
             }
         }
@@ -367,12 +367,14 @@ impl Indexer {
     /// Prune the pending modifications and block hashes trees from a block number
     fn prune_from(&self, from: u64) -> IndexerResult {
         let ser_from = ser(&U256::from(from))?;
+        
+        let block_hash_tree = self.block_hash_tree()?;
+        let pending_modifications_tree = self.pending_modifications_tree()?;
 
-        while let Some((key, _)) = self
-            .block_hash_tree
+        while let Some((key, _)) = block_hash_tree
             .pop_first_in_range(ser_from.clone()..)?
         {
-            self.pending_modifications_tree.remove(&key)?;
+            pending_modifications_tree.remove(&key)?;
         }
         debug!(
             target = "assertion_executor::indexer",
@@ -386,7 +388,7 @@ impl Indexer {
     /// Traverses from the cursor backwords until it finds a common ancestor in the block_hashes
     /// tree.
     async fn find_common_ancestor(&self, cursor_hash: B256) -> IndexerResult<u64> {
-        let block_hashes_tree = &self.block_hash_tree;
+        let block_hashes_tree = self.block_hash_tree()?;
 
         let mut cursor_hash = cursor_hash;
         loop {
@@ -562,8 +564,8 @@ impl Indexer {
             pending_mods_batch.insert(ser(&U256::from(*block))?, ser(&block_mods)?);
         }
 
-        self.pending_modifications_tree
-            .apply_batch(pending_mods_batch)?;
+        let pending_modifications_tree = self.pending_modifications_tree()?;
+        pending_modifications_tree.apply_batch(pending_mods_batch)?;
 
         trace!(
             target = "assertion_executor::indexer",
@@ -740,15 +742,17 @@ impl Indexer {
     /// Insert last indexed block number and hash into the sled db
     fn insert_last_indexed_block_num_hash(&self, block_num_hash: BlockNumHash) -> IndexerResult {
         let value = ser(&block_num_hash)?;
-        self.latest_block_tree.insert("", value)?;
+        let latest_block_tree = self.latest_block_tree()?;
+        latest_block_tree.insert("", value)?;
         Ok(())
     }
 
     /// Get the last indexed block number and hash
     fn get_last_indexed_block_num_hash(&self) -> IndexerResult<Option<BlockNumHash>> {
-        let last_indexed_block = self.latest_block_tree.get("")?;
+        let latest_block_tree = self.latest_block_tree()?;
+        let last_indexed_block = latest_block_tree.get("")?;
         if let Some(last_indexed_block) = last_indexed_block {
-            let last_indexed_block: BlockNumHash = de(&last_indexed_block)?;
+            let last_indexed_block: BlockNumHash = de(&last_indexed_block.to_vec())?;
             Ok(Some(last_indexed_block))
         } else {
             Ok(None)
@@ -763,7 +767,8 @@ impl Indexer {
             let value = ser(&B256::from(block_num_hash.hash))?;
             batch.insert(key, value);
         }
-        self.block_hash_tree.apply_batch(batch)?;
+        let block_hash_tree = self.block_hash_tree()?;
+        block_hash_tree.apply_batch(batch)?;
 
         Ok(())
     }
@@ -792,9 +797,6 @@ mod test_indexer {
             .open()
             .unwrap();
 
-        let block_hash_tree = db.open_tree("block_hashes").unwrap();
-        let latest_block_tree = db.open_tree("latest_block").unwrap();
-        let pending_modifications_tree = db.open_tree("pending_modifications").unwrap();
         let store = AssertionStore::new_ephemeral().unwrap();
 
         // Create mock provider and DA client (will be mocked in tests)
@@ -811,9 +813,7 @@ mod test_indexer {
             executor_config: ExecutorConfig::default(),
             store,
             provider,
-            block_hash_tree,
-            latest_block_tree,
-            pending_modifications_tree,
+            db,
             await_tag: BlockTag::Latest,
         });
 
@@ -865,13 +865,13 @@ mod test_indexer {
         indexer
             .write_block_num_hash_batch(block_hashes.clone())
             .unwrap();
-        assert_eq!(indexer.block_hash_tree.len(), 3);
+        assert_eq!(indexer.block_hash_tree().unwrap().len(), 3);
 
         // Verify the blocks were stored correctly
         for block_hash in block_hashes {
             let key = ser(&U256::from(block_hash.number)).unwrap();
             let stored_hash: B256 =
-                de(&indexer.block_hash_tree.get(&key).unwrap().unwrap()).unwrap();
+                de(&indexer.block_hash_tree().unwrap().get(&key).unwrap().unwrap()).unwrap();
             assert_eq!(stored_hash, B256::from(block_hash.hash));
         }
     }
@@ -931,7 +931,7 @@ mod test_indexer {
 
         let key_1 = ser(&U256::from(1_u64)).unwrap();
         indexer
-            .pending_modifications_tree
+            .pending_modifications_tree().unwrap()
             .insert(&key_1, ser(&vec![modification.clone()]).unwrap())
             .unwrap();
 
@@ -939,9 +939,9 @@ mod test_indexer {
         let pruned = indexer.prune_to(2).unwrap();
 
         // Should have pruned 2 blocks and returned 1 modification
-        assert_eq!(indexer.block_hash_tree.len(), 1); // Only block 2 left
+        assert_eq!(indexer.block_hash_tree().unwrap().len(), 1); // Only block 2 left
         assert_eq!(pruned.len(), 1);
-        assert_eq!(indexer.pending_modifications_tree.len(), 0);
+        assert_eq!(indexer.pending_modifications_tree().unwrap().len(), 0);
     }
 
     #[test]
@@ -969,11 +969,11 @@ mod test_indexer {
         indexer.prune_from(1).unwrap();
 
         // Should have removed blocks 1 and 2, keeping only block 0
-        assert_eq!(indexer.block_hash_tree.len(), 1);
+        assert_eq!(indexer.block_hash_tree().unwrap().len(), 1);
 
         // Verify block 0 is still there
         let key_0 = ser(&U256::from(0_u64)).unwrap();
-        assert!(indexer.block_hash_tree.get(&key_0).unwrap().is_some());
+        assert!(indexer.block_hash_tree().unwrap().get(&key_0).unwrap().is_some());
     }
 
     #[tokio::test]
@@ -1088,8 +1088,8 @@ mod test_indexer {
         assert!(result.is_ok());
 
         // Should have done nothing since we skip genesis block
-        assert_eq!(indexer.pending_modifications_tree.len(), 0);
-        assert_eq!(indexer.block_hash_tree.len(), 0);
+        assert_eq!(indexer.pending_modifications_tree().unwrap().len(), 0);
+        assert_eq!(indexer.block_hash_tree().unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -1119,7 +1119,7 @@ mod test_indexer {
 
         let key = ser(&U256::from(1_u64)).unwrap();
         indexer
-            .pending_modifications_tree
+            .pending_modifications_tree().unwrap()
             .insert(&key, ser(&vec![modification]).unwrap())
             .unwrap();
 
@@ -1130,8 +1130,8 @@ mod test_indexer {
             .unwrap();
 
         // Should have pruned block 1 and applied the modification
-        assert_eq!(indexer.block_hash_tree.len(), 1); // Only block 2 left
-        assert_eq!(indexer.pending_modifications_tree.len(), 0);
+        assert_eq!(indexer.block_hash_tree().unwrap().len(), 1); // Only block 2 left
+        assert_eq!(indexer.pending_modifications_tree().unwrap().len(), 0);
     }
 
     #[test]
