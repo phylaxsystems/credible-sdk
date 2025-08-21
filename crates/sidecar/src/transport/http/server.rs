@@ -1,10 +1,7 @@
 //! JSON-RPC server handlers for HTTP transport
 
 use crate::{
-    engine::queue::{
-        TransactionQueueSender,
-        TxQueueContents,
-    },
+    engine::queue::TransactionQueueSender,
     transport::decoder::{
         Decoder,
         HttpTransactionDecoder,
@@ -229,8 +226,8 @@ async fn handle_send_transactions(
         ));
     };
 
-    let queue_transactions = match HttpTransactionDecoder::to_transaction(request) {
-        Ok(transactions) => transactions,
+    let tx_queue_contents = match HttpTransactionDecoder::to_tx_queue_contents(request) {
+        Ok(tx_queue_contents) => tx_queue_contents,
         Err(e) => {
             error!(
                 error = %e,
@@ -243,12 +240,11 @@ async fn handle_send_transactions(
         }
     };
 
-    let transaction_count = queue_transactions.len();
-    let mut processed_count = 0;
+    let transaction_count = tx_queue_contents.len();
 
     // Send each decoded transaction to the queue
-    for queue_tx in queue_transactions {
-        if let Err(e) = state.tx_sender.send(TxQueueContents::Tx(queue_tx)) {
+    for queue_tx in tx_queue_contents {
+        if let Err(e) = state.tx_sender.send(queue_tx) {
             error!(
                 error = %e,
                 "Failed to send transaction to queue from transport server"
@@ -258,12 +254,10 @@ async fn handle_send_transactions(
                 "Internal error: failed to queue transaction",
             ));
         }
-        processed_count += 1;
     }
 
     debug!(
         transaction_count = transaction_count,
-        processed_count = processed_count,
         "Successfully processed transaction batch"
     );
 
@@ -271,8 +265,8 @@ async fn handle_send_transactions(
         request,
         serde_json::json!({
             "status": "accepted",
-            "transaction_count": processed_count,
-            "message": format!("Successfully processed {} transactions", processed_count)
+            "transaction_count": transaction_count,
+            "message": format!("Successfully processed {} transactions", transaction_count)
         }),
     ))
 }
