@@ -10,6 +10,7 @@ use crate::{
     transport::http::server::{
         JsonRpcRequest,
         SendTransactionsParams,
+        TransactionEnv,
     },
 };
 use assertion_executor::primitives::hex;
@@ -52,6 +53,63 @@ pub enum HttpDecoderError {
     NoTransactions,
 }
 
+fn parse_tx_kind(transact_to: &str) -> Result<TxKind, HttpDecoderError> {
+    if transact_to.is_empty() || transact_to == "0x" {
+        Ok(TxKind::Create)
+    } else {
+        let addr = Address::from_str(transact_to)
+            .map_err(|_| HttpDecoderError::InvalidAddress(transact_to.to_string()))?;
+        Ok(TxKind::Call(addr))
+    }
+}
+
+fn parse_hex_data(data: &str) -> Result<Bytes, HttpDecoderError> {
+    if data.is_empty() {
+        return Ok(Bytes::new());
+    }
+    
+    let hex_data = if let Some(stripped) = data.strip_prefix("0x") {
+        stripped
+    } else {
+        data
+    };
+    
+    hex::decode(hex_data)
+        .map(Bytes::from)
+        .map_err(|_| HttpDecoderError::InvalidHex(data.to_string()))
+}
+
+impl TryFrom<&TransactionEnv> for TxEnv {
+    type Error = HttpDecoderError;
+
+    fn try_from(tx_env: &TransactionEnv) -> Result<Self, Self::Error> {
+        let caller = Address::from_str(&tx_env.caller)
+            .map_err(|_| HttpDecoderError::InvalidAddress(tx_env.caller.clone()))?;
+        
+        let gas_price: u128 = tx_env.gas_price.parse()
+            .map_err(|_| HttpDecoderError::InvalidHex(tx_env.gas_price.clone()))?;
+        
+        let kind = parse_tx_kind(&tx_env.transact_to)?;
+        
+        let value = U256::from_str(&tx_env.value)
+            .map_err(|_| HttpDecoderError::InvalidHex(tx_env.value.clone()))?;
+        
+        let data = parse_hex_data(&tx_env.data)?;
+        
+        Ok(Self {
+            caller,
+            gas_limit: tx_env.gas_limit,
+            gas_price,
+            kind,
+            value,
+            data,
+            nonce: tx_env.nonce,
+            chain_id: Some(tx_env.chain_id),
+            ..Default::default()
+        })
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HttpTransactionDecoder;
 
@@ -78,55 +136,7 @@ impl Decoder for HttpTransactionDecoder {
             let tx_hash = B256::from_str(&transaction.hash)
                 .map_err(|_| HttpDecoderError::InvalidHash(transaction.hash.clone()))?;
 
-            let caller = Address::from_str(&transaction.tx_env.caller)
-                .map_err(|_| HttpDecoderError::InvalidAddress(transaction.tx_env.caller.clone()))?;
-
-            let kind = if transaction.tx_env.transact_to.is_empty()
-                || transaction.tx_env.transact_to == "0x"
-            {
-                TxKind::Create
-            } else {
-                let to_addr = Address::from_str(&transaction.tx_env.transact_to).map_err(|_| {
-                    HttpDecoderError::InvalidAddress(transaction.tx_env.transact_to.clone())
-                })?;
-                TxKind::Call(to_addr)
-            };
-
-            let value = U256::from_str(&transaction.tx_env.value)
-                .map_err(|_| HttpDecoderError::InvalidHex(transaction.tx_env.value.clone()))?;
-
-            let gas_price: u128 =
-                transaction.tx_env.gas_price.parse().map_err(|_| {
-                    HttpDecoderError::InvalidHex(transaction.tx_env.gas_price.clone())
-                })?;
-
-            let data =
-                if transaction.tx_env.data.is_empty() {
-                    Bytes::new()
-                } else if transaction.tx_env.data.starts_with("0x") {
-                    // we check beforehand that we have at least 2 chars before skipping below
-                    let hex_data = &transaction.tx_env.data[2..];
-                    Bytes::from(hex::decode(hex_data).map_err(|_| {
-                        HttpDecoderError::InvalidHex(transaction.tx_env.data.clone())
-                    })?)
-                } else {
-                    // Try to decode without 0x prefix
-                    Bytes::from(hex::decode(&transaction.tx_env.data).map_err(|_| {
-                        HttpDecoderError::InvalidHex(transaction.tx_env.data.clone())
-                    })?)
-                };
-
-            let tx_env = TxEnv {
-                caller,
-                gas_limit: transaction.tx_env.gas_limit,
-                gas_price,
-                kind,
-                value,
-                data,
-                nonce: transaction.tx_env.nonce,
-                chain_id: Some(transaction.tx_env.chain_id),
-                ..Default::default()
-            };
+            let tx_env = TxEnv::try_from(&transaction.tx_env)?;
 
             queue_transactions.push(QueueTransaction { tx_hash, tx_env });
         }
@@ -172,7 +182,7 @@ mod tests {
         Transaction {
             hash: hash.to_string(),
             tx_env: TransactionEnv {
-                caller: format!("{:?}", caller),
+                caller: format!("{caller:?}"),
                 gas_limit,
                 gas_price: gas_price.to_string(),
                 transact_to: to.to_string(),
@@ -200,10 +210,10 @@ mod tests {
         Transaction {
             hash: hash.to_string(),
             tx_env: TransactionEnv {
-                caller: format!("{:?}", caller),
+                caller: format!("{caller:?}"),
                 gas_limit,
                 gas_price: gas_price.to_string(),
-                transact_to: format!("{:?}", to),
+                transact_to: format!("{to:?}"),
                 value: value.to_string(),
                 data: data.to_string(),
                 nonce,

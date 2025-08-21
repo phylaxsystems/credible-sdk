@@ -164,12 +164,12 @@ impl Transport for HttpTransport {
                     Ok(server_result) => {
                         server_result.map_err(|e| {
                             error!(error = %e, "HTTP server error");
-                            HttpTransportError::ServerError(format!("Server error: {}", e))
+                            HttpTransportError::ServerError(format!("Server error: {e}"))
                         })
                     }
                     Err(e) => {
                         error!(error = %e, "HTTP server task error");
-                        Err(HttpTransportError::ServerError(format!("Server task error: {}", e)))
+                        Err(HttpTransportError::ServerError(format!("Server task error: {e}")))
                     }
                 }
             }

@@ -238,7 +238,7 @@ async fn handle_send_transactions(
             );
             return Ok(JsonRpcResponse::internal_error(
                 request,
-                &format!("Failed to decode transactions: {}", e),
+                &format!("Failed to decode transactions: {e}"),
             ));
         }
     };
