@@ -4,10 +4,10 @@ mod args;
 mod config;
 #[allow(dead_code)] // TODO: rm when engine fully impld and connected to transport
 pub mod engine;
+mod indexer;
 mod rpc;
 pub mod transport;
 mod utils;
-mod indexer;
 
 use crate::{
     config::{

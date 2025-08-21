@@ -5,24 +5,29 @@
 use assertion_executor::store::AssertionStore;
 
 pub trait Indexer {
-	type Error: std::error::Error;
+    type Error: std::error::Error;
 
-	async fn run_indexer(assertion_store: AssertionStore) ->  Result<(), Self::Error>;
+	/// Standalone function to run indexer
+    async fn run_indexer(assertion_store: AssertionStore) -> Result<(), Self::Error>;
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum IndexerError {
     #[error("Internal indexer error")]
-	InternalError,
+    InternalError,
 }
 
 pub struct AeIndexer;
 
 impl Indexer for AeIndexer {
-	type Error = IndexerError;
+    type Error = IndexerError;
 
-	/// Runs the indexer 
-	async fn run_indexer(assertion_store: AssertionStore) ->  Result<(), IndexerError> {
-		unimplemented!()
-	}
+    /// Runs the indexer
+    async fn run_indexer(_assertion_store: AssertionStore) -> Result<(), IndexerError> {
+        unimplemented!()
+    }
+}
+
+pub async fn run_indexer(_assertion_store: AssertionStore) -> Result<(), IndexerError> {
+    unimplemented!()
 }

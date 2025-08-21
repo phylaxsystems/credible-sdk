@@ -25,6 +25,8 @@ tracing-subscriber.workspace = true
 sled = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 lazy_static = "1.5.0"
+assertion-da-client = { workspace = true }
+alloy-provider = { workspace = true }
 
 [features]
 testing = ["ctor"]

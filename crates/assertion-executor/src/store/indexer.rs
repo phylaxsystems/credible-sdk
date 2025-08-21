@@ -344,7 +344,7 @@ impl Indexer {
     fn prune_to(&self, to: u64) -> IndexerResult<Vec<PendingModification>> {
         let mut pending_modifications = Vec::new();
         let ser_to = ser(&U256::from(to))?;
-        
+
         let block_hash_tree = self.block_hash_tree()?;
         let pending_modifications_tree = self.pending_modifications_tree()?;
 
@@ -367,13 +367,11 @@ impl Indexer {
     /// Prune the pending modifications and block hashes trees from a block number
     fn prune_from(&self, from: u64) -> IndexerResult {
         let ser_from = ser(&U256::from(from))?;
-        
+
         let block_hash_tree = self.block_hash_tree()?;
         let pending_modifications_tree = self.pending_modifications_tree()?;
 
-        while let Some((key, _)) = block_hash_tree
-            .pop_first_in_range(ser_from.clone()..)?
-        {
+        while let Some((key, _)) = block_hash_tree.pop_first_in_range(ser_from.clone()..)? {
             pending_modifications_tree.remove(&key)?;
         }
         debug!(
@@ -870,8 +868,13 @@ mod test_indexer {
         // Verify the blocks were stored correctly
         for block_hash in block_hashes {
             let key = ser(&U256::from(block_hash.number)).unwrap();
-            let stored_hash: B256 =
-                de(&indexer.block_hash_tree().unwrap().get(&key).unwrap().unwrap()).unwrap();
+            let stored_hash: B256 = de(&indexer
+                .block_hash_tree()
+                .unwrap()
+                .get(&key)
+                .unwrap()
+                .unwrap())
+            .unwrap();
             assert_eq!(stored_hash, B256::from(block_hash.hash));
         }
     }
@@ -931,7 +934,8 @@ mod test_indexer {
 
         let key_1 = ser(&U256::from(1_u64)).unwrap();
         indexer
-            .pending_modifications_tree().unwrap()
+            .pending_modifications_tree()
+            .unwrap()
             .insert(&key_1, ser(&vec![modification.clone()]).unwrap())
             .unwrap();
 
@@ -973,7 +977,14 @@ mod test_indexer {
 
         // Verify block 0 is still there
         let key_0 = ser(&U256::from(0_u64)).unwrap();
-        assert!(indexer.block_hash_tree().unwrap().get(&key_0).unwrap().is_some());
+        assert!(
+            indexer
+                .block_hash_tree()
+                .unwrap()
+                .get(&key_0)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -1119,7 +1130,8 @@ mod test_indexer {
 
         let key = ser(&U256::from(1_u64)).unwrap();
         indexer
-            .pending_modifications_tree().unwrap()
+            .pending_modifications_tree()
+            .unwrap()
             .insert(&key, ser(&vec![modification]).unwrap())
             .unwrap();
 
