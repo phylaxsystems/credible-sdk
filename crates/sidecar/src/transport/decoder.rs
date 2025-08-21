@@ -29,11 +29,11 @@ use revm::{
 use std::str::FromStr;
 
 pub trait Decoder {
-    type RawEvent: Send + Clone;
+    type RawEvent: Send + Clone + Sized;
     type Error: std::error::Error + Send + Clone;
 
-    fn to_transaction(raw_event: Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error>;
-    fn to_blockenv(raw_event: Self::RawEvent) -> Result<BlockEnv, Self::Error>;
+    fn to_transaction(raw_event: &Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error>;
+    fn to_blockenv(raw_event: &Self::RawEvent) -> Result<BlockEnv, Self::Error>;
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
@@ -59,14 +59,14 @@ impl Decoder for HttpTransactionDecoder {
     type RawEvent = JsonRpcRequest;
     type Error = HttpDecoderError;
 
-    fn to_transaction(req: Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error> {
+    fn to_transaction(req: &Self::RawEvent) -> Result<Vec<QueueTransaction>, Self::Error> {
         if req.method != "sendTransactions" {
             return Err(HttpDecoderError::SchemaError);
         }
 
-        let params = req.params.ok_or(HttpDecoderError::MissingParams)?;
+        let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
         let send_params: SendTransactionsParams =
-            serde_json::from_value(params).map_err(|_| HttpDecoderError::SchemaError)?;
+            serde_json::from_value(params.clone()).map_err(|_| HttpDecoderError::SchemaError)?;
 
         if send_params.transactions.is_empty() {
             return Err(HttpDecoderError::NoTransactions);
@@ -134,7 +134,7 @@ impl Decoder for HttpTransactionDecoder {
         Ok(queue_transactions)
     }
 
-    fn to_blockenv(_req: Self::RawEvent) -> Result<BlockEnv, Self::Error> {
+    fn to_blockenv(_req: &Self::RawEvent) -> Result<BlockEnv, Self::Error> {
         // TODO: this is on purpose, decoding of blockenv events to be done later!
         unimplemented!()
     }
@@ -241,7 +241,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();
@@ -302,7 +302,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![tx1, tx2]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();
@@ -356,7 +356,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();
@@ -385,7 +385,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();
@@ -418,7 +418,7 @@ mod tests {
         );
 
         let request = create_test_request("wrongMethod", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpDecoderError::SchemaError));
@@ -433,7 +433,7 @@ mod tests {
             id: Some(serde_json::Value::Number(serde_json::Number::from(1))),
         };
 
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn test_empty_transactions_error() {
         let request = create_test_request("sendTransactions", vec![]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_err());
         assert!(matches!(
@@ -471,7 +471,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHash(hash) = result.unwrap_err() {
@@ -499,7 +499,7 @@ mod tests {
         };
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidAddress(addr) = result.unwrap_err() {
@@ -527,7 +527,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHex(value) = result.unwrap_err() {
@@ -555,7 +555,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHex(gas_price) = result.unwrap_err() {
@@ -583,7 +583,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHex(data) = result.unwrap_err() {
@@ -602,7 +602,7 @@ mod tests {
             id: Some(serde_json::Value::Number(serde_json::Number::from(1))),
         };
 
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpDecoderError::SchemaError));
     }
@@ -625,7 +625,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();
@@ -652,7 +652,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();
@@ -678,7 +678,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();
@@ -705,7 +705,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();
@@ -750,7 +750,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![valid_tx, invalid_tx]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_err());
         assert!(matches!(
@@ -778,7 +778,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();
@@ -805,7 +805,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_err());
         if let HttpDecoderError::InvalidHex(data) = result.unwrap_err() {
@@ -833,7 +833,7 @@ mod tests {
         );
 
         let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();
@@ -888,7 +888,7 @@ mod tests {
 
         let request =
             create_test_request("sendTransactions", vec![tx_with_prefix, tx_without_prefix]);
-        let result = HttpTransactionDecoder::to_transaction(request);
+        let result = HttpTransactionDecoder::to_transaction(&request);
 
         assert!(result.is_ok());
         let transactions = result.unwrap();

@@ -229,7 +229,7 @@ async fn handle_send_transactions(
         ));
     };
 
-    let queue_transactions = match HttpTransactionDecoder::to_transaction(request.clone()) {
+    let queue_transactions = match HttpTransactionDecoder::to_transaction(request) {
         Ok(transactions) => transactions,
         Err(e) => {
             error!(
