@@ -141,7 +141,7 @@ Sends batch of transactions to sidecar for processing. Must include at least one
 
 ### `getTransactions`
 
-Retrieves transaction results by hash. Can retrieve one or many transactions at once. Uses long-polling semantics. Responds when all requested transactions are available.
+Retrieves transaction results by hash. Can retrieve one or many transactions at once. Uses long-polling semantics. Responds when all requested transactions are available. `results` field contains all transactions we have results for, `not_found` contains txhashes the sidecar does not have stored.
 
 **Request:**
 
@@ -169,21 +169,18 @@ Retrieves transaction results by hash. Can retrieve one or many transactions at 
       {
         "hash": "0xabcd1234567890abcdef...",
         "status": "success",
-        "assertions_passed": true,
         "gas_used": 21000,
         "error": null
       },
       {
         "hash": "0xefgh5678901234567890...",
         "status": "assertion_failed",
-        "assertions_passed": false,
         "gas_used": 18500,
         "error": "Assertion 0x123... failed: insufficient balance"
       },
       {
         "hash": "0xijkl9012345678901234...",
         "status": "failed",
-        "assertions_passed": null,
         "gas_used": null,
         "error": null
       }
@@ -196,11 +193,10 @@ Retrieves transaction results by hash. Can retrieve one or many transactions at 
 **Transaction Status Values:**
 
 - `"success"` - completed successfully, assertions passed. Also includes reverting transactions
-- `"assertion_failed"` - completed but assertions failed
+- `"assertion_failed"` - transaction execution completed successfully, but assertions failed
 - `"failed"` - execution failed (internal error, does not concern reverted transactions)
 - `"reverted"` - transaction, executed but reverted
 - `"halted"` - transaction halted (invalid opcode, out of gas, etc...)
-- `"not_found"` - hash not found (pruned or never existed)
 
 ### Semantics on message broadcast transports
 
@@ -395,5 +391,4 @@ Retrieves bytecode for multiple code hashes.
 | --- | --- | --- |
 | -32000 | Transaction validation failed | Transaction execution failed |
 | -32001 | State unavailable | Required state not accessible |
-| -32002 | No BlockEnv | Received a transaction but no blockenv|
-| -32003 | Internal error | Unexpected sidecar error |
+| -32002 | Internal error | Unexpected sidecar error |
