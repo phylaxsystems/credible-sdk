@@ -188,88 +188,14 @@ pub async fn handle_transaction_rpc(
 ) -> Result<ResponseJson<JsonRpcResponse>, StatusCode> {
     debug!("Processing JSON-RPC request");
 
-    let response = match request.method.as_str() {
-        "sendTransactions" => {
-            trace!("Processing sendTransactions request");
-
-            // Check if we have block environment before processing transactions
-            if !state.has_blockenv.load(Ordering::Relaxed) {
-                debug!("Rejecting transaction - no block environment available");
-                JsonRpcResponse::block_not_available(&request)
-            } else {
-                // Use the decoder to decode all transactions
-                match &request.params {
-                    Some(_) => {
-                        // Use the decoder to decode all transactions at once
-                        match HttpTransactionDecoder::to_transaction(request.clone()) {
-                            Ok(queue_transactions) => {
-                                let transaction_count = queue_transactions.len();
-                                let mut processed_count = 0;
-
-                                // Send each decoded transaction to the queue
-                                for queue_tx in queue_transactions {
-                                    if let Err(e) =
-                                        state.tx_sender.send(TxQueueContents::Tx(queue_tx))
-                                    {
-                                        error!(
-                                            error = %e,
-                                            "Failed to send transaction to queue from transport server"
-                                        );
-                                        return Ok(ResponseJson(JsonRpcResponse::internal_error(
-                                            &request,
-                                            "Internal error: failed to queue transaction",
-                                        )));
-                                    }
-                                    processed_count += 1;
-                                }
-
-                                debug!(
-                                    transaction_count = transaction_count,
-                                    processed_count = processed_count,
-                                    "Successfully processed transaction batch"
-                                );
-
-                                JsonRpcResponse::success(
-                                    &request,
-                                    serde_json::json!({
-                                        "status": "accepted",
-                                        "transaction_count": processed_count,
-                                        "message": format!("Successfully processed {} transactions", processed_count)
-                                    }),
-                                )
-                            }
-                            Err(e) => {
-                                error!(
-                                    error = %e,
-                                    "Failed to decode transactions"
-                                );
-
-                                JsonRpcResponse::internal_error(
-                                    &request,
-                                    &format!("Failed to decode transactions: {}", e),
-                                )
-                            }
-                        }
-                    }
-                    None => {
-                        debug!("sendTransactions request missing required parameters");
-
-                        JsonRpcResponse::internal_error(
-                            &request,
-                            "Missing params for sendTransactions",
-                        )
-                    }
-                }
-            }
-        }
-        _ => {
-            debug!(
-                method = %request.method,
-                "Unknown JSON-RPC method requested"
-            );
-
-            JsonRpcResponse::method_not_found(&request)
-        }
+    let response = if request.method != "sendTransactions" {
+        debug!(
+            method = %request.method,
+            "Unknown JSON-RPC method requested"
+        );
+        JsonRpcResponse::method_not_found(&request)
+    } else {
+        handle_send_transactions(&state, &request).await?
     };
 
     debug!(
@@ -278,4 +204,72 @@ pub async fn handle_transaction_rpc(
     );
 
     Ok(ResponseJson(response))
+}
+
+async fn handle_send_transactions(
+    state: &ServerState,
+    request: &JsonRpcRequest,
+) -> Result<JsonRpcResponse, StatusCode> {
+    trace!("Processing sendTransactions request");
+
+    // Check if we have block environment before processing transactions
+    if !state.has_blockenv.load(Ordering::Relaxed) {
+        debug!("Rejecting transaction - no block environment available");
+        return Ok(JsonRpcResponse::block_not_available(request));
+    }
+
+    let Some(_) = &request.params else {
+        debug!("sendTransactions request missing required parameters");
+        return Ok(JsonRpcResponse::internal_error(
+            request,
+            "Missing params for sendTransactions",
+        ));
+    };
+
+    let queue_transactions = match HttpTransactionDecoder::to_transaction(request.clone()) {
+        Ok(transactions) => transactions,
+        Err(e) => {
+            error!(
+                error = %e,
+                "Failed to decode transactions"
+            );
+            return Ok(JsonRpcResponse::internal_error(
+                request,
+                &format!("Failed to decode transactions: {}", e),
+            ));
+        }
+    };
+
+    let transaction_count = queue_transactions.len();
+    let mut processed_count = 0;
+
+    // Send each decoded transaction to the queue
+    for queue_tx in queue_transactions {
+        if let Err(e) = state.tx_sender.send(TxQueueContents::Tx(queue_tx)) {
+            error!(
+                error = %e,
+                "Failed to send transaction to queue from transport server"
+            );
+            return Ok(JsonRpcResponse::internal_error(
+                request,
+                "Internal error: failed to queue transaction",
+            ));
+        }
+        processed_count += 1;
+    }
+
+    debug!(
+        transaction_count = transaction_count,
+        processed_count = processed_count,
+        "Successfully processed transaction batch"
+    );
+
+    Ok(JsonRpcResponse::success(
+        request,
+        serde_json::json!({
+            "status": "accepted",
+            "transaction_count": processed_count,
+            "message": format!("Successfully processed {} transactions", processed_count)
+        }),
+    ))
 }
