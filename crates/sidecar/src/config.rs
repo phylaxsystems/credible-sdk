@@ -89,7 +89,7 @@ pub async fn init_indexer_config(
 
     let indexer_db = indexer_db_config.open()?;
 
-    info!(
+    debug!(
         state_oracle = ?args.credible.oracle_contract,
         da_url = ?args.credible.rpc_da_url,
         indexer_rpc = ?args.credible.indexer_rpc,

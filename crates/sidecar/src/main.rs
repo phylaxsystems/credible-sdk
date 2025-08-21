@@ -13,6 +13,7 @@ use crate::{
     config::{
         init_assertion_store,
         init_executor_config,
+        init_indexer_config,
     },
     engine::CoreEngine,
     transport::{
@@ -53,7 +54,9 @@ async fn main() -> anyhow::Result<()> {
 
     let executor_config = init_executor_config(&args);
     let assertion_store = init_assertion_store(&args)?;
-    let assertion_executor = AssertionExecutor::new(executor_config, assertion_store.clone());
+    let assertion_executor =
+        AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
+    let indexer_cfg = init_indexer_config(&args, assertion_store, executor_config).await?;
 
     let (_, mock_receiver) = unbounded();
     let mock_transport = MockTransport::with_receiver(tx_sender, mock_receiver);
@@ -73,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         _ = mock_transport.run() => {
             tracing::info!("Engine run completed, shutting down...");
         }
-        _ = indexer::run_indexer(assertion_store) => {
+        _ = indexer::run_indexer(indexer_cfg) => {
             tracing::info!("Indexer exited, shutting down...");
         }
     }
