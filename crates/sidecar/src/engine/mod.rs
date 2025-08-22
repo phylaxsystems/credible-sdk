@@ -73,11 +73,7 @@ use revm::{
         B256,
     },
 };
-use std::collections::HashMap;
-use std::sync::{
-    Arc,
-    Mutex,
-};
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use tracing::{
     debug,
@@ -114,17 +110,17 @@ pub enum TransactionResult {
     ValidationError(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct StateResults {
     transaction_results: DashMap<B256, TransactionResult>,
-    pending_queries: Arc<Mutex<HashMap<TxHash, oneshot::Sender<TransactionResult>>>>,
+    pending_queries: DashMap<TxHash, oneshot::Sender<TransactionResult>>,
 }
 
 impl StateResults {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             transaction_results: DashMap::new(),
-            pending_queries: Arc::new(Mutex::new(HashMap::new())),
+            pending_queries: DashMap::new(),
         })
     }
 }
@@ -337,11 +333,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             return;
         };
         // O(1)
-        let Ok(mut sender) = self.state_results.pending_queries.lock() else {
-            return;
-        };
-        // O(1)
-        let Some(sender) = sender.remove(&tx_hash) else {
+        let Some((_, sender)) = self.state_results.pending_queries.remove(&tx_hash) else {
             return;
         };
         // Purposedly ignore this error in case there is a race condition and the result is sent twice

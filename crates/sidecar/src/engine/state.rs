@@ -56,30 +56,31 @@ impl State {
                     })?;
                 }
                 None => {
-                    if let Ok(mut pending_queries) = self.state_results.pending_queries.lock() {
-                        pending_queries.insert(event.tx_hash, event.sender);
+                    self.state_results
+                        .pending_queries
+                        .insert(event.tx_hash, event.sender);
 
-                        // Check the race condition in which the engine is faster than this process:
-                        // Then it could happen:
-                        // 1. The engine is processing the requested transaction
-                        // 2. This process checks for the result and doesn't find it
-                        // 3. The engine adds the result to the state
-                        // 4. This process adds the query to pending_queries
-                        // 5. The engine already checked pending_queries just before it was written
-                        let result = self.get_transaction_result(&tx_hash);
-                        if let Some(result) = result
-                            && let Some(sender) = pending_queries.remove(&tx_hash)
-                        {
-                            sender.send(result.clone()).map_err(|e| {
-                                error!(
-                                    target = "engine",
-                                    error = ?e,
-                                    tx_hash = %tx_hash,
-                                    "Failed to send transaction result to query sender"
-                                );
-                                EngineError::GetTxResultChannelClosed
-                            })?;
-                        }
+                    // Check the race condition in which the engine is faster than this process:
+                    // Then it could happen:
+                    // 1. The engine is processing the requested transaction
+                    // 2. This process checks for the result and doesn't find it
+                    // 3. The engine adds the result to the state
+                    // 4. This process adds the query to pending_queries
+                    // 5. The engine already checked pending_queries just before it was written
+                    let result = self.get_transaction_result(&tx_hash);
+                    if let Some(result) = result
+                        && let Some((_, sender)) =
+                            self.state_results.pending_queries.remove(&tx_hash)
+                    {
+                        sender.send(result.clone()).map_err(|e| {
+                            error!(
+                                target = "engine",
+                                error = ?e,
+                                tx_hash = %tx_hash,
+                                "Failed to send transaction result to query sender"
+                            );
+                            EngineError::GetTxResultChannelClosed
+                        })?;
                     }
                 }
             }
@@ -259,9 +260,8 @@ mod tests {
 
         // Verify the query was added to pending queries
         {
-            let pending = state_results.pending_queries.lock().unwrap();
             assert!(
-                pending.contains_key(&tx_hash),
+                state_results.pending_queries.contains_key(&tx_hash),
                 "Query should be added to pending queries"
             );
         }
@@ -342,21 +342,22 @@ mod tests {
 
         // Add them to pending queries manually
         {
-            let mut pending = state_results.pending_queries.lock().unwrap();
-            pending.insert(tx_hash, sender1);
+            state_results.pending_queries.insert(tx_hash, sender1);
             // This will overwrite the first sender - only one query per tx_hash is kept
-            pending.insert(tx_hash, sender2);
+            state_results.pending_queries.insert(tx_hash, sender2);
         }
 
         // Verify only the last sender remains
         {
-            let pending = state_results.pending_queries.lock().unwrap();
             assert_eq!(
-                pending.len(),
+                state_results.pending_queries.len(),
                 1,
                 "Should only have one pending query per tx_hash"
             );
-            assert!(pending.contains_key(&tx_hash), "Should contain the tx_hash");
+            assert!(
+                state_results.pending_queries.contains_key(&tx_hash),
+                "Should contain the tx_hash"
+            );
         }
 
         // Clean up to avoid dropping the channel receivers in the wrong order
@@ -528,33 +529,39 @@ mod tests {
 
         // Test that the mutex works correctly
         {
-            let mut pending = state_results.pending_queries.lock().unwrap();
-            assert!(pending.is_empty(), "Should start empty");
+            assert!(
+                state_results.pending_queries.is_empty(),
+                "Should start empty"
+            );
 
             let (sender, _receiver) = oneshot::channel();
-            pending.insert(tx_hash, sender);
-            assert_eq!(pending.len(), 1, "Should have one pending query");
+            state_results.pending_queries.insert(tx_hash, sender);
+            assert_eq!(
+                state_results.pending_queries.len(),
+                1,
+                "Should have one pending query"
+            );
         } // Lock is dropped here
 
         // Test that we can access it again
         {
-            let pending = state_results.pending_queries.lock().unwrap();
             assert!(
-                pending.contains_key(&tx_hash),
+                state_results.pending_queries.contains_key(&tx_hash),
                 "Should still contain the query"
             );
         }
 
         // Test removal
         {
-            let mut pending = state_results.pending_queries.lock().unwrap();
-            let removed = pending.remove(&tx_hash);
+            let removed = state_results.pending_queries.remove(&tx_hash);
             assert!(removed.is_some(), "Should be able to remove");
         }
 
         {
-            let pending = state_results.pending_queries.lock().unwrap();
-            assert!(pending.is_empty(), "Should be empty after removal");
+            assert!(
+                state_results.pending_queries.is_empty(),
+                "Should be empty after removal"
+            );
         }
     }
 }
