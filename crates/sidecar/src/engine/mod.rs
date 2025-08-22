@@ -45,6 +45,7 @@ use super::engine::queue::{
     TxQueueContents,
 };
 
+#[allow(unused_imports)]
 use assertion_executor::{
     AssertionExecutor,
     db::overlay::OverlayDb,
@@ -54,6 +55,8 @@ use assertion_executor::{
         AssertionStoreError,
     },
 };
+
+#[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
     DatabaseRef,
