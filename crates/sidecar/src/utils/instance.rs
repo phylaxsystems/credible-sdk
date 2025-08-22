@@ -1,4 +1,3 @@
-
 use crate::{
     engine::{
         CoreEngine,
@@ -31,7 +30,7 @@ use std::{
     time::Duration,
 };
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn, error};
+use tracing::{info, warn, error};
 
 /// Test database error type
 type TestDbError = std::convert::Infallible;
@@ -49,6 +48,8 @@ pub struct LocalInstance {
     transport_handle: Option<JoinHandle<()>>,
     /// Engine task handle  
     engine_handle: Option<JoinHandle<()>>,
+    /// Current block number
+    block_bumber: u64,
 }
 
 impl LocalInstance {
@@ -111,13 +112,21 @@ impl LocalInstance {
             assertion_store,
             transport_handle: Some(transport_handle),
             engine_handle: Some(engine_handle),
+            block_bumber: 0,
         })
     }
 
     /// Send a new block environment to the engine
-    pub fn send_block(&self, block_env: BlockEnv) -> Result<(), String> {
-        info!("LocalInstance sending block: {:?}", block_env.number);
-        info!("About to send to mock_sender channel");
+    pub fn new_block(&mut self) -> Result<(), String> {
+        info!("LocalInstance sending block: {:?}", self.block_bumber);
+        let block_env =  BlockEnv {
+            number: self.block_bumber,
+            gas_limit: 1_000_000,
+            ..Default::default()
+        };
+        // Increment block number for next time we call new_block
+        self.block_bumber += 1;
+
         let result = self.mock_sender
             .send(TxQueueContents::Block(block_env))
             .map_err(|e| format!("Failed to send block: {}", e));
@@ -139,12 +148,11 @@ impl LocalInstance {
 
     /// Send a block with multiple transactions
     pub fn send_block_with_txs(
-        &self,
-        block_env: BlockEnv,
+        &mut self,
         transactions: Vec<(B256, TxEnv)>,
     ) -> Result<(), String> {
         // Send the block environment first
-        self.send_block(block_env)?;
+        self.new_block()?;
 
         // Then send all transactions
         for (tx_hash, tx_env) in transactions {
@@ -183,17 +191,6 @@ impl LocalInstance {
             .map_err(|e| format!("Failed to insert assertion: {}", e))
     }
 
-    /// Create a test block environment with default values
-    pub fn create_test_block(&self, number: u64) -> BlockEnv {
-        BlockEnv {
-            number,
-            basefee: 0, // Set to 0 to avoid balance issues in tests
-            timestamp: 1_000_000 + number * 12,
-            gas_limit: 30_000_000,
-            ..Default::default()
-        }
-    }
-
     /// Create a simple test transaction
     pub fn create_test_transaction(
         &self,
@@ -212,13 +209,6 @@ impl LocalInstance {
             nonce,
             ..Default::default()
         }
-    }
-
-    /// Send a simple test transaction and wait for processing
-    pub async fn send_and_wait(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
-        self.send_transaction(tx_hash, tx_env)?;
-        self.wait_for_processing(Duration::from_millis(100)).await;
-        Ok(())
     }
 
     /// Prefund accounts with ETH for testing
@@ -253,16 +243,11 @@ mod tests {
     use super::*;
     use revm::primitives::uint;
 
-    #[tokio::test]
-    async fn test_mock_driver_pattern_demonstration() {
-        // Create a mock instance for testing
-        info!("Creating LocalInstance for test");
-        let instance = LocalInstance::new().await.unwrap();
-        
+    #[crate::utils::engine_test]
+    async fn test_mock_driver_pattern_demonstration(mut instance: LocalInstance) {
         // Send a block environment
         info!("Sending block to engine");
-        let block = instance.create_test_block(1);
-        instance.send_block(block).unwrap();
+        instance.new_block().unwrap();
         
         // Give transport time to forward the block
         tokio::time::sleep(Duration::from_millis(10)).await;

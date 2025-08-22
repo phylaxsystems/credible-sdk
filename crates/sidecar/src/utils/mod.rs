@@ -7,9 +7,10 @@
 #[cfg(test)]
 mod test_util;
 #[cfg(test)]
+#[allow(dead_code)]
 pub mod instance;
 
 #[cfg(test)]
-pub use test_util::TestDbError;
+pub use test_util::{TestDbError, engine_test};
 #[cfg(test)]
 pub use instance::LocalInstance;
