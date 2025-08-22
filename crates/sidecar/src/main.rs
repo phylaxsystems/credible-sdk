@@ -71,7 +71,8 @@ async fn main() -> anyhow::Result<()> {
         assertion_executor,
         engine_state_results.clone(),
     );
-    let mut engine_state = engine::result_handler::ResultHandler::new(get_tx_result_receiver, engine_state_results);
+    let mut engine_state =
+        engine::result_handler::ResultHandler::new(get_tx_result_receiver, engine_state_results);
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
