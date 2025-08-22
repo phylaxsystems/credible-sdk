@@ -153,6 +153,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     }
 
     /// Inserts an assertion directly into the assertion store of the engine.
+    #[cfg(test)]
     pub fn insert_into_store(
         &self,
         address: Address,
