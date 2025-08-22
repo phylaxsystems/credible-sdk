@@ -9,12 +9,12 @@ use dashmap::mapref::one::Ref;
 use std::sync::Arc;
 use tracing::error;
 
-pub(crate) struct State {
+pub(crate) struct ResultHandler {
     get_tx_result_receiver: GetTransactionResultQueueReceiver,
     state_results: Arc<StateResults>,
 }
 
-impl State {
+impl ResultHandler {
     pub(crate) fn new(
         get_tx_result_receiver: GetTransactionResultQueueReceiver,
         state_results: Arc<StateResults>,
@@ -103,13 +103,13 @@ mod tests {
     use tokio::sync::oneshot;
 
     fn create_test_state() -> (
-        State,
+        ResultHandler,
         crossbeam::channel::Sender<QueryGetTxResult>,
         Arc<StateResults>,
     ) {
         let (sender, receiver) = unbounded();
         let state_results = StateResults::new();
-        let state = State::new(receiver, state_results.clone());
+        let state = ResultHandler::new(receiver, state_results.clone());
         (state, sender, state_results)
     }
 
@@ -141,7 +141,7 @@ mod tests {
         let (sender, receiver) = unbounded();
         let state_results = StateResults::new();
 
-        let state = State::new(receiver, state_results.clone());
+        let state = ResultHandler::new(receiver, state_results.clone());
 
         // Verify state was constructed correctly by testing basic functionality
         let tx_hash = B256::from([0x99; 32]);

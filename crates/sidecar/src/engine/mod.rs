@@ -39,7 +39,7 @@
 //! assertion reverts before approving a transaction.
 
 pub mod queue;
-pub(crate) mod state;
+pub(crate) mod result_handler;
 
 use super::engine::queue::{
     TransactionQueueReceiver,

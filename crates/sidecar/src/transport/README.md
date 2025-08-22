@@ -176,7 +176,7 @@ Retrieves transaction results by hash. Can retrieve one or many transactions at 
         "hash": "0xefgh5678901234567890...",
         "status": "assertion_failed",
         "gas_used": 18500,
-        "error": "Assertion 0x123... failed: insufficient balance"
+        "error": null
       },
       {
         "hash": "0xijkl9012345678901234...",

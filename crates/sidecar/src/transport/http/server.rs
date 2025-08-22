@@ -300,6 +300,7 @@ async fn handle_get_transactions(
     trace!("Processing getTransactions request");
 
     // Check if we have block environment before processing transactions
+    // NOTE: This can be dropped once we implement the "not_found" feature, the result will be "not_found" by default because there cannot be any tx hash consumed if no BlockEnv was received first
     if !state.has_blockenv.load(Ordering::Relaxed) {
         debug!("Rejecting transaction - no block environment available");
         return Ok(JsonRpcResponse::block_not_available(request));
@@ -347,7 +348,6 @@ async fn handle_get_transactions(
             ));
         }
 
-        // Wait for response with timeout
         let transaction_result = match response_rx.await {
             Ok(result) => result,
             Err(_) => {
@@ -394,6 +394,15 @@ fn into_transaction_result_response(
             is_valid,
         } => {
             let gas_used = Some(execution_result.gas_used());
+            if !*is_valid {
+                // Transaction failed assertion validation
+                return TransactionResultResponse {
+                    hash,
+                    status: "assertion_failed".to_string(),
+                    gas_used,
+                    error: None,
+                };
+            }
             match execution_result {
                 ExecutionResult::Success { .. } => {
                     TransactionResultResponse {
@@ -406,27 +415,17 @@ fn into_transaction_result_response(
                 ExecutionResult::Revert { .. } => {
                     TransactionResultResponse {
                         hash,
-                        status: "failed".to_string(),
+                        status: "reverted".to_string(),
                         gas_used,
                         error: None,
                     }
                 }
                 ExecutionResult::Halt { reason, .. } => {
-                    if !*is_valid {
-                        // Transaction failed assertion validation
-                        TransactionResultResponse {
-                            hash,
-                            status: "assertion_failed".to_string(),
-                            gas_used,
-                            error: Some(format!("Assertion failed: {:?}", reason)),
-                        }
-                    } else {
-                        TransactionResultResponse {
-                            hash,
-                            status: "failed".to_string(),
-                            gas_used,
-                            error: Some(format!("Transaction halted: {:?}", reason)),
-                        }
+                    TransactionResultResponse {
+                        hash,
+                        status: "halted".to_string(),
+                        gas_used,
+                        error: Some(format!("Transaction halted: {:?}", reason)),
                     }
                 }
             }
