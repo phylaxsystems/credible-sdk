@@ -39,6 +39,7 @@
 //! assertion reverts before approving a transaction.
 
 pub mod queue;
+pub(crate) mod state;
 
 use super::engine::queue::{
     TransactionQueueReceiver,
@@ -56,6 +57,9 @@ use assertion_executor::{
     },
 };
 
+use dashmap::DashMap;
+use dashmap::mapref::one::Ref;
+use revm::primitives::alloy_primitives::TxHash;
 #[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
@@ -70,6 +74,10 @@ use revm::{
     },
 };
 use std::collections::HashMap;
+use std::sync::{
+    Arc,
+    Mutex,
+};
 use tokio::sync::oneshot;
 use tracing::{
     debug,
@@ -106,6 +114,21 @@ pub enum TransactionResult {
     ValidationError(String),
 }
 
+#[derive(Clone, Debug)]
+pub struct StateResults {
+    transaction_results: DashMap<B256, TransactionResult>,
+    pending_queries: Arc<Mutex<HashMap<TxHash, oneshot::Sender<TransactionResult>>>>,
+}
+
+impl StateResults {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            transaction_results: DashMap::new(),
+            pending_queries: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+}
+
 /// The engine processes blocks and appends transactions to them.
 /// It accepts transaction events sent from a transport via the `TransactionQueueReceiver`
 /// and processes them accordingly.
@@ -116,8 +139,7 @@ pub struct CoreEngine<DB> {
     assertion_executor: AssertionExecutor,
     block_env: Option<BlockEnv>,
     /// TODO: move this out of the core engine when we add proper state.
-    transaction_results: HashMap<B256, TransactionResult>,
-    pending_queries: HashMap<TxHash, oneshot::Sender<TransactionResult>>,
+    state_results: Arc<StateResults>,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -126,14 +148,14 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         state: OverlayDb<DB>,
         tx_receiver: TransactionQueueReceiver,
         assertion_executor: AssertionExecutor,
+        state_results: Arc<StateResults>,
     ) -> Self {
         Self {
             state,
             tx_receiver,
             assertion_executor,
             block_env: None,
-            transaction_results: HashMap::new(),
-            pending_queries: HashMap::new(),
+            state_results,
         }
     }
 
@@ -156,8 +178,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 AssertionStore::new_ephemeral().expect("REASON"),
             ),
             block_env: None,
-            transaction_results: HashMap::new(),
-            pending_queries: HashMap::new(),
+            state_results: StateResults::new(),
         }
     }
 
@@ -212,7 +233,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     "Internal validation error occurred"
                 );
                 // Store the validation error result
-                self.transaction_results.insert(
+                self.state_results.transaction_results.insert(
                     tx_hash,
                     TransactionResult::ValidationError(format!("{e:?}")),
                 );
@@ -270,7 +291,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
 
         // Store the transaction result
-        self.transaction_results.insert(
+        self.state_results.transaction_results.insert(
             tx_hash,
             TransactionResult::ValidationCompleted {
                 execution_result,
@@ -278,7 +299,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             },
         );
 
-        self.process_pending_queries(tx_hash)?;
+        self.process_pending_queries(tx_hash);
         trace!("Transaction execution completed");
         Ok(())
     }
@@ -296,31 +317,43 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     }
 
     /// Get transaction result by hash.
-    pub fn get_transaction_result(&self, tx_hash: &B256) -> Option<&TransactionResult> {
-        self.transaction_results.get(tx_hash)
+    pub fn get_transaction_result(
+        &self,
+        tx_hash: &B256,
+    ) -> Option<Ref<'_, B256, TransactionResult>> {
+        self.state_results.transaction_results.get(tx_hash)
     }
 
     /// Get all transaction results for testing purposes.
     #[cfg(test)]
-    pub fn get_all_transaction_results(&self) -> &HashMap<B256, TransactionResult> {
-        &self.transaction_results
+    pub fn get_all_transaction_results(&self) -> &DashMap<B256, TransactionResult> {
+        &self.state_results.transaction_results
     }
 
     /// Check if there is a pending query for the processed result
-    fn process_pending_queries(&mut self, tx_hash: TxHash) -> Result<(), EngineError> {
-        if let Some(sender) = self.pending_queries.remove(&tx_hash) {
-            let result = self.transaction_results.get(&tx_hash).unwrap();
-            sender.send(result.clone()).map_err(|e| {
-                error!(
-                    target = "engine",
-                    error = ?e,
-                    tx_hash = %tx_hash,
-                    "Failed to send transaction result to query sender"
-                );
-                EngineError::GetTxResultChannelClosed
-            })?;
-        }
-        Ok(())
+    fn process_pending_queries(&mut self, tx_hash: TxHash) {
+        // O(1)
+        let Some(result) = self.state_results.transaction_results.get(&tx_hash) else {
+            return;
+        };
+        // O(1)
+        let Ok(mut sender) = self.state_results.pending_queries.lock() else {
+            return;
+        };
+        // O(1)
+        let Some(sender) = sender.remove(&tx_hash) else {
+            return;
+        };
+        // Purposedly ignore this error in case there is a race condition and the result is sent twice
+        // O(1)
+        let _ = sender.send(result.clone()).map_err(|e| {
+            error!(
+                target = "engine",
+                error = ?e,
+                tx_hash = %tx_hash,
+                "Failed to send transaction result to query sender"
+            );
+        });
     }
 
     /// Run the engine and process transactions and blocks received
@@ -390,26 +423,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     // Process the transaction with the current block environment
                     self.execute_transaction(tx_hash, tx_env)?;
                 }
-                TxQueueContents::GetTxResult(query) => {
-                    let tx_hash = query.tx_hash;
-                    let result = self.get_transaction_result(&tx_hash);
-                    match result {
-                        Some(result) => {
-                            query.sender.send(result.clone()).map_err(|e| {
-                                error!(
-                                    target = "engine",
-                                    error = ?e,
-                                    tx_hash = %tx_hash,
-                                    "Failed to send transaction result to query sender"
-                                );
-                                EngineError::GetTxResultChannelClosed
-                            })?;
-                        }
-                        None => {
-                            self.pending_queries.insert(query.tx_hash, query.sender);
-                        }
-                    }
-                }
             }
 
             if processed_blocks > 0 && processed_blocks.is_multiple_of(100) {
@@ -439,6 +452,7 @@ mod tests {
         ExecutorConfig,
         store::AssertionStore,
     };
+    use crossbeam::channel::unbounded;
     use revm::{
         context::{
             BlockEnv,
@@ -469,7 +483,8 @@ mod tests {
             AssertionStore::new_ephemeral().expect("Failed to create assertion store");
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
-        let engine = CoreEngine::new(state, tx_receiver, assertion_executor);
+        let state_results = StateResults::new();
+        let engine = CoreEngine::new(state, tx_receiver, assertion_executor, state_results);
         (engine, tx_sender)
     }
 
@@ -480,6 +495,7 @@ mod tests {
         crossbeam::channel::Sender<TxQueueContents>,
     ) {
         let (engine_tx, engine_rx) = crossbeam::channel::unbounded();
+        let (get_tx_result_sender, _get_tx_result_receiver) = unbounded();
         let (mock_tx, mock_rx) = crossbeam::channel::unbounded();
 
         // Create engine
@@ -488,10 +504,11 @@ mod tests {
         let assertion_store =
             AssertionStore::new_ephemeral().expect("Failed to create assertion store");
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
-        let engine = CoreEngine::new(state, engine_rx, assertion_executor);
+        let state_results = StateResults::new();
+        let engine = CoreEngine::new(state, engine_rx, assertion_executor, state_results);
 
         // Create mock transport with the receiver
-        let mock_transport = MockTransport::with_receiver(engine_tx, mock_rx);
+        let mock_transport = MockTransport::with_receiver(engine_tx, mock_rx, get_tx_result_sender);
 
         (engine, mock_transport, mock_tx)
     }
@@ -542,7 +559,7 @@ mod tests {
         // Verify transaction result is stored
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        match tx_result.unwrap() {
+        match tx_result.unwrap().clone() {
             TransactionResult::ValidationCompleted { is_valid, .. } => {
                 assert!(is_valid, "Transaction should pass assertions");
             }
@@ -662,13 +679,13 @@ mod tests {
         // Verify transaction result is stored and shows it reverted
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        match tx_result.unwrap() {
+        match tx_result.unwrap().clone() {
             TransactionResult::ValidationCompleted {
                 execution_result,
                 is_valid,
             } => {
                 assert!(
-                    *is_valid,
+                    is_valid,
                     "Transaction should pass assertions (no assertions to fail)"
                 );
                 match execution_result {
@@ -782,12 +799,12 @@ mod tests {
         // Verify transaction result is stored and succeeded
         let tx_result = engine.get_transaction_result(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        match tx_result.unwrap() {
+        match tx_result.unwrap().clone() {
             TransactionResult::ValidationCompleted {
                 execution_result,
                 is_valid,
             } => {
-                assert!(*is_valid, "Transaction should pass assertions");
+                assert!(is_valid, "Transaction should pass assertions");
                 match execution_result {
                     ExecutionResult::Success { .. } => {
                         // Expected - transaction succeeded
@@ -885,7 +902,7 @@ mod tests {
         // Verify the transaction was processed
         let result = engine.get_transaction_result(&tx_hash);
         assert!(result.is_some(), "Transaction result should be stored");
-        match result.unwrap() {
+        match result.unwrap().clone() {
             TransactionResult::ValidationCompleted { is_valid, .. } => {
                 assert!(is_valid, "Transaction should pass assertions");
             }
@@ -1012,7 +1029,7 @@ mod tests {
                 tx2_result.is_some(),
                 "Transaction 2 result should be stored"
             );
-            match tx1_result.unwrap() {
+            match tx1_result.unwrap().clone() {
                 TransactionResult::ValidationCompleted { is_valid, .. } => {
                     assert!(is_valid, "Transaction 1 should pass assertions");
                 }
@@ -1020,7 +1037,7 @@ mod tests {
                     panic!("Transaction 1 unexpected validation error: {e:?}");
                 }
             }
-            match tx2_result.unwrap() {
+            match tx2_result.unwrap().clone() {
                 TransactionResult::ValidationCompleted { is_valid, .. } => {
                     assert!(is_valid, "Transaction 2 should pass assertions");
                 }

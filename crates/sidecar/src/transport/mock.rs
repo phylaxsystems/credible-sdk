@@ -1,3 +1,4 @@
+use crate::engine::queue::GetTransactionResultQueueSender;
 use crate::{
     engine::queue::{
         TransactionQueueReceiver,
@@ -22,6 +23,8 @@ pub struct MockTransport {
     /// Transactions sent to this channel will be forwarded
     /// to the core engine queue.
     mock_receiver: TransactionQueueReceiver,
+    /// Get transaction result queue sender.
+    _get_tx_result_sender: GetTransactionResultQueueSender,
 }
 
 impl MockTransport {
@@ -30,10 +33,12 @@ impl MockTransport {
     pub fn with_receiver(
         tx_sender: TransactionQueueSender,
         mock_receiver: TransactionQueueReceiver,
+        get_tx_result_sender: GetTransactionResultQueueSender,
     ) -> Self {
         Self {
             tx_sender,
             mock_receiver,
+            _get_tx_result_sender: get_tx_result_sender,
         }
     }
 }
@@ -42,12 +47,17 @@ impl Transport for MockTransport {
     type Error = MockTransportError;
     type Config = ();
 
-    fn new(_config: (), tx_sender: TransactionQueueSender) -> Result<Self, Self::Error> {
+    fn new(
+        _config: (),
+        tx_sender: TransactionQueueSender,
+        get_tx_result_sender: GetTransactionResultQueueSender,
+    ) -> Result<Self, Self::Error> {
         // Create a dummy receiver channel for the trait implementation
         let (_, mock_receiver) = crossbeam::channel::unbounded();
         Ok(Self {
             tx_sender,
             mock_receiver,
+            _get_tx_result_sender: get_tx_result_sender,
         })
     }
 

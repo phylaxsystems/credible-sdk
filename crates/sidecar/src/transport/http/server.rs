@@ -2,8 +2,8 @@
 
 use crate::engine::TransactionResult;
 use crate::engine::queue::{
+    GetTransactionResultQueueSender,
     QueryGetTxResult,
-    TxQueueContents,
 };
 use crate::{
     engine::queue::TransactionQueueSender,
@@ -169,13 +169,19 @@ impl JsonRpcResponse {
 pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
+    pub get_tx_result_sender: GetTransactionResultQueueSender,
 }
 
 impl ServerState {
-    pub fn new(has_blockenv: Arc<AtomicBool>, tx_sender: TransactionQueueSender) -> Self {
+    pub fn new(
+        has_blockenv: Arc<AtomicBool>,
+        tx_sender: TransactionQueueSender,
+        get_tx_result_sender: GetTransactionResultQueueSender,
+    ) -> Self {
         Self {
             has_blockenv,
             tx_sender,
+            get_tx_result_sender,
         }
     }
 }
@@ -329,7 +335,7 @@ async fn handle_get_transactions(
         };
 
         // Send query to engine
-        if let Err(e) = state.tx_sender.send(TxQueueContents::GetTxResult(query)) {
+        if let Err(e) = state.get_tx_result_sender.send(query) {
             error!(
                 error = %e,
                 tx_hash = %tx_hash,

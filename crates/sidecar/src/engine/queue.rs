@@ -61,7 +61,6 @@ pub struct QueueTransaction {
 pub enum TxQueueContents {
     Block(BlockEnv),
     Tx(QueueTransaction),
-    GetTxResult(QueryGetTxResult),
 }
 
 #[derive(Debug)]
@@ -74,3 +73,8 @@ pub struct QueryGetTxResult {
 pub type TransactionQueueSender = Sender<TxQueueContents>;
 /// `crossbeam` receiver for the transaction queue. Receives data from tx queue.
 pub type TransactionQueueReceiver = Receiver<TxQueueContents>;
+
+/// `crossbeam` sender for the get transaction result queue. Sends transaction result query requests.
+pub type GetTransactionResultQueueSender = Sender<QueryGetTxResult>;
+/// `crossbeam` receiver for the get transaction result queue. Receives transaction result query responses.
+pub type GetTransactionResultQueueReceiver = Receiver<QueryGetTxResult>;
