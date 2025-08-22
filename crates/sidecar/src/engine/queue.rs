@@ -21,10 +21,12 @@
 //! New transaction events are transactions that should be executed and included for the
 //! current `BlockEnv`.
 
+use crate::engine::TransactionResult;
 use crossbeam::channel::{
     Receiver,
     Sender,
 };
+use revm::primitives::alloy_primitives::TxHash;
 use revm::{
     context::{
         BlockEnv,
@@ -32,6 +34,7 @@ use revm::{
     },
     primitives::B256,
 };
+use tokio::sync::oneshot;
 
 /// Represents a transaction to be processed by the sidecar engine.
 ///
@@ -54,10 +57,17 @@ pub struct QueueTransaction {
 ///
 /// `Tx` should be used to append a new transaction to the current block,
 /// along with its transaction hash for identification and tracing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum TxQueueContents {
     Block(BlockEnv),
     Tx(QueueTransaction),
+    GetTxResult(QueryGetTxResult),
+}
+
+#[derive(Debug)]
+pub struct QueryGetTxResult {
+    pub tx_hash: TxHash,
+    pub sender: oneshot::Sender<TransactionResult>,
 }
 
 /// `crossbeam` sender for the transaction queue. Sends data to tx queue.

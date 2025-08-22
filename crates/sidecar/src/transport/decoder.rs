@@ -6,6 +6,10 @@
 //! the core engine.
 
 use crate::engine::queue::TxQueueContents;
+use crate::transport::http::server::{
+    METHOD_BLOCK_ENV,
+    METHOD_SEND_TRANSACTIONS,
+};
 use crate::{
     engine::queue::QueueTransaction,
     transport::http::server::{
@@ -118,10 +122,6 @@ impl TryFrom<&TransactionEnv> for TxEnv {
 pub struct HttpTransactionDecoder;
 
 impl HttpTransactionDecoder {
-    const METHOD_SEND_TRANSACTIONS: &'static str = "sendTransactions";
-    const METHOD_BLOCK_ENV: &'static str = "sendBlockEnv
-";
-
     fn to_transaction(req: &JsonRpcRequest) -> Result<Vec<TxQueueContents>, HttpDecoderError> {
         let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
         let send_params: SendTransactionsParams =
@@ -152,8 +152,8 @@ impl Decoder for HttpTransactionDecoder {
 
     fn to_tx_queue_contents(req: &Self::RawEvent) -> Result<Vec<TxQueueContents>, Self::Error> {
         match req.method.as_str() {
-            Self::METHOD_SEND_TRANSACTIONS => Self::to_transaction(req),
-            Self::METHOD_BLOCK_ENV => {
+            METHOD_SEND_TRANSACTIONS => Self::to_transaction(req),
+            METHOD_BLOCK_ENV => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
                 let block = serde_json::from_value::<BlockEnv>(params.clone())
                     .map_err(|_| HttpDecoderError::SchemaError)?;

@@ -70,6 +70,7 @@ use revm::{
     },
 };
 use std::collections::HashMap;
+use tokio::sync::oneshot;
 use tracing::{
     debug,
     error,
@@ -89,10 +90,12 @@ pub enum EngineError {
     AssertionError,
     #[error("Transaction queue channel closed")]
     ChannelClosed,
+    #[error("Get transaction result oneshot channel closed")]
+    GetTxResultChannelClosed,
 }
 
 /// Represents either a successful transaction validation or an internal validation error
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TransactionResult {
     /// Transaction was processed successfully (may have reverted/halted, but validation completed)
     ValidationCompleted {
@@ -106,7 +109,7 @@ pub enum TransactionResult {
 /// The engine processes blocks and appends transactions to them.
 /// It accepts transaction events sent from a transport via the `TransactionQueueReceiver`
 /// and processes them accordingly.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CoreEngine<DB> {
     state: OverlayDb<DB>,
     tx_receiver: TransactionQueueReceiver,
@@ -114,6 +117,7 @@ pub struct CoreEngine<DB> {
     block_env: Option<BlockEnv>,
     /// TODO: move this out of the core engine when we add proper state.
     transaction_results: HashMap<B256, TransactionResult>,
+    pending_queries: HashMap<TxHash, oneshot::Sender<TransactionResult>>,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -129,6 +133,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             assertion_executor,
             block_env: None,
             transaction_results: HashMap::new(),
+            pending_queries: HashMap::new(),
         }
     }
 
@@ -152,6 +157,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             ),
             block_env: None,
             transaction_results: HashMap::new(),
+            pending_queries: HashMap::new(),
         }
     }
 
@@ -272,6 +278,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             },
         );
 
+        self.process_pending_queries(tx_hash)?;
         trace!("Transaction execution completed");
         Ok(())
     }
@@ -297,6 +304,23 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[cfg(test)]
     pub fn get_all_transaction_results(&self) -> &HashMap<B256, TransactionResult> {
         &self.transaction_results
+    }
+
+    /// Check if there is a pending query for the processed result
+    fn process_pending_queries(&mut self, tx_hash: TxHash) -> Result<(), EngineError> {
+        if let Some(sender) = self.pending_queries.remove(&tx_hash) {
+            let result = self.transaction_results.get(&tx_hash).unwrap();
+            sender.send(result.clone()).map_err(|e| {
+                error!(
+                    target = "engine",
+                    error = ?e,
+                    tx_hash = %tx_hash,
+                    "Failed to send transaction result to query sender"
+                );
+                EngineError::GetTxResultChannelClosed
+            })?;
+        }
+        Ok(())
     }
 
     /// Run the engine and process transactions and blocks received
@@ -365,6 +389,26 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
                     // Process the transaction with the current block environment
                     self.execute_transaction(tx_hash, tx_env)?;
+                }
+                TxQueueContents::GetTxResult(query) => {
+                    let tx_hash = query.tx_hash;
+                    let result = self.get_transaction_result(&tx_hash);
+                    match result {
+                        Some(result) => {
+                            query.sender.send(result.clone()).map_err(|e| {
+                                error!(
+                                    target = "engine",
+                                    error = ?e,
+                                    tx_hash = %tx_hash,
+                                    "Failed to send transaction result to query sender"
+                                );
+                                EngineError::GetTxResultChannelClosed
+                            })?;
+                        }
+                        None => {
+                            self.pending_queries.insert(query.tx_hash, query.sender);
+                        }
+                    }
                 }
             }
 
