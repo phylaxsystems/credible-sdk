@@ -34,3 +34,4 @@ testing = ["ctor"]
 
 [dev-dependencies]
 ctor = "0.5.0"
+sidecar-test-macros = { path = "src/utils/test-macros" }
