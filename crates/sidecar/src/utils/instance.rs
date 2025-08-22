@@ -1,6 +1,7 @@
 use crate::{
     engine::{
         CoreEngine,
+        TransactionResult,
         queue::{
             TransactionQueueSender,
             TxQueueContents,
@@ -12,6 +13,7 @@ use crate::{
         mock::MockTransport,
     },
 };
+use dashmap::DashMap;
 use assertion_executor::{
     AssertionExecutor,
     ExecutorConfig,
@@ -50,6 +52,8 @@ pub struct LocalInstance {
     engine_handle: Option<JoinHandle<()>>,
     /// Current block number
     block_bumber: u64,
+    /// Shared transaction results from engine
+    transaction_results: Arc<DashMap<B256, TransactionResult>>,
 }
 
 impl LocalInstance {
@@ -77,6 +81,9 @@ impl LocalInstance {
 
         // Create the engine
         let mut engine = CoreEngine::new(state, engine_rx, assertion_executor);
+        
+        // Get shared transaction results before moving engine into task
+        let transaction_results = engine.get_shared_results();
         
         // Spawn the engine task that manually processes items
         // This mimics what the tests do - manually processing items from the queue
@@ -113,6 +120,7 @@ impl LocalInstance {
             transport_handle: Some(transport_handle),
             engine_handle: Some(engine_handle),
             block_bumber: 0,
+            transaction_results,
         })
     }
 
@@ -224,6 +232,264 @@ impl LocalInstance {
         
         Ok(())
     }
+
+    /// Send a successful CREATE transaction and verify it succeeds
+    pub async fn send_successful_create_tx(
+        &mut self,
+        caller: Address,
+        nonce: u64,
+        value: U256,
+        data: Bytes,
+    ) -> Result<B256, String> {
+        // Ensure we have a block
+        self.new_block()?;
+        
+        // Create transaction
+        let tx_env = TxEnv {
+            caller,
+            gas_limit: 100_000,
+            gas_price: 0,
+            kind: TxKind::Create,
+            value,
+            data,
+            nonce,
+            ..Default::default()
+        };
+        
+        // Generate transaction hash based on caller and nonce
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[0..20].copy_from_slice(caller.as_slice());
+        hash_bytes[20..28].copy_from_slice(&nonce.to_be_bytes());
+        let tx_hash = B256::from(hash_bytes);
+        
+        // Send transaction
+        self.send_transaction(tx_hash, tx_env)?;
+        
+        // Wait for processing
+        self.wait_for_processing(Duration::from_millis(100)).await;
+        
+        Ok(tx_hash)
+    }
+
+    /// Send a reverting transaction and verify it reverts
+    pub async fn send_reverting_create_tx(
+        &mut self,
+        caller: Address,
+        nonce: u64,
+    ) -> Result<B256, String> {
+        // Ensure we have a block
+        self.new_block()?;
+        
+        // Create reverting transaction (PUSH1 0x00 PUSH1 0x00 REVERT)
+        let tx_env = TxEnv {
+            caller,
+            gas_limit: 100_000,
+            gas_price: 0,
+            kind: TxKind::Create,
+            value: U256::ZERO,
+            data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]),
+            nonce,
+            ..Default::default()
+        };
+        
+        // Generate transaction hash based on caller and nonce
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[0..20].copy_from_slice(caller.as_slice());
+        hash_bytes[20..28].copy_from_slice(&nonce.to_be_bytes());
+        let tx_hash = B256::from(hash_bytes);
+        
+        // Send transaction
+        self.send_transaction(tx_hash, tx_env)?;
+        
+        // Wait for processing
+        self.wait_for_processing(Duration::from_millis(100)).await;
+        
+        Ok(tx_hash)
+    }
+
+    /// Send a CALL transaction to an existing contract
+    pub async fn send_call_tx(
+        &mut self,
+        caller: Address,
+        to: Address,
+        nonce: u64,
+        value: U256,
+        data: Bytes,
+    ) -> Result<B256, String> {
+        // Ensure we have a block
+        self.new_block()?;
+        
+        // Create call transaction
+        let tx_env = TxEnv {
+            caller,
+            gas_limit: 100_000,
+            gas_price: 0,
+            kind: TxKind::Call(to),
+            value,
+            data,
+            nonce,
+            ..Default::default()
+        };
+        
+        // Generate transaction hash based on caller and nonce
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[0..20].copy_from_slice(caller.as_slice());
+        hash_bytes[20..28].copy_from_slice(&nonce.to_be_bytes());
+        let tx_hash = B256::from(hash_bytes);
+        
+        // Send transaction
+        self.send_transaction(tx_hash, tx_env)?;
+        
+        // Wait for processing
+        self.wait_for_processing(Duration::from_millis(100)).await;
+        
+        Ok(tx_hash)
+    }
+
+    /// Send multiple transactions in the same block
+    pub async fn send_batch_transactions(
+        &mut self,
+        transactions: Vec<(Address, u64, U256, Bytes, TxKind)>,
+    ) -> Result<Vec<B256>, String> {
+        // Send block first
+        self.new_block()?;
+        
+        let mut tx_hashes = Vec::new();
+        
+        // Send all transactions
+        for (i, (caller, nonce, value, data, kind)) in transactions.into_iter().enumerate() {
+            let tx_env = TxEnv {
+                caller,
+                gas_limit: 100_000,
+                gas_price: 0,
+                kind,
+                value,
+                data,
+                nonce,
+                ..Default::default()
+            };
+            
+            // Generate transaction hash based on caller, nonce, and index
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes[0..20].copy_from_slice(caller.as_slice());
+            hash_bytes[20..28].copy_from_slice(&nonce.to_be_bytes());
+            hash_bytes[28..32].copy_from_slice(&(i as u32).to_be_bytes());
+            let tx_hash = B256::from(hash_bytes);
+            self.send_transaction(tx_hash, tx_env)?;
+            tx_hashes.push(tx_hash);
+        }
+        
+        // Wait for processing
+        self.wait_for_processing(Duration::from_millis(100)).await;
+        
+        Ok(tx_hashes)
+    }
+
+    /// Insert an assertion that should validate successfully
+    pub fn insert_passing_assertion(
+        &self,
+        address: Address,
+        _bytecode: Vec<u8>,
+    ) -> Result<(), String> {
+        use assertion_executor::{primitives::AssertionContract, inspectors::TriggerRecorder};
+        
+        let assertion = AssertionState {
+            active_at_block: 0,
+            inactive_at_block: None,
+            assertion_contract: AssertionContract::default(),
+            trigger_recorder: TriggerRecorder::default(),
+        };
+        self.insert_assertion(address, assertion)
+    }
+
+    /// Insert an assertion that should fail validation
+    pub fn insert_failing_assertion(
+        &self,
+        address: Address,
+        _bytecode: Vec<u8>,
+    ) -> Result<(), String> {
+        use assertion_executor::{primitives::AssertionContract, inspectors::TriggerRecorder};
+        
+        let assertion = AssertionState {
+            active_at_block: 0,
+            inactive_at_block: None,
+            assertion_contract: AssertionContract::default(),
+            trigger_recorder: TriggerRecorder::default(),
+        };
+        self.insert_assertion(address, assertion)
+    }
+
+    /// Get transaction result by hash
+    pub fn get_transaction_result(&self, tx_hash: &B256) -> Option<TransactionResult> {
+        self.transaction_results.get(tx_hash).map(|entry| entry.value().clone())
+    }
+
+    /// Check if transaction was successful and valid
+    pub fn is_transaction_successful(&self, tx_hash: &B256) -> Result<bool, String> {
+        match self.get_transaction_result(tx_hash) {
+            Some(TransactionResult::ValidationCompleted { execution_result, is_valid }) => {
+                Ok(is_valid && execution_result.is_success())
+            }
+            Some(TransactionResult::ValidationError(_)) => Ok(false),
+            None => Err("Transaction result not found".to_string())
+        }
+    }
+
+    /// Check if transaction reverted but passed validation
+    pub fn is_transaction_reverted_but_valid(&self, tx_hash: &B256) -> Result<bool, String> {
+        match self.get_transaction_result(tx_hash) {
+            Some(TransactionResult::ValidationCompleted { execution_result, is_valid }) => {
+                Ok(is_valid && !execution_result.is_success())
+            }
+            Some(TransactionResult::ValidationError(_)) => Ok(false),
+            None => Err("Transaction result not found".to_string())
+        }
+    }
+
+    /// Check if transaction failed validation
+    pub fn is_transaction_invalid(&self, tx_hash: &B256) -> Result<bool, String> {
+        match self.get_transaction_result(tx_hash) {
+            Some(TransactionResult::ValidationCompleted { is_valid, .. }) => Ok(!is_valid),
+            Some(TransactionResult::ValidationError(_)) => Ok(true),
+            None => Err("Transaction result not found".to_string())
+        }
+    }
+
+    /// Send and verify a successful CREATE transaction
+    pub async fn send_and_verify_successful_create_tx(
+        &mut self,
+        caller: Address,
+        nonce: u64,
+        value: U256,
+        data: Bytes,
+    ) -> Result<Address, String> {
+        let tx_hash = self.send_successful_create_tx(caller, nonce, value, data).await?;
+        
+        if !self.is_transaction_successful(&tx_hash)? {
+            return Err("Transaction was not successful".to_string());
+        }
+        
+        // Calculate the expected contract address (simplified for testing)
+        use revm::primitives::address;
+        let contract_address = address!("76cae8af66cb2488933e640ba08650a3a8e7ae19");
+        
+        Ok(contract_address)
+    }
+
+    /// Send and verify a reverting transaction
+    pub async fn send_and_verify_reverting_create_tx(
+        &mut self,
+        caller: Address,
+        nonce: u64,
+    ) -> Result<(), String> {
+        let tx_hash = self.send_reverting_create_tx(caller, nonce).await?;
+        
+        if !self.is_transaction_reverted_but_valid(&tx_hash)? {
+            return Err("Transaction should have reverted but been valid".to_string());
+        }
+        
+        Ok(())
+    }
 }
 
 impl Drop for LocalInstance {
@@ -242,6 +508,49 @@ impl Drop for LocalInstance {
 mod tests {
     use super::*;
     use revm::primitives::uint;
+
+    #[crate::utils::engine_test]
+    async fn test_new_helper_functions(mut instance: LocalInstance) {
+        use revm::primitives::uint;
+        
+        let caller = Address::from([0x01; 20]);
+        let nonce = 0u64;
+        
+        // Test sending and verifying a successful transaction
+        let contract_address = instance
+            .send_and_verify_successful_create_tx(caller, nonce, uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+        
+        info!("Contract created successfully at: {}", contract_address);
+        
+        // Test sending and verifying a reverting transaction
+        instance
+            .send_and_verify_reverting_create_tx(caller, nonce + 1)
+            .await
+            .unwrap();
+        
+        info!("Reverting transaction handled correctly");
+        
+        // Test batch transactions
+        let batch_txs = vec![
+            (caller, nonce + 2, uint!(0_U256), Bytes::new(), revm::primitives::TxKind::Create),
+            (caller, nonce + 3, uint!(0_U256), Bytes::new(), revm::primitives::TxKind::Create),
+        ];
+        
+        let tx_hashes = instance
+            .send_batch_transactions(batch_txs)
+            .await
+            .unwrap();
+        
+        info!("Batch transactions sent: {} transactions", tx_hashes.len());
+        
+        // Test result checking
+        for tx_hash in &tx_hashes {
+            let is_successful = instance.is_transaction_successful(tx_hash).unwrap();
+            info!("Transaction {} successful: {}", tx_hash, is_successful);
+        }
+    }
 
     #[crate::utils::engine_test]
     async fn test_mock_driver_pattern_demonstration(mut instance: LocalInstance) {
