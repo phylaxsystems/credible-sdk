@@ -73,7 +73,7 @@ use revm::{
         B256,
     },
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::oneshot;
 use tracing::{
     debug,
@@ -153,6 +153,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env: None,
             state_results,
         }
+    }
+
+    /// Get a clone of the shared transaction results DashMap for testing
+    #[cfg(test)]
+    pub fn get_shared_results(&self) -> Arc<DashMap<B256, TransactionResult>> {
+        self.state_results.transaction_results.clone()
     }
 
     /// Creates a new `CoreEngine` for testing purposes.
@@ -320,6 +326,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.state_results.transaction_results.get(tx_hash)
     }
 
+    /// Get transaction result by hash, returning a cloned value for test compatibility.
+    #[cfg(test)]
+    pub fn get_transaction_result_cloned(&self, tx_hash: &B256) -> Option<TransactionResult> {
+        self.state_results.transaction_results.get(tx_hash).map(|entry| entry.value().clone())
+    }
+
     /// Get all transaction results for testing purposes.
     #[cfg(test)]
     pub fn get_all_transaction_results(&self) -> &DashMap<B256, TransactionResult> {
@@ -346,6 +358,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 "Failed to send transaction result to query sender"
             );
         });
+    }
+
+    /// Clone all transaction results for testing purposes.
+    #[cfg(test)]
+    pub fn clone_transaction_results(&self) -> HashMap<B256, TransactionResult> {
+        self.state_results.transaction_results.iter().map(|entry| (*entry.key(), entry.value().clone())).collect()
     }
 
     /// Run the engine and process transactions and blocks received
@@ -557,9 +575,9 @@ mod tests {
         assert_eq!(engine.get_block_env().unwrap().number, 1);
 
         // Verify transaction result is stored
-        let tx_result = engine.get_transaction_result(&tx_hash);
+        let tx_result = engine.get_transaction_result_cloned(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        match tx_result.unwrap().clone() {
+        match tx_result.unwrap() {
             TransactionResult::ValidationCompleted { is_valid, .. } => {
                 assert!(is_valid, "Transaction should pass assertions");
             }
@@ -677,9 +695,9 @@ mod tests {
         );
 
         // Verify transaction result is stored and shows it reverted
-        let tx_result = engine.get_transaction_result(&tx_hash);
+        let tx_result = engine.get_transaction_result_cloned(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        match tx_result.unwrap().clone() {
+        match tx_result.unwrap() {
             TransactionResult::ValidationCompleted {
                 execution_result,
                 is_valid,
@@ -797,9 +815,9 @@ mod tests {
         );
 
         // Verify transaction result is stored and succeeded
-        let tx_result = engine.get_transaction_result(&tx_hash);
+        let tx_result = engine.get_transaction_result_cloned(&tx_hash);
         assert!(tx_result.is_some(), "Transaction result should be stored");
-        match tx_result.unwrap().clone() {
+        match tx_result.unwrap() {
             TransactionResult::ValidationCompleted {
                 execution_result,
                 is_valid,
@@ -900,9 +918,9 @@ mod tests {
         }
 
         // Verify the transaction was processed
-        let result = engine.get_transaction_result(&tx_hash);
+        let result = engine.get_transaction_result_cloned(&tx_hash);
         assert!(result.is_some(), "Transaction result should be stored");
-        match result.unwrap().clone() {
+        match result.unwrap() {
             TransactionResult::ValidationCompleted { is_valid, .. } => {
                 assert!(is_valid, "Transaction should pass assertions");
             }
@@ -1018,8 +1036,8 @@ mod tests {
             let _ = transport_handle.await;
 
             // Verify both transactions were processed
-            let tx1_result = engine.get_transaction_result(&tx1_hash);
-            let tx2_result = engine.get_transaction_result(&tx2_hash);
+            let tx1_result = engine.get_transaction_result_cloned(&tx1_hash);
+            let tx2_result = engine.get_transaction_result_cloned(&tx2_hash);
 
             assert!(
                 tx1_result.is_some(),
@@ -1029,7 +1047,7 @@ mod tests {
                 tx2_result.is_some(),
                 "Transaction 2 result should be stored"
             );
-            match tx1_result.unwrap().clone() {
+            match tx1_result.unwrap() {
                 TransactionResult::ValidationCompleted { is_valid, .. } => {
                     assert!(is_valid, "Transaction 1 should pass assertions");
                 }
@@ -1037,7 +1055,7 @@ mod tests {
                     panic!("Transaction 1 unexpected validation error: {e:?}");
                 }
             }
-            match tx2_result.unwrap().clone() {
+            match tx2_result.unwrap() {
                 TransactionResult::ValidationCompleted { is_valid, .. } => {
                     assert!(is_valid, "Transaction 2 should pass assertions");
                 }
