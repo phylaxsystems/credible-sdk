@@ -63,12 +63,14 @@ impl Transport for MockTransport {
     }
 
     async fn run(&self) -> Result<(), MockTransportError> {
+        tracing::debug!("MockTransport starting");
         loop {
             // Use tokio::task::yield_now() to make this async-friendly
             tokio::task::yield_now().await;
 
             match self.mock_receiver.try_recv() {
                 Ok(rax) => {
+                    tracing::debug!("MockTransport forwarding message to engine");
                     self.tx_sender
                         .send(rax)
                         .map_err(|_| MockTransportError::CoreSendError)?;
@@ -80,6 +82,7 @@ impl Transport for MockTransport {
                 }
                 Err(crossbeam::channel::TryRecvError::Disconnected) => {
                     // Channel closed, exit gracefully
+                    tracing::debug!("MockTransport channel disconnected, stopping");
                     break;
                 }
             }

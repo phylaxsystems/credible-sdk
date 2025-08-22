@@ -317,14 +317,22 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let mut processed_txs = 0u64;
 
         loop {
-            let event = self.tx_receiver.try_recv().map_err(|e| {
-                error!(
-                    target = "engine",
-                    error = ?e,
-                    "Transaction queue channel closed"
-                );
-                EngineError::ChannelClosed
-            })?;
+            // Use try_recv and yield when empty to be async-friendly
+            let event = match self.tx_receiver.try_recv() {
+                Ok(event) => event,
+                Err(crossbeam::channel::TryRecvError::Empty) => {
+                    // Channel is empty, yield to allow other tasks to run
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                    error!(
+                        target = "engine",
+                        "Transaction queue channel disconnected"
+                    );
+                    return Err(EngineError::ChannelClosed);
+                }
+            };
 
             match event {
                 TxQueueContents::Block(block_env) => {
