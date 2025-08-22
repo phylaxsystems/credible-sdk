@@ -21,7 +21,10 @@ pub mod decoder;
 pub mod http;
 pub mod mock;
 
-use crate::engine::queue::TransactionQueueSender;
+use crate::engine::queue::{
+    GetTransactionResultQueueSender,
+    TransactionQueueSender,
+};
 
 /// The `Transport` trait defines the interface for external communication adapters that
 /// forward transactions and block environments to the core engine.
@@ -76,7 +79,11 @@ pub trait Transport: Send + Sync {
     type Config: Send;
 
     /// Create a new transport instance with the given configuration and queue sender.
-    fn new(config: Self::Config, tx_sender: TransactionQueueSender) -> Result<Self, Self::Error>
+    fn new(
+        config: Self::Config,
+        tx_sender: TransactionQueueSender,
+        get_tx_result_sender: GetTransactionResultQueueSender,
+    ) -> Result<Self, Self::Error>
     where
         Self: Sized;
 

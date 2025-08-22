@@ -1,4 +1,5 @@
 //! HTTP JSON-RPC transport
+use crate::engine::queue::GetTransactionResultQueueSender;
 use crate::{
     engine::queue::TransactionQueueSender,
     transport::{
@@ -66,6 +67,8 @@ pub enum HttpTransportError {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct HttpTransport {
+    /// Core engine queue sender for query transaction results.
+    get_tx_result_sender: GetTransactionResultQueueSender,
     /// Core engine queue sender.
     tx_sender: TransactionQueueSender,
     /// HTTP client for outbound requests
@@ -108,6 +111,7 @@ impl Transport for HttpTransport {
     fn new(
         config: HttpTransportConfig,
         tx_sender: TransactionQueueSender,
+        get_tx_result_sender: GetTransactionResultQueueSender,
     ) -> Result<Self, Self::Error> {
         debug!(
             bind_addr = %config.bind_addr,
@@ -117,6 +121,7 @@ impl Transport for HttpTransport {
 
         let client = reqwest::Client::new();
         Ok(Self {
+            get_tx_result_sender,
             tx_sender,
             client,
             bind_addr: config.bind_addr,
@@ -128,7 +133,11 @@ impl Transport for HttpTransport {
 
     #[instrument(name = "http_transport::run", skip(self), fields(bind_addr = %self.bind_addr), level = "info")]
     async fn run(&self) -> Result<(), Self::Error> {
-        let state = server::ServerState::new(self.has_blockenv.clone(), self.tx_sender.clone());
+        let state = server::ServerState::new(
+            self.has_blockenv.clone(),
+            self.tx_sender.clone(),
+            self.get_tx_result_sender.clone(),
+        );
         let app = Router::new()
             .merge(health_routes())
             .merge(transaction_routes(state));

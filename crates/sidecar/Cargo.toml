@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 clap = { workspace = true }
+dashmap = {workspace = true}
 revm = { workspace = true }
 anyhow = {workspace =  true }
 thiserror = { workspace = true }

@@ -1,5 +1,10 @@
 //! JSON-RPC server handlers for HTTP transport
 
+use crate::engine::TransactionResult;
+use crate::engine::queue::{
+    GetTransactionResultQueueSender,
+    QueryGetTxResult,
+};
 use crate::{
     engine::queue::TransactionQueueSender,
     transport::decoder::{
@@ -7,6 +12,7 @@ use crate::{
         HttpTransactionDecoder,
     },
 };
+use assertion_executor::primitives::ExecutionResult;
 use axum::{
     extract::{
         Json,
@@ -15,6 +21,7 @@ use axum::{
     http::StatusCode,
     response::Json as ResponseJson,
 };
+use revm::primitives::alloy_primitives::TxHash;
 use serde::{
     Deserialize,
     Serialize,
@@ -26,12 +33,17 @@ use std::sync::{
         Ordering,
     },
 };
+use tokio::sync::oneshot;
 use tracing::{
     debug,
     error,
     instrument,
     trace,
 };
+
+pub(in crate::transport) const METHOD_SEND_TRANSACTIONS: &str = "sendTransactions";
+pub(in crate::transport) const METHOD_BLOCK_ENV: &str = "sendBlockEnv";
+pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransactions";
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TransactionEnv {
@@ -157,13 +169,19 @@ impl JsonRpcResponse {
 pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
+    pub get_tx_result_sender: GetTransactionResultQueueSender,
 }
 
 impl ServerState {
-    pub fn new(has_blockenv: Arc<AtomicBool>, tx_sender: TransactionQueueSender) -> Self {
+    pub fn new(
+        has_blockenv: Arc<AtomicBool>,
+        tx_sender: TransactionQueueSender,
+        get_tx_result_sender: GetTransactionResultQueueSender,
+    ) -> Self {
         Self {
             has_blockenv,
             tx_sender,
+            get_tx_result_sender,
         }
     }
 }
@@ -183,14 +201,18 @@ pub async fn handle_transaction_rpc(
 ) -> Result<ResponseJson<JsonRpcResponse>, StatusCode> {
     debug!("Processing JSON-RPC request");
 
-    let response = if request.method != "sendTransactions" {
-        debug!(
-            method = %request.method,
-            "Unknown JSON-RPC method requested"
-        );
-        JsonRpcResponse::method_not_found(&request)
-    } else {
-        handle_send_transactions(&state, &request).await?
+    let response = match request.method.as_str() {
+        METHOD_SEND_TRANSACTIONS | METHOD_BLOCK_ENV => {
+            handle_send_transactions(&state, &request).await?
+        }
+        METHOD_GET_TRANSACTION => handle_get_transactions(&state, &request).await?,
+        _ => {
+            debug!(
+                method = %request.method,
+                "Unknown JSON-RPC method requested"
+            );
+            JsonRpcResponse::method_not_found(&request)
+        }
     };
 
     debug!(
@@ -269,4 +291,160 @@ async fn handle_send_transactions(
             "message": format!("Successfully processed {} transactions", transaction_count)
         }),
     ))
+}
+
+async fn handle_get_transactions(
+    state: &ServerState,
+    request: &JsonRpcRequest,
+) -> Result<JsonRpcResponse, StatusCode> {
+    trace!("Processing getTransactions request");
+
+    // Check if we have block environment before processing transactions
+    // NOTE: This can be dropped once we implement the "not_found" feature, the result will be "not_found" by default because there cannot be any tx hash consumed if no BlockEnv was received first
+    if !state.has_blockenv.load(Ordering::Relaxed) {
+        debug!("Rejecting transaction - no block environment available");
+        return Ok(JsonRpcResponse::block_not_available(request));
+    }
+
+    let Some(params) = &request.params else {
+        debug!("getTransactions request missing required parameters");
+        return Ok(JsonRpcResponse::internal_error(
+            request,
+            "Missing params for getTransactions",
+        ));
+    };
+
+    let Ok(tx_hashes) = serde_json::from_value::<Vec<TxHash>>(params.clone()) else {
+        debug!("getTransactions request invalid tx hash format");
+        return Ok(JsonRpcResponse::internal_error(
+            request,
+            "Invalid params for getTransactions",
+        ));
+    };
+
+    // Can you write me here the sending to the queue + waiting for the result?
+    let mut results = Vec::with_capacity(tx_hashes.len());
+
+    // Process each transaction hash
+    for tx_hash in tx_hashes {
+        // Can you write me here the sending to the queue + waiting for the result?
+        let (response_tx, response_rx) = oneshot::channel();
+
+        let query = QueryGetTxResult {
+            tx_hash,
+            sender: response_tx,
+        };
+
+        // Send query to engine
+        if let Err(e) = state.get_tx_result_sender.send(query) {
+            error!(
+                error = %e,
+                tx_hash = %tx_hash,
+                "Failed to send get transaction query to engine"
+            );
+            return Ok(JsonRpcResponse::internal_error(
+                request,
+                "Internal error: failed to queue get transaction result",
+            ));
+        }
+
+        let transaction_result = match response_rx.await {
+            Ok(result) => result,
+            Err(_) => {
+                error!(
+                    tx_hash = %tx_hash,
+                    "Engine dropped response channel for transaction query"
+                );
+                return Ok(JsonRpcResponse::internal_error(
+                    request,
+                    "Internal error: engine unavailable",
+                ));
+            }
+        };
+
+        // Convert result to JSON format
+        results.push(into_transaction_result_response(
+            tx_hash.to_string(),
+            &transaction_result,
+        ));
+    }
+
+    debug!(
+        result_count = results.len(),
+        "Successfully processed transaction queries"
+    );
+
+    Ok(JsonRpcResponse::success(
+        request,
+        serde_json::json!({
+            "results": results,
+            "not_found": []
+        }),
+    ))
+}
+
+/// Helper function to determine transaction status and error message
+fn into_transaction_result_response(
+    hash: String,
+    result: &TransactionResult,
+) -> TransactionResultResponse {
+    match result {
+        TransactionResult::ValidationCompleted {
+            execution_result,
+            is_valid,
+        } => {
+            let gas_used = Some(execution_result.gas_used());
+            if !*is_valid {
+                // Transaction failed assertion validation
+                return TransactionResultResponse {
+                    hash,
+                    status: "assertion_failed".to_string(),
+                    gas_used,
+                    error: None,
+                };
+            }
+            match execution_result {
+                ExecutionResult::Success { .. } => {
+                    TransactionResultResponse {
+                        hash,
+                        status: "success".to_string(),
+                        gas_used,
+                        error: None,
+                    }
+                }
+                ExecutionResult::Revert { .. } => {
+                    TransactionResultResponse {
+                        hash,
+                        status: "reverted".to_string(),
+                        gas_used,
+                        error: None,
+                    }
+                }
+                ExecutionResult::Halt { reason, .. } => {
+                    TransactionResultResponse {
+                        hash,
+                        status: "halted".to_string(),
+                        gas_used,
+                        error: Some(format!("Transaction halted: {:?}", reason)),
+                    }
+                }
+            }
+        }
+        TransactionResult::ValidationError(error) => {
+            TransactionResultResponse {
+                hash,
+                status: "failed".to_string(),
+                gas_used: None,
+                error: Some(format!("Validation error: {}", error)),
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct TransactionResultResponse {
+    pub hash: String,
+    pub status: String,
+    pub gas_used: Option<u64>,
+    pub error: Option<String>,
 }

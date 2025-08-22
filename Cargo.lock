@@ -10520,6 +10520,7 @@ dependencies = [
  "clap",
  "crossbeam",
  "ctor",
+ "dashmap",
  "lazy_static",
  "reqwest",
  "revm",
