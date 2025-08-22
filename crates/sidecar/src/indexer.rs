@@ -3,7 +3,9 @@
 //! Contains setup functions and types to initialize the assertion-executor indexer.
 
 use assertion_executor::store::{
-    Indexer, IndexerCfg, IndexerError
+    Indexer,
+    IndexerCfg,
+    IndexerError,
 };
 
 /// Runs the indexer to monitor blockchain events from the Credible Layer state oracle contract
