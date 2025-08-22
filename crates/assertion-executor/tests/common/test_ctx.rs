@@ -113,9 +113,7 @@ pub async fn setup_int_test_indexer(block_tag: BlockTag, time_lock_blocks: u64) 
     let db = sled::Config::tmp().unwrap().open().unwrap();
     let indexer_config = assertion_executor::store::IndexerCfg {
         provider: provider.clone().root().clone(),
-        block_hash_tree: db.open_tree("block_hashes").unwrap(),
-        pending_modifications_tree: db.open_tree("pending_modifications").unwrap(),
-        latest_block_tree: db.open_tree("latest_block").unwrap(),
+        db,
         store: store.clone(),
         da_client,
         state_oracle,

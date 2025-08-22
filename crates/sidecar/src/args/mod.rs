@@ -170,6 +170,14 @@ pub struct CredibleArgs {
         required = true
     )]
     pub oracle_contract: Address,
+
+    /// Path to the indexer database (separate from main assertion store)
+    #[arg(
+        long = "ae.indexer_db_path",
+        default_value = "indexer_database",
+        env = "AE_INDEXER_DB_PATH"
+    )]
+    pub indexer_db_path: PathBuf,
 }
 
 /// Main sidecar arguments that extend TelemetryArgs and CredibleArgs

@@ -1,11 +1,18 @@
 //! Configuration module for initializing sidecar components
 
 use crate::args::SidecarArgs;
+use alloy_provider::{
+    Provider,
+    ProviderBuilder,
+    WsConnect,
+};
+use assertion_da_client::DaClient;
 use assertion_executor::{
     ExecutorConfig,
     store::{
         AssertionStore,
         AssertionStoreError,
+        IndexerCfg,
     },
 };
 use tracing::{
@@ -52,4 +59,52 @@ pub fn init_assertion_store(args: &SidecarArgs) -> Result<AssertionStore, Assert
     );
 
     Ok(AssertionStore::new(db))
+}
+
+/// Initialize IndexerCfg from SidecarArgs  
+pub async fn init_indexer_config(
+    args: &SidecarArgs,
+    store: AssertionStore,
+    executor_config: ExecutorConfig,
+) -> anyhow::Result<IndexerCfg> {
+    // Initialize DA client
+    let da_client = DaClient::new(&args.credible.rpc_da_url)?;
+
+    // Initialize provider for blockchain connection
+    let ws_connect = WsConnect::new(&args.credible.indexer_rpc);
+    let provider = ProviderBuilder::new().connect_ws(ws_connect).await?;
+    let provider = provider.root().clone();
+
+    // Initialize indexer database
+    let mut indexer_db_config = sled::Config::new();
+    indexer_db_config = indexer_db_config.path(&args.credible.indexer_db_path);
+
+    if let Some(cache_capacity) = args.credible.cache_capacity_bytes {
+        indexer_db_config = indexer_db_config.cache_capacity_bytes(cache_capacity);
+    }
+
+    if let Some(flush_ms) = args.credible.flush_every_ms {
+        indexer_db_config = indexer_db_config.flush_every_ms(Some(flush_ms));
+    }
+
+    let indexer_db = indexer_db_config.open()?;
+
+    debug!(
+        state_oracle = ?args.credible.oracle_contract,
+        da_url = ?args.credible.rpc_da_url,
+        indexer_rpc = ?args.credible.indexer_rpc,
+        indexer_db_path = ?args.credible.indexer_db_path,
+        block_tag = ?args.credible.block_tag,
+        "Initialized IndexerCfg"
+    );
+
+    Ok(IndexerCfg {
+        state_oracle: args.credible.oracle_contract,
+        da_client,
+        executor_config,
+        store,
+        provider,
+        db: indexer_db,
+        await_tag: args.credible.block_tag,
+    })
 }
