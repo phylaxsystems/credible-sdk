@@ -350,7 +350,7 @@ impl Indexer {
 
         while let Some((key, _)) = block_hash_tree.pop_first_in_range(..ser_to.clone())? {
             if let Some(pending_mods) = pending_modifications_tree.remove(&key)? {
-                let pending_mods: Vec<PendingModification> = de(&pending_mods.to_vec())?;
+                let pending_mods: Vec<PendingModification> = de(&pending_mods)?;
                 pending_modifications.extend(pending_mods);
             }
         }
@@ -750,7 +750,7 @@ impl Indexer {
         let latest_block_tree = self.latest_block_tree()?;
         let last_indexed_block = latest_block_tree.get("")?;
         if let Some(last_indexed_block) = last_indexed_block {
-            let last_indexed_block: BlockNumHash = de(&last_indexed_block.to_vec())?;
+            let last_indexed_block: BlockNumHash = de(&last_indexed_block)?;
             Ok(Some(last_indexed_block))
         } else {
             Ok(None)
