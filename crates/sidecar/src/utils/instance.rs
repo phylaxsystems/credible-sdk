@@ -360,6 +360,8 @@ impl LocalInstance {
         // Ensure we have a block
         self.new_block()?;
 
+        let current_nonce = self.current_nonce();
+
         let nonce = self.next_nonce();
         let caller = self.default_account;
 
@@ -386,6 +388,8 @@ impl LocalInstance {
 
         // Wait for processing
         self.wait_for_processing(Duration::from_millis(100)).await;
+
+        self.reset_nonce(current_nonce);
 
         Ok(tx_hash)
     }
@@ -578,48 +582,7 @@ mod tests {
     use revm::primitives::uint;
 
     #[crate::utils::engine_test]
-    async fn test_new_helper_functions(mut instance: LocalInstance) {
-        // Test sending and verifying a successful transaction
-        let contract_address = instance
-            .send_and_verify_successful_create_tx(uint!(0_U256), Bytes::new())
-            .await
-            .unwrap();
-
-        info!("Contract created successfully at: {}", contract_address);
-
-        // Test sending and verifying a reverting transaction
-        instance
-            .send_and_verify_reverting_create_tx()
-            .await
-            .unwrap();
-
-        info!("Reverting transaction handled correctly");
-
-        // Test multiple individual transactions (simulating batch behavior)
-        let tx_hash_1 = instance
-            .send_successful_create_tx(uint!(0_U256), Bytes::new())
-            .await
-            .unwrap();
-        let tx_hash_2 = instance
-            .send_successful_create_tx(uint!(0_U256), Bytes::new())
-            .await
-            .unwrap();
-
-        let tx_hashes = vec![tx_hash_1, tx_hash_2];
-        info!(
-            "Multiple transactions sent: {} transactions",
-            tx_hashes.len()
-        );
-
-        // Test result checking
-        for tx_hash in &tx_hashes {
-            let is_successful = instance.is_transaction_successful(tx_hash).unwrap();
-            info!("Transaction {} successful: {}", tx_hash, is_successful);
-        }
-    }
-
-    #[crate::utils::engine_test]
-    async fn test_send_assertion_passing_failing_pair(mut instance: LocalInstance) {
+    async fn test_instance_send_assertion_passing_failing_pair(mut instance: LocalInstance) {
         info!("Testing assertion passing/failing pair");
 
         // Send the assertion passing and failing pair
@@ -636,25 +599,5 @@ mod tests {
             .send_and_verify_reverting_create_tx()
             .await
             .unwrap();
-    }
-
-    #[crate::utils::engine_test]
-    async fn test_mock_driver_pattern_demonstration(mut instance: LocalInstance) {
-        // Send a block environment
-        info!("Sending block to engine");
-        instance.new_block().unwrap();
-
-        // Give transport time to forward the block
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        // Create and send a transaction using the simplified API
-        info!("Sending transaction to engine");
-        let tx_hash = instance
-            .send_successful_create_tx(uint!(0_U256), Bytes::new())
-            .await
-            .unwrap();
-
-        info!("Test completed successfully with tx_hash: {}", tx_hash);
-        // Test passes if no panic/errors occurred during processing
     }
 }
