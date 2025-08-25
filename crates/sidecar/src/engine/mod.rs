@@ -483,15 +483,16 @@ mod tests {
         }
     }
 
-
     #[crate::utils::engine_test]
-    async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {        
+    async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {
         // Send and verify a reverting CREATE transaction
         let tx_hash = instance.send_reverting_create_tx().await.unwrap();
 
         // Verify transaction reverted but was still valid (passed assertions)
         assert!(
-            instance.is_transaction_reverted_but_valid(&tx_hash).unwrap(),
+            instance
+                .is_transaction_reverted_but_valid(&tx_hash)
+                .unwrap(),
             "Transaction should revert but still be valid (pass assertions)"
         );
 
@@ -513,7 +514,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Send Block 2 with Transaction 2  
+        // Send Block 2 with Transaction 2
         let tx2_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
@@ -541,7 +542,7 @@ mod tests {
         instance
             .send_and_verify_reverting_create_tx()
             .await
-            .unwrap();   
+            .unwrap();
     }
 
     #[test]
