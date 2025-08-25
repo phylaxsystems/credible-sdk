@@ -49,11 +49,13 @@ use super::engine::queue::{
 #[allow(unused_imports)]
 use assertion_executor::{
     AssertionExecutor,
+    ExecutorConfig,
     ExecutorError,
     db::overlay::OverlayDb,
     primitives::ExecutionResult,
     store::{
         AssertionState,
+        AssertionStore,
         AssertionStoreError,
     },
 };
@@ -167,11 +169,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[cfg(test)]
     #[allow(dead_code)]
     pub fn new_test() -> Self {
-        use assertion_executor::{
-            ExecutorConfig,
-            store::AssertionStore,
-        };
-
         let (_, tx_receiver) = crossbeam::channel::unbounded();
         Self {
             state: OverlayDb::new(None, 64),

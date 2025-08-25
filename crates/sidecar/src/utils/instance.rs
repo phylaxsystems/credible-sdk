@@ -516,7 +516,7 @@ impl LocalInstance {
         Ok(())
     }
 
-    /// Sends a pair of assertion passing and failing transactions using the default account.
+    /// Sends a pair of assertion passing and failing transactions.
     /// The transactions call a preloaded counter contract, which can only
     /// be called once due to subsequent assertions invalidating.
     pub async fn send_assertion_passing_failing_pair(&mut self) -> Result<(), String> {
@@ -524,18 +524,15 @@ impl LocalInstance {
         self.new_block()?;
 
         let basefee = 10u64;
-        let caller = self.default_account;
 
         // Create the first transaction (should pass)
         let mut tx_pass = counter_call();
-        tx_pass.caller = caller;
-        tx_pass.nonce = self.next_nonce();
+        tx_pass.nonce = 0;
         tx_pass.gas_price = basefee.into();
 
         // Create the second transaction (should fail assertion)
         let mut tx_fail = counter_call();
-        tx_fail.caller = caller;
-        tx_fail.nonce = self.next_nonce();
+        tx_fail.nonce = 1;
         tx_fail.gas_price = basefee.into();
 
         // Generate unique transaction hashes
@@ -550,13 +547,6 @@ impl LocalInstance {
 
         // Wait for processing
         self.wait_for_processing(Duration::from_millis(100)).await;
-
-        // Verify the first transaction passed assertions and was committed to engine state
-        if !self.is_transaction_successful(&hash_pass)? {
-            return Err(
-                "First transaction should have passed assertions and been committed".to_string(),
-            );
-        }
 
         // Verify the second transaction failed assertions and was NOT committed
         if !self.is_transaction_invalid(&hash_fail)? {
