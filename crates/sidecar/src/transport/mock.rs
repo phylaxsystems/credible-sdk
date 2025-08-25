@@ -1,4 +1,4 @@
-use crate::engine::queue::GetTransactionResultQueueSender;
+use crate::transactions_state::TransactionsState;
 use crate::{
     engine::queue::{
         TransactionQueueReceiver,
@@ -6,6 +6,7 @@ use crate::{
     },
     transport::Transport,
 };
+use std::sync::Arc;
 
 #[derive(thiserror::Error, Debug)]
 pub enum MockTransportError {
@@ -23,8 +24,8 @@ pub struct MockTransport {
     /// Transactions sent to this channel will be forwarded
     /// to the core engine queue.
     mock_receiver: TransactionQueueReceiver,
-    /// Get transaction result queue sender.
-    _get_tx_result_sender: GetTransactionResultQueueSender,
+    /// Shared transaction state results.
+    _state_results: Arc<TransactionsState>,
 }
 
 impl MockTransport {
@@ -33,12 +34,12 @@ impl MockTransport {
     pub fn with_receiver(
         tx_sender: TransactionQueueSender,
         mock_receiver: TransactionQueueReceiver,
-        get_tx_result_sender: GetTransactionResultQueueSender,
+        state_results: Arc<TransactionsState>,
     ) -> Self {
         Self {
             tx_sender,
             mock_receiver,
-            _get_tx_result_sender: get_tx_result_sender,
+            _state_results: state_results,
         }
     }
 }
@@ -50,14 +51,14 @@ impl Transport for MockTransport {
     fn new(
         _config: (),
         tx_sender: TransactionQueueSender,
-        get_tx_result_sender: GetTransactionResultQueueSender,
+        state_results: Arc<TransactionsState>,
     ) -> Result<Self, Self::Error> {
         // Create a dummy receiver channel for the trait implementation
         let (_, mock_receiver) = crossbeam::channel::unbounded();
         Ok(Self {
             tx_sender,
             mock_receiver,
-            _get_tx_result_sender: get_tx_result_sender,
+            _state_results: state_results,
         })
     }
 

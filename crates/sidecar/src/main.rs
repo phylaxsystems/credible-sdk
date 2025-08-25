@@ -6,6 +6,7 @@ mod config;
 pub mod engine;
 mod indexer;
 mod rpc;
+pub(crate) mod transactions_state;
 pub mod transport;
 mod utils;
 
@@ -36,7 +37,7 @@ use revm::database::{
 use clap::Parser;
 use rust_tracing::trace;
 
-use crate::engine::StateResults;
+use crate::transactions_state::TransactionsState;
 use args::SidecarArgs;
 
 #[tokio::main]
@@ -46,7 +47,6 @@ async fn main() -> anyhow::Result<()> {
     let args = SidecarArgs::parse();
 
     let (tx_sender, tx_receiver) = unbounded();
-    let (get_tx_result_sender, get_tx_result_receiver) = unbounded();
     let state: OverlayDb<CacheDB<EmptyDBTyped<Infallible>>> = OverlayDb::new(
         None,
         args.credible
@@ -61,18 +61,16 @@ async fn main() -> anyhow::Result<()> {
     let indexer_cfg = init_indexer_config(&args, assertion_store, executor_config).await?;
 
     let (_, mock_receiver) = unbounded();
+    let engine_state_results = TransactionsState::new();
     let mock_transport =
-        MockTransport::with_receiver(tx_sender, mock_receiver, get_tx_result_sender);
+        MockTransport::with_receiver(tx_sender, mock_receiver, engine_state_results.clone());
 
-    let engine_state_results = StateResults::new();
     let mut engine = CoreEngine::new(
         state,
         tx_receiver,
         assertion_executor,
         engine_state_results.clone(),
     );
-    let mut engine_state =
-        engine::result_handler::ResultHandler::new(get_tx_result_receiver, engine_state_results);
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -83,9 +81,6 @@ async fn main() -> anyhow::Result<()> {
         }
         _ = engine.run() => {
             tracing::info!("Engine run completed, shutting down...");
-        }
-        _ = engine_state.run() => {
-            tracing::info!("Engine state run completed, shutting down...");
         }
         _ = mock_transport.run() => {
             tracing::info!("Engine run completed, shutting down...");
