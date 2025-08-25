@@ -1,7 +1,3 @@
-use assertion_executor::test_utils::SIMPLE_ASSERTION_COUNTER;
-use assertion_executor::test_utils::COUNTER_ADDRESS;
-use assertion_executor::test_utils::counter_acct_info;
-use revm::primitives::FixedBytes;
 use crate::{
     engine::{
         CoreEngine,
@@ -17,16 +13,25 @@ use crate::{
         mock::MockTransport,
     },
 };
-use assertion_executor::primitives::AccountInfo;
 use assertion_executor::{
     AssertionExecutor,
     ExecutorConfig,
     db::overlay::OverlayDb,
+    primitives::{
+        AccountInfo,
+        FixedBytes,
+    },
     store::{
         AssertionState,
         AssertionStore,
     },
-    test_utils::bytecode,
+    test_utils::{
+        COUNTER_ADDRESS,
+        SIMPLE_ASSERTION_COUNTER,
+        bytecode,
+        counter_acct_info,
+        counter_call,
+    },
 };
 use crossbeam::channel;
 use dashmap::DashMap;
@@ -47,7 +52,6 @@ use revm::{
         U256,
         address,
         hex,
-        uint,
     },
 };
 use std::{
@@ -96,6 +100,18 @@ impl LocalInstance {
         let mut underlying_db = CacheDB::new(EmptyDBTyped::default());
         // Insert default counter contract into the underlying db (and mock by proxy)
         underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
+
+        // Fund common test accounts with maximum balance
+        let default_caller = counter_call().caller;
+        let mut caller_account = AccountInfo::default();
+        caller_account.balance = U256::MAX;
+        underlying_db.insert_account_info(default_caller, caller_account);
+
+        // Fund test caller account
+        let test_caller = Address::from([0x02; 20]);
+        let mut test_account = AccountInfo::default();
+        test_account.balance = U256::MAX;
+        underlying_db.insert_account_info(test_caller, test_account);
 
         let underlying_db = Arc::new(underlying_db);
 
@@ -170,7 +186,7 @@ impl LocalInstance {
         info!("LocalInstance sending block: {:?}", self.block_bumber);
         let block_env = BlockEnv {
             number: self.block_bumber,
-            gas_limit: 1_000_000,
+            gas_limit: 50_000_000, // Set higher gas limit for assertions
             ..Default::default()
         };
         // Increment block number for next time we call new_block
@@ -624,22 +640,59 @@ impl LocalInstance {
     /// Sends a pair of assertion passing and failing transactions.
     /// The transactions call a preloaded counter contract, which can only
     /// be called once due to subsequent assertions invalidating.
+    /// Returns the hash of the failing transaction.
     pub async fn send_assertion_passing_failing_pair(
         &mut self,
         caller: Address,
         nonce: u64,
-    ) -> Result<B256, String> {
-        let tx = TxEnv {
-            gas_price: basefee.into(),
-            ..counter_call()
-        };
+    ) -> Result<(), String> {
+        // Ensure we have a block
+        self.new_block()?;
 
+        let basefee = 10u64;
+
+        // Create the first transaction (should pass)
+        let mut tx_pass = counter_call();
+        tx_pass.caller = caller;
+        tx_pass.nonce = nonce;
+        tx_pass.gas_price = basefee.into();
+
+        // Create the second transaction (should fail assertion)
+        let mut tx_fail = counter_call();
+        tx_fail.caller = caller;
+        tx_fail.nonce = nonce + 1;
+        tx_fail.gas_price = basefee.into();
+
+        // Generate unique transaction hashes
         let hash_pass = FixedBytes::<32>::random();
         let hash_fail = FixedBytes::<32>::random();
 
-        self.send_transaction(hash_pass, tx_env)
-    }
+        // Send the passing transaction first
+        self.send_transaction(hash_pass, tx_pass)?;
 
+        // Send the failing transaction second
+        self.send_transaction(hash_fail, tx_fail)?;
+
+        // Wait for processing
+        self.wait_for_processing(Duration::from_millis(100)).await;
+
+        // Verify the first transaction passed assertions and was committed to engine state
+        if !self.is_transaction_successful(&hash_pass)? {
+            return Err(
+                "First transaction should have passed assertions and been committed".to_string(),
+            );
+        }
+
+        // Verify the second transaction failed assertions and was NOT committed
+        if !self.is_transaction_invalid(&hash_fail)? {
+            return Err(
+                "Second transaction should have failed assertions and not been committed"
+                    .to_string(),
+            );
+        }
+
+        Ok(())
+    }
 }
 
 impl Drop for LocalInstance {
@@ -711,8 +764,28 @@ mod tests {
             info!("Transaction {} successful: {}", tx_hash, is_successful);
         }
 
-        instance.send_assertion_passing_tx(caller, nonce + 4).await.unwrap();
-        instance.send_assertion_failing_tx(caller, nonce + 5).await.unwrap();
+        instance
+            .send_assertion_passing_tx(caller, nonce + 4)
+            .await
+            .unwrap();
+        instance
+            .send_assertion_failing_tx(caller, nonce + 5)
+            .await
+            .unwrap();
+    }
+
+    #[crate::utils::engine_test]
+    async fn test_send_assertion_passing_failing_pair(mut instance: LocalInstance) {
+        let caller = Address::from([0x02; 20]);
+        let nonce = 0u64;
+
+        info!("Testing assertion passing/failing pair");
+
+        // Send the assertion passing and failing pair
+        instance
+            .send_assertion_passing_failing_pair(caller, nonce)
+            .await
+            .unwrap();
     }
 
     #[crate::utils::engine_test]
