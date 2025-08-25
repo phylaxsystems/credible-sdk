@@ -440,28 +440,6 @@ impl LocalInstance {
         Ok(tx_hashes)
     }
 
-    /// Insert an assertion that should validate successfully (always passes)
-    /// Uses MockAssertion which checks protocol.checkBool() - returns true
-    pub fn insert_passing_assertion(&self, address: Address) -> Result<(), String> {
-        // Use MockAssertion which always passes (protocol.checkBool() returns true)
-        let assertion_bytecode = bytecode("MockAssertion.sol:MockAssertion");
-        let assertion = AssertionState::new_test(assertion_bytecode);
-
-        self.insert_assertion(address, assertion)
-            .map_err(|e| format!("Failed to insert passing assertion: {}", e))
-    }
-
-    /// Insert an assertion that should fail validation (conditionally fails)
-    /// Uses DevExExamplesAssertion which fails when adopter.invalidate() returns true
-    pub fn insert_failing_assertion(&self, address: Address) -> Result<(), String> {
-        // Use DevExExamplesAssertion which fails when adopter.invalidate() is true
-        let assertion_bytecode = bytecode("DevExExamples.sol:DevExExamplesAssertion");
-        let assertion = AssertionState::new_test(assertion_bytecode);
-
-        self.insert_assertion(address, assertion)
-            .map_err(|e| format!("Failed to insert failing assertion: {}", e))
-    }
-
     /// Insert a custom assertion from bytecode artifact name
     ///
     /// # Arguments
@@ -554,87 +532,6 @@ impl LocalInstance {
         }
 
         Ok(())
-    }
-
-    /// Send a transaction that should pass all assertions
-    /// Deploys a MockContract with invalidate=false, so assertions pass
-    pub async fn send_assertion_passing_tx(
-        &mut self,
-        caller: Address,
-        nonce: u64,
-    ) -> Result<B256, String> {
-        // Deploy MockContract (from DevExExamples.sol)
-        // By default, invalidate is false, so assertions should pass
-        let mock_contract_bytecode = bytecode("DevExExamples.sol:MockContract");
-
-        self.send_successful_create_tx(caller, nonce, U256::ZERO, mock_contract_bytecode)
-            .await
-    }
-
-    /// Send a transaction that should fail assertions
-    /// Deploys a MockContract, then calls setInvalidate(true) to make assertions fail
-    pub async fn send_assertion_failing_tx(
-        &mut self,
-        caller: Address,
-        nonce: u64,
-    ) -> Result<(B256, Address), String> {
-        // First deploy MockContract
-        let deploy_tx_hash = self.send_assertion_passing_tx(caller, nonce).await?;
-
-        // Calculate contract address (simplified)
-        let contract_address = address!("76cae8af66cb2488933e640ba08650a3a8e7ae19");
-
-        // Call setInvalidate(true) - function selector is 0x5b8b83f2 followed by true (0x01)
-        let set_invalidate_true_data =
-            hex!("5b8b83f20000000000000000000000000000000000000000000000000000000000000001").into();
-
-        let invalidate_tx_hash = self
-            .send_call_tx(
-                caller,
-                contract_address,
-                nonce + 1,
-                U256::ZERO,
-                set_invalidate_true_data,
-            )
-            .await?;
-
-        Ok((invalidate_tx_hash, contract_address))
-    }
-
-    /// Send and verify a transaction that passes assertions
-    pub async fn send_and_verify_assertion_passing_tx(
-        &mut self,
-        caller: Address,
-        nonce: u64,
-    ) -> Result<B256, String> {
-        let tx_hash = self.send_assertion_passing_tx(caller, nonce).await?;
-
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(100)).await;
-
-        if !self.is_transaction_successful(&tx_hash)? {
-            return Err("Transaction should have passed assertions".to_string());
-        }
-
-        Ok(tx_hash)
-    }
-
-    /// Send and verify a transaction that fails assertions  
-    pub async fn send_and_verify_assertion_failing_tx(
-        &mut self,
-        caller: Address,
-        nonce: u64,
-    ) -> Result<(B256, Address), String> {
-        let (tx_hash, contract_address) = self.send_assertion_failing_tx(caller, nonce).await?;
-
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(100)).await;
-
-        if !self.is_transaction_invalid(&tx_hash)? {
-            return Err("Transaction should have failed assertions".to_string());
-        }
-
-        Ok((tx_hash, contract_address))
     }
 
     /// Sends a pair of assertion passing and failing transactions.
@@ -763,15 +660,6 @@ mod tests {
             let is_successful = instance.is_transaction_successful(tx_hash).unwrap();
             info!("Transaction {} successful: {}", tx_hash, is_successful);
         }
-
-        instance
-            .send_assertion_passing_tx(caller, nonce + 4)
-            .await
-            .unwrap();
-        instance
-            .send_assertion_failing_tx(caller, nonce + 5)
-            .await
-            .unwrap();
     }
 
     #[crate::utils::engine_test]
@@ -786,6 +674,9 @@ mod tests {
             .send_assertion_passing_failing_pair(caller, nonce)
             .await
             .unwrap();
+
+        instance.send_and_verify_successful_create_tx(caller, nonce + 1, uint!(0_U256), Bytes::new()).await.unwrap();
+        instance.send_and_verify_reverting_create_tx(caller, nonce).await.unwrap();
     }
 
     #[crate::utils::engine_test]
