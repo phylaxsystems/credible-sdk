@@ -110,20 +110,17 @@ impl LocalInstance {
 
         // Create default account that will be used by this instance
         let default_account = Address::from([0x01; 20]);
-        let mut default_account_info = AccountInfo::default();
-        default_account_info.balance = U256::MAX;
+        let default_account_info = AccountInfo { balance: U256::MAX, ..Default::default() };
         underlying_db.insert_account_info(default_account, default_account_info);
 
         // Fund common test accounts with maximum balance
         let default_caller = counter_call().caller;
-        let mut caller_account = AccountInfo::default();
-        caller_account.balance = U256::MAX;
+        let caller_account = AccountInfo { balance: U256::MAX, ..Default::default() };
         underlying_db.insert_account_info(default_caller, caller_account);
 
         // Fund test caller account
         let test_caller = Address::from([0x02; 20]);
-        let mut test_account = AccountInfo::default();
-        test_account.balance = U256::MAX;
+        let test_account = AccountInfo { balance: U256::MAX, ..Default::default() };
         underlying_db.insert_account_info(test_caller, test_account);
 
         let underlying_db = Arc::new(underlying_db);
@@ -133,7 +130,7 @@ impl LocalInstance {
         // Create assertion store and executor
         let assertion_store = Arc::new(
             AssertionStore::new_ephemeral()
-                .map_err(|e| format!("Failed to create assertion store: {}", e))?,
+                .map_err(|e| format!("Failed to create assertion store: {e}"))?,
         );
 
         // Insert counter assertion into store
@@ -211,7 +208,7 @@ impl LocalInstance {
         let result = self
             .mock_sender
             .send(TxQueueContents::Block(block_env))
-            .map_err(|e| format!("Failed to send block: {}", e));
+            .map_err(|e| format!("Failed to send block: {e}"));
         match &result {
             Ok(_) => info!("Successfully sent block to mock_sender"),
             Err(e) => error!("Failed to send block: {}", e),
@@ -225,7 +222,7 @@ impl LocalInstance {
         let queue_tx = QueueTransaction { tx_hash, tx_env };
         self.mock_sender
             .send(TxQueueContents::Tx(queue_tx))
-            .map_err(|e| format!("Failed to send transaction: {}", e))
+            .map_err(|e| format!("Failed to send transaction: {e}"))
     }
 
     /// Send a block with multiple transactions
@@ -289,7 +286,7 @@ impl LocalInstance {
         self.assertion_store
             .insert(address, assertion)
             .map(|_| ())
-            .map_err(|e| format!("Failed to insert assertion: {}", e))
+            .map_err(|e| format!("Failed to insert assertion: {e}"))
     }
 
     /// Create a simple test transaction using the default account
@@ -313,8 +310,7 @@ impl LocalInstance {
             .ok_or_else(|| "Cannot get mutable reference to database".to_string())?;
 
         for (address, balance) in accounts {
-            let mut account_info = AccountInfo::default();
-            account_info.balance = *balance;
+            let account_info = AccountInfo { balance: *balance, ..Default::default() };
             db.insert_account_info(*address, account_info);
         }
 
@@ -453,7 +449,7 @@ impl LocalInstance {
         let assertion = AssertionState::new_test(assertion_bytecode);
 
         self.insert_assertion(address, assertion)
-            .map_err(|e| format!("Failed to insert custom assertion {}: {}", artifact_name, e))
+            .map_err(|e| format!("Failed to insert custom assertion {artifact_name}: {e}"))
     }
 
     /// Get transaction result by hash
