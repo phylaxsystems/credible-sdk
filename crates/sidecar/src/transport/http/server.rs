@@ -413,7 +413,7 @@ fn into_transaction_result_response(
                         hash,
                         status: "halted".to_string(),
                         gas_used,
-                        error: Some(format!("Transaction halted: {:?}", reason)),
+                        error: Some(format!("Transaction halted: {reason:?}")),
                     }
                 }
             }
@@ -423,7 +423,7 @@ fn into_transaction_result_response(
                 hash,
                 status: "failed".to_string(),
                 gas_used: None,
-                error: Some(format!("Validation error: {}", error)),
+                error: Some(format!("Validation error: {error}")),
             }
         }
     }
