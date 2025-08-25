@@ -74,7 +74,9 @@ use revm::{
         B256,
     },
 };
-use std::{collections::HashMap, sync::Arc};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{
     debug,
     error,
@@ -137,12 +139,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env: None,
             transaction_results: state_results,
         }
-    }
-
-    /// Get a clone of the shared transaction results DashMap for testing
-    #[cfg(test)]
-    pub fn get_shared_results(&self) -> Arc<DashMap<B256, TransactionResult>> {
-        self.state_results.transaction_results.clone()
     }
 
     /// Creates a new `CoreEngine` for testing purposes.
@@ -330,7 +326,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// Get transaction result by hash, returning a cloned value for test compatibility.
     #[cfg(test)]
     pub fn get_transaction_result_cloned(&self, tx_hash: &B256) -> Option<TransactionResult> {
-        self.state_results.transaction_results.get(tx_hash).map(|entry| entry.value().clone())
+        self.transaction_results
+            .get_transaction_result(tx_hash)
+            .map(|r| r.clone())
     }
 
     /// Get all transaction results for testing purposes.
@@ -342,7 +340,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// Clone all transaction results for testing purposes.
     #[cfg(test)]
     pub fn clone_transaction_results(&self) -> HashMap<B256, TransactionResult> {
-        self.state_results.transaction_results.iter().map(|entry| (*entry.key(), entry.value().clone())).collect()
+        self.transaction_results
+            .get_all_transaction_result()
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().clone()))
+            .collect()
     }
 
     /// Run the engine and process transactions and blocks received
