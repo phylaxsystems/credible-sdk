@@ -14,6 +14,9 @@ use tracing::error;
 #[derive(Debug)]
 pub struct TransactionsState {
     transaction_results: DashMap<B256, TransactionResult>,
+    /// DashMap containing the pending queries from the reading the transaction result.
+    /// It contains the transaction hash as key and the oneshot sender as value. The result shall be
+    /// sent via oneshot channel once it is ready.
     transaction_results_pending_requests: DashMap<TxHash, oneshot::Sender<TransactionResult>>,
     /// HashSet containing the accepted transactions which haven't been processed yet.
     accepted_txs: DashSet<TxHash>,
