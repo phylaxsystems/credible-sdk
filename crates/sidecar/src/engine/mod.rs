@@ -344,10 +344,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     continue;
                 }
                 Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                    error!(
-                        target = "engine",
-                        "Transaction queue channel disconnected"
-                    );
+                    error!(target = "engine", "Transaction queue channel disconnected");
                     return Err(EngineError::ChannelClosed);
                 }
             };

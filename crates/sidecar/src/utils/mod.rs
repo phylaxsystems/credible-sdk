@@ -5,12 +5,15 @@
 //! - `instance` test instance for running engine tests with mock transport
 
 #[cfg(test)]
-mod test_util;
-#[cfg(test)]
 #[allow(dead_code)]
 pub mod instance;
+#[cfg(test)]
+mod test_util;
 
 #[cfg(test)]
-pub use test_util::{TestDbError, engine_test};
-#[cfg(test)]
 pub use instance::LocalInstance;
+#[cfg(test)]
+pub use test_util::{
+    TestDbError,
+    engine_test,
+};
