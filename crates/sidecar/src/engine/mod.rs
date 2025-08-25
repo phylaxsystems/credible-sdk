@@ -483,13 +483,18 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_successful_transaction_execution() {
-        use crate::utils::instance::LocalInstance;
-        use revm::primitives::uint;
 
-        let mut instance = LocalInstance::new().await.unwrap();
-        
+    #[crate::utils::engine_test]
+    async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {        
+        // Send and verify a reverting CREATE transaction
+        let tx_hash = instance.send_reverting_create_tx().await.unwrap();
+
+        // Verify transaction reverted but was still valid (passed assertions)
+        assert!(
+            instance.is_transaction_reverted_but_valid(&tx_hash).unwrap(),
+            "Transaction should revert but still be valid (pass assertions)"
+        );
+
         // Send and verify a successful CREATE transaction
         let tx_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -501,22 +506,42 @@ mod tests {
             instance.is_transaction_successful(&tx_hash).unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
-    }
 
-    #[tokio::test]
-    async fn test_reverting_transaction_no_state_update() {
-        use crate::utils::instance::LocalInstance;
+        // Send Block 1 with Transaction 1
+        let tx1_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
 
-        let mut instance = LocalInstance::new().await.unwrap();
-        
-        // Send and verify a reverting CREATE transaction
-        let tx_hash = instance.send_reverting_create_tx().await.unwrap();
+        // Send Block 2 with Transaction 2  
+        let tx2_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
 
-        // Verify transaction reverted but was still valid (passed assertions)
+        // Verify both transactions were processed successfully
         assert!(
-            instance.is_transaction_reverted_but_valid(&tx_hash).unwrap(),
-            "Transaction should revert but still be valid (pass assertions)"
+            instance.is_transaction_successful(&tx1_hash).unwrap(),
+            "Transaction 1 should be successful"
         );
+        assert!(
+            instance.is_transaction_successful(&tx2_hash).unwrap(),
+            "Transaction 2 should be successful"
+        );
+
+        instance
+            .send_assertion_passing_failing_pair()
+            .await
+            .unwrap();
+
+        instance
+            .send_and_verify_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+        instance
+            .send_and_verify_reverting_create_tx()
+            .await
+            .unwrap();   
     }
 
     #[test]
@@ -666,35 +691,5 @@ mod tests {
             }
             other => panic!("Expected TransactionError, got {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn test_mock_driver_multiple_blocks_and_transactions() {
-        use crate::utils::instance::LocalInstance;
-        use revm::primitives::uint;
-
-        let mut instance = LocalInstance::new().await.unwrap();
-
-        // Send Block 1 with Transaction 1
-        let tx1_hash = instance
-            .send_successful_create_tx(uint!(0_U256), Bytes::new())
-            .await
-            .unwrap();
-
-        // Send Block 2 with Transaction 2  
-        let tx2_hash = instance
-            .send_successful_create_tx(uint!(0_U256), Bytes::new())
-            .await
-            .unwrap();
-
-        // Verify both transactions were processed successfully
-        assert!(
-            instance.is_transaction_successful(&tx1_hash).unwrap(),
-            "Transaction 1 should be successful"
-        );
-        assert!(
-            instance.is_transaction_successful(&tx2_hash).unwrap(),
-            "Transaction 2 should be successful"
-        );
     }
 }
