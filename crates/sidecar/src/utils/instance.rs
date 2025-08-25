@@ -69,6 +69,9 @@ type TestDbError = std::convert::Infallible;
 
 /// Creates a test instance of the core engine with mock transport.
 /// This struct manages the lifecycle of a test engine instance.
+///
+/// Used for testing of transaction processing, assertion validation,
+/// and multi-block scenarios. Provides pre-funded accounts and loaded test assertions.
 pub struct LocalInstance {
     /// Channel for sending transactions and blocks to the mock transport
     mock_sender: TransactionQueueSender,
@@ -150,7 +153,8 @@ impl LocalInstance {
         let state_results = StateResults::new();
 
         // Create the engine
-        let mut engine = CoreEngine::new(state, engine_rx, assertion_executor, state_results.clone());
+        let mut engine =
+            CoreEngine::new(state, engine_rx, assertion_executor, state_results.clone());
 
         // Spawn the engine task that manually processes items
         // This mimics what the tests do - manually processing items from the queue
