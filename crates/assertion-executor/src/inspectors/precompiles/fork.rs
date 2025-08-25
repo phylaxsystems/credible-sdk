@@ -100,15 +100,15 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::primitives::{
-        AccountInfo,
-        SpecId,
-    };
     use crate::{
         db::{
             MultiForkDb,
             fork_db::ForkDb,
             overlay::test_utils::MockDb,
+        },
+        primitives::{
+            AccountInfo,
+            SpecId,
         },
         test_utils::{
             random_address,

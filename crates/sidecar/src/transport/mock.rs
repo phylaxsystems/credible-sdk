@@ -1,9 +1,9 @@
-use crate::transactions_state::TransactionsState;
 use crate::{
     engine::queue::{
         TransactionQueueReceiver,
         TransactionQueueSender,
     },
+    transactions_state::TransactionsState,
     transport::Transport,
 };
 use std::sync::Arc;

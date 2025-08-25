@@ -1,10 +1,12 @@
-use crate::engine::TransactionResult;
-use crate::engine::queue::TxQueueContents;
+use crate::engine::{
+    TransactionResult,
+    queue::TxQueueContents,
+};
 use assertion_executor::primitives::B256;
-use dashmap::mapref::one::Ref;
 use dashmap::{
     DashMap,
     DashSet,
+    mapref::one::Ref,
 };
 use revm::primitives::alloy_primitives::TxHash;
 use std::sync::Arc;
@@ -116,17 +118,21 @@ mod tests {
         QueueTransaction,
         TxQueueContents,
     };
-    use assertion_executor::primitives::TxEnv;
     use assertion_executor::primitives::{
         Bytes,
         ExecutionResult,
+        TxEnv,
     };
-    use revm::context::BlockEnv;
-    use revm::context::result::{
-        Output,
-        SuccessReason,
+    use revm::{
+        context::{
+            BlockEnv,
+            result::{
+                Output,
+                SuccessReason,
+            },
+        },
+        primitives::alloy_primitives::B256,
     };
-    use revm::primitives::alloy_primitives::B256;
     use std::sync::Arc;
     use tokio::time::{
         Duration,

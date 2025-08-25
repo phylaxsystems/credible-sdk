@@ -1,6 +1,8 @@
 use crate::{
-    inspectors::phevm::PhEvmContext,
-    inspectors::sol_primitives::PhEvm,
+    inspectors::{
+        phevm::PhEvmContext,
+        sol_primitives::PhEvm,
+    },
     primitives::{
         Address,
         Bytes,

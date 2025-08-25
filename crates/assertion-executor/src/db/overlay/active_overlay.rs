@@ -1,21 +1,23 @@
-use crate::db::{
-    Database,
-    DatabaseCommit,
-    DatabaseRef,
-    NotFoundError,
-    overlay::{
-        ForkDb,
-        TableKey,
-        TableValue,
+use crate::{
+    db::{
+        Database,
+        DatabaseCommit,
+        DatabaseRef,
+        NotFoundError,
+        overlay::{
+            ForkDb,
+            TableKey,
+            TableValue,
+        },
     },
-};
-use crate::primitives::{
-    AccountInfo,
-    Address,
-    B256,
-    Bytecode,
-    EvmState,
-    U256,
+    primitives::{
+        AccountInfo,
+        Address,
+        B256,
+        Bytecode,
+        EvmState,
+        U256,
+    },
 };
 
 use std::{
@@ -331,8 +333,10 @@ impl<Db: Database> Database for ActiveOverlay<Db> {
 #[cfg(test)]
 mod active_overlay_tests {
     use super::*;
-    use crate::db::overlay::test_utils::MockDb;
-    use crate::db::overlay::test_utils::mock_account_info;
+    use crate::db::overlay::test_utils::{
+        MockDb,
+        mock_account_info,
+    };
     use alloy_primitives::{
         U256,
         address,
@@ -341,8 +345,10 @@ mod active_overlay_tests {
     };
     use moka::sync::Cache;
 
-    use crate::db::overlay::TableKey;
-    use crate::primitives::Bytecode;
+    use crate::{
+        db::overlay::TableKey,
+        primitives::Bytecode,
+    };
 
     use std::collections::HashMap;
 

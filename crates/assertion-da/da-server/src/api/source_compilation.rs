@@ -1,14 +1,16 @@
 use anyhow::Result;
-use bollard::Docker;
-use bollard::container::{
-    Config,
-    CreateContainerOptions,
-    LogsOptions,
-    RemoveContainerOptions,
-    StartContainerOptions,
-    WaitContainerOptions,
+use bollard::{
+    Docker,
+    container::{
+        Config,
+        CreateContainerOptions,
+        LogsOptions,
+        RemoveContainerOptions,
+        StartContainerOptions,
+        WaitContainerOptions,
+    },
+    image::ListImagesOptions,
 };
-use bollard::image::ListImagesOptions;
 use futures::TryStreamExt;
 use futures_util::stream::StreamExt;
 use metrics;
@@ -20,11 +22,11 @@ use tokio::time::{
     Duration,
     sleep,
 };
-use tracing::warn;
 use tracing::{
     Instrument,
     debug,
     instrument,
+    warn,
 };
 use uuid::Uuid;
 

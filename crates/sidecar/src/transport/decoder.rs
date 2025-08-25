@@ -5,15 +5,15 @@
 //! of the decoders to convert them into events that can be passed down to
 //! the core engine.
 
-use crate::engine::queue::TxQueueContents;
-use crate::transport::http::server::{
-    METHOD_BLOCK_ENV,
-    METHOD_SEND_TRANSACTIONS,
-};
 use crate::{
-    engine::queue::QueueTransaction,
+    engine::queue::{
+        QueueTransaction,
+        TxQueueContents,
+    },
     transport::http::server::{
         JsonRpcRequest,
+        METHOD_BLOCK_ENV,
+        METHOD_SEND_TRANSACTIONS,
         SendTransactionsParams,
         TransactionEnv,
     },
@@ -173,12 +173,14 @@ mod tests {
         Transaction,
         TransactionEnv,
     };
-    use revm::context_interface::block::BlobExcessGasAndPrice;
-    use revm::primitives::{
-        Address,
-        TxKind,
-        U256,
-        bytes,
+    use revm::{
+        context_interface::block::BlobExcessGasAndPrice,
+        primitives::{
+            Address,
+            TxKind,
+            U256,
+            bytes,
+        },
     };
     use serde_json::json;
     use std::str::FromStr;

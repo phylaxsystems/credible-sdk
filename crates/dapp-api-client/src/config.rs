@@ -8,8 +8,10 @@ use serde::{
     Deserialize,
     Serialize,
 };
-use std::fmt;
-use std::str::FromStr;
+use std::{
+    fmt,
+    str::FromStr,
+};
 
 /// Environment for the dapp API client
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,9 +526,13 @@ mod tests {
 
     #[test]
     fn test_environment_from_env_thread_safety() {
-        use std::sync::Arc;
-        use std::sync::Mutex;
-        use std::thread;
+        use std::{
+            sync::{
+                Arc,
+                Mutex,
+            },
+            thread,
+        };
 
         let results = Arc::new(Mutex::new(Vec::new()));
         let mut handles = vec![];

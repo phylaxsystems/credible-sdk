@@ -383,10 +383,12 @@ mod tests {
     };
     use sled::Config as DbConfig;
     use tempfile::TempDir;
-    use tokio::sync::oneshot;
     use tokio::{
         net::TcpListener,
-        sync::mpsc,
+        sync::{
+            mpsc,
+            oneshot,
+        },
     };
     use tokio_util::sync::CancellationToken;
 

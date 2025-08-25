@@ -8,11 +8,13 @@ mod tests {
         test_ctx::setup_int_test_indexer,
     };
     use alloy_rpc_types_anvil::ReorgOptions;
-    use assertion_executor::primitives::{
-        Address,
-        U256,
+    use assertion_executor::{
+        primitives::{
+            Address,
+            U256,
+        },
+        store::BlockTag,
     };
-    use assertion_executor::store::BlockTag;
     use rand::Rng;
 
     use alloy_provider::{

@@ -555,11 +555,11 @@ mod tests {
     #[tokio::test]
     async fn test_json_rpc_validation() {
         use serde_json::json;
-        use wiremock::matchers::method;
         use wiremock::{
             Mock,
             MockServer,
             ResponseTemplate,
+            matchers::method,
         };
 
         // Test invalid JSON-RPC version

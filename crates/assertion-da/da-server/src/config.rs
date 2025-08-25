@@ -85,8 +85,10 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::SocketAddr;
-    use std::str::FromStr;
+    use std::{
+        net::SocketAddr,
+        str::FromStr,
+    };
 
     use alloy::signers::local::PrivateKeySigner;
     use assertion_da_client::DaClientError;

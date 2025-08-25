@@ -1,8 +1,10 @@
-use crate::config::{
-    CliConfig,
-    UserAuth,
+use crate::{
+    config::{
+        CliConfig,
+        UserAuth,
+    },
+    error::AuthError,
 };
-use crate::error::AuthError;
 use alloy_primitives::Address;
 use chrono::{
     DateTime,

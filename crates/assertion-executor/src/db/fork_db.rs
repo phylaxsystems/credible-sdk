@@ -175,8 +175,10 @@ impl<ExtDb> ForkDb<ExtDb> {
 #[cfg(test)]
 mod fork_db_tests {
     use super::*;
-    use crate::db::overlay::TableKey;
-    use crate::db::overlay::TableValue;
+    use crate::db::overlay::{
+        TableKey,
+        TableValue,
+    };
     use revm::database::{
         CacheDB,
         EmptyDBTyped,

@@ -542,11 +542,13 @@ impl AssertionExecutor {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::db::overlay::test_utils::MockDb;
     use crate::{
         db::{
             DatabaseRef,
-            overlay::OverlayDb,
+            overlay::{
+                OverlayDb,
+                test_utils::MockDb,
+            },
         },
         primitives::{
             BlockEnv,
@@ -559,9 +561,13 @@ mod test {
         },
         test_utils::*,
     };
-    use revm::context::JournalInner;
-    use revm::database::CacheDB;
-    use revm::database::EmptyDBTyped;
+    use revm::{
+        context::JournalInner,
+        database::{
+            CacheDB,
+            EmptyDBTyped,
+        },
+    };
     use std::convert::Infallible;
 
     // Define a concrete error type for tests if needed, or use Infallible

@@ -1,9 +1,11 @@
 use anyhow::Result;
 use bollard::Docker;
 use sled::Db;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 

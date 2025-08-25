@@ -9,8 +9,10 @@ use foundry_cli::opts::{
 
 use std::path::PathBuf;
 
-use crate::compile::compile;
-use crate::error::PhoundryError;
+use crate::{
+    compile::compile,
+    error::PhoundryError,
+};
 
 /// Command-line arguments for building assertion contracts and tests.
 #[derive(Debug, Default, Parser)]

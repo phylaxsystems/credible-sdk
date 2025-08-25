@@ -18,16 +18,18 @@ use assertion_da_client::{
     DaClient,
     DaSubmissionResponse,
 };
-use assertion_executor::primitives::{
-    Address,
-    FixedBytes,
-    U256,
-    bytes,
-};
-use assertion_executor::store::{
-    AssertionStore,
-    BlockTag,
-    Indexer,
+use assertion_executor::{
+    primitives::{
+        Address,
+        FixedBytes,
+        U256,
+        bytes,
+    },
+    store::{
+        AssertionStore,
+        BlockTag,
+        Indexer,
+    },
 };
 use int_test_utils::{
     Contracts,
