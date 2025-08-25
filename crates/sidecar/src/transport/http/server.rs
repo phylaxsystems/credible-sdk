@@ -4,6 +4,7 @@ use crate::engine::TransactionResult;
 use crate::engine::queue::{
     GetTransactionResultQueueSender,
     QueryGetTxResult,
+    TxQueueContents,
 };
 use crate::{
     engine::queue::TransactionQueueSender,
@@ -21,6 +22,7 @@ use axum::{
     http::StatusCode,
     response::Json as ResponseJson,
 };
+use dashmap::DashSet;
 use revm::primitives::alloy_primitives::TxHash;
 use serde::{
     Deserialize,
@@ -170,6 +172,7 @@ pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
     pub get_tx_result_sender: GetTransactionResultQueueSender,
+    processed_txs: DashSet<TxHash>,
 }
 
 impl ServerState {
@@ -182,7 +185,18 @@ impl ServerState {
             has_blockenv,
             tx_sender,
             get_tx_result_sender,
+            processed_txs: DashSet::new(),
         }
+    }
+
+    fn add_processed_tx(&self, tx_queue_contents: &TxQueueContents) {
+        if let TxQueueContents::Tx(tx) = tx_queue_contents {
+            self.processed_txs.insert(tx.tx_hash);
+        }
+    }
+
+    fn is_tx_processed(&self, tx_hash: &TxHash) -> bool {
+        self.processed_txs.contains(tx_hash)
     }
 }
 
@@ -266,6 +280,7 @@ async fn handle_send_transactions(
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
+        state.add_processed_tx(&queue_tx);
         if let Err(e) = state.tx_sender.send(queue_tx) {
             error!(
                 error = %e,
@@ -322,11 +337,15 @@ async fn handle_get_transactions(
         ));
     };
 
+    let (processed_hashes, unprocessed_hashes): (Vec<_>, Vec<_>) = tx_hashes
+        .into_iter()
+        .partition(|tx_hash| state.is_tx_processed(tx_hash));
+
     // Can you write me here the sending to the queue + waiting for the result?
-    let mut results = Vec::with_capacity(tx_hashes.len());
+    let mut results = Vec::with_capacity(processed_hashes.len());
 
     // Process each transaction hash
-    for tx_hash in tx_hashes {
+    for tx_hash in processed_hashes {
         // Can you write me here the sending to the queue + waiting for the result?
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -378,7 +397,7 @@ async fn handle_get_transactions(
         request,
         serde_json::json!({
             "results": results,
-            "not_found": []
+            "not_found": unprocessed_hashes,
         }),
     ))
 }
