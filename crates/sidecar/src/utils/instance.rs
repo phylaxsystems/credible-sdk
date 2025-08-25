@@ -350,7 +350,7 @@ impl LocalInstance {
         self.send_transaction(tx_hash, tx_env)?;
 
         // Wait for processing
-        self.wait_for_processing(Duration::from_millis(100)).await;
+        self.wait_for_processing(Duration::from_millis(2)).await;
 
         Ok(tx_hash)
     }
@@ -387,7 +387,7 @@ impl LocalInstance {
         self.send_transaction(tx_hash, tx_env)?;
 
         // Wait for processing
-        self.wait_for_processing(Duration::from_millis(100)).await;
+        self.wait_for_processing(Duration::from_millis(2)).await;
 
         self.reset_nonce(current_nonce);
 
@@ -429,7 +429,7 @@ impl LocalInstance {
         self.send_transaction(tx_hash, tx_env)?;
 
         // Wait for processing
-        self.wait_for_processing(Duration::from_millis(100)).await;
+        self.wait_for_processing(Duration::from_millis(2)).await;
 
         Ok(tx_hash)
     }
@@ -550,7 +550,7 @@ impl LocalInstance {
         self.send_transaction(hash_fail, tx_fail)?;
 
         // Wait for processing
-        self.wait_for_processing(Duration::from_millis(100)).await;
+        self.wait_for_processing(Duration::from_millis(2)).await;
 
         // Verify the second transaction failed assertions and was NOT committed
         if !self.is_transaction_invalid(&hash_fail)? {
