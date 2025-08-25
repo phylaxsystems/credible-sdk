@@ -288,11 +288,7 @@ impl LocalInstance {
     }
 
     /// Create a simple test transaction using the default account
-    pub fn create_test_transaction(
-        &mut self,
-        value: U256,
-        data: Bytes,
-    ) -> TxEnv {
+    pub fn create_test_transaction(&mut self, value: U256, data: Bytes) -> TxEnv {
         let nonce = self.next_nonce();
         TxEnv {
             caller: self.default_account,
@@ -434,87 +430,6 @@ impl LocalInstance {
         Ok(tx_hash)
     }
 
-    /// Send multiple CREATE transactions in the same block using the default account
-    pub async fn send_batch_create_transactions(
-        &mut self,
-        transactions: Vec<(U256, Bytes)>,
-    ) -> Result<Vec<B256>, String> {
-        // Send block first
-        self.new_block()?;
-
-        let mut tx_hashes = Vec::new();
-
-        // Send all transactions
-        for (i, (value, data)) in transactions.into_iter().enumerate() {
-            let nonce = self.next_nonce();
-            let caller = self.default_account;
-            
-            let tx_env = TxEnv {
-                caller,
-                gas_limit: 100_000,
-                gas_price: 0,
-                kind: TxKind::Create,
-                value,
-                data,
-                nonce,
-                ..Default::default()
-            };
-
-            // Generate transaction hash based on caller, nonce, and index
-            let mut hash_bytes = [0u8; 32];
-            hash_bytes[0..20].copy_from_slice(caller.as_slice());
-            hash_bytes[20..28].copy_from_slice(&nonce.to_be_bytes());
-            hash_bytes[28..32].copy_from_slice(&(i as u32).to_be_bytes());
-            let tx_hash = B256::from(hash_bytes);
-            self.send_transaction(tx_hash, tx_env)?;
-            tx_hashes.push(tx_hash);
-        }
-
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(100)).await;
-
-        Ok(tx_hashes)
-    }
-
-    /// Send multiple transactions in the same block (legacy method for backward compatibility)
-    pub async fn send_batch_transactions(
-        &mut self,
-        transactions: Vec<(Address, u64, U256, Bytes, TxKind)>,
-    ) -> Result<Vec<B256>, String> {
-        // Send block first
-        self.new_block()?;
-
-        let mut tx_hashes = Vec::new();
-
-        // Send all transactions
-        for (i, (caller, nonce, value, data, kind)) in transactions.into_iter().enumerate() {
-            let tx_env = TxEnv {
-                caller,
-                gas_limit: 100_000,
-                gas_price: 0,
-                kind,
-                value,
-                data,
-                nonce,
-                ..Default::default()
-            };
-
-            // Generate transaction hash based on caller, nonce, and index
-            let mut hash_bytes = [0u8; 32];
-            hash_bytes[0..20].copy_from_slice(caller.as_slice());
-            hash_bytes[20..28].copy_from_slice(&nonce.to_be_bytes());
-            hash_bytes[28..32].copy_from_slice(&(i as u32).to_be_bytes());
-            let tx_hash = B256::from(hash_bytes);
-            self.send_transaction(tx_hash, tx_env)?;
-            tx_hashes.push(tx_hash);
-        }
-
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(100)).await;
-
-        Ok(tx_hashes)
-    }
-
     /// Insert a custom assertion from bytecode artifact name
     ///
     /// # Arguments
@@ -578,9 +493,7 @@ impl LocalInstance {
         value: U256,
         data: Bytes,
     ) -> Result<Address, String> {
-        let tx_hash = self
-            .send_successful_create_tx(value, data)
-            .await?;
+        let tx_hash = self.send_successful_create_tx(value, data).await?;
 
         if !self.is_transaction_successful(&tx_hash)? {
             return Err("Transaction was not successful".to_string());
@@ -672,10 +585,7 @@ impl Drop for LocalInstance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm::primitives::{
-        TxKind,
-        uint,
-    };
+    use revm::primitives::uint;
 
     #[crate::utils::engine_test]
     async fn test_new_helper_functions(mut instance: LocalInstance) {
@@ -696,11 +606,20 @@ mod tests {
         info!("Reverting transaction handled correctly");
 
         // Test multiple individual transactions (simulating batch behavior)
-        let tx_hash_1 = instance.send_successful_create_tx(uint!(0_U256), Bytes::new()).await.unwrap();
-        let tx_hash_2 = instance.send_successful_create_tx(uint!(0_U256), Bytes::new()).await.unwrap();
+        let tx_hash_1 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+        let tx_hash_2 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
 
         let tx_hashes = vec![tx_hash_1, tx_hash_2];
-        info!("Multiple transactions sent: {} transactions", tx_hashes.len());
+        info!(
+            "Multiple transactions sent: {} transactions",
+            tx_hashes.len()
+        );
 
         // Test result checking
         for tx_hash in &tx_hashes {
@@ -719,8 +638,14 @@ mod tests {
             .await
             .unwrap();
 
-        instance.send_and_verify_successful_create_tx(uint!(0_U256), Bytes::new()).await.unwrap();
-        instance.send_and_verify_reverting_create_tx().await.unwrap();
+        instance
+            .send_and_verify_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+        instance
+            .send_and_verify_reverting_create_tx()
+            .await
+            .unwrap();
     }
 
     #[crate::utils::engine_test]
@@ -734,7 +659,10 @@ mod tests {
 
         // Create and send a transaction using the simplified API
         info!("Sending transaction to engine");
-        let tx_hash = instance.send_successful_create_tx(uint!(0_U256), Bytes::new()).await.unwrap();
+        let tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
 
         info!("Test completed successfully with tx_hash: {}", tx_hash);
         // Test passes if no panic/errors occurred during processing
