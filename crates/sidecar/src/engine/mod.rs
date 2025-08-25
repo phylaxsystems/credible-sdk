@@ -212,7 +212,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             Err(e) => {
                 match e {
                     ExecutorError::ForkTxExecutionError(_) => {
-                        // Transaction validation errors (nonce, gas, funds, etc.) 
+                        // Transaction validation errors (nonce, gas, funds, etc.)
                         debug!(
                             target = "engine",
                             error = ?e,
