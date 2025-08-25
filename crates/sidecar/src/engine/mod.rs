@@ -48,20 +48,18 @@ use crate::TransactionsState;
 
 #[allow(unused_imports)]
 use assertion_executor::{
-    AssertionExecutor,
     db::overlay::OverlayDb,
     primitives::ExecutionResult,
     store::{
         AssertionState,
         AssertionStoreError,
     },
+    AssertionExecutor,
 };
 
 use dashmap::mapref::one::Ref;
 #[allow(unused_imports)]
 use revm::{
-    DatabaseCommit,
-    DatabaseRef,
     context::{
         BlockEnv,
         TxEnv,
@@ -70,6 +68,8 @@ use revm::{
         Address,
         B256,
     },
+    DatabaseCommit,
+    DatabaseRef,
 };
 use std::sync::Arc;
 use tracing::{
@@ -116,7 +116,6 @@ pub struct CoreEngine<DB> {
     tx_receiver: TransactionQueueReceiver,
     assertion_executor: AssertionExecutor,
     block_env: Option<BlockEnv>,
-    /// TODO: move this out of the core engine when we add proper state.
     transaction_results: Arc<TransactionsState>,
 }
 
@@ -143,8 +142,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[allow(dead_code)]
     pub fn new_test() -> Self {
         use assertion_executor::{
-            ExecutorConfig,
             store::AssertionStore,
+            ExecutorConfig,
         };
 
         let (_, tx_receiver) = crossbeam::channel::unbounded();
@@ -395,14 +394,14 @@ mod tests {
     use super::*;
     use crate::{
         transport::{
-            Transport,
             mock::MockTransport,
+            Transport,
         },
         utils::TestDbError,
     };
     use assertion_executor::{
-        ExecutorConfig,
         store::AssertionStore,
+        ExecutorConfig,
     };
     use revm::{
         context::{
@@ -414,12 +413,12 @@ mod tests {
             EmptyDBTyped,
         },
         primitives::{
+            uint,
             Address,
-            B256,
             Bytes,
             TxKind,
+            B256,
             U256,
-            uint,
         },
     };
 
@@ -1003,7 +1002,7 @@ mod tests {
                 "Should be on block 2"
             );
         })
-        .await
-        .expect("Test timed out");
+            .await
+            .expect("Test timed out");
     }
 }
