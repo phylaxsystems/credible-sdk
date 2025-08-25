@@ -21,8 +21,10 @@ pub mod decoder;
 pub mod http;
 pub mod mock;
 
-use crate::engine::queue::TransactionQueueSender;
-use crate::transactions_state::TransactionsState;
+use crate::{
+    engine::queue::TransactionQueueSender,
+    transactions_state::TransactionsState,
+};
 use std::sync::Arc;
 
 /// The `Transport` trait defines the interface for external communication adapters that
