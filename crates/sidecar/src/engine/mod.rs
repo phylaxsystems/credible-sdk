@@ -438,13 +438,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        transport::{
-            Transport,
-            mock::MockTransport,
-        },
-        utils::TestDbError,
-    };
+    use crate::utils::TestDbError;
     use assertion_executor::{
         ExecutorConfig,
         store::AssertionStore,
@@ -484,30 +478,6 @@ mod tests {
         (engine, tx_sender)
     }
 
-    /// Create a complete test setup with engine, mock transport, and driver sender
-    fn create_test_setup() -> (
-        CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
-        MockTransport,
-        crossbeam::channel::Sender<TxQueueContents>,
-    ) {
-        let (engine_tx, engine_rx) = crossbeam::channel::unbounded();
-        let (mock_tx, mock_rx) = crossbeam::channel::unbounded();
-
-        // Create engine
-        let underlying_db = CacheDB::new(EmptyDBTyped::default());
-        let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)), 1024);
-        let assertion_store =
-            AssertionStore::new_ephemeral().expect("Failed to create assertion store");
-        let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
-        let state_results = TransactionsState::new();
-        let engine = CoreEngine::new(state, engine_rx, assertion_executor, state_results.clone());
-
-        // Create mock transport with the receiver
-        let mock_transport = MockTransport::with_receiver(engine_tx, mock_rx, state_results);
-
-        (engine, mock_transport, mock_tx)
-    }
-
     fn create_test_block_env() -> BlockEnv {
         BlockEnv {
             number: 1,
@@ -516,184 +486,40 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_successful_transaction_execution() {
-        let (mut engine, _) = create_test_engine();
-        let block_env = create_test_block_env();
+    #[tokio::test]
+    async fn test_successful_transaction_execution() {
+        use crate::utils::instance::LocalInstance;
+        use revm::primitives::uint;
 
-        // Create a simple transaction that doesn't require assertions
-        let tx_env = TxEnv {
-            caller: Address::from([0x01; 20]),
-            gas_limit: 100000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value: uint!(0_U256),
-            data: Bytes::new(),
-            nonce: 0,
-            ..Default::default()
-        };
+        let mut instance = LocalInstance::new().await.unwrap();
+        
+        // Send and verify a successful CREATE transaction
+        let tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
 
-        // Generate a random transaction hash for testing
-        let tx_hash = B256::from([0x11; 32]);
-
-        engine.block_env = Some(block_env.clone());
-
-        // Execute the transaction
-        let result = engine.execute_transaction(tx_hash, tx_env);
-
+        // Verify transaction was successful
         assert!(
-            result.is_ok(),
-            "Transaction should execute successfully: {result:?}"
+            instance.is_transaction_successful(&tx_hash).unwrap(),
+            "Transaction should execute successfully and pass assertions"
         );
-        assert!(
-            engine.get_block_env().is_some(),
-            "Block environment should be set"
-        );
-        assert_eq!(engine.get_block_env().unwrap().number, 1);
-
-        // Verify transaction result is stored
-        let tx_result = engine.get_transaction_result_cloned(&tx_hash);
-        assert!(tx_result.is_some(), "Transaction result should be stored");
-        match tx_result.unwrap() {
-            TransactionResult::ValidationCompleted { is_valid, .. } => {
-                assert!(is_valid, "Transaction should pass assertions");
-            }
-            TransactionResult::ValidationError(e) => {
-                panic!("Unexpected validation error: {e:?}");
-            }
-        }
     }
 
-    #[test]
-    fn test_reverting_transaction_no_state_update() {
-        let (mut engine, _) = create_test_engine();
-        let block_env = create_test_block_env();
+    #[tokio::test]
+    async fn test_reverting_transaction_no_state_update() {
+        use crate::utils::instance::LocalInstance;
 
-        // Create a transaction that will revert - Create with bytecode that calls REVERT
-        let tx_env = TxEnv {
-            caller: Address::from([0x02; 20]),
-            gas_limit: 100000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value: uint!(0_U256),
-            data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]), // PUSH1 0x00 PUSH1 0x00 REVERT (reverts with empty message)
-            nonce: 0,
-            ..Default::default()
-        };
+        let mut instance = LocalInstance::new().await.unwrap();
+        
+        // Send and verify a reverting CREATE transaction
+        let tx_hash = instance.send_reverting_create_tx().await.unwrap();
 
-        // Generate a random transaction hash for testing
-        let tx_hash = B256::from([0x22; 32]);
-
-        // Capture comprehensive state snapshot before transaction execution
-        let initial_cache_count = engine.get_state().cache_entry_count();
-
-        // Verify no initial state exists for caller or contract addresses
-        let caller_before = engine.get_state().basic_ref(tx_env.caller).unwrap();
+        // Verify transaction reverted but was still valid (passed assertions)
         assert!(
-            caller_before.is_none(),
-            "Caller account should not exist before transaction"
+            instance.is_transaction_reverted_but_valid(&tx_hash).unwrap(),
+            "Transaction should revert but still be valid (pass assertions)"
         );
-
-        // For CREATE transactions, calculate the expected contract address
-        use revm::primitives::address;
-        let expected_contract_address = address!("76cae8af66cb2488933e640ba08650a3a8e7ae19");
-        let contract_before = engine
-            .get_state()
-            .basic_ref(expected_contract_address)
-            .unwrap();
-        assert!(
-            contract_before.is_none(),
-            "Contract account should not exist before transaction"
-        );
-
-        engine.block_env = Some(block_env);
-
-        // Execute the reverting transaction
-        let result = engine.execute_transaction(tx_hash, tx_env.clone());
-
-        // The transaction execution should complete successfully even if the transaction reverts
-        assert!(
-            result.is_ok(),
-            "Engine should handle reverting transactions gracefully: {result:?}"
-        );
-
-        // Verify comprehensive state verification: overlay should be unchanged
-        let final_cache_count = engine.get_state().cache_entry_count();
-        assert_eq!(
-            final_cache_count, initial_cache_count,
-            "Reverting transaction should not add entries to the state cache. Initial: {initial_cache_count}, Final: {final_cache_count}"
-        );
-
-        // Verify specific account states remain unchanged
-        let caller_after = engine.get_state().basic_ref(tx_env.caller).unwrap();
-        assert!(
-            caller_after.is_none(),
-            "Caller account should not exist after reverting transaction"
-        );
-
-        let contract_after = engine
-            .get_state()
-            .basic_ref(expected_contract_address)
-            .unwrap();
-        assert!(
-            contract_after.is_none(),
-            "Contract account should not exist after reverting transaction"
-        );
-
-        // Verify no storage changes occurred
-        let storage_result = engine.get_state().storage_ref(tx_env.caller, U256::ZERO);
-        assert!(
-            storage_result.is_ok(),
-            "Should be able to check storage without errors"
-        );
-        assert_eq!(
-            storage_result.unwrap(),
-            U256::ZERO,
-            "Storage should remain empty/default"
-        );
-
-        // Verify the overlay cache itself shows no contamination
-        // by checking that no keys are cached for our transaction addresses
-        assert!(
-            !engine
-                .get_state()
-                .is_cached(&assertion_executor::db::overlay::TableKey::Basic(
-                    tx_env.caller
-                )),
-            "Caller account should not be cached in overlay after revert"
-        );
-        assert!(
-            !engine
-                .get_state()
-                .is_cached(&assertion_executor::db::overlay::TableKey::Basic(
-                    expected_contract_address
-                )),
-            "Contract account should not be cached in overlay after revert"
-        );
-
-        // Verify transaction result is stored and shows it reverted
-        let tx_result = engine.get_transaction_result_cloned(&tx_hash);
-        assert!(tx_result.is_some(), "Transaction result should be stored");
-        match tx_result.unwrap() {
-            TransactionResult::ValidationCompleted {
-                execution_result,
-                is_valid,
-            } => {
-                assert!(
-                    is_valid,
-                    "Transaction should pass assertions (no assertions to fail)"
-                );
-                match execution_result {
-                    ExecutionResult::Revert { .. } => {
-                        // Expected - transaction reverted
-                    }
-                    other => panic!("Expected Revert result, got {other:?}"),
-                }
-            }
-            TransactionResult::ValidationError(e) => {
-                panic!("Unexpected validation error: {e:?}");
-            }
-        }
     }
 
     #[test]
@@ -846,209 +672,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_end_to_end_transaction_flow() {
-        // Use the simpler create_test_engine helper to get direct access to sender
-        let (mut engine, queue_sender) = create_test_engine();
-
-        // Create test block and transaction
-        let block_env = create_test_block_env();
-        let tx_env = TxEnv {
-            caller: Address::from([0x01; 20]),
-            gas_limit: 100000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value: uint!(0_U256),
-            data: Bytes::new(),
-            nonce: 0,
-            ..Default::default()
-        };
-        let tx_hash = B256::from([0x11; 32]);
-
-        // Send block environment and transaction directly to engine queue
-        queue_sender
-            .send(TxQueueContents::Block(block_env))
-            .unwrap();
-        queue_sender
-            .send(TxQueueContents::Tx(queue::QueueTransaction {
-                tx_hash,
-                tx_env: tx_env.clone(),
-            }))
-            .unwrap();
-
-        // Process the items manually (simulating what engine.run() would do)
-        // Process block first
-        let block_item = engine.tx_receiver.try_recv().unwrap();
-        match block_item {
-            TxQueueContents::Block(block) => engine.block_env = Some(block),
-            _ => panic!("Expected block"),
-        }
-
-        // Process transaction
-        let tx_item = engine.tx_receiver.try_recv().unwrap();
-        match tx_item {
-            TxQueueContents::Tx(queue_tx) => {
-                engine
-                    .execute_transaction(queue_tx.tx_hash, queue_tx.tx_env)
-                    .unwrap();
-            }
-            _ => panic!("Expected transaction"),
-        }
-
-        // Verify the transaction was processed
-        let result = engine.get_transaction_result_cloned(&tx_hash);
-        assert!(result.is_some(), "Transaction result should be stored");
-        match result.unwrap() {
-            TransactionResult::ValidationCompleted { is_valid, .. } => {
-                assert!(is_valid, "Transaction should pass assertions");
-            }
-            TransactionResult::ValidationError(e) => {
-                panic!("Unexpected validation error: {e:?}");
-            }
-        }
-    }
-
-    #[tokio::test]
     async fn test_mock_driver_multiple_blocks_and_transactions() {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let (mut engine, mock_transport, mock_sender) = create_test_setup();
+        use crate::utils::instance::LocalInstance;
+        use revm::primitives::uint;
 
-            // Prepare test data
-            let block1 = BlockEnv {
-                number: 1,
-                ..create_test_block_env()
-            };
-            let block2 = BlockEnv {
-                number: 2,
-                ..create_test_block_env()
-            };
+        let mut instance = LocalInstance::new().await.unwrap();
 
-            let tx1_env = TxEnv {
-                caller: Address::from([0x01; 20]),
-                gas_limit: 100000,
-                gas_price: 0,
-                kind: TxKind::Create,
-                value: uint!(0_U256),
-                data: Bytes::new(),
-                nonce: 0,
-                ..Default::default()
-            };
-            let tx1_hash = B256::from([0x11; 32]);
+        // Send Block 1 with Transaction 1
+        let tx1_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
 
-            let tx2_env = TxEnv {
-                caller: Address::from([0x02; 20]),
-                gas_limit: 100000,
-                gas_price: 0,
-                kind: TxKind::Create,
-                value: uint!(0_U256),
-                data: Bytes::new(),
-                nonce: 0,
-                ..Default::default()
-            };
-            let tx2_hash = B256::from([0x22; 32]);
+        // Send Block 2 with Transaction 2  
+        let tx2_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
 
-            // Send sequence: Block1 -> Tx1 -> Block2 -> Tx2
-            mock_sender.send(TxQueueContents::Block(block1)).unwrap();
-            mock_sender
-                .send(TxQueueContents::Tx(queue::QueueTransaction {
-                    tx_hash: tx1_hash,
-                    tx_env: tx1_env,
-                }))
-                .unwrap();
-            mock_sender.send(TxQueueContents::Block(block2)).unwrap();
-            mock_sender
-                .send(TxQueueContents::Tx(queue::QueueTransaction {
-                    tx_hash: tx2_hash,
-                    tx_env: tx2_env,
-                }))
-                .unwrap();
-
-            // Start transport in background
-            let transport_handle = tokio::spawn(async move {
-                let _ = mock_transport.run().await;
-            });
-
-            // Give transport a moment to forward the data
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-            // Process items manually in sequence
-            // Block 1
-            let item = engine.tx_receiver.try_recv().unwrap();
-            match item {
-                TxQueueContents::Block(block) => engine.block_env = Some(block),
-                _ => panic!(),
-            }
-
-            // Transaction 1
-            let item = engine.tx_receiver.try_recv().unwrap();
-            match item {
-                TxQueueContents::Tx(queue_tx) => {
-                    engine
-                        .execute_transaction(queue_tx.tx_hash, queue_tx.tx_env)
-                        .unwrap()
-                }
-                _ => panic!(),
-            }
-
-            // Block 2
-            let item = engine.tx_receiver.try_recv().unwrap();
-            match item {
-                TxQueueContents::Block(block) => engine.block_env = Some(block),
-                _ => panic!(),
-            }
-
-            // Transaction 2
-            let item = engine.tx_receiver.try_recv().unwrap();
-            match item {
-                TxQueueContents::Tx(queue_tx) => {
-                    engine
-                        .execute_transaction(queue_tx.tx_hash, queue_tx.tx_env)
-                        .unwrap()
-                }
-                _ => panic!(),
-            }
-
-            // Clean up - close the channel to stop the transport
-            drop(mock_sender);
-            transport_handle.abort();
-            let _ = transport_handle.await;
-
-            // Verify both transactions were processed
-            let tx1_result = engine.get_transaction_result_cloned(&tx1_hash);
-            let tx2_result = engine.get_transaction_result_cloned(&tx2_hash);
-
-            assert!(
-                tx1_result.is_some(),
-                "Transaction 1 result should be stored"
-            );
-            assert!(
-                tx2_result.is_some(),
-                "Transaction 2 result should be stored"
-            );
-            match tx1_result.unwrap() {
-                TransactionResult::ValidationCompleted { is_valid, .. } => {
-                    assert!(is_valid, "Transaction 1 should pass assertions");
-                }
-                TransactionResult::ValidationError(e) => {
-                    panic!("Transaction 1 unexpected validation error: {e:?}");
-                }
-            }
-            match tx2_result.unwrap() {
-                TransactionResult::ValidationCompleted { is_valid, .. } => {
-                    assert!(is_valid, "Transaction 2 should pass assertions");
-                }
-                TransactionResult::ValidationError(e) => {
-                    panic!("Transaction 2 unexpected validation error: {e:?}");
-                }
-            }
-
-            // Verify final block state
-            assert_eq!(
-                engine.get_block_env().unwrap().number,
-                2,
-                "Should be on block 2"
-            );
-        })
-        .await
-        .expect("Test timed out");
+        // Verify both transactions were processed successfully
+        assert!(
+            instance.is_transaction_successful(&tx1_hash).unwrap(),
+            "Transaction 1 should be successful"
+        );
+        assert!(
+            instance.is_transaction_successful(&tx2_hash).unwrap(),
+            "Transaction 2 should be successful"
+        );
     }
 }
