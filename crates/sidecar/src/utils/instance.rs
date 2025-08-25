@@ -108,17 +108,26 @@ impl LocalInstance {
 
         // Create default account that will be used by this instance
         let default_account = Address::from([0x01; 20]);
-        let default_account_info = AccountInfo { balance: U256::MAX, ..Default::default() };
+        let default_account_info = AccountInfo {
+            balance: U256::MAX,
+            ..Default::default()
+        };
         underlying_db.insert_account_info(default_account, default_account_info);
 
         // Fund common test accounts with maximum balance
         let default_caller = counter_call().caller;
-        let caller_account = AccountInfo { balance: U256::MAX, ..Default::default() };
+        let caller_account = AccountInfo {
+            balance: U256::MAX,
+            ..Default::default()
+        };
         underlying_db.insert_account_info(default_caller, caller_account);
 
         // Fund test caller account
         let test_caller = Address::from([0x02; 20]);
-        let test_account = AccountInfo { balance: U256::MAX, ..Default::default() };
+        let test_account = AccountInfo {
+            balance: U256::MAX,
+            ..Default::default()
+        };
         underlying_db.insert_account_info(test_caller, test_account);
 
         let underlying_db = Arc::new(underlying_db);
@@ -305,7 +314,10 @@ impl LocalInstance {
             .ok_or_else(|| "Cannot get mutable reference to database".to_string())?;
 
         for (address, balance) in accounts {
-            let account_info = AccountInfo { balance: *balance, ..Default::default() };
+            let account_info = AccountInfo {
+                balance: *balance,
+                ..Default::default()
+            };
             db.insert_account_info(*address, account_info);
         }
 
