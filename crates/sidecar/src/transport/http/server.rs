@@ -1,11 +1,8 @@
 //! JSON-RPC server handlers for HTTP transport
 
+use crate::TransactionsState;
 use crate::engine::TransactionResult;
-use crate::engine::queue::{
-    GetTransactionResultQueueSender,
-    QueryGetTxResult,
-    TxQueueContents,
-};
+use crate::transactions_state::RequestTransactionResult;
 use crate::{
     engine::queue::TransactionQueueSender,
     transport::decoder::{
@@ -22,7 +19,6 @@ use axum::{
     http::StatusCode,
     response::Json as ResponseJson,
 };
-use dashmap::DashSet;
 use revm::primitives::alloy_primitives::TxHash;
 use serde::{
     Deserialize,
@@ -35,7 +31,6 @@ use std::sync::{
         Ordering,
     },
 };
-use tokio::sync::oneshot;
 use tracing::{
     debug,
     error,
@@ -171,32 +166,20 @@ impl JsonRpcResponse {
 pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
-    pub get_tx_result_sender: GetTransactionResultQueueSender,
-    processed_txs: DashSet<TxHash>,
+    state_results: Arc<TransactionsState>,
 }
 
 impl ServerState {
     pub fn new(
         has_blockenv: Arc<AtomicBool>,
         tx_sender: TransactionQueueSender,
-        get_tx_result_sender: GetTransactionResultQueueSender,
+        state_results: Arc<TransactionsState>,
     ) -> Self {
         Self {
             has_blockenv,
             tx_sender,
-            get_tx_result_sender,
-            processed_txs: DashSet::new(),
+            state_results,
         }
-    }
-
-    fn add_processed_tx(&self, tx_queue_contents: &TxQueueContents) {
-        if let TxQueueContents::Tx(tx) = tx_queue_contents {
-            self.processed_txs.insert(tx.tx_hash);
-        }
-    }
-
-    fn is_tx_processed(&self, tx_hash: &TxHash) -> bool {
-        self.processed_txs.contains(tx_hash)
     }
 }
 
@@ -280,7 +263,7 @@ async fn handle_send_transactions(
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
-        state.add_processed_tx(&queue_tx);
+        state.state_results.add_accepted_tx(&queue_tx);
         if let Err(e) = state.tx_sender.send(queue_tx) {
             error!(
                 error = %e,
@@ -337,54 +320,38 @@ async fn handle_get_transactions(
         ));
     };
 
-    let (processed_hashes, unprocessed_hashes): (Vec<_>, Vec<_>) = tx_hashes
+    let (received_tx_hashes, not_found_hashes): (Vec<_>, Vec<_>) = tx_hashes
         .into_iter()
-        .partition(|tx_hash| state.is_tx_processed(tx_hash));
+        .partition(|tx_hash| state.state_results.is_tx_received(tx_hash));
 
     // Can you write me here the sending to the queue + waiting for the result?
-    let mut results = Vec::with_capacity(processed_hashes.len());
+    let mut results = Vec::with_capacity(received_tx_hashes.len());
 
     // Process each transaction hash
-    for tx_hash in processed_hashes {
-        // Can you write me here the sending to the queue + waiting for the result?
-        let (response_tx, response_rx) = oneshot::channel();
-
-        let query = QueryGetTxResult {
-            tx_hash,
-            sender: response_tx,
-        };
-
-        // Send query to engine
-        if let Err(e) = state.get_tx_result_sender.send(query) {
-            error!(
-                error = %e,
-                tx_hash = %tx_hash,
-                "Failed to send get transaction query to engine"
-            );
-            return Ok(JsonRpcResponse::internal_error(
-                request,
-                "Internal error: failed to queue get transaction result",
-            ));
-        }
-
-        let transaction_result = match response_rx.await {
-            Ok(result) => result,
-            Err(_) => {
-                error!(
-                    tx_hash = %tx_hash,
-                    "Engine dropped response channel for transaction query"
-                );
-                return Ok(JsonRpcResponse::internal_error(
-                    request,
-                    "Internal error: engine unavailable",
-                ));
+    for tx_hash in received_tx_hashes {
+        let result = match state.state_results.request_transaction_result(&tx_hash) {
+            RequestTransactionResult::Result(result) => result,
+            RequestTransactionResult::Channel(receiver) => {
+                match receiver.await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        error!(
+                            tx_hash = %tx_hash,
+                            "Engine dropped response channel for transaction query"
+                        );
+                        return Ok(JsonRpcResponse::internal_error(
+                            request,
+                            "Internal error: engine unavailable",
+                        ));
+                    }
+                }
             }
         };
 
         // Convert result to JSON format
         results.push(into_transaction_result_response(
             tx_hash.to_string(),
-            &transaction_result,
+            &result,
         ));
     }
 
@@ -397,7 +364,7 @@ async fn handle_get_transactions(
         request,
         serde_json::json!({
             "results": results,
-            "not_found": unprocessed_hashes,
+            "not_found": not_found_hashes,
         }),
     ))
 }

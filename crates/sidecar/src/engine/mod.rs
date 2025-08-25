@@ -39,12 +39,12 @@
 //! assertion reverts before approving a transaction.
 
 pub mod queue;
-pub(crate) mod result_handler;
 
 use super::engine::queue::{
     TransactionQueueReceiver,
     TxQueueContents,
 };
+use crate::TransactionsState;
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -57,9 +57,7 @@ use assertion_executor::{
     },
 };
 
-use dashmap::DashMap;
 use dashmap::mapref::one::Ref;
-use revm::primitives::alloy_primitives::TxHash;
 #[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
@@ -74,7 +72,6 @@ use revm::{
     },
 };
 use std::sync::Arc;
-use tokio::sync::oneshot;
 use tracing::{
     debug,
     error,
@@ -110,21 +107,6 @@ pub enum TransactionResult {
     ValidationError(String),
 }
 
-#[derive(Debug)]
-pub struct StateResults {
-    transaction_results: DashMap<B256, TransactionResult>,
-    pending_queries: DashMap<TxHash, oneshot::Sender<TransactionResult>>,
-}
-
-impl StateResults {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            transaction_results: DashMap::new(),
-            pending_queries: DashMap::new(),
-        })
-    }
-}
-
 /// The engine processes blocks and appends transactions to them.
 /// It accepts transaction events sent from a transport via the `TransactionQueueReceiver`
 /// and processes them accordingly.
@@ -135,7 +117,7 @@ pub struct CoreEngine<DB> {
     assertion_executor: AssertionExecutor,
     block_env: Option<BlockEnv>,
     /// TODO: move this out of the core engine when we add proper state.
-    state_results: Arc<StateResults>,
+    transaction_results: Arc<TransactionsState>,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -144,14 +126,14 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         state: OverlayDb<DB>,
         tx_receiver: TransactionQueueReceiver,
         assertion_executor: AssertionExecutor,
-        state_results: Arc<StateResults>,
+        state_results: Arc<TransactionsState>,
     ) -> Self {
         Self {
             state,
             tx_receiver,
             assertion_executor,
             block_env: None,
-            state_results,
+            transaction_results: state_results,
         }
     }
 
@@ -174,7 +156,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 AssertionStore::new_ephemeral().expect("REASON"),
             ),
             block_env: None,
-            state_results: StateResults::new(),
+            transaction_results: TransactionsState::new(),
         }
     }
 
@@ -195,7 +177,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[instrument(
         name = "engine::execute_transaction",
         skip(self),
-        fields(tx_hash = %tx_hash, tx_env = ?tx_env, caller = %tx_env.caller, gas_limit = tx_env.gas_limit),
+        fields(tx_hash = %tx_hash, tx_env = ?tx_env, caller = %tx_env.caller, gas_limit = tx_env.gas_limit
+        ),
         level = "debug"
     )]
     fn execute_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), EngineError> {
@@ -229,7 +212,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     "Internal validation error occurred"
                 );
                 // Store the validation error result
-                self.state_results.transaction_results.insert(
+                self.transaction_results.add_transaction_result(
                     tx_hash,
                     TransactionResult::ValidationError(format!("{e:?}")),
                 );
@@ -287,7 +270,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
 
         // Store the transaction result
-        self.state_results.transaction_results.insert(
+        self.transaction_results.add_transaction_result(
             tx_hash,
             TransactionResult::ValidationCompleted {
                 execution_result,
@@ -295,7 +278,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             },
         );
 
-        self.process_pending_queries(tx_hash);
         trace!("Transaction execution completed");
         Ok(())
     }
@@ -317,35 +299,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         &self,
         tx_hash: &B256,
     ) -> Option<Ref<'_, B256, TransactionResult>> {
-        self.state_results.transaction_results.get(tx_hash)
+        self.transaction_results.get_transaction_result(tx_hash)
     }
 
     /// Get all transaction results for testing purposes.
     #[cfg(test)]
-    pub fn get_all_transaction_results(&self) -> &DashMap<B256, TransactionResult> {
-        &self.state_results.transaction_results
-    }
-
-    /// Check if there is a pending query for the processed result
-    fn process_pending_queries(&mut self, tx_hash: TxHash) {
-        // O(1)
-        let Some(result) = self.state_results.transaction_results.get(&tx_hash) else {
-            return;
-        };
-        // O(1)
-        let Some((_, sender)) = self.state_results.pending_queries.remove(&tx_hash) else {
-            return;
-        };
-        // Purposedly ignore this error in case there is a race condition and the result is sent twice
-        // O(1)
-        let _ = sender.send(result.clone()).map_err(|e| {
-            error!(
-                target = "engine",
-                error = ?e,
-                tx_hash = %tx_hash,
-                "Failed to send transaction result to query sender"
-            );
-        });
+    pub fn get_all_transaction_results(&self) -> &dashmap::DashMap<B256, TransactionResult> {
+        self.transaction_results.get_all_transaction_result()
     }
 
     /// Run the engine and process transactions and blocks received
@@ -444,7 +404,6 @@ mod tests {
         ExecutorConfig,
         store::AssertionStore,
     };
-    use crossbeam::channel::unbounded;
     use revm::{
         context::{
             BlockEnv,
@@ -475,7 +434,7 @@ mod tests {
             AssertionStore::new_ephemeral().expect("Failed to create assertion store");
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
-        let state_results = StateResults::new();
+        let state_results = TransactionsState::new();
         let engine = CoreEngine::new(state, tx_receiver, assertion_executor, state_results);
         (engine, tx_sender)
     }
@@ -487,7 +446,6 @@ mod tests {
         crossbeam::channel::Sender<TxQueueContents>,
     ) {
         let (engine_tx, engine_rx) = crossbeam::channel::unbounded();
-        let (get_tx_result_sender, _get_tx_result_receiver) = unbounded();
         let (mock_tx, mock_rx) = crossbeam::channel::unbounded();
 
         // Create engine
@@ -496,11 +454,11 @@ mod tests {
         let assertion_store =
             AssertionStore::new_ephemeral().expect("Failed to create assertion store");
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
-        let state_results = StateResults::new();
-        let engine = CoreEngine::new(state, engine_rx, assertion_executor, state_results);
+        let state_results = TransactionsState::new();
+        let engine = CoreEngine::new(state, engine_rx, assertion_executor, state_results.clone());
 
         // Create mock transport with the receiver
-        let mock_transport = MockTransport::with_receiver(engine_tx, mock_rx, get_tx_result_sender);
+        let mock_transport = MockTransport::with_receiver(engine_tx, mock_rx, state_results);
 
         (engine, mock_transport, mock_tx)
     }

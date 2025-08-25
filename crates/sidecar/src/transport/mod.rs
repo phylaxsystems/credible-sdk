@@ -21,10 +21,9 @@ pub mod decoder;
 pub mod http;
 pub mod mock;
 
-use crate::engine::queue::{
-    GetTransactionResultQueueSender,
-    TransactionQueueSender,
-};
+use crate::engine::queue::TransactionQueueSender;
+use crate::transactions_state::TransactionsState;
+use std::sync::Arc;
 
 /// The `Transport` trait defines the interface for external communication adapters that
 /// forward transactions and block environments to the core engine.
@@ -82,7 +81,7 @@ pub trait Transport: Send + Sync {
     fn new(
         config: Self::Config,
         tx_sender: TransactionQueueSender,
-        get_tx_result_sender: GetTransactionResultQueueSender,
+        state_results: Arc<TransactionsState>,
     ) -> Result<Self, Self::Error>
     where
         Self: Sized;

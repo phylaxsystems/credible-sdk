@@ -1,5 +1,5 @@
 //! HTTP JSON-RPC transport
-use crate::engine::queue::GetTransactionResultQueueSender;
+use crate::transactions_state::TransactionsState;
 use crate::{
     engine::queue::TransactionQueueSender,
     transport::{
@@ -67,8 +67,6 @@ pub enum HttpTransportError {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct HttpTransport {
-    /// Core engine queue sender for query transaction results.
-    get_tx_result_sender: GetTransactionResultQueueSender,
     /// Core engine queue sender.
     tx_sender: TransactionQueueSender,
     /// HTTP client for outbound requests
@@ -81,6 +79,8 @@ pub struct HttpTransport {
     shutdown_token: CancellationToken,
     /// Signal if the transport has seen a blockenv, will respond to txs with errors if not
     has_blockenv: Arc<AtomicBool>,
+    /// Shared transaction results state
+    state_results: Arc<TransactionsState>,
 }
 
 /// Health check endpoint
@@ -111,7 +111,7 @@ impl Transport for HttpTransport {
     fn new(
         config: HttpTransportConfig,
         tx_sender: TransactionQueueSender,
-        get_tx_result_sender: GetTransactionResultQueueSender,
+        state_results: Arc<TransactionsState>,
     ) -> Result<Self, Self::Error> {
         debug!(
             bind_addr = %config.bind_addr,
@@ -121,22 +121,27 @@ impl Transport for HttpTransport {
 
         let client = reqwest::Client::new();
         Ok(Self {
-            get_tx_result_sender,
             tx_sender,
             client,
             bind_addr: config.bind_addr,
             driver_url: config.driver_addr,
             shutdown_token: CancellationToken::new(),
             has_blockenv: Arc::new(AtomicBool::new(false)),
+            state_results,
         })
     }
 
-    #[instrument(name = "http_transport::run", skip(self), fields(bind_addr = %self.bind_addr), level = "info")]
+    #[instrument(
+        name = "http_transport::run",
+        skip(self),
+        fields(bind_addr = %self.bind_addr),
+        level = "info"
+    )]
     async fn run(&self) -> Result<(), Self::Error> {
         let state = server::ServerState::new(
             self.has_blockenv.clone(),
             self.tx_sender.clone(),
-            self.get_tx_result_sender.clone(),
+            self.state_results.clone(),
         );
         let app = Router::new()
             .merge(health_routes())
