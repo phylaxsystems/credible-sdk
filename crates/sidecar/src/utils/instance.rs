@@ -51,7 +51,6 @@ use revm::{
         TxKind,
         U256,
         address,
-        hex,
     },
 };
 use std::{
@@ -676,7 +675,7 @@ mod tests {
             .unwrap();
 
         instance.send_and_verify_successful_create_tx(caller, nonce + 1, uint!(0_U256), Bytes::new()).await.unwrap();
-        instance.send_and_verify_reverting_create_tx(caller, nonce).await.unwrap();
+        instance.send_and_verify_reverting_create_tx(caller, nonce + 2).await.unwrap();
     }
 
     #[crate::utils::engine_test]
