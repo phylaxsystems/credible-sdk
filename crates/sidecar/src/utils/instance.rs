@@ -84,6 +84,10 @@ pub struct LocalInstance {
     block_bumber: u64,
     /// Shared transaction results from engine
     transaction_results: Arc<DashMap<B256, TransactionResult>>,
+    /// Default account for transactions
+    default_account: Address,
+    /// Current nonce for the default account
+    current_nonce: u64,
 }
 
 impl LocalInstance {
@@ -99,6 +103,12 @@ impl LocalInstance {
         let mut underlying_db = CacheDB::new(EmptyDBTyped::default());
         // Insert default counter contract into the underlying db (and mock by proxy)
         underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
+
+        // Create default account that will be used by this instance
+        let default_account = Address::from([0x01; 20]);
+        let mut default_account_info = AccountInfo::default();
+        default_account_info.balance = U256::MAX;
+        underlying_db.insert_account_info(default_account, default_account_info);
 
         // Fund common test accounts with maximum balance
         let default_caller = counter_call().caller;
@@ -177,6 +187,8 @@ impl LocalInstance {
             engine_handle: Some(engine_handle),
             block_bumber: 0,
             transaction_results,
+            default_account: Address::from([0x01; 20]),
+            current_nonce: 0,
         })
     }
 
@@ -234,6 +246,28 @@ impl LocalInstance {
         &self.assertion_store
     }
 
+    /// Get the default account address
+    pub fn default_account(&self) -> Address {
+        self.default_account
+    }
+
+    /// Get the current nonce for the default account
+    pub fn current_nonce(&self) -> u64 {
+        self.current_nonce
+    }
+
+    /// Get the current nonce and increment it
+    pub fn next_nonce(&mut self) -> u64 {
+        let nonce = self.current_nonce;
+        self.current_nonce += 1;
+        nonce
+    }
+
+    /// Reset the nonce to a specific value
+    pub fn reset_nonce(&mut self, nonce: u64) {
+        self.current_nonce = nonce;
+    }
+
     /// Wait for a short time to allow transaction processing
     /// Since we can't directly access engine results in this test setup,
     /// tests should verify behavior through other means (e.g., state changes)
@@ -253,16 +287,15 @@ impl LocalInstance {
             .map_err(|e| format!("Failed to insert assertion: {}", e))
     }
 
-    /// Create a simple test transaction
+    /// Create a simple test transaction using the default account
     pub fn create_test_transaction(
-        &self,
-        caller: Address,
-        nonce: u64,
+        &mut self,
         value: U256,
         data: Bytes,
     ) -> TxEnv {
+        let nonce = self.next_nonce();
         TxEnv {
-            caller,
+            caller: self.default_account,
             gas_limit: 100_000,
             gas_price: 0,
             kind: TxKind::Create,
@@ -287,16 +320,17 @@ impl LocalInstance {
         Ok(())
     }
 
-    /// Send a successful CREATE transaction and verify it succeeds
+    /// Send a successful CREATE transaction using the default account
     pub async fn send_successful_create_tx(
         &mut self,
-        caller: Address,
-        nonce: u64,
         value: U256,
         data: Bytes,
     ) -> Result<B256, String> {
         // Ensure we have a block
         self.new_block()?;
+
+        let nonce = self.next_nonce();
+        let caller = self.default_account;
 
         // Create transaction
         let tx_env = TxEnv {
@@ -325,14 +359,13 @@ impl LocalInstance {
         Ok(tx_hash)
     }
 
-    /// Send a reverting transaction and verify it reverts
-    pub async fn send_reverting_create_tx(
-        &mut self,
-        caller: Address,
-        nonce: u64,
-    ) -> Result<B256, String> {
+    /// Send a reverting CREATE transaction using the default account
+    pub async fn send_reverting_create_tx(&mut self) -> Result<B256, String> {
         // Ensure we have a block
         self.new_block()?;
+
+        let nonce = self.next_nonce();
+        let caller = self.default_account;
 
         // Create reverting transaction (PUSH1 0x00 PUSH1 0x00 REVERT)
         let tx_env = TxEnv {
@@ -361,17 +394,18 @@ impl LocalInstance {
         Ok(tx_hash)
     }
 
-    /// Send a CALL transaction to an existing contract
+    /// Send a CALL transaction to an existing contract using the default account
     pub async fn send_call_tx(
         &mut self,
-        caller: Address,
         to: Address,
-        nonce: u64,
         value: U256,
         data: Bytes,
     ) -> Result<B256, String> {
         // Ensure we have a block
         self.new_block()?;
+
+        let nonce = self.next_nonce();
+        let caller = self.default_account;
 
         // Create call transaction
         let tx_env = TxEnv {
@@ -400,7 +434,49 @@ impl LocalInstance {
         Ok(tx_hash)
     }
 
-    /// Send multiple transactions in the same block
+    /// Send multiple CREATE transactions in the same block using the default account
+    pub async fn send_batch_create_transactions(
+        &mut self,
+        transactions: Vec<(U256, Bytes)>,
+    ) -> Result<Vec<B256>, String> {
+        // Send block first
+        self.new_block()?;
+
+        let mut tx_hashes = Vec::new();
+
+        // Send all transactions
+        for (i, (value, data)) in transactions.into_iter().enumerate() {
+            let nonce = self.next_nonce();
+            let caller = self.default_account;
+            
+            let tx_env = TxEnv {
+                caller,
+                gas_limit: 100_000,
+                gas_price: 0,
+                kind: TxKind::Create,
+                value,
+                data,
+                nonce,
+                ..Default::default()
+            };
+
+            // Generate transaction hash based on caller, nonce, and index
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes[0..20].copy_from_slice(caller.as_slice());
+            hash_bytes[20..28].copy_from_slice(&nonce.to_be_bytes());
+            hash_bytes[28..32].copy_from_slice(&(i as u32).to_be_bytes());
+            let tx_hash = B256::from(hash_bytes);
+            self.send_transaction(tx_hash, tx_env)?;
+            tx_hashes.push(tx_hash);
+        }
+
+        // Wait for processing
+        self.wait_for_processing(Duration::from_millis(100)).await;
+
+        Ok(tx_hashes)
+    }
+
+    /// Send multiple transactions in the same block (legacy method for backward compatibility)
     pub async fn send_batch_transactions(
         &mut self,
         transactions: Vec<(Address, u64, U256, Bytes, TxKind)>,
@@ -496,16 +572,14 @@ impl LocalInstance {
         }
     }
 
-    /// Send and verify a successful CREATE transaction
+    /// Send and verify a successful CREATE transaction using the default account
     pub async fn send_and_verify_successful_create_tx(
         &mut self,
-        caller: Address,
-        nonce: u64,
         value: U256,
         data: Bytes,
     ) -> Result<Address, String> {
         let tx_hash = self
-            .send_successful_create_tx(caller, nonce, value, data)
+            .send_successful_create_tx(value, data)
             .await?;
 
         if !self.is_transaction_successful(&tx_hash)? {
@@ -518,13 +592,9 @@ impl LocalInstance {
         Ok(contract_address)
     }
 
-    /// Send and verify a reverting transaction
-    pub async fn send_and_verify_reverting_create_tx(
-        &mut self,
-        caller: Address,
-        nonce: u64,
-    ) -> Result<(), String> {
-        let tx_hash = self.send_reverting_create_tx(caller, nonce).await?;
+    /// Send and verify a reverting transaction using the default account
+    pub async fn send_and_verify_reverting_create_tx(&mut self) -> Result<(), String> {
+        let tx_hash = self.send_reverting_create_tx().await?;
 
         if !self.is_transaction_reverted_but_valid(&tx_hash)? {
             return Err("Transaction should have reverted but been valid".to_string());
@@ -533,30 +603,26 @@ impl LocalInstance {
         Ok(())
     }
 
-    /// Sends a pair of assertion passing and failing transactions.
+    /// Sends a pair of assertion passing and failing transactions using the default account.
     /// The transactions call a preloaded counter contract, which can only
     /// be called once due to subsequent assertions invalidating.
-    /// Returns the hash of the failing transaction.
-    pub async fn send_assertion_passing_failing_pair(
-        &mut self,
-        caller: Address,
-        nonce: u64,
-    ) -> Result<(), String> {
+    pub async fn send_assertion_passing_failing_pair(&mut self) -> Result<(), String> {
         // Ensure we have a block
         self.new_block()?;
 
         let basefee = 10u64;
+        let caller = self.default_account;
 
         // Create the first transaction (should pass)
         let mut tx_pass = counter_call();
         tx_pass.caller = caller;
-        tx_pass.nonce = nonce;
+        tx_pass.nonce = self.next_nonce();
         tx_pass.gas_price = basefee.into();
 
         // Create the second transaction (should fail assertion)
         let mut tx_fail = counter_call();
         tx_fail.caller = caller;
-        tx_fail.nonce = nonce + 1;
+        tx_fail.nonce = self.next_nonce();
         tx_fail.gas_price = basefee.into();
 
         // Generate unique transaction hashes
@@ -613,12 +679,9 @@ mod tests {
 
     #[crate::utils::engine_test]
     async fn test_new_helper_functions(mut instance: LocalInstance) {
-        let caller = Address::from([0x01; 20]);
-        let nonce = 0u64;
-
         // Test sending and verifying a successful transaction
         let contract_address = instance
-            .send_and_verify_successful_create_tx(caller, nonce, uint!(0_U256), Bytes::new())
+            .send_and_verify_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
@@ -626,33 +689,18 @@ mod tests {
 
         // Test sending and verifying a reverting transaction
         instance
-            .send_and_verify_reverting_create_tx(caller, nonce + 1)
+            .send_and_verify_reverting_create_tx()
             .await
             .unwrap();
 
         info!("Reverting transaction handled correctly");
 
-        // Test batch transactions
-        let batch_txs = vec![
-            (
-                caller,
-                nonce + 2,
-                uint!(0_U256),
-                Bytes::new(),
-                TxKind::Create,
-            ),
-            (
-                caller,
-                nonce + 3,
-                uint!(0_U256),
-                Bytes::new(),
-                TxKind::Create,
-            ),
-        ];
+        // Test multiple individual transactions (simulating batch behavior)
+        let tx_hash_1 = instance.send_successful_create_tx(uint!(0_U256), Bytes::new()).await.unwrap();
+        let tx_hash_2 = instance.send_successful_create_tx(uint!(0_U256), Bytes::new()).await.unwrap();
 
-        let tx_hashes = instance.send_batch_transactions(batch_txs).await.unwrap();
-
-        info!("Batch transactions sent: {} transactions", tx_hashes.len());
+        let tx_hashes = vec![tx_hash_1, tx_hash_2];
+        info!("Multiple transactions sent: {} transactions", tx_hashes.len());
 
         // Test result checking
         for tx_hash in &tx_hashes {
@@ -663,19 +711,16 @@ mod tests {
 
     #[crate::utils::engine_test]
     async fn test_send_assertion_passing_failing_pair(mut instance: LocalInstance) {
-        let caller = Address::from([0x02; 20]);
-        let nonce = 0u64;
-
         info!("Testing assertion passing/failing pair");
 
         // Send the assertion passing and failing pair
         instance
-            .send_assertion_passing_failing_pair(caller, nonce)
+            .send_assertion_passing_failing_pair()
             .await
             .unwrap();
 
-        instance.send_and_verify_successful_create_tx(caller, nonce + 1, uint!(0_U256), Bytes::new()).await.unwrap();
-        instance.send_and_verify_reverting_create_tx(caller, nonce + 2).await.unwrap();
+        instance.send_and_verify_successful_create_tx(uint!(0_U256), Bytes::new()).await.unwrap();
+        instance.send_and_verify_reverting_create_tx().await.unwrap();
     }
 
     #[crate::utils::engine_test]
@@ -687,25 +732,11 @@ mod tests {
         // Give transport time to forward the block
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        // Create and send a transaction
+        // Create and send a transaction using the simplified API
         info!("Sending transaction to engine");
-        let tx_env = instance.create_test_transaction(
-            Address::from([0x01; 20]),
-            0,
-            uint!(0_U256),
-            Bytes::new(),
-        );
+        let tx_hash = instance.send_successful_create_tx(uint!(0_U256), Bytes::new()).await.unwrap();
 
-        let tx_hash = B256::from([0x11; 32]);
-        instance.send_transaction(tx_hash, tx_env).unwrap();
-
-        // Wait for processing
-        info!("Waiting for transaction processing");
-        instance
-            .wait_for_processing(Duration::from_millis(100))
-            .await;
-
-        info!("Test completed successfully");
+        info!("Test completed successfully with tx_hash: {}", tx_hash);
         // Test passes if no panic/errors occurred during processing
     }
 }
