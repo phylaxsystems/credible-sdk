@@ -76,7 +76,9 @@ use revm::{
         B256,
     },
 };
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
+#[cfg(test)]
+use std::collections::HashMap;
 use tokio::sync::oneshot;
 use tracing::{
     debug,
@@ -126,6 +128,11 @@ impl StateResults {
             pending_queries: DashMap::new(),
         })
     }
+
+    /// Get a reference to the transaction results DashMap
+    pub fn transaction_results(&self) -> &DashMap<B256, TransactionResult> {
+        &self.transaction_results
+    }
 }
 
 /// The engine processes blocks and appends transactions to them.
@@ -158,11 +165,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
     }
 
-    /// Get a clone of the shared transaction results DashMap for testing
-    #[cfg(test)]
-    pub fn get_shared_results(&self) -> Arc<DashMap<B256, TransactionResult>> {
-        self.state_results.transaction_results.clone()
-    }
 
     /// Creates a new `CoreEngine` for testing purposes.
     /// Not to be used for anything but tests.
@@ -480,7 +482,6 @@ mod tests {
         ExecutorConfig,
         store::AssertionStore,
     };
-    use crossbeam::channel::unbounded;
     use revm::{
         context::{
             BlockEnv,

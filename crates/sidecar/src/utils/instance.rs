@@ -1,6 +1,7 @@
 use crate::{
     engine::{
         CoreEngine,
+        StateResults,
         TransactionResult,
         queue::{
             QueueTransaction,
@@ -34,7 +35,6 @@ use assertion_executor::{
     },
 };
 use crossbeam::channel;
-use dashmap::DashMap;
 use revm::{
     context::{
         BlockEnv,
@@ -82,8 +82,8 @@ pub struct LocalInstance {
     engine_handle: Option<JoinHandle<()>>,
     /// Current block number
     block_bumber: u64,
-    /// Shared transaction results from engine
-    transaction_results: Arc<DashMap<B256, TransactionResult>>,
+    /// Shared state results from engine
+    state_results: Arc<StateResults>,
     /// Default account for transactions
     default_account: Address,
     /// Current nonce for the default account
@@ -98,6 +98,7 @@ impl LocalInstance {
         // Create channels for communication
         let (engine_tx, engine_rx) = channel::unbounded();
         let (mock_tx, mock_rx) = channel::unbounded();
+        let (get_tx_result_sender, _get_tx_result_receiver) = channel::unbounded();
 
         // Create the database and state
         let mut underlying_db = CacheDB::new(EmptyDBTyped::default());
@@ -145,11 +146,11 @@ impl LocalInstance {
         let assertion_executor =
             AssertionExecutor::new(ExecutorConfig::default(), (*assertion_store).clone());
 
-        // Create the engine
-        let mut engine = CoreEngine::new(state, engine_rx, assertion_executor);
+        // Create StateResults for the engine
+        let state_results = StateResults::new();
 
-        // Get shared transaction results before moving engine into task
-        let transaction_results = engine.get_shared_results();
+        // Create the engine
+        let mut engine = CoreEngine::new(state, engine_rx, assertion_executor, state_results.clone());
 
         // Spawn the engine task that manually processes items
         // This mimics what the tests do - manually processing items from the queue
@@ -165,7 +166,7 @@ impl LocalInstance {
         });
 
         // Create mock transport with the channels
-        let transport = MockTransport::with_receiver(engine_tx, mock_rx);
+        let transport = MockTransport::with_receiver(engine_tx, mock_rx, get_tx_result_sender);
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
@@ -186,7 +187,7 @@ impl LocalInstance {
             transport_handle: Some(transport_handle),
             engine_handle: Some(engine_handle),
             block_bumber: 0,
-            transaction_results,
+            state_results,
             default_account: Address::from([0x01; 20]),
             current_nonce: 0,
         })
@@ -453,7 +454,8 @@ impl LocalInstance {
 
     /// Get transaction result by hash
     pub fn get_transaction_result(&self, tx_hash: &B256) -> Option<TransactionResult> {
-        self.transaction_results
+        self.state_results
+            .transaction_results()
             .get(tx_hash)
             .map(|entry| entry.value().clone())
     }
