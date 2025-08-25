@@ -11,6 +11,7 @@ members = [
     "crates/assertion-executor",
     "crates/dapp-api-client",
     "crates/sidecar",
+    "crates/sidecar/src/utils/test-macros",
 ]
 exclude = ["fuzz"]
 resolver = "2"

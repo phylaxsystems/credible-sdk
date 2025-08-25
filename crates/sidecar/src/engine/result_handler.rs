@@ -288,7 +288,7 @@ mod tests {
             EngineError::GetTxResultChannelClosed => {
                 // Expected error
             }
-            other => panic!("Expected GetTxResultChannelClosed error, got {:?}", other),
+            other => panic!("Expected GetTxResultChannelClosed error, got {other:?}"),
         }
     }
 
@@ -407,7 +407,7 @@ mod tests {
             TransactionResult::ValidationError(msg) => {
                 assert_eq!(msg, "Test validation error");
             }
-            other => panic!("Expected ValidationError, got {:?}", other),
+            other => panic!("Expected ValidationError, got {other:?}"),
         }
     }
 
@@ -434,10 +434,10 @@ mod tests {
                     ExecutionResult::Halt { reason, .. } => {
                         assert_eq!(reason, HaltReason::CallNotAllowedInsideStatic);
                     }
-                    other => panic!("Expected Revert result, got {:?}", other),
+                    other => panic!("Expected Revert result, got {other:?}"),
                 }
             }
-            other => panic!("Expected ValidationCompleted, got {:?}", other),
+            other => panic!("Expected ValidationCompleted, got {other:?}"),
         }
     }
 

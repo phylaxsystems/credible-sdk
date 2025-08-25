@@ -39,3 +39,20 @@ use std::convert::Infallible;
 
 /// Error type used in tests, infallible for simplicity
 pub type TestDbError = Infallible;
+
+/// Re-export the engine_test procedural macro
+///
+/// This macro simplifies test setup by automatically creating a LocalInstance
+/// and passing it to your test function.
+///
+/// # Usage
+/// ```
+/// use sidecar::utils::engine_test;
+///
+/// #[engine_test]
+/// async fn test_something(mut instance: LocalInstance) {
+///     instance.new_block().unwrap();
+///     // Your test code here
+/// }
+/// ```
+pub use sidecar_test_macros::engine_test;
