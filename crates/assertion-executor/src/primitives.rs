@@ -1,13 +1,13 @@
 pub use revm::{
-    context::journal::{
-        Journal,
-        JournalEntry,
-        JournalInner,
-    },
     context::{
         BlockEnv,
         ContextTr,
         TxEnv,
+        journal::{
+            Journal,
+            JournalEntry,
+            JournalInner,
+        },
     },
     context_interface::result::{
         EVMError,

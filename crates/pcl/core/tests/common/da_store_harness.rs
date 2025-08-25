@@ -1,14 +1,16 @@
 use alloy::{
     hex,
-    signers::k256::ecdsa::SigningKey,
-    signers::k256::elliptic_curve::rand_core::OsRng,
+    signers::k256::{
+        ecdsa::SigningKey,
+        elliptic_curve::rand_core::OsRng,
+    },
 };
 use assertion_da_client::DaClient;
 use int_test_utils::deploy_test_da;
 use pcl_common::args::CliArgs;
-use pcl_core::config::CliConfig;
 use pcl_core::{
     assertion_da::DaStoreArgs,
+    config::CliConfig,
     error::DaSubmitError,
 };
 use pcl_phoundry::build_and_flatten::BuildAndFlattenArgs;

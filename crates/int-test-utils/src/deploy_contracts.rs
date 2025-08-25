@@ -5,10 +5,14 @@ use std::process::{
     Stdio,
 };
 
-use alloy::node_bindings::AnvilInstance;
-use alloy::primitives::Address;
-use std::io;
-use std::str::FromStr;
+use alloy::{
+    node_bindings::AnvilInstance,
+    primitives::Address,
+};
+use std::{
+    io,
+    str::FromStr,
+};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -189,27 +193,29 @@ pub fn deploy_contracts(
 mod tests {
     use super::*;
 
-    use alloy::network::{
-        EthereumWallet,
-        TransactionBuilder,
-    };
-    use alloy::node_bindings::{
-        Anvil,
-        AnvilInstance,
-    };
-    use alloy::primitives::{
-        Address,
-        TxKind,
-        U256,
-    };
-    use alloy::providers::{
-        Provider,
-        ProviderBuilder,
-    };
-    use alloy::rpc::types::TransactionRequest;
-    use alloy::signers::{
-        k256::ecdsa::SigningKey,
-        local::LocalSigner,
+    use alloy::{
+        network::{
+            EthereumWallet,
+            TransactionBuilder,
+        },
+        node_bindings::{
+            Anvil,
+            AnvilInstance,
+        },
+        primitives::{
+            Address,
+            TxKind,
+            U256,
+        },
+        providers::{
+            Provider,
+            ProviderBuilder,
+        },
+        rpc::types::TransactionRequest,
+        signers::{
+            k256::ecdsa::SigningKey,
+            local::LocalSigner,
+        },
     };
     use std::error::Error;
 

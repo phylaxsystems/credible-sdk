@@ -1,6 +1,8 @@
 use forge::cmd::build::BuildArgs;
-use foundry_cli::opts::BuildOpts;
-use foundry_cli::utils::LoadConfig;
+use foundry_cli::{
+    opts::BuildOpts,
+    utils::LoadConfig,
+};
 use foundry_common::compile::ProjectCompiler;
 use foundry_compilers::ProjectCompileOutput;
 

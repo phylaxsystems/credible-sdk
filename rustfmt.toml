@@ -1,7 +1,8 @@
 format_code_in_doc_comments = true
-force_multiline_blocks=true
-imports_indent="Block"
-imports_layout="Vertical"
+force_multiline_blocks = true
+imports_indent = "Block"
+imports_layout = "Vertical"
 ignore = [
     "crates/dapp-api-client/src/generated/**",
 ]
+imports_granularity = "Crate"

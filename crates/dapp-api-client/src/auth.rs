@@ -313,8 +313,10 @@ mod tests {
 
     #[test]
     fn test_auth_config_thread_safety() {
-        use std::sync::Arc;
-        use std::thread;
+        use std::{
+            sync::Arc,
+            thread,
+        };
 
         let config = Arc::new(AuthConfig::bearer_token("shared-token".to_string()).unwrap());
         let mut handles = vec![];

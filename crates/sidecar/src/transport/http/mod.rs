@@ -1,7 +1,7 @@
 //! HTTP JSON-RPC transport
-use crate::transactions_state::TransactionsState;
 use crate::{
     engine::queue::TransactionQueueSender,
+    transactions_state::TransactionsState,
     transport::{
         Transport,
         http::config::HttpTransportConfig,

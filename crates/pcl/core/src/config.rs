@@ -464,9 +464,11 @@ impl fmt::Display for AssertionForSubmission {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+    use std::{
+        env,
+        fs,
+        os::unix::fs::PermissionsExt,
+    };
     use tempfile::TempDir;
 
     /// Helper function to set up a temporary config directory

@@ -1,7 +1,9 @@
 //! Sidecar command arguments
-use assertion_executor::primitives::SpecId;
 use assertion_executor::{
-    primitives::Address,
+    primitives::{
+        Address,
+        SpecId,
+    },
     store::BlockTag,
 };
 use std::path::PathBuf;

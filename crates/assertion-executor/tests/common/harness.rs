@@ -8,8 +8,10 @@ use alloy_provider::{
     },
 };
 use alloy_rpc_types::TransactionRequest;
-use assertion_executor::primitives::Address;
-use assertion_executor::store::AssertionState;
+use assertion_executor::{
+    primitives::Address,
+    store::AssertionState,
+};
 use std::collections::HashMap;
 
 // Executes transactions, mines a given number of blocks, and syncs the indexer.

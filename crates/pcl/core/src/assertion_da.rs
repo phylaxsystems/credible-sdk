@@ -352,10 +352,12 @@ mod tests {
     use chrono::DateTime;
     use clap::Parser;
     use mockito::Server;
-    use std::io::Write;
-    use std::time::{
-        SystemTime,
-        UNIX_EPOCH,
+    use std::{
+        io::Write,
+        time::{
+            SystemTime,
+            UNIX_EPOCH,
+        },
     };
 
     /// Creates a test configuration with authentication

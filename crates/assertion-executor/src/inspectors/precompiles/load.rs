@@ -84,8 +84,8 @@ mod test {
         U256,
     };
     use alloy_sol_types::SolCall;
-    use revm::context::JournalInner;
     use revm::{
+        context::JournalInner,
         interpreter::{
             CallInput,
             CallInputs,

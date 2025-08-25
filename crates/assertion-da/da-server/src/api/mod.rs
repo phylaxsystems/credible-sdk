@@ -104,8 +104,10 @@ pub mod source_compilation;
 pub mod types;
 
 use bollard::Docker;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+};
 use tokio_util::sync::CancellationToken;
 
 pub use crate::config::Config;
@@ -113,9 +115,11 @@ pub use crate::config::Config;
 use crate::api::types::DbRequest;
 
 use hyper_util::rt::TokioIo;
-use tokio::net::TcpStream;
 use tokio::{
-    net::TcpListener,
+    net::{
+        TcpListener,
+        TcpStream,
+    },
     sync::mpsc,
 };
 

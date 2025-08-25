@@ -1,12 +1,12 @@
 //! Main client for interacting with the dapp API
 
-use crate::generated::GeneratedClient;
 use crate::{
     Auth,
     AuthConfig,
     Config,
     Error,
     Result,
+    generated::GeneratedClient,
 };
 
 /// Main client for dapp API operations
@@ -321,8 +321,10 @@ mod tests {
 
     #[test]
     fn test_client_thread_safety() {
-        use std::sync::Arc;
-        use std::thread;
+        use std::{
+            sync::Arc,
+            thread,
+        };
 
         let config = test_config();
         let client = Arc::new(Client::new(config).expect("Failed to create client"));

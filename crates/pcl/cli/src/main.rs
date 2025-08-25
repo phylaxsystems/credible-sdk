@@ -2,8 +2,10 @@ use clap::{
     Parser,
     command,
 };
-use color_eyre::Result;
-use color_eyre::eyre::Report;
+use color_eyre::{
+    Result,
+    eyre::Report,
+};
 use pcl_common::args::CliArgs;
 use pcl_core::{
     assertion_da::DaStoreArgs,

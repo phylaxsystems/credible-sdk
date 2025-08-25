@@ -31,8 +31,10 @@ use alloy_primitives::{
     B256,
     U256,
 };
-use std::cell::UnsafeCell;
-use std::sync::Arc;
+use std::{
+    cell::UnsafeCell,
+    sync::Arc,
+};
 
 use enum_as_inner::EnumAsInner;
 use moka::sync::Cache;
@@ -473,11 +475,13 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
 #[cfg(test)]
 mod overlay_db_tests {
     use super::*;
-    use crate::db::overlay::test_utils::{
-        MockDb,
-        mock_account_info,
+    use crate::{
+        db::overlay::test_utils::{
+            MockDb,
+            mock_account_info,
+        },
+        primitives::Bytecode,
     };
-    use crate::primitives::Bytecode;
     use alloy_primitives::{
         address,
         b256,

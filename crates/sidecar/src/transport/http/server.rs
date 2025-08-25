@@ -1,10 +1,12 @@
 //! JSON-RPC server handlers for HTTP transport
 
-use crate::TransactionsState;
-use crate::engine::TransactionResult;
-use crate::transactions_state::RequestTransactionResult;
 use crate::{
-    engine::queue::TransactionQueueSender,
+    TransactionsState,
+    engine::{
+        TransactionResult,
+        queue::TransactionQueueSender,
+    },
+    transactions_state::RequestTransactionResult,
     transport::decoder::{
         Decoder,
         HttpTransactionDecoder,
