@@ -49,6 +49,7 @@ use crate::TransactionsState;
 #[allow(unused_imports)]
 use assertion_executor::{
     AssertionExecutor,
+    ExecutorError,
     db::overlay::OverlayDb,
     primitives::ExecutionResult,
     store::{
@@ -209,19 +210,41 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         ) {
             Ok(rax) => rax,
             Err(e) => {
-                error!(
-                    target = "engine",
-                    error = ?e,
-                    tx_hash = %tx_hash,
-                    tx_env= ?tx_env,
-                    "Internal validation error occurred"
-                );
-                // Store the validation error result
-                self.transaction_results.add_transaction_result(
-                    tx_hash,
-                    TransactionResult::ValidationError(format!("{e:?}")),
-                );
-                return Err(EngineError::AssertionError);
+                match e {
+                    ExecutorError::ForkTxExecutionError(_) => {
+                        // Transaction validation errors (nonce, gas, funds, etc.) 
+                        debug!(
+                            target = "engine",
+                            error = ?e,
+                            tx_hash = %tx_hash,
+                            tx_env= ?tx_env,
+                            "Transaction validation failed"
+                        );
+                        self.transaction_results.add_transaction_result(
+                            tx_hash,
+                            TransactionResult::ValidationError(format!("{e:?}")),
+                        );
+                        return Ok(());
+                    }
+                    ExecutorError::AssertionExecutionError(_) => {
+                        // Assertion system failures (database corruption, invalid bytecode, etc.)
+                        // These should crash the engine as they indicate system-level problems
+                        error!(
+                            target = "engine",
+                            error = ?e,
+                            tx_hash = %tx_hash,
+                            tx_env= ?tx_env,
+                            "Fatal assertion execution error occurred"
+                        );
+
+                        self.transaction_results.add_transaction_result(
+                            tx_hash,
+                            TransactionResult::ValidationError(format!("{e:?}")),
+                        );
+
+                        return Err(EngineError::AssertionError);
+                    }
+                }
             }
         };
 
