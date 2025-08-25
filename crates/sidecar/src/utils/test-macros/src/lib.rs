@@ -18,6 +18,19 @@ use syn::{
 ///     // Your test code here
 /// }
 /// ```
+// TODO: we should expand this macro to generate tests for multiple transports.
+// For example, we can from one test generate multiple tests for different transports
+// if we genericize `LocalInstnace` to accept different transports. The syntax would
+// then look something like:
+// ```
+// #[engine_test(all)] // can also specify transports for testing only specific ones
+// async fn test_transaction_processing(mut instance: LocalInstance) {
+//     instance.new_block().unwrap();
+//     // Your test code here
+// }
+// ```
+// and would generate tests test_transaction_processing_mock,
+// test_transaction_processing_http, etc...
 #[proc_macro_attribute]
 pub fn engine_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
