@@ -70,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
         tx_receiver,
         assertion_executor,
         engine_state_results.clone(),
+        args.credible.transaction_results_max_capacity,
     );
 
     tokio::select! {

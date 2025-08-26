@@ -1,15 +1,17 @@
 //! JSON-RPC server handlers for HTTP transport
 
 use crate::{
-    TransactionsState,
     engine::{
         TransactionResult,
         queue::TransactionQueueSender,
     },
     transactions_state::RequestTransactionResult,
-    transport::decoder::{
-        Decoder,
-        HttpTransactionDecoder,
+    transport::{
+        decoder::{
+            Decoder,
+            HttpTransactionDecoder,
+        },
+        http::transactions_results::TransactionsResults,
     },
 };
 use alloy::rpc::types::error::EthRpcErrorCode;
@@ -178,19 +180,19 @@ impl JsonRpcResponse {
 pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
-    state_results: Arc<TransactionsState>,
+    transactions_results: TransactionsResults,
 }
 
 impl ServerState {
     pub fn new(
         has_blockenv: Arc<AtomicBool>,
         tx_sender: TransactionQueueSender,
-        state_results: Arc<TransactionsState>,
+        transactions_results: TransactionsResults,
     ) -> Self {
         Self {
             has_blockenv,
             tx_sender,
-            state_results,
+            transactions_results,
         }
     }
 }
@@ -275,7 +277,7 @@ async fn handle_send_transactions(
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
-        state.state_results.add_accepted_tx(&queue_tx);
+        state.transactions_results.add_accepted_tx(&queue_tx);
         if let Err(e) = state.tx_sender.send(queue_tx) {
             error!(
                 error = %e,
@@ -334,14 +336,17 @@ async fn handle_get_transactions(
 
     let (received_tx_hashes, not_found_hashes): (Vec<_>, Vec<_>) = tx_hashes
         .into_iter()
-        .partition(|tx_hash| state.state_results.is_tx_received(tx_hash));
+        .partition(|tx_hash| state.transactions_results.is_tx_received(tx_hash));
 
     // Can you write me here the sending to the queue + waiting for the result?
     let mut results = Vec::with_capacity(received_tx_hashes.len());
 
     // Process each transaction hash
     for tx_hash in received_tx_hashes {
-        let result = match state.state_results.request_transaction_result(&tx_hash) {
+        let result = match state
+            .transactions_results
+            .request_transaction_result(&tx_hash)
+        {
             RequestTransactionResult::Result(result) => result,
             RequestTransactionResult::Channel(receiver) => {
                 match receiver.await {

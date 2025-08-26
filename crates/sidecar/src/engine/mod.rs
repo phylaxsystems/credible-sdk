@@ -39,6 +39,7 @@
 //! assertion reverts before approving a transaction.
 
 pub mod queue;
+mod transactions_results;
 
 use super::engine::queue::{
     TransactionQueueReceiver,
@@ -60,7 +61,7 @@ use assertion_executor::{
     },
 };
 
-use dashmap::mapref::one::Ref;
+use crate::engine::transactions_results::TransactionsResults;
 #[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
@@ -121,7 +122,7 @@ pub struct CoreEngine<DB> {
     tx_receiver: TransactionQueueReceiver,
     assertion_executor: AssertionExecutor,
     block_env: Option<BlockEnv>,
-    transaction_results: Arc<TransactionsState>,
+    transaction_results: TransactionsResults,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -131,13 +132,17 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         tx_receiver: TransactionQueueReceiver,
         assertion_executor: AssertionExecutor,
         state_results: Arc<TransactionsState>,
+        transaction_results_max_capacity: usize,
     ) -> Self {
         Self {
             state,
             tx_receiver,
             assertion_executor,
             block_env: None,
-            transaction_results: state_results,
+            transaction_results: TransactionsResults::new(
+                state_results,
+                transaction_results_max_capacity,
+            ),
         }
     }
 
@@ -155,7 +160,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 AssertionStore::new_ephemeral().expect("REASON"),
             ),
             block_env: None,
-            transaction_results: TransactionsState::new(),
+            transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
         }
     }
 
@@ -316,10 +321,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     }
 
     /// Get transaction result by hash.
+    #[cfg(test)]
     pub fn get_transaction_result(
         &self,
         tx_hash: &B256,
-    ) -> Option<Ref<'_, B256, TransactionResult>> {
+    ) -> Option<dashmap::mapref::one::Ref<'_, B256, TransactionResult>> {
         self.transaction_results.get_transaction_result(tx_hash)
     }
 
@@ -473,7 +479,7 @@ mod tests {
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
         let state_results = TransactionsState::new();
-        let engine = CoreEngine::new(state, tx_receiver, assertion_executor, state_results);
+        let engine = CoreEngine::new(state, tx_receiver, assertion_executor, state_results, 10);
         (engine, tx_sender)
     }
 
