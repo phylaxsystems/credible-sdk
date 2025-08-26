@@ -7,10 +7,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+alloy = { workspace = true }
 clap = { workspace = true }
-dashmap = {workspace = true}
+dashmap = { workspace = true }
 revm = { workspace = true }
-anyhow = {workspace =  true }
+anyhow = { workspace = true }
 thiserror = { workspace = true }
 assertion-executor = { workspace = true, features = ["test"] }
 rust-tracing = { workspace = true }

@@ -12,6 +12,7 @@ use crate::{
         HttpTransactionDecoder,
     },
 };
+use alloy::rpc::types::error::EthRpcErrorCode;
 use assertion_executor::primitives::ExecutionResult;
 use axum::{
     extract::{
@@ -88,9 +89,6 @@ pub struct JsonRpcResponse {
     pub id: Option<serde_json::Value>,
 }
 
-const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
-const INTERNAL_ERROR: i32 = -32003;
-
 #[derive(Debug, Serialize)]
 pub struct JsonRpcError {
     pub code: i32,
@@ -107,7 +105,7 @@ impl JsonRpcResponse {
             jsonrpc: JSONRPCVER.clone(),
             result: None,
             error: Some(JsonRpcError {
-                code: INTERNAL_ERROR,
+                code: EthRpcErrorCode::UnknownBlock.code(),
                 message: "Block environment not available".to_string(),
             }),
             id: request.id.clone(),
@@ -119,7 +117,19 @@ impl JsonRpcResponse {
             jsonrpc: JSONRPCVER.clone(),
             result: None,
             error: Some(JsonRpcError {
-                code: INTERNAL_ERROR,
+                code: EthRpcErrorCode::TransactionRejected.code(),
+                message: message.to_string(),
+            }),
+            id: request.id.clone(),
+        }
+    }
+
+    pub fn invalid_request(request: &JsonRpcRequest, message: &str) -> Self {
+        JsonRpcResponse {
+            jsonrpc: JSONRPCVER.clone(),
+            result: None,
+            error: Some(JsonRpcError {
+                code: EthRpcErrorCode::InvalidInput.code(),
                 message: message.to_string(),
             }),
             id: request.id.clone(),
@@ -131,7 +141,7 @@ impl JsonRpcResponse {
             jsonrpc: JSONRPCVER.clone(),
             result: None,
             error: Some(JsonRpcError {
-                code: INTERNAL_ERROR,
+                code: EthRpcErrorCode::InvalidInput.code(),
                 message: message.to_string(),
             }),
             id: request.id.clone(),
@@ -143,7 +153,7 @@ impl JsonRpcResponse {
             jsonrpc: JSONRPCVER.clone(),
             result: None,
             error: Some(JsonRpcError {
-                code: JSON_RPC_METHOD_NOT_FOUND,
+                code: EthRpcErrorCode::InvalidInput.code(),
                 message: "Method not found".to_string(),
             }),
             id: request.id.clone(),
@@ -241,7 +251,7 @@ async fn handle_send_transactions(
 
     let Some(_) = &request.params else {
         debug!("sendTransactions request missing required parameters");
-        return Ok(JsonRpcResponse::internal_error(
+        return Ok(JsonRpcResponse::invalid_params(
             request,
             "Missing params for sendTransactions",
         ));
@@ -254,7 +264,7 @@ async fn handle_send_transactions(
                 error = %e,
                 "Failed to decode transactions"
             );
-            return Ok(JsonRpcResponse::internal_error(
+            return Ok(JsonRpcResponse::invalid_request(
                 request,
                 &format!("Failed to decode transactions: {e}"),
             ));
@@ -308,7 +318,7 @@ async fn handle_get_transactions(
 
     let Some(params) = &request.params else {
         debug!("getTransactions request missing required parameters");
-        return Ok(JsonRpcResponse::internal_error(
+        return Ok(JsonRpcResponse::invalid_params(
             request,
             "Missing params for getTransactions",
         ));
@@ -316,7 +326,7 @@ async fn handle_get_transactions(
 
     let Ok(tx_hashes) = serde_json::from_value::<Vec<TxHash>>(params.clone()) else {
         debug!("getTransactions request invalid tx hash format");
-        return Ok(JsonRpcResponse::internal_error(
+        return Ok(JsonRpcResponse::invalid_request(
             request,
             "Invalid params for getTransactions",
         ));
