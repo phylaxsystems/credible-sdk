@@ -155,7 +155,8 @@ impl LocalInstance {
 
         // Create the engine with TransactionsState
         let state_results = crate::TransactionsState::new();
-        let mut engine = CoreEngine::new(state, engine_rx, assertion_executor, state_results.clone());
+        let mut engine =
+            CoreEngine::new(state, engine_rx, assertion_executor, state_results.clone());
 
         // Spawn the engine task that manually processes items
         // This mimics what the tests do - manually processing items from the queue
