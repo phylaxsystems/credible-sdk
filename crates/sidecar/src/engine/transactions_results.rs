@@ -22,6 +22,10 @@ pub struct TransactionsResults {
 
 impl TransactionsResults {
     pub fn new(transactions_state: Arc<TransactionsState>, max_capacity: usize) -> Self {
+        assert!(
+            max_capacity > 0,
+            "The maximum capacity must be greater than 0"
+        );
         Self {
             transactions: VecDeque::with_capacity(max_capacity),
             max_capacity,
@@ -30,10 +34,6 @@ impl TransactionsResults {
     }
 
     pub fn add_transaction_result(&mut self, tx_hash: TxHash, result: TransactionResult) {
-        if self.max_capacity == 0 {
-            return;
-        }
-
         self.transactions_state
             .add_transaction_result(tx_hash, result);
 
@@ -300,21 +300,6 @@ mod tests {
         // Check queue order
         assert_eq!(results.transactions[0], tx_hashes[8]);
         assert_eq!(results.transactions[1], tx_hashes[9]);
-    }
-
-    #[test]
-    fn test_zero_capacity_handles_gracefully() {
-        let transactions_state = TransactionsState::new();
-        let mut results = TransactionsResults::new(transactions_state.clone(), 0);
-
-        let tx_hash = create_test_tx_hash(1);
-        let result = create_test_result_success();
-
-        results.add_transaction_result(tx_hash, result);
-
-        // With zero capacity, nothing should be stored
-        assert_eq!(results.transactions.len(), 0);
-        assert!(results.get_transaction_result(&tx_hash).is_none());
     }
 
     #[test]
