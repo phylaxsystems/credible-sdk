@@ -30,16 +30,22 @@ impl TransactionsResults {
     }
 
     pub fn add_transaction_result(&mut self, tx_hash: TxHash, result: TransactionResult) {
-        self.transactions_state
-            .add_transaction_result(tx_hash, result);
-        self.transactions.push_back(tx_hash);
-        if self.transactions.len() <= self.max_capacity {
+        if self.max_capacity == 0 {
             return;
         }
-        let Some(tx_hash) = self.transactions.pop_front() else {
-            return;
-        };
-        self.transactions_state.remove_transaction_result(&tx_hash);
+
+        self.transactions_state
+            .add_transaction_result(tx_hash, result);
+
+        // If at capacity, remove the oldest before adding the new one
+        if self.transactions.len() == self.max_capacity
+            && let Some(old_tx_hash) = self.transactions.pop_front()
+        {
+            self.transactions_state
+                .remove_transaction_result(&old_tx_hash);
+        }
+
+        self.transactions.push_back(tx_hash);
     }
 
     #[cfg(test)]
@@ -411,5 +417,43 @@ mod tests {
 
         // But the result should be the latest one
         assert_eq!(*results.get_transaction_result(&tx_hash).unwrap(), result2);
+    }
+
+    #[test]
+    fn test_no_reallocation_when_at_capacity() {
+        let transactions_state = TransactionsState::new();
+        let capacity = 3;
+        let mut results = TransactionsResults::new(transactions_state.clone(), capacity);
+
+        // Fill to capacity
+        for i in 0..capacity {
+            let tx_hash = create_test_tx_hash(i as u8 + 1);
+            let result = create_test_result_success();
+            results.add_transaction_result(tx_hash, result);
+        }
+
+        // Get the initial capacity of the VecDeque
+        let initial_capacity = results.transactions.capacity();
+
+        // Add many more transactions beyond capacity
+        for i in capacity..(capacity + 10) {
+            let tx_hash = create_test_tx_hash(i as u8 + 1);
+            let result = create_test_result_success();
+            results.add_transaction_result(tx_hash, result);
+
+            // Verify no reallocation occurred
+            assert_eq!(
+                results.transactions.capacity(),
+                initial_capacity,
+                "VecDeque capacity should not change - no reallocation should occur"
+            );
+
+            // Verify we maintain exactly the capacity
+            assert_eq!(
+                results.transactions.len(),
+                capacity,
+                "Should maintain exactly max_capacity transactions"
+            );
+        }
     }
 }

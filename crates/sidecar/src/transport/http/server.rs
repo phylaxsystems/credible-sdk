@@ -11,7 +11,7 @@ use crate::{
             Decoder,
             HttpTransactionDecoder,
         },
-        http::transactions_results::TransactionsResults,
+        http::transactions_results::QueryTransactionsResults,
     },
 };
 use alloy::rpc::types::error::EthRpcErrorCode;
@@ -180,14 +180,14 @@ impl JsonRpcResponse {
 pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
-    transactions_results: TransactionsResults,
+    transactions_results: QueryTransactionsResults,
 }
 
 impl ServerState {
     pub fn new(
         has_blockenv: Arc<AtomicBool>,
         tx_sender: TransactionQueueSender,
-        transactions_results: TransactionsResults,
+        transactions_results: QueryTransactionsResults,
     ) -> Self {
         Self {
             has_blockenv,

@@ -6,7 +6,7 @@ use crate::{
         Transport,
         http::{
             config::HttpTransportConfig,
-            transactions_results::TransactionsResults,
+            transactions_results::QueryTransactionsResults,
         },
     },
 };
@@ -84,7 +84,7 @@ pub struct HttpTransport {
     /// Signal if the transport has seen a blockenv, will respond to txs with errors if not
     has_blockenv: Arc<AtomicBool>,
     /// Shared transaction results state
-    transactions_results: TransactionsResults,
+    transactions_results: QueryTransactionsResults,
 }
 
 /// Health check endpoint
@@ -131,7 +131,7 @@ impl Transport for HttpTransport {
             driver_url: config.driver_addr,
             shutdown_token: CancellationToken::new(),
             has_blockenv: Arc::new(AtomicBool::new(false)),
-            transactions_results: TransactionsResults::new(state_results),
+            transactions_results: QueryTransactionsResults::new(state_results),
         })
     }
 
