@@ -342,7 +342,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     pub fn clone_transaction_results(&self) -> HashMap<B256, TransactionResult> {
         self.transaction_results
             .get_all_transaction_result()
-            .cloned()
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().clone()))
+            .collect()
     }
 
     /// Run the engine and process transactions and blocks received
