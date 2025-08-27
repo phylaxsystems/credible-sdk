@@ -39,6 +39,10 @@ impl TransactionsState {
         self.process_pending_queries(tx_hash, result);
     }
 
+    pub fn remove_transaction_result(&self, tx_hash: &B256) {
+        self.transaction_results.remove(tx_hash);
+    }
+
     pub fn add_accepted_tx(&self, tx_queue_contents: &TxQueueContents) {
         if let TxQueueContents::Tx(tx) = tx_queue_contents {
             self.accepted_txs.insert(tx.tx_hash);

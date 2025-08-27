@@ -180,6 +180,13 @@ pub struct CredibleArgs {
         env = "AE_INDEXER_DB_PATH"
     )]
     pub indexer_db_path: PathBuf,
+
+    #[arg(
+        long = "ae.transaction_results_max_capacity",
+        default_value = "1000000",
+        env = "AE_TRANSACTION_RESULTS_MAX_CAPACITY"
+    )]
+    pub transaction_results_max_capacity: usize,
 }
 
 /// Main sidecar arguments that extend TelemetryArgs and CredibleArgs

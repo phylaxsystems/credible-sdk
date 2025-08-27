@@ -4,7 +4,10 @@ use crate::{
     transactions_state::TransactionsState,
     transport::{
         Transport,
-        http::config::HttpTransportConfig,
+        http::{
+            config::HttpTransportConfig,
+            transactions_results::QueryTransactionsResults,
+        },
     },
 };
 use axum::{
@@ -33,6 +36,7 @@ use tracing::{
 
 pub mod config;
 pub mod server;
+mod transactions_results;
 
 #[derive(thiserror::Error, Debug)]
 pub enum HttpTransportError {
@@ -80,7 +84,7 @@ pub struct HttpTransport {
     /// Signal if the transport has seen a blockenv, will respond to txs with errors if not
     has_blockenv: Arc<AtomicBool>,
     /// Shared transaction results state
-    state_results: Arc<TransactionsState>,
+    transactions_results: QueryTransactionsResults,
 }
 
 /// Health check endpoint
@@ -127,7 +131,7 @@ impl Transport for HttpTransport {
             driver_url: config.driver_addr,
             shutdown_token: CancellationToken::new(),
             has_blockenv: Arc::new(AtomicBool::new(false)),
-            state_results,
+            transactions_results: QueryTransactionsResults::new(state_results),
         })
     }
 
@@ -141,7 +145,7 @@ impl Transport for HttpTransport {
         let state = server::ServerState::new(
             self.has_blockenv.clone(),
             self.tx_sender.clone(),
-            self.state_results.clone(),
+            self.transactions_results.clone(),
         );
         let app = Router::new()
             .merge(health_routes())
