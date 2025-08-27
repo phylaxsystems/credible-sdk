@@ -38,7 +38,7 @@ pub struct LineaEvm<CTX, INSP>(
 impl<CTX: ContextTr, INSP> LineaEvm<CTX, INSP> {
     pub fn new(ctx: CTX, inspector: INSP) -> Self {
         let mut instruction = EthInstructions::new_mainnet();
-        insert_linea_instructions(&mut instruction).unwrap();
+        insert_linea_instructions(&mut instruction);
 
         Self(Evm {
             ctx,

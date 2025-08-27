@@ -28,7 +28,7 @@ use revm::{
 // FIXME: this is ideally implemented as an instructionprovider but this is easier
 pub fn insert_linea_instructions<WIRE, HOST>(
     instructions: &mut EthInstructions<WIRE, HOST>,
-) -> Result<(), ()>
+) -> ()
 where
     WIRE: InterpreterTypes,
     HOST: Host,
@@ -36,7 +36,6 @@ where
     instructions.insert_instruction(BLOBHASH, linea_blob_hash);
     instructions.insert_instruction(BLOBBASEFEE, linea_blob_basefee);
     instructions.insert_instruction(DIFFICULTY, linea_difficulty);
-    Ok(())
 }
 
 /// Implements the linea version of the BLOBHASH instruction.
@@ -58,13 +57,13 @@ pub fn linea_blob_hash<WIRE: InterpreterTypes, HOST: Host>(
 /// EIP-7516: BLOBBASEFEE opcode
 ///
 /// The linea version of BLOBBASEFEE returns the minimum value
-// FIXME: this is ambigous, we need to clarify what `minimum value means`. returning 0 for now
+// FIXME: this is ambigous, we need to clarify what `minimum value means`. returning blob_gasprice for now
 pub fn linea_blob_basefee<WIRE: InterpreterTypes, HOST: Host>(
     interpreter: &mut Interpreter<WIRE>,
-    _host: &mut HOST,
+    host: &mut HOST,
 ) {
     if let Some(_index) = interpreter.stack.pop() {
-        let _ = interpreter.stack.push(revm::primitives::U256::ZERO);
+        let _ = interpreter.stack.push(host.blob_gasprice());
     }
 }
 
