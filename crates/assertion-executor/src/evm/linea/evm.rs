@@ -214,7 +214,10 @@ mod tests {
         let spec = env.cfg_env.spec;
         let context = Context {
             journaled_state: {
-                let mut journal = crate::primitives::Journal::new_with_inner(&mut multi_fork_db, JournalInner::<JournalEntry>::new());
+                let mut journal = crate::primitives::Journal::new_with_inner(
+                    &mut multi_fork_db,
+                    JournalInner::<JournalEntry>::new(),
+                );
                 journal.set_spec_id(spec);
                 journal
             },
@@ -225,7 +228,7 @@ mod tests {
             local: LocalContext::default(),
             error: Ok(()),
         };
-        
+
         let mut linea_evm = LineaEvm::new(context, inspector);
 
         linea_evm.0.transact(tx_env).unwrap().result
@@ -275,7 +278,10 @@ mod tests {
         let spec = env.cfg_env.spec;
         let context = Context {
             journaled_state: {
-                let mut journal = crate::primitives::Journal::new_with_inner(&mut multi_fork_db, JournalInner::<JournalEntry>::new());
+                let mut journal = crate::primitives::Journal::new_with_inner(
+                    &mut multi_fork_db,
+                    JournalInner::<JournalEntry>::new(),
+                );
                 journal.set_spec_id(spec);
                 journal
             },
@@ -287,7 +293,7 @@ mod tests {
             error: Ok(()),
         };
         let linea_evm = LineaEvm::new(context, inspector);
-        
+
         // Verify the EVM was created successfully and has Linea instructions
         assert!(!linea_evm.0.instruction.instruction_table().is_empty());
     }
