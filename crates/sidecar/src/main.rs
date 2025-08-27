@@ -5,6 +5,7 @@ mod config;
 #[allow(dead_code)] // TODO: rm when engine fully impld and connected to transport
 pub mod engine;
 mod indexer;
+mod json_rpc_db;
 mod rpc;
 pub(crate) mod transactions_state;
 pub mod transport;
@@ -27,17 +28,14 @@ use assertion_executor::{
     db::overlay::OverlayDb,
 };
 use crossbeam::channel::unbounded;
-use std::convert::Infallible;
-
-use revm::database::{
-    CacheDB,
-    EmptyDBTyped,
-};
 
 use clap::Parser;
 use rust_tracing::trace;
 
-use crate::transactions_state::TransactionsState;
+use crate::{
+    json_rpc_db::JsonRpcDb,
+    transactions_state::TransactionsState,
+};
 use args::SidecarArgs;
 
 #[tokio::main]
@@ -47,8 +45,9 @@ async fn main() -> anyhow::Result<()> {
     let args = SidecarArgs::parse();
 
     let (tx_sender, tx_receiver) = unbounded();
-    let state: OverlayDb<CacheDB<EmptyDBTyped<Infallible>>> = OverlayDb::new(
-        None,
+    let json_rpc_db = JsonRpcDb::try_new(&args.rollup.rpc_url).await?;
+    let state: OverlayDb<JsonRpcDb> = OverlayDb::new(
+        Some(json_rpc_db),
         args.credible
             .overlay_cache_capacity_bytes
             .unwrap_or(1024 * 1024 * 1024) as u64,
