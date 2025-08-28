@@ -213,7 +213,7 @@ mod tests {
         let inputs = Default::default();
         let is_static = false;
         let is_eof = false;
-        let spec_id = SpecId::OSAKA;
+        let spec_id = SpecId::PRAGUE;
         let gas_limit = 1000000u64;
 
         let mut interpreter = revm::interpreter::Interpreter::new(

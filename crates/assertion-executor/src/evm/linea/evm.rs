@@ -3,12 +3,10 @@
 //! Contains types needed to initialize a linea spec of revm.
 
 use crate::evm::{
-    build_evm::EthIns,
     linea::opcodes::insert_linea_instructions,
 };
 use alloy_evm::{
     EvmEnv,
-    eth::EthEvmContext,
 };
 use revm::{
     Context,
@@ -60,6 +58,11 @@ type LineaEvmTyped<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, LineaIns<'db, DB>, Et
 /// In the `new` fn, we replace certain instructions with how they are implemented
 /// on linea. We also wrap the inspector that gets passed into the new function with
 /// our own linea inspector that implements functionality of those matching linea v4.
+///
+/// # IMPORTANT: tracer and precompiles
+/// Linea has some minor precompile changes to precompiles. We have implemented such
+/// changes within an inspector. ***To get full linea precompile changes, you must use
+/// either the `CallTracer` or `PhEvm` inspectors!!!.***
 ///
 /// # Executing transactions
 /// To implement our *own* evm we needed to wrap the Linea evm in a struct.
