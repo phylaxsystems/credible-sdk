@@ -2,11 +2,9 @@
 
 mod args;
 mod config;
-#[allow(dead_code)] // TODO: rm when engine fully impld and connected to transport
 pub mod engine;
 mod indexer;
 mod json_rpc_db;
-mod rpc;
 pub(crate) mod transactions_state;
 pub mod transport;
 mod utils;
@@ -61,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     let indexer_cfg = init_indexer_config(&args, assertion_store, executor_config).await?;
 
     let engine_state_results = TransactionsState::new();
-    let mock_transport = HttpTransport::new(
+    let transport = HttpTransport::new(
         HttpTransportConfig::try_from(args.transport.clone())?,
         tx_sender,
         engine_state_results.clone(),
@@ -79,13 +77,10 @@ async fn main() -> anyhow::Result<()> {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received Ctrl+C, shutting down...");
         }
-        _ = rpc::start_rpc_server(&args) => {
-            tracing::info!("rpc server exited, shutting down...");
-        }
         _ = engine.run() => {
             tracing::info!("Engine run completed, shutting down...");
         }
-        _ = mock_transport.run() => {
+        _ = transport.run() => {
             tracing::info!("Engine run completed, shutting down...");
         }
         _ = indexer::run_indexer(indexer_cfg) => {
