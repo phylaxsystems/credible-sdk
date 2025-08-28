@@ -16,7 +16,9 @@ use crate::{
     db::Database,
     evm::linea::evm::LineaCtx,
     inspectors::CallTracer,
+    primitives::bytes,
 };
+use alloy_primitives::Address;
 use revm::{
     Inspector,
     interpreter::{
@@ -24,6 +26,12 @@ use revm::{
         CallOutcome,
         CreateInputs,
         CreateOutcome,
+        Gas,
+        InterpreterResult,
+    },
+    precompile::{
+        blake2::FUN,
+        hash::RIPEMD160,
     },
 };
 
@@ -52,7 +60,28 @@ struct WrappedInspector<INSP0, INSP1> {
 /// - Anything else - None (meaning pass)
 pub fn execute_linea_precompile<DB: revm::Database>(
     ctx: &mut LineaCtx<'_, DB>,
+    inputs: &mut CallInputs,
 ) -> Option<CallOutcome> {
+    if inputs.target_address == *RIPEMD160.address() {
+        return Some(CallOutcome::new(
+            InterpreterResult::new(
+                revm::interpreter::InstructionResult::Revert,
+                bytes!(),
+                Gas::new(inputs.gas_limit),
+            ),
+            inputs.return_memory_offset.clone(),
+        ));
+    } else if inputs.target_address == *FUN.address() {
+        return Some(CallOutcome::new(
+            InterpreterResult::new(
+                revm::interpreter::InstructionResult::Revert,
+                bytes!(),
+                Gas::new(inputs.gas_limit),
+            ),
+            inputs.return_memory_offset.clone(),
+        ));
+    }
+
     unimplemented!()
 }
 
@@ -70,7 +99,7 @@ impl<DB: Database> Inspector<LineaCtx<'_, DB>> for CallTracer {
             &mut context.journaled_state.inner,
         );
 
-        execute_linea_precompile(context)
+        execute_linea_precompile(context, inputs)
     }
     fn call_end(
         &mut self,
