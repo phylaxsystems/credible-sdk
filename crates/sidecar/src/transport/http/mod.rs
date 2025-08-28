@@ -69,14 +69,9 @@ pub enum HttpTransportError {
 /// The transport will attempt to clean up as well as it can when gracefully shutting down with
 /// `stop`. This means severing client/server connections and performing database flushes if aplicable.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct HttpTransport {
     /// Core engine queue sender.
     tx_sender: TransactionQueueSender,
-    /// HTTP client for outbound requests
-    client: reqwest::Client,
-    /// URL to use for making requests to the driver
-    driver_url: SocketAddr,
     /// Server bind address
     bind_addr: SocketAddr,
     /// Shutdown cancellation token
@@ -119,16 +114,11 @@ impl Transport for HttpTransport {
     ) -> Result<Self, Self::Error> {
         debug!(
             bind_addr = %config.bind_addr,
-            driver_addr = %config.driver_addr,
             "Creating HTTP transport"
         );
-
-        let client = reqwest::Client::new();
         Ok(Self {
             tx_sender,
-            client,
             bind_addr: config.bind_addr,
-            driver_url: config.driver_addr,
             shutdown_token: CancellationToken::new(),
             has_blockenv: Arc::new(AtomicBool::new(false)),
             transactions_results: QueryTransactionsResults::new(state_results),
