@@ -213,9 +213,8 @@ pub async fn handle_transaction_rpc(
     debug!("Processing JSON-RPC request");
 
     let response = match request.method.as_str() {
-        METHOD_SEND_TRANSACTIONS | METHOD_BLOCK_ENV => {
-            handle_send_transactions(&state, &request).await?
-        }
+        METHOD_SEND_TRANSACTIONS => handle_send_transactions(&state, &request).await?,
+        METHOD_BLOCK_ENV => handle_block_env(&state, &request).await?,
         METHOD_GET_TRANSACTION => handle_get_transactions(&state, &request).await?,
         _ => {
             debug!(
@@ -234,6 +233,22 @@ pub async fn handle_transaction_rpc(
     Ok(ResponseJson(response))
 }
 
+#[instrument(name = "http_server::handle_block_env", skip_all, level = "debug")]
+async fn handle_block_env(
+    state: &ServerState,
+    request: &JsonRpcRequest,
+) -> Result<JsonRpcResponse, StatusCode> {
+    trace!("Processing blockEnv request");
+
+    let response = process_request(state, request).await?;
+    // If the `process_request` call was successful, we can mark the block environment as received
+    if !state.has_blockenv.load(Ordering::Relaxed) {
+        state.has_blockenv.store(true, Ordering::Release);
+    }
+
+    Ok(response)
+}
+
 #[instrument(
     name = "http_server::handle_send_transactions",
     skip_all,
@@ -250,6 +265,15 @@ async fn handle_send_transactions(
         debug!("Rejecting transaction - no block environment available");
         return Ok(JsonRpcResponse::block_not_available(request));
     }
+    process_request(state, request).await
+}
+
+#[instrument(name = "http_server::process_message", skip_all, level = "debug")]
+async fn process_request(
+    state: &ServerState,
+    request: &JsonRpcRequest,
+) -> Result<JsonRpcResponse, StatusCode> {
+    trace!("Processing incoming request and sending to the queue");
 
     let Some(_) = &request.params else {
         debug!("sendTransactions request missing required parameters");
