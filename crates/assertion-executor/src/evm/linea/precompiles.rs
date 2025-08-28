@@ -13,9 +13,9 @@
 //! we need to process them according to the linea spec.
 
 use crate::{
-    db::Database,
+    db::{Database, DatabaseCommit, DatabaseRef, MultiForkDb},
     evm::linea::evm::LineaCtx,
-    inspectors::CallTracer,
+    inspectors::{CallTracer, PhEvmInspector},
     primitives::bytes,
 };
 use revm::{
@@ -174,6 +174,30 @@ impl<DB: Database> Inspector<LineaCtx<'_, DB>> for CallTracer {
         _outcome: &mut CreateOutcome,
     ) {
         self.journal = context.journaled_state.clone();
+    }
+}
+
+// Manually implemented for linea PhEvmInspector
+impl<ExtDb: DatabaseRef + Clone + DatabaseCommit> Inspector<LineaCtx<'_, MultiForkDb<ExtDb>>> for PhEvmInspector<'_> {
+    fn call(
+        &mut self,
+        context: &mut LineaCtx<'_, MultiForkDb<ExtDb>>,
+        inputs: &mut CallInputs,
+    ) -> Option<CallOutcome> {
+        use crate::{constants::PRECOMPILE_ADDRESS, inspectors::inspector_result_to_call_outcome};
+
+        // First check for PhEvm precompiles
+        if inputs.target_address == PRECOMPILE_ADDRESS {
+            let call_outcome = inspector_result_to_call_outcome(
+                self.execute_precompile(context, inputs),
+                Gas::new(inputs.gas_limit),
+                inputs.return_memory_offset.clone(),
+            );
+            return Some(call_outcome);
+        }
+
+        // Then check for Linea-specific precompile behavior
+        execute_linea_precompile(context, inputs)
     }
 }
 

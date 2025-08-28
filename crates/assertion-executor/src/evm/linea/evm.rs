@@ -47,7 +47,9 @@ use std::marker::PhantomData;
 
 pub type LineaCtx<'db, DB> =
     Context<BlockEnv, TxEnv, CfgEnv<SpecId>, &'db mut DB, Journal<&'db mut DB>, PhantomData<()>>;
+#[allow(dead_code)]
 pub type LineaIns<'db, DB> = EthInstructions<EthInterpreter, LineaCtx<'db, DB>>;
+#[allow(dead_code)]
 type LineaEvmTyped<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, LineaIns<'db, DB>, EthPrecompiles>;
 
 /// LineaEvm is a Linea v4 spec version of revm with custom opcodes and precompile
@@ -62,7 +64,7 @@ type LineaEvmTyped<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, LineaIns<'db, DB>, Et
 /// # IMPORTANT: tracer and precompiles
 /// Linea has some minor precompile changes to precompiles. We have implemented such
 /// changes within an inspector. ***To get full linea precompile changes, you must use
-/// either the `CallTracer` or `PhEvm` inspectors!!!.***
+/// either the `CallTracer` or `PhEvmInspector` inspectors!!!.***
 ///
 /// # Executing transactions
 /// To implement our *own* evm we needed to wrap the Linea evm in a struct.
