@@ -23,7 +23,7 @@ use tracing::{
 /// Initialize ExecutorConfig from SidecarArgs
 pub fn init_executor_config(args: &SidecarArgs) -> ExecutorConfig {
     let config = ExecutorConfig::default()
-        .with_spec_id(args.rollup.spec_id.clone().into())
+        .with_spec_id(args.chain.spec_id.clone().into())
         .with_assertion_gas_limit(args.credible.assertion_gas_limit);
 
     debug!(
@@ -39,7 +39,7 @@ pub fn init_executor_config(args: &SidecarArgs) -> ExecutorConfig {
 /// Initialize AssertionStore from SidecarArgs
 pub fn init_assertion_store(args: &SidecarArgs) -> Result<AssertionStore, AssertionStoreError> {
     let mut db_config = sled::Config::new();
-    db_config = db_config.path(&args.credible.db_path);
+    db_config = db_config.path(&args.credible.assertion_executor_db_path);
 
     if let Some(cache_capacity) = args.credible.cache_capacity_bytes {
         db_config = db_config.cache_capacity_bytes(cache_capacity);
@@ -52,7 +52,7 @@ pub fn init_assertion_store(args: &SidecarArgs) -> Result<AssertionStore, Assert
     let db = db_config.open()?;
 
     info!(
-        db_path = ?args.credible.db_path,
+        db_path = ?args.credible.assertion_executor_db_path,
         cache_capacity = ?args.credible.cache_capacity_bytes,
         flush_every_ms = ?args.credible.flush_every_ms,
         "Initialized persistent AssertionStore"
@@ -68,10 +68,10 @@ pub async fn init_indexer_config(
     executor_config: ExecutorConfig,
 ) -> anyhow::Result<IndexerCfg> {
     // Initialize DA client
-    let da_client = DaClient::new(&args.credible.rpc_da_url)?;
+    let da_client = DaClient::new(&args.credible.assertion_da_rpc_url)?;
 
     // Initialize provider for blockchain connection
-    let ws_connect = WsConnect::new(&args.credible.indexer_rpc);
+    let ws_connect = WsConnect::new(&args.credible.indexer_rpc_url);
     let provider = ProviderBuilder::new().connect_ws(ws_connect).await?;
     let provider = provider.root().clone();
 
@@ -90,16 +90,16 @@ pub async fn init_indexer_config(
     let indexer_db = indexer_db_config.open()?;
 
     debug!(
-        state_oracle = ?args.credible.oracle_contract,
-        da_url = ?args.credible.rpc_da_url,
-        indexer_rpc = ?args.credible.indexer_rpc,
+        state_oracle = ?args.credible.state_oracle,
+        da_url = ?args.credible.assertion_da_rpc_url,
+        indexer_rpc = ?args.credible.indexer_rpc_url,
         indexer_db_path = ?args.credible.indexer_db_path,
         block_tag = ?args.credible.block_tag,
         "Initialized IndexerCfg"
     );
 
     Ok(IndexerCfg {
-        state_oracle: args.credible.oracle_contract,
+        state_oracle: args.credible.state_oracle,
         da_client,
         executor_config,
         store,
