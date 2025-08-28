@@ -109,11 +109,11 @@ pub struct CredibleArgs {
 
     /// Path to the `assertion-executor` database.
     #[arg(
-        long = "credible.db-path",
+        long = "credible.assertion-executor-db-path",
         default_value = "ae_database",
-        env = "CREDIBLE_DB_PATH"
+        env = "CREDIBLE_ASSERTION_EXECUTOR_DB_PATH"
     )]
-    pub db_path: PathBuf,
+    pub assertion_executor_db_path: PathBuf,
 
     /// Sled cache capacity, used in the `FsDb`, 256mb default
     #[arg(
@@ -149,19 +149,19 @@ pub struct CredibleArgs {
 
     /// HTTP URL of the assertion DA
     #[arg(
-        long = "credible.rpc-da-url",
+        long = "credible.assertion-da-rpc-url",
         default_value = "http://localhost:5001",
-        env = "CREDIBLE_RPC_DA_URL"
+        env = "CREDIBLE_ASSERTION_DA_RPC_URL"
     )]
-    pub rpc_da_url: String,
+    pub assertion_da_rpc_url: String,
 
     /// Path to the rpc store db
     #[arg(
-        long = "credible.rpc-store-db-path",
-        default_value = "rpc_store_database",
-        env = "CREDIBLE_RPC_STORE_DB_PATH"
+        long = "credible.assertion-store-db-path",
+        default_value = "assertion_store_database",
+        env = "CREDIBLE_ASSERTION_STORE_DB_PATH"
     )]
-    pub rpc_store_db_path: PathBuf,
+    pub assertion_store_db_path: PathBuf,
 
     /// Block tag to use for indexing assertions.
     #[arg(
@@ -174,12 +174,12 @@ pub struct CredibleArgs {
 
     /// Contract address of the state oracle contract, used to query assertion info
     #[arg(
-        long = "credible.oracle-contract",
+        long = "credible.state-oracle",
         default_value = DEFAULT_STATE_ORACLE_ADDRESS,
-        env = "CREDIBLE_ORACLE_CONTRACT",
+        env = "CREDIBLE_STATE_ORACLE",
         required = true
     )]
-    pub oracle_contract: Address,
+    pub state_oracle: Address,
 
     /// Path to the indexer database (separate from main assertion store)
     #[arg(
