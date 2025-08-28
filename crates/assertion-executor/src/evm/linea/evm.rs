@@ -2,33 +2,29 @@
 //!
 //! Contains types needed to initialize a linea spec of revm.
 
+use crate::evm::build_evm::EthIns;
+use revm::{context::{JournalTr, LocalContext}, Database};
 use crate::evm::linea::opcodes::insert_linea_instructions;
+use alloy_evm::{eth::EthEvmContext, EvmEnv};
 use revm::{
-    Inspector,
     context::{
-        ContextSetters,
-        ContextTr,
-        Evm,
-    },
-    handler::{
-        EthPrecompiles,
-        EvmTr,
+        BlockEnv, CfgEnv, ContextSetters, ContextTr, Evm, TxEnv
+    }, handler::{
         instructions::{
             EthInstructions,
             InstructionProvider,
-        },
-    },
-    inspector::{
-        InspectorEvmTr,
-        JournalExt,
-        inspect_instructions,
-    },
-    interpreter::{
-        Interpreter,
-        InterpreterTypes,
-        interpreter::EthInterpreter,
-    },
+        }, EthPrecompiles, EvmTr
+    }, inspector::{
+        inspect_instructions, InspectorEvmTr, JournalExt
+    }, interpreter::{
+        interpreter::EthInterpreter, Interpreter, InterpreterTypes
+    }, primitives::hardfork::SpecId, Context, Inspector, Journal
 };
+
+pub type LineaCtx<'db, DB> =
+    Context<BlockEnv, TxEnv, CfgEnv<SpecId>, &'db mut DB, Journal<&'db mut DB>, ()>;
+type EthEvm<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, EthIns<'db, DB>, EthPrecompiles>;
+
 
 /// LineaEvm is a Linea v4 spec version of revm with custom opcodes and precompile
 /// behaviour.
@@ -128,6 +124,30 @@ where
             instructions.instruction_table(),
         )
     }
+}
+
+pub fn build_linea_evm<'db, DB, I>(db: &'db mut DB, env: &EvmEnv, inspector: I) -> EthEvm<'db, DB, I>
+where
+    DB: Database,
+    I: Inspector<LineaCtx<'db, DB>>,
+{
+    let spec = env.cfg_env.spec;
+    let eth_context = EthEvmContext {
+        journaled_state: {
+            let mut journal = Journal::new(db);
+            journal.set_spec_id(spec);
+            journal
+        },
+        block: env.block_env.clone(),
+        cfg: env.cfg_env.clone(),
+        tx: Default::default(),
+        chain: (),
+        local: LocalContext::default(),
+        error: Ok(()),
+    };
+
+    let evm = LineaEvm::new(eth_context, inspector);
+    evm.0
 }
 
 #[cfg(test)]

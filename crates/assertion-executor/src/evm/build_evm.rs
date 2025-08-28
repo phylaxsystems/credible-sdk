@@ -126,7 +126,7 @@ where
 }
 pub type EthCtx<'db, DB> =
     Context<BlockEnv, TxEnv, CfgEnv<SpecId>, &'db mut DB, Journal<&'db mut DB>, ()>;
-type EthIns<'db, DB> = EthInstructions<EthInterpreter, EthCtx<'db, DB>>;
+pub type EthIns<'db, DB> = EthInstructions<EthInterpreter, EthCtx<'db, DB>>;
 type EthEvm<'db, DB, I> = Evm<EthCtx<'db, DB>, I, EthIns<'db, DB>, PrecompilesMap>;
 
 /// Builds a mainnet Ethereum EVM, using all mainnet related types.
