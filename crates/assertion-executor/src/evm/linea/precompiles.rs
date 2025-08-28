@@ -11,3 +11,31 @@
 //! Instead of actually implementing custom precompiles, we extend the phevm insperctor
 //! impl function to check if we are calling any of the precompiles above. If we are,
 //! we need to process them according to the linea spec.
+
+use revm::{interpreter::CallOutcome, Context};
+
+/// `WrappedInspector` exists as a wrapper for merging the functionality of multiple 
+/// revm inspectors into one.
+///
+/// This struct fully implements the inspector traits, and when we begin inspection,
+/// we first call into `INSP0`, and then `INSP1`.
+///
+/// This struct is primarily used to Wrap the phevm inspector, providing 
+#[derive(Debug)]
+#[allow(dead_code)]
+struct WrappedInspector<INSP0, INSP1> {
+    inspector_0: INSP0,
+    inspector_1: INSP1,
+}
+
+/// Called inside of an inspector to act as if we were calling into
+/// linea precompiles.
+///
+/// The outcomes depending on the precompile are as follows:
+/// - **BLAKE2f** - Always revert
+/// - **MODEXP** - None if args (base, exponent, modulus) are individually less than 512 bytes, otherwise revert
+/// - **Precompiles as transaction recipients** - Always revert
+/// - **RIPEMD-160** - Always revert
+pub fn execute_linea_precompile(ctx: Context) -> Option<CallOutcome> {
+    unimplemented!()
+}

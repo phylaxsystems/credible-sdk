@@ -1,6 +1,6 @@
 //! # `evm`
 //!
-//! Contains types needed to initialize a linea version of revm.
+//! Contains types needed to initialize a linea spec of revm.
 
 use crate::evm::linea::opcodes::insert_linea_instructions;
 use revm::{
@@ -30,9 +30,18 @@ use revm::{
     },
 };
 
-/// LineaEvm variant of the EVM.
+/// LineaEvm is a Linea v4 spec version of revm with custom opcodes and precompile
+/// behaviour.
+///
+/// # Usage and differences
+/// `LineaEvm` has the exact same API as you would creating a regular revm evm.
+/// In the `new` fn, we replace certain instructions with how they are implemented
+/// on linea. We also wrap the inspector that gets passed into the new function with
+/// our own linea inspector that implements functionality of those matching linea v4.
+/// 
+/// # Executing transactions
 /// To implement our *own* evm we needed to wrap the Linea evm in a struct.
-/// It can be interacter like so: `linea_evm.0.transact(tx_env)`
+/// It can be interacted with like so: `linea_evm.0.transact(tx_env)`
 pub struct LineaEvm<CTX, INSP>(
     pub Evm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, EthPrecompiles>,
 );
