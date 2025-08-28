@@ -94,9 +94,9 @@ pub fn execute_linea_precompile<DB: revm::Database>(
         },
         addr if addr == *MODEXP.address() => {
             // MODEXP only supports arguments (base, exponent, modulus) that do not exceed 512-byte integers
-            const MAX_SIZE: usize = 512;
+            const LINEA_INPUT_SIZE_LIMIT: usize = 512;
             
-            // Parse the input to extract lengths
+            // Parse the input to extract lengths using the same method as REVM
             let input = inputs.input.bytes(ctx);
             
             // Need at least 96 bytes for the header (3x32 bytes for lengths)
@@ -105,24 +105,26 @@ pub fn execute_linea_precompile<DB: revm::Database>(
                 return None;
             }
             
-            // Extract lengths from the input
-            let mut base_len_bytes = [0u8; 32];
-            base_len_bytes.copy_from_slice(&input[0..32]);
-            let base_len = revm::primitives::U256::from_be_bytes(base_len_bytes);
-            
-            let mut exp_len_bytes = [0u8; 32];
-            exp_len_bytes.copy_from_slice(&input[32..64]);
-            let exp_len = revm::primitives::U256::from_be_bytes(exp_len_bytes);
-            
-            let mut mod_len_bytes = [0u8; 32];
-            mod_len_bytes.copy_from_slice(&input[64..96]);
-            let mod_len = revm::primitives::U256::from_be_bytes(mod_len_bytes);
-            
-            // Check if any of the arguments exceed 512 bytes
-            if base_len > revm::primitives::U256::from(MAX_SIZE) 
-                || exp_len > revm::primitives::U256::from(MAX_SIZE) 
-                || mod_len > revm::primitives::U256::from(MAX_SIZE) {
-                // Revert if any argument exceeds 512 bytes
+            // Extract the header 
+            let base_len = revm::primitives::U256::from_be_bytes(
+                input.get(0..32).unwrap_or(&[0u8; 32]).try_into().unwrap_or([0u8; 32])
+            );
+            let exp_len = revm::primitives::U256::from_be_bytes(
+                input.get(32..64).unwrap_or(&[0u8; 32]).try_into().unwrap_or([0u8; 32])
+            );
+            let mod_len = revm::primitives::U256::from_be_bytes(
+                input.get(64..96).unwrap_or(&[0u8; 32]).try_into().unwrap_or([0u8; 32])
+            );
+
+            let base_len = usize::try_from(base_len).unwrap_or(usize::MAX);
+            let mod_len = usize::try_from(mod_len).unwrap_or(usize::MAX);
+            let exp_len = usize::try_from(exp_len).unwrap_or(usize::MAX);
+
+            // Check size limits like REVM does for OSAKA, but with our 512-byte limit
+            if base_len > LINEA_INPUT_SIZE_LIMIT
+                || mod_len > LINEA_INPUT_SIZE_LIMIT
+                || exp_len > LINEA_INPUT_SIZE_LIMIT
+            {
                 return Some(CallOutcome::new(
                     InterpreterResult::new(
                         revm::interpreter::InstructionResult::Revert,
