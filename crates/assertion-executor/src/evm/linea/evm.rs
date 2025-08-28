@@ -2,29 +2,55 @@
 //!
 //! Contains types needed to initialize a linea spec of revm.
 
-use crate::evm::build_evm::EthIns;
-use revm::{context::{JournalTr, LocalContext}, Database};
-use crate::evm::linea::opcodes::insert_linea_instructions;
-use alloy_evm::{eth::EthEvmContext, EvmEnv};
+use crate::evm::{
+    build_evm::EthIns,
+    linea::opcodes::insert_linea_instructions,
+};
+use alloy_evm::{
+    EvmEnv,
+    eth::EthEvmContext,
+};
 use revm::{
+    Context,
+    Database,
+    Inspector,
+    Journal,
     context::{
-        BlockEnv, CfgEnv, ContextSetters, ContextTr, Evm, TxEnv
-    }, handler::{
+        BlockEnv,
+        CfgEnv,
+        ContextSetters,
+        ContextTr,
+        Evm,
+        JournalTr,
+        LocalContext,
+        TxEnv,
+    },
+    handler::{
+        EthPrecompiles,
+        EvmTr,
         instructions::{
             EthInstructions,
             InstructionProvider,
-        }, EthPrecompiles, EvmTr
-    }, inspector::{
-        inspect_instructions, InspectorEvmTr, JournalExt
-    }, interpreter::{
-        interpreter::EthInterpreter, Interpreter, InterpreterTypes
-    }, primitives::hardfork::SpecId, Context, Inspector, Journal
+        },
+    },
+    inspector::{
+        InspectorEvmTr,
+        JournalExt,
+        inspect_instructions,
+    },
+    interpreter::{
+        Interpreter,
+        InterpreterTypes,
+        interpreter::EthInterpreter,
+    },
+    primitives::hardfork::SpecId,
 };
+use std::marker::PhantomData;
 
 pub type LineaCtx<'db, DB> =
-    Context<BlockEnv, TxEnv, CfgEnv<SpecId>, &'db mut DB, Journal<&'db mut DB>, ()>;
-type EthEvm<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, EthIns<'db, DB>, EthPrecompiles>;
-
+    Context<BlockEnv, TxEnv, CfgEnv<SpecId>, &'db mut DB, Journal<&'db mut DB>, PhantomData<()>>;
+pub type LineaIns<'db, DB> = EthInstructions<EthInterpreter, LineaCtx<'db, DB>>;
+type LineaEvmTyped<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, LineaIns<'db, DB>, EthPrecompiles>;
 
 /// LineaEvm is a Linea v4 spec version of revm with custom opcodes and precompile
 /// behaviour.
@@ -34,7 +60,7 @@ type EthEvm<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, EthIns<'db, DB>, EthPrecompi
 /// In the `new` fn, we replace certain instructions with how they are implemented
 /// on linea. We also wrap the inspector that gets passed into the new function with
 /// our own linea inspector that implements functionality of those matching linea v4.
-/// 
+///
 /// # Executing transactions
 /// To implement our *own* evm we needed to wrap the Linea evm in a struct.
 /// It can be interacted with like so: `linea_evm.0.transact(tx_env)`
@@ -126,13 +152,17 @@ where
     }
 }
 
-pub fn build_linea_evm<'db, DB, I>(db: &'db mut DB, env: &EvmEnv, inspector: I) -> EthEvm<'db, DB, I>
+pub fn build_linea_evm<'db, DB, I>(
+    db: &'db mut DB,
+    env: &EvmEnv,
+    inspector: I,
+) -> LineaEvmTyped<'db, DB, I>
 where
     DB: Database,
     I: Inspector<LineaCtx<'db, DB>>,
 {
     let spec = env.cfg_env.spec;
-    let eth_context = EthEvmContext {
+    let eth_context = LineaCtx {
         journaled_state: {
             let mut journal = Journal::new(db);
             journal.set_spec_id(spec);
@@ -141,7 +171,7 @@ where
         block: env.block_env.clone(),
         cfg: env.cfg_env.clone(),
         tx: Default::default(),
-        chain: (),
+        chain: PhantomData,
         local: LocalContext::default(),
         error: Ok(()),
     };
