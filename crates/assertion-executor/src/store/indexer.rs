@@ -279,19 +279,23 @@ impl Indexer {
             return Err(IndexerError::StoreNotSynced);
         }
 
-        let mut block_stream = self.provider.subscribe_blocks().await?;
-        loop {
-            // FIXME: Sometimes when op-talos is syncing from scratch,
-            // the below might fail with `Lagged` on the recv.
-            // When op-talos is initially syncing, writes indexer data to disk,
-            // and then restarts this problem does not appear.
-            let latest_block = block_stream.recv().await?;
-            trace!(
-                target = "assertion_executor::indexer",
-                ?latest_block,
-                "Received new block"
-            );
-            self.handle_latest_block(latest_block).await?;
+        'main: loop {
+            let mut block_stream = self.provider.subscribe_blocks().await?;
+            loop {
+                // FIXME: Sometimes when op-talos is syncing from scratch,
+                // the below might fail with `Lagged` on the recv.
+                // When op-talos is initially syncing, writes indexer data to disk,
+                // and then restarts this problem does not appear.
+                let Ok(latest_block) = block_stream.recv().await else {
+                    continue 'main;
+                };
+                trace!(
+                    target = "assertion_executor::indexer",
+                    ?latest_block,
+                    "Received new block"
+                );
+                self.handle_latest_block(latest_block).await?;
+            }
         }
     }
 
