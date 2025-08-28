@@ -18,10 +18,7 @@ use crate::{
         init_indexer_config,
     },
     engine::CoreEngine,
-    transport::{
-        Transport,
-        mock::MockTransport,
-    },
+    transport::Transport,
 };
 use assertion_executor::{
     AssertionExecutor,
@@ -35,6 +32,10 @@ use rust_tracing::trace;
 use crate::{
     json_rpc_db::JsonRpcDb,
     transactions_state::TransactionsState,
+    transport::http::{
+        HttpTransport,
+        config::HttpTransportConfig,
+    },
 };
 use args::SidecarArgs;
 
@@ -59,10 +60,12 @@ async fn main() -> anyhow::Result<()> {
         AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
     let indexer_cfg = init_indexer_config(&args, assertion_store, executor_config).await?;
 
-    let (_, mock_receiver) = unbounded();
     let engine_state_results = TransactionsState::new();
-    let mock_transport =
-        MockTransport::with_receiver(tx_sender, mock_receiver, engine_state_results.clone());
+    let mock_transport = HttpTransport::new(
+        HttpTransportConfig::try_from(args.transport.clone())?,
+        tx_sender,
+        engine_state_results.clone(),
+    )?;
 
     let mut engine = CoreEngine::new(
         state,
