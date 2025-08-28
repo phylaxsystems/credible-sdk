@@ -18,7 +18,6 @@ use crate::{
     inspectors::CallTracer,
     primitives::bytes,
 };
-use alloy_primitives::Address;
 use revm::{
     Inspector,
     interpreter::{
@@ -32,6 +31,7 @@ use revm::{
     precompile::{
         blake2::FUN,
         hash::RIPEMD160,
+        modexp::BERLIN as MODEXP, // FIXME: this is bad because we cannot change with specid. real solution is a precompile provider
     },
 };
 
@@ -62,27 +62,82 @@ pub fn execute_linea_precompile<DB: revm::Database>(
     ctx: &mut LineaCtx<'_, DB>,
     inputs: &mut CallInputs,
 ) -> Option<CallOutcome> {
-    if inputs.target_address == *RIPEMD160.address() {
-        return Some(CallOutcome::new(
-            InterpreterResult::new(
-                revm::interpreter::InstructionResult::Revert,
-                bytes!(),
-                Gas::new(inputs.gas_limit),
-            ),
-            inputs.return_memory_offset.clone(),
-        ));
-    } else if inputs.target_address == *FUN.address() {
-        return Some(CallOutcome::new(
-            InterpreterResult::new(
-                revm::interpreter::InstructionResult::Revert,
-                bytes!(),
-                Gas::new(inputs.gas_limit),
-            ),
-            inputs.return_memory_offset.clone(),
-        ));
-    }
+    // let addr = inputs.target_address;
+    
+    // // Check if address is in the precompile range (0x01-0x09)
+    // let addr_bytes = addr.into_array();
+    // let is_precompile_range = addr_bytes[0..19] == [0; 19] && (1..=9).contains(&addr_bytes[19]);
+    
+    // // All addresses in 0x01-0x09 range are disallowed as transaction recipients
+    // if is_precompile_range {
+    //     return Some(CallOutcome::new(
+    //         InterpreterResult::new(
+    //             revm::interpreter::InstructionResult::Revert,
+    //             bytes!(),
+    //             Gas::new(inputs.gas_limit),
+    //         ),
+    //         inputs.return_memory_offset.clone(),
+    //     ));
+    // }
 
-    unimplemented!()
+    // RIPEMD-160 (0x03) and BLAKE2f (0x09) are explicitly disallowed
+    match inputs.target_address {
+        addr if addr == *RIPEMD160.address() || addr == *FUN.address() => {
+            Some(CallOutcome::new(
+                InterpreterResult::new(
+                    revm::interpreter::InstructionResult::Revert,
+                    bytes!(),
+                    Gas::new(inputs.gas_limit),
+                ),
+                inputs.return_memory_offset.clone(),
+            ))
+        },
+        addr if addr == *MODEXP.address() => {
+            // MODEXP only supports arguments (base, exponent, modulus) that do not exceed 512-byte integers
+            const MAX_SIZE: usize = 512;
+            
+            // Parse the input to extract lengths
+            let input = inputs.input.bytes(ctx);
+            
+            // Need at least 96 bytes for the header (3x32 bytes for lengths)
+            if input.len() < 96 {
+                // Let the precompile handle the error
+                return None;
+            }
+            
+            // Extract lengths from the input
+            let mut base_len_bytes = [0u8; 32];
+            base_len_bytes.copy_from_slice(&input[0..32]);
+            let base_len = revm::primitives::U256::from_be_bytes(base_len_bytes);
+            
+            let mut exp_len_bytes = [0u8; 32];
+            exp_len_bytes.copy_from_slice(&input[32..64]);
+            let exp_len = revm::primitives::U256::from_be_bytes(exp_len_bytes);
+            
+            let mut mod_len_bytes = [0u8; 32];
+            mod_len_bytes.copy_from_slice(&input[64..96]);
+            let mod_len = revm::primitives::U256::from_be_bytes(mod_len_bytes);
+            
+            // Check if any of the arguments exceed 512 bytes
+            if base_len > revm::primitives::U256::from(MAX_SIZE) 
+                || exp_len > revm::primitives::U256::from(MAX_SIZE) 
+                || mod_len > revm::primitives::U256::from(MAX_SIZE) {
+                // Revert if any argument exceeds 512 bytes
+                return Some(CallOutcome::new(
+                    InterpreterResult::new(
+                        revm::interpreter::InstructionResult::Revert,
+                        bytes!(),
+                        Gas::new(inputs.gas_limit),
+                    ),
+                    inputs.return_memory_offset.clone(),
+                ));
+            }
+            
+            // Arguments are within limits, allow the precompile to execute
+            None
+        }
+        _ => None,
+    }
 }
 
 // Manually implemented for linea
