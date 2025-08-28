@@ -13,9 +13,17 @@
 //! we need to process them according to the linea spec.
 
 use crate::{
-    db::{Database, DatabaseCommit, DatabaseRef, MultiForkDb},
+    db::{
+        Database,
+        DatabaseCommit,
+        DatabaseRef,
+        MultiForkDb,
+    },
     evm::linea::evm::LineaCtx,
-    inspectors::{CallTracer, PhEvmInspector},
+    inspectors::{
+        CallTracer,
+        PhEvmInspector,
+    },
     primitives::bytes,
 };
 use revm::{
@@ -63,11 +71,11 @@ pub fn execute_linea_precompile<DB: revm::Database>(
     inputs: &mut CallInputs,
 ) -> Option<CallOutcome> {
     // let addr = inputs.target_address;
-    
+
     // // Check if address is in the precompile range (0x01-0x09)
     // let addr_bytes = addr.into_array();
     // let is_precompile_range = addr_bytes[0..19] == [0; 19] && (1..=9).contains(&addr_bytes[19]);
-    
+
     // // All addresses in 0x01-0x09 range are disallowed as transaction recipients
     // if is_precompile_range {
     //     return Some(CallOutcome::new(
@@ -91,29 +99,41 @@ pub fn execute_linea_precompile<DB: revm::Database>(
                 ),
                 inputs.return_memory_offset.clone(),
             ))
-        },
+        }
         addr if addr == *MODEXP.address() => {
             // MODEXP only supports arguments (base, exponent, modulus) that do not exceed 512-byte integers
             const LINEA_INPUT_SIZE_LIMIT: usize = 512;
-            
+
             // Parse the input to extract lengths using the same method as REVM
             let input = inputs.input.bytes(ctx);
-            
+
             // Need at least 96 bytes for the header (3x32 bytes for lengths)
             if input.len() < 96 {
                 // Let the precompile handle the error
                 return None;
             }
-            
-            // Extract the header 
+
+            // Extract the header
             let base_len = revm::primitives::U256::from_be_bytes(
-                input.get(0..32).unwrap_or(&[0u8; 32]).try_into().unwrap_or([0u8; 32])
+                input
+                    .get(0..32)
+                    .unwrap_or(&[0u8; 32])
+                    .try_into()
+                    .unwrap_or([0u8; 32]),
             );
             let exp_len = revm::primitives::U256::from_be_bytes(
-                input.get(32..64).unwrap_or(&[0u8; 32]).try_into().unwrap_or([0u8; 32])
+                input
+                    .get(32..64)
+                    .unwrap_or(&[0u8; 32])
+                    .try_into()
+                    .unwrap_or([0u8; 32]),
             );
             let mod_len = revm::primitives::U256::from_be_bytes(
-                input.get(64..96).unwrap_or(&[0u8; 32]).try_into().unwrap_or([0u8; 32])
+                input
+                    .get(64..96)
+                    .unwrap_or(&[0u8; 32])
+                    .try_into()
+                    .unwrap_or([0u8; 32]),
             );
 
             let base_len = usize::try_from(base_len).unwrap_or(usize::MAX);
@@ -134,7 +154,7 @@ pub fn execute_linea_precompile<DB: revm::Database>(
                     inputs.return_memory_offset.clone(),
                 ));
             }
-            
+
             // Arguments are within limits, allow the precompile to execute
             None
         }
@@ -178,13 +198,18 @@ impl<DB: Database> Inspector<LineaCtx<'_, DB>> for CallTracer {
 }
 
 // Manually implemented for linea PhEvmInspector
-impl<ExtDb: DatabaseRef + Clone + DatabaseCommit> Inspector<LineaCtx<'_, MultiForkDb<ExtDb>>> for PhEvmInspector<'_> {
+impl<ExtDb: DatabaseRef + Clone + DatabaseCommit> Inspector<LineaCtx<'_, MultiForkDb<ExtDb>>>
+    for PhEvmInspector<'_>
+{
     fn call(
         &mut self,
         context: &mut LineaCtx<'_, MultiForkDb<ExtDb>>,
         inputs: &mut CallInputs,
     ) -> Option<CallOutcome> {
-        use crate::{constants::PRECOMPILE_ADDRESS, inspectors::inspector_result_to_call_outcome};
+        use crate::{
+            constants::PRECOMPILE_ADDRESS,
+            inspectors::inspector_result_to_call_outcome,
+        };
 
         // First check for PhEvm precompiles
         if inputs.target_address == PRECOMPILE_ADDRESS {
@@ -204,23 +229,48 @@ impl<ExtDb: DatabaseRef + Clone + DatabaseCommit> Inspector<LineaCtx<'_, MultiFo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm::{
-        primitives::{Address, U256, Bytes},
-        interpreter::{CallScheme, CallInput, CallValue},
-        database::InMemoryDB,
-        JournalEntry,
-        context::{Context, LocalContext, JournalInner},
-    };
     use crate::{
-        evm::{linea::evm::LineaCtx, build_evm::evm_env},
-        primitives::{BlockEnv, TxEnv, Journal, SpecId, keccak256, AccountInfo},
         db::MultiForkDb,
+        evm::{
+            build_evm::evm_env,
+            linea::evm::LineaCtx,
+        },
+        primitives::{
+            AccountInfo,
+            BlockEnv,
+            Journal,
+            SpecId,
+            TxEnv,
+            keccak256,
+        },
+    };
+    use revm::{
+        JournalEntry,
+        context::{
+            Context,
+            JournalInner,
+            LocalContext,
+        },
+        database::InMemoryDB,
+        interpreter::{
+            CallInput,
+            CallScheme,
+            CallValue,
+        },
+        primitives::{
+            Address,
+            Bytes,
+            U256,
+        },
     };
     use std::marker::PhantomData;
 
-    fn create_test_context() -> (MultiForkDb<InMemoryDB>, LineaCtx<'static, MultiForkDb<InMemoryDB>>) {
+    fn create_test_context() -> (
+        MultiForkDb<InMemoryDB>,
+        LineaCtx<'static, MultiForkDb<InMemoryDB>>,
+    ) {
         let mut db = InMemoryDB::default();
-        
+
         // Insert a test account with balance
         db.insert_account_info(
             Address::from([0x01; 20]),
@@ -234,12 +284,12 @@ mod tests {
 
         let env = evm_env(1, SpecId::CANCUN, BlockEnv::default());
         let spec = env.cfg_env.spec;
-        
+
         let multi_fork_db = MultiForkDb::new(db, &JournalInner::new());
-        
+
         // Create context - need to leak to get 'static lifetime
         let multi_fork_db_ptr: *mut MultiForkDb<InMemoryDB> = Box::leak(Box::new(multi_fork_db));
-        
+
         unsafe {
             let context = Context {
                 journaled_state: {
@@ -257,7 +307,7 @@ mod tests {
                 local: LocalContext::default(),
                 error: Ok(()),
             };
-            
+
             ((*multi_fork_db_ptr).clone(), context)
         }
     }
@@ -282,13 +332,13 @@ mod tests {
         let (_db, mut ctx) = create_test_context();
         let blake2f_address = *FUN.address();
         let mut inputs = create_call_inputs(blake2f_address, Bytes::default());
-        
+
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
-        
+
         assert!(result.is_some());
         let outcome = result.unwrap();
         assert_eq!(
-            outcome.result.result, 
+            outcome.result.result,
             revm::interpreter::InstructionResult::Revert
         );
         assert_eq!(outcome.result.output, bytes!());
@@ -300,13 +350,13 @@ mod tests {
         let (_db, mut ctx) = create_test_context();
         let ripemd_address = *RIPEMD160.address();
         let mut inputs = create_call_inputs(ripemd_address, Bytes::default());
-        
+
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
-        
+
         assert!(result.is_some());
         let outcome = result.unwrap();
         assert_eq!(
-            outcome.result.result, 
+            outcome.result.result,
             revm::interpreter::InstructionResult::Revert
         );
         assert_eq!(outcome.result.output, bytes!());
@@ -317,7 +367,7 @@ mod tests {
     fn test_modexp_with_small_args_passes() {
         let (_db, mut ctx) = create_test_context();
         let modexp_address = *MODEXP.address();
-        
+
         // Create input with small argument sizes (< 512 bytes each)
         let mut input = Vec::new();
         input.extend_from_slice(&U256::from(32).to_be_bytes::<32>()); // base_len = 32
@@ -325,11 +375,11 @@ mod tests {
         input.extend_from_slice(&U256::from(32).to_be_bytes::<32>()); // mod_len = 32
         // Add actual data (96 bytes total)
         input.extend_from_slice(&[0u8; 96]);
-        
+
         let mut inputs = create_call_inputs(modexp_address, Bytes::from(input));
-        
+
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
-        
+
         // Should return None, allowing the precompile to execute normally
         assert!(result.is_none());
     }
@@ -338,21 +388,21 @@ mod tests {
     fn test_modexp_with_large_base_reverts() {
         let (_db, mut ctx) = create_test_context();
         let modexp_address = *MODEXP.address();
-        
+
         // Create input with base_len > 512 bytes
         let mut input = Vec::new();
         input.extend_from_slice(&U256::from(513).to_be_bytes::<32>()); // base_len = 513 (exceeds limit)
-        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>());  // exp_len = 32
-        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>());  // mod_len = 32
-        
+        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>()); // exp_len = 32
+        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>()); // mod_len = 32
+
         let mut inputs = create_call_inputs(modexp_address, Bytes::from(input));
-        
+
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
-        
+
         assert!(result.is_some());
         let outcome = result.unwrap();
         assert_eq!(
-            outcome.result.result, 
+            outcome.result.result,
             revm::interpreter::InstructionResult::Revert
         );
         assert_eq!(outcome.result.gas.remaining(), 100_000);
@@ -362,21 +412,21 @@ mod tests {
     fn test_modexp_with_large_exponent_reverts() {
         let (_db, mut ctx) = create_test_context();
         let modexp_address = *MODEXP.address();
-        
+
         // Create input with exp_len > 512 bytes
         let mut input = Vec::new();
-        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>());  // base_len = 32
+        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>()); // base_len = 32
         input.extend_from_slice(&U256::from(1024).to_be_bytes::<32>()); // exp_len = 1024 (exceeds limit)
-        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>());  // mod_len = 32
-        
+        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>()); // mod_len = 32
+
         let mut inputs = create_call_inputs(modexp_address, Bytes::from(input));
-        
+
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
-        
+
         assert!(result.is_some());
         let outcome = result.unwrap();
         assert_eq!(
-            outcome.result.result, 
+            outcome.result.result,
             revm::interpreter::InstructionResult::Revert
         );
     }
@@ -385,21 +435,21 @@ mod tests {
     fn test_modexp_with_large_modulus_reverts() {
         let (_db, mut ctx) = create_test_context();
         let modexp_address = *MODEXP.address();
-        
+
         // Create input with mod_len > 512 bytes
         let mut input = Vec::new();
-        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>());  // base_len = 32
-        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>());  // exp_len = 32
+        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>()); // base_len = 32
+        input.extend_from_slice(&U256::from(32).to_be_bytes::<32>()); // exp_len = 32
         input.extend_from_slice(&U256::from(600).to_be_bytes::<32>()); // mod_len = 600 (exceeds limit)
-        
+
         let mut inputs = create_call_inputs(modexp_address, Bytes::from(input));
-        
+
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
-        
+
         assert!(result.is_some());
         let outcome = result.unwrap();
         assert_eq!(
-            outcome.result.result, 
+            outcome.result.result,
             revm::interpreter::InstructionResult::Revert
         );
     }
@@ -408,17 +458,17 @@ mod tests {
     fn test_modexp_exactly_at_limit_passes() {
         let (_db, mut ctx) = create_test_context();
         let modexp_address = *MODEXP.address();
-        
+
         // Create input with all arguments exactly at 512 bytes
         let mut input = Vec::new();
         input.extend_from_slice(&U256::from(512).to_be_bytes::<32>()); // base_len = 512 (at limit)
         input.extend_from_slice(&U256::from(512).to_be_bytes::<32>()); // exp_len = 512 (at limit)
         input.extend_from_slice(&U256::from(512).to_be_bytes::<32>()); // mod_len = 512 (at limit)
-        
+
         let mut inputs = create_call_inputs(modexp_address, Bytes::from(input));
-        
+
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
-        
+
         // Should return None since all arguments are at the limit (not exceeding)
         assert!(result.is_none());
     }
@@ -427,14 +477,14 @@ mod tests {
     fn test_modexp_with_short_input_passes() {
         let (_db, mut ctx) = create_test_context();
         let modexp_address = *MODEXP.address();
-        
+
         // Create input with less than 96 bytes (header incomplete)
         let input = vec![0u8; 50];
-        
+
         let mut inputs = create_call_inputs(modexp_address, Bytes::from(input));
-        
+
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
-        
+
         // Should return None and let the precompile handle the error
         assert!(result.is_none());
     }
@@ -442,21 +492,24 @@ mod tests {
     #[test]
     fn test_other_precompiles_pass() {
         let (_db, mut ctx) = create_test_context();
-        
+
         // Test ecrecover (0x01)
-        let ecrecover_address = Address::from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let ecrecover_address =
+            Address::from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         let mut inputs = create_call_inputs(ecrecover_address, Bytes::default());
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
         assert!(result.is_none());
-        
+
         // Test SHA256 (0x02)
-        let sha256_address = Address::from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let sha256_address =
+            Address::from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
         let mut inputs = create_call_inputs(sha256_address, Bytes::default());
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
         assert!(result.is_none());
-        
+
         // Test identity (0x04)
-        let identity_address = Address::from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]);
+        let identity_address =
+            Address::from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]);
         let mut inputs = create_call_inputs(identity_address, Bytes::default());
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
         assert!(result.is_none());
@@ -465,15 +518,16 @@ mod tests {
     #[test]
     fn test_non_precompile_addresses_pass() {
         let (_db, mut ctx) = create_test_context();
-        
+
         // Test regular contract address
-        let contract_address = Address::from([0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 
-                                            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-                                            0x12, 0x34, 0x56, 0x78]);
+        let contract_address = Address::from([
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
+            0xde, 0xf0, 0x12, 0x34, 0x56, 0x78,
+        ]);
         let mut inputs = create_call_inputs(contract_address, Bytes::default());
-        
+
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
-        
+
         // Should return None for non-precompile addresses
         assert!(result.is_none());
     }
@@ -482,17 +536,17 @@ mod tests {
     fn test_modexp_edge_cases() {
         let (_db, mut ctx) = create_test_context();
         let modexp_address = *MODEXP.address();
-        
+
         // Test with zero-length arguments
         let mut input = Vec::new();
-        input.extend_from_slice(&U256::from(0).to_be_bytes::<32>());  // base_len = 0
-        input.extend_from_slice(&U256::from(0).to_be_bytes::<32>());  // exp_len = 0
-        input.extend_from_slice(&U256::from(0).to_be_bytes::<32>());  // mod_len = 0
-        
+        input.extend_from_slice(&U256::from(0).to_be_bytes::<32>()); // base_len = 0
+        input.extend_from_slice(&U256::from(0).to_be_bytes::<32>()); // exp_len = 0
+        input.extend_from_slice(&U256::from(0).to_be_bytes::<32>()); // mod_len = 0
+
         let mut inputs = create_call_inputs(modexp_address, Bytes::from(input));
-        
+
         let result = execute_linea_precompile(&mut ctx, &mut inputs);
-        
+
         // Should return None since all arguments are within limits
         assert!(result.is_none());
     }

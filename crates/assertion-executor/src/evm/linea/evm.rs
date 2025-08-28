@@ -2,12 +2,8 @@
 //!
 //! Contains types needed to initialize a linea spec of revm.
 
-use crate::evm::{
-    linea::opcodes::insert_linea_instructions,
-};
-use alloy_evm::{
-    EvmEnv,
-};
+use crate::evm::linea::opcodes::insert_linea_instructions;
+use alloy_evm::EvmEnv;
 use revm::{
     Context,
     Database,
