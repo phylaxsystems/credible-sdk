@@ -77,13 +77,22 @@ async fn main() -> anyhow::Result<()> {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received Ctrl+C, shutting down...");
         }
-        _ = engine.run() => {
+        result = engine.run() => {
+            if let Err(e) = result {
+                tracing::error!("Engine exited with error: {}", e);
+            }
             tracing::info!("Engine run completed, shutting down...");
         }
-        _ = transport.run() => {
+        result = transport.run() => {
+            if let Err(e) = result {
+                tracing::error!("Transport exited with error: {}", e);
+            }
             tracing::info!("Engine run completed, shutting down...");
         }
-        _ = indexer::run_indexer(indexer_cfg) => {
+        result = indexer::run_indexer(indexer_cfg) => {
+            if let Err(e) = result {
+                tracing::error!("Indexer exited with error: {}", e);
+            }
             tracing::info!("Indexer exited, shutting down...");
         }
     }
