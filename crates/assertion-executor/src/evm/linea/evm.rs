@@ -157,6 +157,13 @@ where
     }
 }
 
+/// Builds a Linea EVM enviroment. Replaces specific opcodes with their linea compatible counterparts.
+///
+/// ***IMPORTANT:*** To get linea precompile functionality, you must use either the `CallTracer` or `PhEvmInspector` inspectors.
+///
+/// The `chain_id` is used to set the chain ID in the EVM environment.
+/// The `spec_id` is used to set the spec ID in the EVM environment.
+/// The `block_env` is used to set the block environment in the EVM environment.
 pub fn build_linea_evm<'db, DB, I>(
     db: &'db mut DB,
     env: &EvmEnv,

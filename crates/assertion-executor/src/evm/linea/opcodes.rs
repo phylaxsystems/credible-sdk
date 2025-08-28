@@ -25,7 +25,7 @@ use revm::{
 
 /// Inserts linea specific instructions into an Eth instruction table.
 /// We replace certain opcodes to match the linea spec of revm.
-// FIXME: this is ideally implemented as an instructionprovider but this is easier
+// TODO: this is ideally implemented as an instructionprovider but this is easier
 pub fn insert_linea_instructions<WIRE, HOST>(instructions: &mut EthInstructions<WIRE, HOST>) -> ()
 where
     WIRE: InterpreterTypes,

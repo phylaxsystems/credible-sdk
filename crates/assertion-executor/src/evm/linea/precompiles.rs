@@ -55,7 +55,7 @@ struct WrappedInspector<INSP0, INSP1> {
 /// The outcomes depending on the precompile are as follows:
 /// - **BLAKE2f** - Always revert
 /// - **MODEXP** - None (meaning pass) if args (base, exponent, modulus) are individually less than 512 bytes, otherwise revert
-/// - **Precompiles as transaction recipients** - Always revert
+/// - **Precompiles as transaction recipients** - N/A here, FIXME: this should be handled elsewhere as we cannot revert before we execute a call within an inspector.
 /// - **RIPEMD-160** - Always revert
 /// - Anything else - None (meaning pass)
 pub fn execute_linea_precompile<DB: revm::Database>(
