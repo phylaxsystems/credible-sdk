@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     let args = SidecarArgs::parse();
 
     let (tx_sender, tx_receiver) = unbounded();
-    let json_rpc_db = JsonRpcDb::try_new(&args.rollup.rpc_url).await?;
+    let json_rpc_db = JsonRpcDb::try_new(&args.chain.rpc_url).await?;
     let state: OverlayDb<JsonRpcDb> = OverlayDb::new(
         Some(json_rpc_db),
         args.credible

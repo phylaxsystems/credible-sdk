@@ -23,7 +23,7 @@ use tracing::{
 /// Initialize ExecutorConfig from SidecarArgs
 pub fn init_executor_config(args: &SidecarArgs) -> ExecutorConfig {
     let config = ExecutorConfig::default()
-        .with_spec_id(args.rollup.spec_id.clone().into())
+        .with_spec_id(args.chain.spec_id.clone().into())
         .with_assertion_gas_limit(args.credible.assertion_gas_limit);
 
     debug!(
@@ -71,7 +71,7 @@ pub async fn init_indexer_config(
     let da_client = DaClient::new(&args.credible.rpc_da_url)?;
 
     // Initialize provider for blockchain connection
-    let ws_connect = WsConnect::new(&args.credible.indexer_rpc);
+    let ws_connect = WsConnect::new(&args.credible.indexer_rpc_url);
     let provider = ProviderBuilder::new().connect_ws(ws_connect).await?;
     let provider = provider.root().clone();
 
@@ -92,7 +92,7 @@ pub async fn init_indexer_config(
     debug!(
         state_oracle = ?args.credible.oracle_contract,
         da_url = ?args.credible.rpc_da_url,
-        indexer_rpc = ?args.credible.indexer_rpc,
+        indexer_rpc = ?args.credible.indexer_rpc_url,
         indexer_db_path = ?args.credible.indexer_db_path,
         block_tag = ?args.credible.block_tag,
         "Initialized IndexerCfg"
