@@ -242,7 +242,9 @@ async fn handle_block_env(
 
     let response = process_request(state, request).await?;
     // If the `process_request` call was successful, we can mark the block environment as received
-    state.has_blockenv.store(true, Ordering::Release);
+    if !state.has_blockenv.load(Ordering::Relaxed) {
+        state.has_blockenv.store(true, Ordering::Release);
+    }
 
     Ok(response)
 }
