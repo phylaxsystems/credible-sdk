@@ -189,6 +189,25 @@ pub struct CredibleArgs {
     pub transaction_results_max_capacity: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+pub struct HttpTransportArgs {
+    /// Server bind address and port
+    #[arg(
+        long = "ae.bind-addr",
+        default_value = "127.0.0.1:8080",
+        env = "AE_BIND_ADDR"
+    )]
+    pub bind_addr: String,
+
+    /// Server bind address and port
+    #[arg(
+        long = "ae.driver-addr",
+        default_value = "127.0.0.1:1337",
+        env = "AE_DRIVER_ADDR"
+    )]
+    pub driver_addr: String,
+}
+
 /// Main sidecar arguments that extend TelemetryArgs and CredibleArgs
 #[derive(Debug, Clone, PartialEq, Eq, clap::Parser)]
 #[command(name = "sidecar", about = "Credible layer sidecar")]
@@ -201,4 +220,7 @@ pub struct SidecarArgs {
 
     #[command(flatten)]
     pub rollup: ChainArgs,
+
+    #[command(flatten)]
+    pub transport: HttpTransportArgs,
 }
