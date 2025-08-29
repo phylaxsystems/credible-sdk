@@ -4,7 +4,7 @@
 /// - Linea EVM when `linea` feature is enabled
 /// - Optimism EVM when `optimism` feature is enabled (but not `linea`)
 /// - Ethereum mainnet EVM as default
-/// 
+///
 /// # Arguments
 /// * `$db` - Database reference
 /// * `$env` - EVM environment reference
@@ -20,6 +20,10 @@
 #[macro_export]
 macro_rules! build_evm_by_features {
     ($db:expr, $env:expr, $inspector:expr) => {{
+        // ensure only one EVM feature is enabled
+        #[cfg(all(feature = "linea", feature = "optimism"))]
+        compile_error!("Cannot enable both 'linea' and 'optimism' features simultaneously. Please enable only one EVM feature at a time.");
+        
         #[cfg(feature = "linea")]
         {
             $crate::evm::linea::build_linea_evm($db, $env, $inspector)
@@ -41,7 +45,7 @@ macro_rules! build_evm_by_features {
 /// 
 /// This macro either returns the original TxEnv unchanged, or wraps it in
 /// `OpTransaction::new()` if the optimism feature is enabled.
-/// 
+///
 /// # Arguments
 /// * `$tx_env` - The transaction environment to potentially wrap
 /// 
@@ -55,6 +59,10 @@ macro_rules! build_evm_by_features {
 #[macro_export]
 macro_rules! wrap_tx_env_for_optimism {
     ($tx_env:expr) => {{
+        // ensure only one EVM feature is enabled
+        #[cfg(all(feature = "linea", feature = "optimism"))]
+        compile_error!("Cannot enable both 'linea' and 'optimism' features simultaneously. Please enable only one EVM feature at a time.");
+        
         #[cfg(all(feature = "optimism", not(feature = "linea")))]
         {
             op_revm::OpTransaction::new($tx_env)
