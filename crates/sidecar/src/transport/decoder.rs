@@ -59,13 +59,16 @@ pub enum HttpDecoderError {
     NoTransactions,
 }
 
-fn parse_tx_kind(transact_to: &str) -> Result<TxKind, HttpDecoderError> {
-    if transact_to.is_empty() || transact_to == "0x" {
-        Ok(TxKind::Create)
-    } else {
-        let addr = Address::from_str(transact_to)
-            .map_err(|_| HttpDecoderError::InvalidAddress(transact_to.to_string()))?;
-        Ok(TxKind::Call(addr))
+fn parse_tx_kind(transact_to: Option<&str>) -> Result<TxKind, HttpDecoderError> {
+    match transact_to {
+        // If transact_to is None or "" or "0x", it's a contract creation transaction
+        None => Ok(TxKind::Create),
+        Some("") | Some("0x") => Ok(TxKind::Create),
+        Some(addr_str) => {
+            let addr = Address::from_str(addr_str)
+                .map_err(|_| HttpDecoderError::InvalidAddress(addr_str.to_string()))?;
+            Ok(TxKind::Call(addr))
+        }
     }
 }
 
@@ -97,7 +100,7 @@ impl TryFrom<&TransactionEnv> for TxEnv {
             .parse()
             .map_err(|_| HttpDecoderError::InvalidHex(tx_env.gas_price.clone()))?;
 
-        let kind = parse_tx_kind(&tx_env.transact_to)?;
+        let kind = parse_tx_kind(tx_env.transact_to.as_deref())?;
 
         let value = U256::from_str(&tx_env.value)
             .map_err(|_| HttpDecoderError::InvalidHex(tx_env.value.clone()))?;
@@ -203,7 +206,11 @@ mod tests {
                 caller: format!("{caller:?}"),
                 gas_limit,
                 gas_price: gas_price.to_string(),
-                transact_to: to.to_string(),
+                transact_to: if to.is_empty() {
+                    None
+                } else {
+                    Some(to.to_string())
+                },
                 value: value.to_string(),
                 data: data.to_string(),
                 nonce,
@@ -231,7 +238,7 @@ mod tests {
                 caller: format!("{caller:?}"),
                 gas_limit,
                 gas_price: gas_price.to_string(),
-                transact_to: format!("{to:?}"),
+                transact_to: Some(format!("{to:?}")),
                 value: value.to_string(),
                 data: data.to_string(),
                 nonce,
@@ -386,40 +393,91 @@ mod tests {
     }
 
     #[test]
-    fn test_contract_creation_transaction() {
+    fn test_all_contract_creation_variations() {
         let caller = Address::random();
+        let hash = "0x4444444444444444444444444444444444444444444444444444444444444444";
+        let deploy_code = "0x608060405234801561001057600080fd5b50";
 
-        let transaction = create_test_transaction(
-            "0x3333333333333333333333333333333333333333333333333333333333333333",
-            caller,
-            "",
-            "0",
-            "0x608060405234801561001057600080fd5b50",
-            2000000,
-            "20000000000",
-            44,
-            1,
-        );
+        // Create base transaction JSON
+        let mut base_tx = json!({
+            "hash": hash,
+            "txEnv": {
+                "caller": format!("{caller:?}"),
+                "gas_limit": 2000000,
+                "gas_price": "20000000000",
+                "value": "0",
+                "data": deploy_code,
+                "nonce": 1,
+                "chain_id": 1,
+                "access_list": []
+            }
+        });
 
-        let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        // Test cases with different transact_to values
+        let test_cases = vec![
+            (None, "missing field"),
+            (Some(json!(null)), "null value"),
+            (Some(json!("")), "empty string"),
+            (Some(json!("0x")), "0x string"),
+        ];
 
-        assert!(result.is_ok());
-        let transactions = result
-            .unwrap()
-            .into_iter()
-            .filter_map(|queue_content| {
-                match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
-                    _ => None,
-                }
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(transactions.len(), 1);
+        for (transact_to_value, description) in test_cases {
+            // Modify or remove transact_to field
+            if let Some(value) = transact_to_value {
+                base_tx["txEnv"]["transact_to"] = value;
+            } else {
+                // Remove the field if it exists
+                base_tx["txEnv"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("transact_to");
+            }
 
-        let decoded_tx = &transactions[0];
-        assert_eq!(decoded_tx.tx_env.caller, caller);
-        assert!(matches!(decoded_tx.tx_env.kind, TxKind::Create));
+            // Update nonce for each test to ensure uniqueness
+            base_tx["txEnv"]["nonce"] = json!(base_tx["txEnv"]["nonce"].as_u64().unwrap() + 1);
+
+            // Deserialize the Transaction
+            let transaction: Transaction =
+                serde_json::from_value(base_tx.clone()).unwrap_or_else(|_| {
+                    panic!("Failed to deserialize transaction with {}", description)
+                });
+
+            // Create a request with this transaction
+            let request = create_test_request("sendTransactions", vec![transaction]);
+
+            // Decode the transaction
+            let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+            assert!(
+                result.is_ok(),
+                "Failed to decode transaction with {}: {:?}",
+                description,
+                result
+            );
+
+            let transactions = result
+                .unwrap()
+                .into_iter()
+                .filter_map(|queue_content| {
+                    match queue_content {
+                        TxQueueContents::Tx(tx) => Some(tx),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            let decoded_tx = &transactions[0];
+            assert_eq!(
+                decoded_tx.tx_env.caller, caller,
+                "Caller mismatch for {}",
+                description
+            );
+            assert!(
+                matches!(decoded_tx.tx_env.kind, TxKind::Create),
+                "Expected TxKind::Create for {}, got {:?}",
+                description,
+                decoded_tx.tx_env.kind
+            );
+        }
     }
 
     #[test]
@@ -553,7 +611,7 @@ mod tests {
                 caller: "invalid_address".to_string(), // invalid address format
                 gas_limit: 21000,
                 gas_price: "20000000000".to_string(),
-                transact_to: format!("{:?}", Address::random()),
+                transact_to: Some(format!("{:?}", Address::random())),
                 value: "1000000000000000000".to_string(),
                 data: "0x".to_string(),
                 nonce: 42,
@@ -741,41 +799,6 @@ mod tests {
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].tx_env.caller, caller);
         assert!(transactions[0].tx_env.data.is_empty());
-    }
-
-    #[test]
-    fn test_0x_prefix_contract_creation() {
-        let caller = Address::random();
-
-        let transaction = create_test_transaction(
-            "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-            caller,
-            "0x", // "0x" should also be treated as contract creation
-            "0",
-            "0x608060405234801561001057600080fd5b50",
-            2000000,
-            "20000000000",
-            44,
-            1,
-        );
-
-        let request = create_test_request("sendTransactions", vec![transaction]);
-        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-
-        assert!(result.is_ok());
-        let transactions = result
-            .unwrap()
-            .into_iter()
-            .filter_map(|queue_content| {
-                match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
-                    _ => None,
-                }
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(transactions.len(), 1);
-        assert_eq!(transactions[0].tx_env.caller, caller);
-        assert!(matches!(transactions[0].tx_env.kind, TxKind::Create));
     }
 
     #[test]
