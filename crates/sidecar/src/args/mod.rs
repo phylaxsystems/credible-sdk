@@ -59,6 +59,10 @@ pub struct ChainArgs {
     )]
     pub spec_id: SpecIdArg,
 
+    // Chain ID
+    #[arg(long = "chain.chain-id", default_value = "1", env = "CHAIN_CHAIN_ID")]
+    pub chain_id: u64,
+
     /// RPC node URL and port
     #[arg(
         long = "chain.rpc-url",
