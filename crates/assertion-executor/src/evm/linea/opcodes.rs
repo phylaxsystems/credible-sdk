@@ -54,13 +54,13 @@ pub fn linea_blob_hash<WIRE: InterpreterTypes, HOST: Host>(
 
 /// EIP-7516: BLOBBASEFEE opcode
 ///
-/// The linea version of BLOBBASEFEE returns the minimum value
-// FIXME: this is ambigous, we need to clarify what `minimum value means`. returning blob_gasprice for now
+/// The linea version of BLOBBASEFEE returns the minimum value.
+/// The minimum value is always `1_u256`.
 pub fn linea_blob_basefee<WIRE: InterpreterTypes, HOST: Host>(
     interpreter: &mut Interpreter<WIRE>,
-    host: &mut HOST,
+    _host: &mut HOST,
 ) {
-    let _ = interpreter.stack.push(host.blob_gasprice());
+    let _ = interpreter.stack.push(revm::primitives::U256::from(1));
 }
 
 /// Implements the linea DIFFICULTY/PREVRANDAO instruction.
