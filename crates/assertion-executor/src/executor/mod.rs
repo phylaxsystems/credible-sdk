@@ -357,14 +357,17 @@ impl AssertionExecutor {
 
         let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
 
-        #[cfg(feature = "optimism")]
+        #[cfg(feature = "linea")]
+        let mut evm = crate::evm::linea::build_linea_evm(&mut multi_fork_db, &env, inspector);
+        
+        #[cfg(all(feature = "optimism", not(feature = "linea")))]
         let (mut evm, tx_env) = {
             let evm =
                 crate::evm::build_evm::build_optimism_evm(&mut multi_fork_db, &env, inspector);
             (evm, op_revm::OpTransaction::new(tx_env))
         };
 
-        #[cfg(not(feature = "optimism"))]
+        #[cfg(all(not(feature = "optimism"), not(feature = "linea")))]
         let mut evm = crate::evm::build_evm::build_eth_evm(&mut multi_fork_db, &env, inspector);
 
         reprice_evm_storage!(evm);
@@ -412,14 +415,20 @@ impl AssertionExecutor {
         let mut call_tracer = CallTracer::default();
         let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
 
-        #[cfg(feature = "optimism")]
+        #[cfg(feature = "linea")]
+        let (mut evm, tx_env) = {
+            let evm = crate::evm::linea::build_linea_evm(external_db, &env, &mut call_tracer);
+            (evm, tx_env)
+        };
+
+        #[cfg(all(feature = "optimism", not(feature = "linea")))]
         let (mut evm, tx_env) = {
             let evm =
                 crate::evm::build_evm::build_optimism_evm(external_db, &env, &mut call_tracer);
             (evm, op_revm::OpTransaction::new(tx_env))
         };
 
-        #[cfg(not(feature = "optimism"))]
+        #[cfg(all(not(feature = "optimism"), not(feature = "linea")))]
         let (mut evm, tx_env) = {
             let evm = crate::evm::build_evm::build_eth_evm(external_db, &env, &mut call_tracer);
             (evm, tx_env)

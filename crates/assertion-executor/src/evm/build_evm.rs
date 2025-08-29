@@ -299,7 +299,15 @@ mod tests {
 
         let inspector = PhEvmInspector::new(phvem_context);
 
-        #[cfg(feature = "optimism")]
+        #[cfg(feature = "linea")]
+        let (mut evm, tx_env) = {
+            let env = evm_env(1, SpecId::default(), BlockEnv::default());
+            (
+                crate::evm::linea::build_linea_evm(&mut multi_fork_db, &env, inspector),
+                tx_env,
+            )
+        };
+        #[cfg(all(feature = "optimism", not(feature = "linea")))]
         let (mut evm, tx_env) = {
             let env = evm_env(1, SpecId::default(), BlockEnv::default());
             (
@@ -307,10 +315,13 @@ mod tests {
                 OpTransaction::new(tx_env),
             )
         };
-        #[cfg(not(feature = "optimism"))]
-        let mut evm = {
+        #[cfg(all(not(feature = "optimism"), not(feature = "linea")))]
+        let (mut evm, tx_env) = {
             let env = evm_env(1, SpecId::default(), BlockEnv::default());
-            build_eth_evm(&mut multi_fork_db, &env, inspector)
+            (
+                build_eth_evm(&mut multi_fork_db, &env, inspector),
+                tx_env,
+            )
         };
 
         if with_reprice {

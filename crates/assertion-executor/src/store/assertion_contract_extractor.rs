@@ -98,7 +98,13 @@ pub fn extract_assertion_contract(
 
     let env = evm_env(config.chain_id, config.spec_id, block_env.clone());
 
-    #[cfg(feature = "optimism")]
+    #[cfg(feature = "linea")]
+    let (mut evm, tx_env) = {
+        let evm = crate::evm::linea::build_linea_evm(&mut db, &env, NoOpInspector);
+        (evm, tx_env)
+    };
+
+    #[cfg(all(feature = "optimism", not(feature = "linea")))]
     let (mut evm, tx_env) = {
         use op_revm::OpTransaction;
 
@@ -106,7 +112,7 @@ pub fn extract_assertion_contract(
         (evm, OpTransaction::new(tx_env))
     };
 
-    #[cfg(not(feature = "optimism"))]
+    #[cfg(all(not(feature = "optimism"), not(feature = "linea")))]
     let (mut evm, tx_env) = {
         let evm = crate::evm::build_evm::build_eth_evm(&mut db, &env, NoOpInspector);
         (evm, tx_env)
@@ -149,7 +155,13 @@ pub fn extract_assertion_contract(
 
     // Set up and execute the call
     let mut trigger_recorder = TriggerRecorder::default();
-    #[cfg(feature = "optimism")]
+    #[cfg(feature = "linea")]
+    let (mut evm, tx_env) = {
+        let evm = crate::evm::linea::build_linea_evm(&mut db, &env, &mut trigger_recorder);
+        (evm, tx_env)
+    };
+
+    #[cfg(all(feature = "optimism", not(feature = "linea")))]
     let (mut evm, tx_env) = {
         use op_revm::OpTransaction;
 
@@ -157,7 +169,7 @@ pub fn extract_assertion_contract(
         (evm, OpTransaction::new(tx_env))
     };
 
-    #[cfg(not(feature = "optimism"))]
+    #[cfg(all(not(feature = "optimism"), not(feature = "linea")))]
     let (mut evm, tx_env) = {
         let evm = crate::evm::build_evm::build_eth_evm(&mut db, &env, &mut trigger_recorder);
         (evm, tx_env)
