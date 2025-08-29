@@ -60,7 +60,7 @@ type LineaEvmTyped<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, LineaIns<'db, DB>, Et
 /// # IMPORTANT: tracer and precompiles
 /// Linea has some minor precompile changes to precompiles. We have implemented such
 /// changes within an inspector. ***To get full linea precompile changes, you must use
-/// either the `CallTracer` or `PhEvmInspector` inspectors!!!.***
+/// either the `CallTracer`, `TriggerRecorder` or `PhEvmInspector` inspectors!!!.***
 ///
 /// # Executing transactions
 /// To implement our *own* evm we needed to wrap the Linea evm in a struct.
@@ -155,7 +155,8 @@ where
 
 /// Builds a Linea EVM enviroment. Replaces specific opcodes with their linea compatible counterparts.
 ///
-/// ***IMPORTANT:*** To get linea precompile functionality, you must use either the `CallTracer` or `PhEvmInspector` inspectors.
+/// ***IMPORTANT:*** To get linea precompile functionality, you must use either the `CallTracer`,
+/// `TriggerRecorder` or `PhEvmInspector` inspectors.
 ///
 /// The `chain_id` is used to set the chain ID in the EVM environment.
 /// The `spec_id` is used to set the spec ID in the EVM environment.
