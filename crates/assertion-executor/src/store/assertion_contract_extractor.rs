@@ -98,19 +98,8 @@ pub fn extract_assertion_contract(
 
     let env = evm_env(config.chain_id, config.spec_id, block_env.clone());
 
-    #[cfg(feature = "optimism")]
-    let (mut evm, tx_env) = {
-        use op_revm::OpTransaction;
-
-        let evm = crate::evm::build_evm::build_optimism_evm(&mut db, &env, NoOpInspector);
-        (evm, OpTransaction::new(tx_env))
-    };
-
-    #[cfg(not(feature = "optimism"))]
-    let (mut evm, tx_env) = {
-        let evm = crate::evm::build_evm::build_eth_evm(&mut db, &env, NoOpInspector);
-        (evm, tx_env)
-    };
+    let mut evm = crate::build_evm_by_features!(&mut db, &env, NoOpInspector);
+    let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
 
     let result_and_state = evm
         .transact(tx_env)
@@ -149,19 +138,8 @@ pub fn extract_assertion_contract(
 
     // Set up and execute the call
     let mut trigger_recorder = TriggerRecorder::default();
-    #[cfg(feature = "optimism")]
-    let (mut evm, tx_env) = {
-        use op_revm::OpTransaction;
-
-        let evm = crate::evm::build_evm::build_optimism_evm(&mut db, &env, &mut trigger_recorder);
-        (evm, OpTransaction::new(tx_env))
-    };
-
-    #[cfg(not(feature = "optimism"))]
-    let (mut evm, tx_env) = {
-        let evm = crate::evm::build_evm::build_eth_evm(&mut db, &env, &mut trigger_recorder);
-        (evm, tx_env)
-    };
+    let mut evm = crate::build_evm_by_features!(&mut db, &env, &mut trigger_recorder);
+    let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
 
     let trigger_call_result = evm
         .inspect_with_tx(tx_env)

@@ -12,6 +12,8 @@
 //! impl function to check if we are calling any of the precompiles above. If we are,
 //! we need to process them according to the linea spec.
 
+use crate::inspectors::{TriggerRecorder, TRIGGER_RECORDER};
+use crate::inspectors::inspector_result_to_call_outcome;
 use crate::{
     db::{
         Database,
@@ -205,6 +207,28 @@ impl<ExtDb: DatabaseRef + Clone + DatabaseCommit> Inspector<LineaCtx<'_, MultiFo
                 inputs.return_memory_offset.clone(),
             );
             return Some(call_outcome);
+        }
+
+        // Then check for Linea-specific precompile behavior
+        execute_linea_precompile(context, inputs)
+    }
+}
+
+impl<DB: Database> Inspector<LineaCtx<'_, DB>> for TriggerRecorder {
+    fn call(
+        &mut self,
+        context: &mut LineaCtx<'_, DB>,
+        inputs: &mut CallInputs,
+    ) -> Option<CallOutcome> {
+        if inputs.target_address == TRIGGER_RECORDER {
+            let input_bytes = inputs.input.bytes(context);
+            let record_result = self.record_trigger(&input_bytes);
+            let gas = Gas::new(inputs.gas_limit);
+            return Some(inspector_result_to_call_outcome(
+                record_result,
+                gas,
+                inputs.return_memory_offset.clone(),
+            ));
         }
 
         // Then check for Linea-specific precompile behavior

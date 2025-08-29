@@ -18,6 +18,7 @@ pub use trigger_recorder::{
     TriggerRecorder,
     TriggerType,
     insert_trigger_recorder_account,
+    TRIGGER_RECORDER,
 };
 
 use sol_primitives::Error;
