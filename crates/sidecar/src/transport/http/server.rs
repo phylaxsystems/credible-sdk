@@ -52,7 +52,8 @@ pub struct TransactionEnv {
     pub caller: String,
     pub gas_limit: u64,
     pub gas_price: String,
-    pub transact_to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transact_to: Option<String>,
     pub value: String,
     pub data: String,
     pub nonce: u64,
