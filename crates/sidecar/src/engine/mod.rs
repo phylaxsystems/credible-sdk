@@ -199,7 +199,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             "Validating transaction against assertions"
         );
 
-
         #[cfg(feature = "linea")]
         if check_recepient_address(&tx_env).is_none() {
             // if `None`, we can just skip this transaction as it failed
