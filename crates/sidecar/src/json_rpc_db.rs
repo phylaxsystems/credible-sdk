@@ -30,22 +30,11 @@ impl DBErrorMarker for JsonRpcDbError {}
 /// A DatabaseRef implementation that fetches data from an Ethereum node via JSON-RPC
 pub struct JsonRpcDb {
     provider: Arc<RootProvider>,
-    runtime: tokio::runtime::Handle,
-    code_cache: DashMap<B256, Bytecode>,
+    code_cache: Arc<DashMap<B256, Bytecode>>,
 }
 
 impl JsonRpcDb {
     pub async fn try_new(rpc_url: &str) -> Result<Arc<Self>, JsonRpcDbError> {
-        // Try to get current runtime handle, or create a new one
-        let runtime = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle
-        } else {
-            // We're not in an async context, so we need to create a minimal runtime
-            // Use a single-threaded runtime for efficiency
-            let rt = tokio::runtime::Runtime::new().map_err(JsonRpcDbError::Runtime)?;
-            rt.handle().clone()
-        };
-
         // Create provider (this needs to be done in async context)
         let provider = ProviderBuilder::new()
             .connect(rpc_url)
@@ -54,8 +43,7 @@ impl JsonRpcDb {
 
         Ok(Arc::new(Self {
             provider: Arc::new(provider.root().clone()),
-            runtime,
-            code_cache: DashMap::default(),
+            code_cache: Arc::new(DashMap::default()),
         }))
     }
 }
@@ -65,8 +53,7 @@ impl DatabaseRef for JsonRpcDb {
 
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let provider = self.provider.clone();
-
-        self.runtime.block_on(async move {
+        let future = async move {
             // Get balance, nonce, and code in parallel for efficiency
             let (balance_result, nonce_result, code_result) = tokio::join!(
                 provider.get_balance(address),
@@ -96,6 +83,12 @@ impl DatabaseRef for JsonRpcDb {
                     Some(bytecode)
                 },
             }))
+        };
+        let handle = tokio::runtime::Handle::current();
+        std::thread::scope(|s| {
+            s.spawn(|| handle.block_on(future))
+                .join()
+                .map_err(|_| JsonRpcDbError::Runtime)?
         })
     }
 
@@ -116,20 +109,26 @@ impl DatabaseRef for JsonRpcDb {
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
         let provider = self.provider.clone();
 
-        self.runtime.block_on(async move {
+        let future = async move {
             let value = provider
                 .get_storage_at(address, index)
                 .await
                 .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
 
             Ok(value)
+        };
+        let handle = tokio::runtime::Handle::current();
+        std::thread::scope(|s| {
+            s.spawn(|| handle.block_on(future))
+                .join()
+                .map_err(|_| JsonRpcDbError::Runtime)?
         })
     }
 
     fn block_hash_ref(&self, block_number: u64) -> Result<B256, Self::Error> {
         let provider = self.provider.clone();
 
-        self.runtime.block_on(async move {
+        let future = async move {
             let block = provider
                 .get_block_by_number(block_number.into())
                 .await
@@ -137,6 +136,12 @@ impl DatabaseRef for JsonRpcDb {
                 .ok_or(JsonRpcDbError::BlockNotFound)?;
 
             Ok(block.header.hash)
+        };
+        let handle = tokio::runtime::Handle::current();
+        std::thread::scope(|s| {
+            s.spawn(|| handle.block_on(future))
+                .join()
+                .map_err(|_| JsonRpcDbError::Runtime)?
         })
     }
 }
@@ -152,5 +157,5 @@ pub enum JsonRpcDbError {
     #[error("Code by hash not found")]
     CodeByHashNotFound,
     #[error("Runtime error")]
-    Runtime(#[source] std::io::Error),
+    Runtime,
 }
