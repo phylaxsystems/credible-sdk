@@ -43,20 +43,6 @@ use revm::{
     },
 };
 
-/// `WrappedInspector` exists as a wrapper for merging the functionality of multiple
-/// revm inspectors into one.
-///
-/// This struct fully implements the inspector traits, and when we begin inspection,
-/// we first call into `INSP0`, and then `INSP1`.
-///
-/// This struct is primarily used to Wrap the phevm inspector, providing
-#[derive(Debug)]
-#[allow(dead_code)]
-struct WrappedInspector<INSP0, INSP1> {
-    inspector_0: INSP0,
-    inspector_1: INSP1,
-}
-
 /// Called inside of an inspector to act as if we were calling into
 /// linea precompiles.
 ///
