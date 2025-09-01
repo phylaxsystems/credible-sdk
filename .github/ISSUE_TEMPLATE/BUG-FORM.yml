@@ -1,0 +1,86 @@
+name: Bug report
+description: File a bug report
+labels: ["C-bug", "PM-needs-refinement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this bug!
+
+        If you're looking to submit a FEATURE REQUEST, please do so in our [Discussions Section](https://github.com/phylaxsystems/credible-sdk/discussions/categories/feature-requests).
+
+        If you want to disclose a security vulnerability, please consult our [Security Policy](https://github.com/phylaxsystems/credible-sdk/security/policy).
+
+        **Before filing this bug report, please ensure you have:**
+        - Searched existing issues to avoid duplicates
+        - Updated to the latest version of the relevant component
+
+  - type: dropdown
+    attributes:
+      label: Component
+      description: What component is the bug in?
+      multiple: true
+      options:
+        - pcl
+        - assertion-da
+        - assertion-executor
+        - dapp-api-client
+        - sidecar
+        - Other (please describe)
+    validations:
+      required: true
+  - type: checkboxes
+    attributes:
+      label: Have you ensured that all of these are up to date?
+      options:
+        - label: pcl
+  - type: input
+    attributes:
+      label: pcl Version
+      placeholder: "Run `pcl --version` and paste the output here"
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Rust Version
+      placeholder: "Run `rustc --version` and paste the output here"
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Operating System
+      description: What operating system are you on?
+      options:
+        - Windows
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: What command(s) triggered the bug?
+      description: Leave empty if not relevant
+      placeholder: "For example: pcl auth login, pcl build, etc."
+
+  - type: textarea
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+      description: Steps to reproduce the behavior. Be as specific as possible.
+      placeholder: |
+        1. Run command '...'
+        2. Navigate to '...'
+        3. Click on '...'
+        4. See error
+    validations:
+      required: true
