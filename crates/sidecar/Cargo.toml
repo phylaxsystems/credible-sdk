@@ -13,7 +13,7 @@ dashmap = { workspace = true }
 revm = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-assertion-executor = { workspace = true, features = ["test", "linea"],  default-features = false }
+assertion-executor = { workspace = true, default-features = false, features = ["test", "linea"] }
 rust-tracing = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
