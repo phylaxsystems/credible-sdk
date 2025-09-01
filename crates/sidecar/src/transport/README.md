@@ -165,7 +165,7 @@ is sent along with a `TxEnv` because we cannot construct a hash without a signat
 }
 ```
 
-The `transact_to` can be null, `0x` or "" if the transaction is a contract creation.
+The `transact_to` can be null, `0x`, "" or missing if the transaction is a contract creation.
 
 **Response (success):**
 
