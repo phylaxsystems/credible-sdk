@@ -6,7 +6,9 @@ For docs regarding the transport trait and how/when to implement it, please cons
 # The API
 
 Below you'll find what API methods the driver or sidecar should implement and how the response should be structured.
-All methods below are formatted in JSON for ease of implementation but other encodings, like CBOR, can be used.
+All methods below are formatted in JSON for ease of implementation, but other encodings, like CBOR, can be used.
+
+The URI for the request is `/tx`.
 
 ## Message formats
 
@@ -15,8 +17,11 @@ All methods below are formatted in JSON for ease of implementation but other enc
 ```json
 {
   "id": 1,
+  "jsonrpc": "2.0",
   "method": "methodName",
-  "params": { /* method-specific parameters */ }
+  "params": {
+    /* method-specific parameters */
+  }
 }
 ```
 
@@ -25,7 +30,10 @@ All methods below are formatted in JSON for ease of implementation but other enc
 ```json
 {
   "id": 1,
-  "result": { /* method-specific result */ }
+  "jsonrpc": "2.0",
+  "result": {
+    /* method-specific result */
+  }
 }
 ```
 
@@ -34,16 +42,20 @@ All methods below are formatted in JSON for ease of implementation but other enc
 ```json
 {
   "id": 1,
+  "jsonrpc": "2.0",
   "error": {
     "code": -32000,
-    "message": "Error description" // Optional
+    "message": "Error description"
+    // Optional
   }
 }
 ```
 
 ## Core Driver API Methods
 
-The following methods are for the core driver to send to the transport of the sidecar. When the driver starts working on a new block it should send the sidecar a new `sendBlockEnv` and then it should send `sendTransactions` events with transactions to be included in the block.
+The following methods are for the core driver to send to the transport of the sidecar. When the driver starts working on
+a new block it should send the sidecar a new `sendBlockEnv` and then it should send `sendTransactions` events with
+transactions to be included in the block.
 
 ### `sendBlockEnv`
 
@@ -54,43 +66,56 @@ Marks the start of a new block and end of the previous. Sends block environment 
 ```json
 {
   "id": 1,
+  "jsonrpc": "2.0",
   "method": "sendBlockEnv",
   "params": {
     "blockEnv": {
       "number": 12345,
-      "coinbase": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
+      "beneficiary": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
       "timestamp": 1692816000,
       "gas_limit": 30000000,
-      "basefee": "0x5f5e100",
+      "basefee": 10000000,
       "difficulty": "0x0",
-      "prevrandao": "0x1234567890abcdef..."
+      "prevrandao": "0x1234567890abcdef...",
+      "blob_excess_gas_and_price": {
+        "excess_blob_gas": 1000,
+        "blob_gasprice": 2000
+      }
     }
   }
 }
 ```
+
+The field `blob_excess_gas_and_price` is only required for specifications Cancun or later.
 
 **Response:**
 
 ```json
 {
   "id": 1,
+  "jsonrpc": "2.0",
   "result": {
     "success": true
   }
 }
 ```
 
-*Note: A successful response only means that the blockEnv has been received by the sidecar but may not be active yet as it gets queued for the core engine to process the event.*
+*Note: A successful response only means that the blockEnv has been received by the sidecar but may not be active yet as
+it gets queued for the core engine to process the event.*
 
 ### `sendTransactions`
 
-Sends batch of transactions to sidecar for processing. Must include at least one transaction. Blocked until a BlockEnv call is received, as we need information about what block we are executing txs on top of. The full `TxEnv` struct must be sent for each transaction. This is the minimum amount of data we need to execute a transaction. The transaction `hash` is sent along with a `TxEnv` because we cannot construct a hash without a signature, which we dont need/want.
+Sends batch of transactions to sidecar for processing. Must include at least one transaction. Blocked until a BlockEnv
+call is received, as we need information about what block we are executing txs on top of. The full `TxEnv` struct must
+be sent for each transaction. This is the minimum amount of data we need to execute a transaction. The transaction`hash`
+is sent along with a `TxEnv` because we cannot construct a hash without a signature, which we dont need/want.
 
 **Request:**
 
 ```json
 {
   "id": 2,
+  "jsonrpc": "2.0",
   "method": "sendTransactions",
   "params": {
     "transactions": [
@@ -98,7 +123,7 @@ Sends batch of transactions to sidecar for processing. Must include at least one
         "txEnv": {
           "caller": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
           "gas_limit": 21000,
-          "gas_price": "0x5f5e100",
+          "gas_price": "1000",
           "transact_to": "0x8ba1f109551bD432803012645Hac136c2D29",
           "value": "0x0",
           "data": "0x",
@@ -112,8 +137,7 @@ Sends batch of transactions to sidecar for processing. Must include at least one
         "txEnv": {
           "caller": "0x8ba1f109551bD432803012645Hac136c2D29",
           "gas_limit": 50000,
-          "gas_price": "0x5f5e100",
-          "transact_to": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
+          "gas_price": "2000",
           "value": "0x1bc16d674ec80000",
           "data": "0x60806040...",
           "nonce": 1,
@@ -121,41 +145,60 @@ Sends batch of transactions to sidecar for processing. Must include at least one
           "access_list": []
         },
         "hash": "0xefgh5678901234567890..."
+      },
+      {
+        "txEnv": {
+          "caller": "0x8ba1f109551bD432803012645Hac136c2D29",
+          "gas_limit": 50000,
+          "gas_price": "2000",
+          "transact_to": "0x",
+          "value": "0x1bc16d674ec80000",
+          "data": "0x60806040...",
+          "nonce": 1,
+          "chain_id": 1,
+          "access_list": []
+        },
+        "hash": "0xabcdef1234567890abcdef..."
       }
     ]
   }
 }
 ```
 
-**Response:**
+The `transact_to` can be null, `0x`, "" or missing if the transaction is a contract creation.
+
+**Response (success):**
 
 ```json
 {
   "id": 2,
+  "jsonrpc": "2.0",
   "result": {
-    "queued": ["0xabcd1234567890abcdef...", "0xefgh5678901234567890..."],
-    "failed": []
+    "status": "accepted",
+    "request_count": 3,
+    "message": "Successfully processed 3 requests"
   }
 }
 ```
 
 ### `getTransactions`
 
-Retrieves transaction results by hash. Can retrieve one or many transactions at once. Uses long-polling semantics. Responds when all requested transactions are available. `results` field contains all transactions we have results for, `not_found` contains txhashes the sidecar does not have stored.
+Retrieves transaction results by hash. Can retrieve one or many transactions at once. Uses long-polling semantics.
+Responds when all requested transactions are available. `results` field contains all transactions we have results for,
+`not_found` contains txhashes the sidecar does not have stored.
 
 **Request:**
 
 ```json
 {
   "id": 3,
+  "jsonrpc": "2.0",
   "method": "getTransactions",
-  "params": {
-    "hashes": [
-      "0xabcd1234567890abcdef...",
-      "0xefgh5678901234567890...",
-      "0xijkl9012345678901234..."
-    ]
-  }
+  "params": [
+    "0xabcd1234567890abcdef...",
+    "0xefgh5678901234567890...",
+    "0xijkl9012345678901234..."
+  ]
 }
 ```
 
@@ -164,6 +207,7 @@ Retrieves transaction results by hash. Can retrieve one or many transactions at 
 ```json
 {
   "id": 3,
+  "jsonrpc": "2.0",
   "result": {
     "results": [
       {
@@ -203,16 +247,36 @@ Retrieves transaction results by hash. Can retrieve one or many transactions at 
 When we cannot long wait for a `getTransactions` response, the flow of the call look like this:
 
 ```json
-{"id":2,"method":"getTransactions","params":{"hashes":[...]}}
+{
+  "id": 2,
+  "jsonrpc": "2.0",
+  "method": "getTransactions",
+  "params": {
+    "hashes": [
+      ...
+    ]
+  }
+}
 // ... waits ...
-{"id":2,"result":{"results":[...],"not_found":[]}}
+{
+  "id": 2,
+  "result": {
+    "results": [
+      ...
+    ],
+    "not_found": []
+  }
+}
 ```
 
-`getTransactions` **should not** be used for pings to the sidecar/sequencer. Instead dedicated messages for this should be defined according to transport needs.
+`getTransactions` **should not** be used for pings to the sidecar/sequencer. Instead dedicated messages for this should
+be defined according to transport needs.
 
 ## State Sync API
 
-Provides state access with signatures identical to revm DatabaseRef interface. When the sidecar is missing state (state not present in the sidecar evm cache), it should call into the driver(sequencer) with the methods below, with the driver responding.
+Provides state access with signatures identical to revm DatabaseRef interface. When the sidecar is missing state (state
+not present in the sidecar evm cache), it should call into the driver(sequencer) with the methods below, with the driver
+responding.
 
 ### `getAccounts`
 
@@ -223,6 +287,7 @@ Retrieves account information for multiple addresses.
 ```json
 {
   "id": 4,
+  "jsonrpc": "2.0",
   "method": "getAccounts",
   "params": {
     "addresses": [
@@ -238,6 +303,7 @@ Retrieves account information for multiple addresses.
 ```json
 {
   "id": 4,
+  "jsonrpc": "2.0",
   "result": {
     "accounts": [
       {
@@ -268,6 +334,7 @@ Retrieves storage values for multiple address/slot combinations.
 ```json
 {
   "id": 5,
+  "jsonrpc": "2.0",
   "method": "getStorage",
   "params": {
     "requests": [
@@ -289,6 +356,7 @@ Retrieves storage values for multiple address/slot combinations.
 ```json
 {
   "id": 5,
+  "jsonrpc": "2.0",
   "result": {
     "storage": [
       {
@@ -315,9 +383,14 @@ Retrieves block hashes for multiple block numbers.
 ```json
 {
   "id": 6,
+  "jsonrpc": "2.0",
   "method": "getBlockHashes",
   "params": {
-    "numbers": [12344, 12343, 12342]
+    "numbers": [
+      12344,
+      12343,
+      12342
+    ]
   }
 }
 ```
@@ -327,6 +400,7 @@ Retrieves block hashes for multiple block numbers.
 ```json
 {
   "id": 6,
+  "jsonrpc": "2.0",
   "result": {
     "hashes": [
       {
@@ -355,6 +429,7 @@ Retrieves bytecode for multiple code hashes.
 ```json
 {
   "id": 7,
+  "jsonrpc": "2.0",
   "method": "getCodeByHash",
   "params": {
     "code_hashes": [
@@ -370,6 +445,7 @@ Retrieves bytecode for multiple code hashes.
 ```json
 {
   "id": 7,
+  "jsonrpc": "2.0",
   "result": {
     "bytecodes": [
       {
@@ -387,8 +463,8 @@ Retrieves bytecode for multiple code hashes.
 
 ## Error Codes
 
-| Code | Message | Description |
-| --- | --- | --- |
-| -32000 | Transaction validation failed | Transaction execution failed |
-| -32001 | No BlockEnv | Received a transaction but no blockenv|
-| -32002 | Internal error | Unexpected sidecar error |
+| Code   | Message                       | Description                            |
+|--------|-------------------------------|----------------------------------------|
+| -32000 | Transaction validation failed | Transaction execution failed           |
+| -32001 | No BlockEnv                   | Received a transaction but no blockenv |
+| -32002 | Internal error                | Unexpected sidecar error               |

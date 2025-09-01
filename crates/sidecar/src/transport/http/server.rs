@@ -277,10 +277,10 @@ async fn process_request(
     trace!("Processing incoming request and sending to the queue");
 
     let Some(_) = &request.params else {
-        debug!("sendTransactions request missing required parameters");
+        debug!("request missing required parameters");
         return Ok(JsonRpcResponse::invalid_params(
             request,
-            "Missing params for sendTransactions",
+            "Missing params for the incoming request",
         ));
     };
 
@@ -298,7 +298,7 @@ async fn process_request(
         }
     };
 
-    let transaction_count = tx_queue_contents.len();
+    let request_count = tx_queue_contents.len();
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
@@ -306,7 +306,7 @@ async fn process_request(
         if let Err(e) = state.tx_sender.send(queue_tx) {
             error!(
                 error = %e,
-                "Failed to send transaction to queue from transport server"
+                "Failed to send tx queue content to queue from transport server"
             );
             return Ok(JsonRpcResponse::internal_error(
                 request,
@@ -316,16 +316,16 @@ async fn process_request(
     }
 
     debug!(
-        transaction_count = transaction_count,
-        "Successfully processed transaction batch"
+        request_count = request_count,
+        "Successfully processed request batch"
     );
 
     Ok(JsonRpcResponse::success(
         request,
         serde_json::json!({
             "status": "accepted",
-            "transaction_count": transaction_count,
-            "message": format!("Successfully processed {} transactions", transaction_count)
+            "request_count": request_count,
+            "message": "Requests processed successfully".to_string(),
         }),
     ))
 }
