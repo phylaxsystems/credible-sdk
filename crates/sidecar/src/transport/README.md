@@ -86,7 +86,7 @@ Marks the start of a new block and end of the previous. Sends block environment 
 }
 ```
 
-The field `blob_excess_gas_and_price` is optional and only used for blob blocks.
+The field `blob_excess_gas_and_price` is only required for specifications Cancun or later.
 
 **Response:**
 
@@ -164,6 +164,8 @@ is sent along with a `TxEnv` because we cannot construct a hash without a signat
   }
 }
 ```
+
+The `transact_to` can be null, `0x` or an address.
 
 **Response (success):**
 
