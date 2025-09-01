@@ -111,8 +111,7 @@ mod tests {
             assert_eq!(
                 interpreter.stack.peek(0).unwrap(),
                 U256::ZERO,
-                "Index {} should return 0",
-                index
+                "Index {index} should return 0"
             );
         }
     }

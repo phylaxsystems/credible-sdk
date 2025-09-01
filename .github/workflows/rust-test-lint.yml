@@ -36,6 +36,6 @@ jobs:
       foundry-command: 'forge build --root testdata/mock-protocol'
       # [""] means default features
       # Feature matrices are supported as follows: ["", "--features=foo", "--features=bar", "--features=foo,bar"]
-      feature-sets: '["", "--no-default-features"]'
+      feature-sets: '["", "--no-default-features --features=linea", "--no-default-features"]'
     secrets:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
