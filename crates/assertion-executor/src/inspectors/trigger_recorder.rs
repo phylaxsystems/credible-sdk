@@ -80,7 +80,7 @@ pub enum RecordError {
 
 impl TriggerRecorder {
     /// Records a trigger call made to the trigger recorder address.
-    fn record_trigger(&mut self, input_bytes: &[u8]) -> Result<Bytes, RecordError> {
+    pub fn record_trigger(&mut self, input_bytes: &[u8]) -> Result<Bytes, RecordError> {
         match input_bytes
             .get(0..4)
             .unwrap_or_default()

@@ -15,6 +15,7 @@ pub use tracer::{
     CallTracerError,
 };
 pub use trigger_recorder::{
+    TRIGGER_RECORDER,
     TriggerRecorder,
     TriggerType,
     insert_trigger_recorder_account,
@@ -39,7 +40,7 @@ use std::ops::Range;
 
 /// Convert a result to a call outcome.
 /// Uses the default require [`Error`] signature for encoding revert messages.
-fn inspector_result_to_call_outcome<E: std::fmt::Display>(
+pub fn inspector_result_to_call_outcome<E: std::fmt::Display>(
     result: Result<Bytes, E>,
     gas: Gas,
     memory_offset: Range<usize>,

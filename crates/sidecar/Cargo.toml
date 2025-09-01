@@ -13,7 +13,7 @@ dashmap = { workspace = true }
 revm = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-assertion-executor = { workspace = true, features = ["test"] }
+assertion-executor = { workspace = true, default-features = false, features = ["test", "linea"] }
 rust-tracing = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -31,7 +31,9 @@ assertion-da-client = { workspace = true }
 alloy-provider = { workspace = true }
 
 [features]
-testing = ["ctor"]
+default = [ "linea" ]
+linea = []
+testing = [ "ctor" ]
 
 [dev-dependencies]
 ctor = "0.5.0"

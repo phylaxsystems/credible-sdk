@@ -162,7 +162,7 @@ mod tests {
             let result = if i % 2 == 0 {
                 create_test_result_success()
             } else {
-                create_test_result_error(&format!("error {}", i))
+                create_test_result_error(&format!("error {i}"))
             };
             results.add_transaction_result(tx_hash, result);
         }
@@ -283,7 +283,7 @@ mod tests {
         for i in 1..=10 {
             let tx_hash = create_test_tx_hash(i);
             tx_hashes.push(tx_hash);
-            let result = create_test_result_error(&format!("error {}", i));
+            let result = create_test_result_error(&format!("error {i}"));
             results.add_transaction_result(tx_hash, result);
         }
 
