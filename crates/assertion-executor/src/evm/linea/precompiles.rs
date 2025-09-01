@@ -12,8 +12,6 @@
 //! impl function to check if we are calling any of the precompiles above. If we are,
 //! we need to process them according to the linea spec.
 
-use crate::inspectors::{TriggerRecorder, TRIGGER_RECORDER};
-use crate::inspectors::inspector_result_to_call_outcome;
 use crate::{
     db::{
         Database,
@@ -25,6 +23,9 @@ use crate::{
     inspectors::{
         CallTracer,
         PhEvmInspector,
+        TRIGGER_RECORDER,
+        TriggerRecorder,
+        inspector_result_to_call_outcome,
     },
     primitives::bytes,
 };
