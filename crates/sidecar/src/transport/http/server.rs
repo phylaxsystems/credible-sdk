@@ -324,7 +324,7 @@ async fn process_request(
         serde_json::json!({
             "status": "accepted",
             "request_count": request_count,
-            "message": format!("Successfully processed {} requests", request_count)
+            "message": "Requests processed successfully".to_string(),
         }),
     ))
 }

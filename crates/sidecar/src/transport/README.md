@@ -76,11 +76,17 @@ Marks the start of a new block and end of the previous. Sends block environment 
       "gas_limit": 30000000,
       "basefee": 10000000,
       "difficulty": "0x0",
-      "prevrandao": "0x1234567890abcdef..."
+      "prevrandao": "0x1234567890abcdef...",
+      "blob_excess_gas_and_price": {
+        "excess_blob_gas": 1000,
+        "blob_gasprice": 2000
+      }
     }
   }
 }
 ```
+
+The field `blob_excess_gas_and_price` is optional and only used for blob blocks.
 
 **Response:**
 
@@ -117,7 +123,7 @@ is sent along with a `TxEnv` because we cannot construct a hash without a signat
         "txEnv": {
           "caller": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
           "gas_limit": 21000,
-          "gas_price": 1000,
+          "gas_price": "1000",
           "transact_to": "0x8ba1f109551bD432803012645Hac136c2D29",
           "value": "0x0",
           "data": "0x",
@@ -131,8 +137,7 @@ is sent along with a `TxEnv` because we cannot construct a hash without a signat
         "txEnv": {
           "caller": "0x8ba1f109551bD432803012645Hac136c2D29",
           "gas_limit": 50000,
-          "gas_price": 2000,
-          "transact_to": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
+          "gas_price": "2000",
           "value": "0x1bc16d674ec80000",
           "data": "0x60806040...",
           "nonce": 1,
@@ -140,6 +145,20 @@ is sent along with a `TxEnv` because we cannot construct a hash without a signat
           "access_list": []
         },
         "hash": "0xefgh5678901234567890..."
+      },
+      {
+        "txEnv": {
+          "caller": "0x8ba1f109551bD432803012645Hac136c2D29",
+          "gas_limit": 50000,
+          "gas_price": "2000",
+          "transact_to": "0x",
+          "value": "0x1bc16d674ec80000",
+          "data": "0x60806040...",
+          "nonce": 1,
+          "chain_id": 1,
+          "access_list": []
+        },
+        "hash": "0xabcdef1234567890abcdef..."
       }
     ]
   }
@@ -173,13 +192,11 @@ Responds when all requested transactions are available. `results` field contains
   "id": 3,
   "jsonrpc": "2.0",
   "method": "getTransactions",
-  "params": {
-    "hashes": [
-      "0xabcd1234567890abcdef...",
-      "0xefgh5678901234567890...",
-      "0xijkl9012345678901234..."
-    ]
-  }
+  "params": [
+    "0xabcd1234567890abcdef...",
+    "0xefgh5678901234567890...",
+    "0xijkl9012345678901234..."
+  ]
 }
 ```
 
