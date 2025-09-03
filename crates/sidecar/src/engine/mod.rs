@@ -401,6 +401,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         "Block details"
                     );
 
+                    if let Some(prev_block_env) = self.block_env.as_ref()
+                        && prev_block_env.number != block_env.number - 1
+                    {
+                        self.state.invalidate_all();
+                    }
+
                     self.block_env = Some(block_env);
                 }
                 TxQueueContents::Tx(queue_transaction) => {
