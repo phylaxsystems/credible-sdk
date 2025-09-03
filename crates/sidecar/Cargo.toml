@@ -17,7 +17,7 @@ assertion-executor = { workspace = true, default-features = false, features = ["
 rust-tracing = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-axum = "0.7"
+axum = "0.8.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
@@ -31,9 +31,9 @@ assertion-da-client = { workspace = true }
 alloy-provider = { workspace = true }
 
 [features]
-default = [ "linea" ]
+default = ["linea"]
 linea = []
-testing = [ "ctor" ]
+testing = ["ctor"]
 
 [dev-dependencies]
 ctor = "0.5.0"
