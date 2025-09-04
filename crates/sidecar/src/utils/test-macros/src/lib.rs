@@ -60,12 +60,13 @@ pub fn engine_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #[tokio::test]
         #fn_vis async fn #fn_name() {
             use crate::utils::LocalInstance;
+            use crate::utils::LocalInstanceMockDriver;
 
-            let mut instance = LocalInstance::new()
+            let mut instance = LocalInstance::<LocalInstanceMockDriver>::new()
                 .await
                 .expect("Failed to create LocalInstance");
 
-            let test_fn = |mut instance: LocalInstance| async move #fn_body;
+            let test_fn = |mut instance: LocalInstance::<LocalInstanceMockDriver>| async move #fn_body;
             test_fn(instance).await;
         }
     };

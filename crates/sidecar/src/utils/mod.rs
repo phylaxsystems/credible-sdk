@@ -52,6 +52,11 @@ use tracing::{
     warn,
 };
 
+use revm::database::{
+        CacheDB,
+        EmptyDBTyped,
+    };
+
 use crate::transport::Transport;
 
 pub trait TestTransport: Sized {
@@ -168,7 +173,6 @@ impl TestTransport for LocalInstanceMockDriver {
         });
 
         Ok(LocalInstance {
-            mock_sender: mock_tx.clone(),
             db: underlying_db,
             assertion_store,
             transport_handle: Some(transport_handle),
@@ -187,7 +191,7 @@ impl TestTransport for LocalInstanceMockDriver {
         todo!()
     }
 
-    async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
+    async fn send_transaction(&self, _tx_hash: B256, _tx_env: TxEnv) -> Result<(), String> {
         todo!()
     }
 }
