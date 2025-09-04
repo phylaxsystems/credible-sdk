@@ -38,3 +38,9 @@ testing = ["ctor"]
 [dev-dependencies]
 ctor = "0.5.0"
 sidecar-test-macros = { path = "src/utils/test-macros" }
+
+[profile.release]
+lto = "fat"
+opt-level = 3
+codegen-units = 1
+strip = true
