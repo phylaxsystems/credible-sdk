@@ -16,14 +16,11 @@ struct TransportVariant {
     options: fn(&proc_macro2::TokenStream) -> proc_macro2::TokenStream,
 }
 
-const VARIANTS: &[TransportVariant] = &[
-    TransportVariant {
-        test_name: "mock",
-        transport_type: "crate::transport::mock::MockTransport",
-        options: |_| quote! { },
-    }
-
-];
+const VARIANTS: &[TransportVariant] = &[TransportVariant {
+    test_name: "mock",
+    transport_type: "crate::transport::mock::MockTransport",
+    options: |_| quote! {},
+}];
 
 /// Procedural macro for sidecar engine tests.
 ///
