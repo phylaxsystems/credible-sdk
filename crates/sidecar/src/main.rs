@@ -1,10 +1,10 @@
 //! # The credible layer sidecar
 
 mod args;
+mod cache;
 mod config;
 pub mod engine;
 mod indexer;
-mod json_rpc_db;
 pub(crate) mod transactions_state;
 pub mod transport;
 mod utils;
@@ -23,12 +23,16 @@ use assertion_executor::{
     db::overlay::OverlayDb,
 };
 use crossbeam::channel::unbounded;
+use std::sync::Arc;
 
 use clap::Parser;
 use rust_tracing::trace;
 
 use crate::{
-    json_rpc_db::JsonRpcDb,
+    cache::{
+        Cache,
+        sources::sequencer::Sequencer,
+    },
     transactions_state::TransactionsState,
     transport::http::{
         HttpTransport,
@@ -44,9 +48,11 @@ async fn main() -> anyhow::Result<()> {
     let args = SidecarArgs::parse();
 
     let (tx_sender, tx_receiver) = unbounded();
-    let json_rpc_db = JsonRpcDb::try_new(&args.chain.rpc_url).await?;
-    let state: OverlayDb<JsonRpcDb> = OverlayDb::new(
-        Some(json_rpc_db),
+
+    let sequencer = Arc::new(Sequencer::try_new(&args.chain.rpc_url).await?);
+    let cache = Arc::new(Cache::new(vec![sequencer]));
+    let state: OverlayDb<Cache> = OverlayDb::new(
+        Some(cache.clone()),
         args.credible
             .overlay_cache_capacity_bytes
             .unwrap_or(1024 * 1024 * 1024) as u64,
@@ -67,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut engine = CoreEngine::new(
         state,
+        cache,
         tx_receiver,
         assertion_executor,
         engine_state_results.clone(),

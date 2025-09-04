@@ -205,6 +205,18 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
                         // Found in DB, cache it
                         self.overlay
                             .insert(key, TableValue::Basic(account_info.clone()));
+
+                        // If the code is present, already populate the cache with the code hash, so we save one call to the underlying DB
+                        if let Some(code) = account_info.code.as_ref() {
+                            let code_byte = code.original_byte_slice();
+                            let code_hash =
+                                TableKey::CodeByHash(revm::primitives::keccak256(code_byte));
+                            let bytecode = TableValue::CodeByHash(Bytecode::new_raw(
+                                code_byte.to_vec().into(),
+                            ));
+                            self.overlay.insert(code_hash, bytecode);
+                        }
+
                         Ok(Some(account_info)) // Return the found info
                     }
                     None => {

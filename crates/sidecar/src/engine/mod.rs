@@ -61,7 +61,10 @@ use assertion_executor::{
     },
 };
 
-use crate::engine::transactions_results::TransactionsResults;
+use crate::{
+    cache::Cache,
+    engine::transactions_results::TransactionsResults,
+};
 #[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
@@ -119,6 +122,7 @@ pub enum TransactionResult {
 #[derive(Debug)]
 pub struct CoreEngine<DB> {
     state: OverlayDb<DB>,
+    cache: Arc<Cache>,
     tx_receiver: TransactionQueueReceiver,
     assertion_executor: AssertionExecutor,
     block_env: Option<BlockEnv>,
@@ -129,6 +133,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[instrument(name = "engine::new", skip_all, level = "debug")]
     pub fn new(
         state: OverlayDb<DB>,
+        cache: Arc<Cache>,
         tx_receiver: TransactionQueueReceiver,
         assertion_executor: AssertionExecutor,
         state_results: Arc<TransactionsState>,
@@ -136,6 +141,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     ) -> Self {
         Self {
             state,
+            cache,
             tx_receiver,
             assertion_executor,
             block_env: None,
@@ -160,6 +166,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 AssertionStore::new_ephemeral().expect("REASON"),
             ),
             block_env: None,
+            cache: Arc::new(Cache::new(vec![])),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
         }
     }
@@ -407,6 +414,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         self.state.invalidate_all();
                     }
 
+                    self.cache.set_block_number(block_env.number);
                     self.block_env = Some(block_env);
                 }
                 TxQueueContents::Tx(queue_transaction) => {
@@ -516,7 +524,15 @@ mod tests {
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
         let state_results = TransactionsState::new();
-        let engine = CoreEngine::new(state, tx_receiver, assertion_executor, state_results, 10);
+        let cache = Arc::new(Cache::new(vec![]));
+        let engine = CoreEngine::new(
+            state,
+            cache,
+            tx_receiver,
+            assertion_executor,
+            state_results,
+            10,
+        );
         (engine, tx_sender)
     }
 
