@@ -5,6 +5,26 @@ use syn::{
     parse_macro_input,
 };
 
+/// Contains info about a single transport variant. Used in the macro below to generate tests
+/// for different variants.
+struct TransportVariant {
+    /// What tests of this variant should be suffixed with
+    test_name: &'static str,
+    /// `crate::...` import of the transport
+    transport_type: &'static str,
+    /// If we need to modify the arguments to spawn the transport in any way
+    options: fn(&proc_macro2::TokenStream) -> proc_macro2::TokenStream,
+}
+
+const VARIANTS: &[TransportVariant] = &[
+    TransportVariant {
+        test_name: "mock",
+        transport_type: "crate::transport::mock::MockTransport",
+        options: |_| quote! { },
+    }
+
+];
+
 /// Procedural macro for sidecar engine tests.
 ///
 /// This macro automatically creates a LocalInstance and passes it to your test function.
