@@ -76,6 +76,63 @@ use tracing::{
 /// Test database error type
 type TestDbError = std::convert::Infallible;
 
+// HTTP transport retry configuration constants
+const MAX_HTTP_RETRY_ATTEMPTS: usize = 3;
+const HTTP_RETRY_DELAY_MS: u64 = 100;
+
+/// Setup test database with common accounts pre-funded
+fn setup_test_database(
+    underlying_db: &mut CacheDB<EmptyDBTyped<TestDbError>>,
+) -> Address {
+    // Insert default counter contract into the underlying db
+    underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
+
+    // Create default account that will be used by this instance
+    let default_account = Address::from([0x01; 20]);
+    let default_account_info = AccountInfo {
+        balance: U256::MAX,
+        ..Default::default()
+    };
+    underlying_db.insert_account_info(default_account, default_account_info);
+
+    // Fund common test accounts with maximum balance
+    let default_caller = counter_call().caller;
+    let caller_account = AccountInfo {
+        balance: U256::MAX,
+        ..Default::default()
+    };
+    underlying_db.insert_account_info(default_caller, caller_account);
+
+    // Fund test caller account
+    let test_caller = Address::from([0x02; 20]);
+    let test_account = AccountInfo {
+        balance: U256::MAX,
+        ..Default::default()
+    };
+    underlying_db.insert_account_info(test_caller, test_account);
+
+    default_account
+}
+
+/// Setup assertion store with test assertions pre-loaded
+fn setup_assertion_store() -> Result<Arc<AssertionStore>, String> {
+    let assertion_store = Arc::new(
+        AssertionStore::new_ephemeral()
+            .map_err(|e| format!("Failed to create assertion store: {e}"))?,
+    );
+
+    // Insert counter assertion into store
+    let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
+    assertion_store
+        .insert(
+            COUNTER_ADDRESS,
+            AssertionState::new_test(assertion_bytecode),
+        )
+        .unwrap();
+
+    Ok(assertion_store)
+}
+
 pub trait TestTransport: Sized {
     /// Creates a `LocalInstance` with a specific transport
     async fn new() -> Result<LocalInstance<Self>, String>;
@@ -497,52 +554,14 @@ impl TestTransport for LocalInstanceMockDriver {
 
         // Create the database and state
         let mut underlying_db = CacheDB::new(EmptyDBTyped::default());
-        // Insert default counter contract into the underlying db (and mock by proxy)
-        underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
-
-        // Create default account that will be used by this instance
-        let default_account = Address::from([0x01; 20]);
-        let default_account_info = AccountInfo {
-            balance: U256::MAX,
-            ..Default::default()
-        };
-        underlying_db.insert_account_info(default_account, default_account_info);
-
-        // Fund common test accounts with maximum balance
-        let default_caller = counter_call().caller;
-        let caller_account = AccountInfo {
-            balance: U256::MAX,
-            ..Default::default()
-        };
-        underlying_db.insert_account_info(default_caller, caller_account);
-
-        // Fund test caller account
-        let test_caller = Address::from([0x02; 20]);
-        let test_account = AccountInfo {
-            balance: U256::MAX,
-            ..Default::default()
-        };
-        underlying_db.insert_account_info(test_caller, test_account);
+        let default_account = setup_test_database(&mut underlying_db);
 
         let underlying_db = Arc::new(underlying_db);
 
         let state = OverlayDb::new(Some(underlying_db.clone()), 1024);
 
         // Create assertion store and executor
-        let assertion_store = Arc::new(
-            AssertionStore::new_ephemeral()
-                .map_err(|e| format!("Failed to create assertion store: {e}"))?,
-        );
-
-        // Insert counter assertion into store
-        let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
-        assertion_store
-            .insert(
-                COUNTER_ADDRESS,
-                // Assuming AssertionState::new_test takes Bytes or similar
-                AssertionState::new_test(assertion_bytecode),
-            )
-            .unwrap();
+        let assertion_store = setup_assertion_store()?;
 
         let assertion_executor =
             AssertionExecutor::new(ExecutorConfig::default(), (*assertion_store).clone());
@@ -592,7 +611,7 @@ impl TestTransport for LocalInstanceMockDriver {
             engine_handle: Some(engine_handle),
             block_number: 0,
             transaction_results: state_results,
-            default_account: Address::from([0x01; 20]),
+            default_account,
             current_nonce: 0,
             transport: LocalInstanceMockDriver {
                 mock_sender: mock_tx,
@@ -637,59 +656,21 @@ pub struct LocalInstanceHttpDriver {
 
 impl TestTransport for LocalInstanceHttpDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
-        info!(target: "LocalInstanceHttpDriver", "Creating LocalInstance with MockTransport");
+        info!(target: "LocalInstanceHttpDriver", "Creating LocalInstance with HttpTransport");
 
         // Create channels for communication
         let (engine_tx, engine_rx) = channel::unbounded();
 
         // Create the database and state
         let mut underlying_db = CacheDB::new(EmptyDBTyped::default());
-        // Insert default counter contract into the underlying db (and mock by proxy)
-        underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
-
-        // Create default account that will be used by this instance
-        let default_account = Address::from([0x01; 20]);
-        let default_account_info = AccountInfo {
-            balance: U256::MAX,
-            ..Default::default()
-        };
-        underlying_db.insert_account_info(default_account, default_account_info);
-
-        // Fund common test accounts with maximum balance
-        let default_caller = counter_call().caller;
-        let caller_account = AccountInfo {
-            balance: U256::MAX,
-            ..Default::default()
-        };
-        underlying_db.insert_account_info(default_caller, caller_account);
-
-        // Fund test caller account
-        let test_caller = Address::from([0x02; 20]);
-        let test_account = AccountInfo {
-            balance: U256::MAX,
-            ..Default::default()
-        };
-        underlying_db.insert_account_info(test_caller, test_account);
+        let default_account = setup_test_database(&mut underlying_db);
 
         let underlying_db = Arc::new(underlying_db);
 
         let state = OverlayDb::new(Some(underlying_db.clone()), 1024);
 
         // Create assertion store and executor
-        let assertion_store = Arc::new(
-            AssertionStore::new_ephemeral()
-                .map_err(|e| format!("Failed to create assertion store: {e}"))?,
-        );
-
-        // Insert counter assertion into store
-        let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
-        assertion_store
-            .insert(
-                COUNTER_ADDRESS,
-                // Assuming AssertionState::new_test takes Bytes or similar
-                AssertionState::new_test(assertion_bytecode),
-            )
-            .unwrap();
+        let assertion_store = setup_assertion_store()?;
 
         let assertion_executor =
             AssertionExecutor::new(ExecutorConfig::default(), (*assertion_store).clone());
@@ -757,7 +738,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             engine_handle: Some(engine_handle),
             block_number: 0,
             transaction_results: state_results,
-            default_account: Address::from([0x01; 20]),
+            default_account,
             current_nonce: 0,
             transport: LocalInstanceHttpDriver {
                 client: reqwest::Client::new(),
@@ -801,10 +782,9 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         // Retry logic to wait for HTTP server to be ready
         let mut attempts = 0;
-        let max_attempts = 10;
         let mut last_error = String::new();
 
-        while attempts < max_attempts {
+        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
             attempts += 1;
 
             match self
@@ -833,9 +813,9 @@ impl TestTransport for LocalInstanceHttpDriver {
                 }
                 Err(e) => {
                     last_error = format!("HTTP request failed: {}", e);
-                    if attempts < max_attempts {
-                        debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, max_attempts);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
+                        debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS)).await;
                     }
                 }
             }
@@ -843,7 +823,7 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         Err(format!(
             "Failed after {} attempts: {}",
-            max_attempts, last_error
+            MAX_HTTP_RETRY_ATTEMPTS, last_error
         ))
     }
 
@@ -882,9 +862,8 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         let mut last_error = String::new();
         let mut attempts = 0;
-        let max_attempts = 10;
 
-        while attempts < max_attempts {
+        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
             attempts += 1;
 
             match self
@@ -915,9 +894,9 @@ impl TestTransport for LocalInstanceHttpDriver {
                 }
                 Err(e) => {
                     last_error = format!("HTTP request failed: {}", e);
-                    if attempts < max_attempts {
-                        debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, max_attempts);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
+                        debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS)).await;
                     }
                 }
             }
@@ -925,7 +904,7 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         Err(format!(
             "Failed after {} attempts: {}",
-            max_attempts, last_error
+            MAX_HTTP_RETRY_ATTEMPTS, last_error
         ))
     }
 }
