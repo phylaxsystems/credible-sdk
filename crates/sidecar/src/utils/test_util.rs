@@ -49,7 +49,7 @@ pub type TestDbError = Infallible;
 /// ```
 /// use sidecar::utils::engine_test;
 ///
-/// #[engine_test]
+/// #[engine_test(all)]
 /// async fn test_something(mut instance: LocalInstance) {
 ///     instance.new_block().unwrap();
 ///     // Your test code here
