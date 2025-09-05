@@ -528,7 +528,7 @@ mod tests {
         }
     }
 
-    #[crate::utils::engine_test]
+    #[crate::utils::engine_test(all)]
     async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {
         // Send and verify a reverting CREATE transaction
         let tx_hash = instance.send_reverting_create_tx().await.unwrap();

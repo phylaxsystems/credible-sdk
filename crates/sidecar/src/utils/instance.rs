@@ -617,12 +617,31 @@ impl TestTransport for LocalInstanceMockDriver {
     }
 }
 
+#[derive(Debug)]
+struct LocalInstanceHttpDriver {
+    field: u64
+}
+
+impl TestTransport for LocalInstanceHttpDriver {
+    async fn new() -> Result<LocalInstance<Self>, String> {
+        unimplemented!()
+    }
+
+    async fn new_block(&self, _block_number: u64) -> Result<(), String> {
+        unimplemented!()
+    }
+
+    async fn send_transaction(&self, _tx_hash: B256, _tx_env: TxEnv) -> Result<(), String> {
+        unimplemented!()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use revm::primitives::uint;
 
-    #[crate::utils::engine_test]
+    #[crate::utils::engine_test(all)]
     async fn test_instance_send_assertion_passing_failing_pair(
         mut instance: LocalInstance<LocalInstanceMockDriver>,
     ) {
