@@ -1,4 +1,5 @@
 use crate::{
+    cache::Cache,
     engine::{
         CoreEngine,
         TransactionResult,
@@ -155,8 +156,10 @@ impl LocalInstance {
 
         // Create the engine with TransactionsState
         let state_results = crate::TransactionsState::new();
+        let cache = Arc::new(Cache::new(vec![]));
         let mut engine = CoreEngine::new(
             state,
+            cache,
             engine_rx,
             assertion_executor,
             state_results.clone(),
