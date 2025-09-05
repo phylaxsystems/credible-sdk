@@ -20,12 +20,12 @@ struct TransportVariant {
 const VARIANTS: &[TransportVariant] = &[
     TransportVariant {
         test_name: "mock",
-        transport_type: "crate::utils::instance::LocalInstanceMockDriver",
+        transport_type: "crate::utils::test_drivers::LocalInstanceMockDriver",
         options: |_| quote! {},
     },
     TransportVariant {
         test_name: "http",
-        transport_type: "crate::utils::instance::LocalInstanceHttpDriver",
+        transport_type: "crate::utils::test_drivers::LocalInstanceHttpDriver",
         options: |_| quote! {},
     },
 ];
