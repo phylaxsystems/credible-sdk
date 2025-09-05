@@ -81,6 +81,7 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Internal constructor for creating LocalInstance with all fields
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_internal(
         db: Arc<CacheDB<EmptyDBTyped<TestDbError>>>,
         assertion_store: Arc<AssertionStore>,
