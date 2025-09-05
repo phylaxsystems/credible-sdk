@@ -763,37 +763,52 @@ impl TestTransport for LocalInstanceHttpDriver {
     async fn new_block(&self, block_number: u64) -> Result<(), String> {
         info!(target: "LocalInstanceHttpDriver", "LocalInstance sending block: {:?}", block_number);
 
-        let blockenv = BlockEnv::default();
+        let blockenv = BlockEnv {
+            number: block_number,
+            gas_limit: 50_000_000, // Set higher gas limit for assertions
+            ..Default::default()
+        };
+
         // jsonrpc request for sending a blockenv to the sidecar
-        let mut request = json!({
+        let request = json!({
           "id": 1,
           "jsonrpc": "2.0",
           "method": "sendBlockEnv",
           "params": {
-            "blockEnv": {
-              "number": 0,
-              "beneficiary": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
-              "timestamp": 1692816000,
-              "gas_limit": 30000000,
-              "basefee": 0,
-              "difficulty": "0x0",
-              "prevrandao": "0x0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
-              "blob_excess_gas_and_price": {
-                "excess_blob_gas": 1000,
-                "blob_gasprice": 2000
-              }
-            }
+            "number": blockenv.number,
+            "beneficiary": blockenv.beneficiary.to_string(),
+            "timestamp": blockenv.timestamp,
+            "gas_limit": blockenv.gas_limit,
+            "basefee": blockenv.basefee,
+            "difficulty": format!("0x{:x}", blockenv.difficulty),
+            "prevrandao": blockenv.prevrandao.map(|h| h.to_string())
           }
         });
 
-        // Modify the blocknumber
-        request["params"]["blockEnv"]["number"] = block_number.into();
-        request["params"]["blockEnv"]["beneficiary"] = blockenv.beneficiary.to_string().into();
-        request["params"]["blockEnv"]["beneficiary"] = blockenv.prevrandao.unwrap().to_string().into();
-        request["params"]["blockEnv"]["timestamp"] = blockenv.timestamp.into();
-
         // Send request via reqwest to the httptransport server
-        // return error if the response contains an error or an internal reqwest error or ()
+        let response = self
+            .client
+            .post(format!("http://{}/tx", self.address))
+            .header("content-type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("HTTP error: {}", response.status()));
+        }
+
+        let json_response: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+        if let Some(error) = json_response.get("error") {
+            return Err(format!("JSON-RPC error: {}", error));
+        }
+
+        Ok(())
     }
 
     async fn send_transaction(&self, _tx_hash: B256, _tx_env: TxEnv) -> Result<(), String> {
