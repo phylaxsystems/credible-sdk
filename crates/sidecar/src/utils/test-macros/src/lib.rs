@@ -1,7 +1,8 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-    ItemFn, Ident,
+    Ident,
+    ItemFn,
     parse_macro_input,
 };
 
@@ -58,14 +59,16 @@ const VARIANTS: &[TransportVariant] = &[
 #[proc_macro_attribute]
 pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
-    
+
     let fn_name = &input_fn.sig.ident;
     let fn_body = &input_fn.block;
     let fn_vis = &input_fn.vis;
 
     // Parse which variants to test - require arguments
     let variants_to_test: Vec<&'static str> = if attr.is_empty() {
-        panic!("engine_test macro requires an argument: use #[engine_test(all)] or #[engine_test(mock)]");
+        panic!(
+            "engine_test macro requires an argument: use #[engine_test(all)] or #[engine_test(mock)]"
+        );
     } else {
         let attr_str = attr.to_string();
         if attr_str.trim() == "all" {
@@ -76,9 +79,15 @@ pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             if let Some(variant) = VARIANTS.iter().find(|v| v.test_name == requested_variant) {
                 vec![variant.test_name]
             } else {
-                panic!("Unknown variant '{}'. Available variants: {} or 'all'", 
-                       requested_variant, 
-                       VARIANTS.iter().map(|v| v.test_name).collect::<Vec<_>>().join(", "));
+                panic!(
+                    "Unknown variant '{}'. Available variants: {} or 'all'",
+                    requested_variant,
+                    VARIANTS
+                        .iter()
+                        .map(|v| v.test_name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
             }
         }
     };

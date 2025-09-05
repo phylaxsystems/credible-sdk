@@ -1,13 +1,21 @@
 use crate::{
+    CoreEngine,
     engine::{
+        TransactionResult,
         queue::{
             QueueTransaction,
             TransactionQueueSender,
             TxQueueContents,
-        }, TransactionResult
-    }, transport::{
-        http::{config::HttpTransportConfig, HttpTransport}, mock::MockTransport, Transport
-    }, CoreEngine
+        },
+    },
+    transport::{
+        Transport,
+        http::{
+            HttpTransport,
+            config::HttpTransportConfig,
+        },
+        mock::MockTransport,
+    },
 };
 use assertion_executor::{
     AssertionExecutor,
@@ -46,7 +54,9 @@ use revm::{
         address,
     },
 };
+use serde_json::json;
 use std::{
+    net::SocketAddr,
     sync::Arc,
     time::Duration,
 };
@@ -615,12 +625,13 @@ impl TestTransport for LocalInstanceMockDriver {
 
 #[derive(Debug)]
 pub struct LocalInstanceHttpDriver {
-    field: u64
+    client: reqwest::Client,
+    address: SocketAddr,
 }
 
 impl TestTransport for LocalInstanceHttpDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
-        info!(target: "test_transport", "Creating LocalInstance with MockTransport");
+        info!(target: "LocalInstanceHttpDriver", "Creating LocalInstance with MockTransport");
 
         // Create channels for communication
         let (engine_tx, engine_rx) = channel::unbounded();
@@ -690,32 +701,47 @@ impl TestTransport for LocalInstanceHttpDriver {
         // Spawn the engine task that manually processes items
         // This mimics what the tests do - manually processing items from the queue
         let engine_handle = tokio::spawn(async move {
-            info!(target: "test_transport", "Engine task started, waiting for items...");
-            info!(target: "test_transport", "Engine about to call run()");
+            info!(target: "LocalInstanceHttpDriver", "Engine task started, waiting for items...");
+            info!(target: "LocalInstanceHttpDriver", "Engine about to call run()");
             let result = engine.run().await;
             match result {
-                Ok(_) => info!(target: "test_transport", "Engine run() completed successfully"),
-                Err(e) => error!(target: "test_transport", "Engine run() failed: {:?}", e),
+                Ok(_) => {
+                    info!(target: "LocalInstanceHttpDriver", "Engine run() completed successfully")
+                }
+                Err(e) => error!(target: "LocalInstanceHttpDriver", "Engine run() failed: {:?}", e),
             }
-            info!(target: "test_transport", "Engine task completed");
+            info!(target: "LocalInstanceHttpDriver", "Engine task completed");
         });
 
-        // Create mock transport with the channels
-        let config = HttpTransportConfig {
-            bind_addr: "127.0.0.1:8001".parse().unwrap(),
-        };
+        // Find an available port dynamically
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("Failed to bind to available port: {}", e))?;
+        let address = listener
+            .local_addr()
+            .map_err(|e| format!("Failed to get local address: {}", e))?;
+
+        // Drop the listener so the port becomes available for HttpTransport
+        drop(listener);
+
+        // Create HTTP transport config with the dynamically assigned address
+        let config = HttpTransportConfig { bind_addr: address };
         let transport = HttpTransport::new(config, engine_tx, state_results.clone()).unwrap();
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
-            info!(target: "test_transport", "Transport task started");
-            info!(target: "test_transport", "Transport about to call run()");
+            info!(target: "LocalInstanceHttpDriver", "Transport task started");
+            info!(target: "LocalInstanceHttpDriver", "Transport about to call run()");
             let result = transport.run().await;
             match result {
-                Ok(_) => info!(target: "test_transport", "Transport run() completed successfully"),
-                Err(e) => warn!(target: "test_transport", "Transport stopped with error: {}", e),
+                Ok(_) => {
+                    info!(target: "LocalInstanceHttpDriver", "Transport run() completed successfully")
+                }
+                Err(e) => {
+                    warn!(target: "LocalInstanceHttpDriver", "Transport stopped with error: {}", e)
+                }
             }
-            info!(target: "test_transport", "Transport task completed");
+            info!(target: "LocalInstanceHttpDriver", "Transport task completed");
         });
 
         Ok(LocalInstance {
@@ -728,13 +754,46 @@ impl TestTransport for LocalInstanceHttpDriver {
             default_account: Address::from([0x01; 20]),
             current_nonce: 0,
             transport: LocalInstanceHttpDriver {
-                field: 1,
+                client: reqwest::Client::new(),
+                address,
             },
         })
     }
 
-    async fn new_block(&self, _block_number: u64) -> Result<(), String> {
-        todo!()
+    async fn new_block(&self, block_number: u64) -> Result<(), String> {
+        info!(target: "LocalInstanceHttpDriver", "LocalInstance sending block: {:?}", block_number);
+
+        let blockenv = BlockEnv::default();
+        // jsonrpc request for sending a blockenv to the sidecar
+        let mut request = json!({
+          "id": 1,
+          "jsonrpc": "2.0",
+          "method": "sendBlockEnv",
+          "params": {
+            "blockEnv": {
+              "number": 0,
+              "beneficiary": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
+              "timestamp": 1692816000,
+              "gas_limit": 30000000,
+              "basefee": 0,
+              "difficulty": "0x0",
+              "prevrandao": "0x0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
+              "blob_excess_gas_and_price": {
+                "excess_blob_gas": 1000,
+                "blob_gasprice": 2000
+              }
+            }
+          }
+        });
+
+        // Modify the blocknumber
+        request["params"]["blockEnv"]["number"] = block_number.into();
+        request["params"]["blockEnv"]["beneficiary"] = blockenv.beneficiary.to_string().into();
+        request["params"]["blockEnv"]["beneficiary"] = blockenv.prevrandao.unwrap().to_string().into();
+        request["params"]["blockEnv"]["timestamp"] = blockenv.timestamp.into();
+
+        // Send request via reqwest to the httptransport server
+        // return error if the response contains an error or an internal reqwest error or ()
     }
 
     async fn send_transaction(&self, _tx_hash: B256, _tx_env: TxEnv) -> Result<(), String> {
@@ -748,9 +807,7 @@ mod tests {
     use revm::primitives::uint;
 
     #[crate::utils::engine_test(all)]
-    async fn test_instance_send_assertion_passing_failing_pair(
-        mut instance: LocalInstance<_>,
-    ) {
+    async fn test_instance_send_assertion_passing_failing_pair(mut instance: LocalInstance<_>) {
         info!("Testing assertion passing/failing pair");
 
         // Send the assertion passing and failing pair
