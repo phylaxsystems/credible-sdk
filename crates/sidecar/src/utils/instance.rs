@@ -13,6 +13,10 @@ use crate::{
         http::{
             HttpTransport,
             config::HttpTransportConfig,
+            server::{
+                Transaction,
+                TransactionEnv,
+            },
         },
         mock::MockTransport,
     },
@@ -44,6 +48,7 @@ use assertion_executor::{
 };
 use crossbeam::channel;
 use revm::{
+    context_interface::block::BlobExcessGasAndPrice,
     database::{
         CacheDB,
         EmptyDBTyped,
@@ -62,10 +67,10 @@ use std::{
 };
 use tokio::task::JoinHandle;
 use tracing::{
+    debug,
     error,
     info,
     warn,
-    debug,
 };
 
 /// Test database error type
@@ -767,6 +772,10 @@ impl TestTransport for LocalInstanceHttpDriver {
         let blockenv = BlockEnv {
             number: block_number,
             gas_limit: 50_000_000, // Set higher gas limit for assertions
+            blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
+                excess_blob_gas: 0,
+                blob_gasprice: 0,
+            }),
             ..Default::default()
         };
 
@@ -782,7 +791,11 @@ impl TestTransport for LocalInstanceHttpDriver {
             "gas_limit": blockenv.gas_limit,
             "basefee": blockenv.basefee,
             "difficulty": format!("0x{:x}", blockenv.difficulty),
-            "prevrandao": blockenv.prevrandao.map(|h| h.to_string())
+            "prevrandao": blockenv.prevrandao.map(|h| h.to_string()),
+            "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| json!({
+                "excess_blob_gas": blob.excess_blob_gas,
+                "blob_gasprice": blob.blob_gasprice
+            }))
           }
         });
 
@@ -790,17 +803,17 @@ impl TestTransport for LocalInstanceHttpDriver {
         let mut attempts = 0;
         let max_attempts = 10;
         let mut last_error = String::new();
-        
+
         while attempts < max_attempts {
             attempts += 1;
-            
+
             match self
                 .client
                 .post(format!("http://{}/tx", self.address))
                 .header("content-type", "application/json")
                 .json(&request)
                 .send()
-                .await 
+                .await
             {
                 Ok(response) => {
                     if !response.status().is_success() {
@@ -827,12 +840,93 @@ impl TestTransport for LocalInstanceHttpDriver {
                 }
             }
         }
-        
-        Err(format!("Failed after {} attempts: {}", max_attempts, last_error))
+
+        Err(format!(
+            "Failed after {} attempts: {}",
+            max_attempts, last_error
+        ))
     }
 
-    async fn send_transaction(&self, _tx_hash: B256, _tx_env: TxEnv) -> Result<(), String> {
-        todo!()
+    async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
+        debug!(target: "LocalInstanceHttpDriver", "Sending transaction: {}", tx_hash);
+
+        // Create the transaction structure
+        let transaction = Transaction {
+            hash: tx_hash.to_string(),
+            tx_env: TransactionEnv {
+                caller: tx_env.caller.to_string(),
+                gas_limit: tx_env.gas_limit,
+                gas_price: tx_env.gas_price.to_string(),
+                transact_to: match tx_env.kind {
+                    TxKind::Call(addr) => Some(addr.to_string()),
+                    TxKind::Create => None,
+                },
+                value: tx_env.value.to_string(),
+                data: format!("0x{}", alloy::hex::encode(&tx_env.data)),
+                nonce: tx_env.nonce,
+                chain_id: tx_env.chain_id.unwrap_or_default(),
+                access_list: Vec::new(), // Empty access list for now
+            },
+        };
+
+        let request = json!({
+            "id": 1,
+            "jsonrpc": "2.0",
+            "method": "sendTransactions",
+            "params": {
+                "transactions": [transaction]
+            }
+        });
+
+        debug!(target: "LocalInstanceHttpDriver", "Sending HTTP request: {}", serde_json::to_string_pretty(&request).unwrap_or_default());
+
+        let mut last_error = String::new();
+        let mut attempts = 0;
+        let max_attempts = 10;
+
+        while attempts < max_attempts {
+            attempts += 1;
+
+            match self
+                .client
+                .post(format!("http://{}/tx", self.address))
+                .header("content-type", "application/json")
+                .json(&request)
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        return Err(format!("HTTP error: {}", response.status()));
+                    }
+
+                    let json_response: serde_json::Value = response
+                        .json()
+                        .await
+                        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+                    debug!(target: "LocalInstanceHttpDriver", "Received response: {}", serde_json::to_string_pretty(&json_response).unwrap_or_default());
+
+                    if let Some(error) = json_response.get("error") {
+                        return Err(format!("JSON-RPC error: {}", error));
+                    }
+
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_error = format!("HTTP request failed: {}", e);
+                    if attempts < max_attempts {
+                        debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, max_attempts);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        }
+
+        Err(format!(
+            "Failed after {} attempts: {}",
+            max_attempts, last_error
+        ))
     }
 }
 
