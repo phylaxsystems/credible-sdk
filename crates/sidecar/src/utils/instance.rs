@@ -65,6 +65,7 @@ use tracing::{
     error,
     info,
     warn,
+    debug,
 };
 
 /// Test database error type
@@ -785,30 +786,49 @@ impl TestTransport for LocalInstanceHttpDriver {
           }
         });
 
-        // Send request via reqwest to the httptransport server
-        let response = self
-            .client
-            .post(format!("http://{}/tx", self.address))
-            .header("content-type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("HTTP request failed: {}", e))?;
+        // Retry logic to wait for HTTP server to be ready
+        let mut attempts = 0;
+        let max_attempts = 10;
+        let mut last_error = String::new();
+        
+        while attempts < max_attempts {
+            attempts += 1;
+            
+            match self
+                .client
+                .post(format!("http://{}/tx", self.address))
+                .header("content-type", "application/json")
+                .json(&request)
+                .send()
+                .await 
+            {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        return Err(format!("HTTP error: {}", response.status()));
+                    }
 
-        if !response.status().is_success() {
-            return Err(format!("HTTP error: {}", response.status()));
+                    let json_response: serde_json::Value = response
+                        .json()
+                        .await
+                        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+                    if let Some(error) = json_response.get("error") {
+                        return Err(format!("JSON-RPC error: {}", error));
+                    }
+
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_error = format!("HTTP request failed: {}", e);
+                    if attempts < max_attempts {
+                        debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, max_attempts);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
         }
-
-        let json_response: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-
-        if let Some(error) = json_response.get("error") {
-            return Err(format!("JSON-RPC error: {}", error));
-        }
-
-        Ok(())
+        
+        Err(format!("Failed after {} attempts: {}", max_attempts, last_error))
     }
 
     async fn send_transaction(&self, _tx_hash: B256, _tx_env: TxEnv) -> Result<(), String> {
