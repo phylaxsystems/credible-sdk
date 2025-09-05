@@ -97,7 +97,6 @@ pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
         VARIANTS.iter().find(|v| v.test_name == *variant_name).map(|variant| {
             // Always prefix with the test_name
             let test_fn_name = Ident::new(&format!("{}_{}", variant.test_name, fn_name), fn_name.span());
-            
             let transport_type: proc_macro2::TokenStream = variant.transport_type.parse().unwrap();
             let _options = (variant.options)(&quote! {});
 
