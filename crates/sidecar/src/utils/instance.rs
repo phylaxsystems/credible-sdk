@@ -1,17 +1,13 @@
 use crate::{
-    CoreEngine,
     engine::{
-        TransactionResult,
         queue::{
             QueueTransaction,
             TransactionQueueSender,
             TxQueueContents,
-        },
-    },
-    transport::{
-        Transport,
-        mock::MockTransport,
-    },
+        }, TransactionResult
+    }, transport::{
+        http::{config::HttpTransportConfig, HttpTransport}, mock::MockTransport, Transport
+    }, CoreEngine
 };
 use assertion_executor::{
     AssertionExecutor,
@@ -477,7 +473,7 @@ pub struct LocalInstanceMockDriver {
 
 impl TestTransport for LocalInstanceMockDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
-        info!("Creating LocalInstance with MockTransport");
+        info!(target: "test_transport", "Creating LocalInstance with MockTransport");
 
         // Create channels for communication
         let (engine_tx, engine_rx) = channel::unbounded();
@@ -548,14 +544,14 @@ impl TestTransport for LocalInstanceMockDriver {
         // Spawn the engine task that manually processes items
         // This mimics what the tests do - manually processing items from the queue
         let engine_handle = tokio::spawn(async move {
-            info!("Engine task started, waiting for items...");
-            info!("Engine about to call run()");
+            info!(target: "test_transport", "Engine task started, waiting for items...");
+            info!(target: "test_transport", "Engine about to call run()");
             let result = engine.run().await;
             match result {
-                Ok(_) => info!("Engine run() completed successfully"),
-                Err(e) => error!("Engine run() failed: {:?}", e),
+                Ok(_) => info!(target: "test_transport", "Engine run() completed successfully"),
+                Err(e) => error!(target: "test_transport", "Engine run() failed: {:?}", e),
             }
-            info!("Engine task completed");
+            info!(target: "test_transport", "Engine task completed");
         });
 
         // Create mock transport with the channels
@@ -563,14 +559,14 @@ impl TestTransport for LocalInstanceMockDriver {
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
-            info!("Transport task started");
-            info!("Transport about to call run()");
+            info!(target: "test_transport", "Transport task started");
+            info!(target: "test_transport", "Transport about to call run()");
             let result = transport.run().await;
             match result {
-                Ok(_) => info!("Transport run() completed successfully"),
-                Err(e) => warn!("Transport stopped with error: {}", e),
+                Ok(_) => info!(target: "test_transport", "Transport run() completed successfully"),
+                Err(e) => warn!(target: "test_transport", "Transport stopped with error: {}", e),
             }
-            info!("Transport task completed");
+            info!(target: "test_transport", "Transport task completed");
         });
 
         Ok(LocalInstance {
@@ -589,7 +585,7 @@ impl TestTransport for LocalInstanceMockDriver {
     }
 
     async fn new_block(&self, block_number: u64) -> Result<(), String> {
-        info!("LocalInstance sending block: {:?}", block_number);
+        info!(target: "test_transport", "LocalInstance sending block: {:?}", block_number);
         let block_env = BlockEnv {
             number: block_number,
             gas_limit: 50_000_000, // Set higher gas limit for assertions
@@ -602,14 +598,14 @@ impl TestTransport for LocalInstanceMockDriver {
             .send(TxQueueContents::Block(block_env))
             .map_err(|e| format!("Failed to send block: {e}"));
         match &result {
-            Ok(_) => info!("Successfully sent block to mock_sender"),
-            Err(e) => error!("Failed to send block: {}", e),
+            Ok(_) => info!(target: "test_transport", "Successfully sent block to mock_sender"),
+            Err(e) => error!(target: "test_transport", "Failed to send block: {}", e),
         }
         result
     }
 
     async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
-        info!("LocalInstance sending transaction: {:?}", tx_hash);
+        info!(target: "test_transport", "LocalInstance sending transaction: {:?}", tx_hash);
         let queue_tx = QueueTransaction { tx_hash, tx_env };
         self.mock_sender
             .send(TxQueueContents::Tx(queue_tx))
@@ -624,7 +620,117 @@ pub struct LocalInstanceHttpDriver {
 
 impl TestTransport for LocalInstanceHttpDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
-        todo!()
+        info!(target: "test_transport", "Creating LocalInstance with MockTransport");
+
+        // Create channels for communication
+        let (engine_tx, engine_rx) = channel::unbounded();
+
+        // Create the database and state
+        let mut underlying_db = CacheDB::new(EmptyDBTyped::default());
+        // Insert default counter contract into the underlying db (and mock by proxy)
+        underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
+
+        // Create default account that will be used by this instance
+        let default_account = Address::from([0x01; 20]);
+        let default_account_info = AccountInfo {
+            balance: U256::MAX,
+            ..Default::default()
+        };
+        underlying_db.insert_account_info(default_account, default_account_info);
+
+        // Fund common test accounts with maximum balance
+        let default_caller = counter_call().caller;
+        let caller_account = AccountInfo {
+            balance: U256::MAX,
+            ..Default::default()
+        };
+        underlying_db.insert_account_info(default_caller, caller_account);
+
+        // Fund test caller account
+        let test_caller = Address::from([0x02; 20]);
+        let test_account = AccountInfo {
+            balance: U256::MAX,
+            ..Default::default()
+        };
+        underlying_db.insert_account_info(test_caller, test_account);
+
+        let underlying_db = Arc::new(underlying_db);
+
+        let state = OverlayDb::new(Some(underlying_db.clone()), 1024);
+
+        // Create assertion store and executor
+        let assertion_store = Arc::new(
+            AssertionStore::new_ephemeral()
+                .map_err(|e| format!("Failed to create assertion store: {e}"))?,
+        );
+
+        // Insert counter assertion into store
+        let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
+        assertion_store
+            .insert(
+                COUNTER_ADDRESS,
+                // Assuming AssertionState::new_test takes Bytes or similar
+                AssertionState::new_test(assertion_bytecode),
+            )
+            .unwrap();
+
+        let assertion_executor =
+            AssertionExecutor::new(ExecutorConfig::default(), (*assertion_store).clone());
+
+        // Create the engine with TransactionsState
+        let state_results = crate::TransactionsState::new();
+        let mut engine = CoreEngine::new(
+            state,
+            engine_rx,
+            assertion_executor,
+            state_results.clone(),
+            10,
+        );
+
+        // Spawn the engine task that manually processes items
+        // This mimics what the tests do - manually processing items from the queue
+        let engine_handle = tokio::spawn(async move {
+            info!(target: "test_transport", "Engine task started, waiting for items...");
+            info!(target: "test_transport", "Engine about to call run()");
+            let result = engine.run().await;
+            match result {
+                Ok(_) => info!(target: "test_transport", "Engine run() completed successfully"),
+                Err(e) => error!(target: "test_transport", "Engine run() failed: {:?}", e),
+            }
+            info!(target: "test_transport", "Engine task completed");
+        });
+
+        // Create mock transport with the channels
+        let config = HttpTransportConfig {
+            bind_addr: "127.0.0.1:8001".parse().unwrap(),
+        };
+        let transport = HttpTransport::new(config, engine_tx, state_results.clone()).unwrap();
+
+        // Spawn the transport task
+        let transport_handle = tokio::spawn(async move {
+            info!(target: "test_transport", "Transport task started");
+            info!(target: "test_transport", "Transport about to call run()");
+            let result = transport.run().await;
+            match result {
+                Ok(_) => info!(target: "test_transport", "Transport run() completed successfully"),
+                Err(e) => warn!(target: "test_transport", "Transport stopped with error: {}", e),
+            }
+            info!(target: "test_transport", "Transport task completed");
+        });
+
+        Ok(LocalInstance {
+            db: underlying_db,
+            assertion_store,
+            transport_handle: Some(transport_handle),
+            engine_handle: Some(engine_handle),
+            block_number: 0,
+            transaction_results: state_results,
+            default_account: Address::from([0x01; 20]),
+            current_nonce: 0,
+            transport: LocalInstanceHttpDriver {
+                field: 1,
+            },
+        })
     }
 
     async fn new_block(&self, _block_number: u64) -> Result<(), String> {
@@ -643,7 +749,7 @@ mod tests {
 
     #[crate::utils::engine_test(all)]
     async fn test_instance_send_assertion_passing_failing_pair(
-        mut instance: LocalInstance<LocalInstanceMockDriver>,
+        mut instance: LocalInstance<_>,
     ) {
         info!("Testing assertion passing/failing pair");
 
