@@ -19,5 +19,4 @@ pub use test_util::{
 #[cfg(test)]
 pub use crate::utils::instance::{
     LocalInstance,
-    LocalInstanceMockDriver,
 };

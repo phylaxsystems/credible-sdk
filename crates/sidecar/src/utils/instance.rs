@@ -618,21 +618,21 @@ impl TestTransport for LocalInstanceMockDriver {
 }
 
 #[derive(Debug)]
-struct LocalInstanceHttpDriver {
+pub struct LocalInstanceHttpDriver {
     field: u64
 }
 
 impl TestTransport for LocalInstanceHttpDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
-        unimplemented!()
+        todo!()
     }
 
     async fn new_block(&self, _block_number: u64) -> Result<(), String> {
-        unimplemented!()
+        todo!()
     }
 
     async fn send_transaction(&self, _tx_hash: B256, _tx_env: TxEnv) -> Result<(), String> {
-        unimplemented!()
+        todo!()
     }
 }
 
