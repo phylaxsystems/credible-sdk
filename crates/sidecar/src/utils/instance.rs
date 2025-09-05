@@ -2,7 +2,11 @@ use crate::{
     CoreEngine,
     engine::{
         TransactionResult,
-        queue::TransactionQueueSender,
+        queue::{
+            QueueTransaction,
+            TransactionQueueSender,
+            TxQueueContents,
+        },
     },
     transport::{
         Transport,
@@ -15,9 +19,10 @@ use assertion_executor::{
     db::overlay::OverlayDb,
     primitives::{
         AccountInfo,
-        FixedBytes,
         Address,
         B256,
+        BlockEnv,
+        FixedBytes,
         TxEnv,
         U256,
     },
@@ -63,7 +68,7 @@ pub trait TestTransport: Sized {
     /// Creates a `LocalInstance` with a specific transport
     async fn new() -> Result<LocalInstance<Self>, String>;
     /// Advance the core engine block by sending a new blockenv to it
-    async fn new_block(&mut self) -> Result<(), String>;
+    async fn new_block(&self, block_number: u64) -> Result<(), String>;
     /// Send a transaction to the core engine via the transport
     async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String>;
 }
@@ -85,7 +90,7 @@ pub struct LocalInstance<T: TestTransport> {
     /// Engine task handle  
     engine_handle: Option<JoinHandle<()>>,
     /// Current block number
-    block_bumber: u64,
+    block_number: u64,
     /// Shared transaction results from engine
     transaction_results: Arc<crate::TransactionsState>,
     /// Default account for transactions
@@ -101,41 +106,14 @@ impl<T: TestTransport> LocalInstance<T> {
         T::new().await
     }
 
-    // /// Send a new block environment to the engine
-    // pub fn new_block(&mut self) -> Result<(), String> {
-    //     info!("LocalInstance sending block: {:?}", self.block_bumber);
-    //     let block_env = BlockEnv {
-    //         number: self.block_bumber,
-    //         gas_limit: 50_000_000, // Set higher gas limit for assertions
-    //         ..Default::default()
-    //     };
-    //     // Increment block number for next time we call new_block
-    //     self.block_bumber += 1;
-
-    //     let result = self
-    //         .mock_sender
-    //         .send(TxQueueContents::Block(block_env))
-    //         .map_err(|e| format!("Failed to send block: {e}"));
-    //     match &result {
-    //         Ok(_) => info!("Successfully sent block to mock_sender"),
-    //         Err(e) => error!("Failed to send block: {}", e),
-    //     }
-    //     result
-    // }
-
-    // /// Send a transaction to the engine
-    // pub fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
-    //     info!("LocalInstance sending transaction: {:?}", tx_hash);
-    //     let queue_tx = QueueTransaction { tx_hash, tx_env };
-    //     self.mock_sender
-    //         .send(TxQueueContents::Tx(queue_tx))
-    //         .map_err(|e| format!("Failed to send transaction: {e}"))
-    // }
-
     /// Send a block with multiple transactions
-    pub async fn send_block_with_txs(&mut self, transactions: Vec<(B256, TxEnv)>) -> Result<(), String> {
+    pub async fn send_block_with_txs(
+        &mut self,
+        transactions: Vec<(B256, TxEnv)>,
+    ) -> Result<(), String> {
         // Send the block environment first
-        self.transport.new_block().await?;
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
 
         // Then send all transactions
         for (tx_hash, tx_env) in transactions {
@@ -234,7 +212,8 @@ impl<T: TestTransport> LocalInstance<T> {
         data: Bytes,
     ) -> Result<B256, String> {
         // Ensure we have a block
-        self.transport.new_block().await?;
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
 
         let nonce = self.next_nonce();
         let caller = self.default_account;
@@ -269,7 +248,8 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Send a reverting CREATE transaction using the default account
     pub async fn send_reverting_create_tx(&mut self) -> Result<B256, String> {
         // Ensure we have a block
-        self.transport.new_block().await?;
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
 
         let current_nonce = self.current_nonce();
 
@@ -313,7 +293,8 @@ impl<T: TestTransport> LocalInstance<T> {
         data: Bytes,
     ) -> Result<B256, String> {
         // Ensure we have a block
-        self.transport.new_block().await?;
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
 
         let nonce = self.next_nonce();
         let caller = self.default_account;
@@ -436,7 +417,8 @@ impl<T: TestTransport> LocalInstance<T> {
     /// be called once due to subsequent assertions invalidating.
     pub async fn send_assertion_passing_failing_pair(&mut self) -> Result<(), String> {
         // Ensure we have a block
-        self.transport.new_block().await?;
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
 
         let basefee = 10u64;
 
@@ -596,7 +578,7 @@ impl TestTransport for LocalInstanceMockDriver {
             assertion_store,
             transport_handle: Some(transport_handle),
             engine_handle: Some(engine_handle),
-            block_bumber: 0,
+            block_number: 0,
             transaction_results: state_results,
             default_account: Address::from([0x01; 20]),
             current_nonce: 0,
@@ -606,12 +588,32 @@ impl TestTransport for LocalInstanceMockDriver {
         })
     }
 
-    async fn new_block(&mut self) -> Result<(), String> {
-        todo!()
+    async fn new_block(&self, block_number: u64) -> Result<(), String> {
+        info!("LocalInstance sending block: {:?}", block_number);
+        let block_env = BlockEnv {
+            number: block_number,
+            gas_limit: 50_000_000, // Set higher gas limit for assertions
+            ..Default::default()
+        };
+        // Increment block number for next time we call new_block
+
+        let result = self
+            .mock_sender
+            .send(TxQueueContents::Block(block_env))
+            .map_err(|e| format!("Failed to send block: {e}"));
+        match &result {
+            Ok(_) => info!("Successfully sent block to mock_sender"),
+            Err(e) => error!("Failed to send block: {}", e),
+        }
+        result
     }
 
-    async fn send_transaction(&self, _tx_hash: B256, _tx_env: TxEnv) -> Result<(), String> {
-        todo!()
+    async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
+        info!("LocalInstance sending transaction: {:?}", tx_hash);
+        let queue_tx = QueueTransaction { tx_hash, tx_env };
+        self.mock_sender
+            .send(TxQueueContents::Tx(queue_tx))
+            .map_err(|e| format!("Failed to send transaction: {e}"))
     }
 }
 
@@ -621,7 +623,9 @@ mod tests {
     use revm::primitives::uint;
 
     #[crate::utils::engine_test]
-    async fn test_instance_send_assertion_passing_failing_pair(mut instance: LocalInstance<LocalInstanceMockDriver>) {
+    async fn test_instance_send_assertion_passing_failing_pair(
+        mut instance: LocalInstance<LocalInstanceMockDriver>,
+    ) {
         info!("Testing assertion passing/failing pair");
 
         // Send the assertion passing and failing pair
