@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[build-dependencies]
+tonic-build = "0.12"
+
 [dependencies]
 alloy = { workspace = true }
 clap = { workspace = true }
@@ -16,8 +19,15 @@ thiserror = { workspace = true }
 assertion-executor = { workspace = true, default-features = false, features = ["test", "linea"] }
 rust-tracing = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
+<<<<<<< HEAD
 axum = "0.8.4"
+=======
+tonic = "0.12"
+prost = "0.13"
+axum = "0.7"
+>>>>>>> da6188b (wip)
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

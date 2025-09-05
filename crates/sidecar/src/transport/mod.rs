@@ -18,6 +18,7 @@
 //! ```
 
 pub mod decoder;
+pub mod grpc;
 pub mod http;
 pub mod mock;
 

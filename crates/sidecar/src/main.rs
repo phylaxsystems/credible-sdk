@@ -2,9 +2,11 @@
 
 mod args;
 mod config;
+#[allow(dead_code)] // TODO: rm when engine fully impld and connected to transport
 pub mod engine;
 mod indexer;
 mod json_rpc_db;
+mod rpc;
 pub(crate) mod transactions_state;
 pub mod transport;
 mod utils;
@@ -30,9 +32,15 @@ use rust_tracing::trace;
 use crate::{
     json_rpc_db::JsonRpcDb,
     transactions_state::TransactionsState,
-    transport::http::{
-        HttpTransport,
-        config::HttpTransportConfig,
+    transport::{
+        http::{
+            HttpTransport,
+            config::HttpTransportConfig,
+        },
+        grpc::{
+            GrpcTransport,
+            config::GrpcTransportConfig,
+        },
     },
 };
 use args::SidecarArgs;
@@ -44,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     let args = SidecarArgs::parse();
 
     let (tx_sender, tx_receiver) = unbounded();
-    let json_rpc_db = JsonRpcDb::try_new(&args.chain.rpc_url).await?;
+    let json_rpc_db = JsonRpcDb::try_new(&args.rollup.rpc_url).await?;
     let state: OverlayDb<JsonRpcDb> = OverlayDb::new(
         Some(json_rpc_db),
         args.credible
@@ -59,8 +67,16 @@ async fn main() -> anyhow::Result<()> {
     let indexer_cfg = init_indexer_config(&args, assertion_store, executor_config).await?;
 
     let engine_state_results = TransactionsState::new();
-    let transport = HttpTransport::new(
+    
+    // Create both HTTP and gRPC transports
+    let http_transport = HttpTransport::new(
         HttpTransportConfig::try_from(args.transport.clone())?,
+        tx_sender.clone(),
+        engine_state_results.clone(),
+    )?;
+    
+    let grpc_transport = GrpcTransport::new(
+        GrpcTransportConfig::default(), // TODO: Add gRPC args to CLI
         tx_sender,
         engine_state_results.clone(),
     )?;
@@ -77,22 +93,19 @@ async fn main() -> anyhow::Result<()> {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received Ctrl+C, shutting down...");
         }
-        result = engine.run() => {
-            if let Err(e) = result {
-                tracing::error!("Engine exited with error: {}", e);
-            }
+        _ = rpc::start_rpc_server(&args) => {
+            tracing::info!("rpc server exited, shutting down...");
+        }
+        _ = engine.run() => {
             tracing::info!("Engine run completed, shutting down...");
         }
-        result = transport.run() => {
-            if let Err(e) = result {
-                tracing::error!("Transport exited with error: {}", e);
-            }
-            tracing::info!("Engine run completed, shutting down...");
+        _ = http_transport.run() => {
+            tracing::info!("HTTP transport completed, shutting down...");
         }
-        result = indexer::run_indexer(indexer_cfg) => {
-            if let Err(e) = result {
-                tracing::error!("Indexer exited with error: {}", e);
-            }
+        _ = grpc_transport.run() => {
+            tracing::info!("gRPC transport completed, shutting down...");
+        }
+        _ = indexer::run_indexer(indexer_cfg) => {
             tracing::info!("Indexer exited, shutting down...");
         }
     }

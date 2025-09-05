@@ -46,6 +46,7 @@ use tracing::{
 pub(in crate::transport) const METHOD_SEND_TRANSACTIONS: &str = "sendTransactions";
 pub(in crate::transport) const METHOD_BLOCK_ENV: &str = "sendBlockEnv";
 pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransactions";
+pub(in crate::transport) const METHOD_REVERT_TRANSACTION: &str = "revertTransaction";
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TransactionEnv {
@@ -71,6 +72,12 @@ pub struct Transaction {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendTransactionsParams {
     pub transactions: Vec<Transaction>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RevertTransactionRequest {
+    pub tx_hash: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -217,6 +224,7 @@ pub async fn handle_transaction_rpc(
         METHOD_SEND_TRANSACTIONS => handle_send_transactions(&state, &request).await?,
         METHOD_BLOCK_ENV => handle_block_env(&state, &request).await?,
         METHOD_GET_TRANSACTION => handle_get_transactions(&state, &request).await?,
+        METHOD_REVERT_TRANSACTION => handle_revert_transaction(&state, &request).await?,
         _ => {
             debug!(
                 method = %request.method,
@@ -232,6 +240,70 @@ pub async fn handle_transaction_rpc(
     );
 
     Ok(ResponseJson(response))
+}
+
+/// Handle transaction reversion requests from Besu plugins
+async fn handle_revert_transaction(
+    state: &ServerState,
+    request: &JsonRpcRequest,
+) -> Result<JsonRpcResponse, StatusCode> {
+    trace!("Processing revertTransaction request");
+
+    match &request.params {
+        Some(params) => {
+            // Parse the reversion request
+            match serde_json::from_value::<RevertTransactionRequest>(params.clone()) {
+                Ok(revert_params) => {
+                    debug!(
+                        tx_hash = %revert_params.tx_hash,
+                        reason = %revert_params.reason,
+                        "Reverting transaction"
+                    );
+
+                    // TODO: Implement actual reversion logic
+                    // This would involve:
+                    // 1. Remove transaction from engine queue if still pending
+                    // 2. Invalidate cache entries for this transaction
+                    // 3. Rollback any speculative state changes
+                    // 4. Update transaction results to mark as reverted
+
+                    // For now, just acknowledge the reversion
+                    state
+                        .transactions_results
+                        .mark_transaction_reverted(&revert_params.tx_hash, &revert_params.reason)
+                        .await;
+
+                    Ok(JsonRpcResponse::success(
+                        request,
+                        serde_json::json!({
+                            "status": "reverted",
+                            "tx_hash": revert_params.tx_hash,
+                            "message": format!("Transaction {} reverted: {}", revert_params.tx_hash, revert_params.reason)
+                        }),
+                    ))
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        "Failed to parse revertTransaction request"
+                    );
+
+                    Ok(JsonRpcResponse::invalid_params(
+                        request,
+                        &format!("Invalid revertTransaction parameters: {}", e),
+                    ))
+                }
+            }
+        }
+        None => {
+            debug!("revertTransaction request missing required parameters");
+
+            Ok(JsonRpcResponse::invalid_params(
+                request,
+                "Missing params for revertTransaction",
+            ))
+        }
+    }
 }
 
 #[instrument(name = "http_server::handle_block_env", skip_all, level = "debug")]

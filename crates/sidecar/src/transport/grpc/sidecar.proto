@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package sidecar;
+
+// Main sidecar service for transaction and block processing
+service SidecarService {
+  // Send transactions to the sidecar for processing
+  rpc SendTransactions(SendTransactionsRequest) returns (SendTransactionsResponse);
+  
+  // Send block environment to set up block context
+  rpc SendBlockEnv(SendBlockEnvRequest) returns (SendBlockEnvResponse);
+  
+  // Query transaction processing results
+  rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
+  
+  // Revert a transaction (from Besu plugin)
+  rpc RevertTransaction(RevertTransactionRequest) returns (RevertTransactionResponse);
+  
+  // Health check
+  rpc Health(HealthRequest) returns (HealthResponse);
+  
+  // Streaming version for high-throughput scenarios
+  rpc SendTransactionsStream(stream SendTransactionsRequest) returns (stream SendTransactionsResponse);
+}
+
+// Transaction environment data
+message TransactionEnv {
+  string caller = 1;
+  uint64 gas_limit = 2;
+  string gas_price = 3;
+  optional string transact_to = 4;
+  string value = 5;
+  string data = 6;
+  uint64 nonce = 7;
+  uint64 chain_id = 8;
+  repeated string access_list = 9; // Simplified - could be more structured
+}
+
+// Transaction with hash
+message Transaction {
+  TransactionEnv tx_env = 1;
+  string hash = 2;
+}
+
+// Send transactions request
+message SendTransactionsRequest {
+  repeated Transaction transactions = 1;
+}
+
+// Send transactions response
+message SendTransactionsResponse {
+  string status = 1;
+  uint32 transaction_count = 2;
+  string message = 3;
+  repeated string failed = 4; // Hashes of failed transactions
+}
+
+// Block environment request
+message SendBlockEnvRequest {
+  uint64 number = 1;
+  string coinbase = 2;
+  optional uint64 timestamp = 3;
+  optional uint64 difficulty = 4;
+  optional string prevrandao = 5;
+  uint64 basefee = 6;
+  optional uint64 gas_limit = 7;
+}
+
+// Block environment response
+message SendBlockEnvResponse {
+  string status = 1;
+  uint64 block_number = 2;
+  string message = 3;
+}
+
+// Get transactions request
+message GetTransactionsRequest {
+  repeated string hashes = 1;
+}
+
+// Transaction result
+message TransactionResult {
+  string hash = 1;
+  string status = 2;
+  optional uint64 gas_used = 3;
+  optional string error = 4;
+}
+
+// Get transactions response
+message GetTransactionsResponse {
+  repeated TransactionResult results = 1;
+}
+
+// Revert transaction request
+message RevertTransactionRequest {
+  string tx_hash = 1;
+  string reason = 2;
+}
+
+// Revert transaction response
+message RevertTransactionResponse {
+  string status = 1;
+  string tx_hash = 2;
+  string message = 3;
+}
+
+// Health check request
+message HealthRequest {}
+
+// Health check response
+message HealthResponse {
+  string status = 1;
+  string message = 2;
+}
