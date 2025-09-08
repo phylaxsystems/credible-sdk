@@ -1,55 +1,30 @@
-use crate::{
-    cache::Cache,
-    engine::{
-        CoreEngine,
-        TransactionResult,
-        queue::{
-            QueueTransaction,
-            TransactionQueueSender,
-            TxQueueContents,
-        },
-    },
-    transport::{
-        Transport,
-        mock::MockTransport,
-    },
-};
+use crate::engine::TransactionResult;
 use assertion_executor::{
-    AssertionExecutor,
-    ExecutorConfig,
-    db::overlay::OverlayDb,
     primitives::{
         AccountInfo,
+        Address,
+        B256,
         FixedBytes,
+        TxEnv,
+        TxKind,
+        U256,
     },
     store::{
         AssertionState,
         AssertionStore,
     },
     test_utils::{
-        COUNTER_ADDRESS,
-        SIMPLE_ASSERTION_COUNTER,
         bytecode,
-        counter_acct_info,
         counter_call,
     },
 };
-use crossbeam::channel;
 use revm::{
-    context::{
-        BlockEnv,
-        TxEnv,
-    },
     database::{
         CacheDB,
         EmptyDBTyped,
     },
     primitives::{
-        Address,
-        B256,
         Bytes,
-        TxKind,
-        U256,
         address,
     },
 };
@@ -58,23 +33,36 @@ use std::{
     time::Duration,
 };
 use tokio::task::JoinHandle;
-use tracing::{
-    error,
-    info,
-    warn,
-};
+use tracing::info;
 
 /// Test database error type
 type TestDbError = std::convert::Infallible;
 
-/// Creates a test instance of the core engine with mock transport.
-/// This struct manages the lifecycle of a test engine instance.
+pub trait TestTransport: Sized {
+    /// Creates a `LocalInstance` with a specific transport
+    async fn new() -> Result<LocalInstance<Self>, String>;
+    /// Advance the core engine block by sending a new blockenv to it
+    async fn new_block(&self, block_number: u64) -> Result<(), String>;
+    /// Send a transaction to the core engine via the transport
+    async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String>;
+}
+
+/// `LocalInstance` is used to instantiate the core engine and a transport.
+/// This struct manages the lifecycle of a test engine and transport instance.
 ///
 /// Used for testing of transaction processing, assertion validation,
 /// and multi-block scenarios. Provides pre-funded accounts and loaded test assertions.
-pub struct LocalInstance {
+/// Works with any type that implements `TestTransport`.
+///
+/// The `LocalInstance` is not designed to be instantiated by itself directly.
+/// Instead we instantiate it with the `engine_test` macro. This allows us to
+/// generate tests for many transports from a single test case.
+///
+/// Test cases should be written to use the `LocalInstance` methods instead of
+/// manually sending/verifying because of this.
+pub struct LocalInstance<T: TestTransport> {
     /// Channel for sending transactions and blocks to the mock transport
-    mock_sender: TransactionQueueSender,
+    // mock_sender: TransactionQueueSender,
     /// The underlying database
     db: Arc<CacheDB<EmptyDBTyped<TestDbError>>>,
     /// The assertion store
@@ -84,168 +72,61 @@ pub struct LocalInstance {
     /// Engine task handle  
     engine_handle: Option<JoinHandle<()>>,
     /// Current block number
-    block_bumber: u64,
+    block_number: u64,
     /// Shared transaction results from engine
     transaction_results: Arc<crate::TransactionsState>,
     /// Default account for transactions
     default_account: Address,
     /// Current nonce for the default account
     current_nonce: u64,
+    /// Container type that holds the transport and impls `TestTransport`
+    transport: T,
 }
 
-impl LocalInstance {
+impl<T: TestTransport> LocalInstance<T> {
     /// Create a new local instance with mock transport
-    pub async fn new() -> Result<Self, String> {
-        info!("Creating LocalInstance with MockTransport");
+    pub async fn new() -> Result<LocalInstance<T>, String> {
+        T::new().await
+    }
 
-        // Create channels for communication
-        let (engine_tx, engine_rx) = channel::unbounded();
-        let (mock_tx, mock_rx) = channel::unbounded();
-
-        // Create the database and state
-        let mut underlying_db = CacheDB::new(EmptyDBTyped::default());
-        // Insert default counter contract into the underlying db (and mock by proxy)
-        underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
-
-        // Create default account that will be used by this instance
-        let default_account = Address::from([0x01; 20]);
-        let default_account_info = AccountInfo {
-            balance: U256::MAX,
-            ..Default::default()
-        };
-        underlying_db.insert_account_info(default_account, default_account_info);
-
-        // Fund common test accounts with maximum balance
-        let default_caller = counter_call().caller;
-        let caller_account = AccountInfo {
-            balance: U256::MAX,
-            ..Default::default()
-        };
-        underlying_db.insert_account_info(default_caller, caller_account);
-
-        // Fund test caller account
-        let test_caller = Address::from([0x02; 20]);
-        let test_account = AccountInfo {
-            balance: U256::MAX,
-            ..Default::default()
-        };
-        underlying_db.insert_account_info(test_caller, test_account);
-
-        let underlying_db = Arc::new(underlying_db);
-
-        let state = OverlayDb::new(Some(underlying_db.clone()), 1024);
-
-        // Create assertion store and executor
-        let assertion_store = Arc::new(
-            AssertionStore::new_ephemeral()
-                .map_err(|e| format!("Failed to create assertion store: {e}"))?,
-        );
-
-        // Insert counter assertion into store
-        let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
-        assertion_store
-            .insert(
-                COUNTER_ADDRESS,
-                // Assuming AssertionState::new_test takes Bytes or similar
-                AssertionState::new_test(assertion_bytecode),
-            )
-            .unwrap();
-
-        let assertion_executor =
-            AssertionExecutor::new(ExecutorConfig::default(), (*assertion_store).clone());
-
-        // Create the engine with TransactionsState
-        let state_results = crate::TransactionsState::new();
-        let cache = Arc::new(Cache::new(vec![]));
-        let mut engine = CoreEngine::new(
-            state,
-            cache,
-            engine_rx,
-            assertion_executor,
-            state_results.clone(),
-            10,
-        );
-
-        // Spawn the engine task that manually processes items
-        // This mimics what the tests do - manually processing items from the queue
-        let engine_handle = tokio::spawn(async move {
-            info!("Engine task started, waiting for items...");
-            info!("Engine about to call run()");
-            let result = engine.run().await;
-            match result {
-                Ok(_) => info!("Engine run() completed successfully"),
-                Err(e) => error!("Engine run() failed: {:?}", e),
-            }
-            info!("Engine task completed");
-        });
-
-        // Create mock transport with the channels
-        let transport = MockTransport::with_receiver(engine_tx, mock_rx, state_results.clone());
-
-        // Spawn the transport task
-        let transport_handle = tokio::spawn(async move {
-            info!("Transport task started");
-            info!("Transport about to call run()");
-            let result = transport.run().await;
-            match result {
-                Ok(_) => info!("Transport run() completed successfully"),
-                Err(e) => warn!("Transport stopped with error: {}", e),
-            }
-            info!("Transport task completed");
-        });
-
-        Ok(Self {
-            mock_sender: mock_tx,
-            db: underlying_db,
+    /// Internal constructor for creating LocalInstance with all fields
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_internal(
+        db: Arc<CacheDB<EmptyDBTyped<TestDbError>>>,
+        assertion_store: Arc<AssertionStore>,
+        transport_handle: Option<JoinHandle<()>>,
+        engine_handle: Option<JoinHandle<()>>,
+        block_number: u64,
+        transaction_results: Arc<crate::TransactionsState>,
+        default_account: Address,
+        current_nonce: u64,
+        transport: T,
+    ) -> Self {
+        Self {
+            db,
             assertion_store,
-            transport_handle: Some(transport_handle),
-            engine_handle: Some(engine_handle),
-            block_bumber: 0,
-            transaction_results: state_results,
-            default_account: Address::from([0x01; 20]),
-            current_nonce: 0,
-        })
-    }
-
-    /// Send a new block environment to the engine
-    pub fn new_block(&mut self) -> Result<(), String> {
-        info!("LocalInstance sending block: {:?}", self.block_bumber);
-        let block_env = BlockEnv {
-            number: self.block_bumber,
-            gas_limit: 50_000_000, // Set higher gas limit for assertions
-            ..Default::default()
-        };
-        // Increment block number for next time we call new_block
-        self.block_bumber += 1;
-
-        let result = self
-            .mock_sender
-            .send(TxQueueContents::Block(block_env))
-            .map_err(|e| format!("Failed to send block: {e}"));
-        match &result {
-            Ok(_) => info!("Successfully sent block to mock_sender"),
-            Err(e) => error!("Failed to send block: {}", e),
+            transport_handle,
+            engine_handle,
+            block_number,
+            transaction_results,
+            default_account,
+            current_nonce,
+            transport,
         }
-        result
-    }
-
-    /// Send a transaction to the engine
-    pub fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
-        info!("LocalInstance sending transaction: {:?}", tx_hash);
-        let queue_tx = QueueTransaction { tx_hash, tx_env };
-        self.mock_sender
-            .send(TxQueueContents::Tx(queue_tx))
-            .map_err(|e| format!("Failed to send transaction: {e}"))
     }
 
     /// Send a block with multiple transactions
-    pub fn send_block_with_txs(&mut self, transactions: Vec<(B256, TxEnv)>) -> Result<(), String> {
+    pub async fn send_block_with_txs(
+        &mut self,
+        transactions: Vec<(B256, TxEnv)>,
+    ) -> Result<(), String> {
         // Send the block environment first
-        self.new_block()?;
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
 
         // Then send all transactions
         for (tx_hash, tx_env) in transactions {
-            self.send_transaction(tx_hash, tx_env)?;
+            self.transport.send_transaction(tx_hash, tx_env).await?;
         }
 
         Ok(())
@@ -340,7 +221,8 @@ impl LocalInstance {
         data: Bytes,
     ) -> Result<B256, String> {
         // Ensure we have a block
-        self.new_block()?;
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
 
         let nonce = self.next_nonce();
         let caller = self.default_account;
@@ -364,7 +246,7 @@ impl LocalInstance {
         let tx_hash = B256::from(hash_bytes);
 
         // Send transaction
-        self.send_transaction(tx_hash, tx_env)?;
+        self.transport.send_transaction(tx_hash, tx_env).await?;
 
         // Wait for processing
         self.wait_for_processing(Duration::from_millis(2)).await;
@@ -375,7 +257,8 @@ impl LocalInstance {
     /// Send a reverting CREATE transaction using the default account
     pub async fn send_reverting_create_tx(&mut self) -> Result<B256, String> {
         // Ensure we have a block
-        self.new_block()?;
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
 
         let current_nonce = self.current_nonce();
 
@@ -401,7 +284,7 @@ impl LocalInstance {
         let tx_hash = B256::from(hash_bytes);
 
         // Send transaction
-        self.send_transaction(tx_hash, tx_env)?;
+        self.transport.send_transaction(tx_hash, tx_env).await?;
 
         // Wait for processing
         self.wait_for_processing(Duration::from_millis(2)).await;
@@ -419,7 +302,8 @@ impl LocalInstance {
         data: Bytes,
     ) -> Result<B256, String> {
         // Ensure we have a block
-        self.new_block()?;
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
 
         let nonce = self.next_nonce();
         let caller = self.default_account;
@@ -443,7 +327,7 @@ impl LocalInstance {
         let tx_hash = B256::from(hash_bytes);
 
         // Send transaction
-        self.send_transaction(tx_hash, tx_env)?;
+        self.transport.send_transaction(tx_hash, tx_env).await?;
 
         // Wait for processing
         self.wait_for_processing(Duration::from_millis(2)).await;
@@ -542,7 +426,8 @@ impl LocalInstance {
     /// be called once due to subsequent assertions invalidating.
     pub async fn send_assertion_passing_failing_pair(&mut self) -> Result<(), String> {
         // Ensure we have a block
-        self.new_block()?;
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
 
         let basefee = 10u64;
 
@@ -561,10 +446,10 @@ impl LocalInstance {
         let hash_fail = FixedBytes::<32>::random();
 
         // Send the passing transaction first
-        self.send_transaction(hash_pass, tx_pass)?;
+        self.transport.send_transaction(hash_pass, tx_pass).await?;
 
         // Send the failing transaction second
-        self.send_transaction(hash_fail, tx_fail)?;
+        self.transport.send_transaction(hash_fail, tx_fail).await?;
 
         // Wait for processing
         self.wait_for_processing(Duration::from_millis(2)).await;
@@ -581,7 +466,7 @@ impl LocalInstance {
     }
 }
 
-impl Drop for LocalInstance {
+impl<T: TestTransport> Drop for LocalInstance<T> {
     fn drop(&mut self) {
         // Abort tasks if still running
         if let Some(handle) = self.transport_handle.take() {
@@ -598,8 +483,8 @@ mod tests {
     use super::*;
     use revm::primitives::uint;
 
-    #[crate::utils::engine_test]
-    async fn test_instance_send_assertion_passing_failing_pair(mut instance: LocalInstance) {
+    #[crate::utils::engine_test(all)]
+    async fn test_instance_send_assertion_passing_failing_pair(mut instance: LocalInstance<_>) {
         info!("Testing assertion passing/failing pair");
 
         // Send the assertion passing and failing pair
