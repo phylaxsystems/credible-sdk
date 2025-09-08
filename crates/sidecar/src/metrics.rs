@@ -42,7 +42,7 @@ impl BlockMetrics {
 
     /// Commits the metrics
     pub fn commit(&self) {
-        gauge!("block_processing_duration").set(self.block_processing_duration);
+        histogram!("block_processing_duration_seconds").record(self.block_processing_duration);
         counter!("transactions_considered_total").increment(self.transactions_considered_total);
         counter!("transactions_simulated_total").increment(self.transactions_simulated_total);
         counter!("transactions_simulated_success_total").increment(self.transactions_simulated_success_total);
