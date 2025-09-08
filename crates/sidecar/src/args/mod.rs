@@ -9,16 +9,11 @@ use assertion_executor::{
 use std::path::PathBuf;
 
 /// Wrapper for SpecId that implements clap::ValueEnum
-#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum, Default)]
 pub enum SpecIdArg {
+    #[default]
     #[value(name = "latest")]
     Latest,
-}
-
-impl Default for SpecIdArg {
-    fn default() -> Self {
-        Self::Latest
-    }
 }
 
 impl From<SpecIdArg> for SpecId {
