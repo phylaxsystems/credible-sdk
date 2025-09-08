@@ -203,7 +203,13 @@ impl AssertionStore {
     }
 
     /// Reads the assertions for the given block from the store, given the traces.
-    #[tracing::instrument(skip_all, name = "read_assertions_from_store", target = "assertion_store::read", fields(triggers, block_num=?block_num), level="DEBUG")]
+    #[tracing::instrument(
+        skip_all,
+        name = "read_assertions_from_store",
+        target = "assertion_store::read",
+        fields(triggers, block_num=?block_num),
+        level = "DEBUG"
+    )]
     pub fn read(
         &self,
         traces: &CallTracer,
@@ -261,7 +267,13 @@ impl AssertionStore {
     /// An assertion is considered active at a block if the active_at_block is less than or equal
     /// to the given block, and the inactive_at_block is greater than the given block.
     /// `assertion_adopter` is the address of the contract leveraging assertions.
-    #[tracing::instrument(skip_all, name = "read_adopter_from_db", target = "assertion_store::read_adopter", fields(assertion_adopter=?assertion_adopter, triggers=?triggers, block=?block), level="trace")]
+    #[tracing::instrument(
+        skip_all,
+        name = "read_adopter_from_db",
+        target = "assertion_store::read_adopter",
+        fields(assertion_adopter=?assertion_adopter, triggers=?triggers, block=?block),
+        level = "trace"
+    )]
     fn read_adopter(
         &self,
         assertion_adopter: &Address,
@@ -499,7 +511,6 @@ impl AssertionStore {
 }
 #[cfg(test)]
 mod tests {
-
     use revm::context::JournalInner;
 
     use super::*;
@@ -934,7 +945,7 @@ mod tests {
         let trigger_slot = U256::from(42);
 
         // Create recorded triggers for ALL trigger types
-        let recorded_triggers = vec![
+        let recorded_triggers = [
             (
                 TriggerType::Call { trigger_selector },
                 vec![selector_specific_call]
