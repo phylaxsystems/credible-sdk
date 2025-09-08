@@ -47,11 +47,19 @@ pub trait TestTransport: Sized {
     async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String>;
 }
 
-/// Creates a test instance of the core engine with mock transport.
-/// This struct manages the lifecycle of a test engine instance.
+/// `LocalInstance` is used to instantiate the core engine and a transport.
+/// This struct manages the lifecycle of a test engine and transport instance.
 ///
 /// Used for testing of transaction processing, assertion validation,
 /// and multi-block scenarios. Provides pre-funded accounts and loaded test assertions.
+/// Works with any type that implements `TestTransport`.
+///
+/// The `LocalInstance` is not designed to be instantiated by itself directly.
+/// Instead we instantiate it with the `engine_test` macro. This allows us to
+/// generate tests for many transports from a single test case.
+///
+/// Test cases should be written to use the `LocalInstance` methods instead of
+/// manually sending/verifying because of this.
 pub struct LocalInstance<T: TestTransport> {
     /// Channel for sending transactions and blocks to the mock transport
     // mock_sender: TransactionQueueSender,
@@ -71,6 +79,7 @@ pub struct LocalInstance<T: TestTransport> {
     default_account: Address,
     /// Current nonce for the default account
     current_nonce: u64,
+    /// Container type that holds the transport and impls `TestTransport`
     transport: T,
 }
 
