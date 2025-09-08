@@ -45,8 +45,10 @@ impl BlockMetrics {
         histogram!("block_processing_duration_seconds").record(self.block_processing_duration);
         counter!("transactions_considered_total").increment(self.transactions_considered_total);
         counter!("transactions_simulated_total").increment(self.transactions_simulated_total);
-        counter!("transactions_simulated_success_total").increment(self.transactions_simulated_success_total);
-        counter!("transactions_simulated_failure_total").increment(self.transactions_simulated_failure_total);
+        counter!("transactions_simulated_success_total")
+            .increment(self.transactions_simulated_success_total);
+        counter!("transactions_simulated_failure_total")
+            .increment(self.transactions_simulated_failure_total);
         counter!("invalidated_transactions_total").increment(self.invalidated_transactions_total);
         gauge!("block_gas_used").set(self.block_gas_used as f64);
         gauge!("assertions_per_block").set(self.assertions_per_block as f64);
@@ -90,10 +92,14 @@ impl TransactionMetrics {
 
     /// Commits the per tx metrics
     pub fn commit(&self) {
-        histogram!("assertion_gas_per_transaction", "tx_hash" => self.hash.to_string()).record(self.assertion_gas_per_transaction as f64);
-        histogram!("assertions_per_transaction", "tx_hash" => self.hash.to_string()).record(self.assertions_per_transaction as f64);
-        histogram!("transaction_processing_duration", "tx_hash" => self.hash.to_string()).record(self.transaction_processing_duration);
-        histogram!("gas_per_assertion", "tx_hash" => self.hash.to_string()).record(self.gas_per_assertion as f64);
+        histogram!("assertion_gas_per_transaction", "tx_hash" => self.hash.to_string())
+            .record(self.assertion_gas_per_transaction as f64);
+        histogram!("assertions_per_transaction", "tx_hash" => self.hash.to_string())
+            .record(self.assertions_per_transaction as f64);
+        histogram!("transaction_processing_duration", "tx_hash" => self.hash.to_string())
+            .record(self.transaction_processing_duration);
+        histogram!("gas_per_assertion", "tx_hash" => self.hash.to_string())
+            .record(self.gas_per_assertion as f64);
     }
 }
 

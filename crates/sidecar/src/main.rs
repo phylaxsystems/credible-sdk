@@ -9,10 +9,10 @@ mod cache;
 mod config;
 pub mod engine;
 mod indexer;
+mod metrics;
 pub(crate) mod transactions_state;
 pub mod transport;
 mod utils;
-mod metrics;
 
 use crate::{
     config::{

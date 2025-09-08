@@ -45,7 +45,13 @@ use super::engine::queue::{
     TransactionQueueReceiver,
     TxQueueContents,
 };
-use crate::{metrics::{BlockMetrics, TransactionMetrics}, TransactionsState};
+use crate::{
+    TransactionsState,
+    metrics::{
+        BlockMetrics,
+        TransactionMetrics,
+    },
+};
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -150,7 +156,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 state_results,
                 transaction_results_max_capacity,
             ),
-            block_metrics:BlockMetrics::new(),
+            block_metrics: BlockMetrics::new(),
         }
     }
 
@@ -171,7 +177,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env: None,
             cache: Arc::new(Cache::new(vec![])),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
-            block_metrics:BlockMetrics::new(),
+            block_metrics: BlockMetrics::new(),
         }
     }
 
@@ -276,7 +282,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         tx_metrics.assertions_per_transaction = rax.total_assertion_funcs_ran();
         self.block_metrics.assertions_per_block += rax.total_assertion_funcs_ran();
         tx_metrics.assertion_gas_per_transaction = rax.total_assertions_gas();
-        self.block_metrics.assertion_gas_per_block += rax.total_assertions_gas(); 
+        self.block_metrics.assertion_gas_per_block += rax.total_assertions_gas();
 
         let is_valid = rax.is_valid();
         let execution_result = rax.result_and_state.result.clone();
@@ -452,7 +458,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     block_processing_time = std::time::Instant::now();
 
                     self.block_env = Some(block_env);
-
                 }
                 TxQueueContents::Tx(queue_transaction) => {
                     let tx_hash = queue_transaction.tx_hash;

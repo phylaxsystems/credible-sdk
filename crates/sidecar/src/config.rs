@@ -18,6 +18,7 @@ use assertion_executor::{
 use tracing::{
     debug,
     info,
+    trace,
 };
 
 /// Initialize `ExecutorConfig` from `SidecarArgs`

@@ -10461,6 +10461,7 @@ dependencies = [
  "crossbeam",
  "ctor",
  "dashmap",
+ "lazy_static",
  "metrics",
  "reqwest",
  "revm",
