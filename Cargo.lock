@@ -10461,6 +10461,7 @@ dependencies = [
  "crossbeam",
  "ctor",
  "dashmap",
+ "metrics",
  "reqwest",
  "revm",
  "rust-tracing",
