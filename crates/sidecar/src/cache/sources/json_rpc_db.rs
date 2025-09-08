@@ -14,7 +14,6 @@ use alloy_provider::{
     Provider,
     RootProvider,
 };
-use dashmap::DashMap;
 use revm::{
     DatabaseRef,
     database::DBErrorMarker,
@@ -28,23 +27,22 @@ use std::sync::Arc;
 impl DBErrorMarker for JsonRpcDbError {}
 
 /// A DatabaseRef implementation that fetches data from an Ethereum node via JSON-RPC
+#[derive(Debug)]
 pub struct JsonRpcDb {
     provider: Arc<RootProvider>,
-    code_cache: Arc<DashMap<B256, Bytecode>>,
 }
 
 impl JsonRpcDb {
-    pub async fn try_new(rpc_url: &str) -> Result<Arc<Self>, JsonRpcDbError> {
+    pub async fn try_new(rpc_url: &str) -> Result<Self, JsonRpcDbError> {
         // Create provider (this needs to be done in async context)
         let provider = ProviderBuilder::new()
             .connect(rpc_url)
             .await
             .map_err(JsonRpcDbError::BuildProvider)?;
 
-        Ok(Arc::new(Self {
+        Ok(Self {
             provider: Arc::new(provider.root().clone()),
-            code_cache: Arc::new(DashMap::default()),
-        }))
+        })
     }
 }
 
@@ -79,7 +77,6 @@ impl DatabaseRef for JsonRpcDb {
                     None
                 } else {
                     let bytecode = Bytecode::new_raw(code);
-                    self.code_cache.insert(code_hash, bytecode.clone());
                     Some(bytecode)
                 },
             }))
@@ -92,17 +89,10 @@ impl DatabaseRef for JsonRpcDb {
         })
     }
 
-    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        if code_hash == revm::primitives::KECCAK_EMPTY {
-            return Ok(Bytecode::default());
-        }
-
-        if let Some(bytecode) = self.code_cache.get(&code_hash) {
-            return Ok(bytecode.clone());
-        }
-
+    fn code_by_hash_ref(&self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
         // If not in cache, we can't retrieve it via standard JSON-RPC
         // This should not happen if basic_ref is always called before code_by_hash_ref
+        // NOTE: Since this will be part of the OverlayDB, it is guaranteed to be in the cache of the OverlayDB
         Err(JsonRpcDbError::CodeByHashNotFound)
     }
 
@@ -158,4 +148,16 @@ pub enum JsonRpcDbError {
     CodeByHashNotFound,
     #[error("Runtime error")]
     Runtime,
+}
+
+impl From<JsonRpcDbError> for super::SourceError {
+    fn from(value: JsonRpcDbError) -> Self {
+        match value {
+            JsonRpcDbError::Provider(e) => super::SourceError::Request(e),
+            JsonRpcDbError::BuildProvider(e) => super::SourceError::Other(e.to_string()),
+            JsonRpcDbError::BlockNotFound => super::SourceError::BlockNotFound,
+            JsonRpcDbError::CodeByHashNotFound => super::SourceError::CodeByHashNotFound,
+            JsonRpcDbError::Runtime => super::SourceError::Other("Runtime error".to_string()),
+        }
+    }
 }
