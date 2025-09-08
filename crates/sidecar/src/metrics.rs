@@ -1,3 +1,12 @@
+//! Prometheus `metrics`
+//!
+//! Contains data types for containing metrics before sending them to the 
+//! global prometheus server spawned in `main.rs`
+//!
+//! The prometheus exporter lives by default at `0.0.0.0:9000`.
+//! The port on which to bind it to can be specified with the
+//! `TRACING_METRICS_PORT` env variable.
+
 use assertion_executor::primitives::FixedBytes;
 use metrics::{
     counter,
