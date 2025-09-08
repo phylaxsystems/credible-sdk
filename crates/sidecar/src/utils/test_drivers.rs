@@ -71,7 +71,7 @@ use super::instance::{
 };
 
 /// Setup test database with common accounts pre-funded
-fn setup_test_database(underlying_db: &mut CacheDB<EmptyDBTyped<TestDbError>>) -> Address {
+fn populate_test_database(underlying_db: &mut CacheDB<EmptyDBTyped<TestDbError>>) -> Address {
     // Insert default counter contract into the underlying db
     underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
 
@@ -142,7 +142,7 @@ impl TestTransport for LocalInstanceMockDriver {
         // Create the database and state
         let mut underlying_db =
             revm::database::CacheDB::new(revm::database::EmptyDBTyped::default());
-        let default_account = setup_test_database(&mut underlying_db);
+        let default_account = populate_test_database(&mut underlying_db);
 
         let underlying_db = Arc::new(underlying_db);
 
@@ -254,7 +254,7 @@ impl TestTransport for LocalInstanceHttpDriver {
         // Create the database and state
         let mut underlying_db =
             revm::database::CacheDB::new(revm::database::EmptyDBTyped::default());
-        let default_account = setup_test_database(&mut underlying_db);
+        let default_account = populate_test_database(&mut underlying_db);
 
         let underlying_db = Arc::new(underlying_db);
 
