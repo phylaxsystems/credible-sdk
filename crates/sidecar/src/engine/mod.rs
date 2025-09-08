@@ -452,9 +452,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     self.cache.set_block_number(block_env.number);
 
                     self.block_metrics.block_processing_duration = block_processing_time.elapsed();
+                    self.block_metrics.current_height = block_env.number;
                     self.block_metrics.commit();
                     self.block_metrics = BlockMetrics::new();
-                    self.block_metrics.current_height = block_env.number;
                     block_processing_time = std::time::Instant::now();
 
                     self.block_env = Some(block_env);
