@@ -1,3 +1,5 @@
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::missing_errors_doc)]
 use alloy::primitives::B256;
 use http::header;
 use reqwest::Client;
@@ -228,6 +230,7 @@ mod tests {
     use alloy::{
         primitives::{
             Bytes,
+            FixedBytes,
             hex,
             keccak256,
         },
@@ -292,9 +295,7 @@ mod tests {
 
         // Start the database listener
         tokio::spawn(async move {
-            listen_for_db(db_receiver, db, CancellationToken::new())
-                .await
-                .unwrap();
+            Box::pin(listen_for_db(db_receiver, db, CancellationToken::new())).await
         });
 
         // Create the client
@@ -305,9 +306,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_submit_solidity_assertion() {
+        #[allow(clippy::large_futures)]
         let (_temp_dir, _db_sender, _signer, client) = setup_test_env().await;
 
-        let source_code = r#"
+        let source_code = r"
             // SPDX-License-Identifier: MIT
             pragma solidity ^0.8.0;
             
@@ -322,7 +324,7 @@ mod tests {
                     return value;
                 }
             }
-        "#;
+        ";
 
         let response = client
             .submit_assertion(
@@ -339,6 +341,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_get_assertion() {
+        #[allow(clippy::large_futures)]
         let (_temp_dir, db_sender, signer, client) = setup_test_env().await;
 
         // First submit an assertion directly to DB
@@ -376,6 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_nonexistent_assertion() {
+        #[allow(clippy::large_futures)]
         let (_temp_dir, _db_sender, _signer, client) = setup_test_env().await;
 
         let nonexistent_id = B256::ZERO;
@@ -425,9 +429,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_submit_solidity_assertion_with_args() {
+        #[allow(clippy::large_futures)]
         let (_temp_dir, _db_sender, _signer, client) = setup_test_env().await;
 
-        let source_code = r#"
+        let source_code = r"
             // SPDX-License-Identifier: MIT
             pragma solidity ^0.8.0;
             
@@ -442,7 +447,7 @@ mod tests {
                     return value;
                 }
             }
-        "#;
+        ";
 
         let response = client
             .submit_assertion_with_args(
@@ -461,6 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_solidity_submission() {
+        #[allow(clippy::large_futures)]
         let (_temp_dir, _db_sender, _signer, client) = setup_test_env().await;
 
         // Invalid Solidity code (missing semicolon)
@@ -509,6 +515,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_response_content_validation() {
+        #[allow(clippy::large_futures)]
         let (_temp_dir, db_sender, signer, client) = setup_test_env().await;
 
         // Create a test contract with specific bytecode
@@ -583,7 +590,7 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let result = client.fetch_assertion(Default::default()).await;
+            let result = client.fetch_assertion(FixedBytes::default()).await;
             assert!(result.is_err());
             match result.unwrap_err() {
                 DaClientError::InvalidResponse(msg) => {
@@ -614,7 +621,7 @@ mod tests {
                 .mount(&mock_server)
                 .await;
 
-            let result = client.fetch_assertion(Default::default()).await;
+            let result = client.fetch_assertion(FixedBytes::default()).await;
             assert!(result.is_err());
             match result.unwrap_err() {
                 DaClientError::InvalidResponse(msg) => {

@@ -14,7 +14,7 @@
 /// Returns the constructed EVM instance
 ///
 /// # Example
-/// ```rust
+/// ```rust,ignore
 /// let mut evm = build_evm_by_features!(&mut db, &env, inspector);
 /// ```
 #[macro_export]
@@ -41,19 +41,19 @@ macro_rules! build_evm_by_features {
     }};
 }
 
-/// Macro to conditionally wrap a TxEnv for Optimism if needed.
+/// Macro to conditionally wrap a `TxEnv` for Optimism if needed.
 ///
-/// This macro either returns the original TxEnv unchanged, or wraps it in
+/// This macro either returns the original `TxEnv` unchanged, or wraps it in
 /// `OpTransaction::new()` if the optimism feature is enabled.
 ///
 /// # Arguments
 /// * `$tx_env` - The transaction environment to potentially wrap
 ///
 /// # Returns
-/// Returns either the original TxEnv or OpTransaction::new(TxEnv) for Optimism
+/// Returns either the original `TxEnv` or `OpTransaction::new(TxEnv)` for Optimism
 ///
 /// # Example
-/// ```rust
+/// ```rust,ignore
 /// let tx_env = wrap_tx_env_for_optimism!(tx_env);
 /// ```
 #[macro_export]

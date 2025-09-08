@@ -71,10 +71,10 @@ const DEPLOYMENT_GAS_LIMIT: u64 = 20_000_000;
 /// Extracts [`AssertionContract`] and [`TriggerRecorder`] from a given assertion contract's deployment bytecode
 #[allow(clippy::result_large_err)]
 pub fn extract_assertion_contract(
-    assertion_code: Bytes,
+    assertion_code: &Bytes,
     config: &ExecutorConfig,
 ) -> Result<(AssertionContract, TriggerRecorder), FnSelectorExtractorError> {
-    let assertion_id = keccak256(&assertion_code);
+    let assertion_id = keccak256(assertion_code);
 
     debug!(
         target = "assertion_executor:extract_assertion_contract",
@@ -189,7 +189,8 @@ fn test_get_assertion_selectors() {
 
     let config = ExecutorConfig::default();
     // Test with valid assertion contract
-    let (_, trigger_recorder) = extract_assertion_contract(bytecode(FN_SELECTOR), &config).unwrap();
+    let (_, trigger_recorder) =
+        extract_assertion_contract(&bytecode(FN_SELECTOR), &config).unwrap();
 
     // Verify the contract has the expected selectors from the counter assertion
     let mut expected_selectors = vec![
@@ -203,7 +204,7 @@ fn test_get_assertion_selectors() {
         .triggers
         .values()
         .flat_map(|v| v.iter())
-        .cloned()
+        .copied()
         .collect::<Vec<_>>();
     recorded_selectors.sort();
     assert_eq!(recorded_selectors, expected_selectors);
@@ -222,7 +223,7 @@ fn test_endless_loop_constructor() {
 
     // Test with valid assertion contract
     let result = extract_assertion_contract(
-        bytecode("InfiniteDeployment.sol:InfiniteDeploymentAssertion"),
+        &bytecode("InfiniteDeployment.sol:InfiniteDeploymentAssertion"),
         &config,
     );
 
@@ -257,7 +258,7 @@ fn test_extract_all_trigger_types() {
 
     // Test extraction from TriggerOnAny contract which should have AllCalls, AllStorageChanges, and BalanceChange
     let (_, trigger_recorder_any) =
-        extract_assertion_contract(bytecode("TriggerOnAny.sol:TriggerOnAny"), &config).unwrap();
+        extract_assertion_contract(&bytecode("TriggerOnAny.sol:TriggerOnAny"), &config).unwrap();
 
     // Should have all three "Any" trigger types
     assert!(
@@ -305,9 +306,11 @@ fn test_extract_all_trigger_types() {
     );
 
     // Test extraction from TriggerOnSpecific contract which should have specific Call and StorageChange triggers
-    let (_, trigger_recorder_specific) =
-        extract_assertion_contract(bytecode("TriggerOnSpecific.sol:TriggerOnSpecific"), &config)
-            .unwrap();
+    let (_, trigger_recorder_specific) = extract_assertion_contract(
+        &bytecode("TriggerOnSpecific.sol:TriggerOnSpecific"),
+        &config,
+    )
+    .unwrap();
 
     // Should have specific trigger types
     let expected_call_trigger = TriggerType::Call {
@@ -361,7 +364,7 @@ fn test_extract_no_triggers_error() {
     // Test with a contract that doesn't register any triggers
     // This would be a contract that has a triggers() function but doesn't call any register functions
     let result = extract_assertion_contract(
-        bytecode("Target.sol:Target"), // Target contract likely doesn't register triggers
+        &bytecode("Target.sol:Target"), // Target contract likely doesn't register triggers
         &config,
     );
 

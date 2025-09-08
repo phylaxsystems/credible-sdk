@@ -39,6 +39,10 @@ pub struct Config {
 }
 impl Config {
     /// Build the assertion DA Server
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the root directory is invalid
     pub async fn build(self) -> anyhow::Result<DaServer> {
         // Bind to an address
         let listener = TcpListener::bind(&self.listen_addr).await?;
@@ -65,7 +69,7 @@ impl Config {
             database_path = db_path.to_str().unwrap(),
             "Opened database"
         );
-        metrics::gauge!("db_size_mb").set(db_size as u32);
+        metrics::gauge!("db_size_mb").set(u32::try_from(db_size)?);
 
         // Connect to Docker daemon
         let docker = Arc::new(Docker::connect_with_local_defaults()?);
@@ -85,13 +89,15 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::{
+        primitives::FixedBytes,
+        signers::local::PrivateKeySigner,
+    };
+    use assertion_da_client::DaClientError;
     use std::{
         net::SocketAddr,
         str::FromStr,
     };
-
-    use alloy::signers::local::PrivateKeySigner;
-    use assertion_da_client::DaClientError;
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
@@ -118,6 +124,7 @@ mod tests {
         let cancel_token_clone = cancel_token.clone();
 
         let task_handle = tokio::task::spawn(async move {
+            #[allow(clippy::large_futures)]
             server.run(cancel_token_clone).await.unwrap();
         });
 
@@ -126,7 +133,7 @@ mod tests {
             assertion_da_client::DaClient::new(&format!("http://{listen_addr}")).unwrap();
 
         if let Err(DaClientError::JsonRpcError { code, message }) =
-            da_client.fetch_assertion(Default::default()).await
+            da_client.fetch_assertion(FixedBytes::default()).await
         {
             assert_eq!(code, 404);
             assert_eq!(message, "Assertion not found");

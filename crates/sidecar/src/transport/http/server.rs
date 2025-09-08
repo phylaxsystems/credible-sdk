@@ -31,6 +31,7 @@ use serde::{
 };
 use std::sync::{
     Arc,
+    LazyLock,
     atomic::{
         AtomicBool,
         Ordering,
@@ -98,9 +99,7 @@ pub struct JsonRpcError {
     pub message: String,
 }
 
-lazy_static::lazy_static! {
-    static ref JSONRPCVER: String = "2.0".to_string();
-}
+static JSONRPCVER: LazyLock<String> = LazyLock::new(|| "2.0".to_string());
 
 impl JsonRpcResponse {
     pub fn block_not_available(request: &JsonRpcRequest) -> Self {
@@ -374,18 +373,17 @@ async fn handle_get_transactions(
         {
             RequestTransactionResult::Result(result) => result,
             RequestTransactionResult::Channel(receiver) => {
-                match receiver.await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        error!(
-                            tx_hash = %tx_hash,
-                            "Engine dropped response channel for transaction query"
-                        );
-                        return Ok(JsonRpcResponse::internal_error(
-                            request,
-                            "Internal error: engine unavailable",
-                        ));
-                    }
+                if let Ok(result) = receiver.await {
+                    result
+                } else {
+                    error!(
+                    tx_hash = %tx_hash,
+                    "Engine dropped response channel for transaction query"
+                    );
+                    return Ok(JsonRpcResponse::internal_error(
+                        request,
+                        "Internal error: engine unavailable",
+                    ));
                 }
             }
         };

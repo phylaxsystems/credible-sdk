@@ -27,9 +27,8 @@ mod tests {
         let res = test_runner.run().await;
         assert!(matches!(
             res,
-            Err(DaSubmitError::PhoundryError(
-                pcl_phoundry::error::PhoundryError::DirectoryNotFound(_)
-            ))
+            Err(DaSubmitError::PhoundryError(ref boxed_error))
+            if matches!(**boxed_error, pcl_phoundry::error::PhoundryError::DirectoryNotFound(_))
         ));
     }
 
@@ -45,9 +44,8 @@ mod tests {
         assert!(
             matches!(
                 res,
-                Err(DaSubmitError::PhoundryError(
-                    pcl_phoundry::error::PhoundryError::NoSourceFilesFound
-                ))
+                Err(DaSubmitError::PhoundryError(ref boxed_error))
+                if matches!(**boxed_error, pcl_phoundry::error::PhoundryError::NoSourceFilesFound)
             ),
             "Result: {res:#?}",
         );
@@ -71,9 +69,8 @@ mod tests {
         let res = test_runner.run().await;
         assert!(matches!(
             res,
-            Err(DaSubmitError::PhoundryError(
-                pcl_phoundry::error::PhoundryError::CompilationError(..)
-            ))
+            Err(DaSubmitError::PhoundryError(ref boxed_error))
+            if matches!(**boxed_error, pcl_phoundry::error::PhoundryError::CompilationError(..))
         ));
     }
 
@@ -86,9 +83,8 @@ mod tests {
         let res = test_runner.run().await;
         assert!(matches!(
             res,
-            Err(DaSubmitError::PhoundryError(
-                pcl_phoundry::error::PhoundryError::ContractNotFound(s)
-            )) if s == "ContractDoesNotExist"
+            Err(DaSubmitError::PhoundryError(ref boxed_error))
+            if matches!(**boxed_error, pcl_phoundry::error::PhoundryError::ContractNotFound(ref s) if s == "ContractDoesNotExist")
         ));
     }
 

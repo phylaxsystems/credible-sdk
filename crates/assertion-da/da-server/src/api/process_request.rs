@@ -1,3 +1,4 @@
+#![allow(clippy::large_futures)]
 use std::{
     net::SocketAddr,
     sync::Arc,
@@ -140,6 +141,8 @@ async fn verify_request<B: hyper::body::Body<Error = Error>>(
 }
 
 /// Matches the incoming method sent by a client to a corresponding function.
+// FIXME: Break down in several pieces
+#[allow(clippy::too_many_lines)]
 #[tracing::instrument(
     level = "debug",
     skip_all,
@@ -430,9 +433,7 @@ mod tests {
 
         // Start the database listener
         tokio::spawn(async move {
-            listen_for_db(db_receiver, db, CancellationToken::new())
-                .await
-                .unwrap();
+            Box::pin(listen_for_db(db_receiver, db, CancellationToken::new())).await
         });
 
         (temp_dir, db_sender, signer, server_url)
@@ -477,7 +478,7 @@ mod tests {
     async fn test_submit_solidity_assertion() {
         let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
 
-        let source_code = r#"
+        let source_code = r"
             // SPDX-License-Identifier: MIT
             pragma solidity ^0.8.0;
             
@@ -492,7 +493,7 @@ mod tests {
                     return value;
                 }
             }
-        "#;
+        ";
 
         let request_body = json!({
             "jsonrpc": "2.0",
@@ -707,6 +708,7 @@ mod tests {
         assert_eq!(response_json["error"]["message"], "Request body too large");
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn test_invalid_json_schema() {
         let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;

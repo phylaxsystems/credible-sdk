@@ -46,11 +46,14 @@ pub fn get_call_inputs(
     for CallInputsWithId { call_input, id } in call_inputs {
         let original_input_data = match &call_input.input {
             revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
-            _ => return Err(GetCallInputsError::ExpectedBytes),
+            revm::interpreter::CallInput::SharedBuffer(_) => {
+                return Err(GetCallInputsError::ExpectedBytes);
+            }
         };
-        let input_data_wo_selector = match original_input_data.len() >= 4 {
-            true => original_input_data.slice(4..),
-            false => Bytes::new(),
+        let input_data_wo_selector = if original_input_data.len() >= 4 {
+            original_input_data.slice(4..)
+        } else {
+            Bytes::new()
         };
         sol_call_inputs.push(PhEvmCallInputs {
             input: input_data_wo_selector,
@@ -99,11 +102,11 @@ mod test {
 
     fn test_with_inputs_and_tracer(
         call_inputs: &CallInputs,
-        call_tracer: CallTracer,
+        call_tracer: &CallTracer,
     ) -> Result<Bytes, GetCallInputsError> {
         let logs_and_traces = LogsAndTraces {
             tx_logs: &[],
-            call_traces: &call_tracer,
+            call_traces: call_tracer,
         };
         let mock_db = MockDb::new();
         let pre_tx_db = ForkDb::new(mock_db);
@@ -200,7 +203,7 @@ mod test {
         let get_call_inputs = create_get_call_input(target, selector);
         let call_tracer = create_call_tracer_with_inputs(vec![mock_call_input.clone()]);
 
-        let result = test_with_inputs_and_tracer(&get_call_inputs, call_tracer);
+        let result = test_with_inputs_and_tracer(&get_call_inputs, &call_tracer);
 
         let encoded = result.unwrap();
 
@@ -228,7 +231,7 @@ mod test {
         // Create context with no matching call inputs (different target and selector)
         let call_tracer = CallTracer::new();
 
-        let result = test_with_inputs_and_tracer(&get_call_inputs, call_tracer);
+        let result = test_with_inputs_and_tracer(&get_call_inputs, &call_tracer);
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
@@ -255,7 +258,7 @@ mod test {
 
         let call_tracer = create_call_tracer_with_inputs(mock_call_inputs.clone());
 
-        let result = test_with_inputs_and_tracer(&get_call_inputs, call_tracer);
+        let result = test_with_inputs_and_tracer(&get_call_inputs, &call_tracer);
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
@@ -276,81 +279,81 @@ mod test {
         assert_eq!(decoded[1].input, mock_call_inputs[1].1.slice(4..));
     }
 
-    #[tokio::test]
-    async fn test_get_call_inputs_create() {
-        let result = run_precompile_test("TestGetCallInputsCreate").await;
+    #[test]
+    fn test_get_call_inputs_create() {
+        let result = run_precompile_test("TestGetCallInputsCreate");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
         assert_eq!(result.assertions_executions.len(), 1);
     }
 
-    #[tokio::test]
-    async fn test_get_call_inputs() {
-        let result = run_precompile_test("TestGetCallInputs").await;
+    #[test]
+    fn test_get_call_inputs() {
+        let result = run_precompile_test("TestGetCallInputs");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
         assert_eq!(result.assertions_executions.len(), 1);
     }
 
-    #[tokio::test]
-    async fn test_get_call_inputs_reverts() {
-        let result = run_precompile_test("TestGetCallInputsReverts").await;
+    #[test]
+    fn test_get_call_inputs_reverts() {
+        let result = run_precompile_test("TestGetCallInputsReverts");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert_eq!(result.assertions_executions.len(), 1);
         assert!(result_and_state.result.is_success());
     }
 
-    #[tokio::test]
-    async fn test_get_call_inputs_recursive() {
-        let result = run_precompile_test("TestGetCallInputsRecursive").await;
+    #[test]
+    fn test_get_call_inputs_recursive() {
+        let result = run_precompile_test("TestGetCallInputsRecursive");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1);
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
     }
 
-    #[tokio::test]
-    async fn test_get_call_inputs_static() {
-        let result = run_precompile_test("TestGetCallInputsStatic").await;
+    #[test]
+    fn test_get_call_inputs_static() {
+        let result = run_precompile_test("TestGetCallInputsStatic");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
     }
 
-    #[tokio::test]
-    async fn test_get_call_inputs_proxy() {
-        let result = run_precompile_test("TestGetCallInputsProxy").await;
+    #[test]
+    fn test_get_call_inputs_proxy() {
+        let result = run_precompile_test("TestGetCallInputsProxy");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
     }
 
-    #[tokio::test]
-    async fn test_get_call_inputs_call_code() {
-        let result = run_precompile_test("TestGetCallInputsCallCode").await;
+    #[test]
+    fn test_get_call_inputs_call_code() {
+        let result = run_precompile_test("TestGetCallInputsCallCode");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
     }
 
-    #[tokio::test]
-    async fn test_get_call_inputs_delegate() {
-        let result = run_precompile_test("TestGetCallInputsDelegate").await;
+    #[test]
+    fn test_get_call_inputs_delegate() {
+        let result = run_precompile_test("TestGetCallInputsDelegate");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
     }
 
-    #[tokio::test]
-    async fn test_get_call_inputs_all_calls() {
-        let result = run_precompile_test("TestGetCallInputsAllCalls").await;
+    #[test]
+    fn test_get_call_inputs_all_calls() {
+        let result = run_precompile_test("TestGetCallInputsAllCalls");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
         let result_and_state = result.result_and_state;

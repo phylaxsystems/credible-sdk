@@ -2,7 +2,10 @@ use alloy::sol_types::{
     SolCall,
     sol,
 };
-use alloy_primitives::B256;
+use alloy_primitives::{
+    B256,
+    Bytes,
+};
 use alloy_provider::network::TransactionBuilder;
 use alloy_rpc_types::TransactionRequest;
 use assertion_da_client::DaSubmissionResponse;
@@ -15,7 +18,7 @@ sol! {
     function owner() external view returns (address);
 }
 
-/// Generates a TransactionRequest for addAssertion
+/// Generates a `TransactionRequest` for `addAssertion`
 pub fn add_assertion_tx(
     state_oracle: Address,
     contract_address: Address,
@@ -26,7 +29,7 @@ pub fn add_assertion_tx(
     let input = addAssertionCall {
         contractAddress: contract_address,
         assertionId: assertion_id,
-        metadata: Default::default(),
+        metadata: Bytes::default(),
         proof: da_submission_response.prover_signature,
     }
     .abi_encode();
@@ -36,7 +39,7 @@ pub fn add_assertion_tx(
         .from(deployer)
 }
 
-/// Generates a TransactionRequest for removeAssertion
+/// Generates a `TransactionRequest` for removeAssertion
 pub fn remove_assertion_tx(
     state_oracle: Address,
     contract_address: Address,
@@ -67,7 +70,7 @@ pub fn register_assertion_adopter_tx(
             registerAssertionAdopterCall {
                 contractAddress: contract_address,
                 adminVerifier: admin_verifier,
-                data: Default::default(),
+                data: Bytes::default(),
             }
             .abi_encode(),
         )

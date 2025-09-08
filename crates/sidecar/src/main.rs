@@ -1,4 +1,8 @@
 //! # The credible layer sidecar
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::unreadable_literal)]
+#![allow(clippy::similar_names)]
 
 mod args;
 mod cache;

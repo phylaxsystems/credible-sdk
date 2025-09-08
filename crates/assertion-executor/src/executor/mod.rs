@@ -143,7 +143,7 @@ impl AssertionExecutor {
 
         // This call relies on From<EVMError<ExtDb::Error>> for ExecutorError<DB::Error>
         let forked_tx_result =
-            self.execute_forked_tx_ext_db::<ExtDb>(block_env.clone(), tx_env, external_db)?;
+            self.execute_forked_tx_ext_db::<ExtDb>(&block_env, tx_env, external_db)?;
 
         let exec_result = &forked_tx_result.result_and_state.result;
         if !exec_result.is_success() {
@@ -171,7 +171,11 @@ impl AssertionExecutor {
 
         let invalid_assertions: Vec<AssertionFnId> = results
             .iter()
-            .filter(|a| !a.assertion_fns_results.iter().all(|r| r.is_success()))
+            .filter(|a| {
+                !a.assertion_fns_results
+                    .iter()
+                    .all(AssertionFunctionResult::is_success)
+            })
             .flat_map(|a| a.assertion_fns_results.iter().map(|r| r.id))
             .collect::<Vec<_>>();
 
@@ -244,7 +248,7 @@ impl AssertionExecutor {
                         self.run_assertion_contract(
                             &assertion_for_execution.assertion_contract,
                             &assertion_for_execution.selectors,
-                            block_env.clone(),
+                            &block_env,
                             tx_fork_db.clone(),
                             &phevm_context,
                         )
@@ -255,12 +259,17 @@ impl AssertionExecutor {
         results
     }
 
-    #[instrument(skip_all, fields(assertion_id=%assertion_contract.id), level="debug", target="assertion-executor::execute_assertions")]
+    #[instrument(
+        skip_all,
+        fields(assertion_id=%assertion_contract.id),
+        level = "debug",
+        target = "assertion-executor::execute_assertions"
+    )]
     fn run_assertion_contract<Active>(
         &self,
         assertion_contract: &AssertionContract,
         fn_selectors: &[FixedBytes<4>],
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         mut tx_fork_db: ForkDb<Active>,
         context: &PhEvmContext,
     ) -> Result<AssertionContractExecution, AssertionExecutionError<Active>>
@@ -366,11 +375,11 @@ impl AssertionExecutor {
         let result_and_state = evm.inspect_with_tx(tx_env);
 
         let result = result_and_state
-                        .map(|result_and_state| result_and_state.result)
-                        .map_err(|e| {
-                            warn!(target: "assertion-executor::execute_assertions", error = ?e, "Evm error executing assertions");
-                            e
-                        })?;
+            .map(|result_and_state| result_and_state.result)
+            .map_err(|e| {
+                warn!(target: "assertion-executor::execute_assertions", error = ?e, "Evm error executing assertions");
+                e
+            })?;
 
         assertion_gas.fetch_add(result.gas_used(), std::sync::atomic::Ordering::Relaxed);
         assertions_ran.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -395,7 +404,7 @@ impl AssertionExecutor {
     )]
     pub fn execute_forked_tx_ext_db<ExtDb>(
         &self,
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         tx_env: TxEnv,
         external_db: &mut ExtDb,
     ) -> Result<ExecuteForkedTxResult, ForkTxExecutionError<ExtDb>>
@@ -607,7 +616,7 @@ mod test {
 
         // execute_forked_tx uses &mut ForkDb<TestDB>
         let result = executor
-            .execute_forked_tx_ext_db(BlockEnv::default(), counter_call(), &mut mock_db)
+            .execute_forked_tx_ext_db(&BlockEnv::default(), counter_call(), &mut mock_db)
             .unwrap();
 
         //Traces should contain the call to the counter contract
@@ -625,7 +634,7 @@ mod test {
             .result_and_state
             .state
             .keys()
-            .cloned()
+            .copied()
             .collect::<Vec<_>>();
 
         // Check storage on the TestForkDB
@@ -667,7 +676,7 @@ mod test {
             .insert(
                 COUNTER_ADDRESS,
                 // Assuming AssertionState::new_test takes Bytes or similar
-                AssertionState::new_test(assertion_bytecode),
+                AssertionState::new_test(&assertion_bytecode),
             )
             .unwrap();
 

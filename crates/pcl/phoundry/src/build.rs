@@ -73,14 +73,14 @@ mod tests {
         let contract_path = contract_dir.join("ValidContract.sol");
         fs::write(
             &contract_path,
-            r#"// SPDX-License-Identifier: MIT
+            r"// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
 contract ValidContract {
     function test() public pure returns (bool) {
         return true;
     }
-}"#,
+}",
         )
         .unwrap();
 

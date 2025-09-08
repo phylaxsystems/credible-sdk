@@ -9,7 +9,6 @@ fn init_tests() {
     };
     if let Ok(v) = std::env::var("TEST_TRACE") {
         let level = match v.as_str() {
-            "false" | "off" => return,
             "true" | "debug" | "on" => tracing::Level::DEBUG,
             "trace" => tracing::Level::TRACE,
             "info" => tracing::Level::INFO,
@@ -40,9 +39,9 @@ use std::convert::Infallible;
 /// Error type used in tests, infallible for simplicity
 pub type TestDbError = Infallible;
 
-/// Re-export the engine_test procedural macro
+/// Re-export the `engine_test` procedural macro
 ///
-/// This macro simplifies test setup by automatically creating a LocalInstance
+/// This macro simplifies test setup by automatically creating a `LocalInstance`
 /// and passing it to your test function.
 ///
 /// # Usage

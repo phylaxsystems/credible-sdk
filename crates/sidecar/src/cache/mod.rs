@@ -202,6 +202,7 @@ impl DBErrorMarker for CacheError {}
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::cast_possible_truncation)]
     use super::*;
     use crate::cache::sources::Source;
     use assertion_executor::primitives::{

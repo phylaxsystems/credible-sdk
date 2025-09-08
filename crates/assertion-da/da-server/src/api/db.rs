@@ -22,7 +22,7 @@ pub async fn listen_for_db(
 ) -> Result<()> {
     loop {
         tokio::select! {
-            _ = cancel_token.cancelled() => {
+            () = cancel_token.cancelled() => {
                 tracing::info!("Database listener received cancellation signal, shutting down...");
                 break;
             }
@@ -55,6 +55,7 @@ fn db_insert(db: &Db<{ LEAF_FANOUT }>, key: &Vec<u8>, value: &Vec<u8>) -> Result
     db.insert(key, value.to_owned())?;
 
     let db_size = db.size_on_disk()? / (1024 * 1024);
+    #[allow(clippy::cast_precision_loss)]
     metrics::gauge!("db_size_mb").set(db_size as f64);
     metrics::gauge!("database_assertions_sum").increment(1);
     Ok(())

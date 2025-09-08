@@ -1,3 +1,5 @@
+// We allow panics as this should be invoked at startup time
+#![allow(clippy::missing_panics_doc)]
 use std::path::Path;
 
 use crate::Assertion;
@@ -11,10 +13,10 @@ pub struct BuildInfo {
 
 /// Reads a contract artifact
 /// Input can be specified in two patterns
-/// 1. ${file_name[.sol, .a.sol]}:${contract_name}
-/// 2. ${contract_name} (file_name is assumed to be the same as contract_name, with .sol extension)
+/// 1. ${`file_name[.sol, .a.sol]`}:${`contract_name`}
+/// 2. ${`contract_name`} (`file_name` is assumed to be the same as `contract_name`, with .sol extension)
 ///
-/// out_dir is the output directory of the build artifact
+/// `out_dir` is the output directory of the build artifact
 pub fn read_artifact(input: &Assertion, out_dir: &Path) -> serde_json::Value {
     let file_names = input.get_paths();
     // Try each file name until we find one that exists
@@ -30,10 +32,10 @@ pub fn read_artifact(input: &Assertion, out_dir: &Path) -> serde_json::Value {
 
 /// Reads deployment bytecode from a contract artifact
 /// Input can be specified in two patterns
-/// 1. ${file_name[.sol, .a.sol]}:${contract_name}
-/// 2. ${contract_name} (file_name is assumed to be the same as contract_name, with .sol extension)
+/// 1. ${`file_name[.sol, .a.sol]`}:${`contract_name`}
+/// 2. ${`contract_name`} (`file_name` is assumed to be the same as `contract_name`, with .sol extension)
 ///
-/// out_dir is the output directory of the build artifact
+/// `out_dir` is the output directory of the build artifact
 pub fn bytecode(artifact: &serde_json::Value) -> String {
     let bytecode = artifact["bytecode"]["object"]
         .as_str()
@@ -52,7 +54,7 @@ pub fn compilation_target(input: &Assertion, artifact: &serde_json::Value) -> St
         .iter()
         .find_map(|(key, value)| {
             if value.as_str() == Some(input.contract_name()) {
-                Some(key.to_string())
+                Some(key.clone())
             } else {
                 None
             }

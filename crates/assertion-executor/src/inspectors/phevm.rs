@@ -109,19 +109,19 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     LoadExternalSlotError(#[from] LoadExternalSlotError<ExtDb>),
 }
 
-/// PhEvmInspector is an inspector for supporting the PhEvm precompiles.
+/// `PhEvmInspector` is an inspector for supporting the `PhEvm` precompiles.
 #[derive(Debug, Clone)]
 pub struct PhEvmInspector<'a> {
     pub context: PhEvmContext<'a>,
 }
 
 impl<'a> PhEvmInspector<'a> {
-    /// Create a new PhEvmInspector.
+    /// Create a new `PhEvmInspector`.
     pub fn new(context: PhEvmContext<'a>) -> Self {
         PhEvmInspector { context }
     }
 
-    /// Execute precompile functions for the PhEvm.
+    /// Execute precompile functions for the `PhEvm`.
     pub fn execute_precompile<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
         &mut self,
         context: &mut CTX,
@@ -150,14 +150,14 @@ impl<'a> PhEvmInspector<'a> {
                 fork_pre_call(
                     context,
                     self.context.logs_and_traces.call_traces,
-                    input_bytes,
+                    &input_bytes,
                 )?
             }
             PhEvm::forkPostCallCall::SELECTOR => {
                 fork_post_call(
                     context,
                     self.context.logs_and_traces.call_traces,
-                    input_bytes,
+                    &input_bytes,
                 )?
             }
             PhEvm::loadCall::SELECTOR => load_external_slot(context, inputs)?,
@@ -224,7 +224,7 @@ impl<'a> PhEvmInspector<'a> {
                 )?);
 
                 #[cfg(not(feature = "phoundry"))]
-                return Ok(Default::default());
+                return Ok(Bytes::default());
             }
             selector => Err(PrecompileError::SelectorNotFound(selector.into()))?,
         };
@@ -269,9 +269,9 @@ mod test {
     use crate::inspectors::sol_primitives::Error;
     use alloy_sol_types::SolError;
 
-    #[tokio::test]
-    async fn test_invalid_selector_error_encoding() {
-        let result = run_precompile_test("TestInvalidCall").await;
+    #[test]
+    fn test_invalid_selector_error_encoding() {
+        let result = run_precompile_test("TestInvalidCall");
         assert!(!result.is_valid());
         assert_eq!(result.assertions_executions.len(), 1);
         let assertion_contract_execution = &result.assertions_executions[0];
@@ -290,7 +290,9 @@ mod test {
 
                 assert_eq!(error_string.0, "Precompile selector not found: 0x1dcc85ae");
             }
-            _ => {
+            crate::primitives::AssertionFunctionExecutionResult::AssertionContractDeployFailure(
+                _,
+            ) => {
                 panic!("Expected AssertionExecutionResult(_), got: {assertion_fn_result:#?}");
             }
         }

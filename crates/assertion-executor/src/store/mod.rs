@@ -65,8 +65,8 @@ impl PendingModification {
         match self {
             PendingModification::Add {
                 assertion_adopter, ..
-            } => *assertion_adopter,
-            PendingModification::Remove {
+            }
+            | PendingModification::Remove {
                 assertion_adopter, ..
             } => *assertion_adopter,
         }

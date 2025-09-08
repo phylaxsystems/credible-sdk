@@ -44,8 +44,6 @@ mod tests {
         if let Ok(_request) = client.get(url).build() {
             // In real usage, this would be an actual reqwest::Error
             // For now, we just verify the Error enum structure exists
-            let _error_variant = Error::HttpError;
-
             // Verify that our error messages are formatted correctly
             let test_msg = "test error";
             let config_err = Error::ConfigError(test_msg.to_string());
@@ -110,15 +108,15 @@ mod tests {
 
     #[test]
     fn test_result_type_alias() {
-        fn returns_ok() -> Result<String> {
-            Ok("success".to_string())
+        fn returns_ok() -> String {
+            "success".to_string()
         }
 
         fn returns_err() -> Result<String> {
             Err(Error::ConfigError("failure".to_string()))
         }
 
-        assert_matches!(returns_ok(), Ok(s) if s == "success");
+        assert_matches!(returns_ok().as_str(), "success");
         assert_matches!(returns_err(), Err(Error::ConfigError(msg)) if msg == "failure");
     }
 
@@ -161,8 +159,8 @@ mod tests {
 
     #[test]
     fn test_error_with_empty_messages() {
-        let config_error = Error::ConfigError("".to_string());
-        let auth_error = Error::AuthError("".to_string());
+        let config_error = Error::ConfigError(String::new());
+        let auth_error = Error::AuthError(String::new());
 
         assert_eq!(config_error.to_string(), "Configuration error: ");
         assert_eq!(auth_error.to_string(), "Authentication error: ");

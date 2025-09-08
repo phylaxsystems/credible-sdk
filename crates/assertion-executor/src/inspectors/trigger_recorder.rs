@@ -45,11 +45,11 @@ pub const TRIGGER_RECORDER: Address = address!("55BB9AD8Dc1EE06D47279fC2B23Cd755
 
 /// Trigger type represents different types of triggers that assertions can be registered for.
 ///
-/// Call { trigger_selector: FixedBytes<4> } - Triggers on specific function calls matching the 4-byte selector
-/// AllCalls - Triggers on any function call to the contract
-/// BalanceChange - Triggers when the contract's ETH balance changes
-/// StorageChange { trigger_slot: FixedBytes<32> } - Triggers when a specific storage slot is modified
-/// AllStorageChanges - Triggers on any storage modification in the contract
+/// `Call` { `trigger_selector`: `FixedBytes<4>` } - Triggers on specific function calls matching the 4-byte selector
+/// `AllCalls` - Triggers on any function call to the contract
+/// `BalanceChange` - Triggers when the contract's ETH balance changes
+/// `StorageChange` { `trigger_slot`: `FixedBytes<32>` } - Triggers when a specific storage slot is modified
+/// `AllStorageChanges` - Triggers on any storage modification in the contract
 ///
 /// These triggers are used to determine when an assertion should be executed.
 /// The trigger recorder keeps track of which triggers are registered for each contract.
@@ -62,7 +62,7 @@ pub enum TriggerType {
     AllStorageChanges,
 }
 
-/// TriggerRecorder is an inspector for recording calls made to register triggers at the trigger
+/// `TriggerRecorder` is an inspector for recording calls made to register triggers at the trigger
 /// recorder address.
 /// The recorder triggers are used to determine when to run an assertion.
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Clone)]

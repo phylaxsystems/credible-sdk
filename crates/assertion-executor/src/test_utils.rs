@@ -1,4 +1,5 @@
 #![cfg(any(test, feature = "test"))]
+#![allow(clippy::missing_panics_doc)]
 
 use crate::{
     ExecutorConfig,
@@ -87,17 +88,19 @@ pub fn counter_assertion() -> AssertionContract {
 pub const FN_SELECTOR: &str = "SelectorImpl.sol:SelectorImpl";
 
 fn get_assertion_contract(artifact: &str) -> (AssertionContract, TriggerRecorder) {
-    extract_assertion_contract(bytecode(artifact), &ExecutorConfig::default()).unwrap()
+    extract_assertion_contract(&bytecode(artifact), &ExecutorConfig::default()).unwrap()
 }
 
 pub fn selector_assertion() -> (AssertionContract, TriggerRecorder) {
     get_assertion_contract(FN_SELECTOR)
 }
 
-/// Returns a random FixedBytes of length N
+/// Returns a random `FixedBytes` of length N
 pub fn random_bytes<const N: usize>() -> FixedBytes<N> {
     let mut value = [0u8; N];
-    value.iter_mut().for_each(|x| *x = rand::random());
+    for x in &mut value {
+        *x = rand::random();
+    }
     FixedBytes::new(value)
 }
 
@@ -130,7 +133,7 @@ fn read_artifact(input: &str) -> serde_json::Value {
 /// Reads deployment bytecode from a ../../testdata/mock-protocol artifact
 ///
 /// # Arguments
-/// * `input` - ${file_name}:${contract_name}
+/// * `input` - ${`file_name`}:${`contract_name`}
 pub fn bytecode(input: &str) -> Bytes {
     let value = read_artifact(input);
     let bytecode = value["bytecode"]["object"]
@@ -144,7 +147,7 @@ pub fn bytecode(input: &str) -> Bytes {
 /// Reads deployed bytecode from a ../../testdata/mock-protocol artifact
 ///
 /// # Arguments
-/// * `input` - ${file_name}:${contract_name}
+/// * `input` - ${`file_name`}:${`contract_name`}
 pub fn deployed_bytecode(input: &str) -> Bytes {
     let value = read_artifact(input);
     let bytecode = value["deployedBytecode"]["object"]
@@ -155,7 +158,7 @@ pub fn deployed_bytecode(input: &str) -> Bytes {
         .into()
 }
 
-pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
+pub fn run_precompile_test(artifact: &str) -> TxValidationResult {
     let caller = address!("5fdcca53617f4d2b9134b29090c87d01058e27e9");
     let target = address!("118dd24a3b0d02f90d8896e242d3838b4d37c181");
 
@@ -169,7 +172,7 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
 
     let assertion_store = AssertionStore::new_ephemeral().unwrap();
     assertion_store
-        .insert(target, AssertionState::new_test(assertion_code))
+        .insert(target, AssertionState::new_test(&assertion_code))
         .unwrap();
 
     let mut executor = ExecutorConfig::default().build(assertion_store);
@@ -186,7 +189,7 @@ pub async fn run_precompile_test(artifact: &str) -> TxValidationResult {
 
     // Execute target deployment tx
     let result = executor
-        .execute_forked_tx_ext_db(BlockEnv::default(), target_deployment_tx, &mut mock_db)
+        .execute_forked_tx_ext_db(&BlockEnv::default(), target_deployment_tx, &mut mock_db)
         .unwrap();
     mock_db.commit(result.result_and_state.state.clone());
     fork_db.commit(result.result_and_state.state.clone());

@@ -66,6 +66,7 @@ mod tests {
     use alloy_primitives::U256;
     use revm::{
         interpreter::{
+            InputsImpl,
             SharedMemory,
             Stack,
             host::DummyHost,
@@ -160,7 +161,7 @@ mod tests {
     fn create_test_interpreter(stack: Stack) -> revm::interpreter::Interpreter<EthInterpreter> {
         let memory = SharedMemory::new();
         let bytecode = ExtBytecode::new(Bytecode::default());
-        let inputs = Default::default();
+        let inputs = InputsImpl::default();
         let is_static = false;
         let is_eof = false;
         let spec_id = SpecId::PRAGUE;

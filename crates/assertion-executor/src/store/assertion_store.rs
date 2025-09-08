@@ -98,14 +98,14 @@ struct AssertionStateMetadata<'a> {
 
 impl AssertionState {
     /// Creates a new active assertion state.
-    /// WIll be active across all blocks.
+    /// Will be active across all blocks.
+    #[cfg(any(test, feature = "test"))]
     #[allow(clippy::result_large_err)]
     pub fn new_active(
-        bytecode: Bytes,
+        bytecode: &Bytes,
         executor_config: &ExecutorConfig,
     ) -> Result<Self, FnSelectorExtractorError> {
-        let (contract, trigger_recorder) =
-            extract_assertion_contract(bytecode.clone(), executor_config)?;
+        let (contract, trigger_recorder) = extract_assertion_contract(bytecode, executor_config)?;
         Ok(Self {
             active_at_block: 0,
             inactive_at_block: None,
@@ -115,11 +115,12 @@ impl AssertionState {
     }
 
     #[cfg(any(test, feature = "test"))]
-    pub fn new_test(bytecode: Bytes) -> Self {
+    #[allow(clippy::missing_panics_doc)]
+    pub fn new_test(bytecode: &Bytes) -> Self {
         Self::new_active(bytecode, &ExecutorConfig::default()).unwrap()
     }
 
-    /// Getter for the assertion_contract_id
+    /// Getter for the `assertion_contract_id`
     pub fn assertion_contract_id(&self) -> B256 {
         self.assertion_contract.id
     }
@@ -145,7 +146,7 @@ impl AssertionStore {
     }
 
     /// Inserts the given assertion into the store.
-    /// If an assertion with the same assertion_contract_id already exists, it is replaced.
+    /// If an assertion with the same `assertion_contract_id` already exists, it is replaced.
     /// Returns the previous assertion if it existed.
     pub fn insert(
         &self,
@@ -160,7 +161,10 @@ impl AssertionStore {
             "Inserting assertion into store"
         );
 
-        let db_lock = self.db.lock().unwrap_or_else(|e| e.into_inner());
+        let db_lock = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut assertions: Vec<AssertionState> = db_lock
             .get(assertion_adopter)?
             .map(|a| de(&a))
@@ -196,7 +200,7 @@ impl AssertionStore {
         }
 
         for (aa, mods) in map {
-            self.apply_pending_modification(aa, mods)?;
+            self.apply_pending_modification(aa, &mods)?;
         }
 
         Ok(())
@@ -264,8 +268,8 @@ impl AssertionStore {
 
     /// Reads the assertions for the given assertion adopter at the given block.
     /// Returns the assertions that are active at the given block.
-    /// An assertion is considered active at a block if the active_at_block is less than or equal
-    /// to the given block, and the inactive_at_block is greater than the given block.
+    /// An assertion is considered active at a block if the `active_at_block` is less than or equal
+    /// to the given block, and the `inactive_at_block` is greater than the given block.
     /// `assertion_adopter` is the address of the contract leveraging assertions.
     #[tracing::instrument(
         skip_all,
@@ -289,7 +293,7 @@ impl AssertionStore {
         .in_scope(|| {
             self.db
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(assertion_adopter)?
                 .map(|a| de::<Vec<AssertionState>>(&a))
                 .transpose()
@@ -338,7 +342,7 @@ impl AssertionStore {
                 // Process specific triggers and detect trigger types
                 for trigger in triggers {
                     if let Some(selectors) = a.trigger_recorder.triggers.get(trigger) {
-                        all_selectors.extend(selectors.iter().cloned());
+                        all_selectors.extend(selectors.iter().copied());
                     }
 
                     // Check trigger type while we're iterating
@@ -353,7 +357,7 @@ impl AssertionStore {
                 if has_call_trigger
                     && let Some(selectors) = a.trigger_recorder.triggers.get(&TriggerType::AllCalls)
                 {
-                    all_selectors.extend(selectors.iter().cloned());
+                    all_selectors.extend(selectors.iter().copied());
                 }
 
                 // Add AllStorageChanges selectors if needed
@@ -363,7 +367,7 @@ impl AssertionStore {
                         .triggers
                         .get(&TriggerType::AllStorageChanges)
                 {
-                    all_selectors.extend(selectors.iter().cloned());
+                    all_selectors.extend(selectors.iter().copied());
                 }
                 // Convert HashSet to Vec to match the expected return type
                 (a.assertion_contract, all_selectors.into_iter().collect())
@@ -377,13 +381,13 @@ impl AssertionStore {
     fn apply_pending_modification(
         &self,
         assertion_adopter: Address,
-        modifications: Vec<PendingModification>,
+        modifications: &[PendingModification],
     ) -> Result<(), AssertionStoreError> {
         loop {
             let assertions_serialized = self
                 .db
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(assertion_adopter)?;
 
             let mut assertions: Vec<AssertionState> = assertions_serialized
@@ -398,7 +402,7 @@ impl AssertionStore {
                 "Applying pending modifications"
             );
 
-            for modification in modifications.clone().into_iter() {
+            for modification in modifications {
                 match modification {
                     PendingModification::Add {
                         assertion_contract,
@@ -419,14 +423,14 @@ impl AssertionStore {
 
                         match existing_state {
                             Some(state) => {
-                                state.active_at_block = active_at_block;
+                                state.active_at_block = *active_at_block;
                             }
                             None => {
                                 assertions.push(AssertionState {
-                                    active_at_block,
+                                    active_at_block: *active_at_block,
                                     inactive_at_block: None,
-                                    assertion_contract,
-                                    trigger_recorder,
+                                    assertion_contract: assertion_contract.clone(),
+                                    trigger_recorder: trigger_recorder.clone(),
                                 });
                             }
                         }
@@ -444,11 +448,11 @@ impl AssertionStore {
                         );
                         let existing_state = assertions
                             .iter_mut()
-                            .find(|a| a.assertion_contract_id() == assertion_contract_id);
+                            .find(|a| a.assertion_contract_id() == *assertion_contract_id);
 
                         match existing_state {
                             Some(state) => {
-                                state.inactive_at_block = Some(inactive_at_block);
+                                state.inactive_at_block = Some(*inactive_at_block);
                             }
                             None => {
                                 // The assertion was not found, so we add it with the inactive_at_block set.
@@ -465,7 +469,7 @@ impl AssertionStore {
             let result = self
                 .db
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .compare_and_swap(
                     assertion_adopter,
                     assertions_serialized,
@@ -474,13 +478,12 @@ impl AssertionStore {
 
             if let Ok(Ok(_)) = result {
                 break;
-            } else {
-                tracing::debug!(
-                    target: "assertion-executor::assertion_store",
-                    ?result,
-                    "Assertion store Compare and Swap failed, retrying"
-                );
             }
+            tracing::debug!(
+                target: "assertion-executor::assertion_store",
+                ?result,
+                "Assertion store Compare and Swap failed, retrying"
+            );
         }
 
         Ok(())
@@ -497,7 +500,7 @@ impl AssertionStore {
         let assertions_serialized = self
             .db
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(assertion_adopter)
             .unwrap_or(None);
 
@@ -751,6 +754,7 @@ mod tests {
         ));
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn setup_and_match(
         recorded_triggers: Vec<(TriggerType, HashSet<FixedBytes<4>>)>,
         journal_entries: Vec<JournalEntry>,
@@ -759,11 +763,11 @@ mod tests {
         let store = AssertionStore::new_ephemeral()?;
         let mut trigger_recorder = TriggerRecorder::default();
 
-        recorded_triggers.iter().for_each(|(trigger, selectors)| {
+        for (trigger, selectors) in &recorded_triggers {
             trigger_recorder
                 .triggers
                 .insert(trigger.clone(), selectors.clone());
-        });
+        }
 
         let mut assertion = create_test_assertion(100, None);
         assertion.trigger_recorder = trigger_recorder;
@@ -930,6 +934,7 @@ mod tests {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn test_all_trigger_types_comprehensive() -> Result<(), AssertionStoreError> {
         let aa = Address::random();
@@ -998,11 +1003,11 @@ mod tests {
         let store = AssertionStore::new_ephemeral()?;
         let mut trigger_recorder = TriggerRecorder::default();
 
-        recorded_triggers.iter().for_each(|(trigger, selectors)| {
+        for (trigger, selectors) in &recorded_triggers {
             trigger_recorder
                 .triggers
                 .insert(trigger.clone(), selectors.clone());
-        });
+        }
 
         let mut assertion = create_test_assertion(100, None);
         assertion.trigger_recorder = trigger_recorder;

@@ -11,6 +11,7 @@ use alloy::{
 };
 use std::{
     io,
+    path::Path,
     str::FromStr,
 };
 use thiserror::Error;
@@ -41,7 +42,7 @@ pub fn get_anvil_deployer(anvil_instance: &AnvilInstance) -> SigningKey {
 /// * `Result<(), DeployContractsError>` - Success or error
 pub fn deploy_create_factory(
     funder_private_key: &SigningKey,
-    project_root: std::path::PathBuf,
+    project_root: &Path,
     rpc_url: &str,
 ) -> Result<(), DeployContractsError> {
     let funder_pk_bytes = funder_private_key.to_bytes();
@@ -88,19 +89,15 @@ pub struct Contracts {
 /// * `Result<Contracts, DeployContractsError>` - The deployed contract addresses or an error
 pub fn deploy_contracts(
     anvil: &AnvilInstance,
-    assertion_da_private_key: SigningKey,
-    project_root: std::path::PathBuf,
+    assertion_da_private_key: &SigningKey,
+    project_root: &std::path::Path,
     state_oracle_assertion_timelock_blocks: usize,
 ) -> Result<Contracts, DeployContractsError> {
     let deployer_private_key = get_anvil_deployer(anvil);
 
     let rpc_url = anvil.endpoint();
     // Validate inputs
-    deploy_create_factory(
-        &deployer_private_key,
-        project_root.clone(),
-        &anvil.endpoint(),
-    )?;
+    deploy_create_factory(&deployer_private_key, project_root, &anvil.endpoint())?;
 
     let project_root = project_root.to_string_lossy();
 
@@ -126,7 +123,7 @@ pub fn deploy_contracts(
             format!("{address:#x}")
         })
         .env("DA_PROVER_ADDRESS", {
-            let address = Address::from_private_key(&assertion_da_private_key);
+            let address = Address::from_private_key(assertion_da_private_key);
             format!("{address:#x}")
         })
         .stdout(Stdio::piped())
@@ -219,23 +216,21 @@ mod tests {
     };
     use std::error::Error;
 
-    fn setup_anvil() -> Result<AnvilInstance, Box<dyn Error>> {
+    fn setup_anvil() -> AnvilInstance {
         // Configure and spawn anvil
-        let anvil = Anvil::new().spawn();
-
-        Ok(anvil)
+        Anvil::new().spawn()
     }
 
     #[test]
-    fn test_deploy_contracts() -> Result<(), Box<dyn Error>> {
-        let anvil = setup_anvil()?;
-
+    fn test_deploy_contracts() {
         use alloy::signers::k256::elliptic_curve::rand_core::OsRng;
+
+        let anvil = setup_anvil();
 
         let result = deploy_contracts(
             &anvil,
-            SigningKey::random(&mut OsRng), // Using same key for both roles in test
-            std::path::PathBuf::from("../../lib/credible-layer-contracts"),
+            &SigningKey::random(&mut OsRng), // Using same key for both roles in test
+            &std::path::PathBuf::from("../../lib/credible-layer-contracts"),
             5,
         );
 
@@ -247,12 +242,11 @@ mod tests {
             "Contract deployment failed: {:?}",
             result.err()
         );
-        Ok(())
     }
 
     #[tokio::test]
     async fn test_deploy_contracts_fails_without_funds() -> Result<(), Box<dyn Error>> {
-        let anvil = setup_anvil()?;
+        let anvil = setup_anvil();
 
         // Generate a key and drain its funds
         let deployer_key = get_anvil_deployer(&anvil);
@@ -306,8 +300,8 @@ mod tests {
         println!("Deploying contracts");
         let result = deploy_contracts(
             &anvil,
-            deployer_key,
-            std::path::PathBuf::from("../../lib/credible-layer-contracts"),
+            &deployer_key,
+            &std::path::PathBuf::from("../../lib/credible-layer-contracts"),
             5,
         );
 
@@ -325,13 +319,13 @@ mod tests {
     }
 
     #[test]
-    fn test_deploy_create_factory() -> Result<(), Box<dyn Error>> {
-        let anvil = setup_anvil()?;
+    fn test_deploy_create_factory() {
+        let anvil = setup_anvil();
 
         let deployer_key = get_anvil_deployer(&anvil);
         let result = deploy_create_factory(
             &deployer_key,
-            std::path::PathBuf::from("../../lib/credible-layer-contracts"),
+            &std::path::PathBuf::from("../../lib/credible-layer-contracts"),
             &anvil.endpoint(),
         );
 
@@ -341,6 +335,5 @@ mod tests {
             "Deployer deployment failed: {:?}",
             result.err()
         );
-        Ok(())
     }
 }

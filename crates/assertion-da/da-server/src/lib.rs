@@ -1,3 +1,8 @@
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::unreadable_literal)]
+
 pub mod api;
 mod config;
 mod encode_args;

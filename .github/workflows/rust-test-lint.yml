@@ -25,7 +25,7 @@ on:
 jobs:
   rust-base:
     name: Rust Base
-    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@version-check
+    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
     with:
       rust-channel: 'nightly'
       require-lockfile: true

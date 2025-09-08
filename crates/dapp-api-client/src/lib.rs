@@ -1,4 +1,7 @@
 //! API client for interacting with dapp services
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::return_self_not_must_use)]
 
 pub mod auth;
 pub mod client;

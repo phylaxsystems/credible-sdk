@@ -22,7 +22,10 @@ use serde::{
 use std::{
     collections::HashMap,
     fmt,
-    path::PathBuf,
+    path::{
+        Path,
+        PathBuf,
+    },
     str::FromStr,
 };
 
@@ -99,7 +102,7 @@ impl From<String> for AssertionKey {
             };
         }
 
-        let constructor_args = args.split(',').map(|arg| arg.to_string()).collect();
+        let constructor_args = args.split(',').map(ToString::to_string).collect();
 
         Self {
             assertion_name: assertion_name.to_string(),
@@ -139,7 +142,7 @@ impl<'de> Deserialize<'de> for AssertionKey {
         // Use a visitor to deserialize the string
         struct AssertionKeyVisitor;
 
-        impl<'de> Visitor<'de> for AssertionKeyVisitor {
+        impl Visitor<'_> for AssertionKeyVisitor {
             type Value = AssertionKey;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -213,7 +216,7 @@ impl CliConfig {
     /// * `Result<(), ConfigError>` - Success or error
     pub fn write_to_file(&self, cli_args: &CliArgs) -> Result<(), ConfigError> {
         self.write_to_file_at_dir(
-            cli_args
+            &cli_args
                 .config_dir
                 .clone()
                 .unwrap_or(Self::get_config_dir()),
@@ -227,9 +230,9 @@ impl CliConfig {
     ///
     /// # Returns
     /// * `Result<(), ConfigError>` - Success or error
-    fn write_to_file_at_dir(&self, config_dir: PathBuf) -> Result<(), ConfigError> {
+    fn write_to_file_at_dir(&self, config_dir: &PathBuf) -> Result<(), ConfigError> {
         // Ensure directory exists and is writable
-        Self::ensure_writable_directory(&config_dir)?;
+        Self::ensure_writable_directory(config_dir)?;
 
         // Get config file path and check permissions
         let config_file = config_dir.join(CONFIG_FILE);
@@ -301,6 +304,10 @@ impl CliConfig {
     ///
     /// # Returns
     /// * `PathBuf` - Path to the config directory
+    ///
+    /// # Panics
+    ///
+    /// Will panic if it does not find the home directory
     pub fn get_config_dir() -> PathBuf {
         home_dir().unwrap().join(CONFIG_DIR)
     }
@@ -312,7 +319,7 @@ impl CliConfig {
     ///
     /// # Returns
     /// * `Result<Self, ConfigError>` - Configuration or error
-    fn read_from_file_at_dir(config_dir: PathBuf) -> Result<Self, ConfigError> {
+    fn read_from_file_at_dir(config_dir: &Path) -> Result<Self, ConfigError> {
         let config_file = config_dir.join(CONFIG_FILE);
 
         // If file doesn't exist, return default config
@@ -351,7 +358,7 @@ impl CliConfig {
     /// * `Result<Self, ConfigError>` - Configuration or error
     pub fn read_from_file(cli_args: &CliArgs) -> Result<Self, ConfigError> {
         Self::read_from_file_at_dir(
-            cli_args
+            &cli_args
                 .config_dir
                 .clone()
                 .unwrap_or(Self::get_config_dir()),
@@ -387,14 +394,15 @@ impl fmt::Display for CliConfig {
             Some(auth) => writeln!(f, "{auth}")?,
             None => writeln!(f, "Authentication: Not authenticated")?,
         }
-        if !self.assertions_for_submission.is_empty() {
+
+        if self.assertions_for_submission.is_empty() {
+            writeln!(f, "\nNo pending assertions for submission")?;
+        } else {
             writeln!(f, "\nPending Assertions for Submission")?;
             writeln!(f, "--------------------------------")?;
             for (i, assertion) in self.assertions_for_submission.values().enumerate() {
                 writeln!(f, "Assertion #{}:\n{}", i + 1, assertion)?;
             }
-        } else {
-            writeln!(f, "\nNo pending assertions for submission")?;
         }
 
         Ok(())
@@ -524,10 +532,10 @@ mod tests {
         };
 
         // Test writing
-        config.write_to_file_at_dir(config_dir.clone()).unwrap();
+        config.write_to_file_at_dir(&config_dir).unwrap();
 
         // Test reading
-        let read_config = CliConfig::read_from_file_at_dir(config_dir.clone()).unwrap();
+        let read_config = CliConfig::read_from_file_at_dir(&config_dir).unwrap();
         assert_eq!(
             read_config.auth.as_ref().unwrap().access_token,
             "test_access"
@@ -573,7 +581,7 @@ mod tests {
         let (config_dir, _temp_dir) = setup_config_dir();
 
         // Try reading without creating a file
-        let config = CliConfig::read_from_file_at_dir(config_dir).unwrap();
+        let config = CliConfig::read_from_file_at_dir(&config_dir).unwrap();
         assert!(config.auth.is_none());
         assert!(config.assertions_for_submission.is_empty());
     }
@@ -668,7 +676,7 @@ mod tests {
         std::fs::set_permissions(&temp_dir, perms).unwrap();
 
         let config = CliConfig::default();
-        let result = config.write_to_file_at_dir(temp_dir.path().to_path_buf());
+        let result = config.write_to_file_at_dir(&temp_dir.path().to_path_buf());
 
         assert!(result.is_err());
         assert!(
@@ -686,7 +694,7 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
         fs::write(config_file, "invalid toml content").unwrap();
 
-        let result = CliConfig::read_from_file_at_dir(config_dir);
+        let result = CliConfig::read_from_file_at_dir(&config_dir);
         assert!(result.is_err());
     }
 
@@ -816,7 +824,7 @@ mod tests {
         create_readonly_dir(&config_dir).unwrap();
 
         let config = CliConfig::default();
-        let result = config.write_to_file_at_dir(config_dir);
+        let result = config.write_to_file_at_dir(&config_dir);
         assert!(result.is_err());
         assert!(
             result
@@ -834,7 +842,7 @@ mod tests {
         create_readonly_file(&config_file).unwrap();
 
         let config = CliConfig::default();
-        let result = config.write_to_file_at_dir(config_dir);
+        let result = config.write_to_file_at_dir(&config_dir);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("read-only"));
     }
@@ -843,7 +851,7 @@ mod tests {
     fn test_write_to_file_at_dir_success() {
         let (config_dir, _temp_dir) = setup_config_dir();
         let config = CliConfig::default();
-        assert!(config.write_to_file_at_dir(config_dir).is_ok());
+        assert!(config.write_to_file_at_dir(&config_dir).is_ok());
     }
 
     #[test]

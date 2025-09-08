@@ -115,7 +115,7 @@ impl Config {
 
     /// Create a new configuration from environment variables
     ///
-    /// Uses DAPP_ENV to determine the environment, defaulting to Production
+    /// Uses `DAPP_ENV` to determine the environment, defaulting to Production
     pub fn from_env() -> Self {
         let env = Environment::from_env_or(Environment::default());
         Self::from_environment(env)
@@ -350,7 +350,7 @@ mod tests {
         assert!(valid_config_http.validate().is_ok());
 
         // Invalid configurations
-        let empty_url = Config::new("".to_string());
+        let empty_url = Config::new(String::new());
         assert!(empty_url.validate().is_err());
 
         let invalid_url = Config::new("not-a-url".to_string());
@@ -368,7 +368,7 @@ mod tests {
         assert!(Config::new_validated("https://api.example.com".to_string()).is_ok());
 
         // Invalid URL
-        assert!(Config::new_validated("".to_string()).is_err());
+        assert!(Config::new_validated(String::new()).is_err());
         assert!(Config::new_validated("invalid-url".to_string()).is_err());
     }
 
@@ -424,7 +424,7 @@ mod tests {
 
         // Bearer token edge cases
         let mut config = Config::new("https://api.example.com".to_string());
-        config.bearer_token = Some("".to_string());
+        config.bearer_token = Some(String::new());
         assert!(config.validate().is_err());
 
         config.bearer_token = Some("\t\n ".to_string());
@@ -559,7 +559,7 @@ mod tests {
         let results = results.lock().unwrap();
         assert_eq!(results.len(), 10);
         // All results should be Some(Environment)
-        assert!(results.iter().all(|e| e.is_some()));
+        assert!(results.iter().all(Option::is_some));
     }
 
     #[test]

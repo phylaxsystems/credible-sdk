@@ -128,6 +128,10 @@ use anyhow::Result;
 use alloy::signers::local::PrivateKeySigner;
 
 /// Start the API server
+///
+/// # Panics
+///
+/// Will panic if the private key is invalid
 pub async fn serve(
     listener: TcpListener,
     db_tx: mpsc::UnboundedSender<DbRequest>,
@@ -142,14 +146,14 @@ pub async fn serve(
     // We start a loop to continuously accept incoming connections
     loop {
         tokio::select! {
-                _ = cancel_token.cancelled() => {
+                () = cancel_token.cancelled() => {
                     tracing::info!("Api received cancellation signal, shutting down...");
                     break;
                 }
                 res = listener.accept() => {
                     match res {
                         Ok((stream, socketaddr)) => {
-                            serve_connection(socketaddr, db_tx.clone(), docker.clone(), signer.clone(), stream);
+                            serve_connection(socketaddr, &db_tx, docker.clone(), signer.clone(), stream);
                         }
                         Err(err) => {
                             tracing::error!(?err, "Error accepting connection");
@@ -162,9 +166,10 @@ pub async fn serve(
     Ok(())
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn serve_connection(
     socketaddr: SocketAddr,
-    db_tx: mpsc::UnboundedSender<DbRequest>,
+    db_tx: &mpsc::UnboundedSender<DbRequest>,
     docker: Arc<Docker>,
     signer: PrivateKeySigner,
     stream: TcpStream,

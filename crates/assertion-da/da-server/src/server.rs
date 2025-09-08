@@ -103,8 +103,8 @@ mod tests {
 
         // Create server instance
         let server = DaServer {
-            db,
             listener,
+            db,
             docker,
             private_key,
         };
@@ -115,6 +115,7 @@ mod tests {
 
         // Run server in background task
         let server_handle = tokio::spawn(async move {
+            #[allow(clippy::large_futures)]
             server.run(cancel_token).await.unwrap();
         });
 

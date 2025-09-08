@@ -40,6 +40,7 @@ pub use revm::{
         EvmStorageSlot,
     },
 };
+use std::collections::HashMap;
 
 use serde::{
     Deserialize,
@@ -85,7 +86,7 @@ pub struct TxValidationResult {
 }
 
 impl TxValidationResult {
-    /// Create a new TxValidationResult instance
+    /// Create a new `TxValidationResult` instance
     pub fn new(
         transaction_valid: bool,
         result_and_state: ResultAndState,
@@ -162,8 +163,8 @@ impl AssertionFunctionResult {
     /// Convert the assertion function execution result into an execution result
     pub fn as_result(&self) -> &EvmExecutionResult {
         match &self.result {
-            AssertionFunctionExecutionResult::AssertionContractDeployFailure(result) => result,
-            AssertionFunctionExecutionResult::AssertionExecutionResult(result) => result,
+            AssertionFunctionExecutionResult::AssertionContractDeployFailure(result)
+            | AssertionFunctionExecutionResult::AssertionExecutionResult(result) => result,
         }
     }
 }
@@ -185,12 +186,12 @@ pub struct BlockChanges {
 }
 
 impl BlockChanges {
-    /// Create a new BlockChanges instance, with empty state changes.
+    /// Create a new `BlockChanges` instance, with empty state changes.
     pub fn new(block_num: u64, block_hash: B256) -> Self {
         Self {
             block_num,
             block_hash,
-            state_changes: Default::default(),
+            state_changes: HashMap::default(),
         }
     }
     /// Merge `Vec<HashMap<Address, Account>>` into block changes.

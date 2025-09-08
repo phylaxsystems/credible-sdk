@@ -89,7 +89,7 @@ impl<T: TestTransport> LocalInstance<T> {
         T::new().await
     }
 
-    /// Internal constructor for creating LocalInstance with all fields
+    /// Internal constructor for creating `LocalInstance` with all fields
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_internal(
         db: Arc<CacheDB<EmptyDBTyped<TestDbError>>>,
@@ -346,7 +346,7 @@ impl<T: TestTransport> LocalInstance<T> {
         artifact_name: &str,
     ) -> Result<(), String> {
         let assertion_bytecode = bytecode(artifact_name);
-        let assertion = AssertionState::new_test(assertion_bytecode);
+        let assertion = AssertionState::new_test(&assertion_bytecode);
 
         self.insert_assertion(address, assertion)
             .map_err(|e| format!("Failed to insert custom assertion {artifact_name}: {e}"))

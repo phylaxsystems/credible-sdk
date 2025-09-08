@@ -1,8 +1,8 @@
 //! Build script for dapp-api-client crate
 //!
 //! This script:
-//! 1. Conditionally fetches the OpenAPI specification from the dApp API when the 'regenerate' feature is enabled
-//! 2. Generates Rust client code from the cached OpenAPI specification using progenitor
+//! 1. Conditionally fetches the `OpenAPI` specification from the dApp API when the 'regenerate' feature is enabled
+//! 2. Generates Rust client code from the cached `OpenAPI` specification using progenitor
 
 // Import modules from the build directory
 #[path = "build/codegen.rs"]

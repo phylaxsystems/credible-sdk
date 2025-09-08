@@ -28,14 +28,14 @@ use std::{
 use moka::sync::Cache;
 
 #[derive(Debug)]
-/// An active overlay is a wrapper around the overlaydb meant to be used
+/// An active overlay is a wrapper around the `overlaydb` meant to be used
 /// when temporarily needing to change what database to use as the underlying.
 ///
 /// It implements `DatabaseRef` over a Db implementing `Database`.
 /// This access pattern uses `unsafe` code, but because we are not mutating the Db
 /// data in any way it is perfectly safe. Additional safety is provided via an Arc.
 ///
-/// The use of the active overlay may result in undefined begaviour if the active_db
+/// The use of the active overlay may result in undefined behaviour if the `active_db`
 /// is holding a refrance that is not valid anymore. There are no protections for this.
 pub struct ActiveOverlay<Db> {
     active_db: Arc<UnsafeCell<Db>>,
@@ -60,7 +60,7 @@ impl<Db> ActiveOverlay<Db> {
         Self { active_db, overlay }
     }
 
-    /// Creates a new forkdb from the current overlay.
+    /// Creates a new `forkdb` from the current overlay.
     pub fn fork(&self) -> ForkDb<ActiveOverlay<Db>> {
         ForkDb::new(self.clone())
     }

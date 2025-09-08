@@ -67,31 +67,25 @@ pub async fn accept_bytecode_assertion(
     json_rpc_id: &Value,
     client_ip: &str,
 ) -> Result<String> {
-    let code = match json_rpc["params"][0].as_str() {
-        Some(code) => code,
-        _ => {
-            warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid params: missing or invalid bytecode parameter");
-            return Ok(rpc_error_with_request_id(
-                json_rpc,
-                -32602,
-                "Invalid params",
-                request_id,
-            ));
-        }
+    let Some(code) = json_rpc["params"][0].as_str() else {
+        warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid params: missing or invalid bytecode parameter");
+        return Ok(rpc_error_with_request_id(
+            json_rpc,
+            -32602,
+            "Invalid params",
+            request_id,
+        ));
     };
 
     // Validate hex inputs
-    let bytecode = match alloy::hex::decode(code.trim_start_matches("0x")) {
-        Ok(code) => code,
-        _ => {
-            warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, "Failed to decode hex bytecode");
-            return Ok(rpc_error_with_request_id(
-                json_rpc,
-                500,
-                "Failed to decode hex",
-                request_id,
-            ));
-        }
+    let Ok(bytecode) = alloy::hex::decode(code.trim_start_matches("0x")) else {
+        warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, "Failed to decode hex bytecode");
+        return Ok(rpc_error_with_request_id(
+            json_rpc,
+            500,
+            "Failed to decode hex",
+            request_id,
+        ));
     };
 
     debug!(target: "json_rpc", bytecode_len = bytecode.len(), "Submitting raw assertion bytecode");
@@ -137,10 +131,10 @@ pub async fn accept_bytecode_assertion(
 
     // Log success or failure based on response
     if let Ok(ref response) = res {
-        if !response.contains("\"error\"") {
-            info!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Successfully processed raw assertion submission");
-        } else {
+        if response.contains("\"error\"") {
             warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Failed to process raw assertion submission");
+        } else {
+            info!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Successfully processed raw assertion submission");
         }
     }
 
@@ -256,10 +250,10 @@ pub async fn accept_solidity_assertion(
     .await;
 
     if let Ok(ref response) = res {
-        if !response.contains("\"error\"") {
-            info!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, contract_name = da_submission.assertion_contract_name, compiler_version = da_submission.compiler_version, "Successfully compiled Solidity assertion");
-        } else {
+        if response.contains("\"error\"") {
             warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, contract_name = da_submission.assertion_contract_name, compiler_version = da_submission.compiler_version, "Failed to process Solidity assertion");
+        } else {
+            info!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, contract_name = da_submission.assertion_contract_name, compiler_version = da_submission.compiler_version, "Successfully compiled Solidity assertion");
         }
     }
 
@@ -280,31 +274,27 @@ pub async fn retreive_assertion(
     json_rpc_id: &Value,
     client_ip: &str,
 ) -> Result<String> {
-    let id = match json_rpc["params"][0].as_str() {
-        Some(id) => id,
-        None => {
-            warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid params: missing id parameter");
-            return Ok(rpc_error_with_request_id(
-                json_rpc,
-                -32602,
-                "Invalid params: Didn't find id",
-                request_id,
-            ));
-        }
+    let Some(id) = json_rpc["params"][0].as_str() else {
+        warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid params: missing id parameter");
+        return Ok(rpc_error_with_request_id(
+            json_rpc,
+            -32602,
+            "Invalid params: Didn't find id",
+            request_id,
+        ));
     };
 
     // Validate hex input
-    let id: B256 = match id.trim_start_matches("0x").parse() {
-        Ok(id) => id,
-        _ => {
-            warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, id = id, "Failed to decode hex ID");
-            return Ok(rpc_error_with_request_id(
-                json_rpc,
-                -32605,
-                "Internal Error: Failed to decode hex of id",
-                request_id,
-            ));
-        }
+    let id: B256 = if let Ok(id) = id.trim_start_matches("0x").parse() {
+        id
+    } else {
+        warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, id = id, "Failed to decode hex ID");
+        return Ok(rpc_error_with_request_id(
+            json_rpc,
+            -32605,
+            "Internal Error: Failed to decode hex of id",
+            request_id,
+        ));
     };
 
     debug!(target: "json_rpc", ?id, "Getting assertion");

@@ -16,11 +16,11 @@ use tracing::error;
 #[derive(Debug)]
 pub struct TransactionsState {
     transaction_results: DashMap<B256, TransactionResult>,
-    /// DashMap containing the pending queries from the reading the transaction result.
+    /// `DashMap` containing the pending queries from the reading the transaction result.
     /// It contains the transaction hash as key and the oneshot sender as value. The result shall be
     /// sent via oneshot channel once it is ready.
     transaction_results_pending_requests: DashMap<TxHash, oneshot::Sender<TransactionResult>>,
-    /// HashSet containing the accepted transactions which haven't been processed yet.
+    /// `HashSet` containing the accepted transactions which haven't been processed yet.
     accepted_txs: DashSet<TxHash>,
 }
 
@@ -33,7 +33,7 @@ impl TransactionsState {
         })
     }
 
-    pub fn add_transaction_result(&self, tx_hash: B256, result: TransactionResult) {
+    pub fn add_transaction_result(&self, tx_hash: B256, result: &TransactionResult) {
         self.transaction_results.insert(tx_hash, result.clone());
         self.accepted_txs.remove(&tx_hash);
         self.process_pending_queries(tx_hash, result);
@@ -55,7 +55,7 @@ impl TransactionsState {
     }
 
     /// Check if there is a pending query for the processed result
-    fn process_pending_queries(&self, tx_hash: TxHash, result: TransactionResult) {
+    fn process_pending_queries(&self, tx_hash: TxHash, result: &TransactionResult) {
         // O(1)
         let Some((_, sender)) = self.transaction_results_pending_requests.remove(&tx_hash) else {
             return;
@@ -86,26 +86,25 @@ impl TransactionsState {
     /// Requests a transaction result, if the result is available, it is returned immediately, if the result is not available, it is return an oneshot channel for receiving the result as soon as it is available
     pub fn request_transaction_result(&self, tx_hash: &TxHash) -> RequestTransactionResult {
         let result = self.get_transaction_result(tx_hash);
-        match result {
-            Some(result) => RequestTransactionResult::Result(result.clone()),
-            None => {
-                let (response_tx, response_rx) = oneshot::channel();
-                self.transaction_results_pending_requests
-                    .insert(*tx_hash, response_tx);
+        if let Some(result) = result {
+            RequestTransactionResult::Result(result.clone())
+        } else {
+            let (response_tx, response_rx) = oneshot::channel();
+            self.transaction_results_pending_requests
+                .insert(*tx_hash, response_tx);
 
-                // Check the race condition in which the engine is faster than the transport layer process:
-                // Then it could happen:
-                // 1. The engine is processing the requested transaction
-                // 2. This process checks for the result and doesn't find it
-                // 3. The engine adds the result to the state
-                // 4. This process adds the query to pending_queries
-                // 5. The engine already checked pending_queries just before it was written
-                if let Some(result) = self.get_transaction_result(tx_hash) {
-                    self.transaction_results_pending_requests.remove(tx_hash);
-                    return RequestTransactionResult::Result(result.clone());
-                }
-                RequestTransactionResult::Channel(response_rx)
+            // Check the race condition in which the engine is faster than the transport layer process:
+            // Then it could happen:
+            // 1. The engine is processing the requested transaction
+            // 2. This process checks for the result and doesn't find it
+            // 3. The engine adds the result to the state
+            // 4. This process adds the query to pending_queries
+            // 5. The engine already checked pending_queries just before it was written
+            if let Some(result) = self.get_transaction_result(tx_hash) {
+                self.transaction_results_pending_requests.remove(tx_hash);
+                return RequestTransactionResult::Result(result.clone());
             }
+            RequestTransactionResult::Channel(response_rx)
         }
     }
 }
@@ -117,6 +116,8 @@ pub enum RequestTransactionResult {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::cast_possible_truncation)]
+    #![allow(clippy::cast_sign_loss)]
     use super::*;
     use crate::engine::queue::{
         QueueTransaction,
@@ -172,7 +173,7 @@ mod tests {
         TransactionResult::ValidationError("Test validation error".to_string())
     }
 
-    /// Helper function to create a test TxQueueContents with transaction
+    /// Helper function to create a test `TxQueueContents` with transaction
     fn create_test_tx_queue_contents(tx_hash: B256) -> TxQueueContents {
         TxQueueContents::Tx(QueueTransaction {
             tx_hash,
@@ -180,7 +181,7 @@ mod tests {
         })
     }
 
-    /// Helper function to create a test TxQueueContents with block
+    /// Helper function to create a test `TxQueueContents` with block
     fn create_test_block_queue_contents() -> TxQueueContents {
         TxQueueContents::Block(BlockEnv::default())
     }
@@ -200,7 +201,7 @@ mod tests {
         let tx_hash = create_test_tx_hash();
         let result = create_test_transaction_result();
 
-        state.add_transaction_result(tx_hash, result.clone());
+        state.add_transaction_result(tx_hash, &result.clone());
 
         assert_eq!(state.transaction_results.len(), 1);
         let stored_result = state.get_transaction_result(&tx_hash).unwrap();
@@ -219,7 +220,7 @@ mod tests {
 
         // Then add the result, should remove from accepted_txs
         let result = create_test_transaction_result();
-        state.add_transaction_result(tx_hash, result);
+        state.add_transaction_result(tx_hash, &result);
 
         assert!(!state.accepted_txs.contains(&tx_hash));
         assert_eq!(state.transaction_results.len(), 1);
@@ -264,7 +265,7 @@ mod tests {
         let tx_hash = create_test_tx_hash();
         let result = create_test_transaction_result();
 
-        state.add_transaction_result(tx_hash, result);
+        state.add_transaction_result(tx_hash, &result);
 
         assert!(state.is_tx_received(&tx_hash));
     }
@@ -292,7 +293,7 @@ mod tests {
         let tx_hash = create_test_tx_hash();
         let result = create_test_transaction_result();
 
-        state.add_transaction_result(tx_hash, result.clone());
+        state.add_transaction_result(tx_hash, &result.clone());
 
         let stored_result = state.get_transaction_result(&tx_hash).unwrap();
         assert_eq!(*stored_result, result);
@@ -306,8 +307,8 @@ mod tests {
         let result1 = create_test_transaction_result();
         let result2 = create_validation_error_result();
 
-        state.add_transaction_result(tx_hash1, result1);
-        state.add_transaction_result(tx_hash2, result2);
+        state.add_transaction_result(tx_hash1, &result1);
+        state.add_transaction_result(tx_hash2, &result2);
 
         let all_results = state.get_all_transaction_result();
         assert_eq!(all_results.len(), 2);
@@ -321,7 +322,7 @@ mod tests {
         let tx_hash = create_test_tx_hash();
         let result = create_test_transaction_result();
 
-        state.add_transaction_result(tx_hash, result.clone());
+        state.add_transaction_result(tx_hash, &result.clone());
 
         match state.request_transaction_result(&tx_hash) {
             RequestTransactionResult::Result(returned_result) => {
@@ -376,7 +377,7 @@ mod tests {
         );
 
         // Add the transaction result (this should trigger the pending query processing)
-        state.add_transaction_result(tx_hash, result.clone());
+        state.add_transaction_result(tx_hash, &result.clone());
 
         // Verify the pending request was removed
         assert!(
@@ -407,7 +408,7 @@ mod tests {
             .insert(tx_hash, tx);
 
         // Add the transaction result
-        state.add_transaction_result(tx_hash, result.clone());
+        state.add_transaction_result(tx_hash, &result.clone());
 
         // Now request should return immediate result due to race condition handling
         match state.request_transaction_result(&tx_hash) {
@@ -458,7 +459,7 @@ mod tests {
         );
 
         // Add result for first transaction
-        state.add_transaction_result(tx_hash1, result1.clone());
+        state.add_transaction_result(tx_hash1, &result1.clone());
 
         // Verify first pending request was removed, second still exists
         assert!(
@@ -480,7 +481,7 @@ mod tests {
         assert_eq!(received_result1, result1);
 
         // Add result for second transaction
-        state.add_transaction_result(tx_hash2, result2.clone());
+        state.add_transaction_result(tx_hash2, &result2.clone());
 
         // Verify second pending request was removed
         assert!(
@@ -504,7 +505,7 @@ mod tests {
         let result = create_test_transaction_result();
 
         // This should not panic even when there's no pending query
-        state.add_transaction_result(tx_hash, result);
+        state.add_transaction_result(tx_hash, &result);
 
         // Verify the result was still stored
         assert!(state.transaction_results.contains_key(&tx_hash));
@@ -520,10 +521,10 @@ mod tests {
         match state.request_transaction_result(&tx_hash) {
             RequestTransactionResult::Channel(rx) => drop(rx),
             RequestTransactionResult::Result(_) => panic!("Expected channel"),
-        };
+        }
 
         // Adding the result should not panic even though receiver was dropped
-        state.add_transaction_result(tx_hash, result);
+        state.add_transaction_result(tx_hash, &result);
 
         // Verify the result was stored and pending request was cleaned up
         assert!(state.transaction_results.contains_key(&tx_hash));
@@ -556,7 +557,7 @@ mod tests {
                 assert!(state_clone.is_tx_received(&tx_hash));
 
                 // Add result
-                state_clone.add_transaction_result(tx_hash, result.clone());
+                state_clone.add_transaction_result(tx_hash, &result.clone());
 
                 // Verify result exists
                 let stored_result = state_clone.get_transaction_result(&tx_hash).unwrap();

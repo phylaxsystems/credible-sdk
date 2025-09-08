@@ -302,18 +302,14 @@ impl Indexer {
             target = "assertion_executor::indexer",
             "Syncing indexer to latest block"
         );
-        let latest_block = match self
+        let Some(latest_block) = self
             .provider
             .get_block_by_number(BlockNumberOrTag::Latest)
             .await?
-        {
-            Some(block) => block,
-            None => {
-                warn!("Latest block not found");
-                return Ok(());
-            }
+        else {
+            warn!("Latest block not found");
+            return Ok(());
         };
-
         let latest_block_header = latest_block.header();
         let latest_block_number = latest_block_header.number();
         let latest_block_hash = latest_block_header.hash();
@@ -383,7 +379,7 @@ impl Indexer {
     }
 
     /// Finds the common ancestor
-    /// Traverses from the cursor backwords until it finds a common ancestor in the block_hashes
+    /// Traverses from the cursor backwords until it finds a common ancestor in the `block_hashes`
     /// tree.
     async fn find_common_ancestor(&self, cursor_hash: B256) -> IndexerResult<u64> {
         let block_hashes_tree = self.block_hash_tree()?;
@@ -468,7 +464,7 @@ impl Indexer {
             }
         } else {
             from = 0;
-        };
+        }
 
         let update_block_number = update_block.block_number;
         let mut current_from = from;
@@ -488,7 +484,7 @@ impl Indexer {
 
     /// Move pending modifications to the store, with the specified block as an upper bound
     /// Prune the pending modifications and block hashes trees
-    async fn move_pending_modifications_to_store(&self, upper_bound: u64) -> IndexerResult {
+    fn move_pending_modifications_to_store(&self, upper_bound: u64) -> IndexerResult {
         // Delay pruning genesis block until the first block is ready to be moved.
         // Otherwise it would immediately prune the genesis block and would not be able to find a
         // common ancestor if there was a reorg to the genesis block.
@@ -517,8 +513,8 @@ impl Indexer {
         Ok(())
     }
 
-    /// Fetch the events from the State Oracle contract.
-    /// Store the events in the pending_modifications tree for the indexed blocks.
+    /// Fetch the events from the `State Oracle` contract.
+    /// Store the events in the `pending_modifications` tree for the indexed blocks.
     async fn index_range(&self, from: u64, to: u64) -> IndexerResult {
         debug!(
             target = "assertion_executor::indexer",
@@ -554,7 +550,7 @@ impl Indexer {
 
         let mut pending_mods_batch = sled::Batch::default();
 
-        for (block, log_map) in pending_modifications.iter() {
+        for (block, log_map) in &pending_modifications {
             let block_mods = log_map
                 .values()
                 .cloned()
@@ -610,8 +606,7 @@ impl Indexer {
                 block_to_move, "Moving pending modifications to store"
             );
 
-            self.move_pending_modifications_to_store(block_to_move)
-                .await?;
+            self.move_pending_modifications_to_store(block_to_move)?;
             trace!(
                 target = "assertion_executor::indexer",
                 block_to_move, "Pending modifications moved to store"
@@ -664,7 +659,7 @@ impl Indexer {
                 deployment_bytecode.extend_from_slice(&encoded_constructor_args);
 
                 let assertion_contract_res =
-                    extract_assertion_contract(deployment_bytecode.into(), &self.executor_config);
+                    extract_assertion_contract(&deployment_bytecode.into(), &self.executor_config);
 
                 match assertion_contract_res {
                     Ok((assertion_contract, trigger_recorder)) => {
@@ -783,6 +778,7 @@ mod test_indexer {
             U256,
         },
     };
+    use alloy_transport::mock::Asserter;
     use sled::Config;
     use tempfile::TempDir;
 
@@ -799,7 +795,7 @@ mod test_indexer {
 
         // Create mock provider and DA client (will be mocked in tests)
         let provider = alloy_provider::ProviderBuilder::new()
-            .connect_mocked_client(Default::default())
+            .connect_mocked_client(Asserter::default())
             .root()
             .clone();
 
@@ -1046,6 +1042,7 @@ mod test_indexer {
         let result = indexer.extract_pending_modifications(&log_data, 0).await;
 
         // Test the result - might succeed in decoding removal events since they don't need DA
+        #[allow(clippy::match_same_arms)]
         match result {
             Ok(Some(PendingModification::Remove {
                 assertion_contract_id,
@@ -1090,12 +1087,12 @@ mod test_indexer {
         assert!(result.is_none());
     }
 
-    #[tokio::test]
-    async fn test_move_pending_modifications_to_store_genesis_block() {
+    #[test]
+    fn test_move_pending_modifications_to_store_genesis_block() {
         let (indexer, _temp_dir) = create_test_indexer();
 
         // Test that genesis block (block 0) doesn't get pruned
-        let result = indexer.move_pending_modifications_to_store(0).await;
+        let result = indexer.move_pending_modifications_to_store(0);
         assert!(result.is_ok());
 
         // Should have done nothing since we skip genesis block
@@ -1103,8 +1100,8 @@ mod test_indexer {
         assert_eq!(indexer.block_hash_tree().unwrap().len(), 0);
     }
 
-    #[tokio::test]
-    async fn test_move_pending_modifications_to_store_with_data() {
+    #[test]
+    fn test_move_pending_modifications_to_store_with_data() {
         let (indexer, _temp_dir) = create_test_indexer();
 
         // Add some test data
@@ -1136,10 +1133,7 @@ mod test_indexer {
             .unwrap();
 
         // Move modifications for block 1
-        indexer
-            .move_pending_modifications_to_store(1)
-            .await
-            .unwrap();
+        indexer.move_pending_modifications_to_store(1).unwrap();
 
         // Should have pruned block 1 and applied the modification
         assert_eq!(indexer.block_hash_tree().unwrap().len(), 1); // Only block 2 left

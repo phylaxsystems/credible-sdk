@@ -56,6 +56,7 @@ mod test {
         LogData,
     };
 
+    #[allow(clippy::needless_pass_by_value)]
     fn with_logs_context<F, R>(logs: Vec<Log>, f: F) -> R
     where
         F: FnOnce(&PhEvmContext) -> R,
@@ -297,9 +298,9 @@ mod test {
         }
     }
 
-    #[tokio::test]
-    async fn test_get_logs_integration() {
-        let result = run_precompile_test("TestGetLogs").await;
+    #[test]
+    fn test_get_logs_integration() {
+        let result = run_precompile_test("TestGetLogs");
         assert!(result.is_valid());
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());

@@ -145,12 +145,12 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
 }
 
 impl<ExtDb> ForkDb<ExtDb> {
-    /// Creates a new ForkDb.
+    /// Creates a new `ForkDb`.
     pub fn new(inner_db: ExtDb) -> Self {
         Self {
-            storage: Default::default(),
-            basic: Default::default(),
-            code_by_hash: Default::default(),
+            storage: HashMap::default(),
+            basic: HashMap::default(),
+            code_by_hash: HashMap::default(),
             inner_db: Arc::new(inner_db),
         }
     }
