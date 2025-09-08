@@ -51,7 +51,7 @@ impl Default for SolcArgs {
             output_type: "bin".to_string(),
             metadata_hash: "none".to_string(),
             combined_json: true,
-            file_path: "".to_string(),
+            file_path: String::new(),
             base_path: None,
         }
     }
@@ -84,7 +84,7 @@ impl SolcArgs {
             args.push(base_path.clone());
         }
 
-        args.push(self.file_path.to_string());
+        args.push(self.file_path.clone());
 
         args
     }
@@ -114,7 +114,7 @@ impl DockerImageManager {
         loop {
             attempts += 1;
             match self.try_ensure_image_available(image_name).await {
-                Ok(_) => return Ok(()),
+                Ok(()) => return Ok(()),
                 Err(e) => {
                     if attempts >= MAX_ATTEMPTS {
                         return Err(e);
@@ -144,7 +144,9 @@ impl DockerImageManager {
             .any(|img| img.repo_tags.contains(&image_name.to_string()));
 
         // Only pull the image if it doesn't exist locally
-        if !image_exists {
+        if image_exists {
+            debug!(target: "solidity_compilation", image_name, "Solc image exists locally");
+        } else {
             debug!(target: "solidity_compilation", "Pulling image: {}", image_name);
             self.docker
                 .create_image(
@@ -158,8 +160,6 @@ impl DockerImageManager {
                 )
                 .try_collect::<Vec<_>>()
                 .await?;
-        } else {
-            debug!(target: "solidity_compilation", image_name, "Solc image exists locally");
         }
         Ok(())
     }
@@ -186,6 +186,10 @@ impl ContainerManager {
     }
 
     /// Create and start a container with the given configuration
+    ///
+    /// # Panics
+    ///
+    /// Will panic if it cannot find the container ID
     pub async fn create_and_start(
         &mut self,
         image: &str,
@@ -320,7 +324,10 @@ impl ContainerManager {
             return Ok(());
         }
 
-        let container_id = self.container_id.as_ref().unwrap();
+        let container_id = self
+            .container_id
+            .as_ref()
+            .ok_or(CompilationError::NoContainerCreated)?;
 
         debug!(
             target: "solidity_compilation",
@@ -450,6 +457,9 @@ pub struct CompilationConfig {
 }
 
 impl CompilationConfig {
+    /// # Panics
+    ///
+    /// Will panic if the regex is invalid (infallible)
     pub fn new(assertion_contract_name: &str, source_code: &str, compiler_version: &str) -> Self {
         // Validate compiler version format (should be like 0.8.17)
         // This regex handles both exact versions (0.8.17) and complex version requirements (=0.8.28 ^0.8.13)
@@ -586,9 +596,7 @@ impl SolidityCompiler {
             let log_messages = container.get_logs(true, false).await?;
 
             // Parse output and extract bytecode
-            let bytecode = self
-                .extract_bytecode(&log_messages, file_name, contract_name)
-                .await?;
+            let bytecode = Self::extract_bytecode(&log_messages, file_name, contract_name)?;
 
             debug!(
                 target: "solidity_compilation",
@@ -614,8 +622,7 @@ impl SolidityCompiler {
     }
 
     /// Parse the JSON output and extract the bytecode
-    async fn extract_bytecode(
-        &self,
+    fn extract_bytecode(
         json_output: &str,
         file_name: &str,
         contract_name: &str,
@@ -692,13 +699,10 @@ pub enum CompilationError {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "full-test")]
-    use once_cell::sync::Lazy;
-
     // Shared Docker client for all tests
     #[cfg(feature = "full-test")]
-    static DOCKER: Lazy<Arc<Docker>> =
-        Lazy::new(|| Arc::new(Docker::connect_with_local_defaults().unwrap()));
+    static DOCKER: std::sync::LazyLock<Arc<Docker>> =
+        std::sync::LazyLock::new(|| Arc::new(Docker::connect_with_local_defaults().unwrap()));
 
     #[cfg(feature = "full-test")]
     fn setup_docker() -> Arc<Docker> {
@@ -709,7 +713,7 @@ mod tests {
     #[tokio::test]
     async fn test_successful_compilation() {
         let docker = setup_docker();
-        let source_code = r#"
+        let source_code = r"
             // SPDX-License-Identifier: MIT
             pragma solidity ^0.8.0;
             
@@ -724,7 +728,7 @@ mod tests {
                     return value;
                 }
             }
-        "#;
+        ";
 
         let result = compile_solidity("SimpleStorage", source_code, "0.8.17", docker).await;
         assert!(result.is_ok(), "Compilation should succeed");
@@ -746,7 +750,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_contracts() {
         let docker = setup_docker();
-        let source_code = r#"
+        let source_code = r"
             // SPDX-License-Identifier: MIT
             pragma solidity ^0.8.0;
             
@@ -757,7 +761,7 @@ mod tests {
             contract Second {
                 string private name;
             }
-        "#;
+        ";
 
         let result = compile_solidity("First", source_code, "0.8.17", docker).await;
         assert!(result.is_ok(), "Should succeed with multiple contracts");
@@ -767,11 +771,11 @@ mod tests {
     #[tokio::test]
     async fn test_syntax_error() {
         let docker = setup_docker();
-        let source_code = r#"
+        let source_code = r"
             contract BrokenContract {
                 This is not valid Solidity;
             }
-        "#;
+        ";
 
         let result = compile_solidity("BrokenContract", source_code, "0.8.17", docker).await;
         assert!(result.is_err(), "Should fail with syntax error");
@@ -789,14 +793,14 @@ mod tests {
     #[tokio::test]
     async fn test_different_compiler_versions() {
         let docker = setup_docker();
-        let source_code = r#"
+        let source_code = r"
             // SPDX-License-Identifier: MIT
             pragma solidity ^0.8.0;
             
             contract VersionTest {
                 uint256 private value;
             }
-        "#;
+        ";
 
         // Test multiple compiler versions
         let versions = vec!["0.8.17", "0.8.20", "0.8.24"];
@@ -839,14 +843,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_concurrent_compilations() {
         let docker = setup_docker();
-        let source_code = r#"
+        let source_code = r"
             // SPDX-License-Identifier: MIT
             pragma solidity ^0.8.0;
             
             contract Simple {
                 uint256 private value;
             }
-        "#;
+        ";
 
         let mut handles = vec![];
 
@@ -887,6 +891,7 @@ mod tests {
         assert!(result.is_err(), "Should fail with an invalid image");
     }
 
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
     #[tokio::test]
     async fn test_solidity_source_file() {
         let source_code = "contract Test {}";
@@ -995,14 +1000,14 @@ mod tests {
     #[tokio::test]
     async fn test_container_cleanup_after_compilation() {
         let docker = setup_docker();
-        let source_code = r#"
+        let source_code = r"
             // SPDX-License-Identifier: MIT
             pragma solidity ^0.8.0;
             
             contract CleanupTest {
                 uint256 private value;
             }
-        "#;
+        ";
 
         let result = compile_solidity("CleanupTest", source_code, "0.8.17", docker.clone()).await;
         assert!(result.is_ok(), "Compilation should succeed");
@@ -1062,21 +1067,21 @@ mod tests {
 
         let image_exists = images
             .iter()
-            .any(|img| img.repo_tags.contains(&image_name.to_string()));
+            .any(|img| img.repo_tags.contains(&image_name.clone()));
 
         if image_exists {
             println!("Warning: Could not remove image for testing, test may be less reliable");
         }
 
         // Use a simple contract with a pragma that works with our specific version
-        let source_code = r#"
+        let source_code = r"
             // SPDX-License-Identifier: MIT
             pragma solidity ^0.8.0;
             
             contract TestPull {
                 uint256 private value;
             }
-        "#;
+        ";
 
         // Run compilation which should trigger a pull
         let result = compile_solidity(
@@ -1101,7 +1106,7 @@ mod tests {
 
         let image_exists_after = images_after
             .iter()
-            .any(|img| img.repo_tags.contains(&image_name.to_string()));
+            .any(|img| img.repo_tags.contains(&image_name.clone()));
 
         assert!(image_exists_after, "Image should exist after compilation");
     }

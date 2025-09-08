@@ -183,21 +183,18 @@ impl CallTracer {
             journal_i: journal_inner.journal.len(),
         };
 
-        match self.pending_post_call_writes.remove(&journal_inner.depth) {
-            Some(index) => {
-                if self.post_call_checkpoints.len() <= index {
-                    error!(target: "assertion-executor::call_tracer", index, "Post call checkpoint not initialized as None");
-                    self.result = Err(CallTracerError::PostCallCheckpointNotInitialized { index });
-                    return;
-                }
-                self.post_call_checkpoints[index] = Some(checkpoint);
+        if let Some(index) = self.pending_post_call_writes.remove(&journal_inner.depth) {
+            if self.post_call_checkpoints.len() <= index {
+                error!(target: "assertion-executor::call_tracer", index, "Post call checkpoint not initialized as None");
+                self.result = Err(CallTracerError::PostCallCheckpointNotInitialized { index });
+                return;
             }
-            None => {
-                error!(target: "assertion-executor::call_tracer", depth = journal_inner.depth, "Pending post call write not found");
-                self.result = Err(CallTracerError::PendingPostCallWriteNotFound {
-                    depth: journal_inner.depth,
-                });
-            }
+            self.post_call_checkpoints[index] = Some(checkpoint);
+        } else {
+            error!(target: "assertion-executor::call_tracer", depth = journal_inner.depth, "Pending post call write not found");
+            self.result = Err(CallTracerError::PendingPostCallWriteNotFound {
+                depth: journal_inner.depth,
+            });
         }
     }
 
@@ -277,7 +274,7 @@ impl CallTracer {
 
         // Process journal entries for balance changes
         // Flatten the two-dimensional journal array
-        for entry in journal.journal.iter() {
+        for entry in &journal.journal {
             match entry {
                 JournalEntry::BalanceTransfer {
                     from,

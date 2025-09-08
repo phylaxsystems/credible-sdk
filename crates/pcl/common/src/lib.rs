@@ -1,3 +1,5 @@
+#![allow(clippy::must_use_candidate)]
+
 pub mod args;
 pub mod utils;
 
@@ -18,16 +20,15 @@ impl Assertion {
     }
 
     pub fn get_paths(&self) -> Vec<String> {
-        match &self.file_name {
-            Some(file_name) => vec![file_name.clone()],
-            None => {
-                let mut file_names = Vec::new();
-                for ext in Self::SUPPORTED_EXTENSIONS {
-                    let path = format!("{}{}", self.contract_name, ext);
-                    file_names.push(path);
-                }
-                file_names
+        if let Some(file_name) = &self.file_name {
+            vec![file_name.clone()]
+        } else {
+            let mut file_names = Vec::new();
+            for ext in Self::SUPPORTED_EXTENSIONS {
+                let path = format!("{}{}", self.contract_name, ext);
+                file_names.push(path);
             }
+            file_names
         }
     }
 

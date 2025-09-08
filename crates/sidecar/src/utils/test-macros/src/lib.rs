@@ -32,17 +32,21 @@ const VARIANTS: &[TransportVariant] = &[
 
 /// Procedural macro for sidecar engine tests.
 ///
-/// This macro automatically creates a LocalInstance and passes it to your test function.
-/// The test function must be async and take a single parameter of type LocalInstance.
+/// This macro automatically creates a `LocalInstance` and passes it to your test function.
+/// The test function must be async and take a single parameter of type `LocalInstance`.
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// #[engine_test(all)]
 /// async fn test_transaction_processing(mut instance: LocalInstance) {
 ///     instance.new_block().unwrap();
 ///     // Your test code here
 /// }
 /// ```
+///
+/// # Panics
+///
+/// Will panic if neither argument is present: `#[engine_test(all)]` or `#[engine_test(mock)]`
 // TODO: we should expand this macro to generate tests for multiple transports.
 // For example, we can from one test generate multiple tests for different transports
 // if we genericize `LocalInstnace` to accept different transports. The syntax would

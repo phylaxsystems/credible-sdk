@@ -1,10 +1,10 @@
 #![allow(unused_imports)]
+#![allow(clippy::cast_sign_loss)]
 
 mod common;
 
 #[cfg(test)]
 mod tests {
-
     use super::common::{
         harness::test_harness,
         test_ctx::setup_int_test_indexer,
@@ -139,6 +139,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "full-test")]
+    #[allow(clippy::ignore_without_reason)]
     #[ignore]
     // NOTE: Op talos bug not reproducible with anvil
     async fn test_indexer_over_100k_blocks() {

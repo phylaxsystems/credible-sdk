@@ -114,7 +114,7 @@ fn setup_assertion_store() -> Result<Arc<AssertionStore>, String> {
     assertion_store
         .insert(
             COUNTER_ADDRESS,
-            AssertionState::new_test(assertion_bytecode),
+            AssertionState::new_test(&assertion_bytecode),
         )
         .unwrap();
 
@@ -125,7 +125,7 @@ fn setup_assertion_store() -> Result<Arc<AssertionStore>, String> {
 const MAX_HTTP_RETRY_ATTEMPTS: usize = 3;
 const HTTP_RETRY_DELAY_MS: u64 = 100;
 
-/// Wrapper over the LocalInstance that provides MockTransport functionality
+/// Wrapper over the `LocalInstance` that provides `MockTransport` functionality
 pub struct LocalInstanceMockDriver {
     /// Channel for sending transactions and blocks to the mock transport
     mock_sender: TransactionQueueSender,
@@ -173,7 +173,7 @@ impl TestTransport for LocalInstanceMockDriver {
             info!(target: "test_transport", "Engine about to call run()");
             let result = engine.run().await;
             match result {
-                Ok(_) => info!(target: "test_transport", "Engine run() completed successfully"),
+                Ok(()) => info!(target: "test_transport", "Engine run() completed successfully"),
                 Err(e) => error!(target: "test_transport", "Engine run() failed: {:?}", e),
             }
             info!(target: "test_transport", "Engine task completed");
@@ -188,7 +188,7 @@ impl TestTransport for LocalInstanceMockDriver {
             info!(target: "test_transport", "Transport about to call run()");
             let result = transport.run().await;
             match result {
-                Ok(_) => info!(target: "test_transport", "Transport run() completed successfully"),
+                Ok(()) => info!(target: "test_transport", "Transport run() completed successfully"),
                 Err(e) => warn!(target: "test_transport", "Transport stopped with error: {}", e),
             }
             info!(target: "test_transport", "Transport task completed");
@@ -223,7 +223,7 @@ impl TestTransport for LocalInstanceMockDriver {
             .send(TxQueueContents::Block(block_env))
             .map_err(|e| format!("Failed to send block: {e}"));
         match &result {
-            Ok(_) => info!(target: "test_transport", "Successfully sent block to mock_sender"),
+            Ok(()) => info!(target: "test_transport", "Successfully sent block to mock_sender"),
             Err(e) => error!(target: "test_transport", "Failed to send block: {}", e),
         }
         result
@@ -285,8 +285,8 @@ impl TestTransport for LocalInstanceHttpDriver {
             info!(target: "LocalInstanceHttpDriver", "Engine about to call run()");
             let result = engine.run().await;
             match result {
-                Ok(_) => {
-                    info!(target: "LocalInstanceHttpDriver", "Engine run() completed successfully")
+                Ok(()) => {
+                    info!(target: "LocalInstanceHttpDriver", "Engine run() completed successfully");
                 }
                 Err(e) => error!(target: "LocalInstanceHttpDriver", "Engine run() failed: {:?}", e),
             }
@@ -296,10 +296,10 @@ impl TestTransport for LocalInstanceHttpDriver {
         // Find an available port dynamically
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .map_err(|e| format!("Failed to bind to available port: {}", e))?;
+            .map_err(|e| format!("Failed to bind to available port: {e}"))?;
         let address = listener
             .local_addr()
-            .map_err(|e| format!("Failed to get local address: {}", e))?;
+            .map_err(|e| format!("Failed to get local address: {e}"))?;
 
         // Drop the listener so the port becomes available for HttpTransport
         drop(listener);
@@ -314,11 +314,11 @@ impl TestTransport for LocalInstanceHttpDriver {
             info!(target: "LocalInstanceHttpDriver", "Transport about to call run()");
             let result = transport.run().await;
             match result {
-                Ok(_) => {
-                    info!(target: "LocalInstanceHttpDriver", "Transport run() completed successfully")
+                Ok(()) => {
+                    info!(target: "LocalInstanceHttpDriver", "Transport run() completed successfully");
                 }
                 Err(e) => {
-                    warn!(target: "LocalInstanceHttpDriver", "Transport stopped with error: {}", e)
+                    warn!(target: "LocalInstanceHttpDriver", "Transport stopped with error: {e}");
                 }
             }
             info!(target: "LocalInstanceHttpDriver", "Transport task completed");
@@ -396,16 +396,16 @@ impl TestTransport for LocalInstanceHttpDriver {
                     let json_response: serde_json::Value = response
                         .json()
                         .await
-                        .map_err(|e| format!("Failed to parse response: {}", e))?;
+                        .map_err(|e| format!("Failed to parse response: {e}"))?;
 
                     if let Some(error) = json_response.get("error") {
-                        return Err(format!("JSON-RPC error: {}", error));
+                        return Err(format!("JSON-RPC error: {error}"));
                     }
 
                     return Ok(());
                 }
                 Err(e) => {
-                    last_error = format!("HTTP request failed: {}", e);
+                    last_error = format!("HTTP request failed: {e}");
                     if attempts < MAX_HTTP_RETRY_ATTEMPTS {
                         debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
                         tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
@@ -416,8 +416,7 @@ impl TestTransport for LocalInstanceHttpDriver {
         }
 
         Err(format!(
-            "Failed after {} attempts: {}",
-            MAX_HTTP_RETRY_ATTEMPTS, last_error
+            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
         ))
     }
 
@@ -476,18 +475,18 @@ impl TestTransport for LocalInstanceHttpDriver {
                     let json_response: serde_json::Value = response
                         .json()
                         .await
-                        .map_err(|e| format!("Failed to parse response: {}", e))?;
+                        .map_err(|e| format!("Failed to parse response: {e}"))?;
 
                     debug!(target: "LocalInstanceHttpDriver", "Received response: {}", serde_json::to_string_pretty(&json_response).unwrap_or_default());
 
                     if let Some(error) = json_response.get("error") {
-                        return Err(format!("JSON-RPC error: {}", error));
+                        return Err(format!("JSON-RPC error: {error}"));
                     }
 
                     return Ok(());
                 }
                 Err(e) => {
-                    last_error = format!("HTTP request failed: {}", e);
+                    last_error = format!("HTTP request failed: {e}");
                     if attempts < MAX_HTTP_RETRY_ATTEMPTS {
                         debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
                         tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
@@ -498,8 +497,7 @@ impl TestTransport for LocalInstanceHttpDriver {
         }
 
         Err(format!(
-            "Failed after {} attempts: {}",
-            MAX_HTTP_RETRY_ATTEMPTS, last_error
+            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
         ))
     }
 }

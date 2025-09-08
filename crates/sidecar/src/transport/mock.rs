@@ -75,7 +75,6 @@ impl Transport for MockTransport {
                 Err(crossbeam::channel::TryRecvError::Empty) => {
                     // No data yet, yield and try again
                     tokio::task::yield_now().await;
-                    continue;
                 }
                 Err(crossbeam::channel::TryRecvError::Disconnected) => {
                     // Channel closed, exit gracefully

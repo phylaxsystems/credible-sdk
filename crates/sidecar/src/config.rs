@@ -20,7 +20,7 @@ use tracing::{
     info,
 };
 
-/// Initialize ExecutorConfig from SidecarArgs
+/// Initialize `ExecutorConfig` from `SidecarArgs`
 pub fn init_executor_config(args: &SidecarArgs) -> ExecutorConfig {
     let config = ExecutorConfig::default()
         .with_spec_id(args.chain.spec_id.clone().into())
@@ -37,7 +37,7 @@ pub fn init_executor_config(args: &SidecarArgs) -> ExecutorConfig {
     config
 }
 
-/// Initialize AssertionStore from SidecarArgs
+/// Initialize `AssertionStore` from `SidecarArgs`
 pub fn init_assertion_store(args: &SidecarArgs) -> Result<AssertionStore, AssertionStoreError> {
     let mut db_config = sled::Config::new();
     db_config = db_config.path(&args.credible.assertion_executor_db_path);
@@ -62,7 +62,7 @@ pub fn init_assertion_store(args: &SidecarArgs) -> Result<AssertionStore, Assert
     Ok(AssertionStore::new(db))
 }
 
-/// Initialize IndexerCfg from SidecarArgs  
+/// Initialize `IndexerCfg` from `SidecarArgs`
 pub async fn init_indexer_config(
     args: &SidecarArgs,
     store: AssertionStore,

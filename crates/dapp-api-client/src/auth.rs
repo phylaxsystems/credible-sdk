@@ -79,7 +79,7 @@ impl Auth {
         Ok(())
     }
 
-    /// Add bearer token from AuthConfig to request headers
+    /// Add bearer token from `AuthConfig` to request headers
     pub fn add_auth_config(
         headers: &mut reqwest::header::HeaderMap,
         config: &AuthConfig,
@@ -87,9 +87,9 @@ impl Auth {
         Self::add_bearer_token(headers, config.token())
     }
 
-    /// Create a HeaderValue from a bearer token
+    /// Create a `HeaderValue` from a bearer token
     ///
-    /// This is useful when you need the HeaderValue directly
+    /// This is useful when you need the `HeaderValue` directly
     pub fn create_bearer_header(token: &str) -> Result<reqwest::header::HeaderValue> {
         use reqwest::header::HeaderValue;
 
@@ -115,7 +115,7 @@ mod tests {
         assert_eq!(config.token(), "test-token");
 
         // Empty token should fail
-        assert!(AuthConfig::new("".to_string()).is_err());
+        assert!(AuthConfig::new(String::new()).is_err());
         assert!(AuthConfig::new("   ".to_string()).is_err());
     }
 
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn test_auth_error_messages() {
         // Test specific error messages
-        match AuthConfig::new("".to_string()) {
+        match AuthConfig::new(String::new()) {
             Err(Error::AuthError(msg)) => {
                 assert!(msg.contains("empty"));
             }

@@ -175,10 +175,10 @@ impl DappSubmitArgs {
         }
 
         let project_names: Vec<String> = projects.iter().map(|p| p.project_name.clone()).collect();
-        let project_name = self.provide_or_select(
+        let project_name = Self::provide_or_select(
             self.project_name.clone(),
             project_names,
-            "Select a project to submit the assertion to:".to_string(),
+            "Select a project to submit the assertion to:",
         )?;
         let project = projects
             .iter()
@@ -198,18 +198,18 @@ impl DappSubmitArgs {
 
         let assertion_keys_for_selection = assertion_keys_for_submission
             .iter()
-            .map(|k| k.to_string())
+            .map(ToString::to_string)
             .collect();
 
         let preselected_assertion_keys = self
             .assertion_keys
             .as_ref()
-            .map(|keys| keys.iter().map(|k| k.to_string()).collect());
+            .map(|keys| keys.iter().map(ToString::to_string).collect());
 
-        self.provide_or_multi_select(
+        Self::provide_or_multi_select(
             preselected_assertion_keys,
             assertion_keys_for_selection,
-            "Select an assertion to submit:".to_string(),
+            "Select an assertion to submit:",
         )
     }
     ///
@@ -269,20 +269,19 @@ impl DappSubmitArgs {
     /// # Returns
     /// * `Result<String, DappSubmitError>` - Selected value or error
     fn provide_or_select(
-        &self,
         maybe_key: Option<String>,
         values: Vec<String>,
-        message: String,
+        message: &str,
     ) -> Result<String, DappSubmitError> {
         match maybe_key {
-            None => Ok(Select::new(message.as_str(), values).prompt()?),
+            None => Ok(Select::new(message, values).prompt()?),
             Some(key) => {
                 let exists = values.contains(&key);
                 if exists {
-                    Ok(key.to_string())
+                    Ok(key.clone())
                 } else {
                     println!("{key} does not exist");
-                    let choice = Select::new(message.as_str(), values).prompt()?;
+                    let choice = Select::new(message, values).prompt()?;
                     Ok(choice)
                 }
             }
@@ -299,13 +298,12 @@ impl DappSubmitArgs {
     /// # Returns
     /// * `Result<Vec<String>, DappSubmitError>` - Selected values or error
     fn provide_or_multi_select(
-        &self,
         maybe_keys: Option<Vec<String>>,
         values: Vec<String>,
-        message: String,
+        message: &str,
     ) -> Result<Vec<String>, DappSubmitError> {
         match maybe_keys {
-            None => Ok(MultiSelect::new(message.as_str(), values).prompt()?),
+            None => Ok(MultiSelect::new(message, values).prompt()?),
             Some(keys) => {
                 let all_exist = keys.iter().all(|k| values.contains(k));
                 if all_exist {
@@ -317,7 +315,7 @@ impl DappSubmitArgs {
                         .cloned()
                         .collect::<Vec<_>>();
                     println!("{} does not exist", missing_keys.join(", "));
-                    Ok(MultiSelect::new(message.as_str(), values).prompt()?)
+                    Ok(MultiSelect::new(message, values).prompt()?)
                 }
             }
         }
@@ -342,7 +340,7 @@ impl DappSubmitArgs {
     }
 }
 
-/// TODO(ODYSSEAS): Add tests for the DappSubmitArgs struct
+/// TODO(ODYSSEAS): Add tests for the `DappSubmitArgs` struct
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,17 +348,9 @@ mod tests {
 
     #[test]
     fn test_provide_or_select_with_valid_input() {
-        let args = DappSubmitArgs {
-            api_url: "".to_string(),
-            project_name: Some("Project1".to_string()),
-            assertion_keys: None,
-            assertion_name: None,
-            constructor_args: vec![],
-        };
-
         let values = vec!["Project1".to_string(), "Project2".to_string()];
         let result =
-            args.provide_or_select(Some("Project1".to_string()), values, "Select:".to_string());
+            DappSubmitArgs::provide_or_select(Some("Project1".to_string()), values, "Select:");
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "Project1");
@@ -368,7 +358,7 @@ mod tests {
     #[test]
     fn test_no_stored_assertions() {
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: None,
@@ -387,7 +377,7 @@ mod tests {
     #[test]
     fn test_no_projects() {
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: None,
@@ -406,7 +396,7 @@ mod tests {
     #[test]
     fn test_select_assertions_with_preselected() {
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::new("assertion1".to_string(), vec![])]),
             assertion_name: None,
@@ -431,19 +421,11 @@ mod tests {
     }
     #[test]
     fn test_provide_or_multi_select_with_preselected() {
-        let args = DappSubmitArgs {
-            api_url: "".to_string(),
-            project_name: None,
-            assertion_keys: Some(vec![AssertionKey::new("assertion1".to_string(), vec![])]),
-            assertion_name: None,
-            constructor_args: vec![],
-        };
-
         let values = vec!["assertion1".to_string(), "assertion2".to_string()];
-        let result = args.provide_or_multi_select(
+        let result = DappSubmitArgs::provide_or_multi_select(
             Some(vec!["assertion1".to_string()]),
             values.clone(),
-            "Select:".to_string(),
+            "Select:",
         );
 
         assert!(result.is_ok());
@@ -452,19 +434,11 @@ mod tests {
 
     #[test]
     fn test_provide_or_select_with_preselected() {
-        let args = DappSubmitArgs {
-            api_url: "".to_string(),
-            project_name: Some("Project1".to_string()),
-            assertion_keys: None,
-            assertion_name: None,
-            constructor_args: vec![],
-        };
-
         let values = vec!["Project1".to_string(), "Project2".to_string()];
-        let result = args.provide_or_select(
+        let result = DappSubmitArgs::provide_or_select(
             Some("Project1".to_string()),
             values.clone(),
-            "Select:".to_string(),
+            "Select:",
         );
 
         assert!(result.is_ok());
@@ -474,7 +448,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_multiple_assertions() {
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![
                 AssertionKey::new(
@@ -501,7 +475,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_string_format() {
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName(arg1,arg2)")]),
             assertion_name: None,
@@ -517,7 +491,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_no_args() {
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName()")]),
             assertion_name: None,
@@ -533,7 +507,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_positional_args() {
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: Some("AssertionName".to_string()),
@@ -556,7 +530,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_positional_no_constructor_args() {
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: Some("AssertionName".to_string()),
@@ -578,7 +552,7 @@ mod tests {
         // With clap implementation, conflicts_with prevents both from being set
         // This test now verifies that assertion_keys takes precedence when both are set
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::new("FlagAssertion".to_string(), vec![])]),
             assertion_name: Some("PositionalAssertion".to_string()),
@@ -595,7 +569,7 @@ mod tests {
     fn test_parse_assertion_keys_without_parentheses() {
         // Test that assertions without parentheses are supported
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName")]),
             assertion_name: None,
@@ -612,7 +586,7 @@ mod tests {
     fn test_parse_assertion_keys_no_input() {
         // Test when no assertions are provided at all
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: None,
@@ -627,7 +601,7 @@ mod tests {
     fn test_parse_assertion_keys_empty_assertion_keys_vec() {
         // Test when assertion_keys is Some but contains empty vec
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![]),
             assertion_name: None,
@@ -642,7 +616,7 @@ mod tests {
     fn test_parse_assertion_keys_with_special_characters() {
         // Test handling of special characters in constructor args
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName(arg-1,arg_2,arg.3)")]),
             assertion_name: None,
@@ -659,7 +633,7 @@ mod tests {
     fn test_parse_assertion_keys_with_spaces() {
         // Test handling of spaces around commas
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName(arg1, arg2 , arg3)")]),
             assertion_name: None,
@@ -676,7 +650,7 @@ mod tests {
     fn test_parse_assertion_keys_with_numeric_args() {
         // Test handling of numeric constructor args
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName(123,456,789)")]),
             assertion_name: None,
@@ -693,7 +667,7 @@ mod tests {
     fn test_parse_assertion_keys_mixed_format() {
         // Test multiple assertions with different formats
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![
                 AssertionKey::from("AssertionName1"),
@@ -725,7 +699,7 @@ mod tests {
     fn test_parse_assertion_keys_address_format() {
         // Test handling of Ethereum addresses as constructor args
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
                 "TokenAssertion(0x1234567890123456789012345678901234567890)",
@@ -747,7 +721,7 @@ mod tests {
     fn test_parse_assertion_keys_complex_args() {
         // Test handling of complex constructor args with mixed types
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
                 "ComplexAssertion(0x742d35Cc6634C0532925a3b844Bc9e7595f8b2dc,1000000,true,ipfs://QmHash)",
@@ -774,7 +748,7 @@ mod tests {
     fn test_parse_assertion_keys_positional_with_address() {
         // Test positional args with Ethereum address
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: Some("TokenAssertion".to_string()),
@@ -807,7 +781,7 @@ mod tests {
     fn test_parse_assertion_keys_with_nested_parentheses() {
         // Test handling of nested parentheses in constructor args
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
                 "FunctionAssertion(someFunc(uint256,address),100)",
@@ -830,7 +804,7 @@ mod tests {
     fn test_parse_assertion_keys_with_quoted_args() {
         // Test handling of quoted arguments (common for strings)
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
                 r#"StringAssertion("hello, world","test string")"#,
@@ -852,7 +826,7 @@ mod tests {
     fn test_parse_assertion_keys_with_empty_string_args() {
         // Test handling of empty string arguments
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("EmptyStringAssertion(,arg2,)")]),
             assertion_name: None,
@@ -869,7 +843,7 @@ mod tests {
     fn test_parse_assertion_keys_with_url_args() {
         // Test handling of URLs as constructor args
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
                 "UrlAssertion(https://example.com/api,http://localhost:8080)",
@@ -891,7 +865,7 @@ mod tests {
     fn test_parse_assertion_keys_positional_with_special_chars() {
         // Test positional args with special characters
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: Some("SpecialAssertion".to_string()),
@@ -933,7 +907,7 @@ mod tests {
     fn test_parse_assertion_keys_with_json_like_args() {
         // Test handling of JSON-like arguments
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
                 r#"JsonAssertion({"key":"value"},["item1","item2"])"#,
@@ -957,7 +931,7 @@ mod tests {
         // Test handling of very long constructor arguments
         let long_arg = "a".repeat(1000);
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(format!(
                 "LongAssertion({long_arg},short)"
@@ -977,7 +951,7 @@ mod tests {
     fn test_parse_assertion_keys_unicode_args() {
         // Test handling of Unicode characters in args
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
                 "UnicodeAssertion(Hello🌍,测试,🚀🚀🚀)",
@@ -999,7 +973,7 @@ mod tests {
     fn test_parse_assertion_keys_malformed_parentheses() {
         // Test handling of malformed parentheses
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("MalformedAssertion(arg1,arg2")]), // Missing closing parenthesis
             assertion_name: None,
@@ -1017,7 +991,7 @@ mod tests {
     fn test_parse_assertion_keys_constructor_args_without_name() {
         // Test that constructor_args are ignored without assertion_name
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: None,
@@ -1032,7 +1006,7 @@ mod tests {
     fn test_parse_assertion_keys_multiple_positional_mixed_args() {
         // Test multiple positional args with different types
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: Some("MixedAssertion".to_string()),
@@ -1077,7 +1051,7 @@ mod tests {
     fn test_parse_assertion_keys_single_flag_assertion() {
         // Test single assertion using -a flag instead of positional
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::new(
                 "SingleAssertion".to_string(),
@@ -1097,7 +1071,7 @@ mod tests {
     fn test_parse_assertion_keys_whitespace_handling() {
         // Test handling of various whitespace scenarios
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![
                 AssertionKey::from(" SpacedAssertion ( arg1 , arg2 ) "),
@@ -1123,7 +1097,7 @@ mod tests {
     fn test_parse_assertion_keys_consecutive_commas() {
         // Test handling of consecutive commas (empty args)
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
                 "ConsecutiveCommas(arg1,,arg3,,,arg6)",
@@ -1144,46 +1118,30 @@ mod tests {
     #[test]
     fn test_provide_or_select_with_invalid_preselected() {
         // Test when preselected value is not in the list
-        let args = DappSubmitArgs {
-            api_url: "".to_string(),
-            project_name: Some("NonExistentProject".to_string()),
-            assertion_keys: None,
-            assertion_name: None,
-            constructor_args: vec![],
-        };
-
         let values = vec!["Project1".to_string(), "Project2".to_string()];
         // This would normally prompt the user, but we can't test interactive behavior
         // Just verify the method signature is correct
-        let _ = args.provide_or_select(
+        let _ = DappSubmitArgs::provide_or_select(
             Some("NonExistentProject".to_string()),
             values,
-            "Select:".to_string(),
+            "Select:",
         );
     }
 
     #[test]
     fn test_provide_or_multi_select_with_partial_invalid() {
         // Test when some preselected values are not in the list
-        let args = DappSubmitArgs {
-            api_url: "".to_string(),
-            project_name: None,
-            assertion_keys: None,
-            assertion_name: None,
-            constructor_args: vec![],
-        };
-
         let values = vec!["assertion1".to_string(), "assertion2".to_string()];
         let preselected = vec!["assertion1".to_string(), "assertion3".to_string()];
         // This would normally prompt the user, but we can't test interactive behavior
-        let _ = args.provide_or_multi_select(Some(preselected), values, "Select:".to_string());
+        let _ = DappSubmitArgs::provide_or_multi_select(Some(preselected), values, "Select:");
     }
 
     #[test]
     fn test_parse_assertion_keys_case_sensitivity() {
         // Test that assertion names preserve case
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![
                 AssertionKey::from("camelCaseAssertion(ARG1,arg2,Arg3)"),
@@ -1211,7 +1169,7 @@ mod tests {
     fn test_positional_args_create_assertion_key() {
         // Test that positional arguments correctly create an AssertionKey
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: Some("TestAssertion".to_string()),
@@ -1233,7 +1191,7 @@ mod tests {
     fn test_positional_args_without_constructor_args() {
         // Test positional args when no constructor arguments are provided
         let args = DappSubmitArgs {
-            api_url: "".to_string(),
+            api_url: String::new(),
             project_name: None,
             assertion_keys: None,
             assertion_name: Some("SimpleAssertion".to_string()),

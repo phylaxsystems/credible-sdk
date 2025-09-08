@@ -29,7 +29,7 @@ pub enum GetStateChangesError {
     AccountNotFound,
 }
 
-/// Function for getting state changes for the PhEvm precompile.
+/// Function for getting state changes for the `PhEvm` precompile.
 /// This returns a result type, which can be used to determine the success of the precompile call and include error messaging.
 pub fn get_state_changes(
     input_bytes: &[u8],
@@ -46,7 +46,7 @@ pub fn get_state_changes(
     Ok(Vec::<U256>::abi_encode(&differences).into())
 }
 
-/// Returns an array of different values for an account and slot, from the JournaledState passed.
+/// Returns an array of different values for an account and slot, from the `JournaledState` passed.
 fn get_differences(
     journal: &JournalInner<JournalEntry>,
     contract_address: Address,
@@ -54,7 +54,7 @@ fn get_differences(
 ) -> Result<Vec<U256>, GetStateChangesError> {
     let mut differences = Vec::new();
 
-    for entry in journal.journal.iter() {
+    for entry in &journal.journal {
         if let JournalEntry::StorageChanged {
             address,
             had_value,
@@ -82,7 +82,7 @@ fn get_differences(
             .present_value;
 
         differences.push(current_slot_value);
-    };
+    }
 
     Ok(differences)
 }
@@ -412,9 +412,9 @@ mod test {
         assert_eq!(decoded.slot, FixedBytes::<32>::from(slot));
     }
 
-    #[tokio::test]
-    async fn test_get_state_changes_integration() {
-        let result = run_precompile_test("TestGetStateChanges").await;
+    #[test]
+    fn test_get_state_changes_integration() {
+        let result = run_precompile_test("TestGetStateChanges");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());

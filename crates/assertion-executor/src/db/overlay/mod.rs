@@ -7,7 +7,7 @@
 //! The data structure can be modeled as follows:
 //! ```Buffer -> TinyLFU Hashmap -> Disk```
 //! 
-//! Eviction happens at the TinyLFU layer when commiting the buffer. The buffer can either
+//! Eviction happens at the `TinyLFU` layer when commiting the buffer. The buffer can either
 //! be commited manually or when it becomes full. It is recommended to clear the buffer during
 //! downtime, i.e., when calculating the state root.
 
@@ -65,7 +65,7 @@ pub enum TableValue {
     BlockHash(B256),
 }
 
-/// The `OverlayDb` is fast TinyLFU'd in memory cache for an on disk EVM database.
+/// The `OverlayDb` is fast `TinyLFU`'d in memory cache for an on disk EVM database.
 /// It optionally points to an on disk database that implements `revm::DatabaseRef`
 /// and has a configurable cache.
 ///
@@ -98,7 +98,7 @@ impl<Db> Default for OverlayDb<Db> {
 }
 
 impl<Db> OverlayDb<Db> {
-    /// Creates a new OverlayDB with the max cache size in bytes.
+    /// Creates a new `OverlayDB` with the max cache size in bytes.
     pub fn new(underlying_db: Option<Arc<Db>>, max_capacity: u64) -> Self {
         let cache = Cache::builder().max_capacity(max_capacity).build();
         Self {
@@ -107,7 +107,7 @@ impl<Db> OverlayDb<Db> {
         }
     }
 
-    /// Creates a new OverlayDb with the max capacity being determined by the number
+    /// Creates a new `OverlayDb` with the max capacity being determined by the number
     /// of elements inside of the cache instead of the size.
     pub fn new_with_len(underlying_db: Option<Arc<Db>>, max_capacity: u64) -> Self {
         let cache = Cache::new(max_capacity);
@@ -939,6 +939,7 @@ mod overlay_db_tests {
         assert_eq!(overlay_db.cache_entry_count(), 6); // 2 accounts + 1 code + 3 storage slots
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn test_active_overlay_commit_propagates_to_parent() {
         use crate::primitives::{

@@ -65,6 +65,8 @@ async fn test_deploy_da() {
     assert_ne!(res.id, B256::ZERO);
 }
 
+// FIXME: Break it down to smaller pieces
+#[allow(clippy::too_many_lines)]
 pub fn assertion_src() -> String {
     let assertion = r#"
         // SPDX-License-Identifier: UNLICENSED

@@ -55,7 +55,7 @@ impl TestSetup {
     }
 
     pub async fn build(&self) -> Result<TestRunner, DaSubmitError> {
-        let (_handle, da_url) = deploy_test_da(SigningKey::random(&mut OsRng)).await;
+        let (handle, da_url) = deploy_test_da(SigningKey::random(&mut OsRng)).await;
         let build_and_flatten_args = BuildAndFlattenArgs {
             root: Some(
                 self.root
@@ -89,7 +89,7 @@ impl TestSetup {
             cli_config,
             da_store_args,
             da_client: DaClient::new(&format!("http://{da_url}")).unwrap(),
-            _da_handle: _handle,
+            _da_handle: handle,
         };
         Ok(test_runner)
     }

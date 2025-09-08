@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 impl DBErrorMarker for JsonRpcDbError {}
 
-/// A DatabaseRef implementation that fetches data from an Ethereum node via JSON-RPC
+/// A `DatabaseRef` implementation that fetches data from an Ethereum node via JSON-RPC
 #[derive(Debug)]
 pub struct JsonRpcDb {
     provider: Arc<RootProvider>,

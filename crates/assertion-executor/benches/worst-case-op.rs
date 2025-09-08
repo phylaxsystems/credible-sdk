@@ -1,4 +1,4 @@
-use Asm::*;
+use Asm::Op;
 use assertion_executor::{
     db::{
         MultiForkDb,
@@ -44,7 +44,25 @@ use criterion::{
 use evm_glue::{
     assembler::assemble_minimized,
     assembly::Asm,
-    opcodes::Opcode::*,
+    opcodes::Opcode::{
+        ADD,
+        JUMP,
+        JUMPDEST,
+        LOG0,
+        MLOAD,
+        MSTORE,
+        POP,
+        PUSH0,
+        PUSH1,
+        PUSH4,
+        PUSH32,
+        SHA3,
+        SLOAD,
+        SSTORE,
+        STATICCALL,
+        TLOAD,
+        TSTORE,
+    },
 };
 use op_revm::OpTransaction;
 use revm::ExecuteEvm;

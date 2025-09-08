@@ -48,7 +48,7 @@ pub type LineaIns<'db, DB> = EthInstructions<EthInterpreter, LineaCtx<'db, DB>>;
 #[allow(dead_code)]
 type LineaEvmTyped<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, LineaIns<'db, DB>, EthPrecompiles>;
 
-/// LineaEvm is a Linea v4 spec version of revm with custom opcodes and precompile
+/// `LineaEvm` is a Linea v4 spec version of revm with custom opcodes and precompile
 /// behaviour.
 ///
 /// # Usage and differences
@@ -179,7 +179,7 @@ where
         },
         block: env.block_env.clone(),
         cfg: env.cfg_env.clone(),
-        tx: Default::default(),
+        tx: TxEnv::default(),
         chain: PhantomData,
         local: LocalContext::default(),
         error: Ok(()),

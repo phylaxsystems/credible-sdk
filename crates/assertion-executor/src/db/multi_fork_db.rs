@@ -42,18 +42,18 @@ pub enum ForkId {
 
 /// A multi-fork database for managing multiple forks.
 ///
-/// MultiForkDb holds the underlying DB (pre-tx DB) and the post-tx journal.
+/// `MultiForkDb` holds the underlying DB (pre-tx DB) and the post-tx journal.
 /// During construction, creates a new post-tx DB by committing the state to the DB. Every new Fork
 /// creates a new DB applying a checkpoint-reverted journal to the state (that's why we need to hold
 /// the post-tx journal).
 /// Each Fork consists of the corresponding DB and an empty journal at first.
 ///
 /// FIXME(fredo): We need to add copy the first two entries in the journal to each new journal to
-/// rebuild the journal as the ETHFrame has seen it, when entering the assertion. This is needed
+/// rebuild the journal as the `ETHFrame` has seen it, when entering the assertion. This is needed
 /// for reverts to work properly on forked state.
 ///
 /// Each active fork moves its journal into the EVM and its own variable remains None.
-/// Upon switching, old journals are moved back into the MultiForkDb.
+/// Upon switching, old journals are moved back into the `MultiForkDb`.
 ///
 /// Persistent accounts are committed to the underlying DB hence they are available throughout all forks.
 /// Persistent account changes are copied from fork journal to fork journal -> hence the name persistent.
@@ -72,12 +72,16 @@ pub struct MultiForkDb<ExtDb> {
 pub enum MultiForkError {
     #[error("Post tx journal not found.")]
     PostTxJournalNotFound,
+    #[error("Post call checkpoint not found.")]
+    PostCallCheckpointNotFound,
     #[error("Target fork's journal should never be None when switching to it")]
     TargetForkJournalNotFound(ForkId),
+    #[error("Target fork's not found.")]
+    TargetForkNotFound,
 }
 
 impl<ExtDb: Clone + DatabaseCommit> MultiForkDb<ExtDb> {
-    /// Creates a new MultiForkDb. Default to the post-tx state is expected.
+    /// Creates a new `MultiForkDb`. Default to the post-tx state is expected.
     pub fn new(pre_tx_db: ExtDb, post_tx_journal: &JournalInner<JournalEntry>) -> Self {
         let mut post_tx_db = pre_tx_db.clone();
         post_tx_db.commit(post_tx_journal.state.clone());
@@ -127,24 +131,26 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         if !self.forks.contains_key(&fork_id) {
             let new_fork = match fork_id {
                 ForkId::PreTx => {
-                    self.create_fork(JournalInner {
+                    self.create_fork(&JournalInner {
                         spec: active_journal.spec,
                         ..Default::default()
-                    })?
+                    })
                 }
                 ForkId::PostTx => return Err(MultiForkError::PostTxJournalNotFound),
                 ForkId::PreCall(call_id) => {
                     let mut pre_call_journal = self.post_tx_journal.clone();
                     pre_call_journal.depth += 1;
                     pre_call_journal.checkpoint_revert(call_tracer.pre_call_checkpoints[call_id]);
-                    self.create_fork(pre_call_journal)?
+                    self.create_fork(&pre_call_journal)
                 }
                 ForkId::PostCall(call_id) => {
                     let mut post_call_journal = self.post_tx_journal.clone();
                     post_call_journal.depth += 1;
-                    post_call_journal
-                        .checkpoint_revert(call_tracer.post_call_checkpoints[call_id].unwrap());
-                    self.create_fork(post_call_journal)?
+                    post_call_journal.checkpoint_revert(
+                        call_tracer.post_call_checkpoints[call_id]
+                            .ok_or(MultiForkError::PostCallCheckpointNotFound)?,
+                    );
+                    self.create_fork(&post_call_journal)
                 }
             };
             self.forks.insert(fork_id, new_fork);
@@ -156,7 +162,7 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
                 DEFAULT_PERSISTENT_ACCOUNTS,
                 active_journal,
                 &mut target_fork.journal,
-            )?;
+            );
         }
 
         // Save the current EVM journal back to the current active fork
@@ -165,7 +171,10 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         }
 
         // Take the target fork's journal for the EVM (target fork becomes active with None)
-        let target_fork = self.forks.get_mut(&fork_id).unwrap();
+        let target_fork = self
+            .forks
+            .get_mut(&fork_id)
+            .ok_or(MultiForkError::TargetForkNotFound)?;
         *active_journal = target_fork
             .journal
             .take()
@@ -176,25 +185,20 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         Ok(())
     }
 
-    fn create_fork(
-        &mut self,
-        journal: JournalInner<JournalEntry>,
-    ) -> Result<InternalFork<ExtDb>, MultiForkError>
+    fn create_fork(&mut self, journal: &JournalInner<JournalEntry>) -> InternalFork<ExtDb>
     where
         ExtDb: Clone + DatabaseCommit,
     {
         let mut fork_db = self.underlying_db.clone();
         fork_db.commit(journal.state.clone());
 
-        let fork = InternalFork {
+        InternalFork {
             db: fork_db,
             journal: Some(JournalInner {
                 spec: journal.spec,
                 ..Default::default()
             }),
-        };
-
-        Ok(fork)
+        }
     }
 }
 
@@ -203,9 +207,9 @@ pub(crate) fn update_journal(
     accounts: impl IntoIterator<Item = Address>,
     active_journal: &mut JournalInner<JournalEntry>,
     target_journal: &mut Option<JournalInner<JournalEntry>>,
-) -> Result<(), MultiForkError> {
+) {
     if let Some(target_journal_inner) = target_journal {
-        for addr in accounts.into_iter() {
+        for addr in accounts {
             merge_journal_data(addr, active_journal, target_journal_inner);
         }
 
@@ -232,8 +236,6 @@ pub(crate) fn update_journal(
         // otherwise cause issues with displaying traces.
         target_journal_inner.depth = active_journal.depth;
     }
-
-    Ok(())
 }
 
 /// Clones the account data from the `active_journal`  into the `fork_journal`
@@ -318,6 +320,7 @@ impl<ExtDb: DatabaseRef> DatabaseRef for MultiForkDb<ExtDb> {
 mod test_multi_fork {
     use super::*;
     use crate::constants::ASSERTION_CONTRACT;
+    use alloy_primitives::FixedBytes;
     use revm::{
         database::InMemoryDB,
         interpreter::{
@@ -442,7 +445,7 @@ mod test_multi_fork {
             ),
         ];
 
-        for (fork_id, balances) in expected_states.iter() {
+        for (fork_id, balances) in &expected_states {
             switch_and_verify_fork_state(
                 &mut db,
                 *fork_id,
@@ -525,10 +528,10 @@ mod test_multi_fork {
                 info: AccountInfo {
                     balance: uint!(6900_U256),
                     nonce: 0,
-                    code_hash: Default::default(),
+                    code_hash: FixedBytes::default(),
                     code: None,
                 },
-                storage: Default::default(),
+                storage: HashMap::default(),
                 status: AccountStatus::Touched,
             },
         );
@@ -539,7 +542,7 @@ mod test_multi_fork {
                     balance: uint!(1337_U256),
                     ..Default::default()
                 },
-                storage: Default::default(),
+                storage: HashMap::default(),
                 status: AccountStatus::Touched,
             },
         );

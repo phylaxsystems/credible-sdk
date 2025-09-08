@@ -156,6 +156,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// Not to be used for anything but tests.
     #[cfg(test)]
     #[allow(dead_code)]
+    #[allow(clippy::missing_panics_doc)]
     pub fn new_test() -> Self {
         let (_, tx_receiver) = crossbeam::channel::unbounded();
         Self {
@@ -185,6 +186,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     }
 
     /// Execute transaction with the core engines blockenv.
+    // FIXME: Break this function down into smaller pieces
+    #[allow(clippy::too_many_lines)]
     #[instrument(
         name = "engine::execute_transaction",
         skip(self),
@@ -192,7 +195,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         ),
         level = "debug"
     )]
-    fn execute_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), EngineError> {
+    fn execute_transaction(&mut self, tx_hash: B256, tx_env: &TxEnv) -> Result<(), EngineError> {
         let mut fork_db = self.state.fork();
         let block_env = self.block_env.as_ref().ok_or_else(|| {
             error!("No block environment set for transaction execution");
@@ -207,7 +210,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         #[cfg(feature = "linea")]
-        if check_recepient_address(&tx_env).is_none() {
+        if check_recepient_address(tx_env).is_none() {
             // if `None`, we can just skip this transaction as it failed
             // linea execution requirements
             return Ok(());
@@ -234,7 +237,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         );
                         self.transaction_results.add_transaction_result(
                             tx_hash,
-                            TransactionResult::ValidationError(format!("{e:?}")),
+                            &TransactionResult::ValidationError(format!("{e:?}")),
                         );
                         return Ok(());
                     }
@@ -251,7 +254,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
                         self.transaction_results.add_transaction_result(
                             tx_hash,
-                            TransactionResult::ValidationError(format!("{e:?}")),
+                            &TransactionResult::ValidationError(format!("{e:?}")),
                         );
 
                         return Err(EngineError::AssertionError);
@@ -312,7 +315,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         // Store the transaction result
         self.transaction_results.add_transaction_result(
             tx_hash,
-            TransactionResult::ValidationCompleted {
+            &TransactionResult::ValidationCompleted {
                 execution_result,
                 is_valid,
             },
@@ -444,7 +447,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     );
 
                     // Process the transaction with the current block environment
-                    self.execute_transaction(tx_hash, tx_env)?;
+                    self.execute_transaction(tx_hash, &tx_env)?;
                 }
             }
 
@@ -608,6 +611,8 @@ mod tests {
 
     #[test]
     fn test_database_commit_verification() {
+        use revm::primitives::address;
+
         let (mut engine, _) = create_test_engine();
         let block_env = create_test_block_env();
 
@@ -632,7 +637,7 @@ mod tests {
         engine.block_env = Some(block_env);
 
         // Execute the transaction
-        let result = engine.execute_transaction(tx_hash, tx_env.clone());
+        let result = engine.execute_transaction(tx_hash, &tx_env.clone());
         assert!(result.is_ok(), "Transaction should execute successfully");
 
         // Verify the caller's account state was updated
@@ -657,7 +662,6 @@ mod tests {
 
         // Verify the created contract exists at the expected address
         // From the cache output, we know the contract was created at this address
-        use revm::primitives::address;
         let contract_address = address!("76cae8af66cb2488933e640ba08650a3a8e7ae19");
 
         let contract_account = engine
@@ -741,7 +745,7 @@ mod tests {
         let tx_hash = B256::from([0x44; 32]);
 
         // Execute transaction without block environment
-        let result = engine.execute_transaction(tx_hash, tx_env.clone());
+        let result = engine.execute_transaction(tx_hash, &tx_env.clone());
 
         assert!(
             result.is_err(),

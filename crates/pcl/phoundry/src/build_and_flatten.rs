@@ -39,7 +39,7 @@ pub struct BuildAndFlatOutput {
 }
 
 impl BuildAndFlatOutput {
-    /// Creates a new BuildAndFlatOutput instance.
+    /// Creates a new `BuildAndFlatOutput` instance.
     pub fn new(compiler_version: String, flattened_source: String, abi: JsonAbi) -> Self {
         Self {
             compiler_version,
@@ -201,14 +201,14 @@ mod tests {
         fs::create_dir_all(contract_path.parent().unwrap()).unwrap();
         fs::write(
             &contract_path,
-            r#"// SPDX-License-Identifier: MIT
+            r"// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
 contract TestContract {
     function test() public pure returns (bool) {
         return true;
     }
-}"#,
+}",
         )
         .unwrap();
 

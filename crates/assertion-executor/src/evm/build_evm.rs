@@ -86,7 +86,7 @@ type OpEvm<'db, DB, I> = Evm<OpCtx<'db, DB>, I, OpIns<'db, DB>, PrecompilesMap>;
 
 /// Builds an Optimism EVM, using all optimism related types.
 /// Passes the `db` as a mutable reference to the inspector.
-/// Any type that implements the inspector trait for the OpCtx can be used.
+/// Any type that implements the inspector trait for the `OpCtx` can be used.
 /// The `env` is used to configure the EVM.
 pub fn build_optimism_evm<'db, DB, I>(
     db: &'db mut DB,
@@ -114,7 +114,7 @@ where
         },
         block: env.block_env.clone(),
         cfg: op_cfg.clone(),
-        tx: Default::default(),
+        tx: OpTransaction::default(),
         chain: L1BlockInfo::default(),
         local: LocalContext::default(),
         error: Ok(()),
@@ -131,7 +131,7 @@ type EthEvm<'db, DB, I> = Evm<EthCtx<'db, DB>, I, EthIns<'db, DB>, PrecompilesMa
 
 /// Builds a mainnet Ethereum EVM, using all mainnet related types.
 /// Passes the `db` as a mutable reference to the inspector.
-/// Any type that implements the inspector trait for the EthCtx can be used.
+/// Any type that implements the inspector trait for the `EthCtx` can be used.
 /// The `env` is used to configure the EVM.
 pub fn build_eth_evm<'db, DB, I>(db: &'db mut DB, env: &EvmEnv, inspector: I) -> EthEvm<'db, DB, I>
 where
@@ -147,7 +147,7 @@ where
         },
         block: env.block_env.clone(),
         cfg: env.cfg_env.clone(),
-        tx: Default::default(),
+        tx: TxEnv::default(),
         chain: (),
         local: LocalContext::default(),
         error: Ok(()),

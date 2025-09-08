@@ -11,7 +11,7 @@ pub enum DaSubmitError {
     DaClientError(#[from] DaClientError),
     /// Error during the build process of the assertion
     #[error("There was an error with the solidity file")]
-    PhoundryError(#[from] PhoundryError),
+    PhoundryError(#[from] Box<PhoundryError>),
     /// Failed to parse bytecode as hex
     #[error("Failed to parse bytecode as hex")]
     ParseError,
@@ -23,7 +23,8 @@ pub enum DaSubmitError {
     HttpError(u16),
     /// Invalid Constructor Args
     #[error("Invalid Constructor Args Count: Constructor Signature expects: {0}, Constructor Args submitted: {1};
-        Pass args by calling the command in the following format: `pcl store <assertion_contract> <arg0> <arg1>`")]
+        Pass args by calling the command in the following format: `pcl store <assertion_contract> <arg0> <arg1>`"
+    )]
     InvalidConstructorArgs(usize, usize),
 }
 

@@ -8,7 +8,7 @@ use assertion_executor::{
 };
 use std::path::PathBuf;
 
-/// Wrapper for SpecId that implements clap::ValueEnum
+/// Wrapper for `SpecId` that implements `clap::ValueEnum`
 #[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum, Default)]
 pub enum SpecIdArg {
     #[default]
@@ -207,7 +207,7 @@ pub struct HttpTransportArgs {
     pub bind_addr: String,
 }
 
-/// Main sidecar arguments that extend TelemetryArgs and CredibleArgs
+/// Main sidecar arguments that extend `TelemetryArgs` and `CredibleArgs`
 #[derive(Debug, Clone, PartialEq, Eq, clap::Parser)]
 #[command(name = "sidecar", about = "Credible layer sidecar")]
 pub struct SidecarArgs {

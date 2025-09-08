@@ -7,7 +7,10 @@ use alloy_provider::{
         DebugApi,
     },
 };
-use alloy_rpc_types::TransactionRequest;
+use alloy_rpc_types::{
+    TransactionRequest,
+    trace::geth::GethDebugTracingOptions,
+};
 use assertion_executor::{
     primitives::Address,
     store::AssertionState,
@@ -30,7 +33,7 @@ pub async fn test_harness(
     test_ctx.indexer.sync_to_head().await.unwrap();
     let mut assertions_by_address = HashMap::new();
 
-    for protocol in test_ctx.protocols.iter() {
+    for protocol in &test_ctx.protocols {
         let assertions = test_ctx.store.get_assertions_for_contract(*protocol);
         assertions_by_address.insert(*protocol, assertions);
     }
@@ -69,7 +72,7 @@ pub async fn validate_tx_hashes(tx_hashes: Vec<B256>, test_ctx: &TestCtx) {
         if !tx_receipt.status() {
             let trace = test_ctx
                 .provider
-                .debug_trace_transaction(tx_hash, Default::default())
+                .debug_trace_transaction(tx_hash, GethDebugTracingOptions::default())
                 .await
                 .unwrap();
             panic!("Transaction failed: trace: {trace:#?}");

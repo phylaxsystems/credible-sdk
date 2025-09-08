@@ -67,13 +67,13 @@ where
 pub fn fork_pre_call<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
-    input_bytes: Bytes,
+    input_bytes: &Bytes,
 ) -> Result<Bytes, ForkError>
 where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
-    let call_id = forkPreCallCall::abi_decode(&input_bytes)?.id;
+    let call_id = forkPreCallCall::abi_decode(input_bytes)?.id;
 
     let Journal { database, inner } = context.journal();
     database.switch_fork(ForkId::PreCall(call_id.try_into()?), inner, call_tracer)?;
@@ -84,13 +84,13 @@ where
 pub fn fork_post_call<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
-    input_bytes: Bytes,
+    input_bytes: &Bytes,
 ) -> Result<Bytes, ForkError>
 where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
-    let call_id = forkPostCallCall::abi_decode(&input_bytes)?.id;
+    let call_id = forkPostCallCall::abi_decode(input_bytes)?.id;
 
     let Journal { database, inner } = context.journal();
     database.switch_fork(ForkId::PostCall(call_id.try_into()?), inner, call_tracer)?;
@@ -306,9 +306,9 @@ mod test {
         assert_eq!(storage_value2, U256::from(40));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_tx_fork_integration() {
-        let result = run_precompile_test("TestFork").await;
+    #[test]
+    fn test_tx_fork_integration() {
+        let result = run_precompile_test("TestFork");
         println!("result: {result:?}");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
@@ -319,9 +319,9 @@ mod test {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_call_fork_integration() {
-        let result = run_precompile_test("TestCallFrameForking").await;
+    #[test]
+    fn test_call_fork_integration() {
+        let result = run_precompile_test("TestCallFrameForking");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(
@@ -331,9 +331,9 @@ mod test {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_call_fork_revert_integration() {
-        let result = run_precompile_test("TestCallFrameForkingRevert").await;
+    #[test]
+    fn test_call_fork_revert_integration() {
+        let result = run_precompile_test("TestCallFrameForkingRevert");
         assert!(!result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert!(

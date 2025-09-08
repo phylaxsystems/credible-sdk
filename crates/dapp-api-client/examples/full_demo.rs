@@ -14,6 +14,7 @@ use dapp_api_client::{
 };
 use std::env;
 
+#[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== dapp-api-client SDK Demo ===\n");
@@ -43,6 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Try to get token from environment
     let token = env::var("DAPP_API_TOKEN");
 
+    #[allow(clippy::single_match_else)]
     match token {
         Ok(token_value) => {
             println!("   ✓ Found DAPP_API_TOKEN in environment");
@@ -71,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("   - Found {} projects", projects.len());
 
                     // Display first few projects
+                    #[allow(clippy::if_not_else)]
                     if !projects.is_empty() {
                         println!("\n   📋 Project Details:");
                         for (i, project) in projects.iter().take(5).enumerate() {
@@ -81,8 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 project
                                     .project_description
                                     .as_ref()
-                                    .map(|d| d.as_str())
-                                    .unwrap_or("No description")
+                                    .map_or("No description", |d| d.as_str())
                             );
                             println!(
                                 "      Created: {}",
@@ -148,6 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("   - Found {} projects", projects.len());
 
                     // Display first few projects
+                    #[allow(clippy::if_not_else)]
                     if !projects.is_empty() {
                         println!("\n   📋 Public Project Details:");
                         for (i, project) in projects.iter().take(3).enumerate() {

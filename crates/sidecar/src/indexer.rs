@@ -18,7 +18,7 @@ use assertion_executor::store::{
 /// The indexer syncs to the current blockchain head before entering continuous monitoring mode.
 pub async fn run_indexer(indexer_cfg: IndexerCfg) -> Result<(), IndexerError> {
     // First, we create an indexer and sync it to the head.
-    let indexer = Indexer::new_synced(indexer_cfg).await?;
+    let indexer = Box::pin(Indexer::new_synced(indexer_cfg)).await?;
     // We can then run the indexer and update the assertion store as new
     // assertions come in
     indexer.run().await

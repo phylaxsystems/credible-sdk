@@ -39,9 +39,8 @@ where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
-    let call = match loadCall::abi_decode(&call_inputs.input.bytes(context)) {
-        Ok(call) => call,
-        Err(_) => return Ok(Bytes::default()),
+    let Ok(call) = loadCall::abi_decode(&call_inputs.input.bytes(context)) else {
+        return Ok(Bytes::default());
     };
     let address: Address = call.target;
 
@@ -214,9 +213,9 @@ mod test {
         assert_eq!(decoded.0, FixedBytes::ZERO);
     }
 
-    #[tokio::test]
-    async fn test_load_integration() {
-        let result = run_precompile_test("TestLoad").await;
+    #[test]
+    fn test_load_integration() {
+        let result = run_precompile_test("TestLoad");
         assert!(result.is_valid());
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());

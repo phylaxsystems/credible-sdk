@@ -38,7 +38,7 @@ use revm::{
 /// This struct encapsulates both the transaction hash for identification/tracing
 /// and the transaction environment containing the actual transaction data needed
 /// for EVM execution. The hash enables transaction tracking throughout the
-/// execution pipeline, while the TxEnv provides the EVM with all necessary
+/// execution pipeline, while the `TxEnv` provides the EVM with all necessary
 /// transaction context (sender, recipient, value, data, gas, etc.).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueTransaction {

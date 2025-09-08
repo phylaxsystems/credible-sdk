@@ -62,8 +62,7 @@ pub enum HttpDecoderError {
 fn parse_tx_kind(transact_to: Option<&str>) -> Result<TxKind, HttpDecoderError> {
     match transact_to {
         // If transact_to is None or "" or "0x", it's a contract creation transaction
-        None => Ok(TxKind::Create),
-        Some("") | Some("0x") => Ok(TxKind::Create),
+        None | Some("" | "0x") => Ok(TxKind::Create),
         Some(addr_str) => {
             let addr = Address::from_str(addr_str)
                 .map_err(|_| HttpDecoderError::InvalidAddress(addr_str.to_string()))?;
@@ -169,6 +168,8 @@ impl Decoder for HttpTransactionDecoder {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::match_wildcard_for_single_variants)]
+
     use super::*;
     use crate::transport::http::server::{
         JsonRpcRequest,
@@ -437,10 +438,8 @@ mod tests {
             base_tx["txEnv"]["nonce"] = json!(base_tx["txEnv"]["nonce"].as_u64().unwrap() + 1);
 
             // Deserialize the Transaction
-            let transaction: Transaction =
-                serde_json::from_value(base_tx.clone()).unwrap_or_else(|_| {
-                    panic!("Failed to deserialize transaction with {}", description)
-                });
+            let transaction: Transaction = serde_json::from_value(base_tx.clone())
+                .unwrap_or_else(|_| panic!("Failed to deserialize transaction with {description}"));
 
             // Create a request with this transaction
             let request = create_test_request("sendTransactions", vec![transaction]);
@@ -449,9 +448,7 @@ mod tests {
             let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
             assert!(
                 result.is_ok(),
-                "Failed to decode transaction with {}: {:?}",
-                description,
-                result
+                "Failed to decode transaction with {description}: {result:?}",
             );
 
             let transactions = result
@@ -468,8 +465,7 @@ mod tests {
             let decoded_tx = &transactions[0];
             assert_eq!(
                 decoded_tx.tx_env.caller, caller,
-                "Caller mismatch for {}",
-                description
+                "Caller mismatch for {description}",
             );
             assert!(
                 matches!(decoded_tx.tx_env.kind, TxKind::Create),

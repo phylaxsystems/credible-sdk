@@ -161,10 +161,10 @@ impl DaStoreArgs {
     ///
     /// # Returns
     /// * `Result<BuildAndFlatOutput, DaSubmitError>` - The build output or error
-    async fn build_and_flatten_assertion(&self) -> Result<BuildAndFlatOutput, DaSubmitError> {
+    fn build_and_flatten_assertion(&self) -> Result<BuildAndFlatOutput, DaSubmitError> {
         self.args
             .run()
-            .map_err(|e| DaSubmitError::PhoundryError(*e))
+            .map_err(|e| DaSubmitError::PhoundryError(Box::new(*e)))
     }
 
     /// Creates a DA client with appropriate authentication.
@@ -269,16 +269,16 @@ impl DaStoreArgs {
     /// * `config` - The configuration to update
     /// * `spinner` - The progress spinner to update
     /// * `json_output` - Whether to output in JSON format
-    fn update_config<A: ToString, S: ToString>(
+    fn update_config<A: ToString + ?Sized, S: ToString + ?Sized>(
         &self,
         config: &mut CliConfig,
-        assertion_id: A,
-        signature: S,
+        assertion_id: &A,
+        signature: &S,
         spinner: &ProgressBar,
         json_output: bool,
     ) {
         let assertion_for_submission = AssertionForSubmission {
-            assertion_contract: self.args.assertion_contract.to_string(),
+            assertion_contract: self.args.assertion_contract.clone(),
             assertion_id: assertion_id.to_string(),
             signature: signature.to_string(),
             constructor_args: self.constructor_args.clone(),
@@ -327,14 +327,14 @@ impl DaStoreArgs {
             spinner.set_message("Submitting assertion to DA...");
         }
 
-        let build_output = self.build_and_flatten_assertion().await?;
+        let build_output = self.build_and_flatten_assertion()?;
         let client = self
             .create_da_client(config)
             .map_err(DaSubmitError::DaClientError)?;
         let submission_response = self.submit_to_da(&client, &build_output, &spinner).await?;
         self.update_config(
             config,
-            submission_response.id,
+            &submission_response.id,
             &submission_response.prover_signature,
             &spinner,
             json_output,
@@ -346,6 +346,7 @@ impl DaStoreArgs {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::cast_possible_wrap)]
     use super::*;
     use crate::config::UserAuth;
     use alloy_primitives::Address;

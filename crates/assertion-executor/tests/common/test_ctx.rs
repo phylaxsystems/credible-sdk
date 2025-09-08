@@ -1,3 +1,4 @@
+#![allow(clippy::cast_possible_truncation)]
 use super::{
     harness::{
         execute_txs,
@@ -93,14 +94,14 @@ pub async fn setup_int_test_indexer(block_tag: BlockTag, time_lock_blocks: u64) 
 
     let contracts = deploy_contracts(
         &anvil,
-        da_signer.clone(),
-        std::path::PathBuf::from("../../lib/credible-layer-contracts"),
+        &da_signer.clone(),
+        &std::path::PathBuf::from("../../lib/credible-layer-contracts"),
         time_lock_blocks as usize,
     )
     .unwrap();
     let state_oracle = contracts.state_oracle;
 
-    let (_da_server_handle, da_server_addr) = deploy_test_da(da_signer.clone()).await;
+    let (da_server_handle, da_server_addr) = deploy_test_da(da_signer.clone()).await;
 
     let da_server_addr = format!("http://{da_server_addr}");
     let da_client = DaClient::new(da_server_addr.as_str()).unwrap();
@@ -132,10 +133,10 @@ pub async fn setup_int_test_indexer(block_tag: BlockTag, time_lock_blocks: u64) 
         _anvil: anvil,
         provider,
         deployer: address,
-        da_client: DaClient::new(da_server_addr.to_string().as_str()).unwrap(),
+        da_client: DaClient::new(da_server_addr.clone().as_str()).unwrap(),
         store,
         indexer,
-        _da_server_handle,
+        _da_server_handle: da_server_handle,
         contracts,
         protocols: Vec::new(),
         assertion_ids: Vec::new(),
@@ -143,7 +144,7 @@ pub async fn setup_int_test_indexer(block_tag: BlockTag, time_lock_blocks: u64) 
 }
 
 impl TestCtx {
-    async fn register_assertion_adopter_tx(&self, contract_address: Address) -> TransactionRequest {
+    fn register_assertion_adopter_tx(&self, contract_address: Address) -> TransactionRequest {
         register_assertion_adopter_tx(
             self.contracts.state_oracle,
             contract_address,
@@ -165,7 +166,7 @@ impl TestCtx {
 
     pub async fn deploy_and_register_protocol(&mut self, address: Address) {
         self.deploy_protocol(address).await;
-        let register_tx = self.register_assertion_adopter_tx(address).await;
+        let register_tx = self.register_assertion_adopter_tx(address);
         let tx_hashes = execute_txs(vec![register_tx], self).await;
         self.provider.anvil_mine(Some(1), None).await.unwrap();
         validate_tx_hashes(tx_hashes, self).await;

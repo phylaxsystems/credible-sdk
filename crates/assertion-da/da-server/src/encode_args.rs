@@ -48,7 +48,7 @@ where
         .collect()
 }
 
-/// Helper function to coerce a value to a [DynSolValue] given a type string
+/// Helper function to coerce a value to a [`DynSolValue`] given a type string
 pub fn coerce_value(ty: &str, arg: &str) -> Result<DynSolValue> {
     let ty = DynSolType::parse(ty)?;
     Ok(DynSolType::coerce_str(&ty, arg)?)

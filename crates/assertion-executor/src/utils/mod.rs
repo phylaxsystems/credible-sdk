@@ -8,7 +8,7 @@ use crate::primitives::{
 
 use alloy_consensus::TxEnvelope;
 
-/// Used to fill a TxEnv with the data from a TxEnvelope
+/// Used to fill a `TxEnv` with the data from a `TxEnvelope`
 pub fn fill_tx_env(input_tx: TxEnvelope, tx_env: &mut TxEnv, sender: Address) {
     tx_env.caller = sender;
     match input_tx {
@@ -130,6 +130,7 @@ mod tests {
     use rand::random;
 
     use alloy::primitives::Signature;
+    use alloy_rpc_types::AccessList;
 
     #[test]
     fn test_fill_tx_env_eip7702() {
@@ -141,7 +142,7 @@ mod tests {
         let input = Bytes::default();
         let chain_id = random();
         let nonce = random();
-        let access_list = Default::default();
+        let access_list = AccessList::default();
 
         let auth_item_address = Address::random();
         let auth_item_chain_id = U256::default();

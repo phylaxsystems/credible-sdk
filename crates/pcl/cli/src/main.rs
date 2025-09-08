@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
             Commands::Build(build_cmd) => {
                 build_cmd.run()?;
             }
-        };
+        }
         config.write_to_file(&cli.args)?;
         Ok::<_, Report>(())
     }

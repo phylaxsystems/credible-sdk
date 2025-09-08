@@ -1,3 +1,4 @@
+#![allow(clippy::missing_panics_doc)]
 use crate::{
     db::{
         Database,
@@ -50,20 +51,20 @@ pub struct MockDb {
     storage: HashMap<Address, HashMap<U256, U256>>,
     /// Simple storage for block hashes.
     block_hashes: HashMap<u64, B256>,
-    /// Counter for calls to basic_ref
+    /// Counter for calls to `basic_ref`
     basic_calls: Arc<Mutex<u64>>,
-    /// Counter for calls to code_by_hash_ref
+    /// Counter for calls to `code_by_hash_ref`
     code_calls: Arc<Mutex<u64>>,
-    /// Counter for calls to storage_ref
+    /// Counter for calls to `storage_ref`
     storage_calls: Arc<Mutex<u64>>,
-    /// Counter for calls to block_hash_ref
+    /// Counter for calls to `block_hash_ref`
     block_hash_calls: Arc<Mutex<u64>>,
 }
 
 #[allow(dead_code)]
 impl MockDb {
     pub fn new() -> Self {
-        Default::default()
+        MockDb::default()
     }
 
     // Methods to populate the mock database
@@ -162,13 +163,13 @@ impl DatabaseRef for MockDb {
             .storage
             .get(&address)
             .and_then(|s| s.get(&slot))
-            .cloned()
+            .copied()
             .unwrap_or_default())
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
         *self.block_hash_calls.lock().unwrap() += 1;
-        self.block_hashes.get(&number).cloned().ok_or(NotFoundError)
+        self.block_hashes.get(&number).copied().ok_or(NotFoundError)
     }
 }
 
@@ -191,13 +192,13 @@ impl Database for MockDb {
             .storage
             .get(&address)
             .and_then(|s| s.get(&slot))
-            .cloned()
+            .copied()
             .unwrap_or_default())
     }
 
     fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
         *self.block_hash_calls.lock().unwrap() += 1;
-        self.block_hashes.get(&number).cloned().ok_or(NotFoundError)
+        self.block_hashes.get(&number).copied().ok_or(NotFoundError)
     }
 }
 
@@ -207,7 +208,7 @@ pub fn mock_account_info(balance: U256, nonce: u64, code: Option<Bytecode>) -> A
     AccountInfo {
         balance,
         nonce,
-        code_hash: code.as_ref().map_or(KECCAK256_EMPTY, |c| c.hash_slow()),
+        code_hash: code.as_ref().map_or(KECCAK256_EMPTY, Bytecode::hash_slow),
         code,
     }
 }

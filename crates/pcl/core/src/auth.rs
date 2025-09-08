@@ -11,7 +11,7 @@ use chrono::{
     Utc,
 };
 use color_eyre::Result;
-use colored::*;
+use colored::Colorize;
 use indicatif::{
     ProgressBar,
     ProgressStyle,
@@ -126,8 +126,14 @@ impl AuthCommand {
     pub async fn run(&self, config: &mut CliConfig) -> Result<(), AuthError> {
         match &self.command {
             AuthSubcommands::Login => self.login(config).await,
-            AuthSubcommands::Logout => self.logout(config),
-            AuthSubcommands::Status => self.status(config),
+            AuthSubcommands::Logout => {
+                Self::logout(config);
+                Ok(())
+            }
+            AuthSubcommands::Status => {
+                Self::status(config);
+                Ok(())
+            }
         }
     }
 
@@ -193,8 +199,8 @@ impl AuthCommand {
 
             if status.verified {
                 spinner.finish_with_message("✅ Authentication successful!");
-                self.update_config(config, status, auth_response)?;
-                self.display_success_message(config);
+                Self::update_config(config, status, auth_response)?;
+                Self::display_success_message(config);
                 return Ok(());
             }
 
@@ -227,7 +233,6 @@ impl AuthCommand {
 
     /// Update the configuration with authentication data
     fn update_config(
-        &self,
         config: &mut CliConfig,
         status: StatusResponse,
         auth_response: &AuthResponse,
@@ -252,7 +257,7 @@ impl AuthCommand {
     }
 
     /// Display success message after authentication
-    fn display_success_message(&self, config: &CliConfig) {
+    fn display_success_message(config: &CliConfig) {
         println!(
             "\n{}\n\n{} {}\n🔗 {}\n",
             PHYLAX_ASCII.white(),
@@ -267,14 +272,13 @@ impl AuthCommand {
     }
 
     /// Remove authentication data from configuration
-    fn logout(&self, config: &mut CliConfig) -> Result<(), AuthError> {
+    fn logout(config: &mut CliConfig) {
         config.auth = None;
         println!("{} Logged out successfully", "👋".green());
-        Ok(())
     }
 
     /// Display current authentication status
-    fn status(&self, config: &CliConfig) -> Result<(), AuthError> {
+    fn status(config: &CliConfig) {
         let (icon, message) = if let Some(auth) = &config.auth {
             (
                 "✅".green(),
@@ -287,7 +291,6 @@ impl AuthCommand {
             ("❌".red(), "Not logged in".to_string())
         };
         println!("{icon} {message}");
-        Ok(())
     }
 }
 
@@ -345,14 +348,10 @@ mod tests {
     #[test]
     fn test_update_config() {
         let mut config = CliConfig::default();
-        let cmd = AuthCommand {
-            command: AuthSubcommands::Login,
-            auth_url: "https://dapp.phylax.systems".to_string(),
-        };
         let auth_response = create_test_auth_response();
         let status = create_test_status_response();
 
-        let result = cmd.update_config(&mut config, status, &auth_response);
+        let result = AuthCommand::update_config(&mut config, status, &auth_response);
 
         if let Err(e) = &result {
             println!("Error: {e:?}");
@@ -377,13 +376,9 @@ mod tests {
     #[test]
     fn test_display_success_message() {
         let config = create_test_config();
-        let cmd = AuthCommand {
-            command: AuthSubcommands::Login,
-            auth_url: "https://dapp.phylax.systems".to_string(),
-        };
 
         // Can't easily test stdout, but we can verify it doesn't panic
-        cmd.display_success_message(&config);
+        AuthCommand::display_success_message(&config);
     }
 
     #[tokio::test]
@@ -442,60 +437,31 @@ mod tests {
     #[test]
     fn test_logout() {
         let mut config = create_test_config();
-        let cmd = AuthCommand::try_parse_from(vec![
-            "auth",
-            "--auth-url",
-            "https://dapp.phylax.systems",
-            "logout",
-        ])
-        .unwrap();
+        AuthCommand::logout(&mut config);
 
-        let result = cmd.logout(&mut config);
-
-        assert!(result.is_ok());
         assert!(config.auth.is_none());
     }
 
     #[test]
     fn test_status() {
         let config = create_test_config();
-        let cmd = AuthCommand::try_parse_from(vec![
-            "auth",
-            "--auth-url",
-            "https://dapp.phylax.systems",
-            "status",
-        ])
-        .unwrap();
-
-        let result = cmd.status(&config);
-        assert!(result.is_ok());
+        AuthCommand::status(&config);
     }
 
     #[test]
     fn test_status_when_logged_out() {
         let config = CliConfig::default();
-        let cmd = AuthCommand {
-            command: AuthSubcommands::Status,
-            auth_url: "https://dapp.phylax.systems".to_string(),
-        };
-
-        let result = cmd.status(&config);
-
-        assert!(result.is_ok());
+        AuthCommand::status(&config);
     }
 
     #[test]
     fn test_update_config_with_invalid_address() {
         let mut config = CliConfig::default();
-        let cmd = AuthCommand {
-            command: AuthSubcommands::Login,
-            auth_url: "https://dapp.phylax.systems".to_string(),
-        };
         let auth_response = create_test_auth_response();
         let mut status = create_test_status_response();
         status.address = Some("invalid_address".to_string());
 
-        let result = cmd.update_config(&mut config, status, &auth_response);
+        let result = AuthCommand::update_config(&mut config, status, &auth_response);
         assert!(result.is_err());
         assert!(matches!(result, Err(AuthError::InvalidAddress)));
     }
@@ -503,15 +469,11 @@ mod tests {
     #[test]
     fn test_update_config_with_invalid_timestamp() {
         let mut config = CliConfig::default();
-        let cmd = AuthCommand {
-            command: AuthSubcommands::Login,
-            auth_url: "https://dapp.phylax.systems".to_string(),
-        };
         let mut auth_response = create_test_auth_response();
         auth_response.expires_at = "invalid_timestamp".to_string();
         let status = create_test_status_response();
 
-        let result = cmd.update_config(&mut config, status, &auth_response);
+        let result = AuthCommand::update_config(&mut config, status, &auth_response);
         assert!(result.is_err());
         assert!(matches!(result, Err(AuthError::InvalidTimestamp)));
     }
@@ -519,15 +481,11 @@ mod tests {
     #[test]
     fn test_update_config_with_missing_token() {
         let mut config = CliConfig::default();
-        let cmd = AuthCommand {
-            command: AuthSubcommands::Login,
-            auth_url: "https://dapp.phylax.systems".to_string(),
-        };
         let auth_response = create_test_auth_response();
         let mut status = create_test_status_response();
         status.token = None;
 
-        let result = cmd.update_config(&mut config, status, &auth_response);
+        let result = AuthCommand::update_config(&mut config, status, &auth_response);
         assert!(result.is_err());
         assert!(matches!(result, Err(AuthError::InvalidAuthData(_))));
     }
@@ -535,15 +493,11 @@ mod tests {
     #[test]
     fn test_update_config_with_missing_refresh_token() {
         let mut config = CliConfig::default();
-        let cmd = AuthCommand {
-            command: AuthSubcommands::Login,
-            auth_url: "https://dapp.phylax.systems".to_string(),
-        };
         let auth_response = create_test_auth_response();
         let mut status = create_test_status_response();
         status.refresh_token = None;
 
-        let result = cmd.update_config(&mut config, status, &auth_response);
+        let result = AuthCommand::update_config(&mut config, status, &auth_response);
         assert!(result.is_err());
         assert!(matches!(result, Err(AuthError::InvalidAuthData(_))));
     }
@@ -551,7 +505,7 @@ mod tests {
     #[test]
     fn test_update_config_with_missing_address() {
         let mut config = CliConfig::default();
-        let cmd = AuthCommand {
+        let _cmd = AuthCommand {
             command: AuthSubcommands::Login,
             auth_url: "https://dapp.phylax.systems".to_string(),
         };
@@ -559,7 +513,7 @@ mod tests {
         let mut status = create_test_status_response();
         status.address = None;
 
-        let result = cmd.update_config(&mut config, status, &auth_response);
+        let result = AuthCommand::update_config(&mut config, status, &auth_response);
         assert!(result.is_err());
         assert!(matches!(result, Err(AuthError::InvalidAuthData(_))));
     }

@@ -1,3 +1,8 @@
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::struct_field_names)]
+#![allow(clippy::unreadable_literal)]
+
 pub mod assertion_da;
 pub mod assertion_submission;
 pub mod auth;

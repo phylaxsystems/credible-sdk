@@ -25,7 +25,7 @@ pub fn console_log(
     context
         .console_logs
         .push(logCall::abi_decode(input_bytes)?.message);
-    Ok(Default::default())
+    Ok(Bytes::default())
 }
 
 #[cfg(test)]
