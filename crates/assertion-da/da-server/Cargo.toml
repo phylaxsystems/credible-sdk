@@ -43,7 +43,7 @@ tracing-subscriber.workspace = true
 futures-util = "0.3"
 uuid = { version = "1.15", features = ["v4"] }
 tempfile = "3.18"
-metrics = "0.24"
+metrics.workspace = true
 
 thiserror = "2"
 regex = "1"
