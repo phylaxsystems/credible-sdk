@@ -9,7 +9,6 @@
 
 use assertion_executor::primitives::FixedBytes;
 use metrics::{
-    counter,
     gauge,
     histogram,
 };
@@ -22,24 +21,24 @@ pub struct BlockMetrics {
     /// Entire duration from blockenv to blockenv
     pub block_processing_duration: std::time::Duration,
     /// How many transactions the engine has seen
-    pub transactions_considered_total: u64, //
+    pub transactions_considered_total: u64,
     /// How many txs were executed
-    pub transactions_simulated_total: u64, //
+    pub transactions_simulated_total: u64,
     /// How many transactions we have executed successfully
-    pub transactions_simulated_success_total: u64, //
+    pub transactions_simulated_success_total: u64,
     /// How many transactions we have executed unsuccessfully
-    pub transactions_simulated_failure_total: u64, //
+    pub transactions_simulated_failure_total: u64,
     /// How many transactions we have executed successfully,
     /// which ended up invalidating assertions
-    pub invalidated_transactions_total: u64, //
+    pub invalidated_transactions_total: u64,
     /// How much gas was used in a block
-    pub block_gas_used: u64, //
+    pub block_gas_used: u64,
     /// How many assertions we have executed in the block
-    pub assertions_per_block: u64, //
+    pub assertions_per_block: u64,
     /// How much assertion gas we executed in a block
-    pub assertion_gas_per_block: u64, //
+    pub assertion_gas_per_block: u64,
     /// Current block height
-    pub current_height: u64, //
+    pub current_height: u64,
 }
 
 impl BlockMetrics {
@@ -52,13 +51,13 @@ impl BlockMetrics {
     /// Commits the metrics
     pub fn commit(&self) {
         histogram!("block_processing_duration_seconds").record(self.block_processing_duration);
-        counter!("transactions_considered_total").increment(self.transactions_considered_total);
-        counter!("transactions_simulated_total").increment(self.transactions_simulated_total);
-        counter!("transactions_simulated_success_total")
-            .increment(self.transactions_simulated_success_total);
-        counter!("transactions_simulated_failure_total")
-            .increment(self.transactions_simulated_failure_total);
-        counter!("invalidated_transactions_total").increment(self.invalidated_transactions_total);
+        gauge!("transactions_considered_total").set(self.transactions_considered_total as f64);
+        gauge!("transactions_simulated_total").set(self.transactions_simulated_total as f64);
+        gauge!("transactions_simulated_success_total")
+            .set(self.transactions_simulated_success_total as f64);
+        gauge!("transactions_simulated_failure_total")
+            .set(self.transactions_simulated_failure_total as f64);
+        gauge!("invalidated_transactions_total").set(self.invalidated_transactions_total as f64);
         gauge!("block_gas_used").set(self.block_gas_used as f64);
         gauge!("assertions_per_block").set(self.assertions_per_block as f64);
         gauge!("assertion_gas_per_block").set(self.assertion_gas_per_block as f64);
