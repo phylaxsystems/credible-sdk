@@ -141,7 +141,11 @@ impl HttpTransactionDecoder {
 
             let tx_env = TxEnv::try_from(&transaction.tx_env)?;
 
-            queue_transactions.push(TxQueueContents::Tx(QueueTransaction { tx_hash, tx_env }));
+            let current_span = tracing::Span::current();
+            queue_transactions.push(TxQueueContents::Tx(
+                QueueTransaction { tx_hash, tx_env },
+                current_span,
+            ));
         }
 
         Ok(queue_transactions)
@@ -159,7 +163,8 @@ impl Decoder for HttpTransactionDecoder {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
                 let block = serde_json::from_value::<BlockEnv>(params.clone())
                     .map_err(|_| HttpDecoderError::SchemaError)?;
-                Ok(vec![TxQueueContents::Block(block)])
+                let current_span = tracing::Span::current();
+                Ok(vec![TxQueueContents::Block(block, current_span)])
             }
             _ => Err(HttpDecoderError::SchemaError),
         }
@@ -285,7 +290,7 @@ mod tests {
             .into_iter()
             .filter_map(|queue_content| {
                 match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
+                    TxQueueContents::Tx(tx, _) => Some(tx),
                     _ => None,
                 }
             })
@@ -355,7 +360,7 @@ mod tests {
             .into_iter()
             .filter_map(|queue_content| {
                 match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
+                    TxQueueContents::Tx(tx, _) => Some(tx),
                     _ => None,
                 }
             })
@@ -456,7 +461,7 @@ mod tests {
                 .into_iter()
                 .filter_map(|queue_content| {
                     match queue_content {
-                        TxQueueContents::Tx(tx) => Some(tx),
+                        TxQueueContents::Tx(tx, _) => Some(tx),
                         _ => None,
                     }
                 })
@@ -502,7 +507,7 @@ mod tests {
             .into_iter()
             .filter_map(|queue_content| {
                 match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
+                    TxQueueContents::Tx(tx, _) => Some(tx),
                     _ => None,
                 }
             })
@@ -751,7 +756,7 @@ mod tests {
             .into_iter()
             .filter_map(|queue_content| {
                 match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
+                    TxQueueContents::Tx(tx, _) => Some(tx),
                     _ => None,
                 }
             })
@@ -787,7 +792,7 @@ mod tests {
             .into_iter()
             .filter_map(|queue_content| {
                 match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
+                    TxQueueContents::Tx(tx, _) => Some(tx),
                     _ => None,
                 }
             })
@@ -823,7 +828,7 @@ mod tests {
             .into_iter()
             .filter_map(|queue_content| {
                 match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
+                    TxQueueContents::Tx(tx, _) => Some(tx),
                     _ => None,
                 }
             })
@@ -905,7 +910,7 @@ mod tests {
             .into_iter()
             .filter_map(|queue_content| {
                 match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
+                    TxQueueContents::Tx(tx, _) => Some(tx),
                     _ => None,
                 }
             })
@@ -969,7 +974,7 @@ mod tests {
             .into_iter()
             .filter_map(|queue_content| {
                 match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
+                    TxQueueContents::Tx(tx, _) => Some(tx),
                     _ => None,
                 }
             })
@@ -1033,7 +1038,7 @@ mod tests {
             .into_iter()
             .filter_map(|queue_content| {
                 match queue_content {
-                    TxQueueContents::Tx(tx) => Some(tx),
+                    TxQueueContents::Tx(tx, _) => Some(tx),
                     _ => None,
                 }
             })

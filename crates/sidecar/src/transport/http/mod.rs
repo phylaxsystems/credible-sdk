@@ -5,7 +5,9 @@ use crate::{
     transport::{
         Transport,
         http::{
+            block_context::BlockContext,
             config::HttpTransportConfig,
+            tracing_middleware::tracing_middleware,
             transactions_results::QueryTransactionsResults,
         },
     },
@@ -13,6 +15,7 @@ use crate::{
 };
 use axum::{
     Router,
+    middleware,
     routing::{
         get,
         post,
@@ -35,8 +38,10 @@ use tracing::{
     warn,
 };
 
+mod block_context;
 pub mod config;
 pub mod server;
+mod tracing_middleware;
 mod transactions_results;
 
 #[derive(thiserror::Error, Debug)]
@@ -92,6 +97,8 @@ pub struct HttpTransport {
     has_blockenv: Arc<AtomicBool>,
     /// Shared transaction results state
     transactions_results: QueryTransactionsResults,
+    /// Block context for tracing
+    block_context: BlockContext,
 }
 
 /// Health check endpoint
@@ -108,10 +115,14 @@ fn health_routes() -> Router {
 }
 
 /// Create transaction submission routes
-fn transaction_routes(state: server::ServerState) -> Router {
+fn transaction_routes(state: server::ServerState, block_context: &BlockContext) -> Router {
     Router::new()
         .route("/tx", post(server::handle_transaction_rpc))
         .with_state(state)
+        .layer(middleware::from_fn_with_state(
+            block_context.clone(),
+            tracing_middleware,
+        ))
 }
 
 impl Transport for HttpTransport {
@@ -134,6 +145,7 @@ impl Transport for HttpTransport {
             shutdown_token: CancellationToken::new(),
             has_blockenv: Arc::new(AtomicBool::new(false)),
             transactions_results: QueryTransactionsResults::new(state_results),
+            block_context: BlockContext::default(),
         })
     }
 
@@ -148,10 +160,11 @@ impl Transport for HttpTransport {
             self.has_blockenv.clone(),
             self.tx_sender.clone(),
             self.transactions_results.clone(),
+            self.block_context.clone(),
         );
         let app = Router::new()
             .merge(health_routes())
-            .merge(transaction_routes(state));
+            .merge(transaction_routes(state, &self.block_context));
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
             .await

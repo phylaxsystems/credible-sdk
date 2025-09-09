@@ -56,8 +56,8 @@ pub struct QueueTransaction {
 /// along with its transaction hash for identification and tracing.
 #[derive(Debug)]
 pub enum TxQueueContents {
-    Block(BlockEnv),
-    Tx(QueueTransaction),
+    Block(BlockEnv, tracing::Span),
+    Tx(QueueTransaction, tracing::Span),
 }
 
 /// `crossbeam` sender for the transaction queue. Sends data to tx queue.

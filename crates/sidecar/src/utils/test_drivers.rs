@@ -59,6 +59,7 @@ use std::{
     sync::Arc,
 };
 use tracing::{
+    Span,
     debug,
     error,
     info,
@@ -220,7 +221,7 @@ impl TestTransport for LocalInstanceMockDriver {
 
         let result = self
             .mock_sender
-            .send(TxQueueContents::Block(block_env))
+            .send(TxQueueContents::Block(block_env, Span::current()))
             .map_err(|e| format!("Failed to send block: {e}"));
         match &result {
             Ok(()) => info!(target: "test_transport", "Successfully sent block to mock_sender"),
@@ -233,7 +234,7 @@ impl TestTransport for LocalInstanceMockDriver {
         info!(target: "test_transport", "LocalInstance sending transaction: {:?}", tx_hash);
         let queue_tx = QueueTransaction { tx_hash, tx_env };
         self.mock_sender
-            .send(TxQueueContents::Tx(queue_tx))
+            .send(TxQueueContents::Tx(queue_tx, Span::current()))
             .map_err(|e| format!("Failed to send transaction: {e}"))
     }
 }
