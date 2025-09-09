@@ -45,7 +45,13 @@ use super::engine::queue::{
     TransactionQueueReceiver,
     TxQueueContents,
 };
-use crate::TransactionsState;
+use crate::{
+    TransactionsState,
+    metrics::{
+        BlockMetrics,
+        TransactionMetrics,
+    },
+};
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -127,6 +133,7 @@ pub struct CoreEngine<DB> {
     assertion_executor: AssertionExecutor,
     block_env: Option<BlockEnv>,
     transaction_results: TransactionsResults,
+    block_metrics: BlockMetrics,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -149,6 +156,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 state_results,
                 transaction_results_max_capacity,
             ),
+            block_metrics: BlockMetrics::new(),
         }
     }
 
@@ -169,6 +177,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env: None,
             cache: Arc::new(Cache::new(vec![])),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
+            block_metrics: BlockMetrics::new(),
         }
     }
 
@@ -196,6 +205,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         level = "debug"
     )]
     fn execute_transaction(&mut self, tx_hash: B256, tx_env: &TxEnv) -> Result<(), EngineError> {
+        let mut tx_metrics = TransactionMetrics::new(tx_hash);
+        let instant = std::time::Instant::now();
+
         let mut fork_db = self.state.fork();
         let block_env = self.block_env.as_ref().ok_or_else(|| {
             error!("No block environment set for transaction execution");
@@ -217,12 +229,16 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
 
         // Validate transaction and run assertions
-        let rax = match self.assertion_executor.validate_transaction_ext_db(
+        let rax = self.assertion_executor.validate_transaction_ext_db(
             block_env.clone(),
             tx_env.clone(),
             &mut fork_db,
             &mut self.state,
-        ) {
+        );
+
+        tx_metrics.transaction_processing_duration = instant.elapsed();
+
+        let rax = match rax {
             Ok(rax) => rax,
             Err(e) => {
                 match e {
@@ -263,6 +279,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             }
         };
 
+        tx_metrics.assertions_per_transaction = rax.total_assertion_funcs_ran();
+        self.block_metrics.assertions_per_block += rax.total_assertion_funcs_ran();
+        tx_metrics.assertion_gas_per_transaction = rax.total_assertions_gas();
+        self.block_metrics.assertion_gas_per_block += rax.total_assertions_gas();
+
         let is_valid = rax.is_valid();
         let execution_result = rax.result_and_state.result.clone();
 
@@ -273,6 +294,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             execution_result = ?execution_result,
             "Transaction processed"
         );
+
+        self.block_metrics.transactions_simulated += 1;
 
         if is_valid {
             // Transaction valid, passed assertions, commit state for successful transactions
@@ -295,7 +318,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     tx_hash = %tx_hash,
                     "Commiting state of successful tx"
                 );
+                self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
+                self.block_metrics.transactions_simulated_success += 1;
+
                 self.state.commit(rax.result_and_state.state);
+            } else {
+                self.block_metrics.transactions_simulated_failure += 1;
             }
         } else {
             warn!(
@@ -310,6 +338,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 assertions_executions = ?rax.assertions_executions,
                 "Transaction validation details"
             );
+
+            self.block_metrics.invalidated_transactions += 1;
         }
 
         // Store the transaction result
@@ -378,6 +408,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     pub async fn run(&mut self) -> Result<(), EngineError> {
         let mut processed_blocks = 0u64;
         let mut processed_txs = 0u64;
+        let mut block_processing_time = std::time::Instant::now();
 
         loop {
             // Use try_recv and yield when empty to be async-friendly
@@ -406,6 +437,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     debug!(
                         target = "engine",
                         timestamp = block_env.timestamp,
+                        number = block_env.number,
                         gas_limit = block_env.gas_limit,
                         base_fee = ?block_env.basefee,
                         "Block details"
@@ -418,12 +450,22 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     }
 
                     self.cache.set_block_number(block_env.number);
+
+                    self.block_metrics.block_processing_duration = block_processing_time.elapsed();
+                    self.block_metrics.current_height = block_env.number;
+                    // Commit all values inside of `block_metrics` to prometheus collector
+                    self.block_metrics.commit();
+                    // Reset the values inside to their defaults
+                    self.block_metrics.reset();
+                    block_processing_time = std::time::Instant::now();
+
                     self.block_env = Some(block_env);
                 }
                 TxQueueContents::Tx(queue_transaction) => {
                     let tx_hash = queue_transaction.tx_hash;
                     let tx_env = queue_transaction.tx_env;
                     processed_txs += 1;
+                    self.block_metrics.transactions_considered += 1;
 
                     if self.block_env.is_none() {
                         error!(
@@ -637,7 +679,7 @@ mod tests {
         engine.block_env = Some(block_env);
 
         // Execute the transaction
-        let result = engine.execute_transaction(tx_hash, &tx_env.clone());
+        let result = engine.execute_transaction(tx_hash, &tx_env);
         assert!(result.is_ok(), "Transaction should execute successfully");
 
         // Verify the caller's account state was updated
@@ -745,7 +787,7 @@ mod tests {
         let tx_hash = B256::from([0x44; 32]);
 
         // Execute transaction without block environment
-        let result = engine.execute_transaction(tx_hash, &tx_env.clone());
+        let result = engine.execute_transaction(tx_hash, &tx_env);
 
         assert!(
             result.is_err(),
