@@ -18,6 +18,7 @@ use assertion_executor::{
         counter_call,
     },
 };
+use rand::Rng;
 use revm::{
     database::{
         CacheDB,
@@ -198,6 +199,14 @@ impl<T: TestTransport> LocalInstance<T> {
         }
     }
 
+    /// Generate a random transaction hash
+    pub fn generate_random_tx_hash() -> B256 {
+        let mut rng = rand::rng();
+        let mut hash_bytes = [0u8; 32];
+        rng.fill(&mut hash_bytes);
+        B256::from(hash_bytes)
+    }
+
     /// Prefund accounts with ETH for testing
     pub fn fund_accounts(&mut self, accounts: &[(Address, U256)]) -> Result<(), String> {
         let db = Arc::get_mut(&mut self.db)
@@ -239,11 +248,8 @@ impl<T: TestTransport> LocalInstance<T> {
             ..Default::default()
         };
 
-        // Generate transaction hash based on caller and nonce
-        let mut hash_bytes = [0u8; 32];
-        hash_bytes[0..20].copy_from_slice(caller.as_slice());
-        hash_bytes[20..28].copy_from_slice(&nonce.to_be_bytes());
-        let tx_hash = B256::from(hash_bytes);
+        // Generate transaction hash
+        let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
@@ -277,11 +283,8 @@ impl<T: TestTransport> LocalInstance<T> {
             ..Default::default()
         };
 
-        // Generate transaction hash based on caller and nonce
-        let mut hash_bytes = [0u8; 32];
-        hash_bytes[0..20].copy_from_slice(caller.as_slice());
-        hash_bytes[20..28].copy_from_slice(&nonce.to_be_bytes());
-        let tx_hash = B256::from(hash_bytes);
+        // Generate transaction hash
+        let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
@@ -320,11 +323,8 @@ impl<T: TestTransport> LocalInstance<T> {
             ..Default::default()
         };
 
-        // Generate transaction hash based on caller and nonce
-        let mut hash_bytes = [0u8; 32];
-        hash_bytes[0..20].copy_from_slice(caller.as_slice());
-        hash_bytes[20..28].copy_from_slice(&nonce.to_be_bytes());
-        let tx_hash = B256::from(hash_bytes);
+        // Generate transaction hash
+        let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
