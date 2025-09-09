@@ -9,6 +9,7 @@ use crate::{
             transactions_results::QueryTransactionsResults,
         },
     },
+    utils::ErrorRecoverability,
 };
 use axum::{
     Router,
@@ -40,12 +41,23 @@ mod transactions_results;
 
 #[derive(thiserror::Error, Debug)]
 pub enum HttpTransportError {
-    #[error("Error sending data to core engine via channel")]
-    CoreSendError,
     #[error("Server error: {0}")]
     ServerError(String),
+    #[error("Failed to bind the address: {0}")]
+    BindAddress(String),
     #[error("Client error: {0}")]
     ClientError(#[from] reqwest::Error),
+}
+
+impl From<&HttpTransportError> for ErrorRecoverability {
+    fn from(e: &HttpTransportError) -> Self {
+        match e {
+            HttpTransportError::ServerError(_) | HttpTransportError::BindAddress(_) => {
+                Self::Unrecoverable
+            }
+            HttpTransportError::ClientError(_) => Self::Recoverable,
+        }
+    }
 }
 
 /// Implementation of the HTTP `Transport`.
@@ -149,10 +161,7 @@ impl Transport for HttpTransport {
                     error = %e,
                     "Failed to bind HTTP transport listener"
                 );
-                HttpTransportError::ServerError(format!(
-                    "Failed to bind to {}: {}",
-                    self.bind_addr, e
-                ))
+                HttpTransportError::BindAddress(self.bind_addr.to_string())
             })?;
 
         info!(

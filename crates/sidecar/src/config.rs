@@ -67,7 +67,7 @@ pub fn init_assertion_store(args: &SidecarArgs) -> Result<AssertionStore, Assert
 pub async fn init_indexer_config(
     args: &SidecarArgs,
     store: AssertionStore,
-    executor_config: ExecutorConfig,
+    executor_config: &ExecutorConfig,
 ) -> anyhow::Result<IndexerCfg> {
     trace!(
         da_url = %args.credible.assertion_da_rpc_url,
@@ -111,7 +111,7 @@ pub async fn init_indexer_config(
     Ok(IndexerCfg {
         state_oracle: args.credible.state_oracle,
         da_client,
-        executor_config,
+        executor_config: executor_config.clone(),
         store,
         provider,
         db: indexer_db,

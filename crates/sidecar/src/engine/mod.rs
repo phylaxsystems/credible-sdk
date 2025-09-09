@@ -70,6 +70,7 @@ use assertion_executor::{
 use crate::{
     cache::Cache,
     engine::transactions_results::TransactionsResults,
+    utils::ErrorRecoverability,
 };
 #[allow(unused_imports)]
 use revm::{
@@ -96,7 +97,7 @@ use tracing::{
     warn,
 };
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum EngineError {
     #[error("Database error")]
     DatabaseError,
@@ -108,6 +109,19 @@ pub enum EngineError {
     ChannelClosed,
     #[error("Get transaction result oneshot channel closed")]
     GetTxResultChannelClosed,
+}
+
+impl From<&EngineError> for ErrorRecoverability {
+    fn from(e: &EngineError) -> Self {
+        match e {
+            EngineError::DatabaseError | EngineError::AssertionError => {
+                ErrorRecoverability::Unrecoverable
+            }
+            EngineError::TransactionError
+            | EngineError::ChannelClosed
+            | EngineError::GetTxResultChannelClosed => ErrorRecoverability::Recoverable,
+        }
+    }
 }
 
 /// Represents either a successful transaction validation or an internal validation error
