@@ -7,6 +7,9 @@
 //! The port on which to bind it to can be specified with the
 //! `TRACING_METRICS_PORT` env variable.
 
+// For converting to f64 from u64. Its metrics so not important to get full precision
+#![allow(clippy::cast_precision_loss)]
+
 use assertion_executor::primitives::FixedBytes;
 use metrics::{
     gauge,
