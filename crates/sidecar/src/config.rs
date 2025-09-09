@@ -70,8 +70,8 @@ pub async fn init_indexer_config(
     executor_config: ExecutorConfig,
 ) -> anyhow::Result<IndexerCfg> {
     trace!(
-        da_url = ?args.credible.assertion_da_rpc_url,
-        indexer_rpc = ?args.credible.indexer_rpc_url,
+        da_url = %args.credible.assertion_da_rpc_url,
+        indexer_rpc = %args.credible.indexer_rpc_url,
         indexer_db_path = ?args.credible.indexer_db_path,
         block_tag = ?args.credible.block_tag,
         "Initializing indexer"
