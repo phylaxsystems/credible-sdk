@@ -44,7 +44,7 @@ impl TransactionsState {
     }
 
     pub fn add_accepted_tx(&self, tx_queue_contents: &TxQueueContents) {
-        if let TxQueueContents::Tx(tx) = tx_queue_contents {
+        if let TxQueueContents::Tx(tx, _) = tx_queue_contents {
             self.accepted_txs.insert(tx.tx_hash);
         }
     }
@@ -143,6 +143,7 @@ mod tests {
         Duration,
         timeout,
     };
+    use tracing::Span;
 
     /// Helper function to create a test transaction hash
     fn create_test_tx_hash() -> B256 {
@@ -175,15 +176,18 @@ mod tests {
 
     /// Helper function to create a test `TxQueueContents` with transaction
     fn create_test_tx_queue_contents(tx_hash: B256) -> TxQueueContents {
-        TxQueueContents::Tx(QueueTransaction {
-            tx_hash,
-            tx_env: TxEnv::default(),
-        })
+        TxQueueContents::Tx(
+            QueueTransaction {
+                tx_hash,
+                tx_env: TxEnv::default(),
+            },
+            Span::current(),
+        )
     }
 
     /// Helper function to create a test `TxQueueContents` with block
     fn create_test_block_queue_contents() -> TxQueueContents {
-        TxQueueContents::Block(BlockEnv::default())
+        TxQueueContents::Block(BlockEnv::default(), Span::current())
     }
 
     #[test]

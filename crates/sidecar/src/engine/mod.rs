@@ -426,7 +426,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             };
 
             match event {
-                TxQueueContents::Block(block_env) => {
+                TxQueueContents::Block(block_env, current_span) => {
+                    let _guard = current_span.enter();
                     processed_blocks += 1;
                     info!(
                         target = "engine",
@@ -461,7 +462,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
                     self.block_env = Some(block_env);
                 }
-                TxQueueContents::Tx(queue_transaction) => {
+                TxQueueContents::Tx(queue_transaction, current_span) => {
+                    let _guard = current_span.enter();
                     let tx_hash = queue_transaction.tx_hash;
                     let tx_env = queue_transaction.tx_env;
                     processed_txs += 1;

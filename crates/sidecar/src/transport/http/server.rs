@@ -11,7 +11,11 @@ use crate::{
             Decoder,
             HttpTransactionDecoder,
         },
-        http::transactions_results::QueryTransactionsResults,
+        http::{
+            block_context::BlockContext,
+            tracing_middleware::trace_tx_queue_contents,
+            transactions_results::QueryTransactionsResults,
+        },
     },
 };
 use alloy::rpc::types::error::EthRpcErrorCode;
@@ -181,6 +185,8 @@ pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
+    /// Block context for tracing
+    block_context: BlockContext,
 }
 
 impl ServerState {
@@ -188,11 +194,13 @@ impl ServerState {
         has_blockenv: Arc<AtomicBool>,
         tx_sender: TransactionQueueSender,
         transactions_results: QueryTransactionsResults,
+        block_context: BlockContext,
     ) -> Self {
         Self {
             has_blockenv,
             tx_sender,
             transactions_results,
+            block_context,
         }
     }
 }
@@ -301,6 +309,7 @@ async fn process_request(
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
+        trace_tx_queue_contents(&state.block_context, &queue_tx);
         state.transactions_results.add_accepted_tx(&queue_tx);
         if let Err(e) = state.tx_sender.send(queue_tx) {
             error!(
