@@ -222,7 +222,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         #[cfg(feature = "linea")]
-        if check_recepient_address(tx_env).is_none() {
+        if check_recepient_address(&tx_env).is_none() {
             // if `None`, we can just skip this transaction as it failed
             // linea execution requirements
             return Ok(());
@@ -487,7 +487,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     );
 
                     // Process the transaction with the current block environment
-                    self.execute_transaction(tx_hash, &tx_env)?;
+                    self.execute_transaction(tx_hash, tx_env)?;
                 }
             }
 
@@ -677,7 +677,7 @@ mod tests {
         engine.block_env = Some(block_env);
 
         // Execute the transaction
-        let result = engine.execute_transaction(tx_hash, &tx_env.clone());
+        let result = engine.execute_transaction(tx_hash, tx_env.clone());
         assert!(result.is_ok(), "Transaction should execute successfully");
 
         // Verify the caller's account state was updated
@@ -785,7 +785,7 @@ mod tests {
         let tx_hash = B256::from([0x44; 32]);
 
         // Execute transaction without block environment
-        let result = engine.execute_transaction(tx_hash, &tx_env.clone());
+        let result = engine.execute_transaction(tx_hash, tx_env.clone());
 
         assert!(
             result.is_err(),
