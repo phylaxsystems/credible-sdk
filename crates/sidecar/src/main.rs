@@ -43,6 +43,7 @@ use crate::{
         HttpTransport,
         config::HttpTransportConfig,
     },
+    utils::ErrorRecoverability,
 };
 use args::SidecarArgs;
 
@@ -67,7 +68,6 @@ async fn main() -> anyhow::Result<()> {
     let assertion_store = init_assertion_store(&args)?;
     let assertion_executor =
         AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
-    let indexer_cfg = init_indexer_config(&args, assertion_store, executor_config).await?;
 
     let engine_state_results = TransactionsState::new();
     let transport = HttpTransport::new(
@@ -85,28 +85,51 @@ async fn main() -> anyhow::Result<()> {
         args.credible.transaction_results_max_capacity,
     );
 
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Received Ctrl+C, shutting down...");
-        }
-        result = engine.run() => {
-            if let Err(e) = result {
-                tracing::error!("Engine exited with error: {}", e);
+    loop {
+        let indexer_cfg =
+            init_indexer_config(&args, assertion_store.clone(), &executor_config).await?;
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Received Ctrl+C, shutting down...");
+                break;
             }
-            tracing::info!("Engine run completed, shutting down...");
-        }
-        result = transport.run() => {
-            if let Err(e) = result {
-                tracing::error!("Transport exited with error: {}", e);
+            result = engine.run() => {
+                let Err(e) = result else {
+                    continue;
+                };
+
+                if ErrorRecoverability::from(&e).is_recoverable() {
+                    tracing::error!(error = %e, "Engine exited");
+                } else {
+                    critical!(error = %e, "Engine exited");
+                }
             }
-            tracing::info!("Engine run completed, shutting down...");
-        }
-        result = indexer::run_indexer(indexer_cfg) => {
-            if let Err(e) = result {
-                tracing::error!("Indexer exited with error: {}", e);
+            result = transport.run() => {
+                let Err(e) = result else {
+                    continue;
+                };
+
+                if ErrorRecoverability::from(&e).is_recoverable() {
+                    tracing::error!(error = %e, "Transport exited");
+                } else {
+                    critical!(error = %e, "Transport exited");
+                }
             }
-            tracing::info!("Indexer exited, shutting down...");
+            result = indexer::run_indexer(indexer_cfg) => {
+                let Err(e) = result else {
+                    continue;
+                };
+
+                if ErrorRecoverability::from(&e).is_recoverable() {
+                    tracing::error!(error = %e, "Indexer exited");
+                } else {
+                    critical!(error = %e, "Indexer exited");
+                }
+            }
         }
+
+        tracing::warn!("Sidecar restarted.");
     }
 
     tracing::info!("Sidecar shutdown complete.");

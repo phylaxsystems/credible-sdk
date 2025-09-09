@@ -2,6 +2,7 @@
 //!
 //! Contains setup functions and types to initialize the assertion-executor indexer.
 
+use crate::utils::ErrorRecoverability;
 use assertion_executor::store::{
     Indexer,
     IndexerCfg,
@@ -22,4 +23,28 @@ pub async fn run_indexer(indexer_cfg: IndexerCfg) -> Result<(), IndexerError> {
     // We can then run the indexer and update the assertion store as new
     // assertions come in
     indexer.run().await
+}
+
+impl From<&IndexerError> for ErrorRecoverability {
+    fn from(e: &IndexerError) -> Self {
+        match e {
+            IndexerError::TransportError(_)
+            | IndexerError::SledError(_)
+            | IndexerError::DaClientError(_)
+            | IndexerError::BlockStreamError(_)
+            | IndexerError::AssertionStoreError(_) => ErrorRecoverability::Unrecoverable,
+            IndexerError::BincodeError(_)
+            | IndexerError::EventDecodeError(_)
+            | IndexerError::BlockNumberMissing
+            | IndexerError::LogIndexMissing
+            | IndexerError::BlockNumberExceedsU64
+            | IndexerError::DaBytecodeDecodingFailed(_)
+            | IndexerError::ParentBlockNotFound
+            | IndexerError::BlockHashMissing
+            | IndexerError::NoCommonAncestor
+            | IndexerError::ExecutionLogsRxNone
+            | IndexerError::CheckIfReorgedError(_)
+            | IndexerError::StoreNotSynced => ErrorRecoverability::Recoverable,
+        }
+    }
 }

@@ -8,6 +8,7 @@
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod instance;
+pub(crate) mod macros;
 #[cfg(test)]
 #[allow(dead_code)]
 pub mod test_drivers;
@@ -22,3 +23,17 @@ pub use test_util::{
 
 #[cfg(test)]
 pub use crate::utils::instance::LocalInstance;
+
+pub enum ErrorRecoverability {
+    Recoverable,
+    Unrecoverable,
+}
+
+impl ErrorRecoverability {
+    pub fn is_recoverable(&self) -> bool {
+        match self {
+            ErrorRecoverability::Recoverable => true,
+            ErrorRecoverability::Unrecoverable => false,
+        }
+    }
+}
