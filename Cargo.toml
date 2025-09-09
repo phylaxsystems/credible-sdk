@@ -127,6 +127,11 @@ url = "2.5.4"
 criterion = { version = "0.5.1" }
 evm-glue = { git = "https://git@github.com/Philogy/evm-glue.git", rev = "6be3e8c89a7d193b591ca0415ec2a48b1540c01e" }
 
+[patch."https://github.com/phylaxsystems/credible-sdk.git"]
+assertion-executor = { path = "crates/assertion-executor" }
+assertion-da-client = { path = "crates/assertion-da/da-client" }
+assertion-da-core = { path = "crates/assertion-da/da-core" }
+
 
 # Maxperf profile for absolute maximum performance
 # Only use for builds that are going to get used by end users
