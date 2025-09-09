@@ -295,7 +295,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             "Transaction processed"
         );
 
-        self.block_metrics.transactions_simulated_total += 1;
+        self.block_metrics.transactions_simulated += 1;
 
         if is_valid {
             // Transaction valid, passed assertions, commit state for successful transactions
@@ -319,11 +319,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     "Commiting state of successful tx"
                 );
                 self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
-                self.block_metrics.transactions_simulated_success_total += 1;
+                self.block_metrics.transactions_simulated_success += 1;
 
                 self.state.commit(rax.result_and_state.state);
             } else {
-                self.block_metrics.transactions_simulated_failure_total += 1;
+                self.block_metrics.transactions_simulated_failure += 1;
             }
         } else {
             warn!(
@@ -339,7 +339,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 "Transaction validation details"
             );
 
-            self.block_metrics.invalidated_transactions_total += 1;
+            self.block_metrics.invalidated_transactions += 1;
         }
 
         // Store the transaction result
@@ -463,7 +463,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     let tx_hash = queue_transaction.tx_hash;
                     let tx_env = queue_transaction.tx_env;
                     processed_txs += 1;
-                    self.block_metrics.transactions_considered_total += 1;
+                    self.block_metrics.transactions_considered += 1;
 
                     if self.block_env.is_none() {
                         error!(
