@@ -453,8 +453,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
                     self.block_metrics.block_processing_duration = block_processing_time.elapsed();
                     self.block_metrics.current_height = block_env.number;
+                    // Commit all values inside of `block_metrics` to prometheus collector
                     self.block_metrics.commit();
-                    self.block_metrics = BlockMetrics::new();
+                    // Reset the values inside to their defaults
+                    self.block_metrics.reset();
                     block_processing_time = std::time::Instant::now();
 
                     self.block_env = Some(block_env);

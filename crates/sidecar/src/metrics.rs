@@ -1,6 +1,6 @@
 //! Prometheus `metrics`
 //!
-//! Contains data types for containing metrics before sending them to the 
+//! Contains data types for containing metrics before sending them to the
 //! global prometheus server spawned in `main.rs`
 //!
 //! The prometheus exporter lives by default at `0.0.0.0:9000`.
@@ -18,26 +18,48 @@ use metrics::{
 /// Will commit metrics when dropped.
 #[derive(Clone, Debug, Default)]
 pub struct BlockMetrics {
-    /// Entire duration from blockenv to blockenv
+    /// Duration elapsed from receving one blockenv to a new one.
+    /// Does not necessarily equate to how much active time was spent
+    /// working on transactions.
+    ///
+    /// Commited as a `Histogram`.
     pub block_processing_duration: std::time::Duration,
     /// How many transactions the engine has seen
+    ///
+    /// Commited as a `Gauge`.
     pub transactions_considered: u64,
     /// How many txs were executed
+    ///
+    /// Commited as a `Gauge`.
     pub transactions_simulated: u64,
     /// How many transactions we have executed successfully
+    ///
+    /// Commited as a `Gauge`.
     pub transactions_simulated_success: u64,
     /// How many transactions we have executed unsuccessfully
+    ///
+    /// Commited as a `Gauge`.
     pub transactions_simulated_failure: u64,
     /// How many transactions we have executed successfully,
     /// which ended up invalidating assertions
+    ///
+    /// Commited as a `Gauge`.
     pub invalidated_transactions: u64,
     /// How much gas was used in a block
+    ///
+    /// Commited as a `Gauge`.
     pub block_gas_used: u64,
     /// How many assertions we have executed in the block
+    ///
+    /// Commited as a `Gauge`.
     pub assertions_per_block: u64,
     /// How much assertion gas we executed in a block
+    ///
+    /// Commited as a `Gauge`.
     pub assertion_gas_per_block: u64,
     /// Current block height
+    ///
+    /// Commited as a `Gauge`.
     pub current_height: u64,
 }
 
@@ -53,15 +75,27 @@ impl BlockMetrics {
         histogram!("block_processing_duration_seconds").record(self.block_processing_duration);
         gauge!("transactions_considered").set(self.transactions_considered as f64);
         gauge!("transactions_simulated").set(self.transactions_simulated as f64);
-        gauge!("transactions_simulated_success")
-            .set(self.transactions_simulated_success as f64);
-        gauge!("transactions_simulated_failure")
-            .set(self.transactions_simulated_failure as f64);
+        gauge!("transactions_simulated_success").set(self.transactions_simulated_success as f64);
+        gauge!("transactions_simulated_failure").set(self.transactions_simulated_failure as f64);
         gauge!("invalidated_transactions").set(self.invalidated_transactions as f64);
         gauge!("block_gas_used").set(self.block_gas_used as f64);
         gauge!("assertions_per_block").set(self.assertions_per_block as f64);
         gauge!("assertion_gas_per_block").set(self.assertion_gas_per_block as f64);
         gauge!("current_height").set(self.current_height as f64);
+    }
+
+    /// Resets all values inside of `&mut Self` back to their defaults
+    pub fn reset(&mut self) {
+        self.block_processing_duration = std::time::Duration::default();
+        self.transactions_considered = 0;
+        self.transactions_simulated = 0;
+        self.transactions_simulated_success = 0;
+        self.transactions_simulated_failure = 0;
+        self.invalidated_transactions = 0;
+        self.block_gas_used = 0;
+        self.assertions_per_block = 0;
+        self.assertion_gas_per_block = 0;
+        self.current_height = 0;
     }
 }
 
