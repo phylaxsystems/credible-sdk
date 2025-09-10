@@ -39,13 +39,13 @@ assertion-da-server = { path = "crates/assertion-da/da-server" }
 int-test-utils = { path = "crates/int-test-utils" }
 
 # assertion-executor
-assertion-executor = { path = "crates/assertion-executor",  default-features = false }
+assertion-executor = { path = "crates/assertion-executor", default-features = false }
 
 anyhow = "1.0.86"
 clap = { version = "4.5.11", features = ["derive", "env"] }
 dashmap = "6.1.0"
 futures = "0.3.30"
-reqwest = { version = "0.12.5", features = ["json"] }
+reqwest = { version = "0.12.5", features = ["json", "rustls-tls"] }
 serde = "1.0.204"
 serde_json = "1.0.121"
 tokio = { version = "1.39.2", features = ["full"] }

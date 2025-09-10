@@ -4,9 +4,19 @@ build:
 build-contracts:
 	forge build --root testdata/mock-protocol 
 
-# Run the rust tests
-test:
-	cargo nextest run --all-features --workspace --locked  --cargo-profile release --no-tests=warn
+# Run the rust tests for linea
+test-linea: build-contracts
+	cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features linea --features test
+
+# Run the rust tests for optimism
+test-optimism: build-contracts
+	cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features optimism --features test
+
+# Run the rust tests for default evm
+test-default: build-contracts
+	cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features test
+
+make test: test-linea test-optimism test-default
 
 # Run tests without full tests (skips Docker-dependent tests and integration tests)
 test-no-full:
@@ -18,11 +28,11 @@ format:
 
 # Errors if there is a warning with clippy
 lint:
-	cargo +nightly clippy --all-targets --workspace   --profile dev -- -D warnings
+	cargo +nightly clippy --all-targets --workspace   --profile dev -- -D warnings -D clippy::pedantic
 
 # Fix linting errors
 lint-fix:
-	cargo +nightly clippy --all-targets --workspace   --profile dev --fix 
+	cargo +nightly clippy --all-targets --workspace   --profile dev --fix -- -D clippy::pedantic
 
 # Can be used as a manual pre-commit check
 pre-commit:

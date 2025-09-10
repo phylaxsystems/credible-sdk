@@ -49,6 +49,11 @@ use args::SidecarArgs;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize the rustls CryptoProvider for HTTPS support
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     trace();
 
     let args = SidecarArgs::parse();
