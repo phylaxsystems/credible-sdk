@@ -48,6 +48,11 @@ impl TransactionsResults {
         self.transactions.push_back(tx_hash);
     }
 
+    pub fn remove_transaction_result(&mut self, tx_hash: TxHash) {
+        self.transactions_state
+            .remove_transaction_result(&tx_hash);
+    }
+
     #[cfg(test)]
     pub fn get_transaction_result(
         &self,

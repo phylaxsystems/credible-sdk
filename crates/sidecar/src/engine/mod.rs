@@ -231,9 +231,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let mut tx_metrics = TransactionMetrics::new(tx_hash);
         let instant = std::time::Instant::now();
 
-        // Apply the previously executed transaction state changes
-        self.apply_state_buffer();
-
         let mut fork_db = self.state.fork();
         let block_env = self.block_env.as_ref().ok_or_else(|| {
             error!("No block environment set for transaction execution");
@@ -521,6 +518,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         "Processing transaction"
                     );
 
+                    // Apply the previously executed transaction state changes
+                    self.apply_state_buffer();
+
                     // Process the transaction with the current block environment
                     self.execute_transaction(tx_hash, &tx_env)?;
                 }
@@ -564,25 +564,28 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// an acceptable solution.
     // TODO: when we star receiving tx bundles this should be expanded such
     // that we can go `n` transactions deep inside of a block.
-    fn execute_reorg(&mut self, hash: B256) -> Result<(), EngineError> {
+    fn execute_reorg(&mut self, tx_hash: B256) -> Result<(), EngineError> {
         trace!(
             target = "engine",
-            tx_hash = %hash,
+            tx_hash = %tx_hash,
             "Checking reorg validity for hash"
         );
 
         // Check if we have received a transaction at all
         if let Some(tx_params) = &self.last_executed_tx {
             let last_hash = tx_params.0;
-            if hash == last_hash {
+            if tx_hash == last_hash {
                 info!(
                     target = "engine",
-                    tx_hash = %hash,
+                    tx_hash = %tx_hash,
                     "Executing reorg for hash"
                 );
 
                 // Clear state buffer if the tx's match
                 self.last_executed_tx = None;
+
+                // Remove transaction from results
+                self.transaction_results.remove_transaction_result(tx_hash);
                 return Ok(());
             }
         }
