@@ -237,7 +237,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let instant = std::time::Instant::now();
 
         // Apply the previously executed transaction state changes
-        self.apply_state_buffer()?;
+        self.apply_state_buffer();
 
         let mut fork_db = self.state.fork();
         let block_env = self.block_env.as_ref().ok_or_else(|| {
