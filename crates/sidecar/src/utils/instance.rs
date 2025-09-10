@@ -364,6 +364,9 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Check if transaction was successful and valid
+    // TODO: we check only how the transaction was noted, but not the underlying state changes
+    // We cover this in core engine state tests, but it would be nice if we could pull it off
+    // here too.
     pub fn is_transaction_successful(&self, tx_hash: &B256) -> Result<bool, String> {
         match self.get_transaction_result(tx_hash) {
             Some(TransactionResult::ValidationCompleted {

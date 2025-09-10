@@ -66,6 +66,7 @@ use assertion_executor::{
         AssertionStoreError,
     },
 };
+use revm::state::EvmState;
 
 use crate::{
     cache::Cache,
@@ -97,6 +98,9 @@ use tracing::{
     warn,
 };
 
+/// Contains the last executed transaction hash and resulting state.
+type LastExecutedTx = Option<(B256, EvmState)>;
+
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum EngineError {
     #[error("Database error")]
@@ -109,14 +113,16 @@ pub enum EngineError {
     ChannelClosed,
     #[error("Get transaction result oneshot channel closed")]
     GetTxResultChannelClosed,
+    #[error("Hash supplied by the reorg event does not match the last executed transaction")]
+    BadReorgHash,
 }
 
 impl From<&EngineError> for ErrorRecoverability {
     fn from(e: &EngineError) -> Self {
         match e {
-            EngineError::DatabaseError | EngineError::AssertionError => {
-                ErrorRecoverability::Unrecoverable
-            }
+            EngineError::DatabaseError
+            | EngineError::AssertionError
+            | EngineError::BadReorgHash => ErrorRecoverability::Unrecoverable,
             EngineError::TransactionError
             | EngineError::ChannelClosed
             | EngineError::GetTxResultChannelClosed => ErrorRecoverability::Recoverable,
@@ -148,6 +154,7 @@ pub struct CoreEngine<DB> {
     block_env: Option<BlockEnv>,
     transaction_results: TransactionsResults,
     block_metrics: BlockMetrics,
+    last_executed_tx: LastExecutedTx,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -171,6 +178,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 transaction_results_max_capacity,
             ),
             block_metrics: BlockMetrics::new(),
+            last_executed_tx: None,
         }
     }
 
@@ -192,6 +200,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             cache: Arc::new(Cache::new(vec![])),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
             block_metrics: BlockMetrics::new(),
+            last_executed_tx: None,
         }
     }
 
@@ -330,12 +339,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 trace!(
                     target = "engine",
                     tx_hash = %tx_hash,
-                    "Commiting state of successful tx"
+                    "Commiting state of successful tx to buffer"
                 );
                 self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
                 self.block_metrics.transactions_simulated_success += 1;
 
-                self.state.commit(rax.result_and_state.state);
+                self.last_executed_tx = Some((tx_hash, rax.result_and_state.state));
             } else {
                 self.block_metrics.transactions_simulated_failure += 1;
             }
@@ -442,6 +451,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             match event {
                 TxQueueContents::Block(block_env, current_span) => {
                     let _guard = current_span.enter();
+
+                    // Apply the previously executed transaction state changes
+                    self.apply_state_buffer();
+
                     processed_blocks += 1;
                     info!(
                         target = "engine",
@@ -478,6 +491,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 }
                 TxQueueContents::Tx(queue_transaction, current_span) => {
                     let _guard = current_span.enter();
+
                     let tx_hash = queue_transaction.tx_hash;
                     let tx_env = queue_transaction.tx_env;
                     processed_txs += 1;
@@ -504,10 +518,16 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         "Processing transaction"
                     );
 
+                    // Apply the previously executed transaction state changes
+                    self.apply_state_buffer();
+
                     // Process the transaction with the current block environment
                     self.execute_transaction(tx_hash, &tx_env)?;
                 }
-                TxQueueContents::Reorg(_, _) => unimplemented!(),
+                TxQueueContents::Reorg(hash, current_span) => {
+                    let _guard = current_span.enter();
+                    self.execute_reorg(hash)?;
+                }
             }
 
             if processed_blocks > 0 && processed_blocks.is_multiple_of(100) {
@@ -520,6 +540,59 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 );
             }
         }
+    }
+
+    /// Applies the state inside of `self.last_executed_tx` to `self.state`.
+    ///
+    /// If `self.last_executed_tx` is `None`, we dont do anything.
+    fn apply_state_buffer(&mut self) {
+        if let Some(last_executed_tx) = &self.last_executed_tx {
+            let changes = last_executed_tx.1.clone();
+            self.state.commit(changes);
+        }
+        self.last_executed_tx = None;
+    }
+
+    /// Processes a reorg event. Checks if the hash of the last executed tx
+    /// matches the hash supplied by the reorg event.
+    /// If yes, we throw out the last executed tx buffer. If not, we throw
+    /// an error.
+    ///
+    /// This function is needed because we don't know if a transaction was
+    /// fully included in a block because a besu plugin might unselect it.
+    /// Because we are receiving transactions one-by-one for now, this is
+    /// an acceptable solution.
+    // TODO: when we star receiving tx bundles this should be expanded such
+    // that we can go `n` transactions deep inside of a block.
+    fn execute_reorg(&mut self, tx_hash: B256) -> Result<(), EngineError> {
+        trace!(
+            target = "engine",
+            tx_hash = %tx_hash,
+            "Checking reorg validity for hash"
+        );
+
+        // Check if we have received a transaction at all
+        if let Some(tx_params) = &self.last_executed_tx {
+            let last_hash = tx_params.0;
+            if tx_hash == last_hash {
+                info!(
+                    target = "engine",
+                    tx_hash = %tx_hash,
+                    "Executing reorg for hash"
+                );
+
+                // Clear state buffer if the tx's match
+                self.last_executed_tx = None;
+
+                // Remove transaction from results
+                self.transaction_results.remove_transaction_result(tx_hash);
+                return Ok(());
+            }
+        }
+
+        // If we received a reorg event before executing a tx,
+        // or if the tx hashes dont match something bad happened and we need to exit
+        Err(EngineError::BadReorgHash)
     }
 }
 
@@ -698,6 +771,8 @@ mod tests {
         // Execute the transaction
         let result = engine.execute_transaction(tx_hash, &tx_env);
         assert!(result.is_ok(), "Transaction should execute successfully");
+        // We now need to advance the state by one block so we commit the transaction state
+        engine.apply_state_buffer();
 
         // Verify the caller's account state was updated
         let caller_account = engine
