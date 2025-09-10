@@ -806,9 +806,7 @@ mod tests {
 
         // Send reorg and unwrap on the result, verifying if the core engine
         // processed tx or exited with error
-        if instance.send_reorg(B256::random()).await.is_ok() {
-            panic!("not an error, core engine should have exited!")
-        };
+        assert!(!instance.send_reorg(B256::random()).await.is_ok(), "not an error, core engine should have exited!");
     }
 
     #[test]
