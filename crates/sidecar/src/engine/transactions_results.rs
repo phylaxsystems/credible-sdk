@@ -49,8 +49,7 @@ impl TransactionsResults {
     }
 
     pub fn remove_transaction_result(&mut self, tx_hash: TxHash) {
-        self.transactions_state
-            .remove_transaction_result(&tx_hash);
+        self.transactions_state.remove_transaction_result(&tx_hash);
     }
 
     #[cfg(test)]
