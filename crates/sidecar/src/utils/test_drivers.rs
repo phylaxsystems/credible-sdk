@@ -540,7 +540,7 @@ impl TestTransport for LocalInstanceHttpDriver {
         let request = json!({
           "id": 1,
           "jsonrpc": "2.0",
-          "method": "revertTx",
+          "method": "reorg",
           "params": {
             "removedTxHash": tx_hash,
           }
