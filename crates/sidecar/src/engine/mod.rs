@@ -550,6 +550,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             let changes = last_executed_tx.1.clone();
             self.state.commit(changes);
         }
+        self.last_executed_tx = None;
 
         Ok(())
     }
