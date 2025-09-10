@@ -237,6 +237,13 @@ impl TestTransport for LocalInstanceMockDriver {
             .send(TxQueueContents::Tx(queue_tx, Span::current()))
             .map_err(|e| format!("Failed to send transaction: {e}"))
     }
+
+    async fn reorg(&self, tx_hash: B256) -> Result<(), String> {
+        info!(target: "test_transport", "LocalInstance sending reorg for: {:?}", tx_hash);
+        self.mock_sender
+            .send(TxQueueContents::Reorg(tx_hash, Span::current()))
+            .map_err(|e| format!("Failed to send transaction: {e}"))
+    }
 }
 
 #[derive(Debug)]
@@ -500,5 +507,9 @@ impl TestTransport for LocalInstanceHttpDriver {
         Err(format!(
             "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
         ))
+    }
+
+    async fn reorg(&self, _tx_hash: B256) -> Result<(), String> {
+        unimplemented!()
     }
 }

@@ -507,6 +507,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     // Process the transaction with the current block environment
                     self.execute_transaction(tx_hash, &tx_env)?;
                 }
+                TxQueueContents::Reorg(_, _) => unimplemented!(),
             }
 
             if processed_blocks > 0 && processed_blocks.is_multiple_of(100) {
