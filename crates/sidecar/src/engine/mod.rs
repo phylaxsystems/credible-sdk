@@ -790,6 +790,27 @@ mod tests {
         instance.send_reorg(tx_hash).await.unwrap();
     }
 
+    #[crate::utils::engine_test(all)]
+    async fn test_core_engine_reorg_bad_tx(mut instance: crate::utils::LocalInstance) {
+        // Send and verify a successful CREATE transaction
+        let tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Verify transaction was successful
+        assert!(
+            instance.is_transaction_successful(&tx_hash).unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
+
+        // Send reorg and unwrap on the result, verifying if the core engine
+        // processed tx or exited with error
+        if instance.send_reorg(B256::random()).await.is_ok() {
+            panic!("not an error, core engine should have exited!")
+        };
+    }
+
     #[test]
     fn test_database_commit_verification() {
         use revm::primitives::address;
