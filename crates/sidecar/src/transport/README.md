@@ -183,15 +183,15 @@ The `transact_to` can be null, `0x`, "" or missing if the transaction is a contr
 }
 ```
 
-### `revertTx`
+### `reorg`
 
-Revert the last sent transaction. Hash of the last sent transaction must be the same as `removedTxHash`.
+Reorg the last sent transaction. Hash of the last sent transaction must be the same as `removedTxHash`.
 
 ```
 {
   "id": 1,
   "jsonrpc": "2.0",
-  "method": "revertTx",
+  "method": "reorg",
   "params": {
     "removedTxHash": "0x...", // Hash of the tx to remove
   }

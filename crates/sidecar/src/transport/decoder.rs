@@ -14,7 +14,7 @@ use crate::{
     transport::http::server::{
         JsonRpcRequest,
         METHOD_BLOCK_ENV,
-        METHOD_REVERT_TX,
+        METHOD_REORG,
         METHOD_SEND_TRANSACTIONS,
         SendTransactionsParams,
         TransactionEnv,
@@ -165,7 +165,7 @@ impl Decoder for HttpTransactionDecoder {
                 let current_span = tracing::Span::current();
                 Ok(vec![TxQueueContents::Block(block, current_span)])
             }
-            METHOD_REVERT_TX => {
+            METHOD_REORG => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
                 let hash = params
                     .get("removedTxHash")
