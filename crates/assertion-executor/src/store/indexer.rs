@@ -92,6 +92,7 @@ sol! {
 /// #[tokio::main]
 /// async fn main() {
 ///    let state_oracle = Address::new([0; 20]);
+///    let state_oracle_deployment_block = 0;
 ///    let db = Config::tmp().unwrap().open().unwrap();
 ///    let store = AssertionStore::new_ephemeral().unwrap();
 ///    let da_client = DaClient::new(&format!("http://127.0.0.1:0000")).unwrap();
@@ -111,6 +112,7 @@ sol! {
 ///         store,
 ///         da_client,
 ///         state_oracle,
+///         state_oracle_deployment_block,
 ///         executor_config: ExecutorConfig::default(),
 ///         await_tag: BlockTag::Latest,
 ///    };
@@ -132,6 +134,8 @@ pub struct Indexer {
     da_client: DaClient,
     /// The State Oracle contract address
     state_oracle: Address,
+    /// The State Oracle deployment block
+    state_oracle_deployment_block: u64,
     /// The executor configuration for extracting the assertion contract
     executor_config: ExecutorConfig,
     /// Whether the indexer is synced to the latest block
@@ -209,6 +213,8 @@ type IndexerResult<T = ()> = std::result::Result<T, IndexerError>;
 pub struct IndexerCfg {
     /// The State Oracle contract address
     pub state_oracle: Address,
+    /// The State Oracle deployment block
+    pub state_oracle_deployment_block: u64,
     /// The DA Client
     pub da_client: DaClient,
     /// The Executor configuration
@@ -234,6 +240,7 @@ impl Indexer {
             store,
             da_client,
             state_oracle,
+            state_oracle_deployment_block,
             executor_config,
             await_tag,
         } = cfg;
@@ -244,6 +251,7 @@ impl Indexer {
             store,
             da_client,
             state_oracle,
+            state_oracle_deployment_block,
             executor_config,
             is_synced: false,
             await_tag,
@@ -463,7 +471,7 @@ impl Indexer {
                 from = last_indexed_block_num_hash.number + 1;
             }
         } else {
-            from = 0;
+            from = self.state_oracle_deployment_block;
         }
 
         let update_block_number = update_block.block_number;
@@ -803,6 +811,7 @@ mod test_indexer {
 
         let indexer = Indexer::new(IndexerCfg {
             state_oracle: Address::random(),
+            state_oracle_deployment_block: 0,
             da_client,
             executor_config: ExecutorConfig::default(),
             store,

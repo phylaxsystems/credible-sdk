@@ -32,24 +32,24 @@ pub struct ChainArgs {
     /// chain block time in milliseconds
     #[arg(
         long = "chain.block-time",
-        default_value = "1000",
-        env = "CHAIN_BLOCK_TIME"
+        env = "CHAIN_BLOCK_TIME",
+        default_value = "1000"
     )]
     pub block_time: u64,
 
     /// How much time extra to wait for the block building job to complete and not get garbage collected
     #[arg(
         long = "chain.extra-block-deadline-secs",
-        default_value = "20",
-        env = "CHAIN_EXTRA_BLOCK_DEADLINE_SECS"
+        env = "CHAIN_EXTRA_BLOCK_DEADLINE_SECS",
+        default_value = "20"
     )]
     pub extra_block_deadline_secs: u64,
 
     /// What EVM specification to use. Only latest for now
     #[arg(
         long = "chain.spec-id",
-        default_value = "latest",
         env = "CHAIN_SPEC_ID",
+        default_value = "latest",
         value_enum
     )]
     pub spec_id: SpecIdArg,
@@ -61,8 +61,8 @@ pub struct ChainArgs {
     /// RPC node URL and port
     #[arg(
         long = "chain.rpc-url",
-        default_value = "http://127.0.0.1:8545",
-        env = "CHAIN_RPC_URL"
+        env = "CHAIN_RPC_URL",
+        default_value = "http://127.0.0.1:8545"
     )]
     pub rpc_url: String,
 }
@@ -85,80 +85,80 @@ pub struct CredibleArgs {
     /// Soft timeout for credible block building in milliseconds
     #[arg(
         long = "credible.soft-timeout-ms",
-        default_value = "650",
-        env = "CREDIBLE_SOFT_TIMEOUT_MS"
+        env = "CREDIBLE_SOFT_TIMEOUT_MS",
+        default_value = "650"
     )]
     pub soft_timeout_ms: u64,
 
     /// Gas limit for assertion execution
     #[arg(
         long = "credible.assertion-gas-limit",
-        default_value = "3000000",
-        env = "CREDIBLE_ASSERTION_GAS_LIMIT"
+        env = "CREDIBLE_ASSERTION_GAS_LIMIT",
+        default_value = "3000000"
     )]
     pub assertion_gas_limit: u64,
 
     /// Overlay cache capacity, 1gb default
     #[arg(
         long = "credible.overlay-cache-capacity-bytes",
-        default_value = "1024000000",
-        env = "CREDIBLE_OVERLAY_CACHE_CAPACITY_BYTES"
+        env = "CREDIBLE_OVERLAY_CACHE_CAPACITY_BYTES",
+        default_value = "1024000000"
     )]
     pub overlay_cache_capacity_bytes: Option<usize>,
 
     /// Path to the `assertion-executor` database.
     #[arg(
         long = "credible.assertion-executor-db-path",
-        default_value = "ae_database",
-        env = "CREDIBLE_ASSERTION_EXECUTOR_DB_PATH"
+        env = "CREDIBLE_ASSERTION_EXECUTOR_DB_PATH",
+        default_value = "ae_database"
     )]
     pub assertion_executor_db_path: PathBuf,
 
     /// Sled cache capacity, used in the `FsDb`, 256mb default
     #[arg(
         long = "credible.cache-capacity-bytes",
-        default_value = "256000000",
-        env = "CREDIBLE_CACHE_CAPACITY_BYTES"
+        env = "CREDIBLE_CACHE_CAPACITY_BYTES",
+        default_value = "256000000"
     )]
     pub cache_capacity_bytes: Option<usize>,
 
     /// How often in ms will the `FsDb` be flushed to disk, 5 sec default
     #[arg(
         long = "credible.flush-every-ms",
-        default_value = "5000",
-        env = "CREDIBLE_FLUSH_EVERY_MS"
+        env = "CREDIBLE_FLUSH_EVERY_MS",
+        default_value = "5000"
     )]
     pub flush_every_ms: Option<usize>,
 
     /// `FsDb` compression level, default to 3
     #[arg(
         long = "credible.zstd-compression-level",
-        default_value = "3",
-        env = "CREDIBLE_ZSTD_COMPRESSION_LEVEL"
+        env = "CREDIBLE_ZSTD_COMPRESSION_LEVEL",
+        default_value = "3"
     )]
     pub zstd_compression_level: Option<i32>,
 
     /// WS URL the RPC store will use to index assertions
     #[arg(
         long = "credible.indexer-rpc-url",
-        default_value = "ws://localhost:8546",
-        env = "CREDIBLE_INDEXER_RPC_URL"
+        env = "CREDIBLE_INDEXER_RPC_URL",
+        default_value = "ws://localhost:8546"
     )]
     pub indexer_rpc_url: String,
 
     /// HTTP URL of the assertion DA
     #[arg(
         long = "credible.assertion-da-rpc-url",
-        default_value = "http://localhost:5001",
-        env = "CREDIBLE_ASSERTION_DA_RPC_URL"
+        env = "CREDIBLE_ASSERTION_DA_RPC_URL",
+        default_value = "http://localhost:5001"
     )]
     pub assertion_da_rpc_url: String,
 
     /// Path to the rpc store db
     #[arg(
         long = "credible.assertion-store-db-path",
-        default_value = "assertion_store_database",
-        env = "CREDIBLE_ASSERTION_STORE_DB_PATH"
+        env = "CREDIBLE_ASSERTION_STORE_DB_PATH",
+        default_value = "assertion_store_database"
     )]
     pub assertion_store_db_path: PathBuf,
 
@@ -174,24 +174,31 @@ pub struct CredibleArgs {
     /// Contract address of the state oracle contract, used to query assertion info
     #[arg(
         long = "credible.state-oracle",
-        default_value = DEFAULT_STATE_ORACLE_ADDRESS,
         env = "CREDIBLE_STATE_ORACLE",
-        required = true
+        default_value = DEFAULT_STATE_ORACLE_ADDRESS
     )]
     pub state_oracle: Address,
+
+    /// Block number of the state oracle deployment
+    #[arg(
+        long = "credible.state-oracle-deployment-block",
+        env = "CREDIBLE_STATE_ORACLE_DEPLOYMENT_BLOCK",
+        default_value = "0"
+    )]
+    pub state_oracle_deployment_block: u64,
 
     /// Path to the indexer database (separate from main assertion store)
     #[arg(
         long = "credible.indexer-db-path",
-        default_value = "indexer_database",
-        env = "CREDIBLE_INDEXER_DB_PATH"
+        env = "CREDIBLE_INDEXER_DB_PATH",
+        default_value = "indexer_database"
     )]
     pub indexer_db_path: PathBuf,
 
     #[arg(
         long = "credible.transaction-results-max-capacity",
-        default_value = "1000000",
-        env = "CREDIBLE_TRANSACTION_RESULTS_MAX_CAPACITY"
+        env = "CREDIBLE_TRANSACTION_RESULTS_MAX_CAPACITY",
+        default_value = "1000000"
     )]
     pub transaction_results_max_capacity: usize,
 }
@@ -201,8 +208,8 @@ pub struct HttpTransportArgs {
     /// Server bind address and port
     #[arg(
         long = "transport.bind-addr",
-        default_value = "127.0.0.1:8080",
-        env = "TRANSPORT_BIND_ADDR"
+        env = "TRANSPORT_BIND_ADDR",
+        default_value = "127.0.0.1:8080"
     )]
     pub bind_addr: String,
 }
