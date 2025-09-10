@@ -232,7 +232,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let instant = std::time::Instant::now();
 
         // Apply the previously executed transaction state changes
-        self.apply_state_buffer()?;
+        self.apply_state_buffer();
 
         let mut fork_db = self.state.fork();
         let block_env = self.block_env.as_ref().ok_or_else(|| {
@@ -456,7 +456,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     let _guard = current_span.enter();
 
                     // Apply the previously executed transaction state changes
-                    self.apply_state_buffer()?;
+                    self.apply_state_buffer();
 
                     processed_blocks += 1;
                     info!(
@@ -526,7 +526,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 }
                 TxQueueContents::Reorg(hash, current_span) => {
                     let _guard = current_span.enter();
-                    self.execute_reorg(hash)?
+                    self.execute_reorg(hash)?;
                 }
             }
 
@@ -545,14 +545,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// Applies the state inside of `self.last_executed_tx` to `self.state`.
     ///
     /// If `self.last_executed_tx` is `None`, we dont do anything.
-    fn apply_state_buffer(&mut self) -> Result<(), EngineError> {
+    fn apply_state_buffer(&mut self) {
         if let Some(last_executed_tx) = &self.last_executed_tx {
             let changes = last_executed_tx.1.clone();
             self.state.commit(changes);
         }
         self.last_executed_tx = None;
-
-        Ok(())
     }
 
     /// Processes a reorg event. Checks if the hash of the last executed tx
@@ -771,7 +769,7 @@ mod tests {
         let result = engine.execute_transaction(tx_hash, &tx_env);
         assert!(result.is_ok(), "Transaction should execute successfully");
         // We now need to advance the state by one block so we commit the transaction state
-        engine.apply_state_buffer().unwrap();
+        engine.apply_state_buffer();
 
         // Verify the caller's account state was updated
         let caller_account = engine
