@@ -43,9 +43,9 @@ pub trait TestTransport: Sized {
     /// Creates a `LocalInstance` with a specific transport
     async fn new() -> Result<LocalInstance<Self>, String>;
     /// Advance the core engine block by sending a new blockenv to it
-    async fn new_block(&self, block_number: u64) -> Result<(), String>;
+    async fn new_block(&mut self, block_number: u64) -> Result<(), String>;
     /// Send a transaction to the core engine via the transport
-    async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String>;
+    async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String>;
     /// Send a new transaction reorg event. Removes the last executed transaction.
     /// Transaction hash provided as an argument must match the last executed tx.
     /// If not the call should succeed but the core engine should produce an error.
@@ -74,7 +74,7 @@ pub struct LocalInstance<T: TestTransport> {
     assertion_store: Arc<AssertionStore>,
     /// Transport task handle
     transport_handle: Option<JoinHandle<()>>,
-    /// Engine task handle  
+    /// Engine task handle
     engine_handle: Option<JoinHandle<()>>,
     /// Current block number
     block_number: u64,
@@ -364,9 +364,6 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Check if transaction was successful and valid
-    // TODO: we check only how the transaction was noted, but not the underlying state changes
-    // We cover this in core engine state tests, but it would be nice if we could pull it off
-    // here too.
     pub fn is_transaction_successful(&self, tx_hash: &B256) -> Result<bool, String> {
         match self.get_transaction_result(tx_hash) {
             Some(TransactionResult::ValidationCompleted {

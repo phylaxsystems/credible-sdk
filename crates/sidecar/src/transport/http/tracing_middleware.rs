@@ -43,7 +43,7 @@ pub async fn tracing_middleware(
 pub fn trace_tx_queue_contents(block_context: &BlockContext, tx_queue_contents: &TxQueueContents) {
     match tx_queue_contents {
         // If we receive a block, update the block context
-        TxQueueContents::Block(block, _) => block_context.update(block),
+        TxQueueContents::Block(block, _) => block_context.update(&block.block_env),
         // If we receive a tx, add the tx hash to the current span
         TxQueueContents::Tx(tx, span) => {
             span.record("tx.hash", tx.tx_hash.to_string());
