@@ -13,10 +13,7 @@ dashmap = { workspace = true }
 revm = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-assertion-executor = { workspace = true, default-features = false, features = [
-    "test",
-    "linea",
-] }
+assertion-executor = { workspace = true, default-features = false }
 rust-tracing = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -38,8 +35,9 @@ metrics = { workspace = true }
 
 [features]
 default = ["linea"]
-linea = []
-testing = ["ctor"]
+linea = ["assertion-executor/linea"]
+optimism = ["assertion-executor/optimism"]
+test = ["assertion-executor/test", "ctor"]
 
 [dev-dependencies]
 ctor = "0.5.0"
