@@ -67,18 +67,6 @@ pub struct ChainArgs {
     pub rpc_url: String,
 }
 
-/// Parameters for telemetry configuration
-#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
-pub struct TelemetryArgs {
-    /// Inverted sampling frequency in blocks. 1 - each block, 100 - every 100th block.
-    #[arg(
-        long = "telemetry.sampling-ratio",
-        env = "TELEMETRY_SAMPLING_RATIO",
-        default_value = "100"
-    )]
-    pub sampling_ratio: u64,
-}
-
 /// Parameters for Credible configuration
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct CredibleArgs {
@@ -214,19 +202,28 @@ pub struct HttpTransportArgs {
     pub bind_addr: String,
 }
 
+/// Parameters for telemetry configuration
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
+pub struct TelemetryArgs {
+    /// Inverted sampling frequency in blocks. 1 - each block, 100 - every 100th block.
+    #[arg(
+        long = "telemetry.sampling-ratio",
+        env = "TELEMETRY_SAMPLING_RATIO",
+        default_value = "100"
+    )]
+    pub sampling_ratio: u64,
+}
+
 /// Main sidecar arguments that extend `TelemetryArgs` and `CredibleArgs`
 #[derive(Debug, Clone, PartialEq, Eq, clap::Parser)]
 #[command(name = "sidecar", about = "Credible layer sidecar")]
 pub struct SidecarArgs {
     #[command(flatten)]
-    pub telemetry: TelemetryArgs,
-
+    pub chain: ChainArgs,
     #[command(flatten)]
     pub credible: CredibleArgs,
-
-    #[command(flatten)]
-    pub chain: ChainArgs,
-
     #[command(flatten)]
     pub transport: HttpTransportArgs,
+    #[command(flatten)]
+    pub telemetry: TelemetryArgs,
 }
