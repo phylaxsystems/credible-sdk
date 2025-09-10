@@ -1,7 +1,12 @@
+use super::instance::{
+    LocalInstance,
+    TestTransport,
+};
 use crate::{
     Cache,
     CoreEngine,
     engine::queue::{
+        QueueBlockEnv,
         QueueTransaction,
         TransactionQueueSender,
         TxQueueContents,
@@ -20,6 +25,7 @@ use crate::{
     },
     utils::TestDbError,
 };
+use alloy::primitives::TxHash;
 use assertion_executor::{
     AssertionExecutor,
     ExecutorConfig,
@@ -64,11 +70,6 @@ use tracing::{
     error,
     info,
     warn,
-};
-
-use super::instance::{
-    LocalInstance,
-    TestTransport,
 };
 
 /// Setup test database with common accounts pre-funded
@@ -130,6 +131,8 @@ const HTTP_RETRY_DELAY_MS: u64 = 100;
 pub struct LocalInstanceMockDriver {
     /// Channel for sending transactions and blocks to the mock transport
     mock_sender: TransactionQueueSender,
+    n_transactions: u64,
+    last_tx_hash: Option<TxHash>,
 }
 
 impl TestTransport for LocalInstanceMockDriver {
@@ -206,17 +209,26 @@ impl TestTransport for LocalInstanceMockDriver {
             0,
             LocalInstanceMockDriver {
                 mock_sender: mock_tx,
+                n_transactions: 0,
+                last_tx_hash: None,
             },
         ))
     }
 
-    async fn new_block(&self, block_number: u64) -> Result<(), String> {
+    async fn new_block(&mut self, block_number: u64) -> Result<(), String> {
         info!(target: "test_transport", "LocalInstance sending block: {:?}", block_number);
-        let block_env = BlockEnv {
-            number: block_number,
-            gas_limit: 50_000_000, // Set higher gas limit for assertions
-            ..Default::default()
+        let block_env = QueueBlockEnv {
+            block_env: BlockEnv {
+                number: block_number,
+                gas_limit: 50_000_000, // Set higher gas limit for assertions
+                ..Default::default()
+            },
+            last_tx_hash: self.last_tx_hash,
+            n_transactions: self.n_transactions,
         };
+
+        self.n_transactions = 0;
+
         // Increment block number for next time we call new_block
 
         let result = self
@@ -230,7 +242,9 @@ impl TestTransport for LocalInstanceMockDriver {
         result
     }
 
-    async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
+    async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
+        self.n_transactions += 1;
+        self.last_tx_hash = Some(tx_hash);
         info!(target: "test_transport", "LocalInstance sending transaction: {:?}", tx_hash);
         let queue_tx = QueueTransaction { tx_hash, tx_env };
         self.mock_sender
@@ -250,6 +264,8 @@ impl TestTransport for LocalInstanceMockDriver {
 pub struct LocalInstanceHttpDriver {
     client: reqwest::Client,
     address: SocketAddr,
+    n_transactions: u64,
+    last_tx_hash: Option<TxHash>,
 }
 
 impl TestTransport for LocalInstanceHttpDriver {
@@ -344,11 +360,13 @@ impl TestTransport for LocalInstanceHttpDriver {
             LocalInstanceHttpDriver {
                 client: reqwest::Client::new(),
                 address,
+                n_transactions: 0,
+                last_tx_hash: None,
             },
         ))
     }
 
-    async fn new_block(&self, block_number: u64) -> Result<(), String> {
+    async fn new_block(&mut self, block_number: u64) -> Result<(), String> {
         info!(target: "LocalInstanceHttpDriver", "LocalInstance sending block: {:?}", block_number);
 
         let blockenv = BlockEnv {
@@ -377,9 +395,14 @@ impl TestTransport for LocalInstanceHttpDriver {
             "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| json!({
                 "excess_blob_gas": blob.excess_blob_gas,
                 "blob_gasprice": blob.blob_gasprice
-            }))
+            })),
+            "n_transactions": self.n_transactions,
+            "last_tx_hash": self.last_tx_hash
           }
         });
+
+        self.n_transactions = 0;
+        self.last_tx_hash = None;
 
         // Retry logic to wait for HTTP server to be ready
         let mut attempts = 0;
@@ -428,8 +451,10 @@ impl TestTransport for LocalInstanceHttpDriver {
         ))
     }
 
-    async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
+    async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
         debug!(target: "LocalInstanceHttpDriver", "Sending transaction: {}", tx_hash);
+        self.n_transactions += 1;
+        self.last_tx_hash = Some(tx_hash);
 
         // Create the transaction structure
         let transaction = Transaction {

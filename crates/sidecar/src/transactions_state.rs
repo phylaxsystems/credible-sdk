@@ -120,6 +120,7 @@ mod tests {
     #![allow(clippy::cast_sign_loss)]
     use super::*;
     use crate::engine::queue::{
+        QueueBlockEnv,
         QueueTransaction,
         TxQueueContents,
     };
@@ -129,12 +130,9 @@ mod tests {
         TxEnv,
     };
     use revm::{
-        context::{
-            BlockEnv,
-            result::{
-                Output,
-                SuccessReason,
-            },
+        context::result::{
+            Output,
+            SuccessReason,
         },
         primitives::alloy_primitives::B256,
     };
@@ -187,7 +185,7 @@ mod tests {
 
     /// Helper function to create a test `TxQueueContents` with block
     fn create_test_block_queue_contents() -> TxQueueContents {
-        TxQueueContents::Block(BlockEnv::default(), Span::current())
+        TxQueueContents::Block(QueueBlockEnv::default(), Span::current())
     }
 
     #[test]

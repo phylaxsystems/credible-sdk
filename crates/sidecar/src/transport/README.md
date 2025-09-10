@@ -69,24 +69,26 @@ Marks the start of a new block and end of the previous. Sends block environment 
   "jsonrpc": "2.0",
   "method": "sendBlockEnv",
   "params": {
-    "blockEnv": {
-      "number": 12345,
-      "beneficiary": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
-      "timestamp": 1692816000,
-      "gas_limit": 30000000,
-      "basefee": 10000000,
-      "difficulty": "0x0",
-      "prevrandao": "0x1234567890abcdef...",
-      "blob_excess_gas_and_price": {
-        "excess_blob_gas": 1000,
-        "blob_gasprice": 2000
-      }
-    }
+    "number": 12345,
+    "beneficiary": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
+    "timestamp": 1692816000,
+    "gas_limit": 30000000,
+    "basefee": 10000000,
+    "difficulty": "0x0",
+    "prevrandao": "0x1234567890abcdef...",
+    "blob_excess_gas_and_price": {
+      "excess_blob_gas": 1000,
+      "blob_gasprice": 2000
+    },
+    "n_transactions": 100,
+    "last_tx_hash": "0x1234567890abcdef..."
   }
 }
 ```
 
 The field `blob_excess_gas_and_price` is only required for specifications Cancun or later.
+If the `n_transactions` is 0, the `last_tx_hash` must be null (or omitted). If the `n_transactions` is > 0,
+the `last_tx_hash` must be present.
 
 **Response:**
 

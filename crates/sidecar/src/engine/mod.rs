@@ -42,6 +42,7 @@ pub mod queue;
 mod transactions_results;
 
 use super::engine::queue::{
+    QueueBlockEnv,
     TransactionQueueReceiver,
     TxQueueContents,
 };
@@ -155,6 +156,7 @@ pub struct CoreEngine<DB> {
     transaction_results: TransactionsResults,
     block_metrics: BlockMetrics,
     last_executed_tx: LastExecutedTx,
+    block_env_transaction_counter: u64,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -179,6 +181,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             ),
             block_metrics: BlockMetrics::new(),
             last_executed_tx: None,
+            block_env_transaction_counter: 0,
         }
     }
 
@@ -201,6 +204,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
             block_metrics: BlockMetrics::new(),
             last_executed_tx: None,
+            block_env_transaction_counter: 0,
         }
     }
 
@@ -228,6 +232,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         level = "debug"
     )]
     fn execute_transaction(&mut self, tx_hash: B256, tx_env: &TxEnv) -> Result<(), EngineError> {
+        self.block_env_transaction_counter += 1;
         let mut tx_metrics = TransactionMetrics::new(tx_hash);
         let instant = std::time::Instant::now();
 
@@ -423,6 +428,31 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             .collect()
     }
 
+    fn check_cache(&mut self, queue_block_env: &QueueBlockEnv) {
+        // If the block env is not +1 from the previous block env, invalidate the cache
+        if let Some(prev_block_env) = self.block_env.as_ref()
+            && prev_block_env.number != queue_block_env.block_env.number - 1
+        {
+            self.state.invalidate_all();
+        }
+
+        // If the last tx hash from the block env is different from the last tx hash from the
+        // queue, invalidate the cache
+        if let Some((prev_tx_hash, _)) = &self.last_executed_tx
+            && Some(prev_tx_hash) != queue_block_env.last_tx_hash.as_ref()
+        {
+            self.state.invalidate_all();
+        }
+
+        // If the number of transactions in the block env is different from the number of
+        // transactions received, invalidate the cache
+        if self.block_env_transaction_counter != queue_block_env.n_transactions {
+            self.state.invalidate_all();
+        }
+
+        self.block_env_transaction_counter = 0;
+    }
+
     /// Run the engine and process transactions and blocks received
     /// via the transaction queue.
     // TODO: fn should probably not be async but we do it because
@@ -449,7 +479,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             };
 
             match event {
-                TxQueueContents::Block(block_env, current_span) => {
+                TxQueueContents::Block(queue_block_env, current_span) => {
+                    let block_env = &queue_block_env.block_env;
                     let _guard = current_span.enter();
 
                     // Apply the previously executed transaction state changes
@@ -471,11 +502,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         "Block details"
                     );
 
-                    if let Some(prev_block_env) = self.block_env.as_ref()
-                        && prev_block_env.number != block_env.number - 1
-                    {
-                        self.state.invalidate_all();
-                    }
+                    self.check_cache(&queue_block_env);
 
                     self.cache.set_block_number(block_env.number);
 
@@ -487,7 +514,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     self.block_metrics.reset();
                     block_processing_time = std::time::Instant::now();
 
-                    self.block_env = Some(block_env);
+                    self.block_env = Some(queue_block_env.block_env);
                 }
                 TxQueueContents::Tx(queue_transaction, current_span) => {
                     let _guard = current_span.enter();

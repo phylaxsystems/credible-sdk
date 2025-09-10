@@ -7,6 +7,7 @@
 
 use crate::{
     engine::queue::{
+        QueueBlockEnv,
         QueueTransaction,
         TxQueueContents,
     },
@@ -20,10 +21,7 @@ use crate::{
 };
 use assertion_executor::primitives::hex;
 use revm::{
-    context::{
-        BlockEnv,
-        TxEnv,
-    },
+    context::TxEnv,
     primitives::{
         Address,
         B256,
@@ -161,7 +159,7 @@ impl Decoder for HttpTransactionDecoder {
             METHOD_SEND_TRANSACTIONS => Self::to_transaction(req),
             METHOD_BLOCK_ENV => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
-                let block = serde_json::from_value::<BlockEnv>(params.clone())
+                let block = serde_json::from_value::<QueueBlockEnv>(params.clone())
                     .map_err(|_| HttpDecoderError::SchemaError)?;
                 let current_span = tracing::Span::current();
                 Ok(vec![TxQueueContents::Block(block, current_span)])
@@ -182,6 +180,7 @@ mod tests {
         Transaction,
         TransactionEnv,
     };
+    use assertion_executor::primitives::BlockEnv;
     use revm::{
         context_interface::block::BlobExcessGasAndPrice,
         primitives::{
@@ -1067,7 +1066,9 @@ mod tests {
                 "gas_limit": 30000000u64,
                 "basefee": 1000000000u64,
                 "difficulty": "0x0",
-                "prevrandao": "0x0000000000000000000000000000000000000000000000000000000000000000"
+                "prevrandao": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "last_tx_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "n_transactions": 1000u64
             },
             "id": 1
         });
@@ -1075,18 +1076,28 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(valid_request).unwrap();
 
         // Test direct deserialization of BlockEnv from params
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_ok(),
             "Should successfully deserialize valid BlockEnv: {:?}",
             block_env_result.err()
         );
 
-        let block_env = block_env_result.unwrap();
+        let queue_block_env = block_env_result.unwrap();
+        let block_env = queue_block_env.block_env;
         assert_eq!(block_env.number, 123456u64);
         assert_eq!(block_env.basefee, 1000000000u64);
         assert_eq!(block_env.gas_limit, 30000000u64);
         assert_eq!(block_env.timestamp, 1234567890u64);
+        assert_eq!(
+            queue_block_env.last_tx_hash,
+            Some(
+                "0x2222222222222222222222222222222222222222222222222222222222222222"
+                    .parse()
+                    .unwrap()
+            )
+        );
+        assert_eq!(queue_block_env.n_transactions, 1000);
     }
 
     #[test]
@@ -1108,13 +1119,13 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(minimal_request).unwrap();
 
         // Test that minimal BlockEnv works
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_ok(),
             "Should successfully deserialize minimal BlockEnv"
         );
 
-        let block_env = block_env_result.unwrap();
+        let block_env = block_env_result.unwrap().block_env;
         assert_eq!(block_env.number, 1u64);
         assert_eq!(block_env.basefee, 0u64);
         assert_eq!(block_env.gas_limit, 0u64);
@@ -1144,13 +1155,14 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(with_blob_request).unwrap();
 
         // Test that blob excess gas is properly deserialized
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_ok(),
             "Should successfully deserialize BlockEnv with blob excess gas"
         );
 
-        let block_env = block_env_result.unwrap();
+        let queue_block_env = block_env_result.unwrap();
+        let block_env = queue_block_env.block_env;
         assert!(
             block_env.blob_excess_gas_and_price.is_some(),
             "blob_excess_gas_and_price should be present"
@@ -1158,6 +1170,8 @@ mod tests {
         let blob_data = block_env.blob_excess_gas_and_price.unwrap();
         assert_eq!(blob_data.excess_blob_gas, 1000u64);
         assert_eq!(blob_data.blob_gasprice, 2000u128);
+        assert_eq!(queue_block_env.n_transactions, 0);
+        assert_eq!(queue_block_env.last_tx_hash, None);
     }
 
     #[test]
@@ -1193,7 +1207,7 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(invalid_request).unwrap();
 
         // Test that invalid number type fails deserialization
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_err(),
             "Should fail to deserialize BlockEnv with invalid number type"
@@ -1219,7 +1233,7 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(invalid_address_request).unwrap();
 
         // Test that invalid address format fails deserialization
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_err(),
             "Should fail to deserialize BlockEnv with invalid address format"
@@ -1246,7 +1260,7 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(invalid_hash_request).unwrap();
 
         // Test that invalid hash format fails deserialization
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_err(),
             "Should fail to deserialize BlockEnv with invalid hash format"
@@ -1272,7 +1286,7 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(negative_values_request).unwrap();
 
         // Test that negative values fail deserialization for u64 fields
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_err(),
             "Should fail to deserialize BlockEnv with negative values for u64 fields"
@@ -1300,13 +1314,13 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(extra_fields_request).unwrap();
 
         // Test that extra fields are ignored during deserialization
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_ok(),
             "Should successfully deserialize BlockEnv ignoring extra fields"
         );
 
-        let block_env = block_env_result.unwrap();
+        let block_env = block_env_result.unwrap().block_env;
         assert_eq!(block_env.number, 123456u64);
         assert_eq!(block_env.basefee, 1000000000u64);
         assert_eq!(block_env.timestamp, 1234567890u64);
@@ -1332,13 +1346,13 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(hex_values_request).unwrap();
 
         // Test that valid hex values are properly deserialized
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_ok(),
             "Should successfully deserialize BlockEnv with hex values"
         );
 
-        let block_env = block_env_result.unwrap();
+        let block_env = block_env_result.unwrap().block_env;
         assert_eq!(block_env.number, 123456u64);
         assert_eq!(block_env.timestamp, 1234567890u64);
         assert!(
@@ -1367,13 +1381,13 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(zero_values_request).unwrap();
 
         // Test that zero values are valid
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_ok(),
             "Should successfully deserialize BlockEnv with zero values"
         );
 
-        let block_env = block_env_result.unwrap();
+        let block_env = block_env_result.unwrap().block_env;
         assert_eq!(block_env.number, 0u64);
         assert_eq!(block_env.basefee, 0u64);
         assert_eq!(block_env.gas_limit, 0u64);
@@ -1401,13 +1415,13 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(max_values_request).unwrap();
 
         // Test that maximum values are handled correctly
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_ok(),
             "Should successfully deserialize BlockEnv with maximum values"
         );
 
-        let block_env = block_env_result.unwrap();
+        let block_env = block_env_result.unwrap().block_env;
         assert_eq!(block_env.number, u64::MAX);
         assert_eq!(block_env.basefee, u64::MAX);
         assert_eq!(block_env.gas_limit, u64::MAX);
@@ -1435,13 +1449,13 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(with_prevrandao_request).unwrap();
 
         // Test that prevrandao is properly deserialized
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_ok(),
             "Should successfully deserialize BlockEnv with prevrandao"
         );
 
-        let block_env = block_env_result.unwrap();
+        let block_env = block_env_result.unwrap().block_env;
         assert!(
             block_env.prevrandao.is_some(),
             "prevrandao should be present"
@@ -1469,13 +1483,13 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(without_prevrandao_request).unwrap();
 
         // Test that BlockEnv works without prevrandao (should be None)
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_ok(),
             "Should successfully deserialize BlockEnv without prevrandao"
         );
 
-        let block_env = block_env_result.unwrap();
+        let block_env = block_env_result.unwrap().block_env;
         assert!(
             block_env.prevrandao.is_none(),
             "prevrandao should be None when not provided"
@@ -1506,7 +1520,7 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(invalid_blob_request).unwrap();
 
         // Test that invalid blob excess gas fails deserialization
-        let block_env_result = serde_json::from_value::<BlockEnv>(request.params.unwrap());
+        let block_env_result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
         assert!(
             block_env_result.is_err(),
             "Should fail to deserialize BlockEnv with invalid blob excess gas"
@@ -1565,33 +1579,41 @@ mod tests {
     #[test]
     fn test_debug_block_env_serialization() {
         // Create a BlockEnv and serialize it to see the expected format
-        let block_env = BlockEnv {
-            number: 123456u64,
-            beneficiary: Address::ZERO,
-            timestamp: 1234567890u64,
-            gas_limit: 30000000u64,
-            basefee: 1000000000u64,
-            difficulty: U256::ZERO,
-            prevrandao: Some(B256::ZERO),
-            blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
-                excess_blob_gas: 1000u64,
-                blob_gasprice: 2000u128,
-            }),
+        let block_env = QueueBlockEnv {
+            block_env: BlockEnv {
+                number: 123456u64,
+                beneficiary: Address::ZERO,
+                timestamp: 1234567890u64,
+                gas_limit: 30000000u64,
+                basefee: 1000000000u64,
+                difficulty: U256::ZERO,
+                prevrandao: Some(B256::ZERO),
+                blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
+                    excess_blob_gas: 1000u64,
+                    blob_gasprice: 2000u128,
+                }),
+            },
+            last_tx_hash: Some(
+                "0x2222222222222222222222222222222222222222222222222222222222222222"
+                    .parse()
+                    .unwrap(),
+            ),
+            n_transactions: 25,
         };
 
         // Serialize and then deserialize to ensure round-trip works
         let serialized = serde_json::to_value(&block_env).unwrap();
         let deserialized = serde_json::from_value::<BlockEnv>(serialized).unwrap();
 
-        assert_eq!(block_env.number, deserialized.number);
-        assert_eq!(block_env.beneficiary, deserialized.beneficiary);
-        assert_eq!(block_env.timestamp, deserialized.timestamp);
-        assert_eq!(block_env.gas_limit, deserialized.gas_limit);
-        assert_eq!(block_env.basefee, deserialized.basefee);
-        assert_eq!(block_env.difficulty, deserialized.difficulty);
-        assert_eq!(block_env.prevrandao, deserialized.prevrandao);
+        assert_eq!(block_env.block_env.number, deserialized.number);
+        assert_eq!(block_env.block_env.beneficiary, deserialized.beneficiary);
+        assert_eq!(block_env.block_env.timestamp, deserialized.timestamp);
+        assert_eq!(block_env.block_env.gas_limit, deserialized.gas_limit);
+        assert_eq!(block_env.block_env.basefee, deserialized.basefee);
+        assert_eq!(block_env.block_env.difficulty, deserialized.difficulty);
+        assert_eq!(block_env.block_env.prevrandao, deserialized.prevrandao);
         assert_eq!(
-            block_env.blob_excess_gas_and_price,
+            block_env.block_env.blob_excess_gas_and_price,
             deserialized.blob_excess_gas_and_price
         );
     }
@@ -1694,5 +1716,246 @@ mod tests {
             block_env_result2.is_ok(),
             "Should handle large U256 difficulty"
         );
+    }
+
+    #[test]
+    fn test_decode_block_env_with_only_last_tx_hash() {
+        let request_with_last_tx = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(request_with_last_tx).unwrap();
+        let result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
+
+        assert!(
+            result.is_err(),
+            "Should fail validation when last_tx_hash is present but n_transactions = 0"
+        );
+        // Fix the error message check - it should contain the message for when n_transactions is 0 but last_tx_hash is present
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("last_tx_hash must be null, empty, or missing")
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_backward_compatibility() {
+        // Test that old format (without new fields) still works
+        let old_format_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 987654u64,
+                "beneficiary": "0x2222222222222222222222222222222222222222",
+                "timestamp": 1111111111u64,
+                "gas_limit": 25000000u64,
+                "basefee": 500000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "0x2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            "id": 3
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(old_format_request).unwrap();
+        let queue_block_env: QueueBlockEnv =
+            serde_json::from_value(request.params.unwrap()).unwrap();
+
+        // Verify BlockEnv fields are correctly deserialized
+        assert_eq!(queue_block_env.block_env.number, 987654u64);
+        assert_eq!(queue_block_env.block_env.gas_limit, 25000000u64);
+        assert_eq!(queue_block_env.block_env.basefee, 500000000u64);
+
+        // Verify new fields have default values
+        assert_eq!(queue_block_env.last_tx_hash, None);
+        assert_eq!(queue_block_env.n_transactions, 0);
+    }
+
+    #[test]
+    fn test_decode_block_env_validation_error_null_hash_with_transactions() {
+        let invalid_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 111111u64,
+                "beneficiary": "0x3333333333333333333333333333333333333333",
+                "timestamp": 2222222222u64,
+                "gas_limit": 35000000u64,
+                "basefee": 1500000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "0x3333333333333333333333333333333333333333333333333333333333333333",
+                "last_tx_hash": null,
+                "n_transactions": 10u64  // Invalid: n_transactions > 0 but last_tx_hash is null
+            },
+            "id": 4
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(invalid_request).unwrap();
+        let result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
+
+        assert!(
+            result.is_err(),
+            "Should fail validation when n_transactions > 0 but last_tx_hash is null"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("last_tx_hash must be provided and non-empty")
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_with_zero_n_transactions() {
+        let request_with_zero = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 222222u64,
+                "beneficiary": "0x4444444444444444444444444444444444444444",
+                "timestamp": 3333333333u64,
+                "gas_limit": 40000000u64,
+                "basefee": 3000000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "0x4444444444444444444444444444444444444444444444444444444444444444",
+                "last_tx_hash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+                "n_transactions": 0u64
+            },
+            "id": 5
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(request_with_zero).unwrap();
+        let result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
+
+        assert!(
+            result.is_err(),
+            "Should fail validation when n_transactions > 0 but last_tx_hash is null"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("last_tx_hash must be null, empty, or missing")
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_with_invalid_tx_hash_format() {
+        let request_with_invalid_hash = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 333333u64,
+                "beneficiary": "0x5555555555555555555555555555555555555555",
+                "timestamp": 4444444444u64,
+                "gas_limit": 45000000u64,
+                "basefee": 4000000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "0x5555555555555555555555555555555555555555555555555555555555555555",
+                "last_tx_hash": "invalid_hash_format",
+                "n_transactions": 5u64
+            },
+            "id": 6
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(request_with_invalid_hash).unwrap();
+        let result = serde_json::from_value::<QueueBlockEnv>(request.params.unwrap());
+
+        // Should fail to deserialize due to invalid hash format
+        assert!(
+            result.is_err(),
+            "Should fail to deserialize invalid tx hash format"
+        );
+    }
+
+    #[test]
+    fn test_decode_block_env_with_large_n_transactions() {
+        let request_with_large_n = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 444444u64,
+                "beneficiary": "0x6666666666666666666666666666666666666666",
+                "timestamp": 5555555555u64,
+                "gas_limit": 55000000u64,
+                "basefee": 5000000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "0x6666666666666666666666666666666666666666666666666666666666666666",
+                "last_tx_hash": "0x7777777777777777777777777777777777777777777777777777777777777777",
+                "n_transactions": 18446744073709551615u64 // u64::MAX
+            },
+            "id": 7
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(request_with_large_n).unwrap();
+        let queue_block_env: QueueBlockEnv =
+            serde_json::from_value(request.params.unwrap()).unwrap();
+
+        assert_eq!(queue_block_env.block_env.number, 444444u64);
+        assert_eq!(
+            queue_block_env.last_tx_hash,
+            Some(
+                "0x7777777777777777777777777777777777777777777777777777777777777777"
+                    .parse()
+                    .unwrap()
+            )
+        );
+        assert_eq!(queue_block_env.n_transactions, u64::MAX);
+    }
+
+    #[test]
+    fn test_queue_block_env_serialization_round_trip() {
+        // Test that serialization and deserialization work correctly
+        let original_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 555555u64,
+                "beneficiary": "0x7777777777777777777777777777777777777777",
+                "timestamp": 6666666666u64,
+                "gas_limit": 60000000u64,
+                "basefee": 6000000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "0x7777777777777777777777777777777777777777777777777777777777777777",
+                "last_tx_hash": "0x8888888888888888888888888888888888888888888888888888888888888888",
+                "n_transactions": 123u64
+            },
+            "id": 8
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(original_request).unwrap();
+        let queue_block_env: QueueBlockEnv =
+            serde_json::from_value(request.params.unwrap()).unwrap();
+
+        // Serialize back to JSON
+        let serialized = serde_json::to_value(&queue_block_env).unwrap();
+
+        // Deserialize again
+        let deserialized: QueueBlockEnv = serde_json::from_value(serialized).unwrap();
+
+        // Verify round-trip consistency
+        assert_eq!(
+            deserialized.block_env.number,
+            queue_block_env.block_env.number
+        );
+        assert_eq!(
+            deserialized.block_env.basefee,
+            queue_block_env.block_env.basefee
+        );
+        assert_eq!(deserialized.last_tx_hash, queue_block_env.last_tx_hash);
+        assert_eq!(deserialized.n_transactions, queue_block_env.n_transactions);
     }
 }
