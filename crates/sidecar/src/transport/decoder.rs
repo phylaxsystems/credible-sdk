@@ -14,6 +14,7 @@ use crate::{
     transport::http::server::{
         JsonRpcRequest,
         METHOD_BLOCK_ENV,
+        METHOD_REVERT_TX,
         METHOD_SEND_TRANSACTIONS,
         SendTransactionsParams,
         TransactionEnv,
@@ -163,6 +164,23 @@ impl Decoder for HttpTransactionDecoder {
                     .map_err(|_| HttpDecoderError::SchemaError)?;
                 let current_span = tracing::Span::current();
                 Ok(vec![TxQueueContents::Block(block, current_span)])
+            }
+            METHOD_REVERT_TX => {
+                let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
+                let hash = params
+                    .get("removedTxHash")
+                    .ok_or(HttpDecoderError::MissingParams)?
+                    .as_str()
+                    .unwrap();
+                let hash: B256 = match hash.parse() {
+                    Ok(rax) => rax,
+                    Err(_) => {
+                        return Err(HttpDecoderError::InvalidHash("bad hash size".to_string()));
+                    }
+                };
+
+                let current_span = tracing::Span::current();
+                Ok(vec![TxQueueContents::Reorg(hash, current_span)])
             }
             _ => Err(HttpDecoderError::SchemaError),
         }
