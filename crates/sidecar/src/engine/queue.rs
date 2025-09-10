@@ -25,7 +25,6 @@
 //! Reorg events are signals from the driver to the engine that it should discard the last
 //! executed transaction.
 
-use assertion_executor::primitives::FixedBytes;
 use crossbeam::channel::{
     Receiver,
     Sender,
@@ -67,7 +66,7 @@ pub struct QueueTransaction {
 pub enum TxQueueContents {
     Block(BlockEnv, tracing::Span),
     Tx(QueueTransaction, tracing::Span),
-    Reorg(FixedBytes<32>, tracing::Span),
+    Reorg(B256, tracing::Span),
 }
 
 /// `crossbeam` sender for the transaction queue. Sends data to tx queue.
