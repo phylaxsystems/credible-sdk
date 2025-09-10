@@ -3,7 +3,10 @@
 use crate::{
     engine::{
         TransactionResult,
-        queue::TransactionQueueSender,
+        queue::{
+            TransactionQueueSender,
+            TxQueueContents,
+        },
     },
     transactions_state::RequestTransactionResult,
     transport::{
@@ -46,6 +49,7 @@ use tracing::{
     error,
     instrument,
     trace,
+    warn,
 };
 
 pub(in crate::transport) const METHOD_SEND_TRANSACTIONS: &str = "sendTransactions";
@@ -310,6 +314,15 @@ async fn process_request(
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
         trace_tx_queue_contents(&state.block_context, &queue_tx);
+        if let TxQueueContents::Tx(tx, _) = &queue_tx
+            && state.transactions_results.is_tx_received(&tx.tx_hash)
+        {
+            warn!(
+                tx_hash = %tx.tx_hash,
+                "TX hash already received, skipping"
+            );
+            continue;
+        }
         state.transactions_results.add_accepted_tx(&queue_tx);
         if let Err(e) = state.tx_sender.send(queue_tx) {
             error!(

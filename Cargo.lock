@@ -10462,6 +10462,7 @@ dependencies = [
  "ctor",
  "dashmap",
  "metrics",
+ "rand 0.9.1",
  "reqwest",
  "revm",
  "rust-tracing",
