@@ -13,14 +13,19 @@
 //!
 //! Channel contents can either be:
 //! - New blocks,
-//! - New transactions.
+//! - New transactions,
+//! - Reorg events.
 //!
 //! New block events contain `BlockEnv`s of the next block the sidecar should build on top of.
 //! At least one new block event is needed for the sidecar to accept transactions.
 //!
 //! New transaction events are transactions that should be executed and included for the
 //! current `BlockEnv`.
+//!
+//! Reorg events are signals from the driver to the engine that it should discard the last
+//! executed transaction.
 
+use assertion_executor::primitives::FixedBytes;
 use crossbeam::channel::{
     Receiver,
     Sender,
@@ -54,10 +59,15 @@ pub struct QueueTransaction {
 ///
 /// `Tx` should be used to append a new transaction to the current block,
 /// along with its transaction hash for identification and tracing.
+///
+/// `Reorg` should be used to signal to remove the last executed transaction.
+/// To verify the transaction is indeed the correct one, we include a tx hash
+/// and should only process it as a valid event if the hashes match.
 #[derive(Debug)]
 pub enum TxQueueContents {
     Block(BlockEnv, tracing::Span),
     Tx(QueueTransaction, tracing::Span),
+    Reorg(FixedBytes<32>, tracing::Span),
 }
 
 /// `crossbeam` sender for the transaction queue. Sends data to tx queue.

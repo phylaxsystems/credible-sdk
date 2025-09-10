@@ -46,6 +46,10 @@ pub trait TestTransport: Sized {
     async fn new_block(&self, block_number: u64) -> Result<(), String>;
     /// Send a transaction to the core engine via the transport
     async fn send_transaction(&self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String>;
+    /// Send a new transaction reorg event. Removes the last executed transaction.
+    /// Transaction hash provided as an argument must match the last executed tx.
+    /// If not the call should succeed but the core engine should produce an error.
+    async fn reorg(&self, tx_hash: B256) -> Result<(), String>;
 }
 
 /// `LocalInstance` is used to instantiate the core engine and a transport.
@@ -460,6 +464,31 @@ impl<T: TestTransport> LocalInstance<T> {
                 "Second transaction should have failed assertions and not been committed"
                     .to_string(),
             );
+        }
+
+        Ok(())
+    }
+
+    /// Sends a reorg event to the core engine via a `Transport`.
+    ///
+    /// A reorg will remove the last executed transaction, if the hash supplied
+    /// matches said transactions hash.
+    /// If not, the core engine should error out and this function will
+    /// return an error.
+    pub async fn send_reorg(&mut self, tx_hash: B256) -> Result<(), String> {
+        // Send reorg event
+        self.transport.reorg(tx_hash).await?;
+
+        // Wait a bit before checking if the engine exited
+        self.wait_for_processing(Duration::from_millis(2)).await;
+
+        // Now check if the engine exited
+        if let Some(handle) = &self.engine_handle {
+            if handle.is_finished() {
+                return Err("Core engine exited!".to_string());
+            }
+        } else {
+            return Err("Engine handle does not exist! Make sure the engine was initialized before calling fn!".to_string());
         }
 
         Ok(())

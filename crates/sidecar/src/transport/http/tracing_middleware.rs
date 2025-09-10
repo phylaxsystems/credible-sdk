@@ -48,5 +48,9 @@ pub fn trace_tx_queue_contents(block_context: &BlockContext, tx_queue_contents: 
         TxQueueContents::Tx(tx, span) => {
             span.record("tx.hash", tx.tx_hash.to_string());
         }
+        // Record the tx hash of the reorg
+        TxQueueContents::Reorg(tx_hash, span) => {
+            span.record("tx.hash", tx_hash.to_string());
+        }
     }
 }
