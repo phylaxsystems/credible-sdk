@@ -1976,4 +1976,312 @@ mod tests {
         assert_eq!(deserialized.last_tx_hash, queue_block_env.last_tx_hash);
         assert_eq!(deserialized.n_transactions, queue_block_env.n_transactions);
     }
+    #[test]
+    fn test_decode_reorg_valid() {
+        let valid_reorg_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(valid_reorg_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_ok(), "Should successfully decode valid reorg request");
+        let contents = result.unwrap();
+        assert_eq!(contents.len(), 1, "Should return exactly one queue content");
+
+        match &contents[0] {
+            TxQueueContents::Reorg(hash, _) => {
+                assert_eq!(
+                    *hash,
+                    B256::from_str("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").unwrap(),
+                    "Should extract correct transaction hash"
+                );
+            }
+            _ => panic!("Expected Reorg variant, got {:?}", contents[0]),
+        }
+    }
+
+    #[test]
+    fn test_decode_reorg_without_0x_prefix() {
+        let reorg_request_no_prefix = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(reorg_request_no_prefix).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_ok(), "Should successfully decode reorg request without 0x prefix");
+        let contents = result.unwrap();
+        
+        match &contents[0] {
+            TxQueueContents::Reorg(hash, _) => {
+                assert_eq!(
+                    *hash,
+                    B256::from_str("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").unwrap(),
+                    "Should handle hash without 0x prefix"
+                );
+            }
+            _ => panic!("Expected Reorg variant"),
+        }
+    }
+
+    #[test]
+    fn test_decode_reorg_missing_params() {
+        let no_params_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(no_params_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_err(), "Should fail when params are missing");
+        assert!(
+            matches!(result.unwrap_err(), HttpDecoderError::MissingParams),
+            "Should return MissingParams error"
+        );
+    }
+
+    #[test]
+    fn test_decode_reorg_missing_removed_tx_hash() {
+        let missing_hash_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "someOtherField": "value"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(missing_hash_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_err(), "Should fail when removedTxHash is missing");
+        assert!(
+            matches!(result.unwrap_err(), HttpDecoderError::MissingParams),
+            "Should return MissingParams error when removedTxHash field is missing"
+        );
+    }
+
+    #[test]
+    fn test_decode_reorg_invalid_hash_format() {
+        let invalid_hash_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": "not_a_valid_hash"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(invalid_hash_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_err(), "Should fail with invalid hash format");
+        assert!(
+            matches!(result.unwrap_err(), HttpDecoderError::InvalidHash(_)),
+            "Should return InvalidHash error"
+        );
+    }
+
+    #[test]
+    fn test_decode_reorg_hash_wrong_length() {
+        let wrong_length_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": "0x1234"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(wrong_length_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_err(), "Should fail with wrong hash length");
+        assert!(
+            matches!(result.unwrap_err(), HttpDecoderError::InvalidHash(_)),
+            "Should return InvalidHash error for wrong length"
+        );
+    }
+
+    #[test]
+    fn test_decode_reorg_hash_not_string() {
+        let non_string_hash_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": 12345
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(non_string_hash_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_err(), "Should fail when hash is not a string");
+        assert!(
+            matches!(result.unwrap_err(), HttpDecoderError::InvalidHash(_)),
+            "Should return InvalidHash error when field is not a string"
+        );
+    }
+
+    #[test]
+    fn test_decode_reorg_null_hash() {
+        let null_hash_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": null
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(null_hash_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_err(), "Should fail when hash is null");
+        assert!(
+            matches!(result.unwrap_err(), HttpDecoderError::InvalidHash(_)),
+            "Should return InvalidHash error when field is null"
+        );
+    }
+
+    #[test]
+    fn test_decode_reorg_with_extra_fields() {
+        let extra_fields_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "extraField1": "should be ignored",
+                "extraField2": 42,
+                "extraField3": true
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(extra_fields_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_ok(), "Should successfully decode reorg with extra fields");
+        let contents = result.unwrap();
+        
+        match &contents[0] {
+            TxQueueContents::Reorg(hash, _) => {
+                assert_eq!(
+                    *hash,
+                    B256::from_str("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").unwrap(),
+                    "Should extract hash correctly even with extra fields"
+                );
+            }
+            _ => panic!("Expected Reorg variant"),
+        }
+    }
+
+    #[test]
+    fn test_decode_reorg_uppercase_hex() {
+        let uppercase_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": "0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(uppercase_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_ok(), "Should handle uppercase hex characters");
+        let contents = result.unwrap();
+        
+        match &contents[0] {
+            TxQueueContents::Reorg(hash, _) => {
+                assert_eq!(
+                    *hash,
+                    B256::from_str("0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF").unwrap(),
+                    "Should handle uppercase hex"
+                );
+            }
+            _ => panic!("Expected Reorg variant"),
+        }
+    }
+
+    #[test]
+    fn test_decode_reorg_mixed_case_hex() {
+        let mixed_case_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": "0x1234567890AbCdEf1234567890aBcDeF1234567890AbCdEf1234567890aBcDeF"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(mixed_case_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_ok(), "Should handle mixed case hex characters");
+        let contents = result.unwrap();
+        
+        match &contents[0] {
+            TxQueueContents::Reorg(_, _) => {
+            }
+            _ => panic!("Expected Reorg variant"),
+        }
+    }
+
+    #[test]
+    fn test_decode_reorg_empty_string_hash() {
+        let empty_hash_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": ""
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(empty_hash_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_err(), "Should fail with empty hash string");
+        assert!(
+            matches!(result.unwrap_err(), HttpDecoderError::InvalidHash(_)),
+            "Should return InvalidHash error for empty string"
+        );
+    }
+
+    #[test]
+    fn test_decode_reorg_0x_only_hash() {
+        let ox_only_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "removedTxHash": "0x"
+            },
+            "id": 1
+        });
+
+        let request: JsonRpcRequest = serde_json::from_value(ox_only_request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_err(), "Should fail with 0x only hash");
+        assert!(
+            matches!(result.unwrap_err(), HttpDecoderError::InvalidHash(_)),
+            "Should return InvalidHash error for '0x' only"
+        );
+    }
 }
