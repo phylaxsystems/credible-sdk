@@ -171,8 +171,12 @@ impl Source for BesuClient {
         "Besu client"
     }
 
-    fn is_synced(&self, current_block_number: &AtomicU64) -> bool {
-        self.get_current_block() >= current_block_number.load(Ordering::Acquire)
+    fn is_synced(&self, current_block_number: u64) -> bool {
+        if current_block_number > 0 {
+            self.get_current_block() >= current_block_number
+        } else {
+            false
+        }
     }
 }
 

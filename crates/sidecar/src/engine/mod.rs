@@ -200,7 +200,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 AssertionStore::new_ephemeral().expect("REASON"),
             ),
             block_env: None,
-            cache: Arc::new(Cache::new(vec![])),
+            cache: Arc::new(Cache::new(vec![], 10)),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
             block_metrics: BlockMetrics::new(),
             last_executed_tx: None,
@@ -433,6 +433,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         if let Some(prev_block_env) = self.block_env.as_ref()
             && prev_block_env.number != queue_block_env.block_env.number - 1
         {
+            self.cache
+                .reset_required_block_number(queue_block_env.block_env.number);
             self.state.invalidate_all();
         }
 
@@ -441,12 +443,16 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         if let Some((prev_tx_hash, _)) = &self.last_executed_tx
             && Some(prev_tx_hash) != queue_block_env.last_tx_hash.as_ref()
         {
+            self.cache
+                .reset_required_block_number(queue_block_env.block_env.number);
             self.state.invalidate_all();
         }
 
         // If the number of transactions in the block env is different from the number of
         // transactions received, invalidate the cache
         if self.block_env_transaction_counter != queue_block_env.n_transactions {
+            self.cache
+                .reset_required_block_number(queue_block_env.block_env.number);
             self.state.invalidate_all();
         }
 
@@ -686,7 +692,7 @@ mod tests {
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
         let state_results = TransactionsState::new();
-        let cache = Arc::new(Cache::new(vec![]));
+        let cache = Arc::new(Cache::new(vec![], 10));
         let engine = CoreEngine::new(
             state,
             cache,

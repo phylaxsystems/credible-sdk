@@ -73,6 +73,14 @@ pub struct ChainArgs {
         env = "CHAIN_BESU_CLIENT_WS_URL"
     )]
     pub besu_client_ws_url: String,
+
+    /// Minimum state diff to consider a cache synced
+    #[arg(
+        long = "chain.minimum-state-diff",
+        default_value = "100",
+        env = "CHAIN_MINIMUM_STATE_DIFF"
+    )]
+    pub minimum_state_diff: u64,
 }
 
 /// Parameters for telemetry configuration

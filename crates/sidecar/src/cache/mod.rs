@@ -70,6 +70,10 @@ pub struct Cache {
     /// Priority-ordered collection of data sources.
     /// Sources are tried in order until one succeeds.
     sources: Vec<Arc<dyn Source>>,
+    /// The required block number for the cache to be considered synced.
+    required_block_number: AtomicU64,
+    /// The maximum depth of the cache to be considered synced.
+    max_depth: u64,
 }
 
 impl Cache {
@@ -83,10 +87,12 @@ impl Cache {
     /// # Returns
     ///
     /// A new `Cache` instance with the block number initialized to 0.
-    pub fn new(sources: Vec<Arc<dyn Source>>) -> Self {
+    pub fn new(sources: Vec<Arc<dyn Source>>, max_depth: u64) -> Self {
         Self {
             current_block_number: AtomicU64::new(0),
             sources,
+            required_block_number: AtomicU64::new(0),
+            max_depth,
         }
     }
 
@@ -100,8 +106,27 @@ impl Cache {
     ///
     /// * `block_number` - The new current block number
     pub fn set_block_number(&self, block_number: u64) {
+        // If the block number is 0 (meaning we are logging it in for the first time), we set the
+        // required block number to the first block number received. This way, we require that the
+        // cache has to be updated up to this block to be considered synced.
+        if self.current_block_number.load(Ordering::Acquire) == 0 {
+            self.required_block_number
+                .store(block_number, Ordering::Relaxed);
+        }
         self.current_block_number
             .store(block_number, Ordering::Relaxed);
+    }
+
+    /// Resets the `required_block_number` to the current `block_number`.
+    ///
+    /// This method updates the `required_block_number` to match the value of the
+    /// current `block_number`.
+    ///
+    /// If the internal cache is flushed, this method must be called to sync the required head to
+    /// the latest block, as the current cache is stale
+    pub fn reset_required_block_number(&self, required_block_number: u64) {
+        self.required_block_number
+            .store(required_block_number, Ordering::Relaxed);
     }
 
     /// Returns an iterator over sources that are currently synced.
@@ -109,9 +134,15 @@ impl Cache {
     /// Sources are returned in priority order, with the highest priority
     /// synced source returned first.
     fn iter_synced_sources(&self) -> impl Iterator<Item = Arc<dyn Source>> {
+        // MAX(latest BlockEnv - MINIMUM_STATE_DIFF, First block env processed)
+        let required_block_number = self.required_block_number.load(Ordering::Acquire);
+        let current_block_number = self.current_block_number.load(Ordering::Acquire);
+        let block_number =
+            required_block_number.max(current_block_number.saturating_sub(self.max_depth));
+
         self.sources
             .iter()
-            .filter(move |source| source.is_synced(&self.current_block_number))
+            .filter(move |source| source.is_synced(block_number))
             .cloned()
     }
 }
@@ -219,7 +250,6 @@ mod tests {
     use std::sync::{
         Arc,
         atomic::{
-            AtomicU64,
             AtomicUsize,
             Ordering,
         },
@@ -306,8 +336,8 @@ mod tests {
     }
 
     impl Source for MockSource {
-        fn is_synced(&self, current_block_number: &AtomicU64) -> bool {
-            current_block_number.load(Ordering::Acquire) >= self.synced_threshold
+        fn is_synced(&self, current_block_number: u64) -> bool {
+            current_block_number >= self.synced_threshold
         }
 
         fn name(&self) -> &'static str {
@@ -377,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_cache_new_creates_empty_cache() {
-        let cache = Cache::new(vec![]);
+        let cache = Cache::new(vec![], 10);
         assert_eq!(cache.current_block_number.load(Ordering::Acquire), 0);
         assert_eq!(cache.sources.len(), 0);
     }
@@ -388,14 +418,14 @@ mod tests {
         let source2: Arc<dyn Source> = Arc::new(MockSource::new("source2"));
         let sources = vec![source1, source2];
 
-        let cache = Cache::new(sources);
+        let cache = Cache::new(sources, 10);
         assert_eq!(cache.sources.len(), 2);
         assert_eq!(cache.current_block_number.load(Ordering::Acquire), 0);
     }
 
     #[test]
     fn test_set_block_number() {
-        let cache = Cache::new(vec![]);
+        let cache = Cache::new(vec![], 10);
 
         cache.set_block_number(42);
         assert_eq!(cache.current_block_number.load(Ordering::Acquire), 42);
@@ -410,7 +440,7 @@ mod tests {
         let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
         let source3 = Arc::new(MockSource::new("source3").with_synced_threshold(0));
 
-        let cache = Cache::new(vec![source1, source2, source3]);
+        let cache = Cache::new(vec![source1, source2, source3], 10);
 
         // Block 0 - only source3 should be synced
         let synced: Vec<_> = cache.iter_synced_sources().collect();
@@ -437,7 +467,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_account_info(account_info.clone()));
         let source2 = Arc::new(MockSource::new("source2"));
 
-        let cache = Cache::new(vec![source1.clone(), source2.clone()]);
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         let address = create_test_address();
 
         let result = cache.basic_ref(address).unwrap();
@@ -462,7 +492,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_error());
         let source2 = Arc::new(MockSource::new("source2").with_account_info(account_info.clone()));
 
-        let cache = Cache::new(vec![source1.clone(), source2.clone()]);
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         let address = create_test_address();
 
         let result = cache.basic_ref(address).unwrap();
@@ -486,7 +516,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_error());
         let source2 = Arc::new(MockSource::new("source2").with_error());
 
-        let cache = Cache::new(vec![source1, source2]);
+        let cache = Cache::new(vec![source1, source2], 10);
         let address = create_test_address();
 
         let result = cache.basic_ref(address);
@@ -496,7 +526,7 @@ mod tests {
     #[test]
     fn test_basic_ref_no_synced_sources() {
         let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
-        let cache = Cache::new(vec![source1]);
+        let cache = Cache::new(vec![source1], 10);
 
         // Block 0, source needs block 10 to be synced
         let address = create_test_address();
@@ -510,7 +540,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_block_hash(block_hash));
         let source2 = Arc::new(MockSource::new("source2"));
 
-        let cache = Cache::new(vec![source1.clone(), source2.clone()]);
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
 
         let result = cache.block_hash_ref(42).unwrap();
         assert_eq!(result, block_hash);
@@ -534,7 +564,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_error());
         let source2 = Arc::new(MockSource::new("source2").with_block_hash(block_hash));
 
-        let cache = Cache::new(vec![source1, source2]);
+        let cache = Cache::new(vec![source1, source2], 10);
 
         let result = cache.block_hash_ref(42).unwrap();
         assert_eq!(result, block_hash);
@@ -545,7 +575,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_error());
         let source2 = Arc::new(MockSource::new("source2"));
 
-        let cache = Cache::new(vec![source1, source2]);
+        let cache = Cache::new(vec![source1, source2], 10);
 
         let result = cache.block_hash_ref(42);
         assert!(matches!(result, Err(CacheError::NoCacheSourceAvailable)));
@@ -557,7 +587,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_bytecode(bytecode.clone()));
         let source2 = Arc::new(MockSource::new("source2"));
 
-        let cache = Cache::new(vec![source1.clone(), source2.clone()]);
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         let code_hash = B256::from([4u8; 32]);
 
         let result = cache.code_by_hash_ref(code_hash).unwrap();
@@ -582,7 +612,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_error());
         let source2 = Arc::new(MockSource::new("source2").with_bytecode(bytecode.clone()));
 
-        let cache = Cache::new(vec![source1, source2]);
+        let cache = Cache::new(vec![source1, source2], 10);
         let code_hash = B256::from([4u8; 32]);
 
         let result = cache.code_by_hash_ref(code_hash).unwrap();
@@ -594,7 +624,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_error());
         let source2 = Arc::new(MockSource::new("source2"));
 
-        let cache = Cache::new(vec![source1, source2]);
+        let cache = Cache::new(vec![source1, source2], 10);
         let code_hash = B256::from([4u8; 32]);
 
         let result = cache.code_by_hash_ref(code_hash);
@@ -607,7 +637,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_storage_value(storage_value));
         let source2 = Arc::new(MockSource::new("source2"));
 
-        let cache = Cache::new(vec![source1.clone(), source2.clone()]);
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         let address = create_test_address();
         let storage_key = U256::from(42);
 
@@ -633,7 +663,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_error());
         let source2 = Arc::new(MockSource::new("source2").with_storage_value(storage_value));
 
-        let cache = Cache::new(vec![source1, source2]);
+        let cache = Cache::new(vec![source1, source2], 10);
         let address = create_test_address();
         let storage_key = U256::from(42);
 
@@ -646,7 +676,7 @@ mod tests {
         let source1 = Arc::new(MockSource::new("source1").with_error());
         let source2 = Arc::new(MockSource::new("source2").with_error());
 
-        let cache = Cache::new(vec![source1, source2]);
+        let cache = Cache::new(vec![source1, source2], 10);
         let address = create_test_address();
         let storage_key = U256::from(42);
 
@@ -660,7 +690,7 @@ mod tests {
 
         let source1 =
             Arc::new(MockSource::new("source1").with_account_info(create_test_account_info()));
-        let cache = Arc::new(Cache::new(vec![source1]));
+        let cache = Arc::new(Cache::new(vec![source1], 10));
         let mut handles = vec![];
 
         // Spawn multiple threads that concurrently access the cache
@@ -690,7 +720,7 @@ mod tests {
 
     #[test]
     fn test_atomic_block_number_operations() {
-        let cache = Cache::new(vec![]);
+        let cache = Cache::new(vec![], 10);
 
         // Test ordering semantics
         cache.set_block_number(42);
@@ -703,7 +733,7 @@ mod tests {
 
     #[test]
     fn test_empty_sources_returns_error() {
-        let cache = Cache::new(vec![]);
+        let cache = Cache::new(vec![], 10);
         let address = create_test_address();
 
         // All operations should return NoCacheSourceAvailable with empty sources
@@ -736,7 +766,7 @@ mod tests {
         // Source 2: Fails on account info, has block hash
         let source2 = Arc::new(MockSource::new("source2").with_block_hash(block_hash));
 
-        let cache = Cache::new(vec![source1, source2]);
+        let cache = Cache::new(vec![source1, source2], 10);
         let address = create_test_address();
 
         // Should get account info from source 1
@@ -778,7 +808,7 @@ mod tests {
                 .with_storage_value(storage_value),
         );
 
-        let cache = Cache::new(vec![source1.clone(), source2.clone()]);
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         let address = create_test_address();
         let code_hash = B256::from([4u8; 32]);
         let storage_key = U256::from(42);
@@ -800,5 +830,258 @@ mod tests {
         assert_eq!(source2.block_hash_ref_call_count(), 0);
         assert_eq!(source2.code_by_hash_ref_call_count(), 0);
         assert_eq!(source2.storage_ref_call_count(), 0);
+    }
+
+    #[test]
+    fn test_cache_max_depth_filtering() {
+        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
+        let source3 = Arc::new(MockSource::new("source3").with_synced_threshold(100));
+
+        // Test with max_depth = 20
+        let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 20);
+
+        // Set current block to 100 (this also sets required_block_number to 100)
+        cache.set_block_number(100);
+
+        // Effective block: max(100, 100 - 20) = 100
+        // All sources synced at block 100 (100 >= 10, 100 >= 50, 100 >= 100)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 3);
+
+        // Set required block to 0 to test depth filtering
+        cache.reset_required_block_number(0);
+
+        // Now effective block: max(0, 100 - 20) = 80
+        // Sources: source1 (80 >= 10 ✓), source2 (80 >= 50 ✓), source3 (80 >= 100 ✗)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 2);
+        let names: Vec<_> = synced.iter().map(|s| s.name()).collect();
+        assert!(names.contains(&"source1"));
+        assert!(names.contains(&"source2"));
+        assert!(!names.contains(&"source3"));
+
+        // Test with max_depth = 60
+        let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 60);
+        cache.set_block_number(100);
+        cache.reset_required_block_number(0);
+
+        // Effective block: max(0, 100 - 60) = 40
+        // Sources: source1 (40 >= 10 ✓), source2 (40 >= 50 ✗), source3 (40 >= 100 ✗)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 1);
+        assert_eq!(synced[0].name(), "source1");
+
+        // Test with max_depth = 200 (larger than current block)
+        let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 200);
+        cache.set_block_number(100);
+        cache.reset_required_block_number(0);
+
+        // Effective block: max(0, 100 - 200) = 0
+        // Sources: source1 (0 >= 10 ✗), source2 (0 >= 50 ✗), source3 (0 >= 100 ✗)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 0);
+    }
+
+    #[test]
+    fn test_cache_required_block_number_override() {
+        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
+
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 20);
+
+        // Set current block to 100 (this sets required_block_number to 100)
+        cache.set_block_number(100);
+
+        // Initially, effective block = max(100, 100 - 20) = 100
+        // Both sources synced at block 100 (100 >= 10, 100 >= 50)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 2);
+
+        // Set required block number to 30
+        cache.reset_required_block_number(30);
+
+        // The effective block number should be max(30, 100 - 20) = max(30, 80) = 80
+        // Both sources synced at block 80 (80 >= 10, 80 >= 50)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 2);
+
+        // Set required block number to 5 (lower than depth calculation)
+        cache.reset_required_block_number(5);
+
+        // The effective block number should be max(5, 80) = 80
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 2);
+    }
+
+    #[test]
+    fn test_cache_reset_required_block_number() {
+        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
+
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 30);
+
+        // Set current block to 100 (this sets required_block_number to 100)
+        cache.set_block_number(100);
+
+        // Verify required block number is set to 100
+        assert_eq!(
+            cache
+                .required_block_number
+                .load(std::sync::atomic::Ordering::Acquire),
+            100
+        );
+
+        // Reset required block number to 0
+        cache.reset_required_block_number(0);
+
+        // Verify it's now 0
+        assert_eq!(
+            cache
+                .required_block_number
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+
+        // Now the effective block number should be max(0, 100 - 30) = 70
+        // Both sources synced at block 70 (70 >= 10, 70 >= 50)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 2);
+
+        // Reset to current block (simulating the old behavior)
+        cache.reset_required_block_number(100);
+        assert_eq!(
+            cache
+                .required_block_number
+                .load(std::sync::atomic::Ordering::Acquire),
+            100
+        );
+    }
+
+    #[test]
+    fn test_cache_out_of_sync_scenarios() {
+        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(100));
+        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(200));
+        let source3 = Arc::new(MockSource::new("source3").with_synced_threshold(300));
+
+        let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
+
+        // Scenario 1: Set block and reset to test depth filtering
+        cache.set_block_number(150);
+        cache.reset_required_block_number(0);
+        // Effective block number: max(0, 150 - 50) = 100
+        // Sources synced at block 100: only source1 (100 >= 100)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 1);
+        assert_eq!(synced[0].name(), "source1");
+
+        // Scenario 2: Lower block number
+        let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
+        cache.set_block_number(50);
+        cache.reset_required_block_number(0);
+        // Effective block number: max(0, 50 - 50) = 0
+        // Sources synced at block 0: none (0 < 100, 0 < 200, 0 < 300)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 0);
+
+        // Scenario 3: Required block number forces higher sync requirement
+        let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
+        cache.set_block_number(400);
+        cache.reset_required_block_number(380);
+        // Effective block number: max(380, 400 - 50) = max(380, 350) = 380
+        // Sources synced at block 380: all sources (380 >= 100, 380 >= 200, 380 >= 300)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 3);
+    }
+
+    #[test]
+    fn test_cache_edge_cases() {
+        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(0));
+        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(u64::MAX));
+
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], u64::MAX);
+
+        // Test with zero block number - only source1 should be synced (0 >= 0)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 1);
+        assert_eq!(synced[0].name(), "source1");
+
+        // Test with maximum block number
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], u64::MAX);
+        cache.set_block_number(u64::MAX);
+        cache.reset_required_block_number(0);
+        // Effective block number: max(0, u64::MAX - u64::MAX) = 0
+        // Only source1 synced at block 0 (0 >= 0)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 1);
+        assert_eq!(synced[0].name(), "source1");
+
+        // Test with zero max_depth
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 0);
+        cache.set_block_number(100);
+        cache.reset_required_block_number(0);
+        // Effective block number: max(0, 100 - 0) = 100
+        // Both sources: source1 (100 >= 0 ✓), source2 (100 >= u64::MAX ✗)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 1);
+        assert_eq!(synced[0].name(), "source1");
+    }
+
+    #[test]
+    fn test_original_test_understanding() {
+        // This replicates the original test to understand the correct behavior
+        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
+        let source3 = Arc::new(MockSource::new("source3").with_synced_threshold(0));
+
+        let cache = Cache::new(vec![source1, source2, source3], 10);
+
+        // Block 0 - effective block is 0, only source3 (0 >= 0) should be synced
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 1);
+        assert_eq!(synced[0].name(), "source3");
+
+        // Block 15 - this sets required_block_number to 15
+        cache.set_block_number(15);
+        // Effective block: max(15, 15 - 10) = 15
+        // Sources synced at block 15: source1 (15 >= 10), source3 (15 >= 0)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 2);
+
+        // Block 60 - current becomes 60, required stays 15
+        cache.set_block_number(60);
+        // Effective block: max(15, 60 - 10) = max(15, 50) = 50
+        // Sources synced at block 50: source1 (50 >= 10), source2 (50 >= 50), source3 (50 >= 0)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 3); // All sources should be synced
+    }
+
+    #[test]
+    fn test_cache_invalidation_simulation() {
+        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
+
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 40);
+
+        // Simulate normal operation
+        cache.set_block_number(100);
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 2); // Both sources synced at block 100
+
+        // Simulate cache invalidation by resetting required block to 0
+        cache.reset_required_block_number(0);
+        // Effective block: max(0, 100 - 40) = 60
+        // Both sources still synced (60 >= 10, 60 >= 50)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 2);
+
+        // Simulate more restrictive invalidation
+        cache.reset_required_block_number(0);
+        cache.set_block_number(70); // Lower current block
+        // Effective block: max(0, 70 - 40) = 30
+        // Only source1 synced (30 >= 10, but 30 < 50)
+        let synced: Vec<_> = cache.iter_synced_sources().collect();
+        assert_eq!(synced.len(), 1);
+        assert_eq!(synced[0].name(), "source1");
     }
 }

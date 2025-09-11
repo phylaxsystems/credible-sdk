@@ -1,9 +1,6 @@
 use assertion_executor::db::DatabaseRef;
 use revm::context::DBErrorMarker;
-use std::{
-    fmt::Debug,
-    sync::atomic::AtomicU64,
-};
+use std::fmt::Debug;
 use thiserror::Error;
 
 pub mod besu_client;
@@ -73,12 +70,11 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     /// number to ensure thread safety. The typical pattern is:
     ///
     /// ```rust
-    /// fn is_synced(&self, current_block: &AtomicU64) -> bool {
-    ///     let current = current_block.load(Ordering::Acquire);
+    /// fn is_synced(&self, current_block: u64) -> bool {
     ///     // Check if this source has data for `current`
     /// }
     /// ```
-    fn is_synced(&self, current_block_number: &AtomicU64) -> bool;
+    fn is_synced(&self, current_block_number: u64) -> bool;
 
     /// Returns a unique identifier for this source.
     ///
