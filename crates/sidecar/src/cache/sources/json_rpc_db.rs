@@ -33,7 +33,7 @@ pub struct JsonRpcDb {
 }
 
 impl JsonRpcDb {
-    pub async fn try_new(rpc_url: &str) -> Result<Self, JsonRpcDbError> {
+    pub async fn try_new_with_rpc_url(rpc_url: &str) -> Result<Self, JsonRpcDbError> {
         // Create provider (this needs to be done in async context)
         let provider = ProviderBuilder::new()
             .connect(rpc_url)
@@ -43,6 +43,10 @@ impl JsonRpcDb {
         Ok(Self {
             provider: Arc::new(provider.root().clone()),
         })
+    }
+
+    pub fn new_with_provider(provider: Arc<RootProvider>) -> Self {
+        Self { provider }
     }
 }
 

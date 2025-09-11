@@ -10461,7 +10461,7 @@ dependencies = [
  "crossbeam",
  "ctor",
  "dashmap",
- "lazy_static",
+ "futures",
  "metrics",
  "rand 0.9.1",
  "reqwest",

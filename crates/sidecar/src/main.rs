@@ -36,7 +36,10 @@ use rust_tracing::trace;
 use crate::{
     cache::{
         Cache,
-        sources::sequencer::Sequencer,
+        sources::{
+            besu_client::BesuClient,
+            sequencer::Sequencer,
+        },
     },
     transactions_state::TransactionsState,
     transport::http::{
@@ -61,7 +64,8 @@ async fn main() -> anyhow::Result<()> {
     let (tx_sender, tx_receiver) = unbounded();
 
     let sequencer = Arc::new(Sequencer::try_new(&args.chain.rpc_url).await?);
-    let cache = Arc::new(Cache::new(vec![sequencer]));
+    let besu_client = BesuClient::try_build(&args.chain.besu_client_ws_url).await?;
+    let cache = Arc::new(Cache::new(vec![besu_client, sequencer]));
     let state: OverlayDb<Cache> = OverlayDb::new(
         Some(cache.clone()),
         args.credible
