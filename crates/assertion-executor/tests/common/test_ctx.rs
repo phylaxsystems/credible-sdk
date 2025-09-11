@@ -120,6 +120,7 @@ pub async fn setup_int_test_indexer(block_tag: BlockTag, time_lock_blocks: u64) 
         store: store.clone(),
         da_client,
         state_oracle,
+        state_oracle_deployment_block: 0,
         executor_config: assertion_executor::ExecutorConfig::default(),
         await_tag: block_tag,
     };
