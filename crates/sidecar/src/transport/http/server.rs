@@ -54,6 +54,7 @@ use tracing::{
 
 pub(in crate::transport) const METHOD_SEND_TRANSACTIONS: &str = "sendTransactions";
 pub(in crate::transport) const METHOD_BLOCK_ENV: &str = "sendBlockEnv";
+pub(in crate::transport) const METHOD_REORG: &str = "reorg";
 pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransactions";
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -227,6 +228,7 @@ pub async fn handle_transaction_rpc(
     let response = match request.method.as_str() {
         METHOD_SEND_TRANSACTIONS => handle_send_transactions(&state, &request).await?,
         METHOD_BLOCK_ENV => handle_block_env(&state, &request).await?,
+        METHOD_REORG => handle_reorg(&state, &request).await?,
         METHOD_GET_TRANSACTION => handle_get_transactions(&state, &request).await?,
         _ => {
             debug!(
@@ -277,6 +279,15 @@ async fn handle_send_transactions(
         debug!("Rejecting transaction - no block environment available");
         return Ok(JsonRpcResponse::block_not_available(request));
     }
+    process_request(state, request).await
+}
+
+#[instrument(name = "http_server::handle_reorg", skip_all, level = "debug")]
+async fn handle_reorg(
+    state: &ServerState,
+    request: &JsonRpcRequest,
+) -> Result<JsonRpcResponse, StatusCode> {
+    trace!("Processing reorg request");
     process_request(state, request).await
 }
 

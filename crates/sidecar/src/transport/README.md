@@ -183,6 +183,21 @@ The `transact_to` can be null, `0x`, "" or missing if the transaction is a contr
 }
 ```
 
+### `reorg`
+
+Reorg the last sent transaction. Hash of the last sent transaction must be the same as `removedTxHash`.
+
+```
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "reorg",
+  "params": {
+    "removedTxHash": "0x...", // Hash of the tx to remove
+  }
+}
+```
+
 ### `getTransactions`
 
 Retrieves transaction results by hash. Can retrieve one or many transactions at once. Uses long-polling semantics.

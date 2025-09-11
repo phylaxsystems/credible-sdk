@@ -534,7 +534,65 @@ impl TestTransport for LocalInstanceHttpDriver {
         ))
     }
 
-    async fn reorg(&self, _tx_hash: B256) -> Result<(), String> {
-        unimplemented!()
+    async fn reorg(&self, tx_hash: B256) -> Result<(), String> {
+        info!(target: "LocalInstanceHttpDriver", "LocalInstance sending reorg for: {:?}", tx_hash);
+
+        let request = json!({
+          "id": 1,
+          "jsonrpc": "2.0",
+          "method": "reorg",
+          "params": {
+            "removedTxHash": tx_hash,
+          }
+        });
+
+        debug!(target: "LocalInstanceHttpDriver", "Sending HTTP request: {}", serde_json::to_string_pretty(&request).unwrap_or_default());
+
+        let mut last_error = String::new();
+        let mut attempts = 0;
+
+        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
+            attempts += 1;
+
+            match self
+                .client
+                .post(format!("http://{}/tx", self.address))
+                .header("content-type", "application/json")
+                .json(&request)
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        return Err(format!("HTTP error: {}", response.status()));
+                    }
+
+                    let json_response: serde_json::Value = response
+                        .json()
+                        .await
+                        .map_err(|e| format!("Failed to parse response: {e}"))?;
+
+                    debug!(target: "LocalInstanceHttpDriver", "Received response: {}", serde_json::to_string_pretty(&json_response).unwrap_or_default());
+
+                    if let Some(error) = json_response.get("error") {
+                        return Err(format!("JSON-RPC error: {error}"));
+                    }
+
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_error = format!("HTTP request failed: {e}");
+                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
+                        debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
+                            .await;
+                    }
+                }
+            }
+        }
+
+        Err(format!(
+            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
+        ))
     }
 }

@@ -1,5 +1,4 @@
 use crate::{
-    ExecutorConfig,
     inspectors::{
         CallTracer,
         TriggerRecorder,
@@ -9,16 +8,19 @@ use crate::{
         Address,
         AssertionContract,
         B256,
-        Bytes,
         FixedBytes,
         U256,
     },
-    store::{
-        PendingModification,
-        assertion_contract_extractor::{
-            FnSelectorExtractorError,
-            extract_assertion_contract,
-        },
+    store::PendingModification,
+};
+
+#[cfg(any(test, feature = "test"))]
+use crate::{
+    ExecutorConfig,
+    primitives::Bytes,
+    store::assertion_contract_extractor::{
+        FnSelectorExtractorError,
+        extract_assertion_contract,
     },
 };
 
