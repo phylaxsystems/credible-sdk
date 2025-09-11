@@ -65,6 +65,14 @@ pub struct ChainArgs {
         env = "CHAIN_RPC_URL"
     )]
     pub rpc_url: String,
+
+    /// Besu client websocket URL
+    #[arg(
+        long = "chain.besu-client-ws-url",
+        default_value = "ws://127.0.0.1:8546",
+        env = "CHAIN_BESU_CLIENT_WS_URL"
+    )]
+    pub besu_client_ws_url: String,
 }
 
 /// Parameters for telemetry configuration

@@ -6,6 +6,7 @@ use std::{
 };
 use thiserror::Error;
 
+pub mod besu_client;
 mod json_rpc_db;
 pub mod sequencer;
 
