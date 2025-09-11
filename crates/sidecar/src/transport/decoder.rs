@@ -171,7 +171,7 @@ impl Decoder for HttpTransactionDecoder {
                     .get("removedTxHash")
                     .ok_or(HttpDecoderError::MissingParams)?
                     .as_str()
-                    .unwrap();
+                    .ok_or(HttpDecoderError::InvalidHash("bad hash".to_string()))?;
                 let hash: B256 = match hash.parse() {
                     Ok(rax) => rax,
                     Err(_) => {
