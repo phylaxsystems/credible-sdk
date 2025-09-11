@@ -1990,7 +1990,10 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(valid_reorg_request).unwrap();
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
-        assert!(result.is_ok(), "Should successfully decode valid reorg request");
+        assert!(
+            result.is_ok(),
+            "Should successfully decode valid reorg request"
+        );
         let contents = result.unwrap();
         assert_eq!(contents.len(), 1, "Should return exactly one queue content");
 
@@ -1998,7 +2001,10 @@ mod tests {
             TxQueueContents::Reorg(hash, _) => {
                 assert_eq!(
                     *hash,
-                    B256::from_str("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").unwrap(),
+                    B256::from_str(
+                        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    )
+                    .unwrap(),
                     "Should extract correct transaction hash"
                 );
             }
@@ -2020,14 +2026,20 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(reorg_request_no_prefix).unwrap();
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
-        assert!(result.is_ok(), "Should successfully decode reorg request without 0x prefix");
+        assert!(
+            result.is_ok(),
+            "Should successfully decode reorg request without 0x prefix"
+        );
         let contents = result.unwrap();
-        
+
         match &contents[0] {
             TxQueueContents::Reorg(hash, _) => {
                 assert_eq!(
                     *hash,
-                    B256::from_str("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").unwrap(),
+                    B256::from_str(
+                        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    )
+                    .unwrap(),
                     "Should handle hash without 0x prefix"
                 );
             }
@@ -2175,14 +2187,20 @@ mod tests {
         let request: JsonRpcRequest = serde_json::from_value(extra_fields_request).unwrap();
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
 
-        assert!(result.is_ok(), "Should successfully decode reorg with extra fields");
+        assert!(
+            result.is_ok(),
+            "Should successfully decode reorg with extra fields"
+        );
         let contents = result.unwrap();
-        
+
         match &contents[0] {
             TxQueueContents::Reorg(hash, _) => {
                 assert_eq!(
                     *hash,
-                    B256::from_str("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").unwrap(),
+                    B256::from_str(
+                        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    )
+                    .unwrap(),
                     "Should extract hash correctly even with extra fields"
                 );
             }
@@ -2206,12 +2224,15 @@ mod tests {
 
         assert!(result.is_ok(), "Should handle uppercase hex characters");
         let contents = result.unwrap();
-        
+
         match &contents[0] {
             TxQueueContents::Reorg(hash, _) => {
                 assert_eq!(
                     *hash,
-                    B256::from_str("0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF").unwrap(),
+                    B256::from_str(
+                        "0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF"
+                    )
+                    .unwrap(),
                     "Should handle uppercase hex"
                 );
             }
@@ -2235,10 +2256,9 @@ mod tests {
 
         assert!(result.is_ok(), "Should handle mixed case hex characters");
         let contents = result.unwrap();
-        
+
         match &contents[0] {
-            TxQueueContents::Reorg(_, _) => {
-            }
+            TxQueueContents::Reorg(_, _) => {}
             _ => panic!("Expected Reorg variant"),
         }
     }
