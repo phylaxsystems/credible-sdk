@@ -18,7 +18,6 @@ use revm::primitives::{
     StorageKey,
     StorageValue,
 };
-use std::sync::atomic::AtomicU64;
 
 #[derive(Debug)]
 pub struct Sequencer {
@@ -36,7 +35,7 @@ impl Sequencer {
 impl Source for Sequencer {
     // The Sequencer is always synced.
     #[inline]
-    fn is_synced(&self, _current_block_number: &AtomicU64) -> bool {
+    fn is_synced(&self, _current_block_number: u64) -> bool {
         true
     }
 

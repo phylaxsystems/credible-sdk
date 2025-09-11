@@ -65,7 +65,10 @@ async fn main() -> anyhow::Result<()> {
 
     let sequencer = Arc::new(Sequencer::try_new(&args.chain.rpc_url).await?);
     let besu_client = BesuClient::try_build(&args.chain.besu_client_ws_url).await?;
-    let cache = Arc::new(Cache::new(vec![besu_client, sequencer]));
+    let cache = Arc::new(Cache::new(
+        vec![besu_client, sequencer],
+        args.chain.minimum_state_diff,
+    ));
     let state: OverlayDb<Cache> = OverlayDb::new(
         Some(cache.clone()),
         args.credible

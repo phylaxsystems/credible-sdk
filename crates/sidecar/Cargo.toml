@@ -42,6 +42,7 @@ test = ["assertion-executor/test", "ctor"]
 [dev-dependencies]
 ctor = "0.5.0"
 sidecar-test-macros = { path = "src/utils/test-macros" }
+assertion-executor = { workspace = true, features = ["test"] }
 
 [profile.release]
 lto = "fat"

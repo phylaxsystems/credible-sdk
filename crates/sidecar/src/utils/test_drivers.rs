@@ -160,7 +160,7 @@ impl TestTransport for LocalInstanceMockDriver {
 
         // Create the engine with TransactionsState
         let state_results = crate::TransactionsState::new();
-        let cache = Arc::new(Cache::new(vec![]));
+        let cache = Arc::new(Cache::new(vec![], 100));
         let mut engine = CoreEngine::new(
             state,
             cache,
@@ -292,7 +292,7 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         // Create the engine with TransactionsState
         let state_results = crate::TransactionsState::new();
-        let cache = Arc::new(Cache::new(vec![]));
+        let cache = Arc::new(Cache::new(vec![], 10));
         let mut engine = CoreEngine::new(
             state,
             cache,
