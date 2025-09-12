@@ -37,6 +37,7 @@ use crate::{
     cache::{
         Cache,
         sources::{
+            Source,
             besu_client::BesuClient,
             sequencer::Sequencer,
         },
@@ -63,12 +64,14 @@ async fn main() -> anyhow::Result<()> {
 
     let (tx_sender, tx_receiver) = unbounded();
 
-    let sequencer = Arc::new(Sequencer::try_new(&args.chain.rpc_url).await?);
-    let besu_client = BesuClient::try_build(&args.chain.besu_client_ws_url).await?;
-    let cache = Arc::new(Cache::new(
-        vec![besu_client, sequencer],
-        args.chain.minimum_state_diff,
-    ));
+    let mut sources: Vec<Arc<dyn Source>> = vec![];
+    if let Ok(sequencer) = Sequencer::try_new(&args.chain.rpc_url).await {
+        sources.push(Arc::new(sequencer));
+    }
+    if let Ok(besu_client) = BesuClient::try_build(&args.chain.besu_client_ws_url).await {
+        sources.push(besu_client);
+    }
+    let cache = Arc::new(Cache::new(sources, args.chain.minimum_state_diff));
     let state: OverlayDb<Cache> = OverlayDb::new(
         Some(cache.clone()),
         args.credible
