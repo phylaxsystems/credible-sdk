@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Feature Request
+    url: https://github.com/phylaxsystems/credible-sdk/discussions/categories/feature-requests
+    about: We are collecting all feature requests related to the Credible Layer in one place.
   - name: Support
     url: https://t.me/phylax_credible_layer
     about: This issue tracker is only for bugs. Support is available on Telegram!
