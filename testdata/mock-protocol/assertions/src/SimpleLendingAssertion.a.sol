@@ -20,8 +20,8 @@ contract SimpleLendingAssertion is Assertion {
         ph.forkPostTx();
 
         // Get price feeds directly from the lending contract
-        IPriceFeed ethPriceFeed = simpleLending.ethPriceFeed();
-        IPriceFeed tokenPriceFeed = simpleLending.tokenPriceFeed();
+        IPriceFeed ethPriceFeed = simpleLending.ETH_PRICE_FEED();
+        IPriceFeed tokenPriceFeed = simpleLending.TOKEN_PRICE_FEED();
 
         uint256 ethPrice = ethPriceFeed.getPrice();
         uint256 tokenPrice = tokenPriceFeed.getPrice();
@@ -71,8 +71,8 @@ contract SimpleLendingAssertion is Assertion {
             address caller = calls[i].caller;
 
             // Get price feeds
-            IPriceFeed ethPriceFeed = simpleLending.ethPriceFeed();
-            IPriceFeed tokenPriceFeed = simpleLending.tokenPriceFeed();
+            IPriceFeed ethPriceFeed = simpleLending.ETH_PRICE_FEED();
+            IPriceFeed tokenPriceFeed = simpleLending.TOKEN_PRICE_FEED();
 
             uint256 ethPrice = ethPriceFeed.getPrice();
             uint256 tokenPrice = tokenPriceFeed.getPrice();

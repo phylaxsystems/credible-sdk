@@ -4,7 +4,6 @@ pragma solidity ^0.8.28;
 import {Assertion} from "credible-std/Assertion.sol";
 import {PhEvm} from "credible-std/PhEvm.sol";
 import {Test} from "forge-std/Test.sol";
-import {console} from "forge-std/console.sol";
 import {Target, TARGET} from "./Target.sol";
 
 contract TestGetLogs is Assertion, Test {
@@ -31,7 +30,7 @@ contract TestGetLogs is Assertion, Test {
     }
 
     function triggers() external view override {
-      registerCallTrigger(this.testGetLogs.selector);
+        registerCallTrigger(this.testGetLogs.selector);
     }
 }
 

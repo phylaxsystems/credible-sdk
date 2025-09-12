@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {Assertion} from "credible-std/Assertion.sol";
 import {Test} from "forge-std/Test.sol";
 
-import {Target, TARGET} from "./Target.sol";
+import {TARGET} from "./Target.sol";
 
 contract TestFork is Assertion, Test {
     uint256 expectedSum = 0;

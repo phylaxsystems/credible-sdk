@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title SimpleLending
 /// @notice A basic lending protocol that allows users to borrow tokens against ETH collateral
 /// @dev This is a simplified implementation for demonstration purposes
 contract SimpleLending {
-    IERC20 public immutable borrowToken;
+    IERC20 public immutable BORROW_TOKEN;
 
     // Price feed interfaces for getting asset prices
-    IPriceFeed public immutable ethPriceFeed;
-    IPriceFeed public immutable tokenPriceFeed;
+    IPriceFeed public immutable ETH_PRICE_FEED;
+    IPriceFeed public immutable TOKEN_PRICE_FEED;
 
     /// @notice Collateral ratio required (75% - can only borrow up to 75% of collateral value)
     uint256 public constant COLLATERAL_RATIO = 75;
@@ -37,9 +37,9 @@ contract SimpleLending {
     /// @param _ethPriceFeed Address of the ETH price feed contract
     /// @param _tokenPriceFeed Address of the token price feed contract
     constructor(address _borrowToken, address _ethPriceFeed, address _tokenPriceFeed) {
-        borrowToken = IERC20(_borrowToken);
-        ethPriceFeed = IPriceFeed(_ethPriceFeed);
-        tokenPriceFeed = IPriceFeed(_tokenPriceFeed);
+        BORROW_TOKEN = IERC20(_borrowToken);
+        ETH_PRICE_FEED = IPriceFeed(_ethPriceFeed);
+        TOKEN_PRICE_FEED = IPriceFeed(_tokenPriceFeed);
     }
 
     /// @notice Allows users to deposit ETH as collateral
@@ -58,8 +58,8 @@ contract SimpleLending {
         require(amount > 0, "Must borrow non-zero amount");
 
         // Get current prices from oracles
-        uint256 ethPrice = ethPriceFeed.getPrice();
-        uint256 tokenPrice = tokenPriceFeed.getPrice();
+        uint256 ethPrice = ETH_PRICE_FEED.getPrice();
+        uint256 tokenPrice = TOKEN_PRICE_FEED.getPrice();
 
         Position storage position = positions[msg.sender];
 
@@ -73,7 +73,7 @@ contract SimpleLending {
         position.borrowedAmount += amount;
         totalBorrowed += amount;
 
-        require(borrowToken.transfer(msg.sender, amount), "Token transfer failed");
+        require(BORROW_TOKEN.transfer(msg.sender, amount), "Token transfer failed");
     }
 
     /// @notice Allows users to repay their borrowed tokens
@@ -83,7 +83,7 @@ contract SimpleLending {
         Position storage position = positions[msg.sender];
         require(position.borrowedAmount >= amount, "Cannot repay more than borrowed");
 
-        require(borrowToken.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+        require(BORROW_TOKEN.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
 
         position.borrowedAmount -= amount;
         totalBorrowed -= amount;

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-Target constant TARGET = Target(
-    address(0x118DD24a3b0D02F90D8896E242D3838B4D37c181)
-);
+Target constant TARGET = Target(address(0x118DD24a3b0D02F90D8896E242D3838B4D37c181));
 
 enum CallType {
     DelegateCall,
@@ -52,16 +50,14 @@ contract Target {
     function recursiveCalls() public {
         value++;
         while (value != 4) {
-            (bool success, ) = address(this).call(
-                abi.encodeWithSelector(this.recursiveCalls.selector)
-            );
+            (bool success,) = address(this).call(abi.encodeWithSelector(this.recursiveCalls.selector));
             (success);
         }
     }
 
     function unhandledRevert() external {
         reverts = new Reverts();
-        (bool success, ) = address(reverts).call("");
+        (bool success,) = address(reverts).call("");
         (success);
     }
 
@@ -80,15 +76,7 @@ contract Target {
 
                     let loaded_impl := sload(impl.slot)
 
-                    success := callcode(
-                        gas(),
-                        loaded_impl,
-                        0,
-                        ptr,
-                        calldatasize(),
-                        retData,
-                        returndatasize()
-                    )
+                    success := callcode(gas(), loaded_impl, 0, ptr, calldatasize(), retData, returndatasize())
                 }
                 (success, retData) = (success, retData);
             }
