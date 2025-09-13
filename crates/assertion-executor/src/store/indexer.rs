@@ -150,16 +150,16 @@ pub struct Indexer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum BlockTag {
     Latest,
-    Finalized,
     Safe,
+    Finalized,
 }
 
 impl From<BlockTag> for BlockNumberOrTag {
     fn from(tag: BlockTag) -> Self {
         match tag {
             BlockTag::Latest => BlockNumberOrTag::Latest,
-            BlockTag::Finalized => BlockNumberOrTag::Finalized,
             BlockTag::Safe => BlockNumberOrTag::Safe,
+            BlockTag::Finalized => BlockNumberOrTag::Finalized,
         }
     }
 }
