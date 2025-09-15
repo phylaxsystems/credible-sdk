@@ -545,6 +545,13 @@ impl<T: TestTransport> LocalInstance<T> {
             return Err("Engine handle does not exist! Make sure the engine was initialized before calling fn!".to_string());
         }
 
+        // Reorg was accepted by the engine and the last executed transaction
+        // was removed from the buffer. Mirror this in our local nonce tracking
+        // so that subsequent transactions use the correct nonce again.
+        if self.current_nonce > 0 {
+            self.current_nonce -= 1;
+        }
+
         Ok(())
     }
 }
