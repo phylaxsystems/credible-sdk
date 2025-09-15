@@ -24,7 +24,7 @@ message TransactionEnv {
   string caller = 1;
   uint64 gas_limit = 2;
   string gas_price = 3; // decimal string
-  string transact_to = 4; // empty string => create
+  string transact_to = 4; // empty string or "0x" => create
   string value = 5;       // decimal string
   string data = 6;        // hex string (0x... or raw hex)
   uint64 nonce = 7;
@@ -41,8 +41,8 @@ message SendTransactionsRequest {
 }
 
 message SendTransactionsResponse {
-  uint64 accepted_count = 1; // number of accepted items (txs or events)
-  uint64 request_count = 2;  // total items received
+  uint64 accepted_count = 1; // number of accepted transactions
+  uint64 request_count = 2;  // total transactions received
   string message = 3;        // info message
 }
 
@@ -72,4 +72,3 @@ service SidecarTransport {
   rpc Reorg(ReorgRequest) returns (BasicAck);
   rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
 }
-

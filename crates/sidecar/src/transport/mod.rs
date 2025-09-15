@@ -21,6 +21,7 @@
 //! Below you'll be able to find the API reference for the sidecar as `JSON-RPC` calls. For protobuf, see the `grpc` mod.
 #![doc = include_str!("./README.md")]
 
+mod common;
 pub mod decoder;
 pub mod grpc;
 pub mod http;

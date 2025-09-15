@@ -1,7 +1,7 @@
-//! # grpc processing `server
+//! # gRPC processing server
 //!
 //! This file contains helper functions and implementations for processing messages
-//! generated from the protobuf definition in `./sidecar.protobuf`.
+//! generated from the protobuf definition in `./sidecar.proto`.
 //!
 //! These methods get called later when we receive a corresponding protobuf message
 //! in the transport.
@@ -30,30 +30,23 @@ use crate::{
         },
     },
     transport::{
-        decoder::HttpDecoderError,
+        common::{
+            HttpDecoderError,
+            to_tx_env_from_fields,
+        },
         http::transactions_results::QueryTransactionsResults,
     },
 };
 use assertion_executor::primitives::ExecutionResult;
-use revm::{
-    context::TxEnv,
-    primitives::{
-        Address,
-        B256,
-        Bytes,
-        TxKind,
-        U256,
-        alloy_primitives::TxHash,
-    },
+use revm::primitives::{
+    B256,
+    alloy_primitives::TxHash,
 };
-use std::{
-    str::FromStr,
-    sync::{
-        Arc,
-        atomic::{
-            AtomicBool,
-            Ordering,
-        },
+use std::sync::{
+    Arc,
+    atomic::{
+        AtomicBool,
+        Ordering,
     },
 };
 use tonic::{
@@ -91,7 +84,7 @@ impl GrpcService {
 
 #[tonic::async_trait]
 impl SidecarTransport for GrpcService {
-    /// Function to parse ProtoBuf message for `SendBlockEnv`
+    /// Handle gRPC request for `SendBlockEnv`.
     #[instrument(
         name = "grpc_server::SendBlockEnv",
         skip(self, request),
@@ -149,7 +142,7 @@ impl SidecarTransport for GrpcService {
         }))
     }
 
-    /// Function to parse ProtoBuf message for `SendTransactions`
+    /// Handle gRPC request for `SendTransactions`.
     #[instrument(
         name = "grpc_server::SendTransactions",
         skip(self, request),
@@ -201,7 +194,7 @@ impl SidecarTransport for GrpcService {
         }))
     }
 
-    /// Function to parse protobuf for `Reorg` messages
+    /// Handle gRPC request for `Reorg` messages.
     #[instrument(name = "grpc_server::Reorg", skip(self, request), level = "debug")]
     async fn reorg(&self, request: Request<ReorgRequest>) -> Result<Response<BasicAck>, Status> {
         trace!("Processing gRPC Reorg request");
@@ -224,7 +217,7 @@ impl SidecarTransport for GrpcService {
         }))
     }
 
-    /// Function to parse protobuf for `GetTransactions` messages
+    /// Handle gRPC request for `GetTransactions` messages.
     #[instrument(
         name = "grpc_server::GetTransactions",
         skip(self, request),
@@ -248,12 +241,9 @@ impl SidecarTransport for GrpcService {
 
         for h in payload.tx_hashes.iter() {
             match h.parse::<TxHash>() {
-                Ok(_) => {
-                    if self
-                        .transactions_results
-                        .is_tx_received(&h.parse().expect("validated above"))
-                    {
-                        received.push(h.clone());
+                Ok(hash) => {
+                    if self.transactions_results.is_tx_received(&hash) {
+                        received.push((h.clone(), hash));
                     } else {
                         not_found.push(h.clone());
                     }
@@ -263,8 +253,7 @@ impl SidecarTransport for GrpcService {
         }
 
         let mut results = Vec::with_capacity(received.len());
-        for h in received {
-            let hash = h.parse::<TxHash>().expect("validated above");
+        for (h, hash) in received {
             let result = match self.transactions_results.request_transaction_result(&hash) {
                 crate::transactions_state::RequestTransactionResult::Result(r) => r,
                 crate::transactions_state::RequestTransactionResult::Channel(rx) => {
@@ -337,49 +326,17 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
     }
 }
 
-fn parse_tx_kind(transact_to: &str) -> Result<TxKind, HttpDecoderError> {
-    if transact_to.is_empty() || transact_to == "0x" {
-        Ok(TxKind::Create)
-    } else {
-        let addr = Address::from_str(transact_to)
-            .map_err(|_| HttpDecoderError::InvalidAddress(transact_to.to_string()))?;
-        Ok(TxKind::Call(addr))
-    }
-}
-
-fn parse_hex_data(data: &str) -> Result<Bytes, HttpDecoderError> {
-    if data.is_empty() {
-        return Ok(Bytes::new());
-    }
-    let hex = strip_0x(data);
-    assertion_executor::primitives::hex::decode(hex)
-        .map(Bytes::from)
-        .map_err(|_| HttpDecoderError::InvalidHex(data.to_string()))
-}
-
-fn to_tx_env(env: &TransactionEnv) -> Result<TxEnv, HttpDecoderError> {
-    let caller = Address::from_str(&env.caller)
-        .map_err(|_| HttpDecoderError::InvalidAddress(env.caller.clone()))?;
-    let gas_price: u128 = env
-        .gas_price
-        .parse()
-        .map_err(|_| HttpDecoderError::InvalidHex(env.gas_price.clone()))?;
-    let kind = parse_tx_kind(&env.transact_to)?;
-    let value = U256::from_str_radix(&env.value, 10)
-        .map_err(|_| HttpDecoderError::InvalidHex(env.value.clone()))?;
-    let data = parse_hex_data(&env.data)?;
-
-    Ok(TxEnv {
-        caller,
-        gas_limit: env.gas_limit,
-        gas_price,
-        kind,
-        value,
-        data,
-        nonce: env.nonce,
-        chain_id: Some(env.chain_id),
-        ..Default::default()
-    })
+fn to_tx_env(env: &TransactionEnv) -> Result<revm::context::TxEnv, HttpDecoderError> {
+    to_tx_env_from_fields(
+        &env.caller,
+        env.gas_limit,
+        &env.gas_price,
+        Some(&env.transact_to),
+        &env.value,
+        &env.data,
+        env.nonce,
+        env.chain_id,
+    )
 }
 
 fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
@@ -393,9 +350,4 @@ fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
         QueueTransaction { tx_hash, tx_env },
         span,
     ))
-}
-
-#[inline]
-fn strip_0x(s: &str) -> &str {
-    s.strip_prefix("0x").unwrap_or(s)
 }

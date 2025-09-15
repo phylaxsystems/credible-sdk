@@ -1,6 +1,6 @@
 //! # `gRPC` transport
 //!
-//! The following is a transport implementation for grpc/protobuf for the sidecar.
+//! The following is a transport implementation for gRPC/Protobuf for the sidecar.
 //!
 //! We use `prost` to generate protobuf rust code from a protobuf definition, and create a
 //! `tonic` service from it.

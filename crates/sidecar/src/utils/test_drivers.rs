@@ -779,9 +779,15 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         // Add n_transactions and last_tx_hash to match HTTP transport format
         if let Some(obj) = block_env_json.as_object_mut() {
-            obj.insert("n_transactions".to_string(), serde_json::Value::Number(serde_json::Number::from(self.n_transactions)));
+            obj.insert(
+                "n_transactions".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(self.n_transactions)),
+            );
             if let Some(hash) = self.last_tx_hash {
-                obj.insert("last_tx_hash".to_string(), serde_json::Value::String(hash.to_string()));
+                obj.insert(
+                    "last_tx_hash".to_string(),
+                    serde_json::Value::String(hash.to_string()),
+                );
             }
         }
 
@@ -870,10 +876,16 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 Ok(response) => {
                     let resp = response.into_inner();
                     if resp.accepted_count == 0 {
-                        return Err(format!("Transaction rejected: {} (request_count: {})", resp.message, resp.request_count));
+                        return Err(format!(
+                            "Transaction rejected: {} (request_count: {})",
+                            resp.message, resp.request_count
+                        ));
                     }
                     if resp.accepted_count != resp.request_count {
-                        return Err(format!("Partial acceptance: {}/{} transactions accepted: {}", resp.accepted_count, resp.request_count, resp.message));
+                        return Err(format!(
+                            "Partial acceptance: {}/{} transactions accepted: {}",
+                            resp.accepted_count, resp.request_count, resp.message
+                        ));
                     }
                     debug!(target: "LocalInstanceGrpcDriver", "Transaction accepted: {}/{} transactions", resp.accepted_count, resp.request_count);
                     return Ok(());
