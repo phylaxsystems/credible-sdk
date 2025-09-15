@@ -714,6 +714,9 @@ mod tests {
 
     #[crate::utils::engine_test(all)]
     async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {
+        // Send an empty block to verify we can advance the chain with empty blocks
+        instance.new_block().await.unwrap();
+
         // Send and verify a reverting CREATE transaction
         let tx_hash = instance.send_reverting_create_tx().await.unwrap();
 

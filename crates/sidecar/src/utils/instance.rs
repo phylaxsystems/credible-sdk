@@ -493,6 +493,14 @@ impl<T: TestTransport> LocalInstance<T> {
 
         Ok(())
     }
+
+    /// Advance the chain by 1 block by sending a new `BlockEnv` to the core engine.
+    pub async fn new_block(&mut self) -> Result<(), String> {
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
+
+        Ok(())
+    }
 }
 
 impl<T: TestTransport> Drop for LocalInstance<T> {
