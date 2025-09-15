@@ -317,7 +317,10 @@ impl<T: TestTransport> LocalInstance<T> {
         // If the engine exited (e.g., received tx before blockenv), return an error
         if let Some(handle) = &self.engine_handle {
             if handle.is_finished() {
-                return Err("Core engine exited while processing transaction (likely sent before blockenv)".to_string());
+                return Err(
+                    "Core engine exited while processing transaction (likely sent before blockenv)"
+                        .to_string(),
+                );
             }
         } else {
             return Err("Engine handle does not exist! Make sure the engine was initialized before calling fn!".to_string());
