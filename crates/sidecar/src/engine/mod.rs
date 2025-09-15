@@ -41,6 +41,7 @@
 pub mod queue;
 mod transactions_results;
 
+use tinyvec::ArrayVec;
 use super::engine::queue::{
     QueueBlockEnv,
     TransactionQueueReceiver,
@@ -99,8 +100,35 @@ use tracing::{
     warn,
 };
 
-/// Contains the last executed transaction hash and resulting state.
-type LastExecutedTx = Option<(B256, EvmState)>;
+/// Contains the last two executed transaction hashes and resulting states.
+/// Stores up to 2 transactions in a stack-allocated array.
+#[derive(Debug)]
+struct LastExecutedTx {
+    hashes: ArrayVec::<[(B256, EvmState); 2]>,
+}
+
+impl LastExecutedTx {
+    fn new() -> Self {
+        Self {
+            hashes: ArrayVec::new(),
+        }
+    }
+
+    fn push(&mut self, hash: B256, state: EvmState) {
+        if self.hashes.len() == 2 {
+            self.hashes.remove(0); // Remove oldest
+        }
+        self.hashes.push((hash, state));
+    }
+
+    fn remove_last(&mut self) -> Option<(B256, EvmState)> {
+        self.hashes.pop()
+    }
+
+    fn current(&self) -> Option<&(B256, EvmState)> {
+        self.hashes.last()
+    }
+}
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum EngineError {
@@ -180,7 +208,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 transaction_results_max_capacity,
             ),
             block_metrics: BlockMetrics::new(),
-            last_executed_tx: None,
+            last_executed_tx: LastExecutedTx::new(),
             block_env_transaction_counter: 0,
         }
     }
@@ -203,7 +231,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             cache: Arc::new(Cache::new(vec![], 10)),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
             block_metrics: BlockMetrics::new(),
-            last_executed_tx: None,
+            last_executed_tx: LastExecutedTx::new(),
             block_env_transaction_counter: 0,
         }
     }
@@ -349,7 +377,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
                 self.block_metrics.transactions_simulated_success += 1;
 
-                self.last_executed_tx = Some((tx_hash, rax.result_and_state.state));
+                self.last_executed_tx.push(tx_hash, rax.result_and_state.state);
             } else {
                 self.block_metrics.transactions_simulated_failure += 1;
             }
@@ -440,7 +468,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         // If the last tx hash from the block env is different from the last tx hash from the
         // queue, invalidate the cache
-        if let Some((prev_tx_hash, _)) = &self.last_executed_tx
+        if let Some((prev_tx_hash, _)) = self.last_executed_tx.current()
             && Some(prev_tx_hash) != queue_block_env.last_tx_hash.as_ref()
         {
             self.cache
@@ -577,13 +605,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
     /// Applies the state inside of `self.last_executed_tx` to `self.state`.
     ///
-    /// If `self.last_executed_tx` is `None`, we dont do anything.
+    /// If `self.last_executed_tx` is empty, we dont do anything.
     fn apply_state_buffer(&mut self) {
-        if let Some(last_executed_tx) = &self.last_executed_tx {
-            let changes = last_executed_tx.1.clone();
+        if let Some((_, state)) = self.last_executed_tx.current() {
+            let changes = state.clone();
             self.state.commit(changes);
         }
-        self.last_executed_tx = None;
+        self.last_executed_tx = LastExecutedTx::new();
     }
 
     /// Processes a reorg event. Checks if the hash of the last executed tx
@@ -605,20 +633,25 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         // Check if we have received a transaction at all
-        if let Some(tx_params) = &self.last_executed_tx {
-            let last_hash = tx_params.0;
-            if tx_hash == last_hash {
+        if let Some((last_hash, _)) = self.last_executed_tx.current() {
+            if tx_hash == *last_hash {
                 info!(
                     target = "engine",
                     tx_hash = %tx_hash,
                     "Executing reorg for hash"
                 );
 
-                // Clear state buffer if the tx's match
-                self.last_executed_tx = None;
+                // Remove the last transaction from buffer, preserving the previous one if it exists
+                self.last_executed_tx.remove_last();
 
                 // Remove transaction from results
                 self.transaction_results.remove_transaction_result(tx_hash);
+
+                // Only decrement the counter if we haven't processed a new block yet
+                if self.block_env_transaction_counter > 0 {
+                    self.block_env_transaction_counter -= 1;
+                }
+
                 return Ok(());
             }
         }
