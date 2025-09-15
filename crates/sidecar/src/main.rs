@@ -62,45 +62,47 @@ async fn main() -> anyhow::Result<()> {
 
     let args = SidecarArgs::parse();
 
-    let (tx_sender, tx_receiver) = unbounded();
-
-    let mut sources: Vec<Arc<dyn Source>> = vec![];
-    if let Ok(sequencer) = Sequencer::try_new(&args.chain.rpc_url).await {
-        sources.push(Arc::new(sequencer));
-    }
-    if let Ok(besu_client) = BesuClient::try_build(&args.chain.besu_client_ws_url).await {
-        sources.push(besu_client);
-    }
-    let cache = Arc::new(Cache::new(sources, args.chain.minimum_state_diff));
-    let state: OverlayDb<Cache> = OverlayDb::new(
-        Some(cache.clone()),
-        args.credible
-            .overlay_cache_capacity_bytes
-            .unwrap_or(1024 * 1024 * 1024) as u64,
-    );
-
     let executor_config = init_executor_config(&args);
     let assertion_store = init_assertion_store(&args)?;
     let assertion_executor =
         AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
 
     let engine_state_results = TransactionsState::new();
-    let transport = HttpTransport::new(
-        HttpTransportConfig::try_from(args.transport.clone())?,
-        tx_sender,
-        engine_state_results.clone(),
-    )?;
-
-    let mut engine = CoreEngine::new(
-        state,
-        cache,
-        tx_receiver,
-        assertion_executor,
-        engine_state_results.clone(),
-        args.credible.transaction_results_max_capacity,
-    );
 
     loop {
+        let mut sources: Vec<Arc<dyn Source>> = vec![];
+        if let Ok(sequencer) = Sequencer::try_new(&args.chain.rpc_url).await {
+            sources.push(Arc::new(sequencer));
+        }
+        if let Ok(besu_client) = BesuClient::try_build(&args.chain.besu_client_ws_url).await {
+            sources.push(besu_client);
+        }
+
+        // The cache is flushed on restart
+        let cache = Arc::new(Cache::new(sources, args.chain.minimum_state_diff));
+        let state: OverlayDb<Cache> = OverlayDb::new(
+            Some(cache.clone()),
+            args.credible
+                .overlay_cache_capacity_bytes
+                .unwrap_or(1024 * 1024 * 1024) as u64,
+        );
+
+        let (tx_sender, tx_receiver) = unbounded();
+        let transport = HttpTransport::new(
+            HttpTransportConfig::try_from(args.transport.clone())?,
+            tx_sender,
+            engine_state_results.clone(),
+        )?;
+
+        let mut engine = CoreEngine::new(
+            state,
+            cache,
+            tx_receiver,
+            assertion_executor.clone(),
+            engine_state_results.clone(),
+            args.credible.transaction_results_max_capacity,
+        );
+
         let indexer_cfg =
             init_indexer_config(&args, assertion_store.clone(), &executor_config).await?;
 
