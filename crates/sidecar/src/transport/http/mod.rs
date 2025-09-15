@@ -200,3 +200,135 @@ impl Transport for HttpTransport {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use reqwest::Client;
+    use serde_json::json;
+    use std::net::SocketAddr;
+    use tracing::debug;
+
+    #[crate::utils::engine_test(http)]
+    async fn test_invalid_block_env_request(mut instance: crate::utils::LocalInstance) {
+        // Send a valid transaction
+        let _ = instance.send_reverting_create_tx().await.unwrap();
+
+        let local_address = instance.local_address.unwrap();
+
+        // Send an invalid blockenv request
+        let invalid_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": "invalid_number",  // String instead of u64
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 0u64,
+                "gas_limit": 0u64,
+                "basefee": 0u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let res = send_raw_request(invalid_request, local_address)
+            .await
+            .unwrap();
+        assert!(res.contains("Failed to decode transactions: Request not in proper schema"));
+    }
+
+    #[crate::utils::engine_test(http)]
+    async fn test_invalid_reorg_request(mut instance: crate::utils::LocalInstance) {
+        // Send a valid transaction
+        let _ = instance.send_reverting_create_tx().await.unwrap();
+
+        let local_address = instance.local_address.unwrap();
+
+        // Send an invalid blockenv request
+        let invalid_request = json!({
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "invalid": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
+            "id": 1
+        });
+
+        let res = send_raw_request(invalid_request, local_address)
+            .await
+            .unwrap();
+        assert!(res.contains("Failed to decode transactions: Missing transaction parameters"));
+    }
+
+    #[crate::utils::engine_test(http)]
+    async fn test_invalid_transaction_request(mut instance: crate::utils::LocalInstance) {
+        // Send a valid transaction
+        let _ = instance.send_reverting_create_tx().await.unwrap();
+
+        let local_address = instance.local_address.unwrap();
+
+        // Send an invalid blockenv request
+        let invalid_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendTransactions",
+            "params": {
+                "transactions": [
+                    {
+                        "txEnv": {
+                            "caller": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
+                            "gas_limit": 21000,
+                            "gas_price": "1000",
+                            "transact_to": "0x8ba1f109551bD432803012645Hac136c2D29",
+                            "value": "0x0",
+                            "data": "0x",
+                            "chain_id": 1,
+                            "access_list": []
+                        }
+                    }
+                ]
+            },
+            "id": 1
+        });
+
+        let res = send_raw_request(invalid_request, local_address)
+            .await
+            .unwrap();
+        assert!(res.contains("Failed to decode transactions: Request not in proper schema"));
+    }
+
+    async fn send_raw_request(
+        request: serde_json::Value,
+        address: SocketAddr,
+    ) -> Result<String, String> {
+        let mut last_error = String::new();
+        let mut attempts = 0;
+
+        while attempts < 3 {
+            attempts += 1;
+
+            match Client::new()
+                .post(format!("http://{address}/tx"))
+                .header("content-type", "application/json")
+                .json(&request)
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        return Err(format!("HTTP error: {}", response.status()));
+                    }
+
+                    return Ok(response.text().await.unwrap_or_default());
+                }
+                Err(e) => {
+                    last_error = format!("HTTP request failed: {e}");
+                    if attempts < 3 {
+                        debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/3), retrying...", attempts);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+                    }
+                }
+            }
+        }
+
+        Err(last_error)
+    }
+}

@@ -34,6 +34,7 @@ use revm::{
     },
 };
 use std::{
+    net::SocketAddr,
     sync::Arc,
     time::Duration,
 };
@@ -94,6 +95,8 @@ pub struct LocalInstance<T: TestTransport> {
     current_nonce: u64,
     /// Container type that holds the transport and impls `TestTransport`
     transport: T,
+    /// Local address for the HTTP transport
+    pub local_address: Option<SocketAddr>,
 }
 
 impl<T: TestTransport> LocalInstance<T> {
@@ -115,6 +118,7 @@ impl<T: TestTransport> LocalInstance<T> {
         transaction_results: Arc<crate::TransactionsState>,
         default_account: Address,
         current_nonce: u64,
+        local_address: Option<&SocketAddr>,
         transport: T,
     ) -> Self {
         Self {
@@ -129,6 +133,7 @@ impl<T: TestTransport> LocalInstance<T> {
             default_account,
             current_nonce,
             transport,
+            local_address: local_address.copied(),
         }
     }
 
