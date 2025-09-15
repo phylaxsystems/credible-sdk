@@ -1,7 +1,7 @@
 //! # `gRPC` transport
 //!
 //! The following is a transport implementation for grpc/protobuf for the sidecar.
-//! 
+//!
 //! We use `prost` to generate protobuf rust code from a protobuf definition, and create a
 //! `tonic` service from it.
 //!
@@ -11,7 +11,10 @@
 //!
 //! ## Type definitions
 //! Protobuf typing can be found below:
-//! [doc = include_str!("./sidecar.proto")]
+//!
+//! ```protobuf
+#![doc = include_str!("./sidecar.proto")]
+//! ```
 
 use crate::{
     engine::queue::TransactionQueueSender,

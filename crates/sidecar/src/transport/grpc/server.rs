@@ -216,7 +216,7 @@ impl SidecarTransport for GrpcService {
             message: "reorg accepted".into(),
         }))
     }
-    
+
     /// Function to parse protobuf for `GetTransactions` messages
     #[instrument(
         name = "grpc_server::GetTransactions",
