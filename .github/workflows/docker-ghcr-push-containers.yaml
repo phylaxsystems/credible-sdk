@@ -25,7 +25,7 @@ jobs:
             echo "Version mismatch: Tag version ($TAG_VERSION) does not match workspace Cargo.toml version ($CARGO_VERSION)"
             exit 1
           fi
-  docker-ghcr-push:
+  docker-ghcr-push-assertion-da:
     needs: check-version
     if: always() && (needs.check-version.result == 'success' || needs.check-version.result == 'skipped')
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
@@ -33,7 +33,7 @@ jobs:
       rust-binary-name: assertion-da
       requires-private-deps: false
       dockerfile-path: dockerfile/Dockerfile.da
-  docker-ghcr-push-dev:
+  docker-ghcr-push-assertion-da-dev:
     needs: check-version
     if: always() && (needs.check-version.result == 'success' || needs.check-version.result == 'skipped')
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
@@ -42,11 +42,12 @@ jobs:
       requires-private-deps: false
       dockerfile-path: dockerfile/Dockerfile.da
       build-flags: "--features debug_assertions"
-  docker-ghcr-push-sidecar:
+  docker-ghcr-push-sidecar-linea:
     needs: check-version
     if: always() && (needs.check-version.result == 'success' || needs.check-version.result == 'skipped')
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
-      rust-binary-name: sidecar
+      rust-binary-name: sidecar-linea
       requires-private-deps: false
       dockerfile-path: dockerfile/Dockerfile.sidecar
+      build-flags: "--features linea"
