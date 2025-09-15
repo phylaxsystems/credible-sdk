@@ -892,6 +892,8 @@ mod tests {
 
     #[crate::utils::engine_test(all)]
     async fn test_core_engine_reorg(mut instance: crate::utils::LocalInstance) {
+        // 1. run tx + reorg
+
         // Send and verify a successful CREATE transaction
         let tx_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -906,6 +908,58 @@ mod tests {
 
         // Send reorg and unwrap on the result, verifying if the core engine
         // processed tx or exited with error
+        instance.send_reorg(tx_hash).await.unwrap();
+
+        // 2. tx + reorg + tx
+
+        // Send and verify a successful CREATE transaction
+        let tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Verify transaction was successful
+        assert!(
+            instance.is_transaction_successful(&tx_hash).unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
+
+        // Send reorg and unwrap on the result, verifying if the core engine
+        // processed tx or exited with error
+        instance.send_reorg(tx_hash).await.unwrap();
+
+        let tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&tx_hash).unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
+
+        // 3. tx + tx + reorg
+
+        let tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&tx_hash).unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
+
+        let tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&tx_hash).unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
+
         instance.send_reorg(tx_hash).await.unwrap();
     }
 
