@@ -1,3 +1,11 @@
+//! # grpc processing `server
+//!
+//! This file contains helper functions and implementations for processing messages
+//! generated from the protobuf definition in `./sidecar.protobuf`.
+//!
+//! These methods get called later when we receive a corresponding protobuf message
+//! in the transport.
+
 use super::pb::{
     BasicAck,
     BlockEnvEnvelope,

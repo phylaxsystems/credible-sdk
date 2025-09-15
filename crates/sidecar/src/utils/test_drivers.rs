@@ -17,12 +17,12 @@ use crate::{
             GrpcTransport,
             config::GrpcTransportConfig,
             pb::{
-                sidecar_transport_client::SidecarTransportClient,
                 BlockEnvEnvelope,
+                ReorgRequest,
                 SendTransactionsRequest,
                 Transaction as GrpcTransaction,
                 TransactionEnv as GrpcTransactionEnv,
-                ReorgRequest,
+                sidecar_transport_client::SidecarTransportClient,
             },
         },
         http::{
@@ -76,6 +76,7 @@ use std::{
     net::SocketAddr,
     sync::Arc,
 };
+use tonic::transport::Channel;
 use tracing::{
     Span,
     debug,
@@ -626,7 +627,7 @@ impl TestTransport for LocalInstanceHttpDriver {
 /// Wrapper over the `LocalInstance` that provides `GrpcTransport` functionality
 pub struct LocalInstanceGrpcDriver {
     /// gRPC client for the transport
-    client: SidecarTransportClient<tonic::transport::Channel>,
+    client: SidecarTransportClient<Channel>,
     /// Number of transactions sent in the current block
     n_transactions: u64,
     /// Last transaction hash sent
@@ -720,10 +721,13 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 Ok(client) => break client,
                 Err(e) => {
                     if attempts >= MAX_HTTP_RETRY_ATTEMPTS {
-                        return Err(format!("Failed to connect to gRPC server after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {e}"));
+                        return Err(format!(
+                            "Failed to connect to gRPC server after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {e}"
+                        ));
                     }
                     debug!(target: "LocalInstanceGrpcDriver", "gRPC connection failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
+                        .await;
                 }
             }
         };
@@ -758,8 +762,8 @@ impl TestTransport for LocalInstanceGrpcDriver {
             ..Default::default()
         };
 
-        // Create JSON representation of block env
-        let block_env_json = serde_json::json!({
+        // Create JSON exactly like HTTP transport does - this must match QueueBlockEnv serialization format
+        let mut block_env_json = serde_json::json!({
             "number": blockenv.number,
             "beneficiary": blockenv.beneficiary.to_string(),
             "timestamp": blockenv.timestamp,
@@ -770,11 +774,19 @@ impl TestTransport for LocalInstanceGrpcDriver {
             "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| serde_json::json!({
                 "excess_blob_gas": blob.excess_blob_gas,
                 "blob_gasprice": blob.blob_gasprice
-            })),
-        }).to_string();
+            }))
+        });
+
+        // Add n_transactions and last_tx_hash to match HTTP transport format
+        if let Some(obj) = block_env_json.as_object_mut() {
+            obj.insert("n_transactions".to_string(), serde_json::Value::Number(serde_json::Number::from(self.n_transactions)));
+            if let Some(hash) = self.last_tx_hash {
+                obj.insert("last_tx_hash".to_string(), serde_json::Value::String(hash.to_string()));
+            }
+        }
 
         let request = BlockEnvEnvelope {
-            block_env_json,
+            block_env_json: block_env_json.to_string(),
             last_tx_hash: self.last_tx_hash.map(|h| h.to_string()).unwrap_or_default(),
             n_transactions: self.n_transactions,
         };
@@ -815,6 +827,12 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
     async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
         debug!(target: "LocalInstanceGrpcDriver", "Sending transaction: {}", tx_hash);
+
+        // Validate inputs
+        if tx_env.gas_limit == 0 {
+            return Err("Gas limit cannot be zero".to_string());
+        }
+
         self.n_transactions += 1;
         self.last_tx_hash = Some(tx_hash);
 
@@ -827,7 +845,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 gas_price: tx_env.gas_price.to_string(),
                 transact_to: match tx_env.kind {
                     TxKind::Call(addr) => addr.to_string(),
-                    TxKind::Create => String::new(),
+                    TxKind::Create => "0x".to_string(), // Must be "0x" for create, not empty string
                 },
                 value: tx_env.value.to_string(),
                 data: format!("0x{}", alloy::hex::encode(&tx_env.data)),
@@ -840,7 +858,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             transactions: vec![transaction],
         };
 
-        debug!(target: "LocalInstanceGrpcDriver", "Sending gRPC transaction request");
+        debug!(target: "LocalInstanceGrpcDriver", "Sending gRPC transaction request for hash: {}", tx_hash);
 
         let mut last_error = String::new();
         let mut attempts = 0;
@@ -852,7 +870,10 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 Ok(response) => {
                     let resp = response.into_inner();
                     if resp.accepted_count == 0 {
-                        return Err(format!("Transaction rejected: {}", resp.message));
+                        return Err(format!("Transaction rejected: {} (request_count: {})", resp.message, resp.request_count));
+                    }
+                    if resp.accepted_count != resp.request_count {
+                        return Err(format!("Partial acceptance: {}/{} transactions accepted: {}", resp.accepted_count, resp.request_count, resp.message));
                     }
                     debug!(target: "LocalInstanceGrpcDriver", "Transaction accepted: {}/{} transactions", resp.accepted_count, resp.request_count);
                     return Ok(());
@@ -884,12 +905,11 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         let mut last_error = String::new();
         let mut attempts = 0;
-        let mut client = self.client.clone();
 
         while attempts < MAX_HTTP_RETRY_ATTEMPTS {
             attempts += 1;
 
-            match client.reorg(request.clone()).await {
+            match self.client.clone().reorg(request.clone()).await {
                 Ok(response) => {
                     let ack = response.into_inner();
                     if !ack.accepted {
