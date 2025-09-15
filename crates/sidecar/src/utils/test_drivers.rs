@@ -717,7 +717,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let mut attempts = 0;
         let client = loop {
             attempts += 1;
-            match SidecarTransportClient::connect(format!("http://{}", address)).await {
+            match SidecarTransportClient::connect(format!("http://{address}")).await {
                 Ok(client) => break client,
                 Err(e) => {
                     if attempts >= MAX_HTTP_RETRY_ATTEMPTS {

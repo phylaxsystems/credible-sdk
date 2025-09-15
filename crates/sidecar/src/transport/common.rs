@@ -1,6 +1,6 @@
 //! Shared helpers for transport decoding/parsing across HTTP and gRPC.
 
-use crate::transport::common::HttpDecoderError::*;
+use crate::transport::common::HttpDecoderError::{InvalidAddress, InvalidHex};
 use revm::{
     context::TxEnv,
     primitives::{
@@ -52,39 +52,42 @@ pub fn parse_hex_data(data: &str) -> Result<Bytes, HttpDecoderError> {
         .map_err(|_| InvalidHex(data.to_string()))
 }
 
-/// Build a TxEnv from string fields shared by HTTP and gRPC shapes.
-pub fn to_tx_env_from_fields(
-    caller: &str,
-    gas_limit: u64,
-    gas_price: &str,
-    transact_to: Option<&str>,
-    value: &str,
-    data: &str,
-    nonce: u64,
-    chain_id: u64,
-) -> Result<TxEnv, HttpDecoderError> {
-    let caller = Address::from_str(caller).map_err(|_| InvalidAddress(caller.to_string()))?;
+/// Parameters for building a `TxEnv` from string fields.
+pub struct TxEnvParams<'a> {
+    pub caller: &'a str,
+    pub gas_limit: u64,
+    pub gas_price: &'a str,
+    pub transact_to: Option<&'a str>,
+    pub value: &'a str,
+    pub data: &'a str,
+    pub nonce: u64,
+    pub chain_id: u64,
+}
 
-    let gas_price: u128 = gas_price
+/// Build a `TxEnv` from string fields shared by HTTP and gRPC shapes.
+pub fn to_tx_env_from_fields(params: &TxEnvParams<'_>) -> Result<TxEnv, HttpDecoderError> {
+    let caller = Address::from_str(params.caller).map_err(|_| InvalidAddress(params.caller.to_string()))?;
+
+    let gas_price: u128 = params.gas_price
         .parse()
-        .map_err(|_| InvalidHex(gas_price.to_string()))?;
+        .map_err(|_| InvalidHex(params.gas_price.to_string()))?;
 
-    let kind = parse_tx_kind_opt(transact_to)?;
+    let kind = parse_tx_kind_opt(params.transact_to)?;
 
     // Expect decimal value strings for consistency with existing schema/comments
-    let value = U256::from_str(value).map_err(|_| InvalidHex(value.to_string()))?;
+    let value = U256::from_str(params.value).map_err(|_| InvalidHex(params.value.to_string()))?;
 
-    let data = parse_hex_data(data)?;
+    let data = parse_hex_data(params.data)?;
 
     Ok(TxEnv {
         caller,
-        gas_limit,
+        gas_limit: params.gas_limit,
         gas_price,
         kind,
         value,
         data,
-        nonce,
-        chain_id: Some(chain_id),
+        nonce: params.nonce,
+        chain_id: Some(params.chain_id),
         ..Default::default()
     })
 }

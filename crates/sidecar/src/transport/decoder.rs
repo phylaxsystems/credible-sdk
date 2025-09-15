@@ -14,6 +14,7 @@ use crate::{
     transport::{
         common::{
             HttpDecoderError,
+            TxEnvParams,
             to_tx_env_from_fields,
         },
         http::server::{
@@ -45,16 +46,16 @@ impl TryFrom<&TransactionEnv> for TxEnv {
     type Error = HttpDecoderError;
 
     fn try_from(tx_env: &TransactionEnv) -> Result<Self, Self::Error> {
-        to_tx_env_from_fields(
-            &tx_env.caller,
-            tx_env.gas_limit,
-            &tx_env.gas_price,
-            tx_env.transact_to.as_deref(),
-            &tx_env.value,
-            &tx_env.data,
-            tx_env.nonce,
-            tx_env.chain_id,
-        )
+        to_tx_env_from_fields(&TxEnvParams {
+            caller: &tx_env.caller,
+            gas_limit: tx_env.gas_limit,
+            gas_price: &tx_env.gas_price,
+            transact_to: tx_env.transact_to.as_deref(),
+            value: &tx_env.value,
+            data: &tx_env.data,
+            nonce: tx_env.nonce,
+            chain_id: tx_env.chain_id,
+        })
     }
 }
 

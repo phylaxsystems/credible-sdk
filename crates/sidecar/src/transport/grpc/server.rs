@@ -32,6 +32,7 @@ use crate::{
     transport::{
         common::{
             HttpDecoderError,
+            TxEnvParams,
             to_tx_env_from_fields,
         },
         http::transactions_results::QueryTransactionsResults,
@@ -164,7 +165,7 @@ impl SidecarTransport for GrpcService {
         let total = req.transactions.len() as u64;
         let mut accepted: u64 = 0;
 
-        for t in req.transactions.into_iter() {
+        for t in req.transactions {
             let queue_tx = match to_queue_tx(&t) {
                 Ok(tx) => tx,
                 Err(e) => {
@@ -173,12 +174,11 @@ impl SidecarTransport for GrpcService {
                 }
             };
 
-            if let TxQueueContents::Tx(tx, _) = &queue_tx {
-                if self.transactions_results.is_tx_received(&tx.tx_hash) {
+            if let TxQueueContents::Tx(tx, _) = &queue_tx
+                && self.transactions_results.is_tx_received(&tx.tx_hash) {
                     warn!(tx_hash = %tx.tx_hash, "TX hash already received, skipping");
                     continue;
                 }
-            }
 
             self.transactions_results.add_accepted_tx(&queue_tx);
             self.tx_sender
@@ -239,7 +239,7 @@ impl SidecarTransport for GrpcService {
         let mut received = Vec::new();
         let mut not_found = Vec::new();
 
-        for h in payload.tx_hashes.iter() {
+        for h in &payload.tx_hashes {
             match h.parse::<TxHash>() {
                 Ok(hash) => {
                     if self.transactions_results.is_tx_received(&hash) {
@@ -327,16 +327,16 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
 }
 
 fn to_tx_env(env: &TransactionEnv) -> Result<revm::context::TxEnv, HttpDecoderError> {
-    to_tx_env_from_fields(
-        &env.caller,
-        env.gas_limit,
-        &env.gas_price,
-        Some(&env.transact_to),
-        &env.value,
-        &env.data,
-        env.nonce,
-        env.chain_id,
-    )
+    to_tx_env_from_fields(&TxEnvParams {
+        caller: &env.caller,
+        gas_limit: env.gas_limit,
+        gas_price: &env.gas_price,
+        transact_to: Some(&env.transact_to),
+        value: &env.value,
+        data: &env.data,
+        nonce: env.nonce,
+        chain_id: env.chain_id,
+    })
 }
 
 fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
