@@ -28,11 +28,11 @@ const VARIANTS: &[TransportVariant] = &[
         transport_type: "crate::utils::test_drivers::LocalInstanceHttpDriver",
         options: |_| quote! {},
     },
-    // TransportVariant {
-    //     test_name: "grpc",
-    //     transport_type: "crate::utils::test_drivers::LocalInstanceHttpDriver",
-    //     options: |_| quote! {},
-    // },
+    TransportVariant {
+        test_name: "grpc",
+        transport_type: "crate::utils::test_drivers::LocalInstanceGrpcDriver",
+        options: |_| quote! {},
+    },
 ];
 
 /// Procedural macro for sidecar engine tests.

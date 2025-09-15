@@ -13,6 +13,18 @@ use crate::{
     },
     transport::{
         Transport,
+        grpc::{
+            GrpcTransport,
+            config::GrpcTransportConfig,
+            pb::{
+                sidecar_transport_client::SidecarTransportClient,
+                BlockEnvEnvelope,
+                SendTransactionsRequest,
+                Transaction as GrpcTransaction,
+                TransactionEnv as GrpcTransactionEnv,
+                ReorgRequest,
+            },
+        },
         http::{
             HttpTransport,
             config::HttpTransportConfig,
@@ -598,6 +610,297 @@ impl TestTransport for LocalInstanceHttpDriver {
                     last_error = format!("HTTP request failed: {e}");
                     if attempts < MAX_HTTP_RETRY_ATTEMPTS {
                         debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
+                            .await;
+                    }
+                }
+            }
+        }
+
+        Err(format!(
+            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
+        ))
+    }
+}
+
+/// Wrapper over the `LocalInstance` that provides `GrpcTransport` functionality
+pub struct LocalInstanceGrpcDriver {
+    /// gRPC client for the transport
+    client: SidecarTransportClient<tonic::transport::Channel>,
+    /// Number of transactions sent in the current block
+    n_transactions: u64,
+    /// Last transaction hash sent
+    last_tx_hash: Option<TxHash>,
+}
+
+impl TestTransport for LocalInstanceGrpcDriver {
+    async fn new() -> Result<LocalInstance<Self>, String> {
+        info!(target: "LocalInstanceGrpcDriver", "Creating LocalInstance with GrpcTransport");
+
+        // Create channels for communication
+        let (engine_tx, engine_rx) = channel::unbounded();
+
+        // Create the database and state
+        let mut underlying_db =
+            revm::database::CacheDB::new(revm::database::EmptyDBTyped::default());
+        let default_account = populate_test_database(&mut underlying_db);
+
+        let underlying_db = Arc::new(underlying_db);
+
+        let state = OverlayDb::new(Some(underlying_db.clone()), 1024);
+
+        // Create assertion store and executor
+        let assertion_store = setup_assertion_store()?;
+
+        let assertion_executor =
+            AssertionExecutor::new(ExecutorConfig::default(), (*assertion_store).clone());
+
+        // Create the engine with TransactionsState
+        let state_results = crate::TransactionsState::new();
+        let cache = Arc::new(Cache::new(vec![], 10));
+        let mut engine = CoreEngine::new(
+            state,
+            cache,
+            engine_rx,
+            assertion_executor,
+            state_results.clone(),
+            10,
+        );
+
+        // Spawn the engine task
+        let engine_handle = tokio::spawn(async move {
+            info!(target: "LocalInstanceGrpcDriver", "Engine task started, waiting for items...");
+            info!(target: "LocalInstanceGrpcDriver", "Engine about to call run()");
+            let result = engine.run().await;
+            match result {
+                Ok(()) => {
+                    info!(target: "LocalInstanceGrpcDriver", "Engine run() completed successfully");
+                }
+                Err(e) => error!(target: "LocalInstanceGrpcDriver", "Engine run() failed: {:?}", e),
+            }
+            info!(target: "LocalInstanceGrpcDriver", "Engine task completed");
+        });
+
+        // Find an available port dynamically
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("Failed to bind to available port: {e}"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|e| format!("Failed to get local address: {e}"))?;
+
+        // Drop the listener so the port becomes available for GrpcTransport
+        drop(listener);
+
+        // Create gRPC transport config with the dynamically assigned address
+        let config = GrpcTransportConfig { bind_addr: address };
+        let transport = GrpcTransport::new(config, engine_tx, state_results.clone()).unwrap();
+
+        // Spawn the transport task
+        let transport_handle = tokio::spawn(async move {
+            info!(target: "LocalInstanceGrpcDriver", "Transport task started");
+            info!(target: "LocalInstanceGrpcDriver", "Transport about to call run()");
+            let result = transport.run().await;
+            match result {
+                Ok(()) => {
+                    info!(target: "LocalInstanceGrpcDriver", "Transport run() completed successfully");
+                }
+                Err(e) => {
+                    warn!(target: "LocalInstanceGrpcDriver", "Transport stopped with error: {e}");
+                }
+            }
+            info!(target: "LocalInstanceGrpcDriver", "Transport task completed");
+        });
+
+        // Create gRPC client with retry logic
+        let mut attempts = 0;
+        let client = loop {
+            attempts += 1;
+            match SidecarTransportClient::connect(format!("http://{}", address)).await {
+                Ok(client) => break client,
+                Err(e) => {
+                    if attempts >= MAX_HTTP_RETRY_ATTEMPTS {
+                        return Err(format!("Failed to connect to gRPC server after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {e}"));
+                    }
+                    debug!(target: "LocalInstanceGrpcDriver", "gRPC connection failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS)).await;
+                }
+            }
+        };
+
+        Ok(LocalInstance::new_internal(
+            underlying_db,
+            assertion_store,
+            Some(transport_handle),
+            Some(engine_handle),
+            0,
+            state_results,
+            default_account,
+            0,
+            LocalInstanceGrpcDriver {
+                client,
+                n_transactions: 0,
+                last_tx_hash: None,
+            },
+        ))
+    }
+
+    async fn new_block(&mut self, block_number: u64) -> Result<(), String> {
+        info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending block: {:?}", block_number);
+
+        let blockenv = BlockEnv {
+            number: block_number,
+            gas_limit: 50_000_000, // Set higher gas limit for assertions
+            blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
+                excess_blob_gas: 0,
+                blob_gasprice: 0,
+            }),
+            ..Default::default()
+        };
+
+        // Create JSON representation of block env
+        let block_env_json = serde_json::json!({
+            "number": blockenv.number,
+            "beneficiary": blockenv.beneficiary.to_string(),
+            "timestamp": blockenv.timestamp,
+            "gas_limit": blockenv.gas_limit,
+            "basefee": blockenv.basefee,
+            "difficulty": format!("0x{:x}", blockenv.difficulty),
+            "prevrandao": blockenv.prevrandao.map(|h| h.to_string()),
+            "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| serde_json::json!({
+                "excess_blob_gas": blob.excess_blob_gas,
+                "blob_gasprice": blob.blob_gasprice
+            })),
+        }).to_string();
+
+        let request = BlockEnvEnvelope {
+            block_env_json,
+            last_tx_hash: self.last_tx_hash.map(|h| h.to_string()).unwrap_or_default(),
+            n_transactions: self.n_transactions,
+        };
+
+        self.n_transactions = 0;
+        self.last_tx_hash = None;
+
+        // Send the gRPC request with retry logic
+        let mut attempts = 0;
+        let mut last_error = String::new();
+
+        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
+            attempts += 1;
+
+            match self.client.send_block_env(request.clone()).await {
+                Ok(response) => {
+                    let ack = response.into_inner();
+                    if !ack.accepted {
+                        return Err(format!("Block env rejected: {}", ack.message));
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_error = format!("gRPC request failed: {e}");
+                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
+                        debug!(target: "LocalInstanceGrpcDriver", "gRPC request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
+                            .await;
+                    }
+                }
+            }
+        }
+
+        Err(format!(
+            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
+        ))
+    }
+
+    async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
+        debug!(target: "LocalInstanceGrpcDriver", "Sending transaction: {}", tx_hash);
+        self.n_transactions += 1;
+        self.last_tx_hash = Some(tx_hash);
+
+        // Create the gRPC transaction structure
+        let transaction = GrpcTransaction {
+            hash: tx_hash.to_string(),
+            tx_env: Some(GrpcTransactionEnv {
+                caller: tx_env.caller.to_string(),
+                gas_limit: tx_env.gas_limit,
+                gas_price: tx_env.gas_price.to_string(),
+                transact_to: match tx_env.kind {
+                    TxKind::Call(addr) => addr.to_string(),
+                    TxKind::Create => String::new(),
+                },
+                value: tx_env.value.to_string(),
+                data: format!("0x{}", alloy::hex::encode(&tx_env.data)),
+                nonce: tx_env.nonce,
+                chain_id: tx_env.chain_id.unwrap_or_default(),
+            }),
+        };
+
+        let request = SendTransactionsRequest {
+            transactions: vec![transaction],
+        };
+
+        debug!(target: "LocalInstanceGrpcDriver", "Sending gRPC transaction request");
+
+        let mut last_error = String::new();
+        let mut attempts = 0;
+
+        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
+            attempts += 1;
+
+            match self.client.send_transactions(request.clone()).await {
+                Ok(response) => {
+                    let resp = response.into_inner();
+                    if resp.accepted_count == 0 {
+                        return Err(format!("Transaction rejected: {}", resp.message));
+                    }
+                    debug!(target: "LocalInstanceGrpcDriver", "Transaction accepted: {}/{} transactions", resp.accepted_count, resp.request_count);
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_error = format!("gRPC request failed: {e}");
+                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
+                        debug!(target: "LocalInstanceGrpcDriver", "gRPC request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
+                            .await;
+                    }
+                }
+            }
+        }
+
+        Err(format!(
+            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
+        ))
+    }
+
+    async fn reorg(&self, tx_hash: B256) -> Result<(), String> {
+        info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending reorg for: {:?}", tx_hash);
+
+        let request = ReorgRequest {
+            removed_tx_hash: tx_hash.to_string(),
+        };
+
+        debug!(target: "LocalInstanceGrpcDriver", "Sending gRPC reorg request");
+
+        let mut last_error = String::new();
+        let mut attempts = 0;
+        let mut client = self.client.clone();
+
+        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
+            attempts += 1;
+
+            match client.reorg(request.clone()).await {
+                Ok(response) => {
+                    let ack = response.into_inner();
+                    if !ack.accepted {
+                        return Err(format!("Reorg rejected: {}", ack.message));
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_error = format!("gRPC request failed: {e}");
+                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
+                        debug!(target: "LocalInstanceGrpcDriver", "gRPC request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
                         tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
                             .await;
                     }

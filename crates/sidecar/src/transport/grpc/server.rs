@@ -55,7 +55,6 @@ use tonic::{
 };
 use tracing::{
     debug,
-    error,
     instrument,
     trace,
     warn,

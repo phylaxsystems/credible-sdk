@@ -11,7 +11,7 @@ fn main() {
 
     tonic_prost_build::configure()
         .build_server(true)
-        .build_client(false)
+        .build_client(true)
         .compile_protos(
             &["src/transport/grpc/sidecar.proto"],
             &["src/transport/grpc"],

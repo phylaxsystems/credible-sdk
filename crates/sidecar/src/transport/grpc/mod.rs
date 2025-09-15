@@ -51,6 +51,12 @@ mod pb_inner {
     tonic::include_proto!("sidecar.transport.v1");
 }
 
+#[cfg(test)]
+pub mod pb {
+    pub use super::pb_inner::*;
+}
+
+#[cfg(not(test))]
 pub(crate) mod pb {
     pub(crate) use super::pb_inner::*;
 }
