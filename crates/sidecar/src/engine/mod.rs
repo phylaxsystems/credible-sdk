@@ -41,7 +41,6 @@
 pub mod queue;
 mod transactions_results;
 
-use tinyvec::ArrayVec;
 use super::engine::queue::{
     QueueBlockEnv,
     TransactionQueueReceiver,
@@ -54,6 +53,7 @@ use crate::{
         TransactionMetrics,
     },
 };
+use tinyvec::ArrayVec;
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -104,7 +104,7 @@ use tracing::{
 /// Stores up to 2 transactions in a stack-allocated array.
 #[derive(Debug)]
 struct LastExecutedTx {
-    hashes: ArrayVec::<[(B256, EvmState); 2]>,
+    hashes: ArrayVec<[(B256, EvmState); 2]>,
 }
 
 impl LastExecutedTx {
@@ -377,7 +377,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
                 self.block_metrics.transactions_simulated_success += 1;
 
-                self.last_executed_tx.push(tx_hash, rax.result_and_state.state);
+                self.last_executed_tx
+                    .push(tx_hash, rax.result_and_state.state);
             } else {
                 self.block_metrics.transactions_simulated_failure += 1;
             }
@@ -633,8 +634,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         // Check if we have received a transaction at all
-        if let Some((last_hash, _)) = self.last_executed_tx.current() {
-            if tx_hash == *last_hash {
+        if let Some((last_hash, _)) = self.last_executed_tx.current()
+            && tx_hash == *last_hash {
                 info!(
                     target = "engine",
                     tx_hash = %tx_hash,
@@ -654,7 +655,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
                 return Ok(());
             }
-        }
 
         // If we received a reorg event before executing a tx,
         // or if the tx hashes dont match something bad happened and we need to exit
