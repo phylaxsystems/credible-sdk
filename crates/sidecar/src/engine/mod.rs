@@ -801,11 +801,19 @@ mod tests {
 
         // Push over capacity; should drop h1 and keep [h2, h3]
         txs.push(h3, EvmState::default());
-        assert_eq!(txs.current().unwrap().0, h3, "current should be newest after overflow");
+        assert_eq!(
+            txs.current().unwrap().0,
+            h3,
+            "current should be newest after overflow"
+        );
 
         // Removing last returns h3, and now current should be h2 (h1 was discarded)
         assert_eq!(txs.remove_last().unwrap().0, h3);
-        assert_eq!(txs.current().unwrap().0, h2, "previous should be preserved after pop");
+        assert_eq!(
+            txs.current().unwrap().0,
+            h2,
+            "previous should be preserved after pop"
+        );
 
         // Removing last again returns h2 and leaves empty
         assert_eq!(txs.remove_last().unwrap().0, h2);
