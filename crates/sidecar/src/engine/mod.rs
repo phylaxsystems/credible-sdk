@@ -99,8 +99,51 @@ use tracing::{
     warn,
 };
 
-/// Contains the last executed transaction hash and resulting state.
-type LastExecutedTx = Option<(B256, EvmState)>;
+/// Contains the last two executed transaction hashes and resulting states.
+/// Stores up to 2 transactions in a stack-allocated array.
+#[derive(Debug)]
+struct LastExecutedTx {
+    hashes: [Option<(B256, EvmState)>; 2],
+    len: usize,
+}
+
+impl LastExecutedTx {
+    fn new() -> Self {
+        Self {
+            hashes: [None, None],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, hash: B256, state: EvmState) {
+        if self.len == 2 {
+            // Shift elements to make room for new one
+            self.hashes[0] = self.hashes[1].take();
+            self.hashes[1] = Some((hash, state));
+        } else {
+            self.hashes[self.len] = Some((hash, state));
+            self.len += 1;
+        }
+    }
+
+    fn remove_last(&mut self) -> Option<(B256, EvmState)> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let result = self.hashes[self.len - 1].take();
+        self.len -= 1;
+        result
+    }
+
+    fn current(&self) -> Option<&(B256, EvmState)> {
+        if self.len == 0 {
+            None
+        } else {
+            self.hashes[self.len - 1].as_ref()
+        }
+    }
+}
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum EngineError {
@@ -180,7 +223,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 transaction_results_max_capacity,
             ),
             block_metrics: BlockMetrics::new(),
-            last_executed_tx: None,
+            last_executed_tx: LastExecutedTx::new(),
             block_env_transaction_counter: 0,
         }
     }
@@ -203,7 +246,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             cache: Arc::new(Cache::new(vec![], 10)),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
             block_metrics: BlockMetrics::new(),
-            last_executed_tx: None,
+            last_executed_tx: LastExecutedTx::new(),
             block_env_transaction_counter: 0,
         }
     }
@@ -349,7 +392,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
                 self.block_metrics.transactions_simulated_success += 1;
 
-                self.last_executed_tx = Some((tx_hash, rax.result_and_state.state));
+                self.last_executed_tx
+                    .push(tx_hash, rax.result_and_state.state);
             } else {
                 self.block_metrics.transactions_simulated_failure += 1;
             }
@@ -440,7 +484,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         // If the last tx hash from the block env is different from the last tx hash from the
         // queue, invalidate the cache
-        if let Some((prev_tx_hash, _)) = &self.last_executed_tx
+        if let Some((prev_tx_hash, _)) = self.last_executed_tx.current()
             && Some(prev_tx_hash) != queue_block_env.last_tx_hash.as_ref()
         {
             self.cache
@@ -577,13 +621,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
     /// Applies the state inside of `self.last_executed_tx` to `self.state`.
     ///
-    /// If `self.last_executed_tx` is `None`, we dont do anything.
+    /// If `self.last_executed_tx` is empty, we dont do anything.
     fn apply_state_buffer(&mut self) {
-        if let Some(last_executed_tx) = &self.last_executed_tx {
-            let changes = last_executed_tx.1.clone();
+        if let Some((_, state)) = self.last_executed_tx.current() {
+            let changes = state.clone();
             self.state.commit(changes);
         }
-        self.last_executed_tx = None;
+        self.last_executed_tx = LastExecutedTx::new();
     }
 
     /// Processes a reorg event. Checks if the hash of the last executed tx
@@ -605,22 +649,27 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         // Check if we have received a transaction at all
-        if let Some(tx_params) = &self.last_executed_tx {
-            let last_hash = tx_params.0;
-            if tx_hash == last_hash {
-                info!(
-                    target = "engine",
-                    tx_hash = %tx_hash,
-                    "Executing reorg for hash"
-                );
+        if let Some((last_hash, _)) = self.last_executed_tx.current()
+            && tx_hash == *last_hash
+        {
+            info!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                "Executing reorg for hash"
+            );
 
-                // Clear state buffer if the tx's match
-                self.last_executed_tx = None;
+            // Remove the last transaction from buffer, preserving the previous one if it exists
+            self.last_executed_tx.remove_last();
 
-                // Remove transaction from results
-                self.transaction_results.remove_transaction_result(tx_hash);
-                return Ok(());
+            // Remove transaction from results
+            self.transaction_results.remove_transaction_result(tx_hash);
+
+            // Only decrement the counter if we haven't processed a new block yet
+            if self.block_env_transaction_counter > 0 {
+                self.block_env_transaction_counter -= 1;
             }
+
+            return Ok(());
         }
 
         // If we received a reorg event before executing a tx,
@@ -702,6 +751,73 @@ mod tests {
             10,
         );
         (engine, tx_sender)
+    }
+
+    #[test]
+    fn test_last_executed_tx_single_push_and_pop() {
+        let mut txs = LastExecutedTx::new();
+        let h1 = B256::from([0x11; 32]);
+        let s1: EvmState = EvmState::default();
+
+        txs.push(h1, s1);
+
+        let cur = txs.current().expect("should contain the pushed tx");
+        assert_eq!(cur.0, h1, "current should be the last pushed hash");
+
+        let popped = txs.remove_last().expect("should pop the only element");
+        assert_eq!(popped.0, h1, "popped should be the same hash");
+        assert!(txs.current().is_none(), "should be empty after pop");
+    }
+
+    #[test]
+    fn test_last_executed_tx_two_elements_lifo() {
+        let mut txs = LastExecutedTx::new();
+        let h1 = B256::from([0x21; 32]);
+        let h2 = B256::from([0x22; 32]);
+        txs.push(h1, EvmState::default());
+        txs.push(h2, EvmState::default());
+
+        // LIFO: current is h2
+        assert_eq!(txs.current().unwrap().0, h2);
+        // Pop h2, current becomes h1
+        assert_eq!(txs.remove_last().unwrap().0, h2);
+        assert_eq!(txs.current().unwrap().0, h1);
+        // Pop h1, now empty
+        assert_eq!(txs.remove_last().unwrap().0, h1);
+        assert!(txs.current().is_none());
+    }
+
+    #[test]
+    fn test_last_executed_tx_overflow_discards_oldest() {
+        let mut txs = LastExecutedTx::new();
+        let h1 = B256::from([0x31; 32]);
+        let h2 = B256::from([0x32; 32]);
+        let h3 = B256::from([0x33; 32]);
+
+        // Fill to capacity
+        txs.push(h1, EvmState::default());
+        txs.push(h2, EvmState::default());
+        assert_eq!(txs.current().unwrap().0, h2);
+
+        // Push over capacity; should drop h1 and keep [h2, h3]
+        txs.push(h3, EvmState::default());
+        assert_eq!(
+            txs.current().unwrap().0,
+            h3,
+            "current should be newest after overflow"
+        );
+
+        // Removing last returns h3, and now current should be h2 (h1 was discarded)
+        assert_eq!(txs.remove_last().unwrap().0, h3);
+        assert_eq!(
+            txs.current().unwrap().0,
+            h2,
+            "previous should be preserved after pop"
+        );
+
+        // Removing last again returns h2 and leaves empty
+        assert_eq!(txs.remove_last().unwrap().0, h2);
+        assert!(txs.current().is_none());
     }
 
     fn create_test_block_env() -> BlockEnv {
