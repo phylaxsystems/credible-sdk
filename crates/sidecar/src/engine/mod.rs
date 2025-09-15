@@ -53,7 +53,6 @@ use crate::{
         TransactionMetrics,
     },
 };
-use tinyvec::ArrayVec;
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -104,29 +103,45 @@ use tracing::{
 /// Stores up to 2 transactions in a stack-allocated array.
 #[derive(Debug)]
 struct LastExecutedTx {
-    hashes: ArrayVec<[(B256, EvmState); 2]>,
+    hashes: [Option<(B256, EvmState)>; 2],
+    len: usize,
 }
 
 impl LastExecutedTx {
     fn new() -> Self {
         Self {
-            hashes: ArrayVec::new(),
+            hashes: [None, None],
+            len: 0,
         }
     }
 
     fn push(&mut self, hash: B256, state: EvmState) {
-        if self.hashes.len() == 2 {
-            self.hashes.remove(0); // Remove oldest
+        if self.len == 2 {
+            // Shift elements to make room for new one
+            self.hashes[0] = self.hashes[1].take();
+            self.hashes[1] = Some((hash, state));
+        } else {
+            self.hashes[self.len] = Some((hash, state));
+            self.len += 1;
         }
-        self.hashes.push((hash, state));
     }
 
     fn remove_last(&mut self) -> Option<(B256, EvmState)> {
-        self.hashes.pop()
+        if self.len == 0 {
+            return None;
+        }
+
+        let result = self.hashes[self.len - 1].take();
+        self.len -= 1;
+        result
     }
 
     fn current(&self) -> Option<&(B256, EvmState)> {
-        self.hashes.last()
+        if self.len == 0 {
+            None
+        } else {
+            self.hashes[self.len - 1].as_ref()
+        }
     }
 }
 

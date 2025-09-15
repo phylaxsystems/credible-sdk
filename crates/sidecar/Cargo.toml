@@ -32,7 +32,6 @@ assertion-da-client = { workspace = true }
 alloy-provider = { workspace = true }
 metrics = { workspace = true }
 futures = { workspace = true }
-tinyvec = "1.10.0"
 
 [features]
 default = ["linea"]

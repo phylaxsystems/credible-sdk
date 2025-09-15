@@ -10473,7 +10473,6 @@ dependencies = [
  "sidecar-test-macros",
  "sled",
  "thiserror 2.0.12",
- "tinyvec",
  "tokio",
  "tokio-util",
  "tracing",
