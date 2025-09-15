@@ -635,26 +635,27 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         // Check if we have received a transaction at all
         if let Some((last_hash, _)) = self.last_executed_tx.current()
-            && tx_hash == *last_hash {
-                info!(
-                    target = "engine",
-                    tx_hash = %tx_hash,
-                    "Executing reorg for hash"
-                );
+            && tx_hash == *last_hash
+        {
+            info!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                "Executing reorg for hash"
+            );
 
-                // Remove the last transaction from buffer, preserving the previous one if it exists
-                self.last_executed_tx.remove_last();
+            // Remove the last transaction from buffer, preserving the previous one if it exists
+            self.last_executed_tx.remove_last();
 
-                // Remove transaction from results
-                self.transaction_results.remove_transaction_result(tx_hash);
+            // Remove transaction from results
+            self.transaction_results.remove_transaction_result(tx_hash);
 
-                // Only decrement the counter if we haven't processed a new block yet
-                if self.block_env_transaction_counter > 0 {
-                    self.block_env_transaction_counter -= 1;
-                }
-
-                return Ok(());
+            // Only decrement the counter if we haven't processed a new block yet
+            if self.block_env_transaction_counter > 0 {
+                self.block_env_transaction_counter -= 1;
             }
+
+            return Ok(());
+        }
 
         // If we received a reorg event before executing a tx,
         // or if the tx hashes dont match something bad happened and we need to exit
