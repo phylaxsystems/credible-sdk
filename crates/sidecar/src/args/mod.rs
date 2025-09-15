@@ -29,22 +29,6 @@ pub const DEFAULT_STATE_ORACLE_ADDRESS: &str = "0x6dD3f12ce435f69DCeDA7e31605C02
 #[derive(Default, Debug, Clone, PartialEq, Eq, clap::Args)]
 #[command(next_help_heading = "Rollup")]
 pub struct ChainArgs {
-    /// chain block time in milliseconds
-    #[arg(
-        long = "chain.block-time",
-        env = "CHAIN_BLOCK_TIME",
-        default_value = "1000"
-    )]
-    pub block_time: u64,
-
-    /// How much time extra to wait for the block building job to complete and not get garbage collected
-    #[arg(
-        long = "chain.extra-block-deadline-secs",
-        env = "CHAIN_EXTRA_BLOCK_DEADLINE_SECS",
-        default_value = "20"
-    )]
-    pub extra_block_deadline_secs: u64,
-
     /// What EVM specification to use. Only latest for now
     #[arg(
         long = "chain.spec-id",
@@ -86,14 +70,6 @@ pub struct ChainArgs {
 /// Parameters for Credible configuration
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct CredibleArgs {
-    /// Soft timeout for credible block building in milliseconds
-    #[arg(
-        long = "credible.soft-timeout-ms",
-        env = "CREDIBLE_SOFT_TIMEOUT_MS",
-        default_value = "650"
-    )]
-    pub soft_timeout_ms: u64,
-
     /// Gas limit for assertion execution
     #[arg(
         long = "credible.assertion-gas-limit",
@@ -109,14 +85,6 @@ pub struct CredibleArgs {
         default_value = "1024000000"
     )]
     pub overlay_cache_capacity_bytes: Option<usize>,
-
-    /// Path to the `assertion-executor` database.
-    #[arg(
-        long = "credible.assertion-executor-db-path",
-        env = "CREDIBLE_ASSERTION_EXECUTOR_DB_PATH",
-        default_value = "ae_database"
-    )]
-    pub assertion_executor_db_path: PathBuf,
 
     /// Sled cache capacity, used in the `FsDb`, 256mb default
     #[arg(
@@ -134,13 +102,13 @@ pub struct CredibleArgs {
     )]
     pub flush_every_ms: Option<usize>,
 
-    /// `FsDb` compression level, default to 3
+    /// HTTP URL of the assertion DA
     #[arg(
-        long = "credible.zstd-compression-level",
-        env = "CREDIBLE_ZSTD_COMPRESSION_LEVEL",
-        default_value = "3"
+        long = "credible.assertion-da-rpc-url",
+        env = "CREDIBLE_ASSERTION_DA_RPC_URL",
+        default_value = "http://localhost:5001"
     )]
-    pub zstd_compression_level: Option<i32>,
+    pub assertion_da_rpc_url: String,
 
     /// WS URL the RPC store will use to index assertions
     #[arg(
@@ -149,14 +117,13 @@ pub struct CredibleArgs {
         default_value = "ws://localhost:8546"
     )]
     pub indexer_rpc_url: String,
-
-    /// HTTP URL of the assertion DA
+    /// Path to the indexer database (separate from main assertion store)
     #[arg(
-        long = "credible.assertion-da-rpc-url",
-        env = "CREDIBLE_ASSERTION_DA_RPC_URL",
-        default_value = "http://localhost:5001"
+        long = "credible.indexer-db-path",
+        env = "CREDIBLE_INDEXER_DB_PATH",
+        default_value = "indexer_database"
     )]
-    pub assertion_da_rpc_url: String,
+    pub indexer_db_path: PathBuf,
 
     /// Path to the rpc store db
     #[arg(
@@ -191,14 +158,7 @@ pub struct CredibleArgs {
     )]
     pub state_oracle_deployment_block: u64,
 
-    /// Path to the indexer database (separate from main assertion store)
-    #[arg(
-        long = "credible.indexer-db-path",
-        env = "CREDIBLE_INDEXER_DB_PATH",
-        default_value = "indexer_database"
-    )]
-    pub indexer_db_path: PathBuf,
-
+    /// Maximum capacity for transaction results
     #[arg(
         long = "credible.transaction-results-max-capacity",
         env = "CREDIBLE_TRANSACTION_RESULTS_MAX_CAPACITY",
@@ -218,18 +178,6 @@ pub struct HttpTransportArgs {
     pub bind_addr: String,
 }
 
-/// Parameters for telemetry configuration
-#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
-pub struct TelemetryArgs {
-    /// Inverted sampling frequency in blocks. 1 - each block, 100 - every 100th block.
-    #[arg(
-        long = "telemetry.sampling-ratio",
-        env = "TELEMETRY_SAMPLING_RATIO",
-        default_value = "100"
-    )]
-    pub sampling_ratio: u64,
-}
-
 /// Main sidecar arguments that extend `TelemetryArgs` and `CredibleArgs`
 #[derive(Debug, Clone, PartialEq, Eq, clap::Parser)]
 #[command(name = "sidecar", about = "Credible layer sidecar")]
@@ -240,6 +188,4 @@ pub struct SidecarArgs {
     pub credible: CredibleArgs,
     #[command(flatten)]
     pub transport: HttpTransportArgs,
-    #[command(flatten)]
-    pub telemetry: TelemetryArgs,
 }

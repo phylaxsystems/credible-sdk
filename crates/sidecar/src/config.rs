@@ -41,7 +41,7 @@ pub fn init_executor_config(args: &SidecarArgs) -> ExecutorConfig {
 /// Initialize `AssertionStore` from `SidecarArgs`
 pub fn init_assertion_store(args: &SidecarArgs) -> Result<AssertionStore, AssertionStoreError> {
     let mut db_config = sled::Config::new();
-    db_config = db_config.path(&args.credible.assertion_executor_db_path);
+    db_config = db_config.path(&args.credible.assertion_store_db_path);
 
     if let Some(cache_capacity) = args.credible.cache_capacity_bytes {
         db_config = db_config.cache_capacity_bytes(cache_capacity);
@@ -54,7 +54,7 @@ pub fn init_assertion_store(args: &SidecarArgs) -> Result<AssertionStore, Assert
     let db = db_config.open()?;
 
     info!(
-        db_path = ?args.credible.assertion_executor_db_path,
+        db_path = ?args.credible.assertion_store_db_path,
         cache_capacity = ?args.credible.cache_capacity_bytes,
         flush_every_ms = ?args.credible.flush_every_ms,
         "Initialized persistent AssertionStore"
