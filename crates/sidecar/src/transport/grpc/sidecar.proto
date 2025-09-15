@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package sidecar.transport.v1;
+
+// Envelope for sending block environment to the sidecar.
+// For compatibility with existing JSON schema, we carry the block env
+// as a JSON object string. This allows the sidecar to leverage existing
+// serde decoding and remain aligned with the HTTP transport schema.
+message BlockEnvEnvelope {
+  // JSON object representing the BlockEnv (same shape as the HTTP schema).
+  string block_env_json = 1;
+  // Optional last tx hash and transaction count to mirror HTTP schema.
+  // When n_transactions > 0, last_tx_hash must be provided and non-empty.
+  string last_tx_hash = 2; // empty string means absent
+  uint64 n_transactions = 3;
+}
+
+message BasicAck {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message TransactionEnv {
+  string caller = 1;
+  uint64 gas_limit = 2;
+  string gas_price = 3; // decimal string
+  string transact_to = 4; // empty string => create
+  string value = 5;       // decimal string
+  string data = 6;        // hex string (0x... or raw hex)
+  uint64 nonce = 7;
+  uint64 chain_id = 8;
+}
+
+message Transaction {
+  string hash = 1;           // 0x-prefixed hash string
+  TransactionEnv tx_env = 2; // transaction env
+}
+
+message SendTransactionsRequest {
+  repeated Transaction transactions = 1;
+}
+
+message SendTransactionsResponse {
+  uint64 accepted_count = 1; // number of accepted items (txs or events)
+  uint64 request_count = 2;  // total items received
+  string message = 3;        // info message
+}
+
+message ReorgRequest {
+  string removed_tx_hash = 1; // 0x-prefixed hash string
+}
+
+message GetTransactionsRequest {
+  repeated string tx_hashes = 1; // 0x-prefixed hash strings
+}
+
+message TransactionResult {
+  string hash = 1;
+  string status = 2;    // success | reverted | halted | assertion_failed | failed
+  uint64 gas_used = 3;  // 0 when unknown
+  string error = 4;     // empty when none
+}
+
+message GetTransactionsResponse {
+  repeated TransactionResult results = 1;
+  repeated string not_found = 2;
+}
+
+service SidecarTransport {
+  rpc SendBlockEnv(BlockEnvEnvelope) returns (BasicAck);
+  rpc SendTransactions(SendTransactionsRequest) returns (SendTransactionsResponse);
+  rpc Reorg(ReorgRequest) returns (BasicAck);
+  rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
+}
+

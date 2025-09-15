@@ -20,7 +20,10 @@ use crate::{
         init_executor_config,
         init_indexer_config,
     },
-    engine::CoreEngine,
+    engine::{
+        CoreEngine,
+        queue::TransactionQueueSender,
+    },
     transport::Transport,
 };
 use assertion_executor::{
@@ -43,13 +46,42 @@ use crate::{
         },
     },
     transactions_state::TransactionsState,
-    transport::http::{
-        HttpTransport,
-        config::HttpTransportConfig,
+    transport::{
+        AnyTransport,
+        grpc::{
+            GrpcTransport,
+            config::GrpcTransportConfig,
+        },
+        http::{
+            HttpTransport,
+            config::HttpTransportConfig,
+        },
     },
     utils::ErrorRecoverability,
 };
-use args::SidecarArgs;
+use args::{
+    SidecarArgs,
+    TransportProtocolArg,
+};
+
+fn create_transport_from_args(
+    args: &SidecarArgs,
+    tx_sender: TransactionQueueSender,
+    state_results: Arc<TransactionsState>,
+) -> anyhow::Result<AnyTransport> {
+    match args.transport_protocol {
+        TransportProtocolArg::Http => {
+            let cfg = HttpTransportConfig::try_from(args.transport.clone())?;
+            let t = HttpTransport::new(cfg, tx_sender, state_results)?;
+            Ok(AnyTransport::Http(t))
+        }
+        TransportProtocolArg::Grpc => {
+            let cfg = GrpcTransportConfig::try_from(args.transport.clone())?;
+            let t = GrpcTransport::new(cfg, tx_sender, state_results)?;
+            Ok(AnyTransport::Grpc(t))
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -88,11 +120,7 @@ async fn main() -> anyhow::Result<()> {
         );
 
         let (tx_sender, tx_receiver) = unbounded();
-        let transport = HttpTransport::new(
-            HttpTransportConfig::try_from(args.transport.clone())?,
-            tx_sender,
-            engine_state_results.clone(),
-        )?;
+        let transport = create_transport_from_args(&args, tx_sender, engine_state_results.clone())?;
 
         let mut engine = CoreEngine::new(
             state,
