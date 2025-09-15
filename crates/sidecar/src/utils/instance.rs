@@ -1,4 +1,11 @@
-use crate::engine::TransactionResult;
+use crate::{
+    cache::Cache,
+    engine::TransactionResult,
+    utils::test_cache::{
+        MockBesuClientDB,
+        MockSequencerDB,
+    },
+};
 use assertion_executor::{
     primitives::{
         AccountInfo,
@@ -20,10 +27,7 @@ use assertion_executor::{
 };
 use rand::Rng;
 use revm::{
-    database::{
-        CacheDB,
-        EmptyDBTyped,
-    },
+    database::CacheDB,
     primitives::{
         Bytes,
         address,
@@ -69,7 +73,11 @@ pub struct LocalInstance<T: TestTransport> {
     /// Channel for sending transactions and blocks to the mock transport
     // mock_sender: TransactionQueueSender,
     /// The underlying database
-    db: Arc<CacheDB<EmptyDBTyped<TestDbError>>>,
+    db: Arc<CacheDB<Arc<Cache>>>,
+    /// The cache DB representing the sequencer
+    pub cache_sequencer_db: Arc<MockSequencerDB>,
+    /// The cache DB representing the Besu client
+    pub cache_besu_client_db: Arc<MockBesuClientDB>,
     /// The assertion store
     assertion_store: Arc<AssertionStore>,
     /// Transport task handle
@@ -97,7 +105,9 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Internal constructor for creating `LocalInstance` with all fields
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_internal(
-        db: Arc<CacheDB<EmptyDBTyped<TestDbError>>>,
+        db: Arc<CacheDB<Arc<Cache>>>,
+        cache_sequencer_db: Arc<MockSequencerDB>,
+        cache_besu_client_db: Arc<MockBesuClientDB>,
         assertion_store: Arc<AssertionStore>,
         transport_handle: Option<JoinHandle<()>>,
         engine_handle: Option<JoinHandle<()>>,
@@ -109,6 +119,8 @@ impl<T: TestTransport> LocalInstance<T> {
     ) -> Self {
         Self {
             db,
+            cache_sequencer_db,
+            cache_besu_client_db,
             assertion_store,
             transport_handle,
             engine_handle,
@@ -138,7 +150,7 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Get a reference to the underlying database
-    pub fn db(&self) -> &Arc<CacheDB<EmptyDBTyped<TestDbError>>> {
+    pub fn db(&self) -> &Arc<CacheDB<Arc<Cache>>> {
         &self.db
     }
 
@@ -211,6 +223,14 @@ impl<T: TestTransport> LocalInstance<T> {
         B256::from(hash_bytes)
     }
 
+    /// Generate a random address
+    pub fn generate_random_address() -> Address {
+        let mut rng = rand::rng();
+        let mut hash_bytes = [0u8; 20];
+        rng.fill(&mut hash_bytes);
+        Address::from(hash_bytes)
+    }
+
     /// Prefund accounts with ETH for testing
     pub fn fund_accounts(&mut self, accounts: &[(Address, U256)]) -> Result<(), String> {
         let db = Arc::get_mut(&mut self.db)
@@ -262,6 +282,40 @@ impl<T: TestTransport> LocalInstance<T> {
         self.wait_for_processing(Duration::from_millis(2)).await;
 
         Ok(tx_hash)
+    }
+
+    /// Send a successful CREATE transaction using a random account to enforce a cache miss (in the
+    /// in-memory cache) and therefore, enforcing a cache fetch from the providers (e.g., Besu client)
+    pub async fn send_create_tx_with_cache_miss(&mut self) -> Result<(Address, B256), String> {
+        // Ensure we have a block
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
+
+        let nonce = self.next_nonce();
+        let caller = Self::generate_random_address();
+
+        // Create transaction
+        let tx_env = TxEnv {
+            caller,
+            gas_limit: 100_000,
+            gas_price: 0,
+            kind: TxKind::Create,
+            value: U256::ZERO,
+            data: Bytes::from(vec![0xff, 0xff, 0xff, 0xff, 0xff]),
+            nonce,
+            ..Default::default()
+        };
+
+        // Generate transaction hash
+        let tx_hash = Self::generate_random_tx_hash();
+
+        // Send transaction
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
+        // Wait for processing
+        self.wait_for_processing(Duration::from_millis(2)).await;
+
+        Ok((caller, tx_hash))
     }
 
     /// Send a reverting CREATE transaction using the default account

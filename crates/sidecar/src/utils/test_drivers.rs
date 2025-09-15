@@ -23,7 +23,10 @@ use crate::{
         },
         mock::MockTransport,
     },
-    utils::TestDbError,
+    utils::test_cache::{
+        MockBesuClientDB,
+        MockSequencerDB,
+    },
 };
 use alloy::primitives::TxHash;
 use assertion_executor::{
@@ -53,10 +56,7 @@ use assertion_executor::{
 use crossbeam::channel;
 use revm::{
     context_interface::block::BlobExcessGasAndPrice,
-    database::{
-        CacheDB,
-        EmptyDBTyped,
-    },
+    database::CacheDB,
     primitives::TxKind,
 };
 use serde_json::json;
@@ -73,7 +73,7 @@ use tracing::{
 };
 
 /// Setup test database with common accounts pre-funded
-fn populate_test_database(underlying_db: &mut CacheDB<EmptyDBTyped<TestDbError>>) -> Address {
+fn populate_test_database(underlying_db: &mut CacheDB<Arc<Cache>>) -> Address {
     // Insert default counter contract into the underlying db
     underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
 
@@ -144,8 +144,13 @@ impl TestTransport for LocalInstanceMockDriver {
         let (mock_tx, mock_rx) = channel::unbounded();
 
         // Create the database and state
-        let mut underlying_db =
-            revm::database::CacheDB::new(revm::database::EmptyDBTyped::default());
+        let mock_sequencer_db = MockSequencerDB::build();
+        let mock_besu_client_db = MockBesuClientDB::build();
+        let cache = Arc::new(Cache::new(
+            vec![mock_sequencer_db.clone(), mock_besu_client_db.clone()],
+            10,
+        ));
+        let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
 
         let underlying_db = Arc::new(underlying_db);
@@ -160,7 +165,6 @@ impl TestTransport for LocalInstanceMockDriver {
 
         // Create the engine with TransactionsState
         let state_results = crate::TransactionsState::new();
-        let cache = Arc::new(Cache::new(vec![], 100));
         let mut engine = CoreEngine::new(
             state,
             cache,
@@ -200,6 +204,8 @@ impl TestTransport for LocalInstanceMockDriver {
 
         Ok(LocalInstance::new_internal(
             underlying_db,
+            mock_sequencer_db,
+            mock_besu_client_db,
             assertion_store,
             Some(transport_handle),
             Some(engine_handle),
@@ -276,8 +282,13 @@ impl TestTransport for LocalInstanceHttpDriver {
         let (engine_tx, engine_rx) = channel::unbounded();
 
         // Create the database and state
-        let mut underlying_db =
-            revm::database::CacheDB::new(revm::database::EmptyDBTyped::default());
+        let mock_sequencer_db = MockSequencerDB::build();
+        let mock_besu_client_db = MockBesuClientDB::build();
+        let cache = Arc::new(Cache::new(
+            vec![mock_sequencer_db.clone(), mock_besu_client_db.clone()],
+            10,
+        ));
+        let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
 
         let underlying_db = Arc::new(underlying_db);
@@ -292,7 +303,6 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         // Create the engine with TransactionsState
         let state_results = crate::TransactionsState::new();
-        let cache = Arc::new(Cache::new(vec![], 10));
         let mut engine = CoreEngine::new(
             state,
             cache,
@@ -350,6 +360,8 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         Ok(LocalInstance::new_internal(
             underlying_db,
+            mock_sequencer_db,
+            mock_besu_client_db,
             assertion_store,
             Some(transport_handle),
             Some(engine_handle),

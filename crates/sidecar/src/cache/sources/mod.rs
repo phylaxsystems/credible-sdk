@@ -98,6 +98,9 @@ pub enum SourceError {
     Request(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("Other error: {0}")]
     Other(String),
+    #[cfg(test)]
+    #[error("Storage not found")]
+    StorageNotFound,
 }
 
 impl DBErrorMarker for SourceError {}

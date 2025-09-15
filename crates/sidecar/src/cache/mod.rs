@@ -1084,4 +1084,62 @@ mod tests {
         assert_eq!(synced.len(), 1);
         assert_eq!(synced[0].name(), "source1");
     }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_cache_first_fallback(mut instance: crate::utils::LocalInstance) {
+        // Send a random tx whose data is not in the in-memory cache
+        let (address, _tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+
+        // The first fallback is hit
+        let cache_sequencer_db_basic_ref_counter = instance
+            .cache_sequencer_db
+            .mock_db
+            .basic_ref_counter
+            .get(&address)
+            .unwrap()
+            .load(Ordering::Relaxed);
+        assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
+
+        // The second fallback is never called
+        assert!(
+            instance
+                .cache_besu_client_db
+                .mock_db
+                .basic_ref_counter
+                .get(&address)
+                .is_none()
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_cache_second_fallback(mut instance: crate::utils::LocalInstance) {
+        // Make the first cache out of sync
+        instance
+            .cache_sequencer_db
+            .is_synced
+            .store(false, Ordering::Relaxed);
+
+        // Send a random tx whose data is not in the in-memory cache
+        let (address, _tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+
+        // The first fallback is never called
+        assert!(
+            instance
+                .cache_sequencer_db
+                .mock_db
+                .basic_ref_counter
+                .get(&address)
+                .is_none()
+        );
+
+        // The second fallback is hit
+        let cache_sequencer_db_basic_ref_counter = instance
+            .cache_besu_client_db
+            .mock_db
+            .basic_ref_counter
+            .get(&address)
+            .unwrap()
+            .load(Ordering::Relaxed);
+        assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
+    }
 }
