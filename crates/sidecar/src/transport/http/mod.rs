@@ -183,28 +183,14 @@ impl Transport for HttpTransport {
         );
 
         let shutdown_token = self.shutdown_token.clone();
-        let server_task = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move { shutdown_token.cancelled().await })
-                .await
-        });
-        tokio::select! {
-            result = server_task => {
-                match result {
-                    Ok(server_result) => {
-                        server_result.map_err(|e| {
-                            error!(error = %e, "HTTP server error");
-                            HttpTransportError::ServerError(format!("Server error: {e}"))
-                        })
-                    }
-                    Err(e) => {
-                        error!(error = %e, "HTTP server task error");
-                        Err(HttpTransportError::ServerError(format!("Server task error: {e}")))
-                    }
-                }
-            }
-            // Add other tasks here as needed
-        }
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { shutdown_token.cancelled().await })
+            .await
+            .map_err(|e| {
+                error!(error = %e, "HTTP server failed");
+                HttpTransportError::ServerError(e.to_string())
+            })?;
+        Ok(())
     }
 
     #[instrument(name = "http_transport::stop", skip(self), level = "info")]
