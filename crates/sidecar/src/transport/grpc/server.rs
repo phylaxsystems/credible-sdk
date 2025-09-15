@@ -175,10 +175,11 @@ impl SidecarTransport for GrpcService {
             };
 
             if let TxQueueContents::Tx(tx, _) = &queue_tx
-                && self.transactions_results.is_tx_received(&tx.tx_hash) {
-                    warn!(tx_hash = %tx.tx_hash, "TX hash already received, skipping");
-                    continue;
-                }
+                && self.transactions_results.is_tx_received(&tx.tx_hash)
+            {
+                warn!(tx_hash = %tx.tx_hash, "TX hash already received, skipping");
+                continue;
+            }
 
             self.transactions_results.add_accepted_tx(&queue_tx);
             self.tx_sender

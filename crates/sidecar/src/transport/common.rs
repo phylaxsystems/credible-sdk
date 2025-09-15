@@ -1,6 +1,9 @@
 //! Shared helpers for transport decoding/parsing across HTTP and gRPC.
 
-use crate::transport::common::HttpDecoderError::{InvalidAddress, InvalidHex};
+use crate::transport::common::HttpDecoderError::{
+    InvalidAddress,
+    InvalidHex,
+};
 use revm::{
     context::TxEnv,
     primitives::{
@@ -66,9 +69,11 @@ pub struct TxEnvParams<'a> {
 
 /// Build a `TxEnv` from string fields shared by HTTP and gRPC shapes.
 pub fn to_tx_env_from_fields(params: &TxEnvParams<'_>) -> Result<TxEnv, HttpDecoderError> {
-    let caller = Address::from_str(params.caller).map_err(|_| InvalidAddress(params.caller.to_string()))?;
+    let caller =
+        Address::from_str(params.caller).map_err(|_| InvalidAddress(params.caller.to_string()))?;
 
-    let gas_price: u128 = params.gas_price
+    let gas_price: u128 = params
+        .gas_price
         .parse()
         .map_err(|_| InvalidHex(params.gas_price.to_string()))?;
 
