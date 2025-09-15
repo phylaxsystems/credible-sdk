@@ -753,6 +753,65 @@ mod tests {
         (engine, tx_sender)
     }
 
+    #[test]
+    fn test_last_executed_tx_single_push_and_pop() {
+        let mut txs = LastExecutedTx::new();
+        let h1 = B256::from([0x11; 32]);
+        let s1: EvmState = EvmState::default();
+
+        txs.push(h1, s1);
+
+        let cur = txs.current().expect("should contain the pushed tx");
+        assert_eq!(cur.0, h1, "current should be the last pushed hash");
+
+        let popped = txs.remove_last().expect("should pop the only element");
+        assert_eq!(popped.0, h1, "popped should be the same hash");
+        assert!(txs.current().is_none(), "should be empty after pop");
+    }
+
+    #[test]
+    fn test_last_executed_tx_two_elements_lifo() {
+        let mut txs = LastExecutedTx::new();
+        let h1 = B256::from([0x21; 32]);
+        let h2 = B256::from([0x22; 32]);
+        txs.push(h1, EvmState::default());
+        txs.push(h2, EvmState::default());
+
+        // LIFO: current is h2
+        assert_eq!(txs.current().unwrap().0, h2);
+        // Pop h2, current becomes h1
+        assert_eq!(txs.remove_last().unwrap().0, h2);
+        assert_eq!(txs.current().unwrap().0, h1);
+        // Pop h1, now empty
+        assert_eq!(txs.remove_last().unwrap().0, h1);
+        assert!(txs.current().is_none());
+    }
+
+    #[test]
+    fn test_last_executed_tx_overflow_discards_oldest() {
+        let mut txs = LastExecutedTx::new();
+        let h1 = B256::from([0x31; 32]);
+        let h2 = B256::from([0x32; 32]);
+        let h3 = B256::from([0x33; 32]);
+
+        // Fill to capacity
+        txs.push(h1, EvmState::default());
+        txs.push(h2, EvmState::default());
+        assert_eq!(txs.current().unwrap().0, h2);
+
+        // Push over capacity; should drop h1 and keep [h2, h3]
+        txs.push(h3, EvmState::default());
+        assert_eq!(txs.current().unwrap().0, h3, "current should be newest after overflow");
+
+        // Removing last returns h3, and now current should be h2 (h1 was discarded)
+        assert_eq!(txs.remove_last().unwrap().0, h3);
+        assert_eq!(txs.current().unwrap().0, h2, "previous should be preserved after pop");
+
+        // Removing last again returns h2 and leaves empty
+        assert_eq!(txs.remove_last().unwrap().0, h2);
+        assert!(txs.current().is_none());
+    }
+
     fn create_test_block_env() -> BlockEnv {
         BlockEnv {
             number: 1,
