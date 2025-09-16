@@ -213,6 +213,7 @@ impl TestTransport for LocalInstanceMockDriver {
             state_results,
             default_account,
             0,
+            None,
             LocalInstanceMockDriver {
                 mock_sender: mock_tx,
                 n_transactions: 0,
@@ -369,6 +370,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             state_results,
             default_account,
             0,
+            Some(&address),
             LocalInstanceHttpDriver {
                 client: reqwest::Client::new(),
                 address,
