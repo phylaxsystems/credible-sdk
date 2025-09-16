@@ -1002,6 +1002,62 @@ mod tests {
         );
     }
 
+    #[crate::utils::engine_test(all)]
+    async fn test_core_engine_reorg_before_blockenv_rejected(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // Send reorg without any prior blockenv or transaction
+        assert!(
+            instance.send_reorg(B256::random()).await.is_err(),
+            "Reorg before any blockenv should be rejected and exit engine"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_core_engine_reorg_after_blockenv_before_tx_rejected(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // Send a blockenv with no transactions
+        instance
+            .send_block_with_txs(Vec::new())
+            .await
+            .expect("should send empty blockenv");
+
+        // Now send a reorg before any transaction in this block
+        assert!(
+            instance.send_reorg(B256::random()).await.is_err(),
+            "Reorg after blockenv but before any tx should be rejected"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_core_engine_reorg_valid_then_previous_rejected(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // Execute two successful transactions
+        let tx1 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .expect("tx1 should be sent successfully");
+        let tx2 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .expect("tx2 should be sent successfully");
+
+        // Valid reorg for the last executed tx should succeed (engine keeps running)
+        instance
+            .send_reorg(tx2)
+            .await
+            .expect("reorg of last executed tx should succeed");
+
+        // Reorg for the previous tx (tx1) should be rejected
+        // Because the engine only keeps the last executed tx in the buffer
+        assert!(
+            instance.send_reorg(tx1).await.is_err(),
+            "Reorg with wrong hash should be rejected and exit engine"
+        );
+    }
+
     #[test]
     fn test_database_commit_verification() {
         use revm::primitives::address;
