@@ -9,17 +9,20 @@ fn main() {
         std::env::set_var("PROTOC", protoc);
     }
 
-    tonic_prost_build::configure()
+    let rax = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
         .compile_protos(
             &["src/transport/grpc/sidecar.proto"],
             &["src/transport/grpc"],
-        )
-        .expect("Failed to compile gRPC protos");
+        );
 
     // Unset var after being set
     unsafe {
         std::env::remove_var("PROTOC");
+    }
+
+    if rax.is_err() {
+        panic!("Failed to compile gRPC protos");
     }
 }
