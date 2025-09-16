@@ -391,9 +391,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 );
                 self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
                 self.block_metrics.transactions_simulated_success += 1;
-
-                self.last_executed_tx
-                    .push(tx_hash, rax.result_and_state.state);
             } else {
                 self.block_metrics.transactions_simulated_failure += 1;
             }
@@ -413,6 +410,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
             self.block_metrics.invalidated_transactions += 1;
         }
+
+        self.last_executed_tx
+            .push(tx_hash, rax.result_and_state.state);
 
         // Store the transaction result
         self.transaction_results.add_transaction_result(
