@@ -1088,7 +1088,9 @@ mod tests {
     #[crate::utils::engine_test(all)]
     async fn test_cache_first_fallback(mut instance: crate::utils::LocalInstance) {
         // Send a random tx whose data is not in the in-memory cache
-        let (address, _tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+        let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+        // Await result
+        let _ = instance.is_transaction_successful(&tx_hash).await;
 
         // The first fallback is hit
         let cache_sequencer_db_basic_ref_counter = instance
@@ -1120,7 +1122,9 @@ mod tests {
             .store(false, Ordering::Relaxed);
 
         // Send a random tx whose data is not in the in-memory cache
-        let (address, _tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+        let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+        // Await result
+        let _ = instance.is_transaction_successful(&tx_hash).await;
 
         // The first fallback is never called
         assert!(

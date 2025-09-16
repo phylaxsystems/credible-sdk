@@ -1,3 +1,4 @@
+use crate::transactions_state::RequestTransactionResult;
 use crate::{
     cache::Cache,
     engine::TransactionResult,
@@ -105,6 +106,8 @@ pub struct LocalInstance<T: TestTransport> {
 }
 
 impl<T: TestTransport> LocalInstance<T> {
+    const TRANSACTION_RESULT_TIMEOUT: Duration = Duration::from_millis(250);
+
     /// Create a new local instance with mock transport
     pub async fn new() -> Result<LocalInstance<T>, String> {
         T::new().await
@@ -196,6 +199,35 @@ impl<T: TestTransport> LocalInstance<T> {
     /// tests should verify behavior through other means (e.g., state changes)
     pub async fn wait_for_processing(&self, duration: Duration) {
         tokio::time::sleep(duration).await;
+    }
+
+    async fn wait_for_transaction_result(
+        &self,
+        tx_hash: &B256,
+    ) -> Result<TransactionResult, String> {
+        let request_hash: FixedBytes<32> = (*tx_hash).into();
+
+        match self
+            .transaction_results
+            .request_transaction_result(&request_hash)
+        {
+            RequestTransactionResult::Result(result) => Ok(result),
+            RequestTransactionResult::Channel(receiver) => {
+                match tokio::time::timeout(Self::TRANSACTION_RESULT_TIMEOUT, receiver).await {
+                    Ok(Ok(result)) => Ok(result),
+                    Ok(Err(_)) => {
+                        Err(format!(
+                            "Transaction result sender dropped before completing for {tx_hash:?}"
+                        ))
+                    }
+                    Err(_) => {
+                        Err(format!(
+                            "Timed out waiting for transaction result for {tx_hash:?}"
+                        ))
+                    }
+                }
+            }
+        }
     }
 
     /// Insert an assertion into the store
@@ -367,9 +399,6 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
-
         Ok((caller, tx_hash))
     }
 
@@ -401,9 +430,6 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
-
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
 
         self.reset_nonce(current_nonce);
 
@@ -442,9 +468,6 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
-
         Ok(tx_hash)
     }
 
@@ -468,40 +491,39 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Get transaction result by hash
     pub fn get_transaction_result(&self, tx_hash: &B256) -> Option<TransactionResult> {
         self.transaction_results
-            .get_transaction_result(tx_hash)
-            .map(|r| r.clone())
+            .get_transaction_result(tx_hash).map(|r| r.clone())
     }
 
     /// Check if transaction was successful and valid
-    pub fn is_transaction_successful(&self, tx_hash: &B256) -> Result<bool, String> {
-        match self.get_transaction_result(tx_hash) {
-            Some(TransactionResult::ValidationCompleted {
+    pub async fn is_transaction_successful(&self, tx_hash: &B256) -> Result<bool, String> {
+        match self.wait_for_transaction_result(tx_hash).await {
+            Ok(TransactionResult::ValidationCompleted {
                 execution_result,
                 is_valid,
             }) => Ok(is_valid && execution_result.is_success()),
-            Some(TransactionResult::ValidationError(_)) => Ok(false),
-            None => Err("Transaction result not found".to_string()),
+            Ok(TransactionResult::ValidationError(_)) => Ok(false),
+            Err(e) => Err(e),
         }
     }
 
     /// Check if transaction reverted but passed validation
-    pub fn is_transaction_reverted_but_valid(&self, tx_hash: &B256) -> Result<bool, String> {
-        match self.get_transaction_result(tx_hash) {
-            Some(TransactionResult::ValidationCompleted {
+    pub async fn is_transaction_reverted_but_valid(&self, tx_hash: &B256) -> Result<bool, String> {
+        match self.wait_for_transaction_result(tx_hash).await {
+            Ok(TransactionResult::ValidationCompleted {
                 execution_result,
                 is_valid,
             }) => Ok(is_valid && !execution_result.is_success()),
-            Some(TransactionResult::ValidationError(_)) => Ok(false),
-            None => Err("Transaction result not found".to_string()),
+            Ok(TransactionResult::ValidationError(_)) => Ok(false),
+            Err(e) => Err(e),
         }
     }
 
     /// Check if transaction failed validation
-    pub fn is_transaction_invalid(&self, tx_hash: &B256) -> Result<bool, String> {
-        match self.get_transaction_result(tx_hash) {
-            Some(TransactionResult::ValidationCompleted { is_valid, .. }) => Ok(!is_valid),
-            Some(TransactionResult::ValidationError(_)) => Ok(true),
-            None => Err("Transaction result not found".to_string()),
+    pub async fn is_transaction_invalid(&self, tx_hash: &B256) -> Result<bool, String> {
+        match self.wait_for_transaction_result(tx_hash).await {
+            Ok(TransactionResult::ValidationCompleted { is_valid, .. }) => Ok(!is_valid),
+            Ok(TransactionResult::ValidationError(_)) => Ok(true),
+            Err(e) => Err(e),
         }
     }
 
@@ -513,7 +535,7 @@ impl<T: TestTransport> LocalInstance<T> {
     ) -> Result<Address, String> {
         let tx_hash = self.send_successful_create_tx(value, data).await?;
 
-        if !self.is_transaction_successful(&tx_hash)? {
+        if !self.is_transaction_successful(&tx_hash).await? {
             return Err("Transaction was not successful".to_string());
         }
 
@@ -527,7 +549,7 @@ impl<T: TestTransport> LocalInstance<T> {
     pub async fn send_and_verify_reverting_create_tx(&mut self) -> Result<(), String> {
         let tx_hash = self.send_reverting_create_tx().await?;
 
-        if !self.is_transaction_reverted_but_valid(&tx_hash)? {
+        if !self.is_transaction_reverted_but_valid(&tx_hash).await? {
             return Err("Transaction should have reverted but been valid".to_string());
         }
 
@@ -564,11 +586,8 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send the failing transaction second
         self.transport.send_transaction(hash_fail, tx_fail).await?;
 
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
-
         // Verify the second transaction failed assertions and was NOT committed
-        if !self.is_transaction_invalid(&hash_fail)? {
+        if !self.is_transaction_invalid(&hash_fail).await? {
             return Err(
                 "Second transaction should have failed assertions and not been committed"
                     .to_string(),
@@ -606,6 +625,8 @@ impl<T: TestTransport> LocalInstance<T> {
         if self.current_nonce > 0 {
             self.current_nonce -= 1;
         }
+
+        self.wait_for_processing(Duration::from_millis(2));
 
         Ok(())
     }

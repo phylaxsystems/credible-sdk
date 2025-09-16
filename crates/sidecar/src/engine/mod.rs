@@ -848,7 +848,7 @@ mod tests {
         assert!(
             instance
                 .is_transaction_reverted_but_valid(&tx_hash)
-                .unwrap(),
+                .await.unwrap(),
             "Transaction should revert but still be valid (pass assertions)"
         );
 
@@ -860,7 +860,7 @@ mod tests {
 
         // Verify transaction was successful
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -878,11 +878,11 @@ mod tests {
 
         // Verify both transactions were processed successfully
         assert!(
-            instance.is_transaction_successful(&tx1_hash).unwrap(),
+            instance.is_transaction_successful(&tx1_hash).await.unwrap(),
             "Transaction 1 should be successful"
         );
         assert!(
-            instance.is_transaction_successful(&tx2_hash).unwrap(),
+            instance.is_transaction_successful(&tx2_hash).await.unwrap(),
             "Transaction 2 should be successful"
         );
 
@@ -927,7 +927,7 @@ mod tests {
 
         // Verify transaction was successful
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -945,7 +945,7 @@ mod tests {
 
         // Verify transaction was successful
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -959,7 +959,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -971,7 +971,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -981,7 +981,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -998,7 +998,7 @@ mod tests {
 
         // Verify transaction was successful
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
