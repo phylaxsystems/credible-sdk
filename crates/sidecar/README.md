@@ -99,6 +99,9 @@ Credible:
           Maximum capacity for transaction results cache [env: CREDIBLE_TRANSACTION_RESULTS_MAX_CAPACITY=] [default: 1000000]
 
 Transport:
+      --transport.protocol <TRANSPORT_PROTOCOL>
+          Which transport protocol to run [env: TRANSPORT_PROTOCOL=] [default: http] [possible values: http, grpc]
+
       --transport.bind-addr <BIND_ADDR>
           Server bind address and port [env: TRANSPORT_BIND_ADDR=] [default: 127.0.0.1:8080]
 ```

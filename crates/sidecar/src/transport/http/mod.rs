@@ -42,7 +42,7 @@ mod block_context;
 pub mod config;
 pub mod server;
 mod tracing_middleware;
-mod transactions_results;
+pub mod transactions_results;
 
 #[derive(thiserror::Error, Debug)]
 pub enum HttpTransportError {

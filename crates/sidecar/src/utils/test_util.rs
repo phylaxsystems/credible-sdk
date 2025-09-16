@@ -19,6 +19,13 @@ fn init_tests() {
 
         let prefix_blacklist = &[
             "sled", // we dont want sled tree tracing
+            // random h2/hyper messages we dont care about
+            "h2",
+            "hyper",
+            "tonic::transport",
+            "h2::codec::framed_write",
+            "h2::codec::framed_read",
+            "tower::buffer::worker", // used by tonic, we dont care
         ];
 
         tracing_subscriber::registry()

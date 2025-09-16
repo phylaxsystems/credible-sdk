@@ -18,6 +18,10 @@ rust-tracing = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 axum = "0.8.4"
+tonic = { version = "0.14.2", features = ["transport"] }
+prost = "0.14"
+tonic-prost = "0.14.2"
+tokio-stream = { version = "0.1", features = ["net"] }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -32,6 +36,11 @@ assertion-da-client = { workspace = true }
 alloy-provider = { workspace = true }
 metrics = { workspace = true }
 futures = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = "0.14.2"
+prost-build = "0.14"
+protoc-bin-vendored = "3"
 
 [features]
 default = ["linea"]

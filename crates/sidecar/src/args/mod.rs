@@ -167,6 +167,15 @@ pub struct CredibleArgs {
     pub transaction_results_max_capacity: usize,
 }
 
+/// Select which transport protocol to run
+#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
+pub enum TransportProtocolArg {
+    #[value(name = "http")]
+    Http,
+    #[value(name = "grpc")]
+    Grpc,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct HttpTransportArgs {
     /// Server bind address and port
@@ -182,6 +191,14 @@ pub struct HttpTransportArgs {
 #[derive(Debug, Clone, PartialEq, Eq, clap::Parser)]
 #[command(name = "sidecar", about = "Credible layer sidecar")]
 pub struct SidecarArgs {
+    /// Which transport protocol to run
+    #[arg(
+        long = "transport.protocol",
+        env = "TRANSPORT_PROTOCOL",
+        default_value = "http",
+        value_enum
+    )]
+    pub transport_protocol: TransportProtocolArg,
     #[command(flatten)]
     pub chain: ChainArgs,
     #[command(flatten)]

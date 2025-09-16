@@ -1,6 +1,6 @@
 //! `decoder`
 //!
-//! This mod contains traits and implemntations of transaction decoders.
+//! This mod contains traits and implementations of transaction decoders.
 //! Transactions arrive in various formats from transports, and its the job
 //! of the decoders to convert them into events that can be passed down to
 //! the core engine.
@@ -11,25 +11,25 @@ use crate::{
         QueueTransaction,
         TxQueueContents,
     },
-    transport::http::server::{
-        JsonRpcRequest,
-        METHOD_BLOCK_ENV,
-        METHOD_REORG,
-        METHOD_SEND_TRANSACTIONS,
-        SendTransactionsParams,
-        TransactionEnv,
+    transport::{
+        common::{
+            HttpDecoderError,
+            TxEnvParams,
+            to_tx_env_from_fields,
+        },
+        http::server::{
+            JsonRpcRequest,
+            METHOD_BLOCK_ENV,
+            METHOD_REORG,
+            METHOD_SEND_TRANSACTIONS,
+            SendTransactionsParams,
+            TransactionEnv,
+        },
     },
 };
-use assertion_executor::primitives::hex;
 use revm::{
     context::TxEnv,
-    primitives::{
-        Address,
-        B256,
-        Bytes,
-        TxKind,
-        U256,
-    },
+    primitives::B256,
 };
 use std::str::FromStr;
 
@@ -42,79 +42,19 @@ pub trait Decoder {
     ) -> Result<Vec<TxQueueContents>, Self::Error>;
 }
 
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum HttpDecoderError {
-    #[error("Request not in proper schema")]
-    SchemaError,
-    #[error("Invalid address format: {0}")]
-    InvalidAddress(String),
-    #[error("Invalid hash format: {0}")]
-    InvalidHash(String),
-    #[error("Invalid hex value: {0}")]
-    InvalidHex(String),
-    #[error("Missing transaction parameters")]
-    MissingParams,
-    #[error("No transactions found in request")]
-    NoTransactions,
-}
-
-fn parse_tx_kind(transact_to: Option<&str>) -> Result<TxKind, HttpDecoderError> {
-    match transact_to {
-        // If transact_to is None or "" or "0x", it's a contract creation transaction
-        None | Some("" | "0x") => Ok(TxKind::Create),
-        Some(addr_str) => {
-            let addr = Address::from_str(addr_str)
-                .map_err(|_| HttpDecoderError::InvalidAddress(addr_str.to_string()))?;
-            Ok(TxKind::Call(addr))
-        }
-    }
-}
-
-fn parse_hex_data(data: &str) -> Result<Bytes, HttpDecoderError> {
-    if data.is_empty() {
-        return Ok(Bytes::new());
-    }
-
-    let hex_data = if let Some(stripped) = data.strip_prefix("0x") {
-        stripped
-    } else {
-        data
-    };
-
-    hex::decode(hex_data)
-        .map(Bytes::from)
-        .map_err(|_| HttpDecoderError::InvalidHex(data.to_string()))
-}
-
 impl TryFrom<&TransactionEnv> for TxEnv {
     type Error = HttpDecoderError;
 
     fn try_from(tx_env: &TransactionEnv) -> Result<Self, Self::Error> {
-        let caller = Address::from_str(&tx_env.caller)
-            .map_err(|_| HttpDecoderError::InvalidAddress(tx_env.caller.clone()))?;
-
-        let gas_price: u128 = tx_env
-            .gas_price
-            .parse()
-            .map_err(|_| HttpDecoderError::InvalidHex(tx_env.gas_price.clone()))?;
-
-        let kind = parse_tx_kind(tx_env.transact_to.as_deref())?;
-
-        let value = U256::from_str(&tx_env.value)
-            .map_err(|_| HttpDecoderError::InvalidHex(tx_env.value.clone()))?;
-
-        let data = parse_hex_data(&tx_env.data)?;
-
-        Ok(Self {
-            caller,
+        to_tx_env_from_fields(&TxEnvParams {
+            caller: &tx_env.caller,
             gas_limit: tx_env.gas_limit,
-            gas_price,
-            kind,
-            value,
-            data,
+            gas_price: &tx_env.gas_price,
+            transact_to: tx_env.transact_to.as_deref(),
+            value: &tx_env.value,
+            data: &tx_env.data,
             nonce: tx_env.nonce,
-            chain_id: Some(tx_env.chain_id),
-            ..Default::default()
+            chain_id: tx_env.chain_id,
         })
     }
 }

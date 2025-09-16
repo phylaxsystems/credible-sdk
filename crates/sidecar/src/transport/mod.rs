@@ -16,14 +16,25 @@
 //! │ (Sequencer) │    │           │    │            │
 //! └─────────────┘    └───────────┘    └────────────┘
 //! ```
+//! ## API reference
+//!
+//! Below you'll be able to find the API reference for the sidecar as `JSON-RPC` calls. For protobuf, see the `grpc` mod.
+#![doc = include_str!("./README.md")]
+// For auto generated code and docs
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::default_trait_access)]
+#![allow(clippy::doc_markdown)]
 
+mod common;
 pub mod decoder;
+pub mod grpc;
 pub mod http;
 pub mod mock;
 
 use crate::{
     engine::queue::TransactionQueueSender,
     transactions_state::TransactionsState,
+    utils::ErrorRecoverability,
 };
 use std::sync::Arc;
 
@@ -94,4 +105,53 @@ pub trait Transport: Send + Sync {
 
     /// Graceful shutdown.
     async fn stop(&mut self) -> Result<(), Self::Error>;
+}
+
+use grpc::{
+    GrpcTransport,
+    GrpcTransportError,
+};
+use http::{
+    HttpTransport,
+    HttpTransportError,
+};
+
+#[derive(Debug, thiserror::Error)]
+pub enum AnyTransportError {
+    #[error("HTTP transport error: {0}")]
+    Http(#[from] HttpTransportError),
+    #[error("gRPC transport error: {0}")]
+    Grpc(#[from] GrpcTransportError),
+}
+
+impl From<&AnyTransportError> for ErrorRecoverability {
+    fn from(e: &AnyTransportError) -> Self {
+        match e {
+            AnyTransportError::Http(inner) => ErrorRecoverability::from(inner),
+            AnyTransportError::Grpc(inner) => ErrorRecoverability::from(inner),
+        }
+    }
+}
+
+/// A simple enum wrapper to run any concrete transport behind a unified API.
+#[derive(Debug)]
+pub enum AnyTransport {
+    Http(HttpTransport),
+    Grpc(GrpcTransport),
+}
+
+impl AnyTransport {
+    pub async fn run(&self) -> Result<(), AnyTransportError> {
+        match self {
+            AnyTransport::Http(t) => t.run().await.map_err(AnyTransportError::from),
+            AnyTransport::Grpc(t) => t.run().await.map_err(AnyTransportError::from),
+        }
+    }
+
+    pub async fn stop(&mut self) -> Result<(), AnyTransportError> {
+        match self {
+            AnyTransport::Http(t) => t.stop().await.map_err(AnyTransportError::from),
+            AnyTransport::Grpc(t) => t.stop().await.map_err(AnyTransportError::from),
+        }
+    }
 }
