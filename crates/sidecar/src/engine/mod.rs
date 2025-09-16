@@ -964,7 +964,7 @@ mod tests {
         mut instance: crate::utils::LocalInstance,
     ) {
         // Execute two successful transactions
-        let _tx1 = instance
+        let tx1 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .expect("tx1 should be sent successfully");
@@ -982,7 +982,7 @@ mod tests {
         // Reorg for the previous tx (tx1) should be rejected
         // Because the engine only keeps the last executed tx in the buffer
         assert!(
-            instance.send_reorg(B256::random()).await.is_err(),
+            instance.send_reorg(tx1).await.is_err(),
             "Reorg with wrong hash should be rejected and exit engine"
         );
     }
