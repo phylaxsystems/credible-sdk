@@ -642,8 +642,13 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let (engine_tx, engine_rx) = channel::unbounded();
 
         // Create the database and state
-        let mut underlying_db =
-            revm::database::CacheDB::new(revm::database::EmptyDBTyped::default());
+        let mock_sequencer_db = MockSequencerDB::build();
+        let mock_besu_client_db = MockBesuClientDB::build();
+        let cache = Arc::new(Cache::new(
+            vec![mock_sequencer_db.clone(), mock_besu_client_db.clone()],
+            10,
+        ));
+        let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
 
         let underlying_db = Arc::new(underlying_db);
@@ -734,6 +739,8 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         Ok(LocalInstance::new_internal(
             underlying_db,
+            mock_sequencer_db,
+            mock_besu_client_db,
             assertion_store,
             Some(transport_handle),
             Some(engine_handle),
@@ -741,6 +748,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             state_results,
             default_account,
             0,
+            Some(&address),
             LocalInstanceGrpcDriver {
                 client,
                 n_transactions: 0,
