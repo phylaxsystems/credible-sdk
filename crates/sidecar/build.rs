@@ -22,7 +22,5 @@ fn main() {
         std::env::remove_var("PROTOC");
     }
 
-    if rax.is_err() {
-        panic!("Failed to compile gRPC protos");
-    }
+    assert!(!rax.is_err(), "Failed to compile gRPC protos");
 }
