@@ -86,8 +86,7 @@ impl Transport for MockTransport {
         Ok(())
     }
 
-    async fn stop(&mut self) -> Result<(), MockTransportError> {
+    fn stop(&mut self) {
         // We dont have anything to cleanup
-        Ok(())
     }
 }
