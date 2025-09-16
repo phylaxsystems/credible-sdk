@@ -278,6 +278,14 @@ impl TestTransport for LocalInstanceMockDriver {
             .send(TxQueueContents::Reorg(tx_hash, Span::current()))
             .map_err(|e| format!("Failed to send transaction: {e}"))
     }
+
+    fn set_n_transactions(&mut self, n_transactions: u64) {
+        self.n_transactions = n_transactions;
+    }
+
+    fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>) {
+        self.last_tx_hash = tx_hash;
+    }
 }
 
 #[derive(Debug)]
@@ -622,6 +630,14 @@ impl TestTransport for LocalInstanceHttpDriver {
             "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
         ))
     }
+
+    fn set_n_transactions(&mut self, n_transactions: u64) {
+        self.n_transactions = n_transactions;
+    }
+
+    fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>) {
+        self.last_tx_hash = tx_hash;
+    }
 }
 
 /// Wrapper over the `LocalInstance` that provides `GrpcTransport` functionality
@@ -951,5 +967,13 @@ impl TestTransport for LocalInstanceGrpcDriver {
         Err(format!(
             "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
         ))
+    }
+
+    fn set_n_transactions(&mut self, n_transactions: u64) {
+        self.n_transactions = n_transactions;
+    }
+
+    fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>) {
+        self.last_tx_hash = tx_hash;
     }
 }

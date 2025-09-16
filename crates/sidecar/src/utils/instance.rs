@@ -6,6 +6,7 @@ use crate::{
         MockSequencerDB,
     },
 };
+use alloy::primitives::TxHash;
 use assertion_executor::{
     primitives::{
         AccountInfo,
@@ -55,6 +56,10 @@ pub trait TestTransport: Sized {
     /// Transaction hash provided as an argument must match the last executed tx.
     /// If not the call should succeed but the core engine should produce an error.
     async fn reorg(&self, tx_hash: B256) -> Result<(), String>;
+    /// Set the number of transactions to be sent in the next blockEnv
+    fn set_n_transactions(&mut self, n_transactions: u64);
+    /// Set the last tx hash to be sent in the next blockEnv
+    fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>);
 }
 
 /// `LocalInstance` is used to instantiate the core engine and a transport.
@@ -94,7 +99,7 @@ pub struct LocalInstance<T: TestTransport> {
     /// Current nonce for the default account
     current_nonce: u64,
     /// Container type that holds the transport and impls `TestTransport`
-    transport: T,
+    pub transport: T,
     /// Local address for the HTTP transport
     pub local_address: Option<SocketAddr>,
 }

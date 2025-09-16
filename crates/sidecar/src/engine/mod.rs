@@ -477,6 +477,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         if let Some(prev_block_env) = self.block_env.as_ref()
             && prev_block_env.number != queue_block_env.block_env.number - 1
         {
+            warn!(prev_block_env = %prev_block_env.number, current_block_env = %queue_block_env.block_env.number, "BlockEnv received is not +1 from the previous block env, invalidating cache");
             self.cache
                 .reset_required_block_number(queue_block_env.block_env.number);
             self.state.invalidate_all();
@@ -487,6 +488,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         if let Some((prev_tx_hash, _)) = self.last_executed_tx.current()
             && Some(prev_tx_hash) != queue_block_env.last_tx_hash.as_ref()
         {
+            warn!(prev_tx_hash = ?prev_tx_hash, current_tx_hash = ?queue_block_env.last_tx_hash, "The last transaction hash in the BlockEnv does not match the last transaction processed, invalidating cache");
             self.cache
                 .reset_required_block_number(queue_block_env.block_env.number);
             self.state.invalidate_all();
@@ -495,6 +497,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         // If the number of transactions in the block env is different from the number of
         // transactions received, invalidate the cache
         if self.block_env_transaction_counter != queue_block_env.n_transactions {
+            warn!(
+                sidecar_n_transactions = self.block_env_transaction_counter,
+                block_env_n_transactions = queue_block_env.n_transactions,
+                "The number of transactions in the BlockEnv does not much the transactions processed, invalidating cache"
+            );
             self.cache
                 .reset_required_block_number(queue_block_env.block_env.number);
             self.state.invalidate_all();
@@ -533,6 +540,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     let block_env = &queue_block_env.block_env;
                     let _guard = current_span.enter();
 
+                    self.check_cache(&queue_block_env);
+
                     // Apply the previously executed transaction state changes
                     self.apply_state_buffer();
 
@@ -551,8 +560,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         base_fee = ?block_env.basefee,
                         "Block details"
                     );
-
-                    self.check_cache(&queue_block_env);
 
                     self.cache.set_block_number(block_env.number);
 
@@ -728,6 +735,7 @@ mod tests {
             uint,
         },
     };
+    use std::time::Duration;
 
     fn create_test_engine() -> (
         CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
@@ -1208,5 +1216,94 @@ mod tests {
             }
             other => panic!("Expected TransactionError, got {other:?}"),
         }
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_block_env_wrong_transaction_number(mut instance: crate::utils::LocalInstance) {
+        // Send and verify a reverting CREATE transaction
+        let _tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.transport.set_n_transactions(2);
+
+        // Send a blockEnv with the wrong number of transactions
+        instance.new_block().await.unwrap();
+
+        instance.wait_for_processing(Duration::from_millis(2)).await;
+
+        assert!(logs_contain(
+            "The number of transactions in the BlockEnv does not much the transactions processed, invalidating cache"
+        ));
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_block_env_wrong_last_tx_hash(mut instance: crate::utils::LocalInstance) {
+        // Send and verify a reverting CREATE transaction
+        let tx_hash_1 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Send and verify a reverting CREATE transaction
+        let _tx_hash_2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.transport.set_last_tx_hash(Some(tx_hash_1));
+
+        // Send a blockEnv with the wrong last tx hash
+        instance.new_block().await.unwrap();
+
+        instance.wait_for_processing(Duration::from_millis(2)).await;
+
+        assert!(logs_contain(
+            "The last transaction hash in the BlockEnv does not match the last transaction processed, invalidating cache"
+        ));
+    }
+
+    #[crate::utils::engine_test(http)]
+    async fn test_block_env_transaction_number_greater_than_zero_and_no_last_tx_hash(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // Send and verify a reverting CREATE transaction
+        let _tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.transport.set_last_tx_hash(None);
+
+        // Send a blockEnv with the wrong number of transactions
+        let _ = instance.new_block().await;
+
+        instance.wait_for_processing(Duration::from_millis(2)).await;
+
+        // The blockEnv is not accepted at http level
+        assert!(logs_contain("Failed to decode transactions"));
+    }
+
+    #[crate::utils::engine_test(http)]
+    async fn test_block_env_transaction_number_zero_and_last_tx_hash(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // Send and verify a reverting CREATE transaction
+        let tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.transport.set_last_tx_hash(Some(tx_hash));
+        instance.transport.set_n_transactions(0);
+
+        // Send a blockEnv with the wrong number of transactions
+        let _ = instance.new_block().await;
+
+        instance.wait_for_processing(Duration::from_millis(2)).await;
+
+        // The blockEnv is not accepted at http level
+        assert!(logs_contain("Failed to decode transactions"));
     }
 }
