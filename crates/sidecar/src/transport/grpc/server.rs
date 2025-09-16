@@ -39,9 +39,12 @@ use crate::{
     },
 };
 use assertion_executor::primitives::ExecutionResult;
-use revm::primitives::{
-    B256,
-    alloy_primitives::TxHash,
+use revm::{
+    context::BlockEnv as RevmBlockEnv,
+    primitives::{
+        B256,
+        alloy_primitives::TxHash,
+    },
 };
 use std::sync::{
     Arc,
@@ -96,36 +99,11 @@ impl SidecarTransport for GrpcService {
         request: Request<BlockEnvEnvelope>,
     ) -> Result<Response<BasicAck>, Status> {
         let payload = request.into_inner();
+        let span = tracing::Span::current();
         trace!("Processing gRPC SendBlockEnv request");
 
-        // Build a combined JSON object to reuse existing QueueBlockEnv deserializer
-        let mut base: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(&payload.block_env_json)
-                .map_err(|e| Status::invalid_argument(format!("invalid block_env_json: {e}")))?;
-
-        if payload.n_transactions > 0 && payload.last_tx_hash.is_empty() {
-            return Err(Status::invalid_argument(
-                "when n_transactions > 0, last_tx_hash must be provided",
-            ));
-        }
-
-        if !payload.last_tx_hash.is_empty() {
-            base.insert(
-                "last_tx_hash".to_string(),
-                serde_json::Value::String(payload.last_tx_hash.clone()),
-            );
-        }
-        if payload.n_transactions != 0 {
-            base.insert(
-                "n_transactions".to_string(),
-                serde_json::Value::Number(serde_json::Number::from(payload.n_transactions)),
-            );
-        }
-
-        let block: QueueBlockEnv = serde_json::from_value(serde_json::Value::Object(base))
-            .map_err(|e| Status::invalid_argument(format!("invalid block env contents: {e}")))?;
-
-        let span = tracing::Span::current();
+        // Decode into proper structs instead of manually merging JSON
+        let block = decode_block_env_envelope(&payload)?;
         let event = TxQueueContents::Block(block, span);
 
         self.transactions_results.add_accepted_tx(&event);
@@ -351,4 +329,41 @@ fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
         QueueTransaction { tx_hash, tx_env },
         span,
     ))
+}
+
+/// Decode `BlockEnvEnvelope` into a `QueueBlockEnv`.
+fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueBlockEnv, Status> {
+    // Parse the BlockEnv JSON into the concrete type
+    let block_env: RevmBlockEnv = serde_json::from_str(&payload.block_env_json)
+        .map_err(|e| Status::invalid_argument(format!("invalid block_env_json: {e}")))?;
+
+    // Parse optional last_tx_hash
+    let last_tx_hash = if payload.last_tx_hash.is_empty() {
+        None
+    } else {
+        Some(
+            payload
+                .last_tx_hash
+                .parse::<TxHash>()
+                .map_err(|_| Status::invalid_argument("invalid last_tx_hash"))?,
+        )
+    };
+
+    // Validate invariants consistent with `QueueBlockEnv` JSON deserializer
+    if payload.n_transactions == 0 && last_tx_hash.is_some() {
+        return Err(Status::invalid_argument(
+            "when n_transactions is 0, last_tx_hash must be null, empty, or missing",
+        ));
+    }
+    if payload.n_transactions > 0 && last_tx_hash.is_none() {
+        return Err(Status::invalid_argument(
+            "when n_transactions > 0, last_tx_hash must be provided",
+        ));
+    }
+
+    Ok(QueueBlockEnv {
+        block_env,
+        last_tx_hash,
+        n_transactions: payload.n_transactions,
+    })
 }
