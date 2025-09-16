@@ -1,7 +1,7 @@
-use crate::transactions_state::RequestTransactionResult;
 use crate::{
     cache::Cache,
     engine::TransactionResult,
+    transactions_state::RequestTransactionResult,
     utils::test_cache::{
         MockBesuClientDB,
         MockSequencerDB,
@@ -320,9 +320,6 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
-
         Ok(tx_hash)
     }
 
@@ -408,8 +405,6 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport.new_block(self.block_number).await?;
         self.block_number += 1;
 
-        let current_nonce = self.current_nonce();
-
         let nonce = self.next_nonce();
         let caller = self.default_account;
 
@@ -430,8 +425,6 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
-
-        self.reset_nonce(current_nonce);
 
         Ok(tx_hash)
     }
@@ -491,7 +484,8 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Get transaction result by hash
     pub fn get_transaction_result(&self, tx_hash: &B256) -> Option<TransactionResult> {
         self.transaction_results
-            .get_transaction_result(tx_hash).map(|r| r.clone())
+            .get_transaction_result(tx_hash)
+            .map(|r| r.clone())
     }
 
     /// Check if transaction was successful and valid
@@ -626,7 +620,7 @@ impl<T: TestTransport> LocalInstance<T> {
             self.current_nonce -= 1;
         }
 
-        self.wait_for_processing(Duration::from_millis(2));
+        self.wait_for_processing(Duration::from_millis(2)).await;
 
         Ok(())
     }
