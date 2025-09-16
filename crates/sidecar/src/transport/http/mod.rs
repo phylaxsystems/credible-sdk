@@ -194,10 +194,9 @@ impl Transport for HttpTransport {
     }
 
     #[instrument(name = "http_transport::stop", skip(self), level = "info")]
-    async fn stop(&mut self) -> Result<(), Self::Error> {
+    fn stop(&mut self) {
         info!("Stopping HTTP transport");
         self.shutdown_token.cancel();
-        Ok(())
     }
 }
 

@@ -104,7 +104,7 @@ pub trait Transport: Send + Sync {
     async fn run(&self) -> Result<(), Self::Error>;
 
     /// Graceful shutdown.
-    async fn stop(&mut self) -> Result<(), Self::Error>;
+    fn stop(&mut self);
 }
 
 use grpc::{
@@ -148,10 +148,10 @@ impl AnyTransport {
         }
     }
 
-    pub async fn stop(&mut self) -> Result<(), AnyTransportError> {
+    pub fn stop(&mut self) {
         match self {
-            AnyTransport::Http(t) => t.stop().await.map_err(AnyTransportError::from),
-            AnyTransport::Grpc(t) => t.stop().await.map_err(AnyTransportError::from),
+            AnyTransport::Http(t) => t.stop(),
+            AnyTransport::Grpc(t) => t.stop(),
         }
     }
 }

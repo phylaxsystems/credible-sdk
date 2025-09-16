@@ -120,7 +120,8 @@ async fn main() -> anyhow::Result<()> {
         );
 
         let (tx_sender, tx_receiver) = unbounded();
-        let transport = create_transport_from_args(&args, tx_sender, engine_state_results.clone())?;
+        let mut transport =
+            create_transport_from_args(&args, tx_sender, engine_state_results.clone())?;
 
         let mut engine = CoreEngine::new(
             state,
@@ -140,40 +141,37 @@ async fn main() -> anyhow::Result<()> {
                 break;
             }
             result = engine.run() => {
-                let Err(e) = result else {
-                    continue;
-                };
-
-                if ErrorRecoverability::from(&e).is_recoverable() {
-                    tracing::error!(error = %e, "Engine exited");
-                } else {
-                    critical!(error = %e, "Engine exited");
+                if let Err(e) = result {
+                    if ErrorRecoverability::from(&e).is_recoverable() {
+                        tracing::error!(error = %e, "Engine exited");
+                    } else {
+                        critical!(error = %e, "Engine exited");
+                    }
                 }
             }
             result = transport.run() => {
-                let Err(e) = result else {
-                    continue;
-                };
-
-                if ErrorRecoverability::from(&e).is_recoverable() {
-                    tracing::error!(error = %e, "Transport exited");
-                } else {
-                    critical!(error = %e, "Transport exited");
+                if let Err(e) = result {
+                    if ErrorRecoverability::from(&e).is_recoverable() {
+                        tracing::error!(error = %e, "Transport exited");
+                    } else {
+                        critical!(error = %e, "Transport exited");
+                    }
                 }
             }
             result = indexer::run_indexer(indexer_cfg) => {
-                let Err(e) = result else {
-                    continue;
-                };
-
-                if ErrorRecoverability::from(&e).is_recoverable() {
-                    tracing::error!(error = %e, "Indexer exited");
-                } else {
-                    critical!(error = %e, "Indexer exited");
+                if let Err(e) = result {
+                    if ErrorRecoverability::from(&e).is_recoverable() {
+                        tracing::error!(error = %e, "Indexer exited");
+                    } else {
+                        critical!(error = %e, "Indexer exited");
+                    }
                 }
             }
         }
 
+        transport.stop();
+        drop(transport);
+        drop(engine);
         tracing::warn!("Sidecar restarted.");
     }
 
