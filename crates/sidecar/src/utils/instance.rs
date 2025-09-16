@@ -284,6 +284,51 @@ impl<T: TestTransport> LocalInstance<T> {
         Ok(tx_hash)
     }
 
+    /// Send a successful CREATE transaction using the default account, without a new blockenv
+    pub async fn send_successful_create_tx_dry(
+        &mut self,
+        value: U256,
+        data: Bytes,
+    ) -> Result<B256, String> {
+        let nonce = self.next_nonce();
+        let caller = self.default_account;
+
+        // Create transaction
+        let tx_env = TxEnv {
+            caller,
+            gas_limit: 100_000,
+            gas_price: 0,
+            kind: TxKind::Create,
+            value,
+            data,
+            nonce,
+            ..Default::default()
+        };
+
+        // Generate transaction hash
+        let tx_hash = Self::generate_random_tx_hash();
+
+        // Send transaction
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
+        // Wait for processing
+        self.wait_for_processing(Duration::from_millis(2)).await;
+
+        // If the engine exited (e.g., received tx before blockenv), return an error
+        if let Some(handle) = &self.engine_handle {
+            if handle.is_finished() {
+                return Err(
+                    "Core engine exited while processing transaction (likely sent before blockenv)"
+                        .to_string(),
+                );
+            }
+        } else {
+            return Err("Engine handle does not exist! Make sure the engine was initialized before calling fn!".to_string());
+        }
+
+        Ok(tx_hash)
+    }
+
     /// Send a successful CREATE transaction using a random account to enforce a cache miss (in the
     /// in-memory cache) and therefore, enforcing a cache fetch from the providers (e.g., Besu client)
     pub async fn send_create_tx_with_cache_miss(&mut self) -> Result<(Address, B256), String> {

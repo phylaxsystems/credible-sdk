@@ -894,6 +894,20 @@ mod tests {
     }
 
     #[crate::utils::engine_test(all)]
+    async fn test_core_engine_reject_tx_before_blockenv(mut instance: crate::utils::LocalInstance) {
+        // Send and verify a successful CREATE transaction
+        let rax = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await;
+
+        // Verify transaction was successful
+        assert!(
+            rax.is_err(),
+            "Transaction did not error when sending before blockenv!"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
     async fn test_core_engine_reorg(mut instance: crate::utils::LocalInstance) {
         // Send and verify a successful CREATE transaction
         let tx_hash = instance
