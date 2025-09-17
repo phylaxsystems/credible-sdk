@@ -522,7 +522,7 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Check if transaction failed validation
     pub async fn is_transaction_removed(&self, tx_hash: &B256) -> Result<bool, String> {
         loop {
-            self.wait_for_processing(Duration::from_millis(2)).await;
+            self.wait_for_processing(Duration::from_millis(5)).await;
             let rax: Result<(), WaitError> = match self.wait_for_transaction_result(tx_hash).await {
                 Ok(TransactionResult::ValidationCompleted { .. }) => {
                     continue;
