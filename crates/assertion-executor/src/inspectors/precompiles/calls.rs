@@ -19,7 +19,7 @@ use alloy_sol_types::SolType;
 #[derive(thiserror::Error, Debug)]
 pub enum GetCallInputsError {
     #[error("Failed to decode getCallInputs call: {0:?}")]
-    FailedToDecodeGetCallInputsCall(#[from] alloy_sol_types::Error),
+    FailedToDecodeGetCallInputsCall(#[source] alloy_sol_types::Error),
     #[error(
         "Expected Bytes in CallInput input. This should be restricted to only CallInput::Bytes by the call tracer."
     )]

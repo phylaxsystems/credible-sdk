@@ -48,11 +48,14 @@ use super::engine::queue::{
 };
 use crate::{
     TransactionsState,
+    critical,
     metrics::{
         BlockMetrics,
         TransactionMetrics,
     },
 };
+use assertion_executor::primitives::EVMError;
+use std::fmt::Debug;
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -73,6 +76,10 @@ use crate::{
     cache::Cache,
     engine::transactions_results::TransactionsResults,
     utils::ErrorRecoverability,
+};
+use assertion_executor::{
+    ForkTxExecutionError,
+    db::Database,
 };
 #[allow(unused_imports)]
 use revm::{
@@ -312,6 +319,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let rax = match rax {
             Ok(rax) => rax,
             Err(e) => {
+                if !ErrorRecoverability::from(&e).is_recoverable() {
+                    critical!(error = ?e, "Failed to execute a transaction");
+                }
                 match e {
                     ExecutorError::ForkTxExecutionError(_) => {
                         // Transaction validation errors (nonce, gas, funds, etc.)
@@ -707,6 +717,40 @@ fn check_recepient_address(tx: &TxEnv) -> Option<()> {
 
     // Bad precompile range, return none
     None
+}
+
+impl<DBError> From<&EVMError<DBError>> for ErrorRecoverability {
+    fn from(value: &EVMError<DBError>) -> Self {
+        match value {
+            EVMError::Transaction(_) | EVMError::Header(_) | EVMError::Custom(_) => {
+                Self::Recoverable
+            }
+            EVMError::Database(_) => Self::Unrecoverable,
+        }
+    }
+}
+
+impl<ExtDb: revm::Database> From<&ForkTxExecutionError<ExtDb>> for ErrorRecoverability {
+    fn from(value: &ForkTxExecutionError<ExtDb>) -> Self {
+        match value {
+            ForkTxExecutionError::TxEvmError(e) => e.into(),
+            ForkTxExecutionError::CallTracerError(_) => Self::Recoverable,
+        }
+    }
+}
+
+impl<Active, ExtDb> From<&ExecutorError<Active, ExtDb>> for ErrorRecoverability
+where
+    Active: DatabaseRef,
+    ExtDb: Database,
+    ExtDb::Error: Debug,
+{
+    fn from(error: &ExecutorError<Active, ExtDb>) -> Self {
+        match error {
+            ExecutorError::ForkTxExecutionError(_) => ErrorRecoverability::Recoverable,
+            ExecutorError::AssertionExecutionError(_) => ErrorRecoverability::Unrecoverable,
+        }
+    }
 }
 
 #[cfg(test)]

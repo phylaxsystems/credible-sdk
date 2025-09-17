@@ -39,12 +39,16 @@ pub struct DaClient {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaClientError {
-    #[error("HTTP client error: {0}")]
-    ReqwestError(#[from] reqwest::Error),
+    #[error("Failed to build the DA client")]
+    Build(#[source] reqwest::Error),
+    #[error("HTTP client error")]
+    Reqwest(#[source] reqwest::Error),
+    #[error("HTTP client response error")]
+    ReqwestResponse(#[source] reqwest::Error),
     #[error("URL parse error: {0}")]
-    UrlParseError(#[from] url::ParseError),
+    UrlParse(#[source] url::ParseError),
     #[error("JSON serialization error: {0}")]
-    JsonError(#[from] serde_json::Error),
+    JsonError(#[source] serde_json::Error),
     #[error("JSON-RPC error code {code}: {message}")]
     JsonRpcError { code: i32, message: String },
     #[error("Invalid response: {0}")]
@@ -79,8 +83,11 @@ struct JsonRpcError {
 impl DaClient {
     /// Create a new DA client
     pub fn new(da_url: &str) -> Result<Self, DaClientError> {
-        let base_url = Url::parse(da_url)?;
-        let client = Client::builder().use_rustls_tls().build()?;
+        let base_url = Url::parse(da_url).map_err(DaClientError::UrlParse)?;
+        let client = Client::builder()
+            .use_rustls_tls()
+            .build()
+            .map_err(DaClientError::Build)?;
 
         Ok(Self {
             client,
@@ -91,7 +98,7 @@ impl DaClient {
 
     /// Create a new DA client with authentication
     pub fn new_with_auth(da_url: &str, auth: &str) -> Result<Self, DaClientError> {
-        let base_url = Url::parse(da_url)?;
+        let base_url = Url::parse(da_url).map_err(DaClientError::UrlParse)?;
         let mut headers = header::HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
@@ -103,7 +110,8 @@ impl DaClient {
         let client = Client::builder()
             .use_rustls_tls()
             .default_headers(headers)
-            .build()?;
+            .build()
+            .map_err(DaClientError::Build)?;
 
         Ok(Self {
             client,
@@ -137,7 +145,8 @@ impl DaClient {
             .post(self.base_url.clone())
             .json(&request)
             .send()
-            .await?;
+            .await
+            .map_err(DaClientError::Reqwest)?;
 
         if !response.status().is_success() {
             return Err(DaClientError::InvalidResponse(format!(
@@ -146,7 +155,10 @@ impl DaClient {
             )));
         }
 
-        let response_body: JsonRpcResponse<R> = response.json().await?;
+        let response_body: JsonRpcResponse<R> = response
+            .json()
+            .await
+            .map_err(DaClientError::ReqwestResponse)?;
 
         // Validate JSON-RPC 2.0 compliance
         if response_body.jsonrpc != "2.0" {

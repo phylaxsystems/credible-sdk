@@ -143,27 +143,27 @@ async fn main() -> anyhow::Result<()> {
             result = engine.run() => {
                 if let Err(e) = result {
                     if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = %e, "Engine exited");
+                        tracing::error!(error = ?e, "Engine exited");
                     } else {
-                        critical!(error = %e, "Engine exited");
+                        critical!(error = ?e, "Engine exited");
                     }
                 }
             }
             result = transport.run() => {
                 if let Err(e) = result {
                     if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = %e, "Transport exited");
+                        tracing::error!(error = ?e, "Transport exited");
                     } else {
-                        critical!(error = %e, "Transport exited");
+                        critical!(error = ?e, "Transport exited");
                     }
                 }
             }
             result = indexer::run_indexer(indexer_cfg) => {
                 if let Err(e) = result {
                     if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = %e, "Indexer exited");
+                        tracing::error!(error = ?e, "Indexer exited");
                     } else {
-                        critical!(error = %e, "Indexer exited");
+                        critical!(error = ?e, "Indexer exited");
                     }
                 }
             }

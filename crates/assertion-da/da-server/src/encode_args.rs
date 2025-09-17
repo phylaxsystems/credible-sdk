@@ -14,9 +14,9 @@ pub enum EncodeArgsError {
     #[error("Signature not a constructor: {0}")]
     SignatureNotAConstructor(String),
     #[error("Dynamic ABI Error: {0}")]
-    DynAbiError(#[from] alloy_dyn_abi::Error),
+    DynAbiError(#[source] alloy_dyn_abi::Error),
     #[error("Error parsing ABI types: {0}")]
-    ParseAbiError(#[from] alloy_dyn_abi::parser::Error),
+    ParseAbiError(#[source] alloy_dyn_abi::parser::Error),
 }
 
 type Result<T> = std::result::Result<T, EncodeArgsError>;
@@ -31,10 +31,11 @@ pub fn encode_constructor_args(sig: &str, args: Vec<String>) -> Result<Bytes> {
             "signature must start with 'constructor('".to_string(),
         ));
     }
-    let func = Function::parse(sig)?;
+    let func = Function::parse(sig).map_err(EncodeArgsError::ParseAbiError)?;
     let sol_values = encode_args(&func.inputs, args)?;
 
-    let encoded = Function::abi_encode_input_raw(&func, &sol_values)?;
+    let encoded =
+        Function::abi_encode_input_raw(&func, &sol_values).map_err(EncodeArgsError::DynAbiError)?;
     Ok(Bytes::from(encoded))
 }
 
@@ -50,8 +51,8 @@ where
 
 /// Helper function to coerce a value to a [`DynSolValue`] given a type string
 pub fn coerce_value(ty: &str, arg: &str) -> Result<DynSolValue> {
-    let ty = DynSolType::parse(ty)?;
-    Ok(DynSolType::coerce_str(&ty, arg)?)
+    let ty = DynSolType::parse(ty).map_err(EncodeArgsError::DynAbiError)?;
+    DynSolType::coerce_str(&ty, arg).map_err(EncodeArgsError::DynAbiError)
 }
 
 #[cfg(test)]

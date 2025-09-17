@@ -51,7 +51,7 @@ pub fn init_assertion_store(args: &SidecarArgs) -> Result<AssertionStore, Assert
         db_config = db_config.flush_every_ms(Some(flush_ms));
     }
 
-    let db = db_config.open()?;
+    let db = db_config.open().map_err(AssertionStoreError::SledError)?;
 
     info!(
         db_path = ?args.credible.assertion_store_db_path,

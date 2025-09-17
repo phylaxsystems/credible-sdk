@@ -121,7 +121,7 @@ impl DockerImageManager {
                     }
                     warn!(
                         target: "solidity_compilation",
-                        error = %e,
+                        error = ?e,
                         attempt = attempts,
                         "Failed to ensure image availability, retrying after delay"
                     );
@@ -138,7 +138,8 @@ impl DockerImageManager {
         let images = self
             .docker
             .list_images(None::<ListImagesOptions<String>>)
-            .await?;
+            .await
+            .map_err(CompilationError::DockerError)?;
         let image_exists = images
             .iter()
             .any(|img| img.repo_tags.contains(&image_name.to_string()));
@@ -159,7 +160,8 @@ impl DockerImageManager {
                     None,
                 )
                 .try_collect::<Vec<_>>()
-                .await?;
+                .await
+                .map_err(CompilationError::DockerError)?;
         }
         Ok(())
     }
@@ -221,7 +223,8 @@ impl ContainerManager {
         let container = self
             .docker
             .create_container(create_options, container_config)
-            .await?;
+            .await
+            .map_err(CompilationError::DockerError)?;
 
         self.container_id = Some(container.id);
 
@@ -236,7 +239,8 @@ impl ContainerManager {
                 self.container_id.as_ref().unwrap(),
                 None::<StartContainerOptions<String>>,
             )
-            .await?;
+            .await
+            .map_err(CompilationError::DockerError)?;
 
         Ok(())
     }
@@ -295,7 +299,8 @@ impl ContainerManager {
             .docker
             .logs(container_id, options)
             .try_collect::<Vec<_>>()
-            .await?;
+            .await
+            .map_err(CompilationError::DockerError)?;
 
         let log_messages = logs
             .iter()
@@ -343,7 +348,8 @@ impl ContainerManager {
                     ..Default::default()
                 }),
             )
-            .await?;
+            .await
+            .map_err(CompilationError::DockerError)?;
 
         self.is_cleaned_up = true;
         Ok(())
@@ -378,7 +384,7 @@ impl Drop for ContainerManager {
                     warn!(
                         target: "solidity_compilation",
                         container_name = %self.container_name,
-                        error = %e,
+                        error = ?e,
                         "Failed to remove container in Drop"
                     );
                 }
@@ -407,10 +413,10 @@ pub struct SoliditySourceFile {
 impl SoliditySourceFile {
     /// Create a new source file with the given content
     pub fn new(source_code: &str) -> Result<Self, CompilationError> {
-        let temp_dir = TempDir::new()?;
+        let temp_dir = TempDir::new().map_err(CompilationError::IoError)?;
         let file_name = format!("{}.sol", Uuid::new_v4());
         let file_path = temp_dir.path().join(&file_name);
-        std::fs::write(&file_path, source_code)?;
+        std::fs::write(&file_path, source_code).map_err(CompilationError::IoError)?;
 
         Ok(Self {
             temp_dir,
@@ -613,7 +619,7 @@ impl SolidityCompiler {
             debug!(
                 target: "solidity_compilation",
                 container_name = %container.name(),
-                error = %e,
+                error = ?e,
                 "Failed to clean up container"
             );
         }
@@ -628,7 +634,8 @@ impl SolidityCompiler {
         contract_name: &str,
     ) -> Result<Vec<u8>, CompilationError> {
         // Parse the JSON output from solc
-        let output: Value = serde_json::from_str(json_output)?;
+        let output: Value =
+            serde_json::from_str(json_output).map_err(CompilationError::JsonError)?;
 
         // Extract the bytecode from the assertion contract
         let contracts = output["contracts"]
@@ -641,7 +648,7 @@ impl SolidityCompiler {
             .ok_or_else(|| CompilationError::MissingBytecode)?;
 
         // Convert hex bytecode to bytes
-        let bytecode_bytes = hex::decode(bytecode)?;
+        let bytecode_bytes = hex::decode(bytecode).map_err(CompilationError::HexError)?;
 
         Ok(bytecode_bytes)
     }
@@ -674,16 +681,16 @@ pub enum CompilationError {
     InvalidOutput(String),
 
     #[error("Docker error {0}")]
-    DockerError(#[from] bollard::errors::Error),
+    DockerError(#[source] bollard::errors::Error),
 
     #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
+    IoError(#[source] std::io::Error),
 
     #[error("JSON error: {0}")]
-    JsonError(#[from] serde_json::Error),
+    JsonError(#[source] serde_json::Error),
 
     #[error("Hex decoding error: {0}")]
-    HexError(#[from] hex::FromHexError),
+    HexError(#[source] hex::FromHexError),
 
     #[error("No container was created")]
     NoContainerCreated,

@@ -21,7 +21,7 @@ pub enum DeployContractsError {
     #[error("Command execution failed. Exit Status: {0}, Error: {1}")]
     CommandError(ExitStatus, String),
     #[error("IO error: {0}")]
-    IoError(#[from] io::Error),
+    IoError(#[source] io::Error),
 }
 
 pub fn get_anvil_deployer(anvil_instance: &AnvilInstance) -> SigningKey {
@@ -57,7 +57,7 @@ pub fn deploy_create_factory(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = cmd.output()?;
+    let output = cmd.output().map_err(DeployContractsError::IoError)?;
     if !output.status.success() {
         return Err(DeployContractsError::CommandError(
             output.status,
@@ -129,7 +129,7 @@ pub fn deploy_contracts(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = cmd.output()?;
+    let output = cmd.output().map_err(DeployContractsError::IoError)?;
 
     // Check if the script executed successfully
     if output.status.success() {

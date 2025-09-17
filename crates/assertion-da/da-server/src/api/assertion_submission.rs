@@ -95,7 +95,7 @@ pub async fn accept_bytecode_assertion(
     let signature = match signer.sign_hash(&id).await {
         Ok(sig) => sig,
         Err(err) => {
-            warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to sign assertion");
+            warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, "Failed to sign assertion");
             return Ok(rpc_error_with_request_id(
                 json_rpc,
                 -32604,
@@ -161,7 +161,7 @@ pub async fn accept_solidity_assertion(
     let da_submission: DaSubmission = match serde_json::from_value(json_rpc["params"][0].clone()) {
         Ok(da_submission) => da_submission,
         Err(err) => {
-            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to parse DaSubmission payload");
+            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, "Failed to parse DaSubmission payload");
             return Ok(rpc_error_with_request_id(
                 json_rpc,
                 -32602,
@@ -183,7 +183,7 @@ pub async fn accept_solidity_assertion(
     {
         Ok(bytecode) => bytecode,
         Err(err) => {
-            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, compiler_version = da_submission.compiler_version, contract_name = da_submission.assertion_contract_name, "Solidity compilation failed");
+            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, compiler_version = da_submission.compiler_version, contract_name = da_submission.assertion_contract_name, "Solidity compilation failed");
             return Ok(rpc_error_with_request_id(
                 json_rpc,
                 -32603,
@@ -199,7 +199,7 @@ pub async fn accept_solidity_assertion(
     ) {
         Ok(encoded_args) => encoded_args,
         Err(err) => {
-            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, constructor_abi = da_submission.constructor_abi_signature, "Constructor args ABI encoding failed");
+            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, constructor_abi = da_submission.constructor_abi_signature, "Constructor args ABI encoding failed");
             return Ok(rpc_error_with_request_id(
                 json_rpc,
                 -32603,
@@ -217,7 +217,7 @@ pub async fn accept_solidity_assertion(
     let prover_signature = match signer.sign_hash(&id).await {
         Ok(sig) => sig,
         Err(err) => {
-            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to sign assertion");
+            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, "Failed to sign assertion");
             return Ok(rpc_error_with_request_id(
                 json_rpc,
                 -32604,
@@ -332,7 +332,7 @@ async fn process_add_assertion(
     let ser_assertion = match bincode::serialize(&stored_assertion) {
         Ok(ser) => ser,
         Err(err) => {
-            error!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Failed to serialize assertion for database storage");
+            error!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, "Failed to serialize assertion for database storage");
             return Ok(rpc_error_with_request_id(
                 json_rpc,
                 -32603,
@@ -360,7 +360,7 @@ async fn process_add_assertion(
             Ok(rpc_response(json_rpc, result))
         }
         Err(err) => {
-            error!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, "Database operation failed for assertion storage");
+            error!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, "Database operation failed for assertion storage");
             Ok(rpc_error_with_request_id(
                 json_rpc,
                 -32603,

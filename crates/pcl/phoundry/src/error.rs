@@ -19,7 +19,7 @@ pub enum PhoundryError {
     #[error("forge is not installed or not available in PATH")]
     ForgeNotInstalled,
     #[error("forge command failed")]
-    ForgeCommandFailed(#[from] color_eyre::Report),
+    ForgeCommandFailed(#[source] color_eyre::Report),
     #[error("invalid forge output: {0}")]
     InvalidForgeOutput(&'static str),
     #[error("invalid forge command: {0}")]
@@ -27,7 +27,7 @@ pub enum PhoundryError {
     #[error("Phoundry profile {0} was not found in config {1}")]
     InvalidFoundryProfile(String, PathBuf),
     #[error("Phoundry failed to extract the config: {0}")]
-    FoundryConfigError(#[from] foundry_config::error::ExtractConfigError),
+    FoundryConfigError(#[source] foundry_config::error::ExtractConfigError),
     #[error("Contract {0} was not found in the build output")]
     ContractNotFound(String),
     #[error("Invalid path: {0:?}")]
@@ -35,11 +35,11 @@ pub enum PhoundryError {
     #[error("Directory not found: {0:?}")]
     DirectoryNotFound(PathBuf),
     #[error("Solc error: {0}")]
-    SolcError(#[from] SolcError),
+    SolcError(#[source] SolcError),
     #[error("Failed to canonicalize path: {0:?}")]
-    CanonicalizePathError(#[from] std::io::Error),
+    CanonicalizePathError(#[source] std::io::Error),
     #[error("Flattener error: {0}")]
-    FlattenerError(#[from] FlattenerError),
+    FlattenerError(#[source] FlattenerError),
     #[error("No source files found in specified build paths.")]
     NoSourceFilesFound,
     #[error("Compilation failed:\n{0}")]
@@ -54,7 +54,7 @@ impl From<ExtractConfigError> for Box<PhoundryError> {
 
 impl From<std::io::Error> for Box<PhoundryError> {
     fn from(error: std::io::Error) -> Self {
-        Box::new(PhoundryError::from(error))
+        Box::new(PhoundryError::CanonicalizePathError(error))
     }
 }
 

@@ -24,7 +24,7 @@ impl BlockContext {
                 *guard = Some(block_env.number);
             }
             Err(e) => {
-                tracing::error!(error = %e, "Failed to acquire write lock for block context");
+                tracing::error!(error = ?e, "Failed to acquire write lock for block context");
             }
         }
     }
@@ -34,7 +34,7 @@ impl BlockContext {
         match self.current_block_number.read() {
             Ok(guard) => *guard,
             Err(e) => {
-                tracing::error!(error = %e, "Failed to acquire read lock for block context");
+                tracing::error!(error = ?e, "Failed to acquire read lock for block context");
                 None
             }
         }

@@ -9,7 +9,7 @@ use crate::{
 use alloy_sol_types::SolCall;
 
 #[derive(Debug, thiserror::Error)]
-pub struct ConsoleLogError(#[from] alloy_sol_types::Error);
+pub struct ConsoleLogError(#[source] alloy_sol_types::Error);
 
 impl std::fmt::Display for ConsoleLogError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -22,9 +22,11 @@ pub fn console_log(
     input_bytes: &Bytes,
     context: &mut PhEvmContext,
 ) -> Result<Bytes, ConsoleLogError> {
-    context
-        .console_logs
-        .push(logCall::abi_decode(input_bytes)?.message);
+    context.console_logs.push(
+        logCall::abi_decode(input_bytes)
+            .map_err(ConsoleLogError)?
+            .message,
+    );
     Ok(Bytes::default())
 }
 
