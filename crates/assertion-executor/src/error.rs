@@ -18,9 +18,9 @@ where
     ExtDb::Error: Debug,
 {
     #[error("Fork tx execution error: {0}")]
-    ForkTxExecutionError(#[from] ForkTxExecutionError<ExtDb>),
+    ForkTxExecutionError(#[source] ForkTxExecutionError<ExtDb>),
     #[error("Assertion execution error: {0}")]
-    AssertionExecutionError(#[from] AssertionExecutionError<Active>),
+    AssertionExecutionError(#[source] AssertionExecutionError<Active>),
 }
 
 impl<Active: DatabaseRef, ExtDb: Database> Debug for ExecutorError<Active, ExtDb>
@@ -42,9 +42,9 @@ where
     ExtDb::Error: Debug,
 {
     #[error("Evm error executing transaction: {0}")]
-    TxEvmError(#[from] EVMError<ExtDb::Error>),
+    TxEvmError(#[source] EVMError<ExtDb::Error>),
     #[error("Call tracer error: {0}")]
-    CallTracerError(#[from] CallTracerError),
+    CallTracerError(#[source] CallTracerError),
 }
 
 impl<ExtDb: Database> Debug for ForkTxExecutionError<ExtDb>
@@ -65,9 +65,9 @@ where
     Active::Error: Debug,
 {
     #[error("Assertion execution error: {0}")]
-    AssertionExecutionError(#[from] EVMError<Active::Error>),
+    AssertionExecutionError(#[source] EVMError<Active::Error>),
     #[error("Assertion store error: {0}")]
-    AssertionReadError(#[from] AssertionStoreError),
+    AssertionReadError(#[source] AssertionStoreError),
 }
 
 impl<Active: DatabaseRef> Debug for AssertionExecutionError<Active>

@@ -19,7 +19,7 @@ pub enum CheckIfReorgedError {
     #[error("Parent block not found")]
     ParentBlockNotFound,
     #[error("TransportError: {0}")]
-    TransportError(#[from] TransportError),
+    TransportError(#[source] TransportError),
 }
 
 /// Checks if the new block is part of the same chain as the last indexed block.
@@ -41,7 +41,8 @@ pub async fn check_if_reorged(
     loop {
         let cursor = provider
             .get_block_by_hash(cursor_hash)
-            .await?
+            .await
+            .map_err(CheckIfReorgedError::TransportError)?
             .ok_or(CheckIfReorgedError::ParentBlockNotFound)?;
 
         let cursor_header = cursor.header();

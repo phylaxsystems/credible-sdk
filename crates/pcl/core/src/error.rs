@@ -8,16 +8,16 @@ use thiserror::Error;
 pub enum DaSubmitError {
     /// Error when HTTP request to the DA layer fails
     #[error("Da Submission Error: {0}")]
-    DaClientError(#[from] DaClientError),
+    DaClientError(#[source] DaClientError),
     /// Error during the build process of the assertion
     #[error("There was an error with the solidity file")]
-    PhoundryError(#[from] Box<PhoundryError>),
+    PhoundryError(#[source] Box<PhoundryError>),
     /// Failed to parse bytecode as hex
     #[error("Failed to parse bytecode as hex")]
     ParseError,
     /// From Hex Error
     #[error("From Hex Error: {0}")]
-    FromHexError(#[from] alloy_primitives::hex::FromHexError),
+    FromHexError(#[source] alloy_primitives::hex::FromHexError),
     /// HTTP Error with status code
     #[error("HTTP Error: {0}")]
     HttpError(u16),
@@ -43,7 +43,7 @@ pub enum DappSubmitError {
 
     /// Error during project selection process
     #[error("Project selection failed: {0}")]
-    ProjectSelectionFailed(#[from] inquire::InquireError),
+    ProjectSelectionFailed(#[source] inquire::InquireError),
 
     /// Error when no projects are found for the authenticated user
     #[error(
@@ -51,9 +51,21 @@ pub enum DappSubmitError {
     )]
     NoProjectsFound,
 
-    /// Error when connection to the dApp API fails
-    #[error("Failed to connect to the dApp API")]
-    ApiConnectionError(#[from] ReqwestError),
+    /// Error when sending a submission to the dApp API fails
+    #[error("Failed to send submission to the dApp API")]
+    SendSubmissionApi(#[source] ReqwestError),
+
+    /// Error while getting a submission response from the dApp API
+    #[error("Failed to read a submission response from the dApp API")]
+    SendSubmissionApiResponse(#[source] ReqwestError),
+
+    /// Error when sending a get user project to the dApp API fails
+    #[error("Failed to send a get user projects to the dApp API")]
+    GetUserProjectsApi(#[source] ReqwestError),
+
+    /// Error while getting a user project response from the dApp API
+    #[error("Failed to read a user project response from the dApp API")]
+    GetUserProjectsApiResponse(#[source] ReqwestError),
 
     /// Error when the submission is rejected by the dApp
     #[error("Submission failed: {0}")]
@@ -81,11 +93,11 @@ pub enum ConfigError {
 
     /// Error when deserializing the config file fails
     #[error("Failed to parse config file: {0}")]
-    ParseError(#[from] toml::de::Error),
+    ParseError(#[source] toml::de::Error),
 
     /// Error when serializing the config file fails
     #[error("Failed to serialize config file: {0}")]
-    SerializeError(#[from] toml::ser::Error),
+    SerializeError(#[source] toml::ser::Error),
 
     /// Error when attempting an operation that requires authentication
     /// but no authentication token is present in the config
@@ -100,7 +112,25 @@ pub enum AuthError {
     #[error(
         "Authentication request failed. Please check your connection and try again.\nError: {0}"
     )]
-    RequestFailed(#[from] reqwest::Error),
+    AuthRequestFailed(#[source] reqwest::Error),
+
+    /// Error when HTTP request to the auth service fails
+    #[error(
+        "Invalid authentication response. Please check your connection and try again.\nError: {0}"
+    )]
+    AuthRequestInvalidResponse(#[source] reqwest::Error),
+
+    /// Error when HTTP request to the auth service fails
+    #[error(
+        "Authentication status request failed. Please check your connection and try again.\nError: {0}"
+    )]
+    StatusRequestFailed(#[source] reqwest::Error),
+
+    /// Error when HTTP request to the auth service fails
+    #[error(
+        "Invalid authentication status response. Please check your connection and try again.\nError: {0}"
+    )]
+    StatusRequestInvalidResponse(#[source] reqwest::Error),
 
     /// Error when authentication times out
     #[error(
@@ -114,7 +144,7 @@ pub enum AuthError {
 
     /// Error when config operations fail during auth
     #[error("Config error: {0}")]
-    ConfigError(#[from] ConfigError),
+    ConfigError(#[source] ConfigError),
 
     /// Error when an invalid Ethereum address is received
     #[error(

@@ -51,7 +51,7 @@ pub enum HttpTransportError {
     #[error("Failed to bind the address: {0}")]
     BindAddress(String),
     #[error("Client error: {0}")]
-    ClientError(#[from] reqwest::Error),
+    ClientError(#[source] reqwest::Error),
 }
 
 impl From<&HttpTransportError> for ErrorRecoverability {
@@ -171,7 +171,7 @@ impl Transport for HttpTransport {
             .map_err(|e| {
                 error!(
                     bind_addr = %self.bind_addr,
-                    error = %e,
+                    error = ?e,
                     "Failed to bind HTTP transport listener"
                 );
                 HttpTransportError::BindAddress(self.bind_addr.to_string())
@@ -187,7 +187,7 @@ impl Transport for HttpTransport {
             .with_graceful_shutdown(async move { shutdown_token.cancelled().await })
             .await
             .map_err(|e| {
-                error!(error = %e, "HTTP server failed");
+                error!(error = ?e, "HTTP server failed");
                 HttpTransportError::ServerError(e.to_string())
             })?;
         Ok(())

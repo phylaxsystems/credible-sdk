@@ -119,9 +119,9 @@ use http::{
 #[derive(Debug, thiserror::Error)]
 pub enum AnyTransportError {
     #[error("HTTP transport error: {0}")]
-    Http(#[from] HttpTransportError),
+    Http(#[source] HttpTransportError),
     #[error("gRPC transport error: {0}")]
-    Grpc(#[from] GrpcTransportError),
+    Grpc(#[source] GrpcTransportError),
 }
 
 impl From<&AnyTransportError> for ErrorRecoverability {
@@ -143,8 +143,8 @@ pub enum AnyTransport {
 impl AnyTransport {
     pub async fn run(&self) -> Result<(), AnyTransportError> {
         match self {
-            AnyTransport::Http(t) => t.run().await.map_err(AnyTransportError::from),
-            AnyTransport::Grpc(t) => t.run().await.map_err(AnyTransportError::from),
+            AnyTransport::Http(t) => t.run().await.map_err(AnyTransportError::Http),
+            AnyTransport::Grpc(t) => t.run().await.map_err(AnyTransportError::Grpc),
         }
     }
 

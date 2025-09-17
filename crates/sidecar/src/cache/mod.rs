@@ -158,7 +158,7 @@ impl DatabaseRef for Cache {
                         target = "cache::basic_ref",
                         name = %source.name(),
                         address = %address,
-                        error = %e,
+                        error = ?e,
                         "Failed to fetch account info from cache source");
                 }
                 res.ok()
@@ -175,7 +175,7 @@ impl DatabaseRef for Cache {
                         target = "cache::block_hash_ref",
                         name = %source.name(),
                         number = number,
-                        error = %e,
+                        error = ?e,
                         "Failed to fetch block hash from cache source");
                 }
                 res.ok()
@@ -192,7 +192,7 @@ impl DatabaseRef for Cache {
                         target = "cache::code_by_hash_ref",
                         name = %source.name(),
                         code_hash = %code_hash,
-                        error = %e,
+                        error = ?e,
                         "Failed to fetch code by hash from cache source");
                 }
                 res.ok()
@@ -214,7 +214,7 @@ impl DatabaseRef for Cache {
                         name = %source.name(),
                         address = %address,
                         index = %index,
-                        error = %e,
+                        error = ?e,
                         "Failed to fetch the storage from cache source");
                 }
                 res.ok()

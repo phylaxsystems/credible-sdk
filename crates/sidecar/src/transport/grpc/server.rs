@@ -147,7 +147,7 @@ impl SidecarTransport for GrpcService {
             let queue_tx = match to_queue_tx(&t) {
                 Ok(tx) => tx,
                 Err(e) => {
-                    warn!(error = %e, "Skipping invalid transaction in gRPC batch");
+                    warn!(error = ?e, "Skipping invalid transaction in gRPC batch");
                     continue;
                 }
             };

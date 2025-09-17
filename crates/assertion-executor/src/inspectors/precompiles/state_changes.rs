@@ -20,7 +20,7 @@ use alloy_sol_types::{
 #[derive(Debug, thiserror::Error)]
 pub enum GetStateChangesError {
     #[error("Error decoding call inputs")]
-    CallDecodeError(#[from] alloy_sol_types::Error),
+    CallDecodeError(#[source] alloy_sol_types::Error),
     #[error("Journal Missing from Context. For some reason it was not captured.")]
     JournalMissing,
     #[error("Slot not found in journal, but differences were found.")]
@@ -35,7 +35,8 @@ pub fn get_state_changes(
     input_bytes: &[u8],
     context: &PhEvmContext,
 ) -> Result<Bytes, GetStateChangesError> {
-    let event = PhEvm::getStateChangesCall::abi_decode(input_bytes)?;
+    let event = PhEvm::getStateChangesCall::abi_decode(input_bytes)
+        .map_err(GetStateChangesError::CallDecodeError)?;
 
     let differences = get_differences(
         &context.logs_and_traces.call_traces.journal,

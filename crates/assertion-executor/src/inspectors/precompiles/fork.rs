@@ -27,12 +27,18 @@ use revm::context::ContextTr;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ForkError {
-    #[error("MultiForkDb error: {0}")]
-    MultiForkDbError(#[from] MultiForkError),
+    #[error("MultiForkDb error: Fork pre call operation")]
+    MultiForkPreCallDbError(#[source] MultiForkError),
+    #[error("MultiForkDb error: Fork pre tx operation")]
+    MultiForkPreTxDbError(#[source] MultiForkError),
+    #[error("MultiForkDb error: Fork post call operation")]
+    MultiForkPostCallDbError(#[source] MultiForkError),
+    #[error("MultiForkDb error: Fork post tx operation")]
+    MultiForkPostTxDbError(#[source] MultiForkError),
     #[error("Error decoding cheatcode input: {0}")]
-    DecodeError(#[from] alloy_sol_types::Error),
+    DecodeError(#[source] alloy_sol_types::Error),
     #[error("ID exceeds usize")]
-    IdExceedsUsize(#[from] FromUintError<usize>),
+    IdExceedsUsize(#[source] FromUintError<usize>),
 }
 
 /// Fork to the state before the transaction.
@@ -45,7 +51,9 @@ where
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     let Journal { database, inner } = context.journal();
-    database.switch_fork(ForkId::PreTx, inner, call_tracer)?;
+    database
+        .switch_fork(ForkId::PreTx, inner, call_tracer)
+        .map_err(ForkError::MultiForkPreTxDbError)?;
     Ok(Bytes::default())
 }
 
@@ -59,7 +67,9 @@ where
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     let Journal { database, inner } = context.journal();
-    database.switch_fork(ForkId::PostTx, inner, call_tracer)?;
+    database
+        .switch_fork(ForkId::PostTx, inner, call_tracer)
+        .map_err(ForkError::MultiForkPostTxDbError)?;
     Ok(Bytes::default())
 }
 
@@ -73,10 +83,18 @@ where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
-    let call_id = forkPreCallCall::abi_decode(input_bytes)?.id;
+    let call_id = forkPreCallCall::abi_decode(input_bytes)
+        .map_err(ForkError::DecodeError)?
+        .id;
 
     let Journal { database, inner } = context.journal();
-    database.switch_fork(ForkId::PreCall(call_id.try_into()?), inner, call_tracer)?;
+    database
+        .switch_fork(
+            ForkId::PreCall(call_id.try_into().map_err(ForkError::IdExceedsUsize)?),
+            inner,
+            call_tracer,
+        )
+        .map_err(ForkError::MultiForkPreCallDbError)?;
     Ok(Bytes::default())
 }
 
@@ -90,10 +108,18 @@ where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
-    let call_id = forkPostCallCall::abi_decode(input_bytes)?.id;
+    let call_id = forkPostCallCall::abi_decode(input_bytes)
+        .map_err(ForkError::DecodeError)?
+        .id;
 
     let Journal { database, inner } = context.journal();
-    database.switch_fork(ForkId::PostCall(call_id.try_into()?), inner, call_tracer)?;
+    database
+        .switch_fork(
+            ForkId::PostCall(call_id.try_into().map_err(ForkError::IdExceedsUsize)?),
+            inner,
+            call_tracer,
+        )
+        .map_err(ForkError::MultiForkPostCallDbError)?;
     Ok(Bytes::default())
 }
 

@@ -163,7 +163,8 @@ impl BuildAndFlattenArgs {
             .ephemeral_project()
             .map_err(|e| Box::new(PhoundryError::SolcError(e)))?;
 
-        let can_path = std::fs::canonicalize(path).map_err(|e| Box::new(PhoundryError::from(e)))?;
+        let can_path = std::fs::canonicalize(path)
+            .map_err(|e| Box::new(PhoundryError::CanonicalizePathError(e)))?;
 
         // Try the new flattener first
         let flattener = Flattener::new(project.clone(), &can_path);
@@ -175,9 +176,9 @@ impl BuildAndFlattenArgs {
                     .paths
                     .with_language::<SolcLanguage>()
                     .flatten(path)
-                    .map_err(|e| Box::new(PhoundryError::from(e)))
+                    .map_err(|e| Box::new(PhoundryError::SolcError(e)))
             }
-            Err(FlattenerError::Other(err)) => Err(Box::new(PhoundryError::from(err))),
+            Err(FlattenerError::Other(err)) => Err(Box::new(PhoundryError::SolcError(err))),
         }?;
 
         Ok(flattened_source)

@@ -8,7 +8,10 @@
 #![allow(clippy::unreadable_literal)]
 
 mod error;
-pub use error::ExecutorError;
+pub use error::{
+    ExecutorError,
+    ForkTxExecutionError,
+};
 
 mod executor;
 pub use executor::{

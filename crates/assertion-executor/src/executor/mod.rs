@@ -142,8 +142,9 @@ impl AssertionExecutor {
         let tx_fork_db = fork_db.clone();
 
         // This call relies on From<EVMError<ExtDb::Error>> for ExecutorError<DB::Error>
-        let forked_tx_result =
-            self.execute_forked_tx_ext_db::<ExtDb>(&block_env, tx_env, external_db)?;
+        let forked_tx_result = self
+            .execute_forked_tx_ext_db::<ExtDb>(&block_env, tx_env, external_db)
+            .map_err(ExecutorError::ForkTxExecutionError)?;
 
         let exec_result = &forked_tx_result.result_and_state.result;
         if !exec_result.is_success() {
@@ -156,7 +157,9 @@ impl AssertionExecutor {
         }
         debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
 
-        let results = self.execute_assertions(block_env, tx_fork_db, &forked_tx_result)?;
+        let results = self
+            .execute_assertions(block_env, tx_fork_db, &forked_tx_result)
+            .map_err(ExecutorError::AssertionExecutionError)?;
 
         if results.is_empty() {
             debug!(target: "assertion-executor::validate_tx", "No assertions were executed");
@@ -221,7 +224,8 @@ impl AssertionExecutor {
 
         let assertions = self
             .store
-            .read(logs_and_traces.call_traces, U256::from(block_env.number))?;
+            .read(logs_and_traces.call_traces, U256::from(block_env.number))
+            .map_err(AssertionExecutionError::AssertionReadError)?;
 
         if assertions.is_empty() {
             return Ok(vec![]);
@@ -379,7 +383,7 @@ impl AssertionExecutor {
             .map_err(|e| {
                 warn!(target: "assertion-executor::execute_assertions", error = ?e, "Evm error executing assertions");
                 e
-            })?;
+            }).map_err(AssertionExecutionError::AssertionExecutionError)?;
 
         assertion_gas.fetch_add(result.gas_used(), std::sync::atomic::Ordering::Relaxed);
         assertions_ran.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -418,9 +422,9 @@ impl AssertionExecutor {
         let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
 
         let result_and_state = evm.inspect_with_tx(tx_env).map_err(|e| {
-            debug!(target: "assertion-executor::execute_tx", error = %e, "Evm error in execute_forked_tx");
+            debug!(target: "assertion-executor::execute_tx", error = ?e, "Evm error in execute_forked_tx");
             e
-        })?;
+        }).map_err(ForkTxExecutionError::TxEvmError)?;
 
         debug!(
             target: "assertion-executor::execute_tx",

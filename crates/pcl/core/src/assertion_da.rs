@@ -232,33 +232,29 @@ impl DaStoreArgs {
             Ok(res) => Ok(res),
             Err(err) => {
                 match &err {
-                    DaClientError::ReqwestError(reqwest_err) => {
+                    DaClientError::Reqwest(reqwest_err)
+                    | DaClientError::ReqwestResponse(reqwest_err)
+                    | DaClientError::Build(reqwest_err) => {
                         if let Some(status) = reqwest_err.status() {
                             Self::handle_http_error(status.as_u16(), spinner)?;
-                            Err(err.into())
-                        } else {
-                            Err(err.into())
                         }
                     }
-                    DaClientError::UrlParseError(_) => {
+                    DaClientError::UrlParse(_) => {
                         spinner.finish_with_message("❌ Invalid DA server URL");
-                        Err(err.into())
                     }
                     DaClientError::JsonError(_) => {
                         spinner.finish_with_message("❌ Failed to parse server response");
-                        Err(err.into())
                     }
                     DaClientError::JsonRpcError { code, message } => {
                         spinner.finish_with_message(format!(
                             "❌ Server error (code {code}): {message}"
                         ));
-                        Err(err.into())
                     }
                     DaClientError::InvalidResponse(msg) => {
                         spinner.finish_with_message(format!("❌ Invalid server response: {msg}"));
-                        Err(err.into())
                     }
                 }
+                Err(DaSubmitError::DaClientError(err))
             }
         }
     }

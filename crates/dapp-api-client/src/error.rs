@@ -7,11 +7,11 @@ use thiserror::Error;
 pub enum Error {
     /// HTTP request error
     #[error("HTTP request failed: {0}")]
-    HttpError(#[from] reqwest::Error),
+    HttpError(#[source] reqwest::Error),
 
     /// Serialization/deserialization error
     #[error("Serialization error: {0}")]
-    SerializationError(#[from] serde_json::Error),
+    SerializationError(#[source] serde_json::Error),
 
     /// Configuration error
     #[error("Configuration error: {0}")]
@@ -57,7 +57,7 @@ mod tests {
         let serde_err: serde_json::Error =
             serde_json::from_str::<serde_json::Value>(json_str).unwrap_err();
 
-        let error = Error::from(serde_err);
+        let error = Error::SerializationError(serde_err);
 
         assert_matches!(error, Error::SerializationError(_));
         assert!(error.to_string().contains("Serialization error"));
@@ -136,7 +136,7 @@ mod tests {
         let serde_err: serde_json::Error =
             serde_json::from_str::<serde_json::Value>(json_str).unwrap_err();
 
-        let error = Error::from(serde_err);
+        let error = Error::SerializationError(serde_err);
 
         // The error should have a source
         assert!(std::error::Error::source(&error).is_some());
@@ -146,8 +146,9 @@ mod tests {
     fn test_error_variants_are_distinct() {
         use std::mem::discriminant;
 
-        let json_error =
-            Error::from(serde_json::from_str::<serde_json::Value>("invalid").unwrap_err());
+        let json_error = Error::SerializationError(
+            serde_json::from_str::<serde_json::Value>("invalid").unwrap_err(),
+        );
         let config_error = Error::ConfigError("test".to_string());
         let auth_error = Error::AuthError("test".to_string());
 
@@ -191,7 +192,8 @@ mod tests {
     fn test_error_conversion_in_result_chain() {
         fn might_fail_with_json() -> Result<String> {
             let json_str = r#"{"invalid": json"#;
-            let _: serde_json::Value = serde_json::from_str(json_str)?;
+            let _: serde_json::Value =
+                serde_json::from_str(json_str).map_err(Error::SerializationError)?;
             Ok("success".to_string())
         }
 

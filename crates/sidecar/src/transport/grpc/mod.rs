@@ -130,7 +130,7 @@ impl Transport for GrpcTransport {
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
             .await
             .map_err(|e| {
-                error!(bind_addr = %self.bind_addr, error = %e, "Failed to bind gRPC listener");
+                error!(bind_addr = %self.bind_addr, error = ?e, "Failed to bind gRPC listener");
                 GrpcTransportError::BindAddress(self.bind_addr.to_string())
             })?;
 
@@ -152,7 +152,7 @@ impl Transport for GrpcTransport {
             .serve_with_incoming_shutdown(incoming, async move { shutdown.cancelled().await })
             .await
             .map_err(|e| {
-                error!(error = %e, "gRPC server failed");
+                error!(error = ?e, "gRPC server failed");
                 GrpcTransportError::ServerError(e.to_string())
             })?;
 

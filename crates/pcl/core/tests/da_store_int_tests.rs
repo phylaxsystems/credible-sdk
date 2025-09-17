@@ -145,9 +145,7 @@ mod tests {
         let res = test_runner.run().await;
         assert!(matches!(
             res,
-            Err(DaSubmitError::DaClientError(DaClientError::UrlParseError(
-                ..
-            )))
+            Err(DaSubmitError::DaClientError(DaClientError::UrlParse(..)))
         ));
     }
 

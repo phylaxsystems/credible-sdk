@@ -161,7 +161,14 @@ impl AuthCommand {
     async fn request_auth_code(&self) -> Result<AuthResponse, AuthError> {
         let client = Client::new();
         let url = format!("{}/api/v1/cli/auth/code", self.auth_url);
-        Ok(client.get(url).send().await?.json().await?)
+        client
+            .get(url)
+            .send()
+            .await
+            .map_err(AuthError::AuthRequestFailed)?
+            .json()
+            .await
+            .map_err(AuthError::AuthRequestInvalidResponse)
     }
 
     /// Display login URL and code to the user
@@ -219,16 +226,18 @@ impl AuthCommand {
         auth_response: &AuthResponse,
     ) -> Result<StatusResponse, AuthError> {
         let url = format!("{}/api/v1/cli/auth/status", self.auth_url);
-        Ok(client
+        client
             .get(url)
             .query(&[
                 ("session_id", &auth_response.session_id),
                 ("device_secret", &auth_response.device_secret),
             ])
             .send()
-            .await?
+            .await
+            .map_err(AuthError::StatusRequestFailed)?
             .json()
-            .await?)
+            .await
+            .map_err(AuthError::StatusRequestInvalidResponse)
     }
 
     /// Update the configuration with authentication data

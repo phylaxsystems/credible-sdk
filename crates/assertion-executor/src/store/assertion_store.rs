@@ -49,9 +49,9 @@ use std::collections::HashSet;
 #[derive(thiserror::Error, Debug)]
 pub enum AssertionStoreError {
     #[error("Sled error")]
-    SledError(#[from] std::io::Error),
+    SledError(#[source] std::io::Error),
     #[error("Bincode error")]
-    BincodeError(#[from] bincode::Error),
+    BincodeError(#[source] bincode::Error),
     #[error("Block number exceeds u64")]
     BlockNumberExceedsU64,
 }
@@ -143,7 +143,10 @@ impl AssertionStore {
 
     /// Creates a new assertion store without persistence.
     pub fn new_ephemeral() -> Result<Self, AssertionStoreError> {
-        let db = sled::Config::tmp()?.open()?;
+        let db = sled::Config::tmp()
+            .map_err(AssertionStoreError::SledError)?
+            .open()
+            .map_err(AssertionStoreError::SledError)?;
         Ok(Self::new(db))
     }
 
@@ -168,9 +171,11 @@ impl AssertionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut assertions: Vec<AssertionState> = db_lock
-            .get(assertion_adopter)?
+            .get(assertion_adopter)
+            .map_err(AssertionStoreError::SledError)?
             .map(|a| de(&a))
-            .transpose()?
+            .transpose()
+            .map_err(AssertionStoreError::BincodeError)?
             .unwrap_or_default();
 
         let position = assertions
@@ -184,7 +189,12 @@ impl AssertionStore {
             None
         };
 
-        db_lock.insert(assertion_adopter, ser(&assertions)?)?;
+        db_lock
+            .insert(
+                assertion_adopter,
+                ser(&assertions).map_err(AssertionStoreError::BincodeError)?,
+            )
+            .map_err(AssertionStoreError::SledError)?;
         Ok(previous)
     }
 
@@ -299,7 +309,8 @@ impl AssertionStore {
                 .get(assertion_adopter)?
                 .map(|a| de::<Vec<AssertionState>>(&a))
                 .transpose()
-        })?
+        })
+        .map_err(AssertionStoreError::BincodeError)?
         .unwrap_or_default();
 
         debug!(
@@ -390,12 +401,14 @@ impl AssertionStore {
                 .db
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(assertion_adopter)?;
+                .get(assertion_adopter)
+                .map_err(AssertionStoreError::SledError)?;
 
             let mut assertions: Vec<AssertionState> = assertions_serialized
                 .clone()
                 .map(|a| de(&a))
-                .transpose()?
+                .transpose()
+                .map_err(AssertionStoreError::BincodeError)?
                 .unwrap_or_default();
 
             debug!(
@@ -475,7 +488,7 @@ impl AssertionStore {
                 .compare_and_swap(
                     assertion_adopter,
                     assertions_serialized,
-                    Some(ser(&assertions)?),
+                    Some(ser(&assertions).map_err(AssertionStoreError::BincodeError)?),
                 );
 
             if let Ok(Ok(_)) = result {
@@ -728,8 +741,14 @@ mod tests {
         tracer.insert_trace(aa);
 
         assert_eq!(store.db.lock().unwrap().len(), 1);
-        let assertions: Vec<AssertionState> =
-            de(&store.db.lock().unwrap().get(aa)?.unwrap()).unwrap();
+        let assertions: Vec<AssertionState> = de(&store
+            .db
+            .lock()
+            .unwrap()
+            .get(aa)
+            .map_err(AssertionStoreError::SledError)?
+            .unwrap())
+        .unwrap();
 
         assert_eq!(assertions.len(), 1);
 

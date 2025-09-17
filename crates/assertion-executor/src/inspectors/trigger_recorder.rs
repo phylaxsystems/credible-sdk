@@ -73,7 +73,7 @@ pub struct TriggerRecorder {
 #[derive(thiserror::Error, Debug)]
 pub enum RecordError {
     #[error("Failed to decode call inputs")]
-    CallDecodeError(#[from] alloy_sol_types::Error),
+    CallDecodeError(#[source] alloy_sol_types::Error),
     #[error("Fn selector not found")]
     FnSelectorNotFound,
 }
@@ -89,13 +89,15 @@ impl TriggerRecorder {
         {
             ITriggerRecorder::registerCallTrigger_0Call::SELECTOR => {
                 let fn_selector =
-                    ITriggerRecorder::registerCallTrigger_0Call::abi_decode(input_bytes)?
+                    ITriggerRecorder::registerCallTrigger_0Call::abi_decode(input_bytes)
+                        .map_err(RecordError::CallDecodeError)?
                         .fnSelector;
                 self.add_trigger(TriggerType::AllCalls, fn_selector);
             }
 
             ITriggerRecorder::registerCallTrigger_1Call::SELECTOR => {
-                let call = ITriggerRecorder::registerCallTrigger_1Call::abi_decode(input_bytes)?;
+                let call = ITriggerRecorder::registerCallTrigger_1Call::abi_decode(input_bytes)
+                    .map_err(RecordError::CallDecodeError)?;
                 self.add_trigger(
                     TriggerType::Call {
                         trigger_selector: call.triggerSelector,
@@ -106,14 +108,16 @@ impl TriggerRecorder {
 
             ITriggerRecorder::registerStorageChangeTrigger_0Call::SELECTOR => {
                 let fn_selector =
-                    ITriggerRecorder::registerStorageChangeTrigger_0Call::abi_decode(input_bytes)?
+                    ITriggerRecorder::registerStorageChangeTrigger_0Call::abi_decode(input_bytes)
+                        .map_err(RecordError::CallDecodeError)?
                         .fnSelector;
                 self.add_trigger(TriggerType::AllStorageChanges, fn_selector);
             }
 
             ITriggerRecorder::registerStorageChangeTrigger_1Call::SELECTOR => {
                 let call =
-                    ITriggerRecorder::registerStorageChangeTrigger_1Call::abi_decode(input_bytes)?;
+                    ITriggerRecorder::registerStorageChangeTrigger_1Call::abi_decode(input_bytes)
+                        .map_err(RecordError::CallDecodeError)?;
                 self.add_trigger(
                     TriggerType::StorageChange {
                         trigger_slot: call.slot,
@@ -124,7 +128,8 @@ impl TriggerRecorder {
 
             ITriggerRecorder::registerBalanceChangeTriggerCall::SELECTOR => {
                 let fn_selector =
-                    ITriggerRecorder::registerBalanceChangeTriggerCall::abi_decode(input_bytes)?
+                    ITriggerRecorder::registerBalanceChangeTriggerCall::abi_decode(input_bytes)
+                        .map_err(RecordError::CallDecodeError)?
                         .fnSelector;
                 self.add_trigger(TriggerType::BalanceChange, fn_selector);
             }

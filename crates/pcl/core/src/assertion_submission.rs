@@ -246,7 +246,8 @@ impl DappSubmitArgs {
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(DappSubmitError::SendSubmissionApi)?;
 
         if response.status().is_success() {
             Ok(())
@@ -255,7 +256,12 @@ impl DappSubmitArgs {
             if response.status().as_u16() == 401 {
                 return Err(DappSubmitError::NoAuthToken);
             }
-            Err(DappSubmitError::SubmissionFailed(response.text().await?))
+            Err(DappSubmitError::SubmissionFailed(
+                response
+                    .text()
+                    .await
+                    .map_err(DappSubmitError::SendSubmissionApiResponse)?,
+            ))
         }
     }
 
@@ -274,14 +280,20 @@ impl DappSubmitArgs {
         message: &str,
     ) -> Result<String, DappSubmitError> {
         match maybe_key {
-            None => Ok(Select::new(message, values).prompt()?),
+            None => {
+                Ok(Select::new(message, values)
+                    .prompt()
+                    .map_err(DappSubmitError::ProjectSelectionFailed)?)
+            }
             Some(key) => {
                 let exists = values.contains(&key);
                 if exists {
                     Ok(key.clone())
                 } else {
                     println!("{key} does not exist");
-                    let choice = Select::new(message, values).prompt()?;
+                    let choice = Select::new(message, values)
+                        .prompt()
+                        .map_err(DappSubmitError::ProjectSelectionFailed)?;
                     Ok(choice)
                 }
             }
@@ -303,7 +315,11 @@ impl DappSubmitArgs {
         message: &str,
     ) -> Result<Vec<String>, DappSubmitError> {
         match maybe_keys {
-            None => Ok(MultiSelect::new(message, values).prompt()?),
+            None => {
+                Ok(MultiSelect::new(message, values)
+                    .prompt()
+                    .map_err(DappSubmitError::ProjectSelectionFailed)?)
+            }
             Some(keys) => {
                 let all_exist = keys.iter().all(|k| values.contains(k));
                 if all_exist {
@@ -315,7 +331,9 @@ impl DappSubmitArgs {
                         .cloned()
                         .collect::<Vec<_>>();
                     println!("{} does not exist", missing_keys.join(", "));
-                    Ok(MultiSelect::new(message, values).prompt()?)
+                    Ok(MultiSelect::new(message, values)
+                        .prompt()
+                        .map_err(DappSubmitError::ProjectSelectionFailed)?)
                 }
             }
         }
@@ -333,9 +351,11 @@ impl DappSubmitArgs {
                     .user_address
             ))
             .send()
-            .await?
+            .await
+            .map_err(DappSubmitError::GetUserProjectsApi)?
             .json()
-            .await?;
+            .await
+            .map_err(DappSubmitError::GetUserProjectsApiResponse)?;
         Ok(projects)
     }
 }

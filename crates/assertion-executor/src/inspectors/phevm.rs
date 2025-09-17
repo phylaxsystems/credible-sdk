@@ -96,17 +96,17 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     #[error("Precompile selector not found: {0:#?}")]
     SelectorNotFound(FixedBytes<4>),
     #[error("Unexpected error, should be Infallible: {0}")]
-    UnexpectedError(#[from] std::convert::Infallible),
+    UnexpectedError(#[source] std::convert::Infallible),
     #[error("Error getting state changes: {0}")]
-    GetStateChangesError(#[from] GetStateChangesError),
+    GetStateChangesError(#[source] GetStateChangesError),
     #[error("Error getting call inputs: {0}")]
-    GetCallInputsError(#[from] GetCallInputsError),
+    GetCallInputsError(#[source] GetCallInputsError),
     #[error("Error switching forks: {0}")]
-    ForkError(#[from] ForkError),
+    ForkError(#[source] ForkError),
     #[error("Error logging to console: {0}")]
-    ConsoleLogError(#[from] ConsoleLogError),
+    ConsoleLogError(#[source] ConsoleLogError),
     #[error("Error loading external slot: {0}")]
-    LoadExternalSlotError(#[from] LoadExternalSlotError<ExtDb>),
+    LoadExternalSlotError(#[source] LoadExternalSlotError<ExtDb>),
 }
 
 /// `PhEvmInspector` is an inspector for supporting the `PhEvm` precompiles.
@@ -122,6 +122,7 @@ impl<'a> PhEvmInspector<'a> {
     }
 
     /// Execute precompile functions for the `PhEvm`.
+    #[allow(clippy::too_many_lines)]
     pub fn execute_precompile<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
         &mut self,
         context: &mut CTX,
@@ -141,36 +142,53 @@ impl<'a> PhEvmInspector<'a> {
             .unwrap_or_default()
         {
             PhEvm::forkPreTxCall::SELECTOR => {
-                fork_pre_tx(context, self.context.logs_and_traces.call_traces)?
+                fork_pre_tx(context, self.context.logs_and_traces.call_traces)
+                    .map_err(PrecompileError::ForkError)?
             }
             PhEvm::forkPostTxCall::SELECTOR => {
-                fork_post_tx(context, self.context.logs_and_traces.call_traces)?
+                fork_post_tx(context, self.context.logs_and_traces.call_traces)
+                    .map_err(PrecompileError::ForkError)?
             }
             PhEvm::forkPreCallCall::SELECTOR => {
                 fork_pre_call(
                     context,
                     self.context.logs_and_traces.call_traces,
                     &input_bytes,
-                )?
+                )
+                .map_err(PrecompileError::ForkError)?
             }
             PhEvm::forkPostCallCall::SELECTOR => {
                 fork_post_call(
                     context,
                     self.context.logs_and_traces.call_traces,
                     &input_bytes,
-                )?
+                )
+                .map_err(PrecompileError::ForkError)?
             }
-            PhEvm::loadCall::SELECTOR => load_external_slot(context, inputs)?,
-            PhEvm::getLogsCall::SELECTOR => get_logs(&self.context)?,
+            PhEvm::loadCall::SELECTOR => {
+                load_external_slot(context, inputs)
+                    .map_err(PrecompileError::LoadExternalSlotError)?
+            }
+            PhEvm::getLogsCall::SELECTOR => {
+                get_logs(&self.context).map_err(PrecompileError::UnexpectedError)?
+            }
             PhEvm::getAllCallInputsCall::SELECTOR => {
                 let inputs = PhEvm::getAllCallInputsCall::abi_decode(&inputs.input.bytes(context))
-                    .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
+                    .map_err(|err| {
+                        PrecompileError::GetCallInputsError(
+                            GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
+                        )
+                    })?;
                 get_call_inputs(&self.context, inputs.target, inputs.selector, None)
                     .map_err(|err| PrecompileError::GetCallInputsError(err))?
             }
             PhEvm::getCallInputsCall::SELECTOR => {
                 let inputs = PhEvm::getCallInputsCall::abi_decode(&inputs.input.bytes(context))
-                    .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
+                    .map_err(|err| {
+                        PrecompileError::GetCallInputsError(
+                            GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
+                        )
+                    })?;
                 get_call_inputs(
                     &self.context,
                     inputs.target,
@@ -182,7 +200,11 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::getStaticCallInputsCall::SELECTOR => {
                 let inputs =
                     PhEvm::getStaticCallInputsCall::abi_decode(&inputs.input.bytes(context))
-                        .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
+                        .map_err(|err| {
+                            PrecompileError::GetCallInputsError(
+                                GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
+                            )
+                        })?;
                 get_call_inputs(
                     &self.context,
                     inputs.target,
@@ -194,7 +216,11 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::getDelegateCallInputsCall::SELECTOR => {
                 let inputs =
                     PhEvm::getDelegateCallInputsCall::abi_decode(&inputs.input.bytes(context))
-                        .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
+                        .map_err(|err| {
+                            PrecompileError::GetCallInputsError(
+                                GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
+                            )
+                        })?;
                 get_call_inputs(
                     &self.context,
                     inputs.target,
@@ -205,7 +231,11 @@ impl<'a> PhEvmInspector<'a> {
             }
             PhEvm::getCallCodeInputsCall::SELECTOR => {
                 let inputs = PhEvm::getCallCodeInputsCall::abi_decode(&inputs.input.bytes(context))
-                    .map_err(|err| PrecompileError::GetCallInputsError(err.into()))?;
+                    .map_err(|err| {
+                        PrecompileError::GetCallInputsError(
+                            GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
+                        )
+                    })?;
                 get_call_inputs(
                     &self.context,
                     inputs.target,
@@ -214,8 +244,13 @@ impl<'a> PhEvmInspector<'a> {
                 )
                 .map_err(|err| PrecompileError::GetCallInputsError(err))?
             }
-            PhEvm::getStateChangesCall::SELECTOR => get_state_changes(&input_bytes, &self.context)?,
-            PhEvm::getAssertionAdopterCall::SELECTOR => get_assertion_adopter(&self.context)?,
+            PhEvm::getStateChangesCall::SELECTOR => {
+                get_state_changes(&input_bytes, &self.context)
+                    .map_err(PrecompileError::GetStateChangesError)?
+            }
+            PhEvm::getAssertionAdopterCall::SELECTOR => {
+                get_assertion_adopter(&self.context).map_err(PrecompileError::UnexpectedError)?
+            }
             console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
                 return Ok(crate::inspectors::precompiles::console_log::console_log(

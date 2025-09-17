@@ -310,7 +310,7 @@ async fn process_request(
         Ok(tx_queue_contents) => tx_queue_contents,
         Err(e) => {
             error!(
-                error = %e,
+                error = ?e,
                 "Failed to decode transactions"
             );
             return Ok(JsonRpcResponse::invalid_request(
@@ -337,7 +337,7 @@ async fn process_request(
         state.transactions_results.add_accepted_tx(&queue_tx);
         if let Err(e) = state.tx_sender.send(queue_tx) {
             error!(
-                error = %e,
+                error = ?e,
                 "Failed to send tx queue content to queue from transport server"
             );
             return Ok(JsonRpcResponse::internal_error(

@@ -278,7 +278,7 @@ where
             }
         }
         Err(err) => {
-            warn!(target: "json_rpc", %method, %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = %err, duration_ms = req_start.elapsed().as_millis(), "Request failed with internal error");
+            warn!(target: "json_rpc", %method, %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, duration_ms = req_start.elapsed().as_millis(), "Request failed with internal error");
         }
     }
 

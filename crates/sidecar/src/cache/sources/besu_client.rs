@@ -128,7 +128,7 @@ impl BesuClient {
                     backoff = Duration::from_secs(0);
                 }
                 Err(e) => {
-                    error!(error = %e.to_string(), "Sync error, retrying in {:?}", backoff);
+                    error!(error = ?e, "Sync error, retrying in {:?}", backoff);
                     backoff = ((backoff + Duration::from_secs(1)) * 2).min(Self::MAX_BACKOFF);
                 }
             }

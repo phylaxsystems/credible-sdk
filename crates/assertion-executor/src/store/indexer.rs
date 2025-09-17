@@ -171,13 +171,13 @@ const MAX_BLOCKS_PER_CALL: u64 = 50_000;
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
     #[error("Transport error")]
-    TransportError(#[from] TransportError),
+    TransportError(#[source] TransportError),
     #[error("Sled error")]
-    SledError(#[from] std::io::Error),
+    SledError(#[source] std::io::Error),
     #[error("Bincode error")]
-    BincodeError(#[from] bincode::Error),
+    BincodeError(#[source] bincode::Error),
     #[error("Event decoding error")]
-    EventDecodeError(#[from] alloy_sol_types::Error),
+    EventDecodeError(#[source] alloy_sol_types::Error),
     #[error("Block number missing")]
     BlockNumberMissing,
     #[error("Log index missing")]
@@ -185,11 +185,11 @@ pub enum IndexerError {
     #[error("Block number exceeds u64")]
     BlockNumberExceedsU64,
     #[error("DA Client Error")]
-    DaClientError(#[from] DaClientError),
+    DaClientError(#[source] DaClientError),
     #[error("Error decoding da bytecode")]
-    DaBytecodeDecodingFailed(#[from] alloy::hex::FromHexError),
+    DaBytecodeDecodingFailed(#[source] alloy::hex::FromHexError),
     #[error("Block stream error")]
-    BlockStreamError(#[from] tokio::sync::broadcast::error::RecvError),
+    BlockStreamError(#[source] tokio::sync::broadcast::error::RecvError),
     #[error("Parent block not found")]
     ParentBlockNotFound,
     #[error("Block hash missing")]
@@ -199,9 +199,9 @@ pub enum IndexerError {
     #[error("Execution Logs Rx is None; Channel likely dropped.")]
     ExecutionLogsRxNone,
     #[error("Check if reorged error")]
-    CheckIfReorgedError(#[from] CheckIfReorgedError),
+    CheckIfReorgedError(#[source] CheckIfReorgedError),
     #[error("Assertion Store Error")]
-    AssertionStoreError(#[from] AssertionStoreError),
+    AssertionStoreError(#[source] AssertionStoreError),
     #[error("Store must be synced before running")]
     StoreNotSynced,
 }
@@ -287,13 +287,20 @@ impl Indexer {
             return Err(IndexerError::StoreNotSynced);
         }
 
-        let mut block_stream = self.provider.subscribe_blocks().await?;
+        let mut block_stream = self
+            .provider
+            .subscribe_blocks()
+            .await
+            .map_err(IndexerError::TransportError)?;
         loop {
             // FIXME: Sometimes when op-talos is syncing from scratch,
             // the below might fail with `Lagged` on the recv.
             // When op-talos is initially syncing, writes indexer data to disk,
             // and then restarts this problem does not appear.
-            let latest_block = block_stream.recv().await?;
+            let latest_block = block_stream
+                .recv()
+                .await
+                .map_err(IndexerError::BlockStreamError)?;
             trace!(
                 target = "assertion_executor::indexer",
                 ?latest_block,
@@ -313,7 +320,8 @@ impl Indexer {
         let Some(latest_block) = self
             .provider
             .get_block_by_number(BlockNumberOrTag::Latest)
-            .await?
+            .await
+            .map_err(IndexerError::TransportError)?
         else {
             warn!("Latest block not found");
             return Ok(());
@@ -347,14 +355,23 @@ impl Indexer {
     /// Prune the pending modifications and block hashes trees up to a block number
     fn prune_to(&self, to: u64) -> IndexerResult<Vec<PendingModification>> {
         let mut pending_modifications = Vec::new();
-        let ser_to = ser(&U256::from(to))?;
+        let ser_to = ser(&U256::from(to)).map_err(IndexerError::BincodeError)?;
 
-        let block_hash_tree = self.block_hash_tree()?;
-        let pending_modifications_tree = self.pending_modifications_tree()?;
+        let block_hash_tree = self.block_hash_tree().map_err(IndexerError::SledError)?;
+        let pending_modifications_tree = self
+            .pending_modifications_tree()
+            .map_err(IndexerError::SledError)?;
 
-        while let Some((key, _)) = block_hash_tree.pop_first_in_range(..ser_to.clone())? {
-            if let Some(pending_mods) = pending_modifications_tree.remove(&key)? {
-                let pending_mods: Vec<PendingModification> = de(&pending_mods)?;
+        while let Some((key, _)) = block_hash_tree
+            .pop_first_in_range(..ser_to.clone())
+            .map_err(IndexerError::SledError)?
+        {
+            if let Some(pending_mods) = pending_modifications_tree
+                .remove(&key)
+                .map_err(IndexerError::SledError)?
+            {
+                let pending_mods: Vec<PendingModification> =
+                    de(&pending_mods).map_err(IndexerError::BincodeError)?;
                 pending_modifications.extend(pending_mods);
             }
         }
@@ -370,13 +387,20 @@ impl Indexer {
 
     /// Prune the pending modifications and block hashes trees from a block number
     fn prune_from(&self, from: u64) -> IndexerResult {
-        let ser_from = ser(&U256::from(from))?;
+        let ser_from = ser(&U256::from(from)).map_err(IndexerError::BincodeError)?;
 
-        let block_hash_tree = self.block_hash_tree()?;
-        let pending_modifications_tree = self.pending_modifications_tree()?;
+        let block_hash_tree = self.block_hash_tree().map_err(IndexerError::SledError)?;
+        let pending_modifications_tree = self
+            .pending_modifications_tree()
+            .map_err(IndexerError::SledError)?;
 
-        while let Some((key, _)) = block_hash_tree.pop_first_in_range(ser_from.clone()..)? {
-            pending_modifications_tree.remove(&key)?;
+        while let Some((key, _)) = block_hash_tree
+            .pop_first_in_range(ser_from.clone()..)
+            .map_err(IndexerError::SledError)?
+        {
+            pending_modifications_tree
+                .remove(&key)
+                .map_err(IndexerError::SledError)?;
         }
         debug!(
             target = "assertion_executor::indexer",
@@ -390,20 +414,24 @@ impl Indexer {
     /// Traverses from the cursor backwords until it finds a common ancestor in the `block_hashes`
     /// tree.
     async fn find_common_ancestor(&self, cursor_hash: B256) -> IndexerResult<u64> {
-        let block_hashes_tree = self.block_hash_tree()?;
+        let block_hashes_tree = self.block_hash_tree().map_err(IndexerError::SledError)?;
 
         let mut cursor_hash = cursor_hash;
         loop {
             let cursor = self
                 .provider
                 .get_block_by_hash(cursor_hash)
-                .await?
+                .await
+                .map_err(IndexerError::TransportError)?
                 .ok_or(IndexerError::ParentBlockNotFound)?;
             let cursor_header = cursor.header();
 
             cursor_hash = cursor_header.parent_hash();
-            if let Some(hash) = block_hashes_tree.get(ser(&U256::from(cursor_header.number()))?)? {
-                if hash == ser(&cursor_header.hash())? {
+            if let Some(hash) = block_hashes_tree
+                .get(ser(&U256::from(cursor_header.number())).map_err(IndexerError::BincodeError)?)
+                .map_err(IndexerError::SledError)?
+            {
+                if hash == ser(&cursor_header.hash()).map_err(IndexerError::BincodeError)? {
                     return Ok(cursor_header.number());
                 }
             } else {
@@ -453,7 +481,8 @@ impl Indexer {
         if let Some(last_indexed_block_num_hash) = last_indexed_block_num_hash {
             let is_reorg =
                 check_if_reorged(&self.provider, &update_block, last_indexed_block_num_hash)
-                    .await?;
+                    .await
+                    .map_err(IndexerError::CheckIfReorgedError)?;
 
             if is_reorg {
                 let common_ancestor = self.find_common_ancestor(update_block.parent_hash).await?;
@@ -515,7 +544,8 @@ impl Indexer {
                 "Moving pending modifications to store",
             );
             self.store
-                .apply_pending_modifications(pending_modifications)?;
+                .apply_pending_modifications(pending_modifications)
+                .map_err(IndexerError::AssertionStoreError)?;
         }
 
         Ok(())
@@ -534,7 +564,11 @@ impl Indexer {
             .from_block(BlockNumberOrTag::Number(from))
             .to_block(BlockNumberOrTag::Number(to));
 
-        let logs = self.provider.get_logs(&filter).await?;
+        let logs = self
+            .provider
+            .get_logs(&filter)
+            .await
+            .map_err(IndexerError::TransportError)?;
 
         // For ordered insertion of pending modifications
         let mut pending_modifications: BTreeMap<u64, BTreeMap<u64, PendingModification>> =
@@ -563,11 +597,18 @@ impl Indexer {
                 .values()
                 .cloned()
                 .collect::<Vec<PendingModification>>();
-            pending_mods_batch.insert(ser(&U256::from(*block))?, ser(&block_mods)?);
+            pending_mods_batch.insert(
+                ser(&U256::from(*block)).map_err(IndexerError::BincodeError)?,
+                ser(&block_mods).map_err(IndexerError::BincodeError)?,
+            );
         }
 
-        let pending_modifications_tree = self.pending_modifications_tree()?;
-        pending_modifications_tree.apply_batch(pending_mods_batch)?;
+        let pending_modifications_tree = self
+            .pending_modifications_tree()
+            .map_err(IndexerError::SledError)?;
+        pending_modifications_tree
+            .apply_batch(pending_mods_batch)
+            .map_err(IndexerError::SledError)?;
 
         trace!(
             target = "assertion_executor::indexer",
@@ -581,7 +622,8 @@ impl Indexer {
             let block_hash = self
                 .provider
                 .get_block(BlockId::Number(BlockNumberOrTag::Number(i)))
-                .await?
+                .await
+                .map_err(IndexerError::TransportError)?
                 .ok_or(IndexerError::BlockHashMissing)?
                 .header()
                 .hash();
@@ -605,7 +647,8 @@ impl Indexer {
         let block_response = self
             .provider
             .get_block_by_number(self.await_tag.into())
-            .await?;
+            .await
+            .map_err(IndexerError::TransportError)?;
 
         if let Some(block) = block_response {
             let block_to_move = block.header().number();
@@ -638,11 +681,12 @@ impl Indexer {
     ) -> IndexerResult<Option<PendingModification>> {
         let pending_mod_opt = match log.topics().first() {
             Some(&AssertionAdded::SIGNATURE_HASH) => {
-                let topics = AssertionAdded::decode_topics(log.topics())?;
+                let topics = AssertionAdded::decode_topics(log.topics())
+                    .map_err(IndexerError::EventDecodeError)?;
                 let data = AssertionAdded::abi_decode_data(&log.data).map_err(|e| {
                     debug!(target: "assertion_executor::indexer", ?e, "Failed to decode AssertionAdded event data");
                     e
-                })?;
+                }).map_err(IndexerError::EventDecodeError)?;
 
                 let event = AssertionAdded::new(topics, data);
 
@@ -661,7 +705,11 @@ impl Indexer {
                     bytecode,
                     encoded_constructor_args,
                     ..
-                } = self.da_client.fetch_assertion(event.assertionId).await?;
+                } = self
+                    .da_client
+                    .fetch_assertion(event.assertionId)
+                    .await
+                    .map_err(IndexerError::DaClientError)?;
 
                 let mut deployment_bytecode = (*bytecode).to_vec();
                 deployment_bytecode.extend_from_slice(&encoded_constructor_args);
@@ -707,8 +755,10 @@ impl Indexer {
                     target = "assertion_executor::indexer",
                     "AssertionRemoved event signature detected."
                 );
-                let topics = AssertionRemoved::decode_topics(log.topics())?;
-                let data = AssertionRemoved::abi_decode_data(&log.data)?;
+                let topics = AssertionRemoved::decode_topics(log.topics())
+                    .map_err(IndexerError::EventDecodeError)?;
+                let data = AssertionRemoved::abi_decode_data(&log.data)
+                    .map_err(IndexerError::EventDecodeError)?;
                 let event = AssertionRemoved::new(topics, data);
 
                 trace!(
@@ -742,18 +792,21 @@ impl Indexer {
 
     /// Insert last indexed block number and hash into the sled db
     fn insert_last_indexed_block_num_hash(&self, block_num_hash: BlockNumHash) -> IndexerResult {
-        let value = ser(&block_num_hash)?;
-        let latest_block_tree = self.latest_block_tree()?;
-        latest_block_tree.insert("", value)?;
+        let value = ser(&block_num_hash).map_err(IndexerError::BincodeError)?;
+        let latest_block_tree = self.latest_block_tree().map_err(IndexerError::SledError)?;
+        latest_block_tree
+            .insert("", value)
+            .map_err(IndexerError::SledError)?;
         Ok(())
     }
 
     /// Get the last indexed block number and hash
     fn get_last_indexed_block_num_hash(&self) -> IndexerResult<Option<BlockNumHash>> {
-        let latest_block_tree = self.latest_block_tree()?;
-        let last_indexed_block = latest_block_tree.get("")?;
+        let latest_block_tree = self.latest_block_tree().map_err(IndexerError::SledError)?;
+        let last_indexed_block = latest_block_tree.get("").map_err(IndexerError::SledError)?;
         if let Some(last_indexed_block) = last_indexed_block {
-            let last_indexed_block: BlockNumHash = de(&last_indexed_block)?;
+            let last_indexed_block: BlockNumHash =
+                de(&last_indexed_block).map_err(IndexerError::BincodeError)?;
             Ok(Some(last_indexed_block))
         } else {
             Ok(None)
@@ -764,12 +817,16 @@ impl Indexer {
     fn write_block_num_hash_batch(&self, block_num_hashes: Vec<BlockNumHash>) -> IndexerResult {
         let mut batch = sled::Batch::default();
         for block_num_hash in block_num_hashes {
-            let key = ser(&U256::from(block_num_hash.number))?;
-            let value = ser(&B256::from(block_num_hash.hash))?;
+            let key =
+                ser(&U256::from(block_num_hash.number)).map_err(IndexerError::BincodeError)?;
+            let value =
+                ser(&B256::from(block_num_hash.hash)).map_err(IndexerError::BincodeError)?;
             batch.insert(key, value);
         }
-        let block_hash_tree = self.block_hash_tree()?;
-        block_hash_tree.apply_batch(batch)?;
+        let block_hash_tree = self.block_hash_tree().map_err(IndexerError::SledError)?;
+        block_hash_tree
+            .apply_batch(batch)
+            .map_err(IndexerError::SledError)?;
 
         Ok(())
     }
