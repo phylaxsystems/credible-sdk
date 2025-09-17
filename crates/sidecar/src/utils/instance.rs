@@ -530,7 +530,7 @@ impl<T: TestTransport> LocalInstance<T> {
             // reorg request is rejected and the engine exits early.
             if let Some(handle) = &self.engine_handle {
                 if handle.is_finished() {
-                    if let Some(_) = self.get_transaction_result(tx_hash) {
+                    if self.get_transaction_result(tx_hash).is_some() {
                         return Ok(false);
                     }
                     return Ok(true);
@@ -540,8 +540,8 @@ impl<T: TestTransport> LocalInstance<T> {
             }
 
             let rax = match self.wait_for_transaction_result(tx_hash).await {
-                Ok(TransactionResult::ValidationCompleted { .. }) => continue,
-                Ok(TransactionResult::ValidationError(_)) => continue,
+                Ok(TransactionResult::ValidationCompleted { .. })
+                | Ok(TransactionResult::ValidationError(_)) => continue,
                 Err(e) => Err(e),
             };
 
