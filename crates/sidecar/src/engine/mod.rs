@@ -391,9 +391,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 );
                 self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
                 self.block_metrics.transactions_simulated_success += 1;
-
-                self.last_executed_tx
-                    .push(tx_hash, rax.result_and_state.state);
             } else {
                 self.block_metrics.transactions_simulated_failure += 1;
             }
@@ -413,6 +410,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
             self.block_metrics.invalidated_transactions += 1;
         }
+
+        self.last_executed_tx
+            .push(tx_hash, rax.result_and_state.state);
 
         // Store the transaction result
         self.transaction_results.add_transaction_result(
@@ -848,6 +848,7 @@ mod tests {
         assert!(
             instance
                 .is_transaction_reverted_but_valid(&tx_hash)
+                .await
                 .unwrap(),
             "Transaction should revert but still be valid (pass assertions)"
         );
@@ -860,7 +861,7 @@ mod tests {
 
         // Verify transaction was successful
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -878,11 +879,11 @@ mod tests {
 
         // Verify both transactions were processed successfully
         assert!(
-            instance.is_transaction_successful(&tx1_hash).unwrap(),
+            instance.is_transaction_successful(&tx1_hash).await.unwrap(),
             "Transaction 1 should be successful"
         );
         assert!(
-            instance.is_transaction_successful(&tx2_hash).unwrap(),
+            instance.is_transaction_successful(&tx2_hash).await.unwrap(),
             "Transaction 2 should be successful"
         );
 
@@ -916,10 +917,11 @@ mod tests {
     }
 
     #[crate::utils::engine_test(all)]
-    async fn test_core_engine_reorg(mut instance: crate::utils::LocalInstance) {
+    async fn test_core_engine_reorg_real(mut instance: crate::utils::LocalInstance) {
         // 1. run tx + reorg
 
         // Send and verify a successful CREATE transaction
+        tracing::error!("1.");
         let tx_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
@@ -927,7 +929,7 @@ mod tests {
 
         // Verify transaction was successful
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -936,6 +938,7 @@ mod tests {
         instance.send_reorg(tx_hash).await.unwrap();
 
         // 2. tx + reorg + tx
+        tracing::error!("2.");
 
         // Send and verify a successful CREATE transaction
         let tx_hash = instance
@@ -945,7 +948,7 @@ mod tests {
 
         // Verify transaction was successful
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -959,11 +962,12 @@ mod tests {
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
         // 3. tx + tx + reorg
+        tracing::error!("3.");
 
         let tx_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -971,7 +975,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -981,7 +985,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -998,7 +1002,7 @@ mod tests {
 
         // Verify transaction was successful
         assert!(
-            instance.is_transaction_successful(&tx_hash).unwrap(),
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -1218,6 +1222,7 @@ mod tests {
         }
     }
 
+    #[tracing_test::traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_block_env_wrong_transaction_number(mut instance: crate::utils::LocalInstance) {
         // Send and verify a reverting CREATE transaction
@@ -1238,6 +1243,7 @@ mod tests {
         ));
     }
 
+    #[tracing_test::traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_block_env_wrong_last_tx_hash(mut instance: crate::utils::LocalInstance) {
         // Send and verify a reverting CREATE transaction
@@ -1264,6 +1270,7 @@ mod tests {
         ));
     }
 
+    #[tracing_test::traced_test]
     #[crate::utils::engine_test(http)]
     async fn test_block_env_transaction_number_greater_than_zero_and_no_last_tx_hash(
         mut instance: crate::utils::LocalInstance,
@@ -1285,6 +1292,7 @@ mod tests {
         assert!(logs_contain("Failed to decode transactions"));
     }
 
+    #[tracing_test::traced_test]
     #[crate::utils::engine_test(http)]
     async fn test_block_env_transaction_number_zero_and_last_tx_hash(
         mut instance: crate::utils::LocalInstance,

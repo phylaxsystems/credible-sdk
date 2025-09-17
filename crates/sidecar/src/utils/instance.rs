@@ -1,6 +1,7 @@
 use crate::{
     cache::Cache,
     engine::TransactionResult,
+    transactions_state::RequestTransactionResult,
     utils::test_cache::{
         MockBesuClientDB,
         MockSequencerDB,
@@ -45,6 +46,12 @@ use tracing::info;
 /// Test database error type
 type TestDbError = std::convert::Infallible;
 
+#[derive(Debug)]
+enum WaitError {
+    Timeout,
+    ChannelClosed,
+}
+
 pub trait TestTransport: Sized {
     /// Creates a `LocalInstance` with a specific transport
     async fn new() -> Result<LocalInstance<Self>, String>;
@@ -55,7 +62,7 @@ pub trait TestTransport: Sized {
     /// Send a new transaction reorg event. Removes the last executed transaction.
     /// Transaction hash provided as an argument must match the last executed tx.
     /// If not the call should succeed but the core engine should produce an error.
-    async fn reorg(&self, tx_hash: B256) -> Result<(), String>;
+    async fn reorg(&mut self, tx_hash: B256) -> Result<(), String>;
     /// Set the number of transactions to be sent in the next blockEnv
     fn set_n_transactions(&mut self, n_transactions: u64);
     /// Set the last tx hash to be sent in the next blockEnv
@@ -105,6 +112,8 @@ pub struct LocalInstance<T: TestTransport> {
 }
 
 impl<T: TestTransport> LocalInstance<T> {
+    const TRANSACTION_RESULT_TIMEOUT: Duration = Duration::from_millis(250);
+
     /// Create a new local instance with mock transport
     pub async fn new() -> Result<LocalInstance<T>, String> {
         T::new().await
@@ -198,6 +207,27 @@ impl<T: TestTransport> LocalInstance<T> {
         tokio::time::sleep(duration).await;
     }
 
+    async fn wait_for_transaction_result(
+        &self,
+        tx_hash: &B256,
+    ) -> Result<TransactionResult, WaitError> {
+        let request_hash: FixedBytes<32> = *tx_hash;
+
+        match self
+            .transaction_results
+            .request_transaction_result(&request_hash)
+        {
+            RequestTransactionResult::Result(result) => Ok(result),
+            RequestTransactionResult::Channel(receiver) => {
+                match tokio::time::timeout(Self::TRANSACTION_RESULT_TIMEOUT, receiver).await {
+                    Ok(Ok(result)) => Ok(result),
+                    Ok(Err(_)) => Err(WaitError::ChannelClosed),
+                    Err(_) => Err(WaitError::Timeout),
+                }
+            }
+        }
+    }
+
     /// Insert an assertion into the store
     pub fn insert_assertion(
         &self,
@@ -288,9 +318,6 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
-
         Ok(tx_hash)
     }
 
@@ -367,9 +394,6 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
-
         Ok((caller, tx_hash))
     }
 
@@ -378,8 +402,6 @@ impl<T: TestTransport> LocalInstance<T> {
         // Ensure we have a block
         self.transport.new_block(self.block_number).await?;
         self.block_number += 1;
-
-        let current_nonce = self.current_nonce();
 
         let nonce = self.next_nonce();
         let caller = self.default_account;
@@ -401,11 +423,6 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
-
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
-
-        self.reset_nonce(current_nonce);
 
         Ok(tx_hash)
     }
@@ -442,9 +459,6 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
-
         Ok(tx_hash)
     }
 
@@ -473,35 +487,72 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Check if transaction was successful and valid
-    pub fn is_transaction_successful(&self, tx_hash: &B256) -> Result<bool, String> {
-        match self.get_transaction_result(tx_hash) {
-            Some(TransactionResult::ValidationCompleted {
+    pub async fn is_transaction_successful(&self, tx_hash: &B256) -> Result<bool, String> {
+        match self.wait_for_transaction_result(tx_hash).await {
+            Ok(TransactionResult::ValidationCompleted {
                 execution_result,
                 is_valid,
             }) => Ok(is_valid && execution_result.is_success()),
-            Some(TransactionResult::ValidationError(_)) => Ok(false),
-            None => Err("Transaction result not found".to_string()),
+            Ok(TransactionResult::ValidationError(e)) => Err(e),
+            Err(e) => Err(format!("{e:?}")),
         }
     }
 
     /// Check if transaction reverted but passed validation
-    pub fn is_transaction_reverted_but_valid(&self, tx_hash: &B256) -> Result<bool, String> {
-        match self.get_transaction_result(tx_hash) {
-            Some(TransactionResult::ValidationCompleted {
+    pub async fn is_transaction_reverted_but_valid(&self, tx_hash: &B256) -> Result<bool, String> {
+        match self.wait_for_transaction_result(tx_hash).await {
+            Ok(TransactionResult::ValidationCompleted {
                 execution_result,
                 is_valid,
             }) => Ok(is_valid && !execution_result.is_success()),
-            Some(TransactionResult::ValidationError(_)) => Ok(false),
-            None => Err("Transaction result not found".to_string()),
+            Ok(TransactionResult::ValidationError(e)) => Err(e),
+            Err(e) => Err(format!("{e:?}")),
         }
     }
 
     /// Check if transaction failed validation
-    pub fn is_transaction_invalid(&self, tx_hash: &B256) -> Result<bool, String> {
-        match self.get_transaction_result(tx_hash) {
-            Some(TransactionResult::ValidationCompleted { is_valid, .. }) => Ok(!is_valid),
-            Some(TransactionResult::ValidationError(_)) => Ok(true),
-            None => Err("Transaction result not found".to_string()),
+    pub async fn is_transaction_invalid(&self, tx_hash: &B256) -> Result<bool, String> {
+        match self.wait_for_transaction_result(tx_hash).await {
+            Ok(TransactionResult::ValidationCompleted { is_valid, .. }) => Ok(!is_valid),
+            Ok(TransactionResult::ValidationError(e)) => Err(e),
+            Err(e) => Err(format!("{e:?}")),
+        }
+    }
+
+    /// Check if transaction failed validation.
+    /// This function will only return false if the engine exited.
+    pub async fn is_transaction_removed(&self, tx_hash: &B256) -> Result<bool, String> {
+        loop {
+            self.wait_for_processing(Duration::from_millis(5)).await;
+
+            // Bail out if the engine stopped running while we were waiting for the
+            // transaction to disappear from the results map. This can happen when a
+            // reorg request is rejected and the engine exits early.
+            if let Some(handle) = &self.engine_handle {
+                if handle.is_finished() {
+                    if self.get_transaction_result(tx_hash).is_some() {
+                        return Ok(false);
+                    }
+                    return Ok(true);
+                }
+            } else {
+                return Err("engine handle missing while checking transaction removal".to_string());
+            }
+
+            #[allow(clippy::unnested_or_patterns)]
+            let rax = match self.wait_for_transaction_result(tx_hash).await {
+                Ok(TransactionResult::ValidationCompleted { .. })
+                | Ok(TransactionResult::ValidationError(_)) => continue,
+                Err(e) => Err(e),
+            };
+
+            match rax {
+                Ok(()) => return Ok(false), // should never be hit
+                Err(WaitError::Timeout) => return Ok(true),
+                Err(WaitError::ChannelClosed) => {
+                    return Err("transaction result channel closed".to_string());
+                }
+            }
         }
     }
 
@@ -513,7 +564,7 @@ impl<T: TestTransport> LocalInstance<T> {
     ) -> Result<Address, String> {
         let tx_hash = self.send_successful_create_tx(value, data).await?;
 
-        if !self.is_transaction_successful(&tx_hash)? {
+        if !self.is_transaction_successful(&tx_hash).await? {
             return Err("Transaction was not successful".to_string());
         }
 
@@ -527,7 +578,7 @@ impl<T: TestTransport> LocalInstance<T> {
     pub async fn send_and_verify_reverting_create_tx(&mut self) -> Result<(), String> {
         let tx_hash = self.send_reverting_create_tx().await?;
 
-        if !self.is_transaction_reverted_but_valid(&tx_hash)? {
+        if !self.is_transaction_reverted_but_valid(&tx_hash).await? {
             return Err("Transaction should have reverted but been valid".to_string());
         }
 
@@ -564,16 +615,15 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send the failing transaction second
         self.transport.send_transaction(hash_fail, tx_fail).await?;
 
-        // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
-
         // Verify the second transaction failed assertions and was NOT committed
-        if !self.is_transaction_invalid(&hash_fail)? {
+        if !self.is_transaction_invalid(&hash_fail).await? {
             return Err(
                 "Second transaction should have failed assertions and not been committed"
                     .to_string(),
             );
         }
+
+        self.transport.reorg(hash_fail).await?;
 
         Ok(())
     }
@@ -585,26 +635,23 @@ impl<T: TestTransport> LocalInstance<T> {
     /// If not, the core engine should error out and this function will
     /// return an error.
     pub async fn send_reorg(&mut self, tx_hash: B256) -> Result<(), String> {
+        // Make sure the tx exists
+        let _ = self.is_transaction_invalid(&tx_hash).await?;
+
         // Send reorg event
         self.transport.reorg(tx_hash).await?;
-
-        // Wait a bit before checking if the engine exited
-        self.wait_for_processing(Duration::from_millis(2)).await;
-
-        // Now check if the engine exited
-        if let Some(handle) = &self.engine_handle {
-            if handle.is_finished() {
-                return Err("Core engine exited!".to_string());
-            }
-        } else {
-            return Err("Engine handle does not exist! Make sure the engine was initialized before calling fn!".to_string());
-        }
 
         // Reorg was accepted by the engine and the last executed transaction
         // was removed from the buffer. Mirror this in our local nonce tracking
         // so that subsequent transactions use the correct nonce again.
         if self.current_nonce > 0 {
             self.current_nonce -= 1;
+        }
+
+        // Make sure the transacton is gone
+        // Note: will only return false if the core engine exited
+        if !self.is_transaction_removed(&tx_hash).await? {
+            return Err("Transaction not removed!".to_string());
         }
 
         Ok(())
