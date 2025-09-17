@@ -46,6 +46,12 @@ use tracing::info;
 /// Test database error type
 type TestDbError = std::convert::Infallible;
 
+#[derive(Debug)]
+enum WaitError {
+    Timeout,
+    ChannelClosed,
+}
+
 pub trait TestTransport: Sized {
     /// Creates a `LocalInstance` with a specific transport
     async fn new() -> Result<LocalInstance<Self>, String>;
@@ -204,7 +210,7 @@ impl<T: TestTransport> LocalInstance<T> {
     async fn wait_for_transaction_result(
         &self,
         tx_hash: &B256,
-    ) -> Result<TransactionResult, String> {
+    ) -> Result<TransactionResult, WaitError> {
         let request_hash: FixedBytes<32> = (*tx_hash).into();
 
         match self
@@ -215,16 +221,8 @@ impl<T: TestTransport> LocalInstance<T> {
             RequestTransactionResult::Channel(receiver) => {
                 match tokio::time::timeout(Self::TRANSACTION_RESULT_TIMEOUT, receiver).await {
                     Ok(Ok(result)) => Ok(result),
-                    Ok(Err(_)) => {
-                        Err(format!(
-                            "Transaction result sender dropped before completing for {tx_hash:?}"
-                        ))
-                    }
-                    Err(_) => {
-                        Err(format!(
-                            "Timed out waiting for transaction result for {tx_hash:?}"
-                        ))
-                    }
+                    Ok(Err(_)) => Err(WaitError::ChannelClosed),
+                    Err(_) => Err(WaitError::Timeout),
                 }
             }
         }
@@ -495,8 +493,8 @@ impl<T: TestTransport> LocalInstance<T> {
                 execution_result,
                 is_valid,
             }) => Ok(is_valid && execution_result.is_success()),
-            Ok(TransactionResult::ValidationError(_)) => Ok(false),
-            Err(e) => Err(e),
+            Ok(TransactionResult::ValidationError(e)) => Err(e),
+            Err(e) => Err(format!("{:?}", e)),
         }
     }
 
@@ -507,8 +505,8 @@ impl<T: TestTransport> LocalInstance<T> {
                 execution_result,
                 is_valid,
             }) => Ok(is_valid && !execution_result.is_success()),
-            Ok(TransactionResult::ValidationError(_)) => Ok(false),
-            Err(e) => Err(e),
+            Ok(TransactionResult::ValidationError(e)) => Err(e),
+            Err(e) => Err(format!("{:?}", e)),
         }
     }
 
@@ -516,8 +514,28 @@ impl<T: TestTransport> LocalInstance<T> {
     pub async fn is_transaction_invalid(&self, tx_hash: &B256) -> Result<bool, String> {
         match self.wait_for_transaction_result(tx_hash).await {
             Ok(TransactionResult::ValidationCompleted { is_valid, .. }) => Ok(!is_valid),
-            Ok(TransactionResult::ValidationError(_)) => Ok(true),
-            Err(e) => Err(e),
+            Ok(TransactionResult::ValidationError(e)) => Err(e),
+            Err(e) => Err(format!("{:?}", e)),
+        }
+    }
+
+    /// Check if transaction failed validation
+    pub async fn is_transaction_removed(&self, tx_hash: &B256) -> Result<bool, String> {
+        loop {
+            self.wait_for_processing(Duration::from_millis(2)).await;
+            let rax: Result<(), WaitError> = match self.wait_for_transaction_result(tx_hash).await {
+                Ok(TransactionResult::ValidationCompleted { .. }) => {
+                    continue;
+                }
+                Ok(TransactionResult::ValidationError(_)) => Ok(()),
+                Err(e) => Err(e),
+            };
+
+            match rax {
+                Ok(_) => return Ok(false),
+                Err(WaitError::Timeout) => return Ok(true),
+                Err(WaitError::ChannelClosed) => return Err("channel closed".to_string()),
+            }
         }
     }
 
@@ -623,10 +641,7 @@ impl<T: TestTransport> LocalInstance<T> {
         }
 
         // Make sure the transacton is gone
-        self.wait_for_processing(Duration::from_millis(2)).await;
-        if self.get_transaction_result(&tx_hash).is_some() {
-            return Err("Transaction not removed on reorg".to_string());
-        }
+        self.is_transaction_removed(&tx_hash).await?;
 
         Ok(())
     }

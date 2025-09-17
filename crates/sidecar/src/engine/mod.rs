@@ -917,10 +917,11 @@ mod tests {
     }
 
     #[crate::utils::engine_test(all)]
-    async fn test_core_engine_reorg(mut instance: crate::utils::LocalInstance) {
+    async fn test_core_engine_reorg_real(mut instance: crate::utils::LocalInstance) {
         // 1. run tx + reorg
 
         // Send and verify a successful CREATE transaction
+        tracing::error!("1.");
         let tx_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
@@ -937,6 +938,7 @@ mod tests {
         instance.send_reorg(tx_hash).await.unwrap();
 
         // 2. tx + reorg + tx
+        tracing::error!("2.");
 
         // Send and verify a successful CREATE transaction
         let tx_hash = instance
@@ -965,6 +967,7 @@ mod tests {
         );
 
         // 3. tx + tx + reorg
+        tracing::error!("3.");
 
         let tx_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
