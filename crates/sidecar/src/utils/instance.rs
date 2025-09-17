@@ -588,6 +588,8 @@ impl<T: TestTransport> LocalInstance<T> {
             );
         }
 
+        self.transport.reorg(hash_fail).await?;
+
         Ok(())
     }
 
