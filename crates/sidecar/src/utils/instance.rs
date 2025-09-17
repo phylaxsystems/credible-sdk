@@ -539,6 +539,7 @@ impl<T: TestTransport> LocalInstance<T> {
                 return Err("engine handle missing while checking transaction removal".to_string());
             }
 
+            #[allow(clippy::unnested_or_patterns)]
             let rax = match self.wait_for_transaction_result(tx_hash).await {
                 Ok(TransactionResult::ValidationCompleted { .. })
                 | Ok(TransactionResult::ValidationError(_)) => continue,
