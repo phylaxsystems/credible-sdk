@@ -599,12 +599,12 @@ impl<T: TestTransport> LocalInstance<T> {
     /// matches said transactions hash.
     /// If not, the core engine should error out and this function will
     /// return an error.
-    pub async fn send_reorg(&mut self, tx_hash: B256) -> Result<(), String> {
+    pub async fn send_reorg(&mut self, tx_hash: B256) -> Result<(), String> {  
+        // Make sure the tx exists
+        let _ = self.is_transaction_invalid(&tx_hash).await?;
+
         // Send reorg event
         self.transport.reorg(tx_hash).await?;
-
-        // Wait a bit before checking if the engine exited
-        self.wait_for_processing(Duration::from_millis(2)).await;
 
         // Now check if the engine exited
         if let Some(handle) = &self.engine_handle {
@@ -622,7 +622,11 @@ impl<T: TestTransport> LocalInstance<T> {
             self.current_nonce -= 1;
         }
 
+        // Make sure the transacton is gone
         self.wait_for_processing(Duration::from_millis(2)).await;
+        if self.get_transaction_result(&tx_hash).is_some() {
+            return Err("Transaction not removed on reorg".to_string());
+        }
 
         Ok(())
     }
