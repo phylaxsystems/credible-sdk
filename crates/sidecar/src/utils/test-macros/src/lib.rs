@@ -110,7 +110,6 @@ pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             let _options = (variant.options)(&quote! {});
 
             quote! {
-                #[tracing_test::traced_test]
                 #[tokio::test]
                 #fn_vis async fn #test_fn_name() {
                     use crate::utils::LocalInstance;

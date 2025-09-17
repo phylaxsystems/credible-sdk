@@ -848,7 +848,8 @@ mod tests {
         assert!(
             instance
                 .is_transaction_reverted_but_valid(&tx_hash)
-                .await.unwrap(),
+                .await
+                .unwrap(),
             "Transaction should revert but still be valid (pass assertions)"
         );
 
@@ -1218,6 +1219,7 @@ mod tests {
         }
     }
 
+    #[tracing_test::traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_block_env_wrong_transaction_number(mut instance: crate::utils::LocalInstance) {
         // Send and verify a reverting CREATE transaction
@@ -1238,6 +1240,7 @@ mod tests {
         ));
     }
 
+    #[tracing_test::traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_block_env_wrong_last_tx_hash(mut instance: crate::utils::LocalInstance) {
         // Send and verify a reverting CREATE transaction
@@ -1264,6 +1267,7 @@ mod tests {
         ));
     }
 
+    #[tracing_test::traced_test]
     #[crate::utils::engine_test(http)]
     async fn test_block_env_transaction_number_greater_than_zero_and_no_last_tx_hash(
         mut instance: crate::utils::LocalInstance,
@@ -1285,6 +1289,7 @@ mod tests {
         assert!(logs_contain("Failed to decode transactions"));
     }
 
+    #[tracing_test::traced_test]
     #[crate::utils::engine_test(http)]
     async fn test_block_env_transaction_number_zero_and_last_tx_hash(
         mut instance: crate::utils::LocalInstance,

@@ -56,7 +56,7 @@ pub trait TestTransport: Sized {
     /// Send a new transaction reorg event. Removes the last executed transaction.
     /// Transaction hash provided as an argument must match the last executed tx.
     /// If not the call should succeed but the core engine should produce an error.
-    async fn reorg(&self, tx_hash: B256) -> Result<(), String>;
+    async fn reorg(&mut self, tx_hash: B256) -> Result<(), String>;
     /// Set the number of transactions to be sent in the next blockEnv
     fn set_n_transactions(&mut self, n_transactions: u64);
     /// Set the last tx hash to be sent in the next blockEnv
@@ -599,7 +599,7 @@ impl<T: TestTransport> LocalInstance<T> {
     /// matches said transactions hash.
     /// If not, the core engine should error out and this function will
     /// return an error.
-    pub async fn send_reorg(&mut self, tx_hash: B256) -> Result<(), String> {  
+    pub async fn send_reorg(&mut self, tx_hash: B256) -> Result<(), String> {
         // Make sure the tx exists
         let _ = self.is_transaction_invalid(&tx_hash).await?;
 
