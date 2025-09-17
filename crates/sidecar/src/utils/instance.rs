@@ -532,14 +532,14 @@ impl<T: TestTransport> LocalInstance<T> {
                 if handle.is_finished() {
                     if let Some(_) = self.get_transaction_result(tx_hash) {
                         return Ok(false);
-                    } 
+                    }
                     return Ok(true);
                 }
             } else {
                 return Err("engine handle missing while checking transaction removal".to_string());
             }
 
-            let rax: Result<(), WaitError> = match self.wait_for_transaction_result(tx_hash).await {
+            let rax = match self.wait_for_transaction_result(tx_hash).await {
                 Ok(TransactionResult::ValidationCompleted { .. }) => continue,
                 Ok(TransactionResult::ValidationError(_)) => continue,
                 Err(e) => Err(e),
@@ -548,7 +548,9 @@ impl<T: TestTransport> LocalInstance<T> {
             match rax {
                 Ok(()) => return Ok(false), // should never be hit
                 Err(WaitError::Timeout) => return Ok(true),
-                Err(WaitError::ChannelClosed) => return Err("channel closed".to_string()),
+                Err(WaitError::ChannelClosed) => {
+                    return Err("transaction result channel closed".to_string());
+                }
             }
         }
     }
