@@ -211,7 +211,7 @@ impl<T: TestTransport> LocalInstance<T> {
         &self,
         tx_hash: &B256,
     ) -> Result<TransactionResult, WaitError> {
-        let request_hash: FixedBytes<32> = (*tx_hash).into();
+        let request_hash: FixedBytes<32> = *tx_hash;
 
         match self
             .transaction_results
@@ -494,7 +494,7 @@ impl<T: TestTransport> LocalInstance<T> {
                 is_valid,
             }) => Ok(is_valid && execution_result.is_success()),
             Ok(TransactionResult::ValidationError(e)) => Err(e),
-            Err(e) => Err(format!("{:?}", e)),
+            Err(e) => Err(format!("{e:?}")),
         }
     }
 
@@ -506,7 +506,7 @@ impl<T: TestTransport> LocalInstance<T> {
                 is_valid,
             }) => Ok(is_valid && !execution_result.is_success()),
             Ok(TransactionResult::ValidationError(e)) => Err(e),
-            Err(e) => Err(format!("{:?}", e)),
+            Err(e) => Err(format!("{e:?}")),
         }
     }
 
@@ -515,7 +515,7 @@ impl<T: TestTransport> LocalInstance<T> {
         match self.wait_for_transaction_result(tx_hash).await {
             Ok(TransactionResult::ValidationCompleted { is_valid, .. }) => Ok(!is_valid),
             Ok(TransactionResult::ValidationError(e)) => Err(e),
-            Err(e) => Err(format!("{:?}", e)),
+            Err(e) => Err(format!("{e:?}")),
         }
     }
 
@@ -532,7 +532,7 @@ impl<T: TestTransport> LocalInstance<T> {
             };
 
             match rax {
-                Ok(_) => return Ok(false),
+                Ok(()) => return Ok(false),
                 Err(WaitError::Timeout) => return Ok(true),
                 Err(WaitError::ChannelClosed) => return Err("channel closed".to_string()),
             }

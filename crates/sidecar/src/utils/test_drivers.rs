@@ -149,6 +149,8 @@ pub struct LocalInstanceMockDriver {
     /// Explicit override for the next `n_transactions` value
     override_n_transactions: Option<u64>,
     /// Explicit override for the next `last_tx_hash` value
+    /// We use Option<Option<TxHash>> to distinguish: None (use default), Some(None) (force no hash), Some(Some(hash)) (force specific hash)
+    #[allow(clippy::option_option)]
     override_last_tx_hash: Option<Option<TxHash>>,
 }
 
@@ -159,7 +161,7 @@ impl LocalInstanceMockDriver {
             .unwrap_or(self.block_tx_hashes.len() as u64);
 
         let last_tx_hash = match &self.override_last_tx_hash {
-            Some(value) => value.clone(),
+            Some(value) => *value,
             None => self.block_tx_hashes.last().copied(),
         };
 
@@ -286,7 +288,7 @@ impl TestTransport for LocalInstanceMockDriver {
     }
 
     async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
-        self.block_tx_hashes.push(tx_hash.into());
+        self.block_tx_hashes.push(tx_hash);
         info!(target: "test_transport", "LocalInstance sending transaction: {:?}", tx_hash);
         let queue_tx = QueueTransaction { tx_hash, tx_env };
         self.mock_sender
@@ -296,7 +298,7 @@ impl TestTransport for LocalInstanceMockDriver {
 
     async fn reorg(&mut self, tx_hash: B256) -> Result<(), String> {
         info!(target: "test_transport", "LocalInstance sending reorg for: {:?}", tx_hash);
-        let tracked_hash: TxHash = tx_hash.into();
+        let tracked_hash: TxHash = tx_hash;
         if let Some(last_hash) = self.block_tx_hashes.last() {
             if last_hash == &tracked_hash {
                 self.block_tx_hashes.pop();
@@ -329,6 +331,8 @@ pub struct LocalInstanceHttpDriver {
     address: SocketAddr,
     block_tx_hashes: Vec<TxHash>,
     override_n_transactions: Option<u64>,
+    /// We use Option<Option<TxHash>> to distinguish: None (use default), Some(None) (force no hash), Some(Some(hash)) (force specific hash)
+    #[allow(clippy::option_option)]
     override_last_tx_hash: Option<Option<TxHash>>,
 }
 
@@ -339,7 +343,7 @@ impl LocalInstanceHttpDriver {
             .unwrap_or(self.block_tx_hashes.len() as u64);
 
         let last_tx_hash = match &self.override_last_tx_hash {
-            Some(value) => value.clone(),
+            Some(value) => *value,
             None => self.block_tx_hashes.last().copied(),
         };
 
@@ -542,7 +546,7 @@ impl TestTransport for LocalInstanceHttpDriver {
 
     async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
         debug!(target: "LocalInstanceHttpDriver", "Sending transaction: {}", tx_hash);
-        self.block_tx_hashes.push(tx_hash.into());
+        self.block_tx_hashes.push(tx_hash);
 
         // Create the transaction structure
         let transaction = Transaction {
@@ -625,7 +629,7 @@ impl TestTransport for LocalInstanceHttpDriver {
     async fn reorg(&mut self, tx_hash: B256) -> Result<(), String> {
         info!(target: "LocalInstanceHttpDriver", "LocalInstance sending reorg for: {:?}", tx_hash);
 
-        let tracked_hash: TxHash = tx_hash.into();
+        let tracked_hash: TxHash = tx_hash;
         if let Some(last_hash) = self.block_tx_hashes.last() {
             if last_hash == &tracked_hash {
                 self.block_tx_hashes.pop();
@@ -716,6 +720,8 @@ pub struct LocalInstanceGrpcDriver {
     /// Explicit override for the next `n_transactions` value
     override_n_transactions: Option<u64>,
     /// Explicit override for the next `last_tx_hash` value
+    /// We use Option<Option<TxHash>> to distinguish: None (use default), Some(None) (force no hash), Some(Some(hash)) (force specific hash)
+    #[allow(clippy::option_option)]
     override_last_tx_hash: Option<Option<TxHash>>,
 }
 
@@ -726,7 +732,7 @@ impl LocalInstanceGrpcDriver {
             .unwrap_or(self.block_tx_hashes.len() as u64);
 
         let last_tx_hash = match &self.override_last_tx_hash {
-            Some(value) => value.clone(),
+            Some(value) => *value,
             None => self.block_tx_hashes.last().copied(),
         };
 
@@ -950,7 +956,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             return Err("Gas limit cannot be zero".to_string());
         }
 
-        self.block_tx_hashes.push(tx_hash.into());
+        self.block_tx_hashes.push(tx_hash);
 
         // Create the gRPC transaction structure
         let transaction = GrpcTransaction {
@@ -1019,7 +1025,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
     async fn reorg(&mut self, tx_hash: B256) -> Result<(), String> {
         info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending reorg for: {:?}", tx_hash);
 
-        let tracked_hash: TxHash = tx_hash.into();
+        let tracked_hash: TxHash = tx_hash;
         if let Some(last_hash) = self.block_tx_hashes.last() {
             if last_hash == &tracked_hash {
                 self.block_tx_hashes.pop();
