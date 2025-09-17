@@ -269,15 +269,21 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[allow(clippy::too_many_lines)]
     #[instrument(
         name = "engine::execute_transaction",
-        skip(self),
-        fields(tx_hash = %tx_hash, tx_env = ?tx_env, caller = %tx_env.caller, gas_limit = tx_env.gas_limit
-        ),
+        skip(self, tx_env),
+        fields(tx_hash = %tx_hash, caller = %tx_env.caller, gas_limit = tx_env.gas_limit),
         level = "debug"
     )]
     fn execute_transaction(&mut self, tx_hash: B256, tx_env: &TxEnv) -> Result<(), EngineError> {
         self.block_env_transaction_counter += 1;
         let mut tx_metrics = TransactionMetrics::new(tx_hash);
         let instant = std::time::Instant::now();
+
+        trace!(
+            target = "engine",
+            tx_hash = %tx_hash,
+            tx_env = ?tx_env,
+            "Executing transaction with environment"
+        );
 
         let mut fork_db = self.state.fork();
         let block_env = self.block_env.as_ref().ok_or_else(|| {
@@ -319,8 +325,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                             target = "engine",
                             error = ?e,
                             tx_hash = %tx_hash,
-                            tx_env= ?tx_env,
                             "Transaction validation failed"
+                        );
+                        trace!(
+                            target = "engine",
+                            tx_hash = %tx_hash,
+                            tx_env = ?tx_env,
+                            "Transaction validation environment"
                         );
                         self.transaction_results.add_transaction_result(
                             tx_hash,
@@ -373,8 +384,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             debug!(
                 target = "engine",
                 tx_hash = %tx_hash,
-                tx_env= ?tx_env,
                 "Transaction does not invalidate assertions, processing result"
+            );
+            trace!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                tx_env = ?tx_env,
+                "Transaction processing environment"
             );
             trace!(
                 target = "engine",
