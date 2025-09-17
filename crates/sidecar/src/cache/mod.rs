@@ -254,6 +254,7 @@ mod tests {
             Ordering,
         },
     };
+    use tracing_test::traced_test;
 
     // Mock Source implementation for testing
     #[derive(Debug)]
@@ -1145,5 +1146,48 @@ mod tests {
             .unwrap()
             .load(Ordering::Relaxed);
         assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
+    }
+
+    #[traced_test]
+    #[crate::utils::engine_test(all)]
+    async fn test_cache_no_fallback_available(mut instance: crate::utils::LocalInstance) {
+        // Make the first cache out of sync
+        instance
+            .cache_sequencer_db
+            .is_synced
+            .store(false, Ordering::Relaxed);
+
+        // Make the second cache out of sync
+        instance
+            .cache_besu_client_db
+            .is_synced
+            .store(false, Ordering::Relaxed);
+
+        // Send a random tx whose data is not in the in-memory cache
+        let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+        // Await result
+        let _ = instance.is_transaction_successful(&tx_hash).await;
+
+        assert!(logs_contain("critical"));
+
+        // The first fallback is never called
+        assert!(
+            instance
+                .cache_sequencer_db
+                .mock_db
+                .basic_ref_counter
+                .get(&address)
+                .is_none()
+        );
+
+        // The second fallback is never called
+        assert!(
+            instance
+                .cache_besu_client_db
+                .mock_db
+                .basic_ref_counter
+                .get(&address)
+                .is_none()
+        );
     }
 }
