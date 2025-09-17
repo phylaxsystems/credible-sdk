@@ -519,20 +519,34 @@ impl<T: TestTransport> LocalInstance<T> {
         }
     }
 
-    /// Check if transaction failed validation
+    /// Check if transaction failed validation.
+    /// This function will only return false if the engine exited.
     pub async fn is_transaction_removed(&self, tx_hash: &B256) -> Result<bool, String> {
         loop {
             self.wait_for_processing(Duration::from_millis(5)).await;
-            let rax: Result<(), WaitError> = match self.wait_for_transaction_result(tx_hash).await {
-                Ok(TransactionResult::ValidationCompleted { .. }) => {
-                    continue;
+
+            // Bail out if the engine stopped running while we were waiting for the
+            // transaction to disappear from the results map. This can happen when a
+            // reorg request is rejected and the engine exits early.
+            if let Some(handle) = &self.engine_handle {
+                if handle.is_finished() {
+                    if let Some(_) = self.get_transaction_result(tx_hash) {
+                        return Ok(false);
+                    } 
+                    return Ok(true);
                 }
-                Ok(TransactionResult::ValidationError(_)) => Ok(()),
+            } else {
+                return Err("engine handle missing while checking transaction removal".to_string());
+            }
+
+            let rax: Result<(), WaitError> = match self.wait_for_transaction_result(tx_hash).await {
+                Ok(TransactionResult::ValidationCompleted { .. }) => continue,
+                Ok(TransactionResult::ValidationError(_)) => continue,
                 Err(e) => Err(e),
             };
 
             match rax {
-                Ok(()) => return Ok(false),
+                Ok(()) => return Ok(false), // should never be hit
                 Err(WaitError::Timeout) => return Ok(true),
                 Err(WaitError::ChannelClosed) => return Err("channel closed".to_string()),
             }
@@ -624,15 +638,6 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send reorg event
         self.transport.reorg(tx_hash).await?;
 
-        // Now check if the engine exited
-        if let Some(handle) = &self.engine_handle {
-            if handle.is_finished() {
-                return Err("Core engine exited!".to_string());
-            }
-        } else {
-            return Err("Engine handle does not exist! Make sure the engine was initialized before calling fn!".to_string());
-        }
-
         // Reorg was accepted by the engine and the last executed transaction
         // was removed from the buffer. Mirror this in our local nonce tracking
         // so that subsequent transactions use the correct nonce again.
@@ -641,7 +646,10 @@ impl<T: TestTransport> LocalInstance<T> {
         }
 
         // Make sure the transacton is gone
-        self.is_transaction_removed(&tx_hash).await?;
+        // Note: will only return false if the core engine exited
+        if !self.is_transaction_removed(&tx_hash).await? {
+            return Err("Transaction not removed!".to_string());
+        }
 
         Ok(())
     }

@@ -68,6 +68,8 @@ use assertion_executor::{
     },
 };
 use revm::state::EvmState;
+#[cfg(test)]
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     cache::Cache,
