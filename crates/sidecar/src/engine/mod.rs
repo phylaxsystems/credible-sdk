@@ -110,7 +110,7 @@ use tracing::{
 /// Stores up to 2 transactions in a stack-allocated array.
 #[derive(Debug)]
 struct LastExecutedTx {
-    hashes: [Option<(B256, EvmState)>; 2],
+    hashes: [Option<(B256, Option<EvmState>)>; 2],
     len: usize,
 }
 
@@ -122,7 +122,7 @@ impl LastExecutedTx {
         }
     }
 
-    fn push(&mut self, hash: B256, state: EvmState) {
+    fn push(&mut self, hash: B256, state: Option<EvmState>) {
         if self.len == 2 {
             // Shift elements to make room for new one
             self.hashes[0] = self.hashes[1].take();
@@ -133,7 +133,7 @@ impl LastExecutedTx {
         }
     }
 
-    fn remove_last(&mut self) -> Option<(B256, EvmState)> {
+    fn remove_last(&mut self) -> Option<(B256, Option<EvmState>)> {
         if self.len == 0 {
             return None;
         }
@@ -143,7 +143,7 @@ impl LastExecutedTx {
         result
     }
 
-    fn current(&self) -> Option<&(B256, EvmState)> {
+    fn current(&self) -> Option<&(B256, Option<EvmState>)> {
         if self.len == 0 {
             None
         } else {
@@ -166,6 +166,10 @@ pub enum EngineError {
     GetTxResultChannelClosed,
     #[error("Hash supplied by the reorg event does not match the last executed transaction")]
     BadReorgHash,
+    #[error(
+        "Nothing to commit. We expect a reorg for a failed transaction due to an internal EVM error."
+    )]
+    NothingToCommit,
 }
 
 impl From<&EngineError> for ErrorRecoverability {
@@ -173,6 +177,7 @@ impl From<&EngineError> for ErrorRecoverability {
         match e {
             EngineError::DatabaseError
             | EngineError::AssertionError
+            | EngineError::NothingToCommit
             | EngineError::BadReorgHash => ErrorRecoverability::Unrecoverable,
             EngineError::TransactionError
             | EngineError::ChannelClosed
@@ -328,6 +333,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 if !ErrorRecoverability::from(&e).is_recoverable() {
                     critical!(error = ?e, "Failed to execute a transaction");
                 }
+                self.last_executed_tx.push(tx_hash, None);
                 match e {
                     ExecutorError::ForkTxExecutionError(_) => {
                         // Transaction validation errors (nonce, gas, funds, etc.)
@@ -438,7 +444,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
 
         self.last_executed_tx
-            .push(tx_hash, rax.result_and_state.state);
+            .push(tx_hash, Some(rax.result_and_state.state));
 
         // Store the transaction result
         self.transaction_results.add_transaction_result(
@@ -569,7 +575,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     self.check_cache(&queue_block_env);
 
                     // Apply the previously executed transaction state changes
-                    self.apply_state_buffer();
+                    self.apply_state_buffer()?;
 
                     processed_blocks += 1;
                     info!(
@@ -629,7 +635,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     );
 
                     // Apply the previously executed transaction state changes
-                    self.apply_state_buffer();
+                    self.apply_state_buffer()?;
 
                     // Process the transaction with the current block environment
                     self.execute_transaction(tx_hash, &tx_env)?;
@@ -652,15 +658,17 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
     }
 
-    /// Applies the state inside of `self.last_executed_tx` to `self.state`.
+    /// Applies the state inside `self.last_executed_tx` to `self.state`.
     ///
     /// If `self.last_executed_tx` is empty, we dont do anything.
-    fn apply_state_buffer(&mut self) {
+    fn apply_state_buffer(&mut self) -> Result<(), EngineError> {
         if let Some((_, state)) = self.last_executed_tx.current() {
             let changes = state.clone();
+            let changes = changes.ok_or(EngineError::NothingToCommit)?;
             self.state.commit(changes);
         }
         self.last_executed_tx = LastExecutedTx::new();
+        Ok(())
     }
 
     /// Processes a reorg event. Checks if the hash of the last executed tx
@@ -827,7 +835,7 @@ mod tests {
         let h1 = B256::from([0x11; 32]);
         let s1: EvmState = EvmState::default();
 
-        txs.push(h1, s1);
+        txs.push(h1, Some(s1));
 
         let cur = txs.current().expect("should contain the pushed tx");
         assert_eq!(cur.0, h1, "current should be the last pushed hash");
@@ -842,8 +850,8 @@ mod tests {
         let mut txs = LastExecutedTx::new();
         let h1 = B256::from([0x21; 32]);
         let h2 = B256::from([0x22; 32]);
-        txs.push(h1, EvmState::default());
-        txs.push(h2, EvmState::default());
+        txs.push(h1, Some(EvmState::default()));
+        txs.push(h2, Some(EvmState::default()));
 
         // LIFO: current is h2
         assert_eq!(txs.current().unwrap().0, h2);
@@ -863,12 +871,12 @@ mod tests {
         let h3 = B256::from([0x33; 32]);
 
         // Fill to capacity
-        txs.push(h1, EvmState::default());
-        txs.push(h2, EvmState::default());
+        txs.push(h1, Some(EvmState::default()));
+        txs.push(h2, Some(EvmState::default()));
         assert_eq!(txs.current().unwrap().0, h2);
 
         // Push over capacity; should drop h1 and keep [h2, h3]
-        txs.push(h3, EvmState::default());
+        txs.push(h3, Some(EvmState::default()));
         assert_eq!(
             txs.current().unwrap().0,
             h3,
@@ -1161,7 +1169,7 @@ mod tests {
         let result = engine.execute_transaction(tx_hash, &tx_env);
         assert!(result.is_ok(), "Transaction should execute successfully");
         // We now need to advance the state by one block so we commit the transaction state
-        engine.apply_state_buffer();
+        engine.apply_state_buffer().unwrap();
 
         // Verify the caller's account state was updated
         let caller_account = engine
@@ -1373,5 +1381,16 @@ mod tests {
 
         // The blockEnv is not accepted at http level
         assert!(logs_contain("Failed to decode transactions"));
+    }
+
+    #[test]
+    fn test_failed_transaction_commit() {
+        let (mut engine, _) = create_test_engine();
+        let tx_hash = B256::from([0x44; 32]);
+
+        engine.last_executed_tx.push(tx_hash, None);
+
+        let result = engine.apply_state_buffer();
+        assert!(matches!(result, Err(EngineError::NothingToCommit)));
     }
 }
