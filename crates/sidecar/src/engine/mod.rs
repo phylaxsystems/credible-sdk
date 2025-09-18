@@ -61,6 +61,7 @@ use assertion_executor::primitives::{
 use std::{
     fmt::Debug,
     sync::Arc,
+    time::Instant,
 };
 
 #[allow(unused_imports)]
@@ -416,7 +417,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     )]
     fn execute_transaction(&mut self, tx_hash: B256, tx_env: &TxEnv) -> Result<(), EngineError> {
         self.block_env_transaction_counter += 1;
-        let mut tx_metrics = TransactionMetrics::new(tx_hash);
+        let block_env = self.block_env.as_ref().ok_or_else(|| {
+            error!("No block environment set for transaction execution");
+            EngineError::TransactionError
+        })?;
+        let mut tx_metrics = TransactionMetrics::new(tx_hash, block_env.number);
         let instant = std::time::Instant::now();
 
         trace!(
@@ -427,10 +432,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         let mut fork_db = self.state.fork();
-        let block_env = self.block_env.as_ref().ok_or_else(|| {
-            error!("No block environment set for transaction execution");
-            EngineError::TransactionError
-        })?;
 
         debug!(
             target = "engine",
@@ -540,7 +541,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             warn!(prev_block_env = %prev_block_env.number, current_block_env = %queue_block_env.block_env.number, "BlockEnv received is not +1 from the previous block env, invalidating cache");
             self.cache
                 .reset_required_block_number(queue_block_env.block_env.number);
+
+            // Measure cache invalidation time and set its new min required driver height
+            let instant = Instant::now();
             self.state.invalidate_all();
+            self.block_metrics
+                .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
 
         // If the last tx hash from the block env is different from the last tx hash from the
@@ -551,7 +557,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             warn!(prev_tx_hash = ?prev_tx_hash, current_tx_hash = ?queue_block_env.last_tx_hash, "The last transaction hash in the BlockEnv does not match the last transaction processed, invalidating cache");
             self.cache
                 .reset_required_block_number(queue_block_env.block_env.number);
+
+            // Measure cache invalidation time and set its new min required driver height
+            let instant = Instant::now();
             self.state.invalidate_all();
+            self.block_metrics
+                .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
 
         // If the number of transactions in the block env is different from the number of
@@ -564,7 +575,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             );
             self.cache
                 .reset_required_block_number(queue_block_env.block_env.number);
+
+            // Measure cache invalidation time and set its new min required driver height
+            let instant = Instant::now();
             self.state.invalidate_all();
+            self.block_metrics
+                .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
 
         self.block_env_transaction_counter = 0;
