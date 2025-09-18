@@ -12,13 +12,18 @@
 
 use assertion_executor::primitives::FixedBytes;
 use metrics::{
-    gauge,
-    histogram,
+    counter, gauge, histogram
 };
 
 /// Individual block metrics we commit to the prometheus exporter.
 ///
 /// Will commit metrics when dropped.
+///
+/// ## Additional metrics
+///
+/// Metrics `sidecar_cache_invalidations` (counter), `sidecar_cache_min_required_height` (counter),
+/// and `sidecar_cache_invalidations_time_seconds` (gauge) are commited in a different way to the
+/// metrics below, but are can be accessed the same way in prometheus.
 #[derive(Clone, Debug, Default)]
 pub struct BlockMetrics {
     /// Duration elapsed from receving one blockenv to a new one.
@@ -79,6 +84,14 @@ impl BlockMetrics {
         Self {
             ..Default::default()
         }
+    }
+
+    /// Increments the `sidecar_cache_invalidations` counter, commit its duration
+    /// `sidecar_cache_invalidations_time_seconds` and set the min required height counter.
+    pub fn increment_cache_invalidation(&self, duration: std::time::Duration, height: u64) {
+        counter!("sidecar_cache_invalidations").increment(1);
+        counter!("sidecar_cache_min_required_height").absolute(height);
+        gauge!("sidecar_cache_invalidations_time_seconds").set(duration);
     }
 
     /// Commits the metrics
