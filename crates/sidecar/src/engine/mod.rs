@@ -416,7 +416,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     )]
     fn execute_transaction(&mut self, tx_hash: B256, tx_env: &TxEnv) -> Result<(), EngineError> {
         self.block_env_transaction_counter += 1;
-        let mut tx_metrics = TransactionMetrics::new(tx_hash);
+        // shouldnt panic because we cant execute without blockenv
+        let block_number = self.block_env.as_ref().map(|env| env.number).unwrap();
+        let mut tx_metrics = TransactionMetrics::new(tx_hash, block_number);
         let instant = std::time::Instant::now();
 
         trace!(
@@ -579,6 +581,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let mut processed_blocks = 0u64;
         let mut processed_txs = 0u64;
         let mut block_processing_time = std::time::Instant::now();
+        let mut last_event_finished_at = std::time::Instant::now();
 
         loop {
             // Use try_recv and yield when empty to be async-friendly
@@ -594,6 +597,16 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     return Err(EngineError::ChannelClosed);
                 }
             };
+
+            let event_start = std::time::Instant::now();
+            if let Some(_) = self.block_env
+                && event_start >= last_event_finished_at
+            {
+                self.block_metrics.idle_time += event_start - last_event_finished_at;
+            }
+
+            let mut new_block_env: Option<BlockEnv> = None;
+            let mut should_commit_block_metrics = false;
 
             match event {
                 TxQueueContents::Block(queue_block_env, current_span) => {
@@ -625,13 +638,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
                     self.block_metrics.block_processing_duration = block_processing_time.elapsed();
                     self.block_metrics.current_height = block_env.number;
-                    // Commit all values inside of `block_metrics` to prometheus collector
-                    self.block_metrics.commit();
-                    // Reset the values inside to their defaults
-                    self.block_metrics.reset();
-                    block_processing_time = std::time::Instant::now();
-
-                    self.block_env = Some(queue_block_env.block_env);
+                    should_commit_block_metrics = true;
+                    new_block_env = Some(queue_block_env.block_env);
                 }
                 TxQueueContents::Tx(queue_transaction, current_span) => {
                     let _guard = current_span.enter();
@@ -671,6 +679,24 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 TxQueueContents::Reorg(hash, current_span) => {
                     let _guard = current_span.enter();
                     self.execute_reorg(hash)?;
+                }
+            }
+
+            let event_end = std::time::Instant::now();
+            if let Some(_) = self.block_env {
+                self.block_metrics.event_processing_time += event_end - event_start;
+            }
+            last_event_finished_at = event_end;
+
+            if should_commit_block_metrics {
+                // Commit all values inside of `block_metrics` to prometheus collector
+                self.block_metrics.commit();
+                // Reset the values inside to their defaults
+                self.block_metrics.reset();
+                block_processing_time = std::time::Instant::now();
+
+                if let Some(block_env) = new_block_env {
+                    self.block_env = Some(block_env);
                 }
             }
 
