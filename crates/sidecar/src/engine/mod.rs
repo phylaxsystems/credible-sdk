@@ -54,8 +54,14 @@ use crate::{
         TransactionMetrics,
     },
 };
-use assertion_executor::primitives::EVMError;
-use std::fmt::Debug;
+use assertion_executor::primitives::{
+    EVMError,
+    TxValidationResult,
+};
+use std::{
+    fmt::Debug,
+    sync::Arc,
+};
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -77,6 +83,7 @@ use crate::{
     engine::transactions_results::TransactionsResults,
     utils::ErrorRecoverability,
 };
+use alloy::primitives::TxHash;
 use assertion_executor::{
     ForkTxExecutionError,
     db::Database,
@@ -96,7 +103,6 @@ use revm::{
 };
 #[cfg(test)]
 use std::collections::HashMap;
-use std::sync::Arc;
 use tracing::{
     debug,
     error,
@@ -276,9 +282,132 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             .map(|_| ())
     }
 
+    fn process_transaction_validation_error(
+        &mut self,
+        tx_hash: TxHash,
+        tx_env: &TxEnv,
+        e: &ExecutorError<OverlayDb<DB>, OverlayDb<DB>>,
+    ) -> Result<(), EngineError> {
+        if !ErrorRecoverability::from(e).is_recoverable() {
+            critical!(error = ?e, "Failed to execute a transaction");
+        }
+        self.add_transaction_result(
+            tx_hash,
+            &TransactionResult::ValidationError(format!("{e:?}")),
+            None,
+        );
+        match e {
+            ExecutorError::ForkTxExecutionError(_) => {
+                // Transaction validation errors (nonce, gas, funds, etc.)
+                debug!(
+                    target = "engine",
+                    error = ?e,
+                    tx_hash = %tx_hash,
+                    "Transaction validation failed"
+                );
+                trace!(
+                    target = "engine",
+                    tx_hash = %tx_hash,
+                    tx_env = ?tx_env,
+                    "Transaction validation environment"
+                );
+                Ok(())
+            }
+            ExecutorError::AssertionExecutionError(_) => {
+                // Assertion system failures (database corruption, invalid bytecode, etc.)
+                // These should crash the engine as they indicate system-level problems
+                error!(
+                    target = "engine",
+                    error = ?e,
+                    tx_hash = %tx_hash,
+                    tx_env= ?tx_env,
+                    "Fatal assertion execution error occurred"
+                );
+                Err(EngineError::AssertionError)
+            }
+        }
+    }
+
+    /// Adds the result of a transaction to the transaction results and updates
+    /// the last executed transaction accordingly.
+    fn add_transaction_result(
+        &mut self,
+        tx_hash: TxHash,
+        result: &TransactionResult,
+        state: Option<EvmState>,
+    ) {
+        self.last_executed_tx.push(tx_hash, state);
+        self.transaction_results
+            .add_transaction_result(tx_hash, result);
+    }
+
+    fn trace_execute_transaction_result(
+        &mut self,
+        tx_hash: TxHash,
+        tx_env: &TxEnv,
+        rax: &TxValidationResult,
+    ) {
+        let is_valid = rax.is_valid();
+        let execution_result = rax.result_and_state.result.clone();
+
+        info!(
+            target = "engine",
+            tx_hash = %tx_hash,
+            is_valid,
+            execution_result = ?execution_result,
+            "Transaction processed"
+        );
+
+        if is_valid {
+            // Transaction valid, passed assertions, commit state for successful transactions
+            debug!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                "Transaction does not invalidate assertions, processing result"
+            );
+            trace!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                tx_env = ?tx_env,
+                "Transaction processing environment"
+            );
+            trace!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                assertions_ran = ?rax.assertions_executions,
+                "Assertions execution details"
+            );
+
+            if execution_result.is_success() {
+                trace!(
+                    target = "engine",
+                    tx_hash = %tx_hash,
+                    "Commiting state of successful tx to buffer"
+                );
+                self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
+                self.block_metrics.transactions_simulated_success += 1;
+            } else {
+                self.block_metrics.transactions_simulated_failure += 1;
+            }
+        } else {
+            warn!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                "Transaction failed assertion validation"
+            );
+            trace!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                tx_env = ?tx_env,
+                assertions_executions = ?rax.assertions_executions,
+                "Transaction validation details"
+            );
+
+            self.block_metrics.invalidated_transactions += 1;
+        }
+    }
+
     /// Execute transaction with the core engines blockenv.
-    // FIXME: Break this function down into smaller pieces
-    #[allow(clippy::too_many_lines)]
     #[instrument(
         name = "engine::execute_transaction",
         skip(self, tx_env),
@@ -330,129 +459,28 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let rax = match rax {
             Ok(rax) => rax,
             Err(e) => {
-                if !ErrorRecoverability::from(&e).is_recoverable() {
-                    critical!(error = ?e, "Failed to execute a transaction");
-                }
-                self.last_executed_tx.push(tx_hash, None);
-                match e {
-                    ExecutorError::ForkTxExecutionError(_) => {
-                        // Transaction validation errors (nonce, gas, funds, etc.)
-                        debug!(
-                            target = "engine",
-                            error = ?e,
-                            tx_hash = %tx_hash,
-                            "Transaction validation failed"
-                        );
-                        trace!(
-                            target = "engine",
-                            tx_hash = %tx_hash,
-                            tx_env = ?tx_env,
-                            "Transaction validation environment"
-                        );
-                        self.transaction_results.add_transaction_result(
-                            tx_hash,
-                            &TransactionResult::ValidationError(format!("{e:?}")),
-                        );
-                        return Ok(());
-                    }
-                    ExecutorError::AssertionExecutionError(_) => {
-                        // Assertion system failures (database corruption, invalid bytecode, etc.)
-                        // These should crash the engine as they indicate system-level problems
-                        error!(
-                            target = "engine",
-                            error = ?e,
-                            tx_hash = %tx_hash,
-                            tx_env= ?tx_env,
-                            "Fatal assertion execution error occurred"
-                        );
-
-                        self.transaction_results.add_transaction_result(
-                            tx_hash,
-                            &TransactionResult::ValidationError(format!("{e:?}")),
-                        );
-
-                        return Err(EngineError::AssertionError);
-                    }
-                }
+                return self.process_transaction_validation_error(tx_hash, tx_env, &e);
             }
         };
 
+        // Update metrics
         tx_metrics.assertions_per_transaction = rax.total_assertion_funcs_ran();
         self.block_metrics.assertions_per_block += rax.total_assertion_funcs_ran();
         tx_metrics.assertion_gas_per_transaction = rax.total_assertions_gas();
         self.block_metrics.assertion_gas_per_block += rax.total_assertions_gas();
-
-        let is_valid = rax.is_valid();
-        let execution_result = rax.result_and_state.result.clone();
-
-        info!(
-            target = "engine",
-            tx_hash = %tx_hash,
-            is_valid,
-            execution_result = ?execution_result,
-            "Transaction processed"
-        );
-
         self.block_metrics.transactions_simulated += 1;
+        tx_metrics.commit();
 
-        if is_valid {
-            // Transaction valid, passed assertions, commit state for successful transactions
-            debug!(
-                target = "engine",
-                tx_hash = %tx_hash,
-                "Transaction does not invalidate assertions, processing result"
-            );
-            trace!(
-                target = "engine",
-                tx_hash = %tx_hash,
-                tx_env = ?tx_env,
-                "Transaction processing environment"
-            );
-            trace!(
-                target = "engine",
-                tx_hash = %tx_hash,
-                assertions_ran = ?rax.assertions_executions,
-                "Assertions execution details"
-            );
+        // Log the result of the transaction execution
+        self.trace_execute_transaction_result(tx_hash, tx_env, &rax);
 
-            if execution_result.is_success() {
-                trace!(
-                    target = "engine",
-                    tx_hash = %tx_hash,
-                    "Commiting state of successful tx to buffer"
-                );
-                self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
-                self.block_metrics.transactions_simulated_success += 1;
-            } else {
-                self.block_metrics.transactions_simulated_failure += 1;
-            }
-        } else {
-            warn!(
-                target = "engine",
-                tx_hash = %tx_hash,
-                "Transaction failed assertion validation"
-            );
-            trace!(
-                target = "engine",
-                tx_hash = %tx_hash,
-                tx_env = ?tx_env,
-                assertions_executions = ?rax.assertions_executions,
-                "Transaction validation details"
-            );
-
-            self.block_metrics.invalidated_transactions += 1;
-        }
-
-        self.last_executed_tx
-            .push(tx_hash, Some(rax.result_and_state.state));
-
-        // Store the transaction result
-        self.transaction_results.add_transaction_result(
+        self.add_transaction_result(
             tx_hash,
             &TransactionResult::ValidationCompleted {
-                execution_result,
-                is_valid,
+                is_valid: rax.is_valid(),
+                execution_result: rax.result_and_state.result,
             },
+            Some(rax.result_and_state.state),
         );
 
         trace!("Transaction execution completed");
