@@ -763,7 +763,7 @@ where
 {
     fn from(error: &ExecutorError<Active, ExtDb>) -> Self {
         match error {
-            ExecutorError::ForkTxExecutionError(_) => ErrorRecoverability::Recoverable,
+            ExecutorError::ForkTxExecutionError(e) => e.into(),
             ExecutorError::AssertionExecutionError(_) => ErrorRecoverability::Unrecoverable,
         }
     }
