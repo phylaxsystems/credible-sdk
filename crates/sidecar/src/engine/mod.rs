@@ -683,7 +683,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             }
 
             let event_end = std::time::Instant::now();
-            if let Some(_) = self.block_env {
+            if self.block_env.is_some() {
                 self.block_metrics.event_processing_time += event_end - event_start;
             }
             last_event_finished_at = event_end;

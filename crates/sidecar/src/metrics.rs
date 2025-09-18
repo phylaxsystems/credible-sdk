@@ -83,15 +83,19 @@ impl BlockMetrics {
 
     /// Commits the metrics
     pub fn commit(&self) {
-        histogram!("sidecar_block_processing_duration_seconds").record(self.block_processing_duration);
+        histogram!("sidecar_block_processing_duration_seconds")
+            .record(self.block_processing_duration);
         histogram!("sidecar_idle_time_distribution").record(self.idle_time);
         gauge!("sidecar_idle_time_seconds").set(self.idle_time.as_secs_f64());
         histogram!("sidecar_event_processing_time_distribution").record(self.event_processing_time);
-        gauge!("sidecar_event_processing_time_seconds").set(self.event_processing_time.as_secs_f64());
+        gauge!("sidecar_event_processing_time_seconds")
+            .set(self.event_processing_time.as_secs_f64());
         gauge!("sidecar_transactions_considered").set(self.transactions_considered as f64);
         gauge!("sidecar_transactions_simulated").set(self.transactions_simulated as f64);
-        gauge!("sidecar_transactions_simulated_success").set(self.transactions_simulated_success as f64);
-        gauge!("sidecar_transactions_simulated_failure").set(self.transactions_simulated_failure as f64);
+        gauge!("sidecar_transactions_simulated_success")
+            .set(self.transactions_simulated_success as f64);
+        gauge!("sidecar_transactions_simulated_failure")
+            .set(self.transactions_simulated_failure as f64);
         gauge!("sidecar_invalidated_transactions").set(self.invalidated_transactions as f64);
         gauge!("sidecar_block_gas_used").set(self.block_gas_used as f64);
         gauge!("sidecar_assertions_per_block").set(self.assertions_per_block as f64);
