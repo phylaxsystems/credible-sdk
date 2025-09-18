@@ -33,7 +33,7 @@ pub struct BlockMetrics {
     pub idle_time: std::time::Duration,
     /// Time spent processing events
     ///
-    /// Commited as a `Gauge`.
+    /// Commited as a `Gauge` and `Histogram`.
     pub event_processing_time: std::time::Duration,
     /// How many transactions the engine has seen
     ///
@@ -83,18 +83,20 @@ impl BlockMetrics {
 
     /// Commits the metrics
     pub fn commit(&self) {
-        histogram!("block_processing_duration_seconds").record(self.block_processing_duration);
-        gauge!("idle_time_seconds").set(self.idle_time.as_secs_f64());
-        gauge!("event_processing_time_seconds").set(self.event_processing_time.as_secs_f64());
-        gauge!("transactions_considered").set(self.transactions_considered as f64);
-        gauge!("transactions_simulated").set(self.transactions_simulated as f64);
-        gauge!("transactions_simulated_success").set(self.transactions_simulated_success as f64);
-        gauge!("transactions_simulated_failure").set(self.transactions_simulated_failure as f64);
-        gauge!("invalidated_transactions").set(self.invalidated_transactions as f64);
-        gauge!("block_gas_used").set(self.block_gas_used as f64);
-        gauge!("assertions_per_block").set(self.assertions_per_block as f64);
-        gauge!("assertion_gas_per_block").set(self.assertion_gas_per_block as f64);
-        gauge!("current_height").set(self.current_height as f64);
+        histogram!("sidecar_block_processing_duration_seconds").record(self.block_processing_duration);
+        histogram!("sidecar_idle_time_distribution").record(self.idle_time);
+        gauge!("sidecar_idle_time_seconds").set(self.idle_time.as_secs_f64());
+        histogram!("sidecar_event_processing_time_distribution").record(self.event_processing_time);
+        gauge!("sidecar_event_processing_time_seconds").set(self.event_processing_time.as_secs_f64());
+        gauge!("sidecar_transactions_considered").set(self.transactions_considered as f64);
+        gauge!("sidecar_transactions_simulated").set(self.transactions_simulated as f64);
+        gauge!("sidecar_transactions_simulated_success").set(self.transactions_simulated_success as f64);
+        gauge!("sidecar_transactions_simulated_failure").set(self.transactions_simulated_failure as f64);
+        gauge!("sidecar_invalidated_transactions").set(self.invalidated_transactions as f64);
+        gauge!("sidecar_block_gas_used").set(self.block_gas_used as f64);
+        gauge!("sidecar_assertions_per_block").set(self.assertions_per_block as f64);
+        gauge!("sidecar_assertion_gas_per_block").set(self.assertion_gas_per_block as f64);
+        gauge!("sidecar_current_height").set(self.current_height as f64);
     }
 
     /// Resets all values inside of `&mut Self` back to their defaults
@@ -151,13 +153,13 @@ impl TransactionMetrics {
 
     /// Commits the per tx metrics
     pub fn commit(&self) {
-        histogram!("assertion_gas_per_transaction", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
+        histogram!("sidecar_assertion_gas_per_transaction", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
             .record(self.assertion_gas_per_transaction as f64);
-        histogram!("assertions_per_transaction", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
+        histogram!("sidecar_assertions_per_transaction", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
             .record(self.assertions_per_transaction as f64);
-        histogram!("transaction_processing_duration", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
+        histogram!("sidecar_transaction_processing_duration", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
             .record(self.transaction_processing_duration);
-        histogram!("gas_per_assertion", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
+        histogram!("sidecar_gas_per_assertion", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
             .record(self.gas_per_assertion as f64);
     }
 }
