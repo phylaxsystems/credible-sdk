@@ -12,7 +12,9 @@
 
 use assertion_executor::primitives::FixedBytes;
 use metrics::{
-    counter, gauge, histogram
+    counter,
+    gauge,
+    histogram,
 };
 
 /// Individual block metrics we commit to the prometheus exporter.
@@ -88,6 +90,7 @@ impl BlockMetrics {
 
     /// Increments the `sidecar_cache_invalidations` counter, commit its duration
     /// `sidecar_cache_invalidations_time_seconds` and set the min required height counter.
+    #[allow(clippy::unused_self)]
     pub fn increment_cache_invalidation(&self, duration: std::time::Duration, height: u64) {
         counter!("sidecar_cache_invalidations").increment(1);
         counter!("sidecar_cache_min_required_height").absolute(height);
