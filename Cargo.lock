@@ -10619,6 +10619,7 @@ dependencies = [
  "ctor",
  "dashmap",
  "futures",
+ "hex",
  "metrics",
  "prost 0.14.1",
  "prost-build",

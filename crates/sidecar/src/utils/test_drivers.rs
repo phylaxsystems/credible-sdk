@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 use super::instance::{
     LocalInstance,
     TestTransport,
@@ -5,6 +6,11 @@ use super::instance::{
 use crate::{
     Cache,
     CoreEngine,
+    cache::sources::{
+        Source,
+        besu_client::BesuClient,
+        sequencer::Sequencer,
+    },
     engine::queue::{
         QueueBlockEnv,
         QueueTransaction,
@@ -35,10 +41,7 @@ use crate::{
         },
         mock::MockTransport,
     },
-    utils::test_cache::{
-        MockBesuClientDB,
-        MockSequencerDB,
-    },
+    utils::test_cache::DualProtocolMockServer,
 };
 use alloy::primitives::TxHash;
 use assertion_executor::{
@@ -178,12 +181,23 @@ impl TestTransport for LocalInstanceMockDriver {
         let (mock_tx, mock_rx) = channel::unbounded();
 
         // Create the database and state
-        let mock_sequencer_db = MockSequencerDB::build();
-        let mock_besu_client_db = MockBesuClientDB::build();
-        let cache = Arc::new(Cache::new(
-            vec![mock_sequencer_db.clone(), mock_besu_client_db.clone()],
-            10,
-        ));
+        let sequencer_http_mock = DualProtocolMockServer::new()
+            .await
+            .expect("Failed to create sequencer mock");
+        let besu_client_http_mock = DualProtocolMockServer::new()
+            .await
+            .expect("Failed to create besu client mock");
+        let mock_sequencer_db: Arc<dyn Source> = Arc::new(
+            Sequencer::try_new(&sequencer_http_mock.http_url())
+                .await
+                .expect("Failed to create sequencer mock"),
+        );
+        let mock_besu_client_db: Arc<dyn Source> =
+            BesuClient::try_build(besu_client_http_mock.ws_url())
+                .await
+                .expect("Failed to create besu client mock");
+        let sources = vec![mock_besu_client_db, mock_sequencer_db];
+        let cache = Arc::new(Cache::new(sources.clone(), 10));
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
 
@@ -238,8 +252,8 @@ impl TestTransport for LocalInstanceMockDriver {
 
         Ok(LocalInstance::new_internal(
             underlying_db,
-            mock_sequencer_db,
-            mock_besu_client_db,
+            sequencer_http_mock,
+            besu_client_http_mock,
             assertion_store,
             Some(transport_handle),
             Some(engine_handle),
@@ -248,6 +262,7 @@ impl TestTransport for LocalInstanceMockDriver {
             default_account,
             0,
             None,
+            sources,
             LocalInstanceMockDriver {
                 mock_sender: mock_tx,
                 block_tx_hashes: Vec::new(),
@@ -359,12 +374,24 @@ impl TestTransport for LocalInstanceHttpDriver {
         let (engine_tx, engine_rx) = channel::unbounded();
 
         // Create the database and state
-        let mock_sequencer_db = MockSequencerDB::build();
-        let mock_besu_client_db = MockBesuClientDB::build();
-        let cache = Arc::new(Cache::new(
-            vec![mock_sequencer_db.clone(), mock_besu_client_db.clone()],
-            10,
-        ));
+        let sequencer_http_mock = DualProtocolMockServer::new()
+            .await
+            .expect("Failed to create sequencer mock");
+        let besu_client_http_mock = DualProtocolMockServer::new()
+            .await
+            .expect("Failed to create besu client mock");
+        let mock_sequencer_db: Arc<dyn Source> = Arc::new(
+            Sequencer::try_new(&sequencer_http_mock.http_url())
+                .await
+                .expect("Failed to create sequencer mock"),
+        );
+        let mock_besu_client_db: Arc<dyn Source> =
+            BesuClient::try_build(besu_client_http_mock.ws_url())
+                .await
+                .expect("Failed to create besu client mock");
+
+        let sources = vec![mock_besu_client_db, mock_sequencer_db];
+        let cache = Arc::new(Cache::new(sources.clone(), 10));
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
 
@@ -437,8 +464,8 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         Ok(LocalInstance::new_internal(
             underlying_db,
-            mock_sequencer_db,
-            mock_besu_client_db,
+            sequencer_http_mock,
+            besu_client_http_mock,
             assertion_store,
             Some(transport_handle),
             Some(engine_handle),
@@ -447,6 +474,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             default_account,
             0,
             Some(&address),
+            sources,
             LocalInstanceHttpDriver {
                 client: reqwest::Client::new(),
                 address,
@@ -748,12 +776,23 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let (engine_tx, engine_rx) = channel::unbounded();
 
         // Create the database and state
-        let mock_sequencer_db = MockSequencerDB::build();
-        let mock_besu_client_db = MockBesuClientDB::build();
-        let cache = Arc::new(Cache::new(
-            vec![mock_sequencer_db.clone(), mock_besu_client_db.clone()],
-            10,
-        ));
+        let sequencer_http_mock = DualProtocolMockServer::new()
+            .await
+            .expect("Failed to create sequencer mock");
+        let besu_client_http_mock = DualProtocolMockServer::new()
+            .await
+            .expect("Failed to create besu client mock");
+        let mock_sequencer_db: Arc<dyn Source> = Arc::new(
+            Sequencer::try_new(&sequencer_http_mock.http_url())
+                .await
+                .expect("Failed to create sequencer mock"),
+        );
+        let mock_besu_client_db: Arc<dyn Source> =
+            BesuClient::try_build(besu_client_http_mock.ws_url())
+                .await
+                .expect("Failed to create besu client mock");
+        let sources = vec![mock_besu_client_db, mock_sequencer_db];
+        let cache = Arc::new(Cache::new(sources.clone(), 10));
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
 
@@ -769,7 +808,6 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         // Create the engine with TransactionsState
         let state_results = crate::TransactionsState::new();
-        let cache = Arc::new(Cache::new(vec![], 10));
         let mut engine = CoreEngine::new(
             state,
             cache,
@@ -845,8 +883,8 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         Ok(LocalInstance::new_internal(
             underlying_db,
-            mock_sequencer_db,
-            mock_besu_client_db,
+            sequencer_http_mock,
+            besu_client_http_mock,
             assertion_store,
             Some(transport_handle),
             Some(engine_handle),
@@ -855,6 +893,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             default_account,
             0,
             Some(&address),
+            sources,
             LocalInstanceGrpcDriver {
                 client,
                 block_tx_hashes: Vec::new(),
