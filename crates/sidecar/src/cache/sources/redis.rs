@@ -1,3 +1,22 @@
+//! # `redis` source client
+//!
+//! This `Source` provides a backend for the cache to be stored in a redis instance.
+//!
+//! `RedisClientBackend` contains all of the needed implementations.
+//! it is instantiated by calling `RedisClientBackend::new` and passing a redis
+//! connection to it.
+//!
+//! ## Schema
+//!
+//! The data is organized as follows:
+//! ```ignore
+//! state:account:{address}     → {balance, nonce, code_hash}
+//! state:storage:{address}     → {slot1: value1, slot2: value2, ...}
+//! state:code:{code_hash}      → hex-encoded bytecode
+//! state:current_block         → latest synced block number
+//! state:block_hash:{number}   → block hash
+//! ```
+
 use crate::Source;
 use alloy::hex;
 use assertion_executor::primitives::{
@@ -17,8 +36,12 @@ use revm::{
 };
 use std::{
     collections::HashMap,
-    fmt::Debug,
+    fmt::{
+        self,
+        Debug,
+    },
     str::FromStr,
+    sync::Mutex,
 };
 use thiserror::Error;
 
@@ -52,15 +75,32 @@ pub trait RedisBackend: Debug + Send + Sync {
 }
 
 /// Real Redis backend that delegates commands to `redis::Client`.
-#[derive(Debug, Clone)]
 pub struct RedisClientBackend {
     client: redis::Client,
+    connection: Mutex<Option<redis::Connection>>,
+}
+
+impl Clone for RedisClientBackend {
+    fn clone(&self) -> Self {
+        Self::new(self.client.clone())
+    }
+}
+
+impl Debug for RedisClientBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedisClientBackend")
+            .field("client", &self.client)
+            .finish()
+    }
 }
 
 impl RedisClientBackend {
     /// Wraps an existing `redis::Client`, allowing callers to share clients across caches.
     pub fn new(client: redis::Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            connection: Mutex::new(None),
+        }
     }
 
     /// Constructs a new backend by opening a client from the provided connection URL.
@@ -74,11 +114,29 @@ impl RedisClientBackend {
     where
         F: FnOnce(&mut redis::Connection) -> Result<T, redis::RedisError>,
     {
-        let mut connection = self
-            .client
-            .get_connection()
-            .map_err(RedisCacheError::Backend)?;
-        func(&mut connection).map_err(RedisCacheError::Backend)
+        let mut guard = self
+            .connection
+            .lock()
+            .expect("redis connection mutex poisoned");
+        if guard.is_none() {
+            let connection = self
+                .client
+                .get_connection()
+                .map_err(RedisCacheError::Backend)?;
+            *guard = Some(connection);
+        }
+
+        let conn = guard
+            .as_mut()
+            .expect("connection must be initialized before use");
+
+        match func(conn) {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                *guard = None;
+                Err(RedisCacheError::Backend(err))
+            }
+        }
     }
 }
 
@@ -351,7 +409,11 @@ impl<B: RedisBackend> DatabaseRef for RedisCache<B> {
                 parse_u256(&value, &self.storage_key(address), "storage")
                     .map_err(super::SourceError::from)
             }
-            None => Ok(U256::ZERO),
+            None => {
+                Err(super::SourceError::from(RedisCacheError::CacheMiss {
+                    kind: "storage",
+                }))
+            }
         }
     }
 }
@@ -400,6 +462,8 @@ pub enum RedisCacheError {
     BlockHashNotFound(u64),
     #[error("bytecode not found for hash {0}")]
     CodeNotFound(B256),
+    #[error("cache miss for '{kind}'")]
+    CacheMiss { kind: &'static str },
     #[error("{0}")]
     Other(String),
 }
@@ -410,6 +474,7 @@ impl From<RedisCacheError> for super::SourceError {
             RedisCacheError::Backend(err) => super::SourceError::Request(Box::new(err)),
             RedisCacheError::BlockHashNotFound(_) => super::SourceError::BlockNotFound,
             RedisCacheError::CodeNotFound(_) => super::SourceError::CodeByHashNotFound,
+            RedisCacheError::CacheMiss { .. } => super::SourceError::CacheMiss,
             other => super::SourceError::Other(other.to_string()),
         }
     }
@@ -507,7 +572,10 @@ fn encode_u256_hex(value: U256) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::sources::Source;
+    use crate::cache::sources::{
+        Source,
+        SourceError,
+    };
     use std::sync::RwLock;
 
     #[derive(Debug, Default)]
@@ -616,16 +684,14 @@ mod tests {
     }
 
     #[test]
-    fn storage_ref_returns_zero_when_missing() {
+    fn storage_ref_returns_cache_miss_when_missing() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
         let address = Address::from([0x33; 20]);
         let slot: StorageKey = U256::from_be_slice(&[0u8; 32]);
 
-        let result = cache
-            .storage_ref(address, slot)
-            .expect("storage lookup failed");
-        assert_eq!(result, U256::ZERO);
+        let result = cache.storage_ref(address, slot);
+        assert!(matches!(result, Err(SourceError::CacheMiss)));
     }
 
     #[test]
@@ -677,22 +743,26 @@ mod tests {
             .set_current_block_number(block_number)
             .expect("failed to set current block number");
 
-        let account = cache.basic_ref(address)
+        let account = cache
+            .basic_ref(address)
             .expect("account lookup failed")
             .expect("account missing");
         assert_eq!(account.balance, balance);
         assert_eq!(account.nonce, nonce);
         assert_eq!(account.code_hash, code_hash);
 
-        let fetched_storage = cache.storage_ref(address, slot)
+        let fetched_storage = cache
+            .storage_ref(address, slot)
             .expect("storage lookup failed");
         assert_eq!(fetched_storage, storage_value);
 
-        let fetched_code = cache.code_by_hash_ref(code_hash)
+        let fetched_code = cache
+            .code_by_hash_ref(code_hash)
             .expect("code lookup failed");
         assert_eq!(fetched_code.original_bytes(), bytecode.original_bytes());
 
-        let fetched_block = cache.block_hash_ref(block_number)
+        let fetched_block = cache
+            .block_hash_ref(block_number)
             .expect("block hash lookup failed");
         assert_eq!(fetched_block, block_hash);
 
