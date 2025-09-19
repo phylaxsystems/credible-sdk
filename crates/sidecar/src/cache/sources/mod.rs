@@ -5,6 +5,7 @@ use thiserror::Error;
 
 pub mod besu_client;
 mod json_rpc_db;
+pub mod redis;
 pub mod sequencer;
 
 /// A data source that provides blockchain state information.
@@ -94,6 +95,8 @@ pub enum SourceError {
     BlockNotFound,
     #[error("Code by hash not found")]
     CodeByHashNotFound,
+    #[error("Cache miss")]
+    CacheMiss,
     #[error("Request failed")]
     Request(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("Other error: {0}")]
