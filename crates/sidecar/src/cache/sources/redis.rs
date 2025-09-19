@@ -677,22 +677,22 @@ mod tests {
             .set_current_block_number(block_number)
             .expect("failed to set current block number");
 
-        let account = DatabaseRef::basic_ref(&cache, address)
+        let account = cache.basic_ref(address)
             .expect("account lookup failed")
             .expect("account missing");
         assert_eq!(account.balance, balance);
         assert_eq!(account.nonce, nonce);
         assert_eq!(account.code_hash, code_hash);
 
-        let fetched_storage = DatabaseRef::storage_ref(&cache, address, slot)
+        let fetched_storage = cache.storage_ref(address, slot)
             .expect("storage lookup failed");
         assert_eq!(fetched_storage, storage_value);
 
-        let fetched_code = DatabaseRef::code_by_hash_ref(&cache, code_hash)
+        let fetched_code = cache.code_by_hash_ref(code_hash)
             .expect("code lookup failed");
         assert_eq!(fetched_code.original_bytes(), bytecode.original_bytes());
 
-        let fetched_block = DatabaseRef::block_hash_ref(&cache, block_number)
+        let fetched_block = cache.block_hash_ref(block_number)
             .expect("block hash lookup failed");
         assert_eq!(fetched_block, block_hash);
 
