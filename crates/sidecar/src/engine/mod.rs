@@ -292,11 +292,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         if !ErrorRecoverability::from(e).is_recoverable() {
             critical!(error = ?e, "Failed to execute a transaction");
         }
-        self.add_transaction_result(
-            tx_hash,
-            &TransactionResult::ValidationError(format!("{e:?}")),
-            None,
-        );
         match e {
             ExecutorError::ForkTxExecutionError(_) => {
                 // Transaction validation errors (nonce, gas, funds, etc.)
@@ -312,9 +307,14 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     tx_env = ?tx_env,
                     "Transaction validation environment"
                 );
+                self.add_transaction_result(
+                    tx_hash,
+                    &TransactionResult::ValidationError(format!("{e:?}")),
+                    None,
+                );
                 Ok(())
             }
-            ExecutorError::AssertionExecutionError(_) => {
+            ExecutorError::AssertionExecutionError(state, _) => {
                 // Assertion system failures (database corruption, invalid bytecode, etc.)
                 // These should crash the engine as they indicate system-level problems
                 error!(
@@ -323,6 +323,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     tx_hash = %tx_hash,
                     tx_env= ?tx_env,
                     "Fatal assertion execution error occurred"
+                );
+                self.add_transaction_result(
+                    tx_hash,
+                    &TransactionResult::ValidationError(format!("{e:?}")),
+                    Some(state.clone()),
                 );
                 Err(EngineError::AssertionError)
             }
@@ -816,7 +821,7 @@ where
     fn from(error: &ExecutorError<Active, ExtDb>) -> Self {
         match error {
             ExecutorError::ForkTxExecutionError(e) => e.into(),
-            ExecutorError::AssertionExecutionError(_) => ErrorRecoverability::Unrecoverable,
+            ExecutorError::AssertionExecutionError(..) => ErrorRecoverability::Unrecoverable,
         }
     }
 }

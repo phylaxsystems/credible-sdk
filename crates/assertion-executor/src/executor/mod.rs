@@ -159,7 +159,12 @@ impl AssertionExecutor {
 
         let results = self
             .execute_assertions(block_env, tx_fork_db, &forked_tx_result)
-            .map_err(ExecutorError::AssertionExecutionError)?;
+            .map_err(|e| {
+                ExecutorError::AssertionExecutionError(
+                    forked_tx_result.result_and_state.state.clone(),
+                    e,
+                )
+            })?;
 
         if results.is_empty() {
             debug!(target: "assertion-executor::validate_tx", "No assertions were executed");
