@@ -647,6 +647,59 @@ mod tests {
     }
 
     #[test]
+    fn stores_and_loads_state_via_database_ref_interface() {
+        let backend = InMemoryBackend::default();
+        let cache = RedisCache::new(backend);
+
+        let address = Address::from([0x77; 20]);
+        let slot: StorageKey = U256::from_be_slice(&[0x01; 32]);
+        let balance = U256::from(0xabcdef_u64);
+        let nonce = 9_u64;
+        let storage_value = U256::from(0xfeedbeefu64);
+        let code_hash = B256::from_slice(&[0x12; 32]);
+        let block_hash = B256::from_slice(&[0x34; 32]);
+        let block_number = 128_u64;
+        let bytecode = Bytecode::new_raw(vec![0x60, 0x0a, 0x60, 0x0b, 0x01].into());
+
+        cache
+            .put_account(address, balance, nonce, code_hash)
+            .expect("failed to insert account");
+        cache
+            .put_storage(address, slot, storage_value)
+            .expect("failed to insert storage slot");
+        cache
+            .put_code(code_hash, &bytecode)
+            .expect("failed to insert bytecode");
+        cache
+            .put_block_hash(block_number, block_hash)
+            .expect("failed to insert block hash");
+        cache
+            .set_current_block_number(block_number)
+            .expect("failed to set current block number");
+
+        let account = DatabaseRef::basic_ref(&cache, address)
+            .expect("account lookup failed")
+            .expect("account missing");
+        assert_eq!(account.balance, balance);
+        assert_eq!(account.nonce, nonce);
+        assert_eq!(account.code_hash, code_hash);
+
+        let fetched_storage = DatabaseRef::storage_ref(&cache, address, slot)
+            .expect("storage lookup failed");
+        assert_eq!(fetched_storage, storage_value);
+
+        let fetched_code = DatabaseRef::code_by_hash_ref(&cache, code_hash)
+            .expect("code lookup failed");
+        assert_eq!(fetched_code.original_bytes(), bytecode.original_bytes());
+
+        let fetched_block = DatabaseRef::block_hash_ref(&cache, block_number)
+            .expect("block hash lookup failed");
+        assert_eq!(fetched_block, block_hash);
+
+        assert!(cache.is_synced(block_number));
+    }
+
+    #[test]
     fn code_by_hash_returns_bytecode() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
