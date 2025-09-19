@@ -848,6 +848,7 @@ mod tests {
         },
     };
     use std::time::Duration;
+    use tokio::time::timeout;
 
     fn create_test_engine() -> (
         CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
@@ -1338,21 +1339,28 @@ mod tests {
     #[crate::utils::engine_test(all)]
     async fn test_block_env_wrong_transaction_number(mut instance: crate::utils::LocalInstance) {
         // Send and verify a reverting CREATE transaction
-        let _tx_hash = instance
+        let tx_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
 
         instance.transport.set_n_transactions(2);
 
         // Send a blockEnv with the wrong number of transactions
         instance.new_block().await.unwrap();
 
-        instance.wait_for_processing(Duration::from_millis(2)).await;
-
-        assert!(logs_contain(
-            "The number of transactions in the BlockEnv does not much the transactions processed, invalidating cache"
-        ));
+        timeout(Duration::from_secs(30), async {
+            while !logs_contain(
+                "The number of transactions in the BlockEnv does not much the transactions processed, invalidating cache",
+            ) {
+                instance.wait_for_processing(Duration::from_millis(2)).await;
+            }
+        }).await.expect("Timeout waiting for logs");
     }
 
     #[tracing_test::traced_test]
@@ -1365,21 +1373,71 @@ mod tests {
             .unwrap();
 
         // Send and verify a reverting CREATE transaction
-        let _tx_hash_2 = instance
+        let tx_hash_2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
+        assert!(
+            instance
+                .is_transaction_successful(&tx_hash_1)
+                .await
+                .unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx_hash_2)
+                .await
+                .unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
+
         instance.transport.set_last_tx_hash(Some(tx_hash_1));
+
+        assert!(
+            instance
+                .sequencer_http_mock
+                .eth_balance_counter
+                .get(&instance.default_account)
+                .is_none()
+        );
+        assert!(
+            instance
+                .besu_client_http_mock
+                .eth_balance_counter
+                .get(&instance.default_account)
+                .is_none()
+        );
+
+        let snapshot = (*instance.sequencer_http_mock.eth_balance_counter).clone();
 
         // Send a blockEnv with the wrong last tx hash
         instance.new_block().await.unwrap();
 
-        instance.wait_for_processing(Duration::from_millis(2)).await;
+        // Send and verify a successful CREATE transaction
+        let tx_hash = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
 
-        assert!(logs_contain(
-            "The last transaction hash in the BlockEnv does not match the last transaction processed, invalidating cache"
-        ));
+        // Verify transaction was successful
+        assert!(
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
+
+        // We verify the cache was flushed by checking that there is a new entry in the sequencer request
+        // for the same transaction we already requested before
+        let new_snapshot = (*instance.sequencer_http_mock.eth_balance_counter).clone();
+
+        let new_values = new_snapshot
+            .iter()
+            .filter(|entry| !snapshot.contains_key(entry.key()))
+            .map(|entry| *entry.key())
+            .collect::<Vec<_>>();
+
+        assert_eq!(new_values.len(), 1);
     }
 
     #[tracing_test::traced_test]
@@ -1388,20 +1446,22 @@ mod tests {
         mut instance: crate::utils::LocalInstance,
     ) {
         // Send and verify a reverting CREATE transaction
-        let _tx_hash = instance
+        let tx_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
+        assert!(
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
+
         instance.transport.set_last_tx_hash(None);
 
         // Send a blockEnv with the wrong number of transactions
-        let _ = instance.new_block().await;
+        let res = instance.new_block().await;
 
-        instance.wait_for_processing(Duration::from_millis(2)).await;
-
-        // The blockEnv is not accepted at http level
-        assert!(logs_contain("Failed to decode transactions"));
+        assert!(res.is_err());
     }
 
     #[tracing_test::traced_test]
@@ -1415,16 +1475,18 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
+
         instance.transport.set_last_tx_hash(Some(tx_hash));
         instance.transport.set_n_transactions(0);
 
         // Send a blockEnv with the wrong number of transactions
-        let _ = instance.new_block().await;
+        let res = instance.new_block().await;
 
-        instance.wait_for_processing(Duration::from_millis(2)).await;
-
-        // The blockEnv is not accepted at http level
-        assert!(logs_contain("Failed to decode transactions"));
+        assert!(res.is_err());
     }
 
     #[test]

@@ -1,11 +1,11 @@
 use crate::{
-    cache::Cache,
+    cache::{
+        Cache,
+        sources::Source,
+    },
     engine::TransactionResult,
     transactions_state::RequestTransactionResult,
-    utils::test_cache::{
-        MockBesuClientDB,
-        MockSequencerDB,
-    },
+    utils::test_cache::DualProtocolMockServer,
 };
 use alloy::primitives::TxHash;
 use assertion_executor::{
@@ -87,10 +87,12 @@ pub struct LocalInstance<T: TestTransport> {
     // mock_sender: TransactionQueueSender,
     /// The underlying database
     db: Arc<CacheDB<Arc<Cache>>>,
-    /// The cache DB representing the sequencer
-    pub cache_sequencer_db: Arc<MockSequencerDB>,
-    /// The cache DB representing the Besu client
-    pub cache_besu_client_db: Arc<MockBesuClientDB>,
+    /// List of cache sources
+    pub sources: Vec<Arc<dyn Source>>,
+    /// The mock HTTP representing the sequencer
+    pub sequencer_http_mock: DualProtocolMockServer,
+    /// The mock HTTP representing the Besu client
+    pub besu_client_http_mock: DualProtocolMockServer,
     /// The assertion store
     assertion_store: Arc<AssertionStore>,
     /// Transport task handle
@@ -102,7 +104,7 @@ pub struct LocalInstance<T: TestTransport> {
     /// Shared transaction results from engine
     transaction_results: Arc<crate::TransactionsState>,
     /// Default account for transactions
-    default_account: Address,
+    pub default_account: Address,
     /// Current nonce for the default account
     current_nonce: u64,
     /// Container type that holds the transport and impls `TestTransport`
@@ -123,8 +125,8 @@ impl<T: TestTransport> LocalInstance<T> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_internal(
         db: Arc<CacheDB<Arc<Cache>>>,
-        cache_sequencer_db: Arc<MockSequencerDB>,
-        cache_besu_client_db: Arc<MockBesuClientDB>,
+        sequencer_http_mock: DualProtocolMockServer,
+        besu_client_http_mock: DualProtocolMockServer,
         assertion_store: Arc<AssertionStore>,
         transport_handle: Option<JoinHandle<()>>,
         engine_handle: Option<JoinHandle<()>>,
@@ -133,12 +135,13 @@ impl<T: TestTransport> LocalInstance<T> {
         default_account: Address,
         current_nonce: u64,
         local_address: Option<&SocketAddr>,
+        sources: Vec<Arc<dyn Source>>,
         transport: T,
     ) -> Self {
         Self {
             db,
-            cache_sequencer_db,
-            cache_besu_client_db,
+            sequencer_http_mock,
+            besu_client_http_mock,
             assertion_store,
             transport_handle,
             engine_handle,
@@ -147,6 +150,7 @@ impl<T: TestTransport> LocalInstance<T> {
             default_account,
             current_nonce,
             transport,
+            sources,
             local_address: local_address.copied(),
         }
     }
