@@ -95,6 +95,8 @@ pub enum SourceError {
     BlockNotFound,
     #[error("Code by hash not found")]
     CodeByHashNotFound,
+    #[error("Cache miss")]
+    CacheMiss,
     #[error("Request failed")]
     Request(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("Other error: {0}")]
