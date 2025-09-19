@@ -1,14 +1,16 @@
-//! # `redis` source client
+#![cfg_attr(not(test), allow(dead_code))]
+
+//! # Redis-backed cache source
 //!
-//! This `Source` provides a backend for the cache to be stored in a redis instance.
+//! Provides a `Source` implementation backed by Redis so that blockchain state
+//! can be cached between runs. `RedisClientBackend` wraps a `redis::Client`,
+//! establishing a single shared connection lazily and reusing it across all
+//! commands. Construct it with `RedisClientBackend::new(client)` or
+//! `RedisClientBackend::from_url("redis://...")`.
 //!
-//! `RedisClientBackend` contains all of the needed implementations.
-//! it is instantiated by calling `RedisClientBackend::new` and passing a redis
-//! connection to it.
+//! ## Redis schema
 //!
-//! ## Schema
-//!
-//! The data is organized as follows:
+//! Entries are namespaced to avoid key collisions:
 //! ```ignore
 //! state:account:{address}     → {balance, nonce, code_hash}
 //! state:storage:{address}     → {slot1: value1, slot2: value2, ...}
@@ -90,7 +92,7 @@ impl Debug for RedisClientBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RedisClientBackend")
             .field("client", &self.client)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -229,35 +231,28 @@ impl<B: RedisBackend> RedisCache<B> {
 
     /// Converts the raw Redis hash for an account into an `AccountInfo` instance.
     fn parse_account(
-        &self,
-        key: String,
-        fields: HashMap<String, String>,
+        key: &str,
+        fields: &HashMap<String, String>,
     ) -> Result<AccountInfo, RedisCacheError> {
         let balance = fields
             .get(BALANCE_FIELD)
-            .ok_or_else(|| {
-                RedisCacheError::MissingField {
-                    key: key.clone(),
-                    field: BALANCE_FIELD,
-                }
+            .ok_or(RedisCacheError::MissingField {
+                key: key.to_string(),
+                field: BALANCE_FIELD,
             })
-            .and_then(|value| parse_u256(value, &key, BALANCE_FIELD))?;
+            .and_then(|value| parse_u256(value, key, BALANCE_FIELD))?;
         let nonce = fields
             .get(NONCE_FIELD)
-            .ok_or_else(|| {
-                RedisCacheError::MissingField {
-                    key: key.clone(),
-                    field: NONCE_FIELD,
-                }
+            .ok_or(RedisCacheError::MissingField {
+                key: key.to_string(),
+                field: NONCE_FIELD,
             })
-            .and_then(|value| parse_u64(value, &key, NONCE_FIELD))?;
+            .and_then(|value| parse_u64(value, key, NONCE_FIELD))?;
         let code_hash = fields
             .get(CODE_HASH_FIELD)
-            .ok_or_else(|| {
-                RedisCacheError::MissingField {
-                    key,
-                    field: CODE_HASH_FIELD,
-                }
+            .ok_or(RedisCacheError::MissingField {
+                key: key.to_string(),
+                field: CODE_HASH_FIELD,
             })
             .and_then(|value| parse_b256(value, CODE_HASH_FIELD))?;
 
@@ -367,7 +362,7 @@ impl<B: RedisBackend> DatabaseRef for RedisCache<B> {
             Some(map) if !map.is_empty() => map,
             _ => return Ok(None),
         };
-        self.parse_account(key, account_map)
+        Self::parse_account(&key, &account_map)
             .map(Some)
             .map_err(super::SourceError::from)
     }
@@ -600,8 +595,7 @@ mod tests {
             let guard = self.entries.read().unwrap();
             match guard.get(key) {
                 Some(Entry::Hash(map)) if !map.is_empty() => Ok(Some(map.clone())),
-                Some(Entry::Hash(_)) | None => Ok(None),
-                Some(Entry::String(_)) => Ok(None),
+                Some(Entry::Hash(_) | Entry::String(_)) | None => Ok(None),
             }
         }
 
