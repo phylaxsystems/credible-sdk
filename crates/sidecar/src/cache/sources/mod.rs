@@ -5,6 +5,7 @@ use thiserror::Error;
 
 pub mod besu_client;
 mod json_rpc_db;
+pub mod redis;
 pub mod sequencer;
 
 /// A data source that provides blockchain state information.
