@@ -6,6 +6,7 @@ use crate::{
 
 use std::fmt::Debug;
 
+use crate::primitives::EvmState;
 use revm::{
     Database,
     DatabaseRef,
@@ -19,8 +20,8 @@ where
 {
     #[error("Fork tx execution error: {0}")]
     ForkTxExecutionError(#[source] ForkTxExecutionError<ExtDb>),
-    #[error("Assertion execution error: {0}")]
-    AssertionExecutionError(#[source] AssertionExecutionError<Active>),
+    #[error("Assertion execution error")]
+    AssertionExecutionError(EvmState, #[source] AssertionExecutionError<Active>),
 }
 
 impl<Active: DatabaseRef, ExtDb: Database> Debug for ExecutorError<Active, ExtDb>
@@ -31,7 +32,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ForkTxExecutionError(e) => write!(f, "ForkTxExecutionError({e:?})"),
-            Self::AssertionExecutionError(e) => write!(f, "AssertionExecutionError({e:?})"),
+            Self::AssertionExecutionError(_, e) => write!(f, "AssertionExecutionError({e:?})"),
         }
     }
 }
