@@ -247,12 +247,15 @@ mod tests {
         StorageValue,
         U256,
     };
-    use std::sync::{
-        Arc,
-        atomic::{
-            AtomicUsize,
-            Ordering,
+    use std::{
+        sync::{
+            Arc,
+            atomic::{
+                AtomicUsize,
+                Ordering,
+            },
         },
+        time::Duration,
     };
     use tracing_test::traced_test;
 
@@ -1088,106 +1091,181 @@ mod tests {
 
     #[crate::utils::engine_test(all)]
     async fn test_cache_first_fallback(mut instance: crate::utils::LocalInstance) {
+        // Send a new block
+        instance.new_block().await.unwrap();
+        instance.wait_for_processing(Duration::from_millis(2)).await;
+
+        // Send a new block to the Besu client websocket
+        instance.besu_client_http_mock.send_new_head();
+
+        // Wait for the Besu client to be synced
+        while !instance.sources[0].is_synced(1) {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
         // Send a random tx whose data is not in the in-memory cache
         let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
         // Await result
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
         // The first fallback is hit
-        let cache_sequencer_db_basic_ref_counter = instance
-            .cache_sequencer_db
-            .mock_db
-            .basic_ref_counter
+        let cache_sequencer_db_basic_ref_counter = *instance
+            .besu_client_http_mock
+            .eth_balance_counter
             .get(&address)
-            .unwrap()
-            .load(Ordering::Relaxed);
+            .unwrap();
         assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
 
         // The second fallback is never called
         assert!(
             instance
-                .cache_besu_client_db
-                .mock_db
-                .basic_ref_counter
+                .sequencer_http_mock
+                .eth_balance_counter
                 .get(&address)
                 .is_none()
         );
     }
 
     #[crate::utils::engine_test(all)]
-    async fn test_cache_second_fallback(mut instance: crate::utils::LocalInstance) {
-        // Make the first cache out of sync
-        instance
-            .cache_sequencer_db
-            .is_synced
-            .store(false, Ordering::Relaxed);
+    async fn test_cache_second_fallback_first_fallback_out_of_sync(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // Send many blocks a new block to the Besu client
+        for _ in 0..15 {
+            instance.new_block().await.unwrap();
+        }
+        instance.wait_for_processing(Duration::from_millis(2)).await;
+
+        // Send a new block to the Besu client websocket
+        instance.besu_client_http_mock.send_new_head();
+
+        // Wait for the Besu client to be synced for block 1
+        while !instance.sources[0].is_synced(1) {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
 
         // Send a random tx whose data is not in the in-memory cache
         let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
         // Await result
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
-        // The first fallback is never called
+        // The first fallback is never called because it is not synced
+        // This is because the Besu client head is at block 1, but the
+        // sequencer head is at block 15
         assert!(
             instance
-                .cache_sequencer_db
-                .mock_db
-                .basic_ref_counter
+                .besu_client_http_mock
+                .eth_balance_counter
                 .get(&address)
                 .is_none()
         );
 
         // The second fallback is hit
-        let cache_sequencer_db_basic_ref_counter = instance
-            .cache_besu_client_db
-            .mock_db
-            .basic_ref_counter
+        let cache_sequencer_db_basic_ref_counter = *instance
+            .sequencer_http_mock
+            .eth_balance_counter
             .get(&address)
-            .unwrap()
-            .load(Ordering::Relaxed);
+            .unwrap();
+        assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_cache_second_fallback_because_first_fallback_error(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // Send a new block
+        instance.new_block().await.unwrap();
+        instance.wait_for_processing(Duration::from_millis(2)).await;
+
+        // Send a new block to the Besu client websocket
+        instance.besu_client_http_mock.send_new_head();
+
+        // Wait for the Besu client to be synced
+        while !instance.sources[0].is_synced(1) {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        // Bad response for Besu client
+        instance.besu_client_http_mock.mock_rpc_error(
+            "eth_getBalance",
+            -32000,               // Error code
+            "Insufficient funds", // Error message
+        );
+
+        // Send a random tx whose data is not in the in-memory cache
+        let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+        // Await result
+        let _ = instance.is_transaction_successful(&tx_hash).await;
+
+        // The first fallback is hit
+        let besu_client_db_basic_ref_counter = *instance
+            .besu_client_http_mock
+            .eth_balance_counter
+            .get(&address)
+            .unwrap();
+        assert_eq!(besu_client_db_basic_ref_counter, 1);
+
+        // The second fallback is hit because the first fallback returned an error
+        let cache_sequencer_db_basic_ref_counter = *instance
+            .sequencer_http_mock
+            .eth_balance_counter
+            .get(&address)
+            .unwrap();
         assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
     }
 
     #[traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_cache_no_fallback_available(mut instance: crate::utils::LocalInstance) {
-        // Make the first cache out of sync
-        instance
-            .cache_sequencer_db
-            .is_synced
-            .store(false, Ordering::Relaxed);
+        // Send a new block
+        instance.new_block().await.unwrap();
+        instance.wait_for_processing(Duration::from_millis(2)).await;
 
-        // Make the second cache out of sync
-        instance
-            .cache_besu_client_db
-            .is_synced
-            .store(false, Ordering::Relaxed);
+        // Send a new block to the Besu client websocket
+        instance.besu_client_http_mock.send_new_head();
+
+        // Wait for the Besu client to be synced
+        while !instance.sources[0].is_synced(1) {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        // Bad response for Besu client
+        instance.besu_client_http_mock.mock_rpc_error(
+            "eth_getBalance",
+            -32000,               // Error code
+            "Insufficient funds", // Error message
+        );
+
+        // Bad response for sequencer
+        instance.sequencer_http_mock.mock_rpc_error(
+            "eth_getBalance",
+            -32000,               // Error code
+            "Insufficient funds", // Error message
+        );
 
         // Send a random tx whose data is not in the in-memory cache
         let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
         // Await result
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
-        assert!(logs_contain("critical"));
+        while !logs_contain("critical") {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
 
-        // The first fallback is never called
-        assert!(
-            instance
-                .cache_sequencer_db
-                .mock_db
-                .basic_ref_counter
-                .get(&address)
-                .is_none()
-        );
+        // The first fallback is hit
+        let besu_client_db_basic_ref_counter = *instance
+            .besu_client_http_mock
+            .eth_balance_counter
+            .get(&address)
+            .unwrap();
+        assert_eq!(besu_client_db_basic_ref_counter, 1);
 
-        // The second fallback is never called
-        assert!(
-            instance
-                .cache_besu_client_db
-                .mock_db
-                .basic_ref_counter
-                .get(&address)
-                .is_none()
-        );
+        // The second fallback is hit because the first fallback returned an error
+        let cache_sequencer_db_basic_ref_counter = *instance
+            .sequencer_http_mock
+            .eth_balance_counter
+            .get(&address)
+            .unwrap();
+        assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
     }
 }
