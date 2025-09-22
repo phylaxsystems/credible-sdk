@@ -43,7 +43,6 @@ use std::{
         Debug,
     },
     str::FromStr,
-    sync::Mutex,
 };
 use thiserror::Error;
 
@@ -79,7 +78,6 @@ pub trait RedisBackend: Debug + Send + Sync {
 /// Real Redis backend that delegates commands to `redis::Client`.
 pub struct RedisClientBackend {
     client: redis::Client,
-    connection: Mutex<Option<redis::Connection>>,
 }
 
 impl Clone for RedisClientBackend {
@@ -99,10 +97,7 @@ impl Debug for RedisClientBackend {
 impl RedisClientBackend {
     /// Wraps an existing `redis::Client`, allowing callers to share clients across caches.
     pub fn new(client: redis::Client) -> Self {
-        Self {
-            client,
-            connection: Mutex::new(None),
-        }
+        Self { client }
     }
 
     /// Constructs a new backend by opening a client from the provided connection URL.
@@ -116,29 +111,12 @@ impl RedisClientBackend {
     where
         F: FnOnce(&mut redis::Connection) -> Result<T, redis::RedisError>,
     {
-        let mut guard = self
-            .connection
-            .lock()
-            .expect("redis connection mutex poisoned");
-        if guard.is_none() {
-            let connection = self
-                .client
-                .get_connection()
-                .map_err(RedisCacheError::Backend)?;
-            *guard = Some(connection);
-        }
+        let mut connection = self
+            .client
+            .get_connection()
+            .map_err(RedisCacheError::Backend)?;
 
-        let conn = guard
-            .as_mut()
-            .expect("connection must be initialized before use");
-
-        match func(conn) {
-            Ok(value) => Ok(value),
-            Err(err) => {
-                *guard = None;
-                Err(RedisCacheError::Backend(err))
-            }
-        }
+        func(&mut connection).map_err(RedisCacheError::Backend)
     }
 }
 
