@@ -1,6 +1,9 @@
-use crate::cache::sources::{
-    Source,
-    SourceError,
+use crate::{
+    cache::sources::{
+        Source,
+        SourceError,
+    },
+    metrics::CacheMetrics,
 };
 use assertion_executor::primitives::{
     AccountInfo,
@@ -25,6 +28,7 @@ use std::{
             Ordering,
         },
     },
+    time::Instant,
 };
 use thiserror::Error;
 use tracing::{
@@ -80,6 +84,8 @@ pub struct Cache {
     required_block_number: AtomicU64,
     /// The maximum depth of the cache to be considered synced.
     max_depth: u64,
+    /// Metrics for the cache.
+    metrics: CacheMetrics,
 }
 
 impl Cache {
@@ -99,6 +105,7 @@ impl Cache {
             sources,
             required_block_number: AtomicU64::new(0),
             max_depth,
+            metrics: CacheMetrics::new(),
         }
     }
 
@@ -118,9 +125,11 @@ impl Cache {
         if self.current_block_number.load(Ordering::Acquire) == 0 {
             self.required_block_number
                 .store(block_number, Ordering::Relaxed);
+            self.metrics.set_required_block_number(block_number);
         }
         self.current_block_number
             .store(block_number, Ordering::Relaxed);
+        self.metrics.set_current_block_number(block_number);
     }
 
     /// Resets the `required_block_number` to the current `block_number`.
@@ -131,6 +140,7 @@ impl Cache {
     /// If the internal cache is flushed, this method must be called to sync the required head to
     /// the latest block, as the current cache is stale
     pub fn reset_required_block_number(&self, required_block_number: u64) {
+        self.metrics.increase_reset_required_block_number_counter();
         self.required_block_number
             .store(required_block_number, Ordering::Relaxed);
     }
@@ -140,25 +150,40 @@ impl Cache {
     /// Sources are returned in priority order, with the highest priority
     /// synced source returned first.
     fn iter_synced_sources(&self) -> impl Iterator<Item = Arc<dyn Source>> {
+        let instant = Instant::now();
+
         // MAX(latest BlockEnv - MINIMUM_STATE_DIFF, First block env processed)
         let required_block_number = self.required_block_number.load(Ordering::Acquire);
         let current_block_number = self.current_block_number.load(Ordering::Acquire);
         let block_number =
             required_block_number.max(current_block_number.saturating_sub(self.max_depth));
 
-        self.sources
+        let sources = self
+            .sources
             .iter()
             .filter(move |source| source.is_synced(block_number))
-            .cloned()
+            .cloned();
+
+        self.metrics.is_sync_duration(instant.elapsed());
+
+        sources
     }
 }
 
 impl DatabaseRef for Cache {
     type Error = CacheError;
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
+            let source_instant = Instant::now();
             match source.basic_ref(address) {
-                Ok(Some(account)) => return Ok(Some(account)),
+                Ok(Some(account)) => {
+                    self.metrics
+                        .basic_ref_duration(source.name(), source_instant.elapsed());
+                    self.metrics
+                        .total_basic_ref_duration(total_operation_instant.elapsed());
+                    return Ok(Some(account));
+                }
                 Ok(None) => {
                     debug!(
                         target = "cache::basic_ref",
@@ -186,14 +211,21 @@ impl DatabaseRef for Cache {
                     );
                 }
             }
+            self.metrics
+                .basic_ref_duration(source.name(), source_instant.elapsed());
         }
 
+        self.metrics
+            .total_basic_ref_duration(total_operation_instant.elapsed());
         Err(CacheError::NoCacheSourceAvailable)
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        self.iter_synced_sources()
+        let total_operation_instant = Instant::now();
+        let result = self
+            .iter_synced_sources()
             .find_map(|source| {
+                let source_instant = Instant::now();
                 let res = source.block_hash_ref(number);
                 if let Err(e) = res.as_ref() {
                     error!(
@@ -203,14 +235,22 @@ impl DatabaseRef for Cache {
                         error = ?e,
                         "Failed to fetch block hash from cache source");
                 }
+                self.metrics
+                    .block_hash_ref_duration(source.name(), source_instant.elapsed());
                 res.ok()
             })
-            .ok_or(CacheError::NoCacheSourceAvailable)
+            .ok_or(CacheError::NoCacheSourceAvailable);
+        self.metrics
+            .total_block_hash_ref_duration(total_operation_instant.elapsed());
+        result
     }
 
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        self.iter_synced_sources()
+        let total_operation_instant = Instant::now();
+        let result = self
+            .iter_synced_sources()
             .find_map(|source| {
+                let source_instant = Instant::now();
                 let res = source.code_by_hash_ref(code_hash);
                 if let Err(e) = res.as_ref() {
                     error!(
@@ -220,9 +260,14 @@ impl DatabaseRef for Cache {
                         error = ?e,
                         "Failed to fetch code by hash from cache source");
                 }
+                self.metrics
+                    .code_by_hash_ref_duration(source.name(), source_instant.elapsed());
                 res.ok()
             })
-            .ok_or(CacheError::NoCacheSourceAvailable)
+            .ok_or(CacheError::NoCacheSourceAvailable);
+        self.metrics
+            .total_code_by_hash_ref_duration(total_operation_instant.elapsed());
+        result
     }
 
     fn storage_ref(
@@ -230,9 +275,17 @@ impl DatabaseRef for Cache {
         address: Address,
         index: StorageKey,
     ) -> Result<StorageValue, Self::Error> {
+        let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
+            let source_instant = Instant::now();
             match source.storage_ref(address, index) {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    self.metrics
+                        .storage_ref_duration(source.name(), source_instant.elapsed());
+                    self.metrics
+                        .total_storage_ref_duration(total_operation_instant.elapsed());
+                    return Ok(value);
+                }
                 Err(SourceError::CacheMiss) => {
                     debug!(
                         target = "cache::storage_ref",
@@ -253,8 +306,12 @@ impl DatabaseRef for Cache {
                     );
                 }
             }
+            self.metrics
+                .storage_ref_duration(source.name(), source_instant.elapsed());
         }
 
+        self.metrics
+            .total_storage_ref_duration(total_operation_instant.elapsed());
         Err(CacheError::NoCacheSourceAvailable)
     }
 }

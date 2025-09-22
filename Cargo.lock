@@ -1589,6 +1589,7 @@ dependencies = [
  "evm-glue",
  "futures",
  "int-test-utils",
+ "metrics",
  "moka",
  "op-revm",
  "parking_lot",

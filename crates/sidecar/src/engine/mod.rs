@@ -1025,6 +1025,10 @@ mod tests {
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await;
 
+        if let Ok(rax) = rax {
+            assert!(!instance.is_transaction_successful(&rax).await.unwrap(),);
+        }
+
         // Verify transaction was successful
         assert!(
             rax.is_err(),
