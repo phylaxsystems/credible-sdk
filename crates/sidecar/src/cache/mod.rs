@@ -175,7 +175,6 @@ impl DatabaseRef for Cache {
                         address = %address,
                         "Cache source reported account cache miss",
                     );
-                    continue;
                 }
                 Err(e) => {
                     error!(
@@ -231,12 +230,10 @@ impl DatabaseRef for Cache {
         address: Address,
         index: StorageKey,
     ) -> Result<StorageValue, Self::Error> {
-        let mut saw_miss = false;
         for source in self.iter_synced_sources() {
             match source.storage_ref(address, index) {
                 Ok(value) => return Ok(value),
                 Err(SourceError::CacheMiss) => {
-                    saw_miss = true;
                     debug!(
                         target = "cache::storage_ref",
                         name = %source.name(),
@@ -258,11 +255,7 @@ impl DatabaseRef for Cache {
             }
         }
 
-        if saw_miss {
-            Ok(StorageValue::ZERO)
-        } else {
-            Err(CacheError::NoCacheSourceAvailable)
-        }
+        Err(CacheError::NoCacheSourceAvailable)
     }
 }
 
