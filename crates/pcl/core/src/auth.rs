@@ -3,6 +3,7 @@ use crate::{
         CliConfig,
         UserAuth,
     },
+    default_dapp_url,
     error::AuthError,
 };
 use alloy_primitives::Address;
@@ -89,7 +90,7 @@ pub struct AuthCommand {
         short = 'u',
         long = "auth-url",
         env = "PCL_AUTH_URL",
-        default_value = "https://dapp.phylax.systems",
+        default_value = default_dapp_url!(),
         help = "Base URL for authentication service"
     )]
     pub auth_url: String,

@@ -4,6 +4,7 @@ use crate::{
         AssertionKey,
         CliConfig,
     },
+    default_dapp_url,
     error::DappSubmitError,
 };
 use clap::ValueHint;
@@ -16,6 +17,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 // TODO(Odysseas) Add tests for the Dapp submission + Rust bindings from the Dapp API
+
+pub const DEFAULT_DAPP_URL: &str = concat!(default_dapp_url!(), "/api/v1");
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
@@ -54,7 +57,7 @@ pub struct DappSubmitArgs {
         env = "PCL_API_URL",
         value_hint = ValueHint::Url,
         value_name = "API Endpoint",
-        default_value = "https://dapp.phylax.systems/api/v1"
+        default_value = DEFAULT_DAPP_URL
     )]
     pub api_url: String,
 

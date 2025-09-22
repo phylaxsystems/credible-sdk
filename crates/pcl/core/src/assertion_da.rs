@@ -34,16 +34,9 @@ use crate::{
         AssertionKey,
         CliConfig,
     },
+    default_da_url,
     error::DaSubmitError,
 };
-
-/// Macro that defines the default DA URL - can be used in concat! macros
-#[macro_export]
-macro_rules! default_da_url {
-    () => {
-        "https://demo-21-assertion-da.phylax.systems"
-    };
-}
 
 pub const DEFAULT_DA_URL: &str = default_da_url!();
 
