@@ -247,3 +247,262 @@ pub fn build_trace_options(timeout: Duration) -> GethDebugTracingOptions {
         .with_prestate_config(config)
         .with_timeout(timeout)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::{
+        network::{
+            EthereumWallet,
+            TransactionBuilder,
+        },
+        node_bindings::Anvil,
+        primitives::{
+            Address,
+            Bytes,
+            TxKind,
+            U256,
+            keccak256,
+        },
+        providers::ProviderBuilder,
+        rpc::types::TransactionRequest,
+        signers::local::LocalSigner,
+    };
+    use alloy_provider::{
+        Provider,
+        WsConnect,
+    };
+    use anyhow::Result;
+    use revm::primitives::KECCAK_EMPTY;
+    use std::collections::{
+        BTreeMap,
+        HashMap,
+    };
+
+    fn collect_accounts(accounts: Vec<AccountCommit>) -> HashMap<Address, AccountCommit> {
+        accounts
+            .into_iter()
+            .map(|account| (account.address, account))
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prestate_tracer_captures_transfer_diffs() -> Result<()> {
+        let anvil = Anvil::new().spawn();
+        let provider = ProviderBuilder::new()
+            .connect_ws(WsConnect::new(anvil.ws_endpoint()))
+            .await?;
+        let sender_key = anvil.keys()[0].clone();
+        let sender = anvil.addresses()[0];
+        let sender_wallet = EthereumWallet::from(LocalSigner::from(sender_key));
+        let recipient = Address::repeat_byte(0x23);
+
+        let initial_sender_balance = provider.get_balance(sender).await?;
+        let chain_id = provider.get_chain_id().await?;
+        let nonce = provider.get_transaction_count(sender).await?;
+        let gas_price = provider.get_gas_price().await?;
+        let transfer_value = U256::from(1_000_000_000u64); // 1 gwei
+        let gas_limit = U256::from(21_000u64);
+
+        let tx = TransactionRequest {
+            from: Some(sender),
+            to: Some(TxKind::Call(recipient)),
+            value: Some(transfer_value),
+            chain_id: Some(chain_id),
+            nonce: Some(nonce),
+            gas: Some(gas_limit.try_into().expect("gas fits in u128")),
+            max_fee_per_gas: Some(gas_price),
+            max_priority_fee_per_gas: Some(gas_price),
+            gas_price: Some(gas_price),
+            ..Default::default()
+        };
+
+        let signed = tx.build(&sender_wallet).await?;
+        let pending = provider.send_tx_envelope(signed).await?;
+        let tx_hash = *pending.tx_hash();
+        let receipt = pending.get_receipt().await?;
+
+        let block_number = receipt
+            .block_number
+            .expect("block number must be present for mined tx");
+        let block_hash = receipt
+            .block_hash
+            .expect("block hash must be present for mined tx");
+
+        let sender_balance = provider.get_balance(sender).await?;
+        let sender_nonce = provider.get_transaction_count(sender).await?;
+        let recipient_balance = provider.get_balance(recipient).await?;
+        let recipient_nonce = provider.get_transaction_count(recipient).await?;
+
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            sender,
+            AccountState {
+                balance: Some(initial_sender_balance),
+                nonce: Some(nonce),
+                code: None,
+                storage: Default::default(),
+            },
+        );
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            sender,
+            AccountState {
+                balance: Some(sender_balance),
+                nonce: Some(sender_nonce),
+                code: None,
+                storage: Default::default(),
+            },
+        );
+        post.insert(
+            recipient,
+            AccountState {
+                balance: Some(recipient_balance),
+                nonce: Some(recipient_nonce),
+                code: None,
+                storage: Default::default(),
+            },
+        );
+
+        let diff = DiffMode { pre, post };
+        let trace = GethTrace::PreStateTracer(PreStateFrame::Diff(diff));
+        let traces = vec![TraceResult::new_success(trace, Some(tx_hash))];
+        let update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
+        let accounts = collect_accounts(update.accounts);
+
+        let sender_commit = accounts
+            .get(&sender)
+            .expect("sender account should be present in diff");
+        assert_eq!(sender_commit.balance, sender_balance);
+        assert_eq!(sender_commit.nonce, sender_nonce);
+        assert!(sender_commit.code.is_none());
+        assert_eq!(sender_commit.code_hash, KECCAK_EMPTY);
+        assert!(sender_commit.storage.is_empty());
+        assert!(!sender_commit.deleted);
+        assert!(sender_balance < initial_sender_balance);
+
+        let recipient_commit = accounts
+            .get(&recipient)
+            .expect("recipient account should be present in diff");
+        assert_eq!(recipient_commit.balance, recipient_balance);
+        assert_eq!(recipient_commit.nonce, recipient_nonce);
+        assert!(recipient_commit.code.is_none());
+        assert_eq!(recipient_commit.code_hash, KECCAK_EMPTY);
+        assert!(recipient_commit.storage.is_empty());
+        assert!(!recipient_commit.deleted);
+        assert_eq!(recipient_balance, transfer_value);
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prestate_tracer_captures_contract_creation_code() -> Result<()> {
+        let anvil = Anvil::new().spawn();
+        let provider = ProviderBuilder::new()
+            .connect_ws(WsConnect::new(anvil.ws_endpoint()))
+            .await?;
+        let deployer = anvil.addresses()[1];
+        let initial_deployer_balance = provider.get_balance(deployer).await?;
+        let deployer_key = anvil.keys()[1].clone();
+        let deployer_wallet = EthereumWallet::from(LocalSigner::from(deployer_key));
+        let chain_id = provider.get_chain_id().await?;
+        let nonce = provider.get_transaction_count(deployer).await?;
+        let gas_price = provider.get_gas_price().await?;
+        let gas_limit = U256::from(2_000_000u64);
+
+        // Minimal init code that returns runtime `602a60005260206000f3`.
+        let init_code = hex::decode("600a600c600039600a6000f3602a60005260206000f3")?;
+        let tx = TransactionRequest {
+            from: Some(deployer),
+            to: Some(TxKind::Create),
+            input: Bytes::from(init_code).into(),
+            chain_id: Some(chain_id),
+            nonce: Some(nonce),
+            gas: Some(gas_limit.try_into().expect("gas fits in u128")),
+            max_fee_per_gas: Some(gas_price),
+            max_priority_fee_per_gas: Some(gas_price),
+            gas_price: Some(gas_price),
+            ..Default::default()
+        };
+
+        let signed = tx.build(&deployer_wallet).await?;
+        let pending = provider.send_tx_envelope(signed).await?;
+        let tx_hash = *pending.tx_hash();
+        let receipt = pending.get_receipt().await?;
+
+        let contract_address = receipt
+            .contract_address
+            .expect("deployment must include contract address");
+        let block_number = receipt
+            .block_number
+            .expect("block number must be present for mined tx");
+        let block_hash = receipt
+            .block_hash
+            .expect("block hash must be present for mined tx");
+
+        let contract_code = provider.get_code_at(contract_address).await?;
+        let contract_balance = provider.get_balance(contract_address).await?;
+        let contract_nonce = provider.get_transaction_count(contract_address).await?;
+        let deployer_balance_after = provider.get_balance(deployer).await?;
+        let deployer_nonce_after = provider.get_transaction_count(deployer).await?;
+
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            deployer,
+            AccountState {
+                balance: Some(initial_deployer_balance),
+                nonce: Some(nonce),
+                code: None,
+                storage: Default::default(),
+            },
+        );
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            deployer,
+            AccountState {
+                balance: Some(deployer_balance_after),
+                nonce: Some(deployer_nonce_after),
+                code: None,
+                storage: Default::default(),
+            },
+        );
+        post.insert(
+            contract_address,
+            AccountState {
+                balance: Some(contract_balance),
+                nonce: Some(contract_nonce),
+                code: Some(contract_code.clone()),
+                storage: Default::default(),
+            },
+        );
+
+        let diff = DiffMode { pre, post };
+        let trace = GethTrace::PreStateTracer(PreStateFrame::Diff(diff));
+        let traces = vec![TraceResult::new_success(trace, Some(tx_hash))];
+        let update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
+        let accounts = collect_accounts(update.accounts);
+
+        let contract_commit = accounts
+            .get(&contract_address)
+            .expect("contract account should be present in diff");
+        assert_eq!(contract_commit.balance, contract_balance);
+        assert_eq!(contract_commit.nonce, contract_nonce);
+        assert_eq!(
+            contract_commit.code.as_deref(),
+            Some(contract_code.as_ref())
+        );
+        assert_eq!(contract_commit.code_hash, keccak256(contract_code.as_ref()));
+        assert!(contract_commit.storage.is_empty());
+        assert!(!contract_commit.deleted);
+
+        // The deployer's nonce should also advance in the diff.
+        let deployer_commit = accounts
+            .get(&deployer)
+            .expect("deployer account should appear in diff");
+        assert_eq!(deployer_commit.nonce, deployer_nonce_after);
+
+        Ok(())
+    }
+}
