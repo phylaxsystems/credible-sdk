@@ -1,3 +1,9 @@
+//! Helpers that collapse per-transaction debug traces into per-account commits.
+//!
+//! The worker consumes Geth's `prestateTracer` output, merges the resulting
+//! diffs into account-level snapshots, and exposes a compact representation that
+//! mirrors the Redis schema the sidecar expects.
+
 use std::{
     collections::{
         HashMap,
@@ -29,20 +35,28 @@ use tracing::warn;
 
 #[derive(Default)]
 struct AccountSnapshot {
+    /// Most recent balance observed in the trace stream; filled lazily.
     balance: Option<U256>,
+    /// Most recent nonce observed in the trace stream; filled lazily.
     nonce: Option<u64>,
+    /// Optional bytecode blob; preserved so we can emit code updates exactly once.
     code: Option<Vec<u8>>,
+    /// Sparse storage slots touched by the block (slot -> value).
     storage_updates: HashMap<B256, B256>,
+    /// Whether we saw a post-state for this account.
     touched: bool,
+    /// Whether the account was deleted by the block.
     deleted: bool,
 }
 
+/// Aggregate of all state changes produced while processing a block.
 pub struct BlockStateUpdate {
-    block_number: u64,
-    block_hash: B256,
-    accounts: Vec<AccountCommit>,
+    pub block_number: u64,
+    pub block_hash: B256,
+    pub accounts: Vec<AccountCommit>,
 }
 
+/// Flattened representation of an account diff that mirrors the Redis schema.
 pub struct AccountCommit {
     pub address: Address,
     pub balance: U256,
@@ -54,6 +68,7 @@ pub struct AccountCommit {
 }
 
 impl BlockStateUpdate {
+    /// Collapse the per-transaction pre-state traces into per-account updates.
     pub fn from_traces(block_number: u64, block_hash: B256, traces: Vec<TraceResult>) -> Self {
         let mut accounts: HashMap<Address, AccountSnapshot> = HashMap::new();
 
@@ -90,12 +105,16 @@ impl BlockStateUpdate {
         }
     }
 
+    /// Consume the update and return its constituent parts for downstream
+    /// writers. This keeps the write path ergonomic without cloning vectors.
     pub fn into_parts(self) -> (u64, B256, Vec<AccountCommit>) {
         (self.block_number, self.block_hash, self.accounts)
     }
 }
 
 impl AccountSnapshot {
+    /// Prime the snapshot with the best-known "pre" values so we always emit a
+    /// full record even if the account later disappears from the post state.
     fn ensure_initialized(&mut self, state: &AccountState) {
         if self.balance.is_none() {
             self.balance = Some(state.balance.unwrap_or_default());
@@ -113,6 +132,7 @@ impl AccountSnapshot {
         }
     }
 
+    /// Apply the post-state diff for updates or creations.
     fn apply_post(&mut self, state: &AccountState) {
         self.touched = true;
         self.deleted = false;
@@ -130,6 +150,8 @@ impl AccountSnapshot {
         }
     }
 
+    /// Apply tombstone semantics for deletions while keeping prior values so we
+    /// can emit zeroed storage/code when the account is removed.
     fn mark_deleted(&mut self, state: &AccountState) {
         self.touched = true;
         self.deleted = true;
@@ -142,6 +164,9 @@ impl AccountSnapshot {
         }
     }
 
+    /// Convert the accumulated snapshot into a commit payload if anything
+    /// meaningful changed. Returning `None` allows callsites to drop untouched
+    /// snapshots without extra bookkeeping.
     fn finalize(mut self, address: Address) -> Option<AccountCommit> {
         if !self.touched && self.storage_updates.is_empty() {
             return None;
@@ -184,6 +209,7 @@ impl AccountSnapshot {
     }
 }
 
+/// Merge a single transaction diff into the pending account snapshots.
 fn process_diff(accounts: &mut HashMap<Address, AccountSnapshot>, diff: DiffMode) {
     let DiffMode { pre, post } = diff;
     let post_addresses: HashSet<Address> = post.keys().copied().collect();
@@ -199,6 +225,8 @@ fn process_diff(accounts: &mut HashMap<Address, AccountSnapshot>, diff: DiffMode
         accounts.entry(*address).or_default().apply_post(state);
     }
 
+    // Any address that had only a `pre` entry but no `post` entry was deleted
+    // during the block. Mark them as tombstones so we zero out Redis.
     for (address, state) in pre.into_iter() {
         if !post_addresses.contains(&address) {
             accounts.entry(address).or_default().mark_deleted(&state);
@@ -206,6 +234,9 @@ fn process_diff(accounts: &mut HashMap<Address, AccountSnapshot>, diff: DiffMode
     }
 }
 
+/// Build the canonical tracer configuration we expect from the execution node.
+/// We enable diff mode so pre/post states arrive side-by-side and set a timeout
+/// to avoid hanging the worker if the client is overloaded.
 pub fn build_trace_options(timeout: Duration) -> GethDebugTracingOptions {
     let config = PreStateConfig {
         diff_mode: Some(true),

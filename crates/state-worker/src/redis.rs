@@ -1,3 +1,9 @@
+//! Lightweight blocking Redis client tailored to the worker's state schema.
+//!
+//! The worker runs on Tokio, but the upstream `redis` crate is synchronous. We
+//! hide the spawn-blocking logic in this module so callers can commit state
+//! updates without threading connection management through their code.
+
 use anyhow::{
     Context,
     Result,
@@ -12,6 +18,8 @@ use crate::state::{
 };
 use alloy::primitives::B256;
 
+/// Thin wrapper that writes account/state data into Redis using the schema
+/// documented in `README.md`.
 #[derive(Clone)]
 pub struct RedisStateWriter {
     client: Arc<redis::Client>,
@@ -19,6 +27,8 @@ pub struct RedisStateWriter {
 }
 
 impl RedisStateWriter {
+    /// Build a new writer. We store the client in an `Arc` so clones can reuse
+    /// the underlying connection pool when the worker is shared across tasks.
     pub fn new(redis_url: &str, namespace: String) -> RedisResult<Self> {
         let client = redis::Client::open(redis_url)?;
         Ok(Self {
@@ -27,6 +37,7 @@ impl RedisStateWriter {
         })
     }
 
+    /// Read the most recently persisted block number from Redis, if any.
     pub async fn latest_block_number(&self) -> Result<Option<u64>> {
         let key = self.current_block_key();
         self.with_connection(move |conn| {
@@ -45,6 +56,7 @@ impl RedisStateWriter {
         .await
     }
 
+    /// Persist all account mutations for the block followed by metadata.
     pub async fn commit_block(&self, update: BlockStateUpdate) -> Result<()> {
         let (block_number, block_hash, accounts) = update.into_parts();
 
@@ -63,6 +75,8 @@ impl RedisStateWriter {
         .await
     }
 
+    /// Update the `current_block` pointer and per-block hash mapping without
+    /// touching any accounts. Used when trace output is empty.
     pub async fn update_block_metadata(&self, block_number: u64, block_hash: B256) -> Result<()> {
         let namespace = self.namespace.clone();
         self.with_connection(move |conn| {
@@ -75,6 +89,8 @@ impl RedisStateWriter {
         format!("{}:current_block", self.namespace)
     }
 
+    /// Execute a synchronous Redis operation on a dedicated blocking thread so
+    /// the async runtime remains responsive.
     async fn with_connection<T, F>(&self, func: F) -> Result<T>
     where
         T: Send + 'static,
@@ -90,6 +106,7 @@ impl RedisStateWriter {
     }
 }
 
+/// Write the account header + storage entries expected by the sidecar overlay.
 fn write_account(
     conn: &mut redis::Connection,
     namespace: &str,
@@ -137,6 +154,8 @@ fn write_account(
     Ok(())
 }
 
+/// Store block-level metadata so consumers can resume sync or map numbers to
+/// hashes.
 fn write_block_metadata(
     conn: &mut redis::Connection,
     namespace: &str,
@@ -159,10 +178,12 @@ fn write_block_metadata(
     Ok(())
 }
 
+/// Helper to render 32-byte words in `0x`-prefixed hex for Redis consumers.
 fn encode_b256(value: B256) -> String {
     format!("0x{}", hex::encode(value))
 }
 
+/// Helper to render arbitrary byte slices for the code cache.
 fn encode_bytes(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
 }

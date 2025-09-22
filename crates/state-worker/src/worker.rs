@@ -1,3 +1,9 @@
+//! Core orchestration loop that keeps Redis in sync with the execution client.
+//!
+//! The worker bootstraps from the last persisted block, catches up to head via
+//! RPC, and then tails new blocks from the `newHeads` subscription. Each block
+//! is traced with the pre-state tracer and written into Redis.
+
 use std::{
     sync::Arc,
     time::Duration,
@@ -35,6 +41,7 @@ use crate::{
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 
+/// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker {
     provider: Arc<RootProvider>,
     redis: RedisStateWriter,
@@ -42,6 +49,7 @@ pub struct StateWorker {
 }
 
 impl StateWorker {
+    /// Build a worker that shares the provider/Redis client across async tasks.
     pub fn new(
         provider: Arc<RootProvider>,
         redis: RedisStateWriter,
@@ -54,6 +62,8 @@ impl StateWorker {
         }
     }
 
+    /// Drive the catch-up + streaming loop. We keep retrying the subscription
+    /// because websocket connections can drop in practice.
     pub async fn run(&self, start_override: Option<u64>) -> Result<()> {
         let mut next_block = self.compute_start_block(start_override).await?;
         loop {
@@ -65,6 +75,8 @@ impl StateWorker {
         }
     }
 
+    /// Determine the next block to ingest. We respect manual overrides so
+    /// operators can force a resync of historical ranges when needed.
     async fn compute_start_block(&self, override_start: Option<u64>) -> Result<u64> {
         if let Some(block) = override_start {
             return Ok(block);
@@ -79,6 +91,7 @@ impl StateWorker {
         Ok(current.map(|b| b + 1).unwrap_or(0))
     }
 
+    /// Sequentially replay blocks until we reach the node's current head.
     async fn catch_up(&self, next_block: &mut u64) -> Result<()> {
         loop {
             let head = self.provider.get_block_number().await?;
@@ -94,6 +107,8 @@ impl StateWorker {
         Ok(())
     }
 
+    /// Follow the `newHeads` stream and process new blocks in order, tolerating
+    /// duplicate/stale headers after reconnects.
     async fn stream_blocks(&self, next_block: &mut u64) -> Result<()> {
         let subscription = self.provider.subscribe_blocks().await?;
         let mut stream = subscription.into_stream();
@@ -102,6 +117,9 @@ impl StateWorker {
             let Header { hash: _, inner, .. } = header;
             let block_number = inner.number;
 
+            // We may receive a header we already processed if the stream
+            // briefly disconnects; skip without rewinding because we do not
+            // currently handle reorgs.
             if block_number + 1 < *next_block {
                 debug!(block_number, next_block, "skipping stale header");
                 continue;
@@ -116,6 +134,7 @@ impl StateWorker {
         Err(anyhow!("block subscription completed"))
     }
 
+    /// Pull, trace, and persist a single block.
     async fn process_block(&self, block_number: u64) -> Result<()> {
         info!(block_number, "processing block");
 
@@ -127,6 +146,8 @@ impl StateWorker {
             .with_context(|| format!("block {block_number} not found"))?;
         let block_hash = block.header.hash;
 
+        // Use the standardized pre-state tracer options so we receive per-tx
+        // diffs matching the sidecar's expectations.
         let trace_options = build_trace_options(self.trace_timeout);
         let traces = self
             .provider

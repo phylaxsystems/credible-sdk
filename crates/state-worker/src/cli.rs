@@ -1,7 +1,13 @@
+//! Command-line configuration for the state worker.
+
 use clap::Parser;
 
 pub const DEFAULT_TRACE_TIMEOUT_SECS: u64 = 30;
 
+/// Runtime configuration flags for the state worker.
+///
+/// We expose each parameter as both a long-form CLI flag and an env var so the
+/// worker can be configured through deployment manifests without shell args.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {

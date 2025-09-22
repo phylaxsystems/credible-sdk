@@ -31,6 +31,7 @@ use std::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install the shared tracing subscriber used across Credible services.
     trace();
 
     let args = Args::parse();
@@ -50,6 +51,9 @@ async fn main() -> Result<()> {
         .context("state worker terminated unexpectedly")
 }
 
+/// Establish a WebSocket connection to the execution node and expose the
+/// underlying `RootProvider`. The root provider gives us access to the
+/// subscription + debug APIs used throughout the worker.
 async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>> {
     let ws = WsConnect::new(ws_url);
     let provider = ProviderBuilder::new()
