@@ -110,7 +110,7 @@ pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             let _options = (variant.options)(&quote! {});
 
             quote! {
-                #[tokio::test]
+                #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
                 #fn_vis async fn #test_fn_name() {
                     use crate::utils::LocalInstance;
                     use crate::utils::instance::TestTransport;

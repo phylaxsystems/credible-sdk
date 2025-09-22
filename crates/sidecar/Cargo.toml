@@ -52,6 +52,8 @@ test = ["assertion-executor/test", "ctor"]
 ctor = "0.5.0"
 sidecar-test-macros = { path = "src/utils/test-macros" }
 assertion-executor = { workspace = true, features = ["test"] }
+hex = "0.4.3"
+axum = { version = "0.8.4", features = ["ws"] }
 tracing-test = "0.2.5"
 
 [profile.release]
