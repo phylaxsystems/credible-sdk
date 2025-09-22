@@ -11042,6 +11042,23 @@ dependencies = [
 [[package]]
 name = "state-worker"
 version = "0.6.0"
+dependencies = [
+ "alloy",
+ "alloy-provider",
+ "alloy-rpc-types",
+ "alloy-rpc-types-trace",
+ "alloy-transport-ws",
+ "anyhow",
+ "clap",
+ "futures",
+ "hex",
+ "redis",
+ "revm",
+ "rust-tracing",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.19",
+]
 
 [[package]]
 name = "static_assertions"

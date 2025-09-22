@@ -23,4 +23,9 @@ state:block_hash:{number}   → block hash
 
 ## Using and configuring the `state-worker`
 
-The state worker needs a `--ws-url` parameter for the eth RPC node, as well as `--redis-url` for the redis db.
+The state worker requires `--ws-url` for the Ethereum WebSocket endpoint and `--redis-url` for the Redis
+database. Optional flags include:
+
+- `--redis-namespace` to change the key namespace (defaults to `state`).
+- `--start-block` to override the resume position derived from `state:current_block`.
+- `--trace-timeout-secs` to tune the timeout for `debug_traceBlockBy*` calls (default 30 seconds).
