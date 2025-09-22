@@ -30,6 +30,8 @@ const VERSION_MESSAGE: &str = concat!(
     env!("VERGEN_BUILD_TIMESTAMP"),
     "\nDefault DA URL: ",
     pcl_core::default_da_url!(),
+    "\nDefault Dapp URL: ",
+    pcl_core::default_dapp_url!(),
 );
 
 #[derive(Parser)]
