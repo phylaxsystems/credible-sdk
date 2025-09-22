@@ -9,12 +9,17 @@
 
 // For converting to f64 from u64. Its metrics so not important to get full precision
 #![allow(clippy::cast_precision_loss)]
+#![allow(clippy::unused_self)]
 
 use assertion_executor::primitives::FixedBytes;
 use metrics::{
     counter,
     gauge,
     histogram,
+};
+use std::sync::atomic::{
+    AtomicU64,
+    Ordering,
 };
 
 /// Individual block metrics we commit to the prometheus exporter.
@@ -90,7 +95,6 @@ impl BlockMetrics {
 
     /// Increments the `sidecar_cache_invalidations` counter, commit its duration
     /// `sidecar_cache_invalidations_time_seconds` and set the min required height counter.
-    #[allow(clippy::unused_self)]
     pub fn increment_cache_invalidation(&self, duration: std::time::Duration, height: u64) {
         counter!("sidecar_cache_invalidations").increment(1);
         counter!("sidecar_cache_min_required_height").absolute(height);
@@ -187,5 +191,132 @@ impl TransactionMetrics {
 impl Drop for TransactionMetrics {
     fn drop(&mut self) {
         self.commit();
+    }
+}
+
+/// Cache metrics. The metrics are committed to prometheus on write. The fields in this struct are
+/// for tracking purposes
+#[derive(Debug, Default)]
+pub struct CacheMetrics {
+    pub required_block_number: AtomicU64,
+    pub current_block_number: AtomicU64,
+    pub reset_required_block_number_counter: AtomicU64,
+}
+
+impl CacheMetrics {
+    pub fn new() -> Self {
+        Self {
+            required_block_number: AtomicU64::new(0),
+            current_block_number: AtomicU64::new(0),
+            reset_required_block_number_counter: AtomicU64::new(0),
+        }
+    }
+
+    /// Set the cache required block number (`sidecar_cache_required_block_number`)
+    ///
+    /// Commited as a `Gauge`.
+    pub fn set_required_block_number(&self, block_number: u64) {
+        self.required_block_number
+            .store(block_number, Ordering::Relaxed);
+        gauge!("sidecar_cache_required_block_number").set(block_number as f64);
+    }
+
+    /// Set the cache current block number (`sidecar_cache_current_block_number`)
+    ///
+    /// Commited as a `Gauge`.
+    pub fn set_current_block_number(&self, block_number: u64) {
+        self.current_block_number
+            .store(block_number, Ordering::Relaxed);
+        gauge!("sidecar_cache_current_block_number").set(block_number as f64);
+    }
+
+    /// Track the number of times the required block number was reset
+    /// (`sidecar_cache_reset_required_block_number_counter`)
+    ///
+    /// Commited as a `Counter`.
+    pub fn increase_reset_required_block_number_counter(&self) {
+        let reset_required_block_number_counter = self
+            .reset_required_block_number_counter
+            .load(Ordering::Relaxed)
+            + 1;
+        self.reset_required_block_number_counter
+            .store(reset_required_block_number_counter, Ordering::Relaxed);
+        counter!("sidecar_cache_reset_required_block_number_counter").increment(1);
+    }
+
+    /// Track the duration of the `is_sync` call
+    /// (`sidecar_cache_is_sync_duration`)
+    ///
+    /// Commited as a `Histogram`.
+    pub fn is_sync_duration(&self, duration: std::time::Duration) {
+        histogram!("sidecar_cache_is_sync_duration").record(duration);
+    }
+
+    /// Track the total duration of the `basic_ref` call
+    /// (`sidecar_cache_total_basic_ref_duration`)
+    ///
+    /// Commited as a `Histogram`.
+    pub fn total_basic_ref_duration(&self, duration: std::time::Duration) {
+        histogram!("sidecar_cache_total_basic_ref_duration").record(duration);
+    }
+
+    /// Track the duration of the `basic_ref` call per source
+    /// (`sidecar_cache_basic_ref_duration`)
+    ///
+    /// Commited as a `Histogram`.
+    pub fn basic_ref_duration(&self, source: &str, duration: std::time::Duration) {
+        histogram!("sidecar_cache_basic_ref_duration", "source" => source.to_string())
+            .record(duration);
+    }
+
+    /// Track the total duration of the `block_hash_ref` call
+    /// (`sidecar_cache_total_block_hash_ref_duration`)
+    ///
+    /// Commited as a `Histogram`.
+    pub fn total_block_hash_ref_duration(&self, duration: std::time::Duration) {
+        histogram!("sidecar_cache_total_block_hash_ref_duration").record(duration);
+    }
+
+    /// Track the duration of the `block_hash_ref` call per source
+    /// (`sidecar_cache_block_hash_ref_duration`)
+    ///
+    /// Commited as a `Histogram`.
+    pub fn block_hash_ref_duration(&self, source: &str, duration: std::time::Duration) {
+        histogram!("sidecar_cache_block_hash_ref_duration", "source" => source.to_string())
+            .record(duration);
+    }
+
+    /// Track the total duration of the `code_by_hash_ref` call
+    /// (`sidecar_cache_total_code_by_hash_ref_duration`)
+    ///
+    /// Commited as a `Histogram`.
+    pub fn total_code_by_hash_ref_duration(&self, duration: std::time::Duration) {
+        histogram!("sidecar_cache_total_code_by_hash_ref_duration").record(duration);
+    }
+
+    /// Track the duration of the `code_by_hash_ref` call per source
+    /// (`sidecar_cache_code_by_hash_ref_duration`)
+    ///
+    /// Commited as a `Histogram`.
+    pub fn code_by_hash_ref_duration(&self, source: &str, duration: std::time::Duration) {
+        histogram!("sidecar_cache_code_by_hash_ref_duration", "source" => source.to_string())
+            .record(duration);
+    }
+
+    /// Track the total duration of the `storage_ref` call
+    /// (`sidecar_cache_total_storage_ref_duration`)
+    ///
+    /// Commited as a `Histogram`.
+    pub fn total_storage_ref_duration(&self, duration: std::time::Duration) {
+        histogram!("sidecar_cache_total_storage_ref_duration").record(duration);
+    }
+
+    /// Track the duration of the `storage_ref` call per source
+    /// (`sidecar_cache_storage_ref_duration`)
+    ///
+    /// Commited as a `Histogram`.
+    pub fn storage_ref_duration(&self, source: &str, duration: std::time::Duration) {
+        histogram!("sidecar_cache_storage_ref_duration", "source" => source.to_string())
+            .record(duration);
     }
 }

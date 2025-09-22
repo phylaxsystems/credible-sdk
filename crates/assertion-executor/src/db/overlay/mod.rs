@@ -24,6 +24,7 @@ use crate::{
         EvmState,
     },
 };
+use metrics::counter;
 
 use active_overlay::ActiveOverlay;
 use alloy_primitives::{
@@ -196,6 +197,8 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
             }
         }
 
+        counter!("assex_overlay_db_basic_ref_misses").increment(1);
+
         // Not in cache, try underlying DB if it exists
         match self.underlying_db.as_ref() {
             Some(db) => {
@@ -239,6 +242,8 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
             return Ok(value.as_code_by_hash().cloned().unwrap()); // unwrap safe, Clone Bytecode
         }
 
+        counter!("assex_overlay_db_code_by_hash_ref_misses").increment(1);
+
         // Not in cache, try underlying DB
         match self.underlying_db.as_ref() {
             Some(db) => {
@@ -264,6 +269,8 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
             return Ok((*value.as_storage().unwrap()).into()); // unwrap safe
         }
 
+        counter!("assex_overlay_db_storage_ref_misses").increment(1);
+
         // Not in cache, try underlying DB
         match self.underlying_db.as_ref() {
             Some(db) => {
@@ -287,6 +294,8 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
             // Found in cache
             return Ok(*value.as_block_hash().unwrap()); // unwrap safe
         }
+
+        counter!("assex_overlay_db_block_hash_ref_misses").increment(1);
 
         // Not in cache, try underlying DB
         match self.underlying_db.as_ref() {

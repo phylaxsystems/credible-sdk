@@ -16,6 +16,7 @@ parking_lot = { workspace = true }
 assertion-da-client = { workspace = true }
 bincode = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+metrics = { workspace = true }
 
 
 # ETH deps
