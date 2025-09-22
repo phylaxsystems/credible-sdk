@@ -353,7 +353,7 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
         // Wait for processing
-        self.wait_for_processing(Duration::from_millis(2)).await;
+        self.wait_for_processing(Duration::from_millis(5)).await;
 
         // If the engine exited (e.g., received tx before blockenv), return an error
         if let Some(handle) = &self.engine_handle {
