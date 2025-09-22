@@ -453,29 +453,13 @@ impl From<RedisCacheError> for super::SourceError {
     }
 }
 
-/// Parses a decimal or hex-encoded `u64` stored in Redis.
+/// Parses a decimal `u64` stored in Redis.
 fn parse_u64(value: &str, key: &str, field: &'static str) -> Result<u64, RedisCacheError> {
-    let trimmed = value.trim();
-    if let Some(hex) = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-    {
-        u64::from_str_radix(hex, 16).map_err(|source| {
-            RedisCacheError::InvalidInteger {
-                key: key.to_string(),
-                field,
-                source,
-            }
-        })
-    } else {
-        trimmed.parse::<u64>().map_err(|source| {
-            RedisCacheError::InvalidInteger {
-                key: key.to_string(),
-                field,
-                source,
-            }
-        })
-    }
+    value.trim().parse::<u64>().map_err(|source| RedisCacheError::InvalidInteger {
+        key: key.to_string(),
+        field,
+        source,
+    })
 }
 
 /// Parses a decimal or hex-encoded `U256` stored in Redis.
