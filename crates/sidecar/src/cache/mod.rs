@@ -1,4 +1,7 @@
-use crate::cache::sources::Source;
+use crate::cache::sources::{
+    Source,
+    SourceError,
+};
 use assertion_executor::primitives::{
     AccountInfo,
     Address,
@@ -24,7 +27,10 @@ use std::{
     },
 };
 use thiserror::Error;
-use tracing::error;
+use tracing::{
+    debug,
+    error,
+};
 
 pub mod sources;
 
@@ -150,20 +156,39 @@ impl Cache {
 impl DatabaseRef for Cache {
     type Error = CacheError;
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.iter_synced_sources()
-            .find_map(|source| {
-                let res = source.basic_ref(address);
-                if let Err(e) = res.as_ref() {
+        for source in self.iter_synced_sources() {
+            match source.basic_ref(address) {
+                Ok(Some(account)) => return Ok(Some(account)),
+                Ok(None) => {
+                    debug!(
+                        target = "cache::basic_ref",
+                        name = %source.name(),
+                        address = %address,
+                        "Cache source returned no account information",
+                    );
+                    return Ok(None);
+                }
+                Err(SourceError::CacheMiss) => {
+                    debug!(
+                        target = "cache::basic_ref",
+                        name = %source.name(),
+                        address = %address,
+                        "Cache source reported account cache miss",
+                    );
+                }
+                Err(e) => {
                     error!(
                         target = "cache::basic_ref",
                         name = %source.name(),
                         address = %address,
                         error = ?e,
-                        "Failed to fetch account info from cache source");
+                        "Failed to fetch account info from cache source",
+                    );
                 }
-                res.ok()
-            })
-            .ok_or(CacheError::NoCacheSourceAvailable)
+            }
+        }
+
+        Err(CacheError::NoCacheSourceAvailable)
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
@@ -205,21 +230,32 @@ impl DatabaseRef for Cache {
         address: Address,
         index: StorageKey,
     ) -> Result<StorageValue, Self::Error> {
-        self.iter_synced_sources()
-            .find_map(|source| {
-                let res = source.storage_ref(address, index);
-                if let Err(e) = res.as_ref() {
+        for source in self.iter_synced_sources() {
+            match source.storage_ref(address, index) {
+                Ok(value) => return Ok(value),
+                Err(SourceError::CacheMiss) => {
+                    debug!(
+                        target = "cache::storage_ref",
+                        name = %source.name(),
+                        address = %address,
+                        index = %index,
+                        "Cache source reported storage cache miss",
+                    );
+                }
+                Err(e) => {
                     error!(
                         target = "cache::storage_ref",
                         name = %source.name(),
                         address = %address,
                         index = %index,
                         error = ?e,
-                        "Failed to fetch the storage from cache source");
+                        "Failed to fetch the storage from cache source",
+                    );
                 }
-                res.ok()
-            })
-            .ok_or(CacheError::NoCacheSourceAvailable)
+            }
+        }
+
+        Err(CacheError::NoCacheSourceAvailable)
     }
 }
 
@@ -273,6 +309,8 @@ mod tests {
         block_hash_ref_calls: AtomicUsize,
         code_by_hash_ref_calls: AtomicUsize,
         storage_ref_calls: AtomicUsize,
+        cache_miss_account: bool,
+        cache_miss_storage: bool,
     }
 
     impl MockSource {
@@ -289,6 +327,8 @@ mod tests {
                 block_hash_ref_calls: AtomicUsize::new(0),
                 code_by_hash_ref_calls: AtomicUsize::new(0),
                 storage_ref_calls: AtomicUsize::new(0),
+                cache_miss_account: false,
+                cache_miss_storage: false,
             }
         }
 
@@ -319,6 +359,16 @@ mod tests {
 
         fn with_error(mut self) -> Self {
             self.should_error = true;
+            self
+        }
+
+        fn with_cache_miss_for_account(mut self) -> Self {
+            self.cache_miss_account = true;
+            self
+        }
+
+        fn with_cache_miss_for_storage(mut self) -> Self {
+            self.cache_miss_storage = true;
             self
         }
 
@@ -354,6 +404,9 @@ mod tests {
 
         fn basic_ref(&self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
             self.basic_ref_calls.fetch_add(1, Ordering::Release);
+            if self.cache_miss_account {
+                return Err(sources::SourceError::CacheMiss);
+            }
             if self.should_error {
                 return Err(sources::SourceError::Other("Mock error".to_string()));
             }
@@ -384,6 +437,9 @@ mod tests {
             _index: StorageKey,
         ) -> Result<StorageValue, Self::Error> {
             self.storage_ref_calls.fetch_add(1, Ordering::Release);
+            if self.cache_miss_storage {
+                return Err(sources::SourceError::CacheMiss);
+            }
             if self.should_error {
                 return Err(sources::SourceError::Other("Mock error".to_string()));
             }
@@ -513,6 +569,38 @@ mod tests {
             1,
             "Second source should be called once after first fails"
         );
+    }
+
+    #[test]
+    fn test_basic_ref_returns_none_on_cache_miss() {
+        let source1 = Arc::new(MockSource::new("redis").with_cache_miss_for_account());
+        let source2 =
+            Arc::new(MockSource::new("rpc").with_account_info(create_test_account_info()));
+
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
+        cache.set_block_number(1);
+        let address = create_test_address();
+
+        let result = cache.basic_ref(address).unwrap();
+        assert!(result.is_some());
+        assert_eq!(source1.basic_ref_call_count(), 1);
+        assert_eq!(source2.basic_ref_call_count(), 1);
+    }
+
+    #[test]
+    fn test_basic_ref_returns_none_without_fallback_when_first_source_has_no_data() {
+        let source1 = Arc::new(MockSource::new("redis"));
+        let source2 =
+            Arc::new(MockSource::new("rpc").with_account_info(create_test_account_info()));
+
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
+        cache.set_block_number(1);
+        let address = create_test_address();
+
+        let result = cache.basic_ref(address).unwrap();
+        assert_eq!(result, None);
+        assert_eq!(source1.basic_ref_call_count(), 1);
+        assert_eq!(source2.basic_ref_call_count(), 0);
     }
 
     #[test]
@@ -673,6 +761,23 @@ mod tests {
 
         let result = cache.storage_ref(address, storage_key).unwrap();
         assert_eq!(result, storage_value);
+    }
+
+    #[test]
+    fn test_storage_ref_fallback_on_cache_miss() {
+        let storage_value = U256::from(0xdeadbeefu64);
+        let source1 = Arc::new(MockSource::new("redis").with_cache_miss_for_storage());
+        let source2 = Arc::new(MockSource::new("rpc").with_storage_value(storage_value));
+
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
+        cache.set_block_number(1);
+        let address = create_test_address();
+        let storage_key = U256::from(42);
+
+        let result = cache.storage_ref(address, storage_key).unwrap();
+        assert_eq!(result, storage_value);
+        assert_eq!(source1.storage_ref_call_count(), 1);
+        assert_eq!(source2.storage_ref_call_count(), 1);
     }
 
     #[test]

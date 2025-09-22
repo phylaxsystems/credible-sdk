@@ -36,6 +36,7 @@ assertion-da-client = { workspace = true }
 alloy-provider = { workspace = true }
 metrics = { workspace = true }
 futures = { workspace = true }
+redis = "0.25"
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"
