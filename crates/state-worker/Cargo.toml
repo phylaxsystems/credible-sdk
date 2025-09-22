@@ -1,0 +1,15 @@
+[package]
+name = "state-worker"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[profile.release]
+lto = "fat"
+opt-level = 3
+codegen-units = 1
+strip = true
