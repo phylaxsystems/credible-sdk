@@ -175,7 +175,7 @@ impl DatabaseRef for Cache {
                         address = %address,
                         "Cache source reported account cache miss",
                     );
-                    return Ok(None);
+                    continue;
                 }
                 Err(e) => {
                     error!(
@@ -589,9 +589,9 @@ mod tests {
         let address = create_test_address();
 
         let result = cache.basic_ref(address).unwrap();
-        assert_eq!(result, None);
+        assert!(result.is_some());
         assert_eq!(source1.basic_ref_call_count(), 1);
-        assert_eq!(source2.basic_ref_call_count(), 0);
+        assert_eq!(source2.basic_ref_call_count(), 1);
     }
 
     #[test]
