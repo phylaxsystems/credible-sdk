@@ -156,27 +156,26 @@ impl Cache {
 impl DatabaseRef for Cache {
     type Error = CacheError;
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        let mut saw_miss = false;
         for source in self.iter_synced_sources() {
             match source.basic_ref(address) {
                 Ok(Some(account)) => return Ok(Some(account)),
                 Ok(None) => {
-                    saw_miss = true;
                     debug!(
                         target = "cache::basic_ref",
                         name = %source.name(),
                         address = %address,
                         "Cache source returned no account information",
                     );
+                    return Ok(None);
                 }
                 Err(SourceError::CacheMiss) => {
-                    saw_miss = true;
                     debug!(
                         target = "cache::basic_ref",
                         name = %source.name(),
                         address = %address,
                         "Cache source reported account cache miss",
                     );
+                    return Ok(None);
                 }
                 Err(e) => {
                     error!(
@@ -190,11 +189,7 @@ impl DatabaseRef for Cache {
             }
         }
 
-        if saw_miss {
-            Ok(None)
-        } else {
-            Err(CacheError::NoCacheSourceAvailable)
-        }
+        Err(CacheError::NoCacheSourceAvailable)
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
@@ -584,19 +579,35 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_ref_fallback_on_cache_miss() {
-        let account_info = create_test_account_info();
+    fn test_basic_ref_returns_none_on_cache_miss() {
         let source1 = Arc::new(MockSource::new("redis").with_cache_miss_for_account());
-        let source2 = Arc::new(MockSource::new("rpc").with_account_info(account_info.clone()));
+        let source2 =
+            Arc::new(MockSource::new("rpc").with_account_info(create_test_account_info()));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         cache.set_block_number(1);
         let address = create_test_address();
 
         let result = cache.basic_ref(address).unwrap();
-        assert_eq!(result, Some(account_info));
+        assert_eq!(result, None);
         assert_eq!(source1.basic_ref_call_count(), 1);
-        assert_eq!(source2.basic_ref_call_count(), 1);
+        assert_eq!(source2.basic_ref_call_count(), 0);
+    }
+
+    #[test]
+    fn test_basic_ref_returns_none_without_fallback_when_first_source_has_no_data() {
+        let source1 = Arc::new(MockSource::new("redis"));
+        let source2 =
+            Arc::new(MockSource::new("rpc").with_account_info(create_test_account_info()));
+
+        let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
+        cache.set_block_number(1);
+        let address = create_test_address();
+
+        let result = cache.basic_ref(address).unwrap();
+        assert_eq!(result, None);
+        assert_eq!(source1.basic_ref_call_count(), 1);
+        assert_eq!(source2.basic_ref_call_count(), 0);
     }
 
     #[test]
