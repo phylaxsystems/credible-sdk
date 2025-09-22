@@ -455,10 +455,12 @@ impl From<RedisCacheError> for super::SourceError {
 
 /// Parses a decimal `u64` stored in Redis.
 fn parse_u64(value: &str, key: &str, field: &'static str) -> Result<u64, RedisCacheError> {
-    value.trim().parse::<u64>().map_err(|source| RedisCacheError::InvalidInteger {
-        key: key.to_string(),
-        field,
-        source,
+    value.trim().parse::<u64>().map_err(|source| {
+        RedisCacheError::InvalidInteger {
+            key: key.to_string(),
+            field,
+            source,
+        }
     })
 }
 
