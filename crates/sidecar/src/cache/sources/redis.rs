@@ -431,7 +431,7 @@ impl<B: RedisBackend> Source for RedisCache<B> {
 #[derive(Error, Debug)]
 pub enum RedisCacheError {
     #[error("redis backend error: {0}")]
-    Backend(#[from] redis::RedisError),
+    Backend(#[source] redis::RedisError),
     #[error("missing field '{field}' for key '{key}'")]
     MissingField { key: String, field: &'static str },
     #[error("invalid integer for '{key}.{field}': {source}")]
