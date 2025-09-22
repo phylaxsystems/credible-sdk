@@ -161,13 +161,13 @@ impl DatabaseRef for Cache {
             match source.basic_ref(address) {
                 Ok(Some(account)) => return Ok(Some(account)),
                 Ok(None) => {
+                    saw_miss = true;
                     debug!(
                         target = "cache::basic_ref",
                         name = %source.name(),
                         address = %address,
                         "Cache source returned no account information",
                     );
-                    return Ok(None);
                 }
                 Err(SourceError::CacheMiss) => {
                     saw_miss = true;
