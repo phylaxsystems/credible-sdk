@@ -79,8 +79,8 @@ impl BlockStateUpdate {
                         GethTrace::PreStateTracer(frame) => {
                             match frame {
                                 PreStateFrame::Diff(diff) => process_diff(&mut accounts, diff),
-                                other => {
-                                    warn!(?tx_hash, ?other, "unexpected prestate frame variant")
+                                other @ PreStateFrame::Default(_) => {
+                                    warn!(?tx_hash, ?other, "unexpected prestate frame variant");
                                 }
                             }
                         }
@@ -214,20 +214,20 @@ fn process_diff(accounts: &mut HashMap<Address, AccountSnapshot>, diff: DiffMode
     let DiffMode { pre, post } = diff;
     let post_addresses: HashSet<Address> = post.keys().copied().collect();
 
-    for (address, state) in pre.iter() {
+    for (address, state) in &pre {
         accounts
             .entry(*address)
             .or_default()
             .ensure_initialized(state);
     }
 
-    for (address, state) in post.iter() {
+    for (address, state) in &post {
         accounts.entry(*address).or_default().apply_post(state);
     }
 
     // Any address that had only a `pre` entry but no `post` entry was deleted
     // during the block. Mark them as tombstones so we zero out Redis.
-    for (address, state) in pre.into_iter() {
+    for (address, state) in pre {
         if !post_addresses.contains(&address) {
             accounts.entry(address).or_default().mark_deleted(&state);
         }
@@ -341,7 +341,7 @@ mod tests {
                 balance: Some(initial_sender_balance),
                 nonce: Some(nonce),
                 code: None,
-                storage: Default::default(),
+                storage: BTreeMap::default(),
             },
         );
 
@@ -352,7 +352,7 @@ mod tests {
                 balance: Some(sender_balance),
                 nonce: Some(sender_nonce),
                 code: None,
-                storage: Default::default(),
+                storage: BTreeMap::default(),
             },
         );
         post.insert(
@@ -361,7 +361,7 @@ mod tests {
                 balance: Some(recipient_balance),
                 nonce: Some(recipient_nonce),
                 code: None,
-                storage: Default::default(),
+                storage: BTreeMap::default(),
             },
         );
 
@@ -454,7 +454,7 @@ mod tests {
                 balance: Some(initial_deployer_balance),
                 nonce: Some(nonce),
                 code: None,
-                storage: Default::default(),
+                storage: BTreeMap::default(),
             },
         );
 
@@ -465,7 +465,7 @@ mod tests {
                 balance: Some(deployer_balance_after),
                 nonce: Some(deployer_nonce_after),
                 code: None,
-                storage: Default::default(),
+                storage: BTreeMap::default(),
             },
         );
         post.insert(
@@ -474,7 +474,7 @@ mod tests {
                 balance: Some(contract_balance),
                 nonce: Some(contract_nonce),
                 code: Some(contract_code.clone()),
-                storage: Default::default(),
+                storage: BTreeMap::default(),
             },
         );
 

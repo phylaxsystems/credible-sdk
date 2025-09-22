@@ -63,7 +63,7 @@ k256 = "0.13.4"
 hex = "0.4.3"
 tempfile = { version = "3.12.0" }
 wiremock = "0.6.1"
-redis = "0.25.4"
+redis-test = "0.12.0"
 directories = "6.0.0"
 bollard = "0.18"
 

@@ -88,7 +88,7 @@ impl StateWorker {
             .await
             .context("failed to read current block from redis")?;
 
-        Ok(current.map(|b| b + 1).unwrap_or(0))
+        Ok(current.map_or(0, |b| b + 1))
     }
 
     /// Sequentially replay blocks until we reach the node's current head.
