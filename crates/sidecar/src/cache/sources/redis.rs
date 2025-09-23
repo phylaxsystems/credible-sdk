@@ -19,7 +19,10 @@
 //! state:block_hash:{number}   → block hash
 //! ```
 
-use crate::Source;
+use crate::{
+    Source,
+    critical,
+};
 use alloy::hex;
 use assertion_executor::primitives::{
     AccountInfo,
@@ -111,12 +114,21 @@ impl RedisClientBackend {
     where
         F: FnOnce(&mut redis::Connection) -> Result<T, redis::RedisError>,
     {
-        let mut connection = self
-            .client
-            .get_connection()
-            .map_err(RedisCacheError::Backend)?;
+        let mut connection = match self.client.get_connection() {
+            Ok(connection) => connection,
+            Err(err) => {
+                critical!(error = ?err, "redis backend connection error");
+                return Err(RedisCacheError::Backend(err));
+            }
+        };
 
-        func(&mut connection).map_err(RedisCacheError::Backend)
+        match func(&mut connection) {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                critical!(error = ?err, "redis backend command error");
+                Err(RedisCacheError::Backend(err))
+            }
+        }
     }
 }
 
