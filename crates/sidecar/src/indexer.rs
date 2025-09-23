@@ -2,7 +2,10 @@
 //!
 //! Contains setup functions and types to initialize the assertion-executor indexer.
 
-use crate::utils::ErrorRecoverability;
+use crate::{
+    critical,
+    utils::ErrorRecoverability,
+};
 use assertion_executor::store::{
     Indexer,
     IndexerCfg,
@@ -22,7 +25,14 @@ pub async fn run_indexer(indexer_cfg: IndexerCfg) -> Result<(), IndexerError> {
     let indexer = Box::pin(Indexer::new_synced(indexer_cfg)).await?;
     // We can then run the indexer and update the assertion store as new
     // assertions come in
-    indexer.run().await
+    match indexer.run().await {
+        Ok(()) => Ok(()),
+        Err(IndexerError::TransportError(e)) => {
+            critical!(error = ?e, "indexer transport error");
+            Err(IndexerError::TransportError(e))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 impl From<&IndexerError> for ErrorRecoverability {
