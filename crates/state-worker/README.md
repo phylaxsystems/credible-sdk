@@ -1,6 +1,6 @@
 # `state-worker`
 
-The state worker is a component that pulls in state from a blockchain and commits it to
+The `state-worker` is a component that pulls in state from a blockchain and commits it to
 an external redis database.
 
 The `state-worker` subscribes to the `newHeads` subscription over WS and then for every new block
