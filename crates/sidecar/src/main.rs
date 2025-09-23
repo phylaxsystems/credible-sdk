@@ -15,6 +15,7 @@ pub mod transport;
 mod utils;
 
 use crate::{
+    cache::sources::redis::RedisCache,
     config::{
         init_assertion_store,
         init_executor_config,
@@ -42,6 +43,7 @@ use crate::{
         sources::{
             Source,
             besu_client::BesuClient,
+            redis::RedisClientBackend,
             sequencer::Sequencer,
         },
     },
@@ -108,6 +110,10 @@ async fn main() -> anyhow::Result<()> {
         }
         if let Ok(besu_client) = BesuClient::try_build(&args.chain.besu_client_ws_url).await {
             sources.push(besu_client);
+        }
+        if let Ok(redis_client) = RedisClientBackend::from_url(&args.chain.redis_client_url) {
+            let redis_cache = Arc::new(RedisCache::new(redis_client));
+            sources.push(redis_cache);
         }
 
         // The cache is flushed on restart
