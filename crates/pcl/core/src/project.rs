@@ -1,6 +1,5 @@
 use crate::{
     config::CliConfig,
-    default_dapp_url,
     error::DappSubmitError,
 };
 use color_eyre::Result;
@@ -18,7 +17,7 @@ pub struct ProjectCommand {
     #[arg(
         long = "base-url",
         env = "PROJECT_BASE_URL",
-        default_value = concat!(default_dapp_url!(), "/api/v1"),
+        default_value_t = crate::default_dapp_url_with("api/v1"),
         help = "Base URL for project service"
     )]
     pub base_url: String,
@@ -205,7 +204,7 @@ mod tests {
                 assertion_adopters: vec!["0xabc".to_string()],
                 chain_id: 1,
             },
-            base_url: concat!(default_dapp_url!(), "/api/v1").to_string(),
+            base_url: crate::default_dapp_url_with("api/v1"),
         };
 
         let mut config = CliConfig::default(); // No auth

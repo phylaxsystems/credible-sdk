@@ -5,6 +5,7 @@
 //! of building, flattening, and submitting assertions along with their source code
 //! to be stored in the DA layer.
 
+use crate::DEFAULT_DA_URL;
 use clap::{
     Parser,
     ValueHint,
@@ -34,11 +35,8 @@ use crate::{
         AssertionKey,
         CliConfig,
     },
-    default_da_url,
     error::DaSubmitError,
 };
-
-pub const DEFAULT_DA_URL: &str = default_da_url!();
 
 /// Command-line arguments for storing assertions in the Data Availability layer.
 ///
