@@ -1,9 +1,11 @@
-use crate::config::CliConfig;
-use crate::error::DappSubmitError;
+use crate::{
+    config::CliConfig,
+    error::DappSubmitError,
+};
 use color_eyre::Result;
+use colored::*;
 use reqwest::Client;
 use serde::Serialize;
-use colored::*;
 
 /// Project-related commands for the PCL CLI
 #[derive(clap::Parser)]
@@ -15,7 +17,7 @@ pub struct ProjectCommand {
     #[arg(
         long = "base-url",
         env = "PROJECT_BASE_URL",
-        default_value = "https://dapp.phylax.systems/api/v1",
+        default_value_t = crate::default_dapp_url_with("api/v1"),
         help = "Base URL for project service"
     )]
     pub base_url: String,
@@ -86,12 +88,21 @@ impl ProjectCommand {
                 if resp.status().is_success() {
                     println!("{} Project created successfully!", "✅".green());
                     println!("\n{}", "Next steps:".bold());
-                    println!("  • View your project at {}", "https://dapp.phylax.systems".cyan());
-                    println!("  • Submit assertions using: {}", format!("pcl submit -p \"{}\"", project_name).yellow());
+                    println!(
+                        "  • View your project at {}",
+                        "https://dapp.phylax.systems".cyan()
+                    );
+                    println!(
+                        "  • Submit assertions using: {}",
+                        format!("pcl submit -p \"{}\"", project_name).yellow()
+                    );
                     Ok(())
                 } else {
                     println!("{:#?}", resp);
-                    let err_text = resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
                     Err(DappSubmitError::SubmissionFailed(err_text))
                 }
             }
@@ -111,7 +122,10 @@ impl ProjectCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CliConfig, UserAuth};
+    use crate::config::{
+        CliConfig,
+        UserAuth,
+    };
     use alloy_primitives::Address;
     use chrono::Utc;
     use mockito::Server;
@@ -190,13 +204,13 @@ mod tests {
                 assertion_adopters: vec!["0xabc".to_string()],
                 chain_id: 1,
             },
-            base_url: "https://dapp.phylax.systems/api/v1".to_string(),
+            base_url: crate::default_dapp_url_with("api/v1"),
         };
-        
+
         let mut config = CliConfig::default(); // No auth
         let result = cmd.run(&mut config).await;
-        
+
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), DappSubmitError::NoAuthToken));
     }
-} 
+}

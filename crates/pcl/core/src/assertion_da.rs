@@ -5,6 +5,7 @@
 //! of building, flattening, and submitting assertions along with their source code
 //! to be stored in the DA layer.
 
+use crate::DEFAULT_DA_URL;
 use clap::{
     Parser,
     ValueHint,
@@ -36,16 +37,6 @@ use crate::{
     },
     error::DaSubmitError,
 };
-
-/// Macro that defines the default DA URL - can be used in concat! macros
-#[macro_export]
-macro_rules! default_da_url {
-    () => {
-        "https://demo-21-assertion-da.phylax.systems"
-    };
-}
-
-pub const DEFAULT_DA_URL: &str = default_da_url!();
 
 /// Command-line arguments for storing assertions in the Data Availability layer.
 ///

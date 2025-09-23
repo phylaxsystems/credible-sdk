@@ -54,7 +54,7 @@ pub struct DappSubmitArgs {
         env = "PCL_API_URL",
         value_hint = ValueHint::Url,
         value_name = "API Endpoint",
-        default_value = "https://dapp.phylax.systems/api/v1"
+        default_value_t = crate::default_dapp_url_with("api/v1")
     )]
     pub api_url: String,
 

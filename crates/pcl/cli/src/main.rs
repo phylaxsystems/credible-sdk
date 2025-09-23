@@ -21,21 +21,29 @@ use pcl_phoundry::{
     phorge_test::PhorgeTest,
 };
 use serde_json::json;
+use std::sync::OnceLock;
 
-const VERSION_MESSAGE: &str = concat!(
-    env!("CARGO_PKG_VERSION"),
-    "\nCommit: ",
-    env!("VERGEN_GIT_SHA"),
-    "\nBuild Timestamp: ",
-    env!("VERGEN_BUILD_TIMESTAMP"),
-    "\nDefault DA URL: ",
-    pcl_core::default_da_url!(),
-);
+fn version_message() -> &'static str {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            format!(
+                "{}\nCommit: {}\nBuild Timestamp: {}\nDefault DA URL: {}\nDefault Dapp URL: {}",
+                env!("CARGO_PKG_VERSION"),
+                env!("VERGEN_GIT_SHA"),
+                env!("VERGEN_BUILD_TIMESTAMP"),
+                pcl_core::DEFAULT_DA_URL,
+                pcl_core::DEFAULT_DAPP_URL,
+            )
+        })
+        .as_str()
+}
 
 #[derive(Parser)]
 #[command(
     name = "pcl",
-    version = VERSION_MESSAGE,
+    version = version_message(),
+    long_version = version_message(),
     about = "The Credible CLI for the Credible Layer"
 )]
 struct Cli {

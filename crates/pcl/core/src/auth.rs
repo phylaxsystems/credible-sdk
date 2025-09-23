@@ -1,4 +1,5 @@
 use crate::{
+    DEFAULT_DAPP_URL,
     config::{
         CliConfig,
         UserAuth,
@@ -89,7 +90,7 @@ pub struct AuthCommand {
         short = 'u',
         long = "auth-url",
         env = "PCL_AUTH_URL",
-        default_value = "https://dapp.phylax.systems",
+        default_value = DEFAULT_DAPP_URL,
         help = "Base URL for authentication service"
     )]
     pub auth_url: String,
