@@ -9435,21 +9435,6 @@ checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
 
 [[package]]
 name = "redis"
-version = "0.25.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0d7a6955c7511f60f3ba9e86c6d02b3c3f144f8c24b288d1f4e18074ab8bbec"
-dependencies = [
- "combine",
- "itoa",
- "percent-encoding",
- "ryu",
- "sha1_smol",
- "socket2 0.5.10",
- "url",
-]
-
-[[package]]
-name = "redis"
 version = "0.32.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd3650deebc68526b304898b192fa4102a4ef0b9ada24da096559cb60e0eef8"
@@ -9471,7 +9456,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b193b65f0e4d429e6caf18c7ca552f58df58079db6500cbb89b653ac371d0ef1"
 dependencies = [
  "rand 0.9.1",
- "redis 0.32.5",
+ "redis",
  "socket2 0.6.0",
  "tempfile",
 ]
@@ -10685,7 +10670,8 @@ dependencies = [
  "prost-build",
  "protoc-bin-vendored",
  "rand 0.9.1",
- "redis 0.25.4",
+ "redis",
+ "redis-test",
  "reqwest",
  "revm",
  "rust-tracing",
@@ -11081,7 +11067,7 @@ dependencies = [
  "clap",
  "futures",
  "hex",
- "redis 0.32.5",
+ "redis",
  "redis-test",
  "revm",
  "rust-tracing",

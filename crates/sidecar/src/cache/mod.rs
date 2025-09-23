@@ -328,12 +328,28 @@ impl DBErrorMarker for CacheError {}
 mod tests {
     #![allow(clippy::cast_possible_truncation)]
     use super::*;
-    use crate::cache::sources::Source;
+    use crate::cache::sources::{
+        Source,
+        redis::{
+            RedisBackend,
+            RedisCache,
+            RedisCacheError,
+        },
+    };
     use assertion_executor::primitives::{
         AccountInfo,
         Address,
         B256,
         Bytecode,
+    };
+    use redis::{
+        self,
+        ErrorKind,
+        RedisError,
+    };
+    use redis_test::{
+        MockCmd,
+        MockRedisConnection,
     };
     use revm::primitives::{
         StorageKey,
@@ -341,8 +357,11 @@ mod tests {
         U256,
     };
     use std::{
+        collections::HashMap,
+        fmt,
         sync::{
             Arc,
+            Mutex,
             atomic::{
                 AtomicUsize,
                 Ordering,
@@ -504,6 +523,109 @@ mod tests {
         }
     }
 
+    struct RedisTestBackend {
+        connection: Mutex<MockRedisConnection>,
+        hgetall_calls: Arc<AtomicUsize>,
+    }
+
+    impl fmt::Debug for RedisTestBackend {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("RedisTestBackend").finish()
+        }
+    }
+
+    impl RedisTestBackend {
+        fn with_commands<I>(commands: I) -> (Self, Arc<AtomicUsize>)
+        where
+            I: IntoIterator<Item = MockCmd>,
+        {
+            let calls = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    connection: Mutex::new(MockRedisConnection::new(commands)),
+                    hgetall_calls: calls.clone(),
+                },
+                calls,
+            )
+        }
+
+        fn for_backend_error(address: Address) -> (Self, Arc<AtomicUsize>) {
+            let account_key = format!("state:account:{}", hex::encode(address));
+            let commands = vec![
+                MockCmd::new(
+                    redis::cmd("GET").arg("state:current_block"),
+                    Ok::<_, RedisError>("100"),
+                ),
+                MockCmd::new(
+                    redis::cmd("HGETALL").arg(&account_key),
+                    Err::<String, RedisError>(redis_io_error("redis connection error")),
+                ),
+            ];
+            Self::with_commands(commands)
+        }
+
+        fn for_unsynced() -> (Self, Arc<AtomicUsize>) {
+            let commands = vec![MockCmd::new(
+                redis::cmd("GET").arg("state:current_block"),
+                Ok::<_, RedisError>("5"),
+            )];
+            Self::with_commands(commands)
+        }
+    }
+
+    fn redis_io_error(message: &str) -> RedisError {
+        RedisError::from((ErrorKind::IoError, "TEST", message.to_string()))
+    }
+
+    impl RedisBackend for RedisTestBackend {
+        fn hgetall(&self, key: &str) -> Result<Option<HashMap<String, String>>, RedisCacheError> {
+            self.hgetall_calls.fetch_add(1, Ordering::Release);
+            let mut connection = self.connection.lock().unwrap();
+            let map: HashMap<String, String> = redis::cmd("HGETALL")
+                .arg(key)
+                .query(&mut *connection)
+                .map_err(RedisCacheError::Backend)?;
+            if map.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(map))
+            }
+        }
+
+        fn hget(&self, key: &str, field: &str) -> Result<Option<String>, RedisCacheError> {
+            let mut connection = self.connection.lock().unwrap();
+            redis::cmd("HGET")
+                .arg(key)
+                .arg(field)
+                .query(&mut *connection)
+                .map_err(RedisCacheError::Backend)
+        }
+
+        fn hset_multiple(
+            &self,
+            _key: &str,
+            _values: &[(String, String)],
+        ) -> Result<(), RedisCacheError> {
+            panic!("unexpected redis hset_multiple command in RedisTestBackend");
+        }
+
+        fn hset(&self, _key: &str, _field: &str, _value: &str) -> Result<(), RedisCacheError> {
+            panic!("unexpected redis hset command in RedisTestBackend");
+        }
+
+        fn get(&self, key: &str) -> Result<Option<String>, RedisCacheError> {
+            let mut connection = self.connection.lock().unwrap();
+            redis::cmd("GET")
+                .arg(key)
+                .query(&mut *connection)
+                .map_err(RedisCacheError::Backend)
+        }
+
+        fn set(&self, _key: &str, _value: &str) -> Result<(), RedisCacheError> {
+            panic!("unexpected redis set command in RedisTestBackend");
+        }
+    }
+
     // Helper functions
     fn create_test_address() -> Address {
         Address::from([1u8; 20])
@@ -658,6 +780,44 @@ mod tests {
         assert_eq!(result, None);
         assert_eq!(source1.basic_ref_call_count(), 1);
         assert_eq!(source2.basic_ref_call_count(), 0);
+    }
+
+    #[test]
+    fn test_basic_ref_falls_back_when_redis_backend_errors() {
+        let address = create_test_address();
+        let (backend, redis_calls) = RedisTestBackend::for_backend_error(address);
+        let redis_source = Arc::new(RedisCache::new(backend));
+
+        let account_info = create_test_account_info();
+        let fallback_source =
+            Arc::new(MockSource::new("rpc").with_account_info(account_info.clone()));
+
+        let cache = Cache::new(vec![redis_source, fallback_source.clone()], 10);
+        cache.set_block_number(1);
+
+        let result = cache.basic_ref(address).unwrap();
+        assert_eq!(result, Some(account_info));
+        assert_eq!(fallback_source.basic_ref_call_count(), 1);
+        assert_eq!(redis_calls.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn test_basic_ref_uses_fallback_when_redis_unsynced() {
+        let address = create_test_address();
+        let (backend, redis_calls) = RedisTestBackend::for_unsynced();
+        let redis_source = Arc::new(RedisCache::new(backend));
+
+        let account_info = create_test_account_info();
+        let fallback_source =
+            Arc::new(MockSource::new("rpc").with_account_info(account_info.clone()));
+
+        let cache = Cache::new(vec![redis_source, fallback_source.clone()], 10);
+        cache.set_block_number(15);
+
+        let result = cache.basic_ref(address).unwrap();
+        assert_eq!(result, Some(account_info));
+        assert_eq!(fallback_source.basic_ref_call_count(), 1);
+        assert_eq!(redis_calls.load(Ordering::Acquire), 0);
     }
 
     #[test]

@@ -12,7 +12,7 @@ clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-redis = "0.32.5"
+redis = { workspace = true }
 alloy = { workspace = true }
 alloy-provider = { workspace = true }
 alloy-transport-ws = { workspace = true }
