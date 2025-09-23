@@ -65,6 +65,14 @@ pub struct ChainArgs {
         env = "CHAIN_MINIMUM_STATE_DIFF"
     )]
     pub minimum_state_diff: u64,
+
+    /// Redis client URL
+    #[arg(
+        long = "chain.redis-client-url",
+        default_value = "http://127.0.0.1:6379",
+        env = "CHAIN_REDIS_CLIENT_URL"
+    )]
+    pub redis_client_url: String,
 }
 
 /// Parameters for Credible configuration
