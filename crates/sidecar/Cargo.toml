@@ -36,7 +36,7 @@ assertion-da-client = { workspace = true }
 alloy-provider = { workspace = true }
 metrics = { workspace = true }
 futures = { workspace = true }
-redis = "0.25.4"
+redis = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"
@@ -56,6 +56,7 @@ assertion-executor = { workspace = true, features = ["test"] }
 hex = "0.4.3"
 axum = { version = "0.8.4", features = ["ws"] }
 tracing-test = "0.2.5"
+redis-test = { workspace = true }
 
 [profile.release]
 lto = "fat"
