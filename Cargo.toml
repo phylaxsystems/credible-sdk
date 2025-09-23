@@ -63,6 +63,7 @@ k256 = "0.13.4"
 hex = "0.4.3"
 tempfile = { version = "3.12.0" }
 wiremock = "0.6.1"
+redis-test = "0.12.0"
 directories = "6.0.0"
 bollard = "0.18"
 
@@ -89,6 +90,7 @@ alloy-provider = { version = "1.0.9", features = [
 ] }
 alloy-consensus = { version = "1.0.9", features = ["k256"] }
 alloy-rpc-types = "1.0.9"
+alloy-rpc-types-trace = "1.0.9"
 alloy-rpc-types-anvil = "1.0.9"
 alloy-pubsub = "1.0.9"
 alloy-rpc-client = "1.0.9"

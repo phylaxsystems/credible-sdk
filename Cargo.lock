@@ -9449,6 +9449,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "redis"
+version = "0.32.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd3650deebc68526b304898b192fa4102a4ef0b9ada24da096559cb60e0eef8"
+dependencies = [
+ "combine",
+ "itoa",
+ "num-bigint",
+ "percent-encoding",
+ "ryu",
+ "sha1_smol",
+ "socket2 0.6.0",
+ "url",
+]
+
+[[package]]
+name = "redis-test"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b193b65f0e4d429e6caf18c7ca552f58df58079db6500cbb89b653ac371d0ef1"
+dependencies = [
+ "rand 0.9.1",
+ "redis 0.32.5",
+ "socket2 0.6.0",
+ "tempfile",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10657,7 +10685,7 @@ dependencies = [
  "prost-build",
  "protoc-bin-vendored",
  "rand 0.9.1",
- "redis",
+ "redis 0.25.4",
  "reqwest",
  "revm",
  "rust-tracing",
@@ -11043,6 +11071,24 @@ dependencies = [
 [[package]]
 name = "state-worker"
 version = "0.6.0"
+dependencies = [
+ "alloy",
+ "alloy-provider",
+ "alloy-rpc-types",
+ "alloy-rpc-types-trace",
+ "alloy-transport-ws",
+ "anyhow",
+ "clap",
+ "futures",
+ "hex",
+ "redis 0.32.5",
+ "redis-test",
+ "revm",
+ "rust-tracing",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.19",
+]
 
 [[package]]
 name = "static_assertions"

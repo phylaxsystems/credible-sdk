@@ -7,6 +7,24 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+redis = "0.32.5"
+alloy = { workspace = true }
+alloy-provider = { workspace = true }
+alloy-transport-ws = { workspace = true }
+alloy-rpc-types = { workspace = true }
+alloy-rpc-types-trace = { workspace = true }
+futures = { workspace = true }
+revm = { workspace = true }
+hex = { workspace = true }
+rust-tracing = { workspace = true }
+
+[dev-dependencies]
+redis-test = { workspace = true }
 
 [profile.release]
 lto = "fat"
