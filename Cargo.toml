@@ -43,6 +43,7 @@ int-test-utils = { path = "crates/int-test-utils" }
 assertion-executor = { path = "crates/assertion-executor", default-features = false }
 
 anyhow = "1.0.86"
+axum = "0.8.4"
 clap = { version = "4.5.11", features = ["derive", "env"] }
 dashmap = "6.1.0"
 futures = "0.3.30"

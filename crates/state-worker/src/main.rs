@@ -1,6 +1,9 @@
 #![doc = include_str!("../README.md")]
 
 mod cli;
+#[cfg(test)]
+mod integration_tests;
+mod macros;
 mod redis;
 mod state;
 mod worker;
@@ -40,7 +43,7 @@ async fn main() -> Result<()> {
     let redis = RedisStateWriter::new(&args.redis_url, args.redis_namespace.clone())
         .context("failed to initialize redis client")?;
 
-    let worker = StateWorker::new(
+    let mut worker = StateWorker::new(
         provider,
         redis,
         Duration::from_secs(args.trace_timeout_secs),

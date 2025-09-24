@@ -10,8 +10,6 @@
 pub mod instance;
 pub(crate) mod macros;
 #[cfg(test)]
-pub mod test_cache;
-#[cfg(test)]
 #[allow(dead_code)]
 pub mod test_drivers;
 #[cfg(test)]

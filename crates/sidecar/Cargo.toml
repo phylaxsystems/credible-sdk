@@ -17,7 +17,7 @@ assertion-executor = { workspace = true, default-features = false }
 rust-tracing = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-axum = "0.8.4"
+axum = { workspace = true }
 tonic = { version = "0.14.2", features = ["transport"] }
 prost = "0.14"
 tonic-prost = "0.14.2"
@@ -53,10 +53,9 @@ test = ["assertion-executor/test", "ctor"]
 ctor = "0.5.0"
 sidecar-test-macros = { path = "src/utils/test-macros" }
 assertion-executor = { workspace = true, features = ["test"] }
-hex = "0.4.3"
-axum = { version = "0.8.4", features = ["ws"] }
 tracing-test = "0.2.5"
 redis-test = { workspace = true }
+int-test-utils = { path = "../int-test-utils" }
 
 [profile.release]
 lto = "fat"
