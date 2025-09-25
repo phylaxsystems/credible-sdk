@@ -41,7 +41,6 @@ use crate::{
         },
         mock::MockTransport,
     },
-    utils::test_cache::DualProtocolMockServer,
 };
 use alloy::primitives::TxHash;
 use assertion_executor::{
@@ -69,6 +68,7 @@ use assertion_executor::{
     },
 };
 use crossbeam::channel;
+use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use revm::{
     context_interface::block::BlobExcessGasAndPrice,
     database::CacheDB,

@@ -336,6 +336,7 @@ mod tests {
             RedisCacheError,
         },
     };
+    use alloy::hex;
     use assertion_executor::primitives::{
         AccountInfo,
         Address,

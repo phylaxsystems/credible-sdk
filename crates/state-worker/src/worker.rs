@@ -4,11 +4,7 @@
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
 //! is traced with the pre-state tracer and written into Redis.
 
-use std::{
-    sync::Arc,
-    time::Duration,
-};
-
+use crate::critical;
 use alloy::rpc::types::{
     BlockNumberOrTag,
     Header,
@@ -24,6 +20,10 @@ use anyhow::{
     anyhow,
 };
 use futures::StreamExt;
+use std::{
+    sync::Arc,
+    time::Duration,
+};
 use tokio::time;
 use tracing::{
     debug,
@@ -64,7 +64,7 @@ impl StateWorker {
 
     /// Drive the catch-up + streaming loop. We keep retrying the subscription
     /// because websocket connections can drop in practice.
-    pub async fn run(&self, start_override: Option<u64>) -> Result<()> {
+    pub async fn run(&mut self, start_override: Option<u64>) -> Result<()> {
         let mut next_block = self.compute_start_block(start_override).await?;
         loop {
             self.catch_up(&mut next_block).await?;
@@ -92,7 +92,7 @@ impl StateWorker {
     }
 
     /// Sequentially replay blocks until we reach the node's current head.
-    async fn catch_up(&self, next_block: &mut u64) -> Result<()> {
+    async fn catch_up(&mut self, next_block: &mut u64) -> Result<()> {
         loop {
             let head = self.provider.get_block_number().await?;
             if *next_block > head {
@@ -109,7 +109,7 @@ impl StateWorker {
 
     /// Follow the `newHeads` stream and process new blocks in order, tolerating
     /// duplicate/stale headers after reconnects.
-    async fn stream_blocks(&self, next_block: &mut u64) -> Result<()> {
+    async fn stream_blocks(&mut self, next_block: &mut u64) -> Result<()> {
         let subscription = self.provider.subscribe_blocks().await?;
         let mut stream = subscription.into_stream();
 
@@ -125,6 +125,14 @@ impl StateWorker {
                 continue;
             }
 
+            // If we are missing a block, trigger a critical error
+            if block_number > *next_block {
+                critical!("Missing block {block_number} (next block: {next_block})");
+                return Err(anyhow!(
+                    "Missing block {block_number} (next block: {next_block})"
+                ));
+            }
+
             while *next_block <= block_number {
                 self.process_block(*next_block).await?;
                 *next_block += 1;
@@ -135,7 +143,7 @@ impl StateWorker {
     }
 
     /// Pull, trace, and persist a single block.
-    async fn process_block(&self, block_number: u64) -> Result<()> {
+    async fn process_block(&mut self, block_number: u64) -> Result<()> {
         info!(block_number, "processing block");
 
         let block_id = BlockNumberOrTag::Number(block_number);
@@ -149,17 +157,26 @@ impl StateWorker {
         // Use the standardized pre-state tracer options so we receive per-tx
         // diffs matching the sidecar's expectations.
         let trace_options = build_trace_options(self.trace_timeout);
-        let traces = self
+        let traces = match self
             .provider
             .debug_trace_block_by_number(block_id, trace_options)
             .await
-            .with_context(|| format!("failed to trace block {block_number}"))?;
+        {
+            Ok(traces) => traces,
+            Err(err) => {
+                critical!(error = ?err, block_number, "failed to trace block");
+                return Err(anyhow!("failed to trace block {block_number}"));
+            }
+        };
 
         let update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
-        self.redis
-            .commit_block(update)
-            .await
-            .with_context(|| format!("failed to persist block {block_number} to redis"))?;
+        match self.redis.commit_block(update).await {
+            Ok(()) => (),
+            Err(err) => {
+                critical!(error = ?err, block_number, "failed to persist block");
+                return Err(anyhow!("failed to persist block {block_number}"));
+            }
+        }
 
         info!(block_number, "block persisted to redis");
         Ok(())

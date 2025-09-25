@@ -1,9 +1,3 @@
-#![allow(clippy::type_complexity)]
-#![allow(clippy::match_same_arms)]
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unused_async)]
-#![allow(dead_code)]
 use alloy::primitives::Address;
 use axum::{
     Json,
@@ -82,6 +76,54 @@ impl DualProtocolMockServer {
         server.start_ws_server(ws_listener);
 
         Ok(server)
+    }
+
+    /// Send a new head with a specific block number
+    /// This does NOT increment the current block number
+    pub fn send_new_head_with_block_number(&self, new_block: u64) {
+        // Alloy's subscribe_blocks expects a full Block object, not just header
+        let block = json!({
+            // Header fields
+            "hash": format!("0x{:064x}", new_block),
+            "parentHash": format!("0x{:064x}", new_block.saturating_sub(1)),
+            "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+            "miner": "0x0000000000000000000000000000000000000000",
+            "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+            "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+            "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+            "logsBloom": format!("0x{:0512}", 0),
+            "difficulty": "0x0",
+            "number": format!("0x{:x}", new_block),
+            "gasLimit": "0x1c9c380",
+            "gasUsed": "0x0",
+            "timestamp": format!("0x{:x}", new_block * 12),
+            "extraData": "0x",
+            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "nonce": "0x0000000000000000",
+
+            // Block body fields (required by Alloy)
+            "totalDifficulty": "0x0",
+            "baseFeePerGas": "0x7",
+            "size": "0x21c",
+            "transactions": [],
+            "uncles": []
+        });
+
+        // Notification with the full block
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_subscription",
+            "params": {
+                "subscription": "SUBSCRIPTION_ID_PLACEHOLDER",
+                "result": block
+            }
+        });
+
+        if let Err(e) = self.notification_tx.send(notification) {
+            println!("Failed to broadcast notification: {e:?}");
+        } else {
+            println!("Mock server: New head sent, block number: {new_block}");
+        }
     }
 
     /// Send a new head (simulate new block arrival)
@@ -183,15 +225,36 @@ impl DualProtocolMockServer {
         self.responses
             .insert("eth_getStorageAt".to_string(), storage_response);
 
+        let trace_response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": []  // Empty array for blocks with no transactions
+        });
+        self.responses
+            .insert("debug_traceBlockByHash".to_string(), trace_response.clone());
+        self.responses
+            .insert("debug_traceBlockByNumber".to_string(), trace_response);
+
         // Default block: genesis-like block
         let block_response = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "result": {
                 "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                "miner": "0x0000000000000000000000000000000000000000",
                 "number": "0x0",
+                "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
                 "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                "logsBloom": format!("0x{:0512}", 0),
+                "difficulty": "0x0",
+                "number": "0x0",
                 "timestamp": "0x0",
+                "extraData": "0x",
+                "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "nonce": "0x0000000000000000",
                 "gasLimit": "0x1c9c380",
                 "gasUsed": "0x0",
                 "transactions": []
@@ -222,13 +285,27 @@ impl DualProtocolMockServer {
             "jsonrpc": "2.0",
             "id": 1,
             "result": {
-                "hash": format!("0x{:064x}", current_block), // Simple hash based on block number
-                "number": format!("0x{:x}", current_block),
+                "hash": format!("0x{:064x}", current_block),
                 "parentHash": format!("0x{:064x}", current_block.saturating_sub(1)),
-                "timestamp": format!("0x{:x}", current_block * 12), // 12 second blocks
+                "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                "miner": "0x0000000000000000000000000000000000000000",
+                "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                "logsBloom": format!("0x{:0512}", 0),
+                "difficulty": "0x0",
+                "number": format!("0x{:x}", current_block),
                 "gasLimit": "0x1c9c380",
                 "gasUsed": "0x0",
-                "transactions": []
+                "timestamp": format!("0x{:x}", current_block * 12),
+                "extraData": "0x",
+                "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "nonce": "0x0000000000000000",
+                "totalDifficulty": "0x0",
+                "baseFeePerGas": "0x7",
+                "size": "0x21c",
+                "transactions": [],
+                "uncles": []
             }
         });
         self.responses
@@ -499,12 +576,26 @@ impl DualProtocolMockServer {
                         "id": id,
                         "result": {
                             "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-                            "number": "0x0",
                             "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                            "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                            "miner": "0x0000000000000000000000000000000000000000",
+                            "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                            "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                            "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                            "logsBloom": format!("0x{:0512}", 0),
+                            "difficulty": "0x0",
+                            "number": "0x0",
                             "timestamp": "0x0",
+                            "extraData": "0x",
+                            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                            "nonce": "0x0000000000000000",
                             "gasLimit": "0x1c9c380",
                             "gasUsed": "0x0",
-                            "transactions": []
+                            "totalDifficulty": "0x0",
+                            "baseFeePerGas": "0x7",
+                            "size": "0x21c",
+                            "transactions": [],
+                            "uncles": []
                         }
                     })
                 }

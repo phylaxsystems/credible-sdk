@@ -25,6 +25,10 @@ tempfile.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 bollard.workspace = true
+axum = { workspace = true }
+dashmap = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true

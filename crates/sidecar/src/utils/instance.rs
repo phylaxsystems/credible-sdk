@@ -5,7 +5,6 @@ use crate::{
     },
     engine::TransactionResult,
     transactions_state::RequestTransactionResult,
-    utils::test_cache::DualProtocolMockServer,
 };
 use alloy::primitives::TxHash;
 use assertion_executor::{
@@ -27,6 +26,7 @@ use assertion_executor::{
         counter_call,
     },
 };
+use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use rand::Rng;
 use revm::{
     database::CacheDB,
