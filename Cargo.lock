@@ -11207,6 +11207,7 @@ dependencies = [
  "redis-test",
  "revm",
  "rust-tracing",
+ "rustls",
  "serde_json",
  "tokio",
  "tracing",
