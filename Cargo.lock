@@ -10620,6 +10620,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "shadow-driver"
+version = "0.6.1"
+dependencies = [
+ "alloy",
+ "alloy-provider",
+ "anyhow",
+ "clap",
+ "futures",
+ "hex",
+ "reqwest",
+ "revm",
+ "rust-tracing",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
