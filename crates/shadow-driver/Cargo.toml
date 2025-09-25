@@ -17,6 +17,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 rust-tracing = { workspace = true }
 serde_json = { workspace = true }
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 hex = { workspace = true }
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
