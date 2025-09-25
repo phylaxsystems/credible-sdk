@@ -22,10 +22,6 @@ use anyhow::{
 };
 use futures::StreamExt;
 use reqwest::Client;
-use revm::context_interface::block::{
-    calc_blob_gasprice,
-    calc_excess_blob_gas,
-};
 use serde_json::json;
 use std::{
     sync::Arc,
@@ -40,7 +36,6 @@ use tracing::{
 };
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
-const TARGET_BLOB_GAS_PER_BLOCK: u64 = 393_216; // 3 * 131072 (3 blobs per block target)
 
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct Listener {
@@ -110,7 +105,7 @@ impl Listener {
             );
 
             // Send block environment to sidecar
-            if let Err(e) = self.send_block_env(&block).await {
+            if let Err(e) = self.send_block_env(&block, transactions.len()).await {
                 error!(
                     "Failed to send block env for block {}: {:?}",
                     block_number, e
@@ -134,16 +129,11 @@ impl Listener {
     }
 
     /// Send block environment to the sidecar
-    async fn send_block_env(&self, block: &alloy::rpc::types::Block) -> Result<()> {
-        // Calculate blob gas price if blob data exists
-        let blob_excess_gas_and_price = block.header.excess_blob_gas.and_then(|excess| {
-            block.header.blob_gas_used.map(|used| {
-                let excess_blob_gas = calc_excess_blob_gas(excess, used, TARGET_BLOB_GAS_PER_BLOCK);
-                let blob_gasprice = calc_blob_gasprice(excess_blob_gas, false); // @TODO: is Prague?
-                (excess_blob_gas, blob_gasprice)
-            })
-        });
-
+    async fn send_block_env(
+        &self,
+        block: &alloy::rpc::types::Block,
+        n_transactions: usize,
+    ) -> Result<()> {
         // Get the last transaction hash if transactions exist
         let last_tx_hash = match &block.transactions {
             alloy::rpc::types::BlockTransactions::Full(txs) if !txs.is_empty() => {
@@ -166,11 +156,11 @@ impl Listener {
                 "basefee": block.header.base_fee_per_gas,
                 "difficulty": block.header.difficulty,
                 "prevrandao": format!("{:#x}", block.header.mix_hash),
-                "blob_excess_gas_and_price": blob_excess_gas_and_price.map(|(excess, price)| json!({
-                    "excess_blob_gas": excess,
-                    "blob_gasprice": price
-                })),
-                "n_transactions": block.transactions.len(),
+                "blob_excess_gas_and_price": json!({
+                    "excess_blob_gas": 0,
+                    "blob_gasprice": 1
+                }),
+                "n_transactions": n_transactions,
                 "last_tx_hash": last_tx_hash,
             },
             "id": 1
@@ -219,7 +209,7 @@ impl Listener {
                         "txEnv": {
                             "caller": format!("{:#x}", tx.inner.signer()),
                             "gas_limit": tx.inner.gas_limit(),
-                            "gas_price": format!("{:#x}", tx.inner.gas_price().unwrap_or_default()),
+                            "gas_price": tx.inner.gas_price().unwrap_or_default().to_string(),
                             "transact_to": tx.to().map(|addr| format!("{addr:#x}")),
                             "value": format!("{:#x}", tx.value()),
                             "data": format!("0x{}", hex::encode(tx.input())),
