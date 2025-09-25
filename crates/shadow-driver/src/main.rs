@@ -23,6 +23,10 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+    
     // Install the shared tracing subscriber used across Credible services.
     trace();
 
