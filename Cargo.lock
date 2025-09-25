@@ -10742,7 +10742,7 @@ dependencies = [
  "alloy",
  "alloy-provider",
  "anyhow",
- "clap",
+ "clap 4.5.41",
  "futures",
  "hex",
  "reqwest",
