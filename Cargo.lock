@@ -10748,6 +10748,7 @@ dependencies = [
  "reqwest",
  "revm",
  "rust-tracing",
+ "rustls",
  "serde_json",
  "tokio",
  "tracing",
