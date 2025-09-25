@@ -51,3 +51,11 @@ jobs:
       requires-private-deps: false
       dockerfile-path: dockerfile/Dockerfile.sidecar
       build-flags: "--features linea"
+  docker-ghcr-push-shadow-driver:
+    needs: check-version
+    if: always() && (needs.check-version.result == 'success' || needs.check-version.result == 'skipped')
+    uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
+    with:
+      rust-binary-name: shadow-driver
+      requires-private-deps: false
+      dockerfile-path: dockerfile/Dockerfile.shadow-driver
