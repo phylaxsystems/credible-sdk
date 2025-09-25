@@ -159,16 +159,16 @@ impl Listener {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": format!("{:#x}", block.header.number),
+                "number": block.header.number,
                 "beneficiary": format!("{:#x}", block.header.beneficiary),
-                "timestamp": format!("{:#x}", block.header.timestamp),
-                "gas_limit": format!("{:#x}", block.header.gas_limit),
-                "basefee": block.header.base_fee_per_gas.map(|fee| format!("{fee:#x}")),
-                "difficulty": format!("{:#x}", block.header.difficulty),
+                "timestamp": block.header.timestamp,
+                "gas_limit": block.header.gas_limit,
+                "basefee": block.header.base_fee_per_gas,
+                "difficulty": block.header.difficulty,
                 "prevrandao": format!("{:#x}", block.header.mix_hash),
                 "blob_excess_gas_and_price": blob_excess_gas_and_price.map(|(excess, price)| json!({
-                    "excess_blob_gas": format!("{:#x}", excess),
-                    "blob_gasprice": format!("{:#x}", price)
+                    "excess_blob_gas": excess,
+                    "blob_gasprice": price
                 })),
                 "n_transactions": block.transactions.len(),
                 "last_tx_hash": last_tx_hash,
@@ -203,6 +203,7 @@ impl Listener {
         Ok(())
     }
 
+    #[allow(clippy::map_unwrap_or)]
     /// Send a transaction to the sidecar
     async fn send_transaction(
         &self,
@@ -224,7 +225,12 @@ impl Listener {
                             "data": format!("0x{}", hex::encode(tx.input())),
                             "nonce": tx.nonce(),
                             "chain_id": tx.chain_id().unwrap(), //@TODO: unwrap
-                            "access_list": tx.access_list(),
+                            "access_list": tx.access_list().map(|list| {
+                                list.0.iter().map(|item| json!({
+                                    "address": format!("{:#x}", item.address),
+                                    "storage_keys": item.storage_keys.iter().map(|key| format!("{key:#x}")).collect::<Vec<_>>()
+                                })).collect::<Vec<_>>()
+                            }).unwrap_or_else(Vec::new),
                         },
                         "hash": format!("{:#x}", tx.inner.hash())
                     }
