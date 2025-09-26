@@ -28,6 +28,7 @@ RUN cargo build --release --locked --bin sidecar $BUILD_FLAGS
 FROM ubuntu:24.04
 WORKDIR /usr/local/bin
 
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /sidecar/target/release/sidecar /usr/local/bin/sidecar
 
 ENTRYPOINT ["/usr/local/bin/sidecar"]
