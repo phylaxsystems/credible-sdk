@@ -412,6 +412,9 @@ impl<B: RedisBackend> Source for RedisCache<B> {
         }
     }
 
+    /// No-op; we dont update the target block for redis.
+    fn update_target_block(&self, _block_number: u64) {}
+
     /// Provides an identifier used in logs and metrics.
     fn name(&self) -> &'static str {
         "redis-cache"

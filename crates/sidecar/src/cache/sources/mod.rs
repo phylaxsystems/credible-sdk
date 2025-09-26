@@ -87,6 +87,13 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     ///
     /// A static string that uniquely identifies this source.
     fn name(&self) -> &'static str;
+
+    /// Updates the block number that queries should target.
+    ///
+    /// Implementations may use this hint to issue RPC calls against a specific
+    /// block rather than the latest head. The default implementation is a
+    /// no-op for sources that do not depend on block context.
+    fn update_target_block(&self, block_number: u64);
 }
 
 #[derive(Error, Debug)]

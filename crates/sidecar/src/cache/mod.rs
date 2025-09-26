@@ -130,6 +130,10 @@ impl Cache {
         self.current_block_number
             .store(block_number, Ordering::Relaxed);
         self.metrics.set_current_block_number(block_number);
+
+        for source in &self.sources {
+            source.update_target_block(block_number);
+        }
     }
 
     /// Resets the `required_block_number` to the current `block_number`.
@@ -470,6 +474,8 @@ mod tests {
         fn is_synced(&self, current_block_number: u64) -> bool {
             current_block_number >= self.synced_threshold
         }
+
+        fn update_target_block(&self, _block_number: u64) {}
 
         fn name(&self) -> &'static str {
             self.name
