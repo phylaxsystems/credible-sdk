@@ -104,15 +104,6 @@ impl Listener {
                 transactions.len()
             );
 
-            // Send block environment to sidecar
-            if let Err(e) = self.send_block_env(&block, transactions.len()).await {
-                error!(
-                    "Failed to send block env for block {}: {:?}",
-                    block_number, e
-                );
-                continue; // Skip to next block
-            }
-
             // Send each transaction to sidecar
             for (index, tx) in transactions.iter().enumerate() {
                 if let Err(e) = self.send_transaction(tx, index as u64).await {
@@ -120,8 +111,17 @@ impl Listener {
                         "Failed to send transaction {} in block {}: {:?}",
                         index, block_number, e
                     );
-                    // Continue processing other transactions
+                    // Stop processing this block
+                    break;
                 }
+            }
+
+            // Send block environment to sidecar
+            if let Err(e) = self.send_block_env(&block, transactions.len()).await {
+                error!(
+                    "Failed to send block env for block {}: {:?}",
+                    block_number, e
+                );
             }
         }
 
