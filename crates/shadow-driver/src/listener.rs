@@ -220,7 +220,7 @@ impl Listener {
                                     "address": format!("{:#x}", item.address),
                                     "storage_keys": item.storage_keys.iter().map(|key| format!("{key:#x}")).collect::<Vec<_>>()
                                 })).collect::<Vec<_>>()
-                            }).unwrap_or_else(Vec::new),
+                            }).unwrap_or_default(),
                         },
                         "hash": format!("{:#x}", tx.inner.hash())
                     }

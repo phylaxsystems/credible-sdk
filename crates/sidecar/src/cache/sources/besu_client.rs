@@ -178,6 +178,10 @@ impl Source for BesuClient {
             false
         }
     }
+
+    fn update_target_block(&self, block_number: u64) {
+        self.json_rpc_db.set_target_block(block_number);
+    }
 }
 
 #[derive(Error, Debug)]

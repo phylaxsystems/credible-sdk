@@ -1,4 +1,5 @@
 use alloy::{
+    eips::BlockId,
     primitives::{
         Address,
         B256,
@@ -22,7 +23,13 @@ use revm::{
         Bytecode,
     },
 };
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{
+        AtomicU64,
+        Ordering,
+    },
+};
 
 impl DBErrorMarker for JsonRpcDbError {}
 
@@ -30,6 +37,7 @@ impl DBErrorMarker for JsonRpcDbError {}
 #[derive(Debug)]
 pub struct JsonRpcDb {
     provider: Arc<RootProvider>,
+    target_block: AtomicU64,
 }
 
 impl JsonRpcDb {
@@ -42,11 +50,23 @@ impl JsonRpcDb {
 
         Ok(Self {
             provider: Arc::new(provider.root().clone()),
+            target_block: AtomicU64::new(0),
         })
     }
 
     pub fn new_with_provider(provider: Arc<RootProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            target_block: AtomicU64::new(0),
+        }
+    }
+
+    pub fn set_target_block(&self, block_number: u64) {
+        self.target_block.store(block_number, Ordering::Relaxed);
+    }
+
+    fn target_block(&self) -> u64 {
+        self.target_block.load(Ordering::Acquire)
     }
 }
 
@@ -55,12 +75,13 @@ impl DatabaseRef for JsonRpcDb {
 
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let provider = self.provider.clone();
+        let target_block = self.target_block();
         let future = async move {
             // Get balance, nonce, and code in parallel for efficiency
             let (balance_result, nonce_result, code_result) = tokio::join!(
-                provider.get_balance(address),
-                provider.get_transaction_count(address),
-                provider.get_code_at(address)
+                provider.get_balance(address).number(target_block),
+                provider.get_transaction_count(address).number(target_block),
+                provider.get_code_at(address).number(target_block)
             );
 
             let balance = balance_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
@@ -102,10 +123,12 @@ impl DatabaseRef for JsonRpcDb {
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
         let provider = self.provider.clone();
+        let target_block = self.target_block();
 
         let future = async move {
             let value = provider
                 .get_storage_at(address, index)
+                .block_id(BlockId::number(target_block))
                 .await
                 .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
 

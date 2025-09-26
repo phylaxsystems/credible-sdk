@@ -43,6 +43,11 @@ impl Source for Sequencer {
     fn name(&self) -> &'static str {
         "sequencer"
     }
+
+    #[inline]
+    fn update_target_block(&self, block_number: u64) {
+        self.json_rpc_db.set_target_block(block_number);
+    }
 }
 
 impl DatabaseRef for Sequencer {
