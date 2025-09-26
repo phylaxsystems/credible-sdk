@@ -30,7 +30,7 @@ crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 ctor = { version = "0.5.0", optional = true }
 tracing-subscriber.workspace = true
 sled = { workspace = true }
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 assertion-da-client = { workspace = true }
 alloy-provider = { workspace = true }
