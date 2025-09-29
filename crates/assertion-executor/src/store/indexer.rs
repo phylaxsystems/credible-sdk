@@ -27,7 +27,6 @@ use bincode::{
 
 use tracing::{
     debug,
-    error,
     info,
     instrument,
     trace,

@@ -1,7 +1,4 @@
-use clap::{
-    Parser,
-    command,
-};
+use clap::Parser;
 use color_eyre::{
     Result,
     eyre::Report,

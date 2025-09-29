@@ -123,41 +123,52 @@ is sent along with a `TxEnv` because we cannot construct a hash without a signat
     "transactions": [
       {
         "txEnv": {
+          "tx_type": 0,
           "caller": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
           "gas_limit": 21000,
-          "gas_price": "1000",
-          "transact_to": "0x8ba1f109551bD432803012645Hac136c2D29",
+          "gas_price": 1000,
+          "kind": "0x8ba1f109551bD432803012645Hac136c2D29",
           "value": "0x0",
           "data": "0x",
           "nonce": 42,
           "chain_id": 1,
+          "gas_priority_fee": 1,
+          "blob_hashes": [],
+          "max_fee_per_blob_gas": 0,
           "access_list": []
         },
         "hash": "0xabcd1234567890abcdef..."
       },
       {
         "txEnv": {
+          "tx_type": 0,
           "caller": "0x8ba1f109551bD432803012645Hac136c2D29",
           "gas_limit": 50000,
-          "gas_price": "2000",
+          "gas_price": 2000,
           "value": "0x1bc16d674ec80000",
           "data": "0x60806040...",
           "nonce": 1,
           "chain_id": 1,
+          "gas_priority_fee": 1,
+          "blob_hashes": [],
+          "max_fee_per_blob_gas": 0,
           "access_list": []
         },
         "hash": "0xefgh5678901234567890..."
       },
       {
         "txEnv": {
+          "tx_type": 0,
           "caller": "0x8ba1f109551bD432803012645Hac136c2D29",
           "gas_limit": 50000,
           "gas_price": "2000",
-          "transact_to": "0x",
           "value": "0x1bc16d674ec80000",
           "data": "0x60806040...",
           "nonce": 1,
           "chain_id": 1,
+          "gas_priority_fee": null,
+          "blob_hashes": [],
+          "max_fee_per_blob_gas": 0,
           "access_list": []
         },
         "hash": "0xabcdef1234567890abcdef..."
@@ -167,7 +178,7 @@ is sent along with a `TxEnv` because we cannot construct a hash without a signat
 }
 ```
 
-The `transact_to` can be null, `0x`, "" or missing if the transaction is a contract creation.
+The `kind` can be null, or missing if the transaction is a contract creation.
 
 **Response (success):**
 

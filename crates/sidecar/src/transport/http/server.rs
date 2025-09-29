@@ -31,7 +31,10 @@ use axum::{
     http::StatusCode,
     response::Json as ResponseJson,
 };
-use revm::primitives::alloy_primitives::TxHash;
+use revm::{
+    context::TxEnv,
+    primitives::alloy_primitives::TxHash,
+};
 use serde::{
     Deserialize,
     Serialize,
@@ -58,23 +61,9 @@ pub(in crate::transport) const METHOD_REORG: &str = "reorg";
 pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransactions";
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct TransactionEnv {
-    pub caller: String,
-    pub gas_limit: u64,
-    pub gas_price: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transact_to: Option<String>,
-    pub value: String,
-    pub data: String,
-    pub nonce: u64,
-    pub chain_id: u64,
-    pub access_list: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
 pub struct Transaction {
     #[serde(rename = "txEnv")]
-    pub tx_env: TransactionEnv,
+    pub tx_env: TxEnv,
     pub hash: String,
 }
 

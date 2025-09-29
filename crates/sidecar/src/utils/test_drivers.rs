@@ -34,10 +34,7 @@ use crate::{
         http::{
             HttpTransport,
             config::HttpTransportConfig,
-            server::{
-                Transaction,
-                TransactionEnv,
-            },
+            server::Transaction,
         },
         mock::MockTransport,
     },
@@ -579,20 +576,7 @@ impl TestTransport for LocalInstanceHttpDriver {
         // Create the transaction structure
         let transaction = Transaction {
             hash: tx_hash.to_string(),
-            tx_env: TransactionEnv {
-                caller: tx_env.caller.to_string(),
-                gas_limit: tx_env.gas_limit,
-                gas_price: tx_env.gas_price.to_string(),
-                transact_to: match tx_env.kind {
-                    TxKind::Call(addr) => Some(addr.to_string()),
-                    TxKind::Create => None,
-                },
-                value: tx_env.value.to_string(),
-                data: format!("0x{}", alloy::hex::encode(&tx_env.data)),
-                nonce: tx_env.nonce,
-                chain_id: tx_env.chain_id.unwrap_or_default(),
-                access_list: Vec::new(), // Empty access list for now
-            },
+            tx_env,
         };
 
         let request = json!({
@@ -998,20 +982,64 @@ impl TestTransport for LocalInstanceGrpcDriver {
         self.block_tx_hashes.push(tx_hash);
 
         // Create the gRPC transaction structure
+
         let transaction = GrpcTransaction {
             hash: tx_hash.to_string(),
             tx_env: Some(GrpcTransactionEnv {
+                tx_type: 0, // Default to legacy transaction type
                 caller: tx_env.caller.to_string(),
                 gas_limit: tx_env.gas_limit,
                 gas_price: tx_env.gas_price.to_string(),
-                transact_to: match tx_env.kind {
+                kind: match tx_env.kind {
                     TxKind::Call(addr) => addr.to_string(),
                     TxKind::Create => "0x".to_string(), // Must be "0x" for create, not empty string
                 },
                 value: tx_env.value.to_string(),
                 data: format!("0x{}", alloy::hex::encode(&tx_env.data)),
                 nonce: tx_env.nonce,
-                chain_id: tx_env.chain_id.unwrap_or_default(),
+                chain_id: tx_env.chain_id,
+                access_list: tx_env
+                    .access_list
+                    .0
+                    .iter()
+                    .map(|item| {
+                        crate::transport::grpc::pb::AccessListItem {
+                            address: item.address.to_string(),
+                            storage_keys: item
+                                .storage_keys
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect(),
+                        }
+                    })
+                    .collect(),
+                authorization_list: tx_env
+                    .authorization_list
+                    .iter()
+                    .filter_map(|auth| {
+                        match auth {
+                            alloy::signers::Either::Left(signed_auth) => {
+                                let inner = signed_auth.inner();
+                                Some(crate::transport::grpc::pb::Authorization {
+                                    chain_id: inner.chain_id.to_string(),
+                                    address: inner.address.to_string(),
+                                    nonce: inner.nonce,
+                                    y_parity: signed_auth.y_parity().to_string(),
+                                    r: signed_auth.r().to_string(),
+                                    s: signed_auth.s().to_string(),
+                                })
+                            }
+                            alloy::signers::Either::Right(_recovered_auth) => {
+                                // Skip RecoveredAuthorization for now since we can't easily access its fields
+                                // In a real implementation, you'd need to handle this case properly
+                                None
+                            }
+                        }
+                    })
+                    .collect(),
+                blob_hashes: tx_env.blob_hashes.iter().map(ToString::to_string).collect(),
+                gas_priority_fee: tx_env.gas_priority_fee.map(|fee| fee.to_string()),
+                max_fee_per_blob_gas: tx_env.max_fee_per_blob_gas.to_string(),
             }),
         };
 

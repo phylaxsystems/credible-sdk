@@ -30,27 +30,47 @@ use crate::{
         },
     },
     transport::{
-        common::{
-            HttpDecoderError,
-            TxEnvParams,
-            to_tx_env_from_fields,
-        },
+        common::HttpDecoderError,
         http::transactions_results::QueryTransactionsResults,
     },
 };
-use assertion_executor::primitives::ExecutionResult;
+use alloy::{
+    eips::eip7702::{
+        Authorization,
+        RecoveredAuthorization,
+        SignedAuthorization,
+    },
+    signers::Either,
+};
+use assertion_executor::primitives::{
+    Address,
+    Bytes,
+    ExecutionResult,
+    TxKind,
+    U256,
+};
 use revm::{
-    context::BlockEnv as RevmBlockEnv,
+    context::{
+        BlockEnv as RevmBlockEnv,
+        TxEnv,
+        transaction::{
+            AccessList,
+            AccessListItem,
+        },
+    },
     primitives::{
         B256,
         alloy_primitives::TxHash,
     },
 };
-use std::sync::{
-    Arc,
-    atomic::{
-        AtomicBool,
-        Ordering,
+use std::{
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
     },
 };
 use tonic::{
@@ -305,30 +325,202 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
     }
 }
 
-fn to_tx_env(env: &TransactionEnv) -> Result<revm::context::TxEnv, HttpDecoderError> {
-    to_tx_env_from_fields(&TxEnvParams {
-        caller: &env.caller,
-        gas_limit: env.gas_limit,
-        gas_price: &env.gas_price,
-        transact_to: Some(&env.transact_to),
-        value: &env.value,
-        data: &env.data,
-        nonce: env.nonce,
-        chain_id: env.chain_id,
+/// Convert a Transaction to queue transaction contents
+pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
+    let tx_env =
+        convert_pb_tx_env_to_revm(t.tx_env.as_ref().ok_or(HttpDecoderError::SchemaError)?)?;
+
+    let tx_hash =
+        B256::from_str(&t.hash).map_err(|_| HttpDecoderError::InvalidHash(t.hash.clone()))?;
+
+    Ok(TxQueueContents::Tx(
+        QueueTransaction { tx_hash, tx_env },
+        tracing::Span::current(),
+    ))
+}
+
+/// Convert protobuf TransactionEnv to revm TxEnv
+pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, HttpDecoderError> {
+    // Parse caller address
+    let caller = parse_address(&pb_tx_env.caller)?;
+
+    // Parse gas price
+    let gas_price = parse_u128(&pb_tx_env.gas_price)?;
+
+    // Parse transaction kind (to address or create)
+    let kind = parse_tx_kind(&pb_tx_env.kind)?;
+
+    // Parse value
+    let value = parse_u256(&pb_tx_env.value)?;
+
+    // Parse data
+    let data = parse_bytes(&pb_tx_env.data)?;
+
+    // Parse access list
+    let access_list = parse_access_list(&pb_tx_env.access_list)?;
+
+    // Parse priority fee (optional)
+    let gas_priority_fee = pb_tx_env
+        .gas_priority_fee
+        .as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| parse_u128(s))
+        .transpose()?;
+
+    // Parse blob hashes
+    let blob_hashes = parse_blob_hashes(&pb_tx_env.blob_hashes)?;
+
+    // Parse max fee per blob gas
+    let max_fee_per_blob_gas = parse_u128(&pb_tx_env.max_fee_per_blob_gas)?;
+
+    // Parse authorization list
+    let authorization_list = parse_authorization_list(&pb_tx_env.authorization_list)?;
+
+    Ok(TxEnv {
+        tx_type: u8::try_from(pb_tx_env.tx_type).map_err(|_| HttpDecoderError::SchemaError)?,
+        caller,
+        gas_limit: pb_tx_env.gas_limit,
+        gas_price,
+        kind,
+        value,
+        data,
+        nonce: pb_tx_env.nonce,
+        chain_id: pb_tx_env.chain_id,
+        access_list,
+        gas_priority_fee,
+        blob_hashes,
+        max_fee_per_blob_gas,
+        authorization_list,
     })
 }
 
-fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
-    let tx_hash: B256 = t
-        .hash
-        .parse()
-        .map_err(|_| HttpDecoderError::InvalidHash(t.hash.clone()))?;
-    let tx_env = to_tx_env(t.tx_env.as_ref().ok_or(HttpDecoderError::MissingParams)?)?;
-    let span = tracing::Span::current();
-    Ok(TxQueueContents::Tx(
-        QueueTransaction { tx_hash, tx_env },
-        span,
-    ))
+fn parse_address(addr_str: &str) -> Result<Address, HttpDecoderError> {
+    Address::from_str(addr_str).map_err(|_| HttpDecoderError::InvalidAddress(addr_str.to_string()))
+}
+
+/// Parse transaction kind from to address
+fn parse_tx_kind(to_str: &str) -> Result<TxKind, HttpDecoderError> {
+    if to_str.is_empty() || to_str == "0x" || to_str == "0x0" {
+        Ok(TxKind::Create)
+    } else {
+        Ok(TxKind::Call(parse_address(to_str)?))
+    }
+}
+
+/// Parse a U256 from a decimal string
+fn parse_u256(value_str: &str) -> Result<U256, HttpDecoderError> {
+    // Handle both decimal and hex strings
+    if value_str.starts_with("0x") || value_str.starts_with("0X") {
+        U256::from_str(value_str).map_err(|_| HttpDecoderError::SchemaError)
+    } else {
+        // Parse as decimal
+        U256::from_str_radix(value_str, 10).map_err(|_| HttpDecoderError::SchemaError)
+    }
+}
+
+/// Parse a u128 from a decimal string
+fn parse_u128(value_str: &str) -> Result<u128, HttpDecoderError> {
+    value_str
+        .parse::<u128>()
+        .map_err(|_| HttpDecoderError::SchemaError)
+}
+
+/// Parse a U8 from a decimal string
+fn parse_u8(value_str: &str) -> Result<u8, HttpDecoderError> {
+    // Handle both decimal and hex strings
+    if value_str.starts_with("0x") || value_str.starts_with("0X") {
+        u8::from_str(value_str).map_err(|_| HttpDecoderError::SchemaError)
+    } else {
+        // Parse as decimal
+        value_str
+            .parse::<u8>()
+            .map_err(|_| HttpDecoderError::SchemaError)
+    }
+}
+
+/// Parse bytes from a hex string
+fn parse_bytes(data_str: &str) -> Result<Bytes, HttpDecoderError> {
+    if data_str.is_empty() {
+        return Ok(Bytes::new());
+    }
+
+    let hex_str = data_str.strip_prefix("0x").unwrap_or(data_str);
+
+    hex::decode(hex_str)
+        .map(Bytes::from)
+        .map_err(|_| HttpDecoderError::InvalidHex(data_str.to_string()))
+}
+
+/// Parse B256 from a hex string
+fn parse_b256(hash_str: &str) -> Result<B256, HttpDecoderError> {
+    B256::from_str(hash_str).map_err(|_| HttpDecoderError::InvalidHex(hash_str.to_string()))
+}
+
+/// Parse access list from protobuf
+fn parse_access_list(
+    pb_list: &[crate::transport::grpc::pb::AccessListItem],
+) -> Result<AccessList, HttpDecoderError> {
+    let items = pb_list
+        .iter()
+        .map(|item| {
+            let address = parse_address(&item.address)?;
+            let storage_keys = item
+                .storage_keys
+                .iter()
+                .map(|key| parse_b256(key))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(AccessListItem {
+                address,
+                storage_keys,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(AccessList(items))
+}
+
+/// Parse blob hashes from string array
+fn parse_blob_hashes(hashes: &[String]) -> Result<Vec<B256>, HttpDecoderError> {
+    hashes.iter().map(|hash| parse_b256(hash)).collect()
+}
+
+/// Parse authorization list from protobuf
+fn parse_authorization_list(
+    pb_auths: &[crate::transport::grpc::pb::Authorization],
+) -> Result<Vec<Either<SignedAuthorization, RecoveredAuthorization>>, HttpDecoderError> {
+    pb_auths
+        .iter()
+        .map(|auth| {
+            // Parse the address being authorized (the account giving permission)
+            let address = parse_address(&auth.address)?;
+
+            // Parse nonce
+            let nonce = auth.nonce;
+
+            // Parse chain_id
+            let chain_id = parse_u256(&auth.chain_id)?;
+
+            // Parse y_parity
+            let y_parity = parse_u8(&auth.y_parity)?;
+
+            // Parse signature components
+            let r = parse_u256(&auth.r)?;
+            let s = parse_u256(&auth.s)?;
+
+            // Create the inner Authorization
+            let inner = Authorization {
+                chain_id,
+                address, // The account that is authorizing
+                nonce,
+            };
+
+            // Create a SignedAuthorization since we have the signature
+            let signed = SignedAuthorization::new_unchecked(inner, y_parity, r, s);
+
+            Ok(Either::Left(signed))
+        })
+        .collect()
 }
 
 /// Decode `BlockEnvEnvelope` into a `QueueBlockEnv`.
