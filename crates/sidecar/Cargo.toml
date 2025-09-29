@@ -37,6 +37,7 @@ alloy-provider = { workspace = true }
 metrics = { workspace = true }
 futures = { workspace = true }
 redis = { workspace = true }
+hex = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"

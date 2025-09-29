@@ -10799,6 +10799,7 @@ dependencies = [
  "ctor",
  "dashmap",
  "futures",
+ "hex",
  "int-test-utils",
  "metrics",
  "prost 0.14.1",

@@ -20,15 +20,38 @@ message BasicAck {
   string message = 2;
 }
 
+// Access list item for EIP-2930
+message AccessListItem {
+  string address = 1;      // 20-byte address as hex string
+  repeated string storage_keys = 2; // 32-byte storage keys as hex strings
+}
+
+// Authorization for EIP-7702 (account abstraction)
+message Authorization {
+  string chain_id = 1;
+  string address = 2;      // 20-byte address as hex string
+  uint64 nonce = 3;
+  string y_parity = 4;     // hex string for y_parity
+  string r = 5;           // hex string for signature r
+  string s = 6;           // hex string for signature s
+}
+
+// Transaction environment equivalent to revm's TxEnv
 message TransactionEnv {
-  string caller = 1;
-  uint64 gas_limit = 2;
-  string gas_price = 3; // decimal string
-  string transact_to = 4; // empty string or "0x" => create
-  string value = 5;       // decimal string
-  string data = 6;        // hex string (0x... or raw hex)
-  uint64 nonce = 7;
-  uint64 chain_id = 8;
+  uint32 tx_type = 1;                             // transaction type (0=legacy, 1=eip2930, 2=eip1559, etc.)
+  string caller = 2;                              // 20-byte sender address as hex string
+  uint64 gas_limit = 3;                           // gas limit
+  string gas_price = 4;                           // gas price as decimal string (u128)
+  string kind = 5;                                // target address (empty/0x for create)
+  string value = 6;                               // transaction value as decimal string (U256)
+  string data = 7;                                // transaction data as hex string
+  uint64 nonce = 8;                               // transaction nonce
+  optional uint64 chain_id = 9;                   // chain ID (optional)
+  repeated AccessListItem access_list = 10;       // EIP-2930 access list
+  optional string gas_priority_fee = 11;          // priority fee as decimal string (u128, optional)
+  repeated string blob_hashes = 12;               // EIP-4844 blob versioned hashes as hex strings
+  string max_fee_per_blob_gas = 13;               // max fee per blob gas as decimal string (u128)
+  repeated Authorization authorization_list = 14; // EIP-7702 authorization list
 }
 
 message Transaction {
