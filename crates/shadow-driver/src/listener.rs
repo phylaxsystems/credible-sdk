@@ -91,7 +91,8 @@ impl Listener {
             provider,
             sidecar_client: Client::new(),
             sidecar_url: sidecar_url.to_string(),
-            skip_txs: false,
+            // If we set `skip_txs` to true, we enforce sending first the BlockEnv to the sidecar
+            skip_txs: true,
         }
     }
 
