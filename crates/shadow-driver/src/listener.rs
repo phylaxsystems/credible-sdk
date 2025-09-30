@@ -38,7 +38,10 @@ use revm::context::{
         TxEnvBuilder,
     },
 };
-use serde::Serialize;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use serde_json::json;
 use std::{
     sync::Arc,
@@ -62,11 +65,23 @@ struct TransactionPayload {
     hash: String,
 }
 
+#[derive(Deserialize)]
+struct Response {
+    error: Option<ResponseError>,
+}
+
+#[derive(Deserialize)]
+struct ResponseError {
+    code: i32,
+    message: String,
+}
+
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct Listener {
     provider: Arc<RootProvider>,
     sidecar_client: Client,
     sidecar_url: String,
+    skip_txs: bool,
 }
 
 impl Listener {
@@ -76,6 +91,7 @@ impl Listener {
             provider,
             sidecar_client: Client::new(),
             sidecar_url: sidecar_url.to_string(),
+            skip_txs: false,
         }
     }
 
@@ -129,24 +145,31 @@ impl Listener {
                 transactions.len()
             );
 
-            // Send each transaction to sidecar
-            for (index, tx) in transactions.iter().enumerate() {
-                if let Err(e) = self.send_transaction(tx, index as u64).await {
-                    error!(
-                        "Failed to send transaction {} in block {}: {:?}",
-                        index, block_number, e
-                    );
-                    // Stop processing this block
-                    break;
+            // We need to skip sending the transactions if the previous BlockEnv failed / was rejected by the sidecar
+            if !self.skip_txs {
+                // Send each transaction to sidecar
+                for (index, tx) in transactions.iter().enumerate() {
+                    if let Err(e) = self.send_transaction(tx, index as u64).await {
+                        error!(
+                            "Failed to send transaction {} in block {}: {:?}",
+                            index, block_number, e
+                        );
+                        // Stop processing this block
+                        break;
+                    }
                 }
             }
 
             // Send block environment to sidecar
             if let Err(e) = self.send_block_env(&block, transactions.len()).await {
+                // If there is an error sending the BlockEnv, we skip sending the transactions in the next batch
+                self.skip_txs = true;
                 error!(
                     "Failed to send block env for block {}: {:?}",
                     block_number, e
                 );
+            } else {
+                self.skip_txs = false;
             }
         }
 
@@ -202,13 +225,27 @@ impl Listener {
             .await
             .context("failed to send block env request to sidecar")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(anyhow!("sidecar returned error {}: {}", status, body));
+        let response_status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "unknown error".to_string());
+        if !response_status.is_success() {
+            return Err(anyhow!(
+                "sidecar returned error {}: {}",
+                response_status,
+                body
+            ));
+        }
+
+        if let Ok(error_response) = serde_json::from_str::<Response>(&body)
+            && let Some(json_rpc_error) = error_response.error
+        {
+            return Err(anyhow!(
+                "sidecar returned JSON-RPC error (code: {}): {}",
+                json_rpc_error.code,
+                json_rpc_error.message
+            ));
         }
 
         debug!(
