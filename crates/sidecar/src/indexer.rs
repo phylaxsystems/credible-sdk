@@ -44,47 +44,100 @@ pub async fn run_indexer(indexer_cfg: IndexerCfg) -> Result<(), IndexerError> {
             // close which can happen occasionally due to WS flakiness,
             // we dont need to raise this error further and can try to recover internally.
             //
-            // If that fails, we escalte this if we fail to restart 5 times in a row in 5 secs.
-            Err(IndexerError::BlockStreamError(e)) /*| Err(IndexerError::TransportError(e))*/ => {
-                let now = Instant::now();
-                let window_start = restart_window_start.unwrap_or(now);
-
-                if restart_window_start.is_none()
-                    || now.duration_since(window_start) > RESTART_WINDOW
-                {
-                    restart_window_start = Some(now);
-                    restart_count = 0;
-                }
-
-                restart_count += 1;
-
-                if restart_count > MAX_RESTARTS_IN_WINDOW {
-                    critical!(
-                        error = ?e,
-                        failures_in_window = restart_count,
-                        restarts_in_window = restart_count.saturating_sub(1),
-                        "indexer restarted too frequently; escalating block stream error",
+            // If that fails, we escalate this if we fail to restart 5 times in a row in 5 secs.
+            Err(err) => {
+                if let Some((kind, log_error)) = transient_error_details(&err) {
+                    let decision = next_restart_action(
+                        &mut restart_window_start,
+                        &mut restart_count,
+                        Instant::now(),
+                        RESTART_WINDOW,
+                        MAX_RESTARTS_IN_WINDOW,
+                        BACKOFF_STEP_MS,
                     );
-                    break Err(IndexerError::BlockStreamError(e));
+
+                    match decision {
+                        RestartAction::Continue {
+                            backoff,
+                            failures_in_window,
+                        } => {
+                            tracing::warn!(
+                                error = ?log_error,
+                                failures_in_window,
+                                backoff_ms = backoff.as_millis(),
+                                "indexer transient {} error, restarting after backoff",
+                                kind,
+                            );
+                            sleep(backoff).await;
+                            continue;
+                        }
+                        RestartAction::Escalate { failures_in_window } => {
+                            critical!(
+                                error = ?log_error,
+                                failures_in_window,
+                                restarts_in_window = failures_in_window.saturating_sub(1),
+                                "indexer restarted too frequently; escalating {} error",
+                                kind,
+                            );
+                            break Err(err);
+                        }
+                    }
                 }
 
-                let backoff = Duration::from_millis(BACKOFF_STEP_MS * restart_count as u64);
-
-                tracing::warn!(
-                    error = ?e,
-                    failures_in_window = restart_count,
-                    backoff_ms = backoff.as_millis(),
-                    "indexer closed channel, restarting after backoff",
-                );
-                sleep(backoff).await;
-                continue;
+                break Err(err);
             }
-            Err(IndexerError::TransportError(e)) => {
-                critical!(error = ?e, "indexer transport error");
-                break Err(IndexerError::TransportError(e));
-            }
-            Err(e) => break Err(e),
         }
+    }
+}
+
+enum RestartAction {
+    Continue {
+        backoff: Duration,
+        failures_in_window: u32,
+    },
+    Escalate {
+        failures_in_window: u32,
+    },
+}
+
+fn next_restart_action(
+    restart_window_start: &mut Option<Instant>,
+    restart_count: &mut u32,
+    now: Instant,
+    restart_window: Duration,
+    max_restarts_in_window: u32,
+    backoff_step_ms: u64,
+) -> RestartAction {
+    let should_reset_window = match restart_window_start {
+        Some(start) => now.duration_since(*start) > restart_window,
+        None => true,
+    };
+
+    if should_reset_window {
+        *restart_window_start = Some(now);
+        *restart_count = 0;
+    }
+
+    *restart_count += 1;
+
+    if *restart_count > max_restarts_in_window {
+        RestartAction::Escalate {
+            failures_in_window: *restart_count,
+        }
+    } else {
+        let backoff = Duration::from_millis(backoff_step_ms * u64::from(*restart_count));
+        RestartAction::Continue {
+            backoff,
+            failures_in_window: *restart_count,
+        }
+    }
+}
+
+fn transient_error_details(err: &IndexerError) -> Option<(&'static str, &dyn std::fmt::Debug)> {
+    match err {
+        IndexerError::BlockStreamError(e) => Some(("block stream", e)),
+        IndexerError::TransportError(e) => Some(("transport", e)),
+        _ => None,
     }
 }
 
