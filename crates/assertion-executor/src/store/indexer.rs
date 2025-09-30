@@ -165,6 +165,9 @@ impl From<BlockTag> for BlockNumberOrTag {
 
 type PubSubProvider = RootProvider;
 
+/// The block range for which the indexer will get logs from.
+/// Different clients have different allowed ranges. If the sidecar errors,
+/// reduce this value to something acceptable in your case.
 const MAX_BLOCKS_PER_CALL: u64 = 50_000;
 
 #[derive(Debug, thiserror::Error)]
@@ -208,7 +211,7 @@ pub enum IndexerError {
 type IndexerResult<T = ()> = std::result::Result<T, IndexerError>;
 
 /// Configuration for the Indexer
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IndexerCfg {
     /// The State Oracle contract address
     pub state_oracle: Address,

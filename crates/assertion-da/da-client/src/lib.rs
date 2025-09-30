@@ -7,6 +7,7 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use std::sync::Arc;
 
 use url::Url;
 
@@ -30,11 +31,11 @@ pub use assertion_da_core::{
 ///     let assertion_id = fixed_bytes!("044852b2a670ade5407e78fb2863c51de9fcb96542a07186fe3aeda6bb8a116d");
 ///     let assertion = da_client.fetch_assertion(assertion_id).await.unwrap();
 /// }         
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DaClient {
     client: Client,
     base_url: Url,
-    request_id: std::sync::atomic::AtomicU64,
+    request_id: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -92,7 +93,7 @@ impl DaClient {
         Ok(Self {
             client,
             base_url,
-            request_id: std::sync::atomic::AtomicU64::new(1),
+            request_id: std::sync::atomic::AtomicU64::new(1).into(),
         })
     }
 
@@ -116,7 +117,7 @@ impl DaClient {
         Ok(Self {
             client,
             base_url,
-            request_id: std::sync::atomic::AtomicU64::new(1),
+            request_id: std::sync::atomic::AtomicU64::new(1).into(),
         })
     }
 
