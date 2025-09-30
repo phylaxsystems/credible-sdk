@@ -561,7 +561,7 @@ mod tests {
             let commands = vec![
                 MockCmd::new(
                     redis::cmd("GET").arg("state:current_block"),
-                    Ok::<_, RedisError>("100"),
+                    Ok::<_, RedisError>("1"),
                 ),
                 MockCmd::new(
                     redis::cmd("HGETALL").arg(&account_key),
