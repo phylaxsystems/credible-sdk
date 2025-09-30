@@ -901,37 +901,22 @@ impl TestTransport for LocalInstanceGrpcDriver {
             ..Default::default()
         };
 
-        // Create JSON exactly like HTTP transport does - this must match QueueBlockEnv serialization format
-        let mut block_env_json = serde_json::json!({
-            "number": blockenv.number,
-            "beneficiary": blockenv.beneficiary.to_string(),
-            "timestamp": blockenv.timestamp,
-            "gas_limit": blockenv.gas_limit,
-            "basefee": blockenv.basefee,
-            "difficulty": format!("0x{:x}", blockenv.difficulty),
-            "prevrandao": blockenv.prevrandao.map(|h| h.to_string()),
-            "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| serde_json::json!({
-                "excess_blob_gas": blob.excess_blob_gas,
-                "blob_gasprice": blob.blob_gasprice
-            }))
-        });
-
-        // Add n_transactions and last_tx_hash to match HTTP transport format
-        if let Some(obj) = block_env_json.as_object_mut() {
-            obj.insert(
-                "n_transactions".to_string(),
-                serde_json::Value::Number(serde_json::Number::from(n_transactions)),
-            );
-            if let Some(hash) = last_tx_hash {
-                obj.insert(
-                    "last_tx_hash".to_string(),
-                    serde_json::Value::String(hash.to_string()),
-                );
-            }
-        }
-
         let request = BlockEnvEnvelope {
-            block_env_json: block_env_json.to_string(),
+            block_env: Some(crate::transport::grpc::pb::BlockEnv {
+                number: blockenv.number,
+                beneficiary: blockenv.beneficiary.to_string(),
+                timestamp: blockenv.timestamp,
+                gas_limit: blockenv.gas_limit,
+                basefee: blockenv.basefee,
+                difficulty: format!("0x{:x}", blockenv.difficulty),
+                prevrandao: blockenv.prevrandao.map(|h| h.to_string()),
+                blob_excess_gas_and_price: blockenv.blob_excess_gas_and_price.map(|blob| {
+                    crate::transport::grpc::pb::BlobExcessGasAndPrice {
+                        excess_blob_gas: blob.excess_blob_gas,
+                        blob_gasprice: blob.blob_gasprice.to_string(),
+                    }
+                }),
+            }),
             last_tx_hash: last_tx_hash.map(|h| h.to_string()).unwrap_or_default(),
             n_transactions,
         };
