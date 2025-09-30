@@ -20,3 +20,4 @@ serde_json = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 hex = { workspace = true }
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
+serde = { workspace = true, features = ["derive"] }

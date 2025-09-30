@@ -5,11 +5,19 @@
 //! is traced with the pre-state tracer and written into Redis.
 
 use alloy::{
-    consensus::Transaction,
+    consensus::{
+        Transaction,
+        TxType,
+    },
+    primitives::{
+        B256,
+        Bytes,
+    },
     rpc::types::{
         BlockNumberOrTag,
         Header,
     },
+    signers::Either,
 };
 use alloy_provider::{
     Provider,
@@ -22,6 +30,15 @@ use anyhow::{
 };
 use futures::StreamExt;
 use reqwest::Client;
+use revm::context::{
+    TxEnv,
+    transaction::AccessListItem,
+    tx::{
+        TxEnvBuildError,
+        TxEnvBuilder,
+    },
+};
+use serde::Serialize;
 use serde_json::json;
 use std::{
     sync::Arc,
@@ -36,6 +53,14 @@ use tracing::{
 };
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
+
+/// Wrapper for serializing `TxEnv` with transaction hash
+#[derive(Serialize)]
+struct TransactionPayload {
+    #[serde(rename = "txEnv")]
+    tx_env: TxEnv,
+    hash: String,
+}
 
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct Listener {
@@ -193,38 +218,137 @@ impl Listener {
         Ok(())
     }
 
-    #[allow(clippy::map_unwrap_or)]
+    /// Convert an Alloy transaction to REVM `TxEnv`
+    fn to_revm_tx_env(tx: &alloy::rpc::types::Transaction) -> Result<TxEnv, TxEnvBuildError> {
+        let mut tx_env = TxEnvBuilder::new();
+
+        // Set caller (from address)
+        tx_env = tx_env.caller(tx.inner.signer());
+
+        // Set gas limit
+        tx_env = tx_env.gas_limit(tx.inner.gas_limit());
+
+        // Set gas price
+        tx_env = tx_env.gas_price(tx.inner.gas_price().unwrap_or_default());
+
+        // Set transaction kind (Create for contract deployment, Call for regular tx)
+        let kind = if let Some(to) = tx.to() {
+            revm::primitives::TxKind::Call(to)
+        } else {
+            revm::primitives::TxKind::Create
+        };
+        tx_env = tx_env.kind(kind);
+
+        // Set value
+        tx_env = tx_env.value(tx.value());
+
+        // Set input data
+        tx_env = tx_env.data(Bytes::from(tx.input().to_vec()));
+
+        // Set nonce
+        tx_env = tx_env.nonce(tx.nonce());
+
+        // Set chain ID
+        tx_env = tx_env.chain_id(tx.chain_id());
+
+        // Set access list if present
+        if let Some(access_list) = tx.access_list() {
+            tx_env = tx_env.access_list(
+                access_list
+                    .0
+                    .iter()
+                    .map(|item| {
+                        AccessListItem {
+                            address: item.address,
+                            storage_keys: item
+                                .storage_keys
+                                .iter()
+                                .map(|key| B256::from(*key))
+                                .collect(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
+            ); // Convert Vec<AccessListItem> to AccessList
+        }
+
+        // Handle different transaction types
+        match tx.inner.tx_type() {
+            // Legacy transaction
+            TxType::Legacy |
+            // EIP-2930 - Access list transaction
+            TxType::Eip2930
+            => {
+                // gas_price and access_list are already set above
+            }
+            // EIP-1559 - Dynamic fee transaction
+            TxType::Eip1559 => {
+                let max_fee = tx.inner.max_fee_per_gas();
+                let max_priority = tx.inner.max_priority_fee_per_gas();
+
+                tx_env = tx_env.gas_price(max_fee);
+                tx_env = tx_env.gas_priority_fee(max_priority);
+            }
+            // EIP-4844 - Blob transaction
+            TxType::Eip4844 => {
+                let max_fee = tx.inner.max_fee_per_gas();
+                let max_priority = tx.inner.max_priority_fee_per_gas();
+
+                tx_env = tx_env.gas_price(max_fee);
+                tx_env = tx_env.gas_priority_fee(max_priority);
+
+                // Set blob-related fields
+                if let Some(blob_versioned_hashes) = tx.blob_versioned_hashes() {
+                    tx_env = tx_env.blob_hashes(blob_versioned_hashes
+                        .iter()
+                        .map(|hash| B256::from(*hash))
+                        .collect());
+                }
+
+                if let Some(max_fee_per_blob_gas) = tx.max_fee_per_blob_gas() {
+                    tx_env = tx_env.max_fee_per_blob_gas(max_fee_per_blob_gas);
+                }
+            }
+            // EIP-7702 - Account delegation transaction
+            TxType::Eip7702 => {
+                let max_fee = tx.inner.max_fee_per_gas();
+                let max_priority = tx.inner.max_priority_fee_per_gas();
+
+                tx_env = tx_env.gas_price(max_fee);
+                tx_env = tx_env.gas_priority_fee(max_priority);
+
+                if let Some(auth_list) = tx.authorization_list() {
+                    tx_env = tx_env.authorization_list(auth_list
+                        .iter()
+                        .map(|auth| Either::Left(auth.clone()))
+                        .collect());
+                }
+            }
+        }
+
+        tx_env.build()
+    }
+
     /// Send a transaction to the sidecar
     async fn send_transaction(
         &self,
         tx: &alloy::rpc::types::Transaction,
         tx_index: u64,
     ) -> Result<()> {
+        // Convert Alloy transaction to REVM TxEnv
+        let tx_env = Self::to_revm_tx_env(tx).map_err(|e| anyhow!("{e:?}"))?;
+
+        // Create the transaction payload with REVM TxEnv
+        let transaction_payload = TransactionPayload {
+            tx_env,
+            hash: format!("{:#x}", tx.inner.hash()),
+        };
+
         let tx_payload = json!({
             "jsonrpc": "2.0",
             "method": "sendTransactions",
             "params": {
-                "transactions": [
-                    {
-                        "txEnv": {
-                            "caller": format!("{:#x}", tx.inner.signer()),
-                            "gas_limit": tx.inner.gas_limit(),
-                            "gas_price": tx.inner.gas_price().unwrap_or_default().to_string(),
-                            "transact_to": tx.to().map(|addr| format!("{addr:#x}")),
-                            "value": format!("{:#x}", tx.value()),
-                            "data": format!("0x{}", hex::encode(tx.input())),
-                            "nonce": tx.nonce(),
-                            "chain_id": tx.chain_id().unwrap(), //@TODO: unwrap
-                            "access_list": tx.access_list().map(|list| {
-                                list.0.iter().map(|item| json!({
-                                    "address": format!("{:#x}", item.address),
-                                    "storage_keys": item.storage_keys.iter().map(|key| format!("{key:#x}")).collect::<Vec<_>>()
-                                })).collect::<Vec<_>>()
-                            }).unwrap_or_default(),
-                        },
-                        "hash": format!("{:#x}", tx.inner.hash())
-                    }
-                ]
+                "transactions": [transaction_payload]
             }
         });
 

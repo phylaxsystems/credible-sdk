@@ -10749,6 +10749,7 @@ dependencies = [
  "revm",
  "rust-tracing",
  "rustls",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
