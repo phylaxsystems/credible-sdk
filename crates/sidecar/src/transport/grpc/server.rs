@@ -58,6 +58,7 @@ use revm::{
             AccessListItem,
         },
     },
+    context_interface::block::BlobExcessGasAndPrice as RevmBlobExcessGasAndPrice,
     primitives::{
         B256,
         alloy_primitives::TxHash,
@@ -525,11 +526,13 @@ fn parse_authorization_list(
 
 /// Decode `BlockEnvEnvelope` into a `QueueBlockEnv`.
 fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueBlockEnv, Status> {
-    // Parse the BlockEnv JSON into the concrete type
-    let block_env: RevmBlockEnv = serde_json::from_str(&payload.block_env_json)
-        .map_err(|e| Status::invalid_argument(format!("invalid block_env_json: {e}")))?;
+    let block_env_pb = payload
+        .block_env
+        .as_ref()
+        .ok_or_else(|| Status::invalid_argument("block_env is required"))?;
+    let block_env = convert_pb_block_env(block_env_pb)?;
 
-    // Parse optional last_tx_hash
+    // Parse optional last_tx_hash (empty string indicates absence for parity with HTTP schema)
     let last_tx_hash = if payload.last_tx_hash.is_empty() {
         None
     } else {
@@ -557,5 +560,53 @@ fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueBlockEnv
         block_env,
         last_tx_hash,
         n_transactions: payload.n_transactions,
+    })
+}
+
+fn convert_pb_block_env(block_env: &super::pb::BlockEnv) -> Result<RevmBlockEnv, Status> {
+    let beneficiary = parse_address(&block_env.beneficiary)
+        .map_err(|e| Status::invalid_argument(format!("invalid beneficiary: {e}")))?;
+
+    let difficulty = parse_u256(&block_env.difficulty)
+        .map_err(|e| Status::invalid_argument(format!("invalid difficulty: {e}")))?;
+
+    let prevrandao = match block_env.prevrandao.as_ref() {
+        Some(value) if !value.is_empty() => {
+            Some(
+                parse_b256(value)
+                    .map_err(|e| Status::invalid_argument(format!("invalid prevrandao: {e}")))?,
+            )
+        }
+        _ => None,
+    };
+
+    let blob_excess_gas_and_price = block_env
+        .blob_excess_gas_and_price
+        .as_ref()
+        .map(convert_pb_blob_excess_gas_and_price)
+        .transpose()?;
+
+    Ok(RevmBlockEnv {
+        number: block_env.number,
+        beneficiary,
+        timestamp: block_env.timestamp,
+        gas_limit: block_env.gas_limit,
+        basefee: block_env.basefee,
+        difficulty,
+        prevrandao,
+        blob_excess_gas_and_price,
+    })
+}
+
+fn convert_pb_blob_excess_gas_and_price(
+    blob: &super::pb::BlobExcessGasAndPrice,
+) -> Result<RevmBlobExcessGasAndPrice, Status> {
+    let blob_gasprice = parse_u128(&blob.blob_gasprice).map_err(|_| {
+        Status::invalid_argument("invalid blob_gasprice: expected decimal string for u128")
+    })?;
+
+    Ok(RevmBlobExcessGasAndPrice {
+        excess_blob_gas: blob.excess_blob_gas,
+        blob_gasprice,
     })
 }

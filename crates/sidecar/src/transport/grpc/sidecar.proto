@@ -3,16 +3,30 @@ syntax = "proto3";
 package sidecar.transport.v1;
 
 // Envelope for sending block environment to the sidecar.
-// For compatibility with existing JSON schema, we carry the block env
-// as a JSON object string. This allows the sidecar to leverage existing
-// serde decoding and remain aligned with the HTTP transport schema.
+// The block environment is transmitted using native protobuf typing to
+// avoid JSON-in-protobuf payloads.
 message BlockEnvEnvelope {
-  // JSON object representing the BlockEnv (same shape as the HTTP schema).
-  string block_env_json = 1;
+  BlockEnv block_env = 1;
   // Optional last tx hash and transaction count to mirror HTTP schema.
   // When n_transactions > 0, last_tx_hash must be provided and non-empty.
   string last_tx_hash = 2; // empty string means absent
   uint64 n_transactions = 3;
+}
+
+message BlockEnv {
+  uint64 number = 1;                     // block number
+  string beneficiary = 2;                // 20-byte address as hex string
+  uint64 timestamp = 3;                  // seconds since UNIX epoch
+  uint64 gas_limit = 4;                  // block gas limit
+  uint64 basefee = 5;                    // base fee per gas (u64)
+  string difficulty = 6;                 // difficulty as hex or decimal string (U256)
+  optional string prevrandao = 7;        // 32-byte prevrandao as hex string
+  optional BlobExcessGasAndPrice blob_excess_gas_and_price = 8;
+}
+
+message BlobExcessGasAndPrice {
+  uint64 excess_blob_gas = 1;            // blob excess gas
+  string blob_gasprice = 2;              // blob gas price as decimal string (u128)
 }
 
 message BasicAck {
