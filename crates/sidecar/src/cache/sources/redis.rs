@@ -46,6 +46,13 @@ use std::{
         Debug,
     },
     str::FromStr,
+    sync::{
+        Arc,
+        atomic::{
+            AtomicU64,
+            Ordering,
+        },
+    },
 };
 use thiserror::Error;
 
@@ -163,6 +170,8 @@ impl RedisBackend for RedisClientBackend {
 pub struct RedisCache<B: RedisBackend> {
     backend: B,
     namespace: String,
+    /// Current block
+    current_block: Arc<AtomicU64>,
 }
 
 impl<B: RedisBackend> RedisCache<B> {
@@ -176,6 +185,7 @@ impl<B: RedisBackend> RedisCache<B> {
         Self {
             backend,
             namespace: namespace.into(),
+            current_block: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -405,15 +415,21 @@ impl<B: RedisBackend> DatabaseRef for RedisCache<B> {
 
 impl<B: RedisBackend> Source for RedisCache<B> {
     /// Reports whether the cache has synchronized past the requested block.
-    fn is_synced(&self, current_block_number: u64) -> bool {
+    fn is_synced(&self, required_block_number: u64) -> bool {
         match self.fetch_current_block_number() {
-            Ok(Some(block)) => block >= current_block_number,
+            Ok(Some(block)) => {
+                block >= required_block_number
+                    && block <= self.current_block.load(Ordering::Relaxed)
+            }
             _ => false,
         }
     }
 
     /// No-op; we dont update the target block for redis.
-    fn update_target_block(&self, _block_number: u64) {}
+    fn update_target_block(&self, block_number: u64) {
+        // NOTE: Temporary patch to avoid reading redis if the redis state is higher than the sidecar state.
+        self.current_block.store(block_number, Ordering::Relaxed);
+    }
 
     /// Provides an identifier used in logs and metrics.
     fn name(&self) -> &'static str {
@@ -712,6 +728,7 @@ mod tests {
         cache
             .put_block_hash(block_number, block_hash)
             .expect("failed to insert block hash");
+        cache.update_target_block(block_number);
         cache
             .set_current_block_number(block_number)
             .expect("failed to set current block number");
@@ -798,12 +815,28 @@ mod tests {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
 
+        cache.update_target_block(110);
         cache
             .set_current_block_number(100)
             .expect("failed to set current block");
 
         assert!(cache.is_synced(90));
         assert!(cache.is_synced(100));
+        assert!(!cache.is_synced(110));
+    }
+
+    #[test]
+    fn is_synced_checks_taget_block() {
+        let backend = InMemoryBackend::default();
+        let cache = RedisCache::new(backend);
+
+        cache.update_target_block(89);
+        cache
+            .set_current_block_number(100)
+            .expect("failed to set current block");
+
+        assert!(!cache.is_synced(90));
+        assert!(!cache.is_synced(100));
         assert!(!cache.is_synced(110));
     }
 
