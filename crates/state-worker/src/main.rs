@@ -27,10 +27,7 @@ use anyhow::{
     Result,
 };
 use clap::Parser;
-use std::{
-    sync::Arc,
-    time::Duration,
-};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -48,11 +45,7 @@ async fn main() -> Result<()> {
     let redis = RedisStateWriter::new(&args.redis_url, args.redis_namespace.clone())
         .context("failed to initialize redis client")?;
 
-    let mut worker = StateWorker::new(
-        provider,
-        redis,
-        Duration::from_secs(args.trace_timeout_secs),
-    );
+    let mut worker = StateWorker::new(provider, redis);
     worker
         .run(args.start_block)
         .await
