@@ -4,13 +4,8 @@
 //! diffs into account-level snapshots, and exposes a compact representation that
 //! mirrors the Redis schema the sidecar expects.
 
-use std::{
-    collections::{
-        HashMap,
-        HashSet,
-    },
-    time::Duration,
-};
+use alloy_rpc_types_trace::parity::Delta;
+use std::collections::HashMap;
 
 use alloy::primitives::{
     Address,
@@ -18,20 +13,11 @@ use alloy::primitives::{
     U256,
     keccak256,
 };
-use alloy_rpc_types_trace::geth::{
-    GethDebugBuiltInTracerType,
-    GethDebugTracingOptions,
-    GethTrace,
-    PreStateConfig,
-    PreStateFrame,
-    TraceResult,
-    pre_state::{
-        AccountState,
-        DiffMode,
-    },
+use alloy_rpc_types_trace::parity::{
+    StateDiff,
+    TraceResultsWithTransactionHash,
 };
 use revm::primitives::KECCAK_EMPTY;
-use tracing::warn;
 
 #[derive(Default)]
 struct AccountSnapshot {
@@ -69,27 +55,16 @@ pub struct AccountCommit {
 
 impl BlockStateUpdate {
     /// Collapse the per-transaction pre-state traces into per-account updates.
-    pub fn from_traces(block_number: u64, block_hash: B256, traces: Vec<TraceResult>) -> Self {
+    pub fn from_traces(
+        block_number: u64,
+        block_hash: B256,
+        traces: Vec<TraceResultsWithTransactionHash>,
+    ) -> Self {
         let mut accounts: HashMap<Address, AccountSnapshot> = HashMap::new();
 
         for trace in traces {
-            match trace {
-                TraceResult::Success { result, tx_hash } => {
-                    match result {
-                        GethTrace::PreStateTracer(frame) => {
-                            match frame {
-                                PreStateFrame::Diff(diff) => process_diff(&mut accounts, diff),
-                                other @ PreStateFrame::Default(_) => {
-                                    warn!(?tx_hash, ?other, "unexpected prestate frame variant");
-                                }
-                            }
-                        }
-                        other => warn!(?tx_hash, ?other, "unexpected tracer response"),
-                    }
-                }
-                TraceResult::Error { error, tx_hash } => {
-                    warn!(?tx_hash, error, "trace error for transaction");
-                }
+            if let Some(state_diff) = trace.full_trace.state_diff {
+                process_diff(&mut accounts, &state_diff);
             }
         }
 
@@ -113,62 +88,11 @@ impl BlockStateUpdate {
 }
 
 impl AccountSnapshot {
-    /// Prime the snapshot with the best-known "pre" values so we always emit a
-    /// full record even if the account later disappears from the post state.
-    fn ensure_initialized(&mut self, state: &AccountState) {
-        if self.balance.is_none() {
-            self.balance = Some(state.balance.unwrap_or_default());
-        }
-        if self.nonce.is_none() {
-            self.nonce = Some(state.nonce.unwrap_or_default());
-        }
-        if self.code.is_none() {
-            let code = state
-                .code
-                .as_ref()
-                .map(|bytes| Vec::<u8>::from(bytes.clone()))
-                .unwrap_or_default();
-            self.code = Some(code);
-        }
-    }
-
-    /// Apply the post-state diff for updates or creations.
-    fn apply_post(&mut self, state: &AccountState) {
-        self.touched = true;
-        self.deleted = false;
-        if let Some(balance) = state.balance {
-            self.balance = Some(balance);
-        }
-        if let Some(nonce) = state.nonce {
-            self.nonce = Some(nonce);
-        }
-        if let Some(code) = &state.code {
-            self.code = Some(Vec::<u8>::from(code.clone()));
-        }
-        for (slot, value) in &state.storage {
-            self.storage_updates.insert(*slot, *value);
-        }
-    }
-
-    /// Apply tombstone semantics for deletions while keeping prior values so we
-    /// can emit zeroed storage/code when the account is removed.
-    fn mark_deleted(&mut self, state: &AccountState) {
-        self.touched = true;
-        self.deleted = true;
-        self.ensure_initialized(state);
-        for slot in state.storage.keys() {
-            self.storage_updates.insert(*slot, B256::ZERO);
-        }
-        for value in self.storage_updates.values_mut() {
-            *value = B256::ZERO;
-        }
-    }
-
     /// Convert the accumulated snapshot into a commit payload if anything
     /// meaningful changed. Returning `None` allows callsites to drop untouched
     /// snapshots without extra bookkeeping.
     fn finalize(mut self, address: Address) -> Option<AccountCommit> {
-        if !self.touched && self.storage_updates.is_empty() {
+        if !self.touched && !self.deleted && self.storage_updates.is_empty() {
             return None;
         }
 
@@ -210,299 +134,551 @@ impl AccountSnapshot {
 }
 
 /// Merge a single transaction diff into the pending account snapshots.
-fn process_diff(accounts: &mut HashMap<Address, AccountSnapshot>, diff: DiffMode) {
-    let DiffMode { pre, post } = diff;
-    let post_addresses: HashSet<Address> = post.keys().copied().collect();
+fn process_diff(accounts: &mut HashMap<Address, AccountSnapshot>, state_diff: &StateDiff) {
+    for (address, account_diff) in &state_diff.0 {
+        let snapshot = accounts.entry(*address).or_default();
 
-    for (address, state) in &pre {
-        accounts
-            .entry(*address)
-            .or_default()
-            .ensure_initialized(state);
-    }
+        // Handle balance changes
+        match &account_diff.balance {
+            Delta::Unchanged => {
+                // No change to balance
+            }
+            Delta::Added(balance) => {
+                // Account was created with this balance
+                snapshot.balance = Some(*balance);
+                snapshot.touched = true;
+            }
+            Delta::Removed(_) => {
+                // Balance removed means account was deleted
+                snapshot.balance = Some(U256::ZERO);
+                snapshot.deleted = true;
+            }
+            Delta::Changed(change) => {
+                // Balance changed from one value to another
+                snapshot.balance = Some(change.to);
+                snapshot.touched = true;
+            }
+        }
 
-    for (address, state) in &post {
-        accounts.entry(*address).or_default().apply_post(state);
-    }
+        // Handle nonce changes
+        match &account_diff.nonce {
+            Delta::Unchanged => {
+                // No change to nonce
+            }
+            Delta::Added(nonce) => {
+                // Account was created with this nonce
+                snapshot.nonce = Some(nonce.to::<u64>());
+                snapshot.touched = true;
+            }
+            Delta::Removed(_) => {
+                // Nonce removed means account was deleted
+                snapshot.nonce = Some(0);
+                snapshot.deleted = true;
+            }
+            Delta::Changed(change) => {
+                // Nonce changed from one value to another
+                snapshot.nonce = Some(change.to.to::<u64>());
+                snapshot.touched = true;
+            }
+        }
 
-    // Any address that had only a `pre` entry but no `post` entry was deleted
-    // during the block. Mark them as tombstones so we zero out Redis.
-    for (address, state) in pre {
-        if !post_addresses.contains(&address) {
-            accounts.entry(address).or_default().mark_deleted(&state);
+        // Handle code changes
+        match &account_diff.code {
+            Delta::Unchanged => {
+                // No change to code
+            }
+            Delta::Added(code) => {
+                // Contract was deployed
+                snapshot.code = Some(code.to_vec());
+                snapshot.touched = true;
+            }
+            Delta::Removed(_) => {
+                // Code removed means contract was deleted
+                snapshot.code = Some(Vec::new());
+                snapshot.deleted = true;
+            }
+            Delta::Changed(change) => {
+                // Code changed (unusual but theoretically possible)
+                snapshot.code = Some(change.to.to_vec());
+                snapshot.touched = true;
+            }
+        }
+
+        // Handle storage changes
+        for (slot, storage_delta) in &account_diff.storage {
+            match storage_delta {
+                Delta::Unchanged => {
+                    // No change to this storage slot
+                }
+                Delta::Added(value) => {
+                    // New storage slot was set
+                    snapshot.storage_updates.insert(*slot, *value);
+                    snapshot.touched = true;
+                }
+                Delta::Removed(_) => {
+                    // Storage slot was deleted (set to zero)
+                    snapshot.storage_updates.insert(*slot, B256::ZERO);
+                    snapshot.touched = true;
+                }
+                Delta::Changed(change) => {
+                    // Storage slot value changed
+                    snapshot.storage_updates.insert(*slot, change.to);
+                    snapshot.touched = true;
+                }
+            }
+        }
+
+        // Check if the account was fully destroyed
+        // This happens when balance, nonce, and code are all Removed
+        let is_destroyed = matches!(account_diff.balance, Delta::Removed(_))
+            && matches!(account_diff.nonce, Delta::Removed(_))
+            && matches!(account_diff.code, Delta::Removed(_));
+
+        if is_destroyed {
+            snapshot.deleted = true;
+            // Zero out all storage that was touched
+            for value in snapshot.storage_updates.values_mut() {
+                *value = B256::ZERO;
+            }
         }
     }
-}
-
-/// Build the canonical tracer configuration we expect from the execution node.
-/// We enable diff mode so pre/post states arrive side-by-side and set a timeout
-/// to avoid hanging the worker if the client is overloaded.
-pub fn build_trace_options(timeout: Duration) -> GethDebugTracingOptions {
-    let config = PreStateConfig {
-        diff_mode: Some(true),
-        disable_code: Some(false),
-        disable_storage: Some(false),
-    };
-    GethDebugTracingOptions::new_tracer(GethDebugBuiltInTracerType::PreStateTracer)
-        .with_prestate_config(config)
-        .with_timeout(timeout)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::{
-        network::{
-            EthereumWallet,
-            TransactionBuilder,
-        },
-        node_bindings::Anvil,
-        primitives::{
-            Address,
-            Bytes,
-            TxKind,
-            U256,
-            keccak256,
-        },
-        providers::ProviderBuilder,
-        rpc::types::TransactionRequest,
-        signers::local::LocalSigner,
+    use alloy::primitives::{
+        Bytes,
+        U64,
     };
-    use alloy_provider::{
-        Provider,
-        WsConnect,
+    use alloy_rpc_types_trace::parity::{
+        AccountDiff,
+        ChangedType,
+        Delta,
     };
-    use anyhow::Result;
-    use revm::primitives::KECCAK_EMPTY;
-    use std::collections::{
-        BTreeMap,
-        HashMap,
-    };
+    use std::collections::BTreeMap;
 
-    fn collect_accounts(accounts: Vec<AccountCommit>) -> HashMap<Address, AccountCommit> {
-        accounts
-            .into_iter()
-            .map(|account| (account.address, account))
-            .collect()
+    // Helper function to create a StateDiff wrapped in TraceResultsWithTransactionHash
+    fn create_trace_with_diff(
+        tx_hash: B256,
+        state_diff: StateDiff,
+    ) -> TraceResultsWithTransactionHash {
+        use alloy_rpc_types_trace::parity::TraceResults;
+
+        TraceResultsWithTransactionHash {
+            transaction_hash: tx_hash,
+            full_trace: TraceResults {
+                output: Bytes::new(),
+                state_diff: Some(state_diff),
+                trace: vec![],
+                vm_trace: None,
+            },
+        }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn prestate_tracer_captures_transfer_diffs() -> Result<()> {
-        let anvil = Anvil::new().spawn();
-        let provider = ProviderBuilder::new()
-            .connect_ws(WsConnect::new(anvil.ws_endpoint()))
-            .await?;
-        let sender_key = anvil.keys()[0].clone();
-        let sender = anvil.addresses()[0];
-        let sender_wallet = EthereumWallet::from(LocalSigner::from(sender_key));
-        let recipient = Address::repeat_byte(0x23);
+    #[test]
+    fn test_simple_balance_transfer() {
+        let sender = Address::repeat_byte(0x01);
+        let recipient = Address::repeat_byte(0x02);
+        let tx_hash = B256::repeat_byte(0xff);
 
-        let initial_sender_balance = provider.get_balance(sender).await?;
-        let chain_id = provider.get_chain_id().await?;
-        let nonce = provider.get_transaction_count(sender).await?;
-        let gas_price = provider.get_gas_price().await?;
-        let transfer_value = U256::from(1_000_000_000u64); // 1 gwei
-        let gas_limit = U256::from(21_000u64);
+        let mut state_diff = StateDiff::default();
 
-        let tx = TransactionRequest {
-            from: Some(sender),
-            to: Some(TxKind::Call(recipient)),
-            value: Some(transfer_value),
-            chain_id: Some(chain_id),
-            nonce: Some(nonce),
-            gas: Some(gas_limit.try_into().expect("gas fits in u128")),
-            max_fee_per_gas: Some(gas_price),
-            max_priority_fee_per_gas: Some(gas_price),
-            gas_price: Some(gas_price),
-            ..Default::default()
-        };
-
-        let signed = tx.build(&sender_wallet).await?;
-        let pending = provider.send_tx_envelope(signed).await?;
-        let tx_hash = *pending.tx_hash();
-        let receipt = pending.get_receipt().await?;
-
-        let block_number = receipt
-            .block_number
-            .expect("block number must be present for mined tx");
-        let block_hash = receipt
-            .block_hash
-            .expect("block hash must be present for mined tx");
-
-        let sender_balance = provider.get_balance(sender).await?;
-        let sender_nonce = provider.get_transaction_count(sender).await?;
-        let recipient_balance = provider.get_balance(recipient).await?;
-        let recipient_nonce = provider.get_transaction_count(recipient).await?;
-
-        let mut pre = BTreeMap::new();
-        pre.insert(
+        // Sender's balance decreases and nonce increases
+        state_diff.0.insert(
             sender,
-            AccountState {
-                balance: Some(initial_sender_balance),
-                nonce: Some(nonce),
-                code: None,
+            AccountDiff {
+                balance: Delta::Changed(ChangedType {
+                    from: U256::from(1000u64),
+                    to: U256::from(900u64),
+                }),
+                nonce: Delta::Changed(ChangedType {
+                    from: U64::from(5),
+                    to: U64::from(6),
+                }),
+                code: Delta::Unchanged,
                 storage: BTreeMap::default(),
             },
         );
 
-        let mut post = BTreeMap::new();
-        post.insert(
-            sender,
-            AccountState {
-                balance: Some(sender_balance),
-                nonce: Some(sender_nonce),
-                code: None,
-                storage: BTreeMap::default(),
-            },
-        );
-        post.insert(
+        // Recipient's balance increases (new account)
+        state_diff.0.insert(
             recipient,
-            AccountState {
-                balance: Some(recipient_balance),
-                nonce: Some(recipient_nonce),
-                code: None,
+            AccountDiff {
+                balance: Delta::Added(U256::from(100u64)),
+                nonce: Delta::Added(U64::from(0)),
+                code: Delta::Unchanged,
                 storage: BTreeMap::default(),
             },
         );
 
-        let diff = DiffMode { pre, post };
-        let trace = GethTrace::PreStateTracer(PreStateFrame::Diff(diff));
-        let traces = vec![TraceResult::new_success(trace, Some(tx_hash))];
-        let update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
-        let accounts = collect_accounts(update.accounts);
+        let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
+        let update = BlockStateUpdate::from_traces(1, B256::ZERO, traces);
 
-        let sender_commit = accounts
-            .get(&sender)
-            .expect("sender account should be present in diff");
-        assert_eq!(sender_commit.balance, sender_balance);
-        assert_eq!(sender_commit.nonce, sender_nonce);
-        assert!(sender_commit.code.is_none());
-        assert_eq!(sender_commit.code_hash, KECCAK_EMPTY);
-        assert!(sender_commit.storage.is_empty());
+        assert_eq!(update.accounts.len(), 2);
+
+        let accounts: HashMap<_, _> = update
+            .accounts
+            .into_iter()
+            .map(|a| (a.address, a))
+            .collect();
+
+        // Check sender
+        let sender_commit = accounts.get(&sender).unwrap();
+        assert_eq!(sender_commit.balance, U256::from(900u64));
+        assert_eq!(sender_commit.nonce, 6);
         assert!(!sender_commit.deleted);
-        assert!(sender_balance < initial_sender_balance);
 
-        let recipient_commit = accounts
-            .get(&recipient)
-            .expect("recipient account should be present in diff");
-        assert_eq!(recipient_commit.balance, recipient_balance);
-        assert_eq!(recipient_commit.nonce, recipient_nonce);
-        assert!(recipient_commit.code.is_none());
-        assert_eq!(recipient_commit.code_hash, KECCAK_EMPTY);
-        assert!(recipient_commit.storage.is_empty());
+        // Check recipient
+        let recipient_commit = accounts.get(&recipient).unwrap();
+        assert_eq!(recipient_commit.balance, U256::from(100u64));
+        assert_eq!(recipient_commit.nonce, 0);
         assert!(!recipient_commit.deleted);
-        assert_eq!(recipient_balance, transfer_value);
-
-        Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn prestate_tracer_captures_contract_creation_code() -> Result<()> {
-        let anvil = Anvil::new().spawn();
-        let provider = ProviderBuilder::new()
-            .connect_ws(WsConnect::new(anvil.ws_endpoint()))
-            .await?;
-        let deployer = anvil.addresses()[1];
-        let initial_deployer_balance = provider.get_balance(deployer).await?;
-        let deployer_key = anvil.keys()[1].clone();
-        let deployer_wallet = EthereumWallet::from(LocalSigner::from(deployer_key));
-        let chain_id = provider.get_chain_id().await?;
-        let nonce = provider.get_transaction_count(deployer).await?;
-        let gas_price = provider.get_gas_price().await?;
-        let gas_limit = U256::from(2_000_000u64);
+    #[test]
+    fn test_contract_deployment() {
+        let deployer = Address::repeat_byte(0x10);
+        let contract = Address::repeat_byte(0x20);
+        let tx_hash = B256::repeat_byte(0xaa);
+        let contract_code = vec![0x60, 0x60, 0x60, 0x40, 0x52];
 
-        // Minimal init code that returns runtime `602a60005260206000f3`.
-        let init_code = hex::decode("600a600c600039600a6000f3602a60005260206000f3")?;
-        let tx = TransactionRequest {
-            from: Some(deployer),
-            to: Some(TxKind::Create),
-            input: Bytes::from(init_code).into(),
-            chain_id: Some(chain_id),
-            nonce: Some(nonce),
-            gas: Some(gas_limit.try_into().expect("gas fits in u128")),
-            max_fee_per_gas: Some(gas_price),
-            max_priority_fee_per_gas: Some(gas_price),
-            gas_price: Some(gas_price),
-            ..Default::default()
+        let mut state_diff = StateDiff::default();
+
+        // Deployer's balance decreases, nonce increases
+        state_diff.0.insert(
+            deployer,
+            AccountDiff {
+                balance: Delta::Changed(ChangedType {
+                    from: U256::from(10_000u64),
+                    to: U256::from(9_000u64),
+                }),
+                nonce: Delta::Changed(ChangedType {
+                    from: U64::from(0),
+                    to: U64::from(1),
+                }),
+                code: Delta::Unchanged,
+                storage: BTreeMap::default(),
+            },
+        );
+
+        // New contract is created
+        state_diff.0.insert(
+            contract,
+            AccountDiff {
+                balance: Delta::Added(U256::ZERO),
+                nonce: Delta::Added(U64::from(1)), // Contracts start with nonce 1
+                code: Delta::Added(contract_code.clone().into()),
+                storage: BTreeMap::default(),
+            },
+        );
+
+        let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
+        let update = BlockStateUpdate::from_traces(2, B256::ZERO, traces);
+
+        let accounts: HashMap<_, _> = update
+            .accounts
+            .into_iter()
+            .map(|a| (a.address, a))
+            .collect();
+
+        // Check contract
+        let contract_commit = accounts.get(&contract).unwrap();
+        assert_eq!(contract_commit.code, Some(contract_code.clone()));
+        assert_eq!(contract_commit.code_hash, keccak256(&contract_code));
+        assert_eq!(contract_commit.nonce, 1);
+        assert!(!contract_commit.deleted);
+    }
+
+    #[test]
+    fn test_storage_updates() {
+        let contract = Address::repeat_byte(0x30);
+        let tx_hash = B256::repeat_byte(0xbb);
+
+        let slot1 = B256::from(U256::from(1));
+        let slot2 = B256::from(U256::from(2));
+        let slot3 = B256::from(U256::from(3));
+
+        let mut storage = BTreeMap::new();
+
+        // Slot 1: New value added
+        storage.insert(slot1, Delta::Added(B256::from(U256::from(100))));
+
+        // Slot 2: Value changed
+        storage.insert(
+            slot2,
+            Delta::Changed(ChangedType {
+                from: B256::from(U256::from(200)),
+                to: B256::from(U256::from(300)),
+            }),
+        );
+
+        // Slot 3: Value removed (set to zero)
+        storage.insert(slot3, Delta::Removed(B256::from(U256::from(400))));
+
+        let mut state_diff = StateDiff::default();
+        state_diff.0.insert(
+            contract,
+            AccountDiff {
+                balance: Delta::Unchanged,
+                nonce: Delta::Unchanged,
+                code: Delta::Unchanged,
+                storage,
+            },
+        );
+
+        let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
+        let update = BlockStateUpdate::from_traces(3, B256::ZERO, traces);
+
+        assert_eq!(update.accounts.len(), 1);
+        let account = &update.accounts[0];
+
+        // Convert storage to HashMap for easier testing
+        let storage_map: HashMap<_, _> = account.storage.iter().copied().collect();
+
+        assert_eq!(storage_map.get(&slot1), Some(&B256::from(U256::from(100))));
+        assert_eq!(storage_map.get(&slot2), Some(&B256::from(U256::from(300))));
+        assert_eq!(storage_map.get(&slot3), Some(&B256::ZERO));
+    }
+
+    #[test]
+    fn test_account_deletion() {
+        let account = Address::repeat_byte(0x40);
+        let tx_hash = B256::repeat_byte(0xcc);
+
+        let mut state_diff = StateDiff::default();
+
+        // Account is being deleted
+        state_diff.0.insert(
+            account,
+            AccountDiff {
+                balance: Delta::Removed(U256::from(500u64)),
+                nonce: Delta::Removed(U64::from(10)),
+                code: Delta::Removed(vec![0x60, 0x80].into()),
+                storage: BTreeMap::default(),
+            },
+        );
+
+        let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
+        let update = BlockStateUpdate::from_traces(4, B256::ZERO, traces);
+
+        assert_eq!(update.accounts.len(), 1);
+        let account_commit = &update.accounts[0];
+
+        assert!(account_commit.deleted);
+        assert_eq!(account_commit.balance, U256::ZERO);
+        assert_eq!(account_commit.nonce, 0);
+        assert_eq!(account_commit.code, None);
+        assert_eq!(account_commit.code_hash, KECCAK_EMPTY);
+    }
+
+    #[test]
+    fn test_account_deletion_with_storage() {
+        let account = Address::repeat_byte(0x50);
+        let tx_hash = B256::repeat_byte(0xdd);
+
+        let slot1 = B256::from(U256::from(1));
+        let slot2 = B256::from(U256::from(2));
+
+        let mut storage = BTreeMap::new();
+        storage.insert(slot1, Delta::Removed(B256::from(U256::from(111))));
+        storage.insert(slot2, Delta::Removed(B256::from(U256::from(222))));
+
+        let mut state_diff = StateDiff::default();
+        state_diff.0.insert(
+            account,
+            AccountDiff {
+                balance: Delta::Removed(U256::from(1000u64)),
+                nonce: Delta::Removed(U64::from(5)),
+                code: Delta::Removed(vec![0x60].into()),
+                storage,
+            },
+        );
+
+        let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
+        let update = BlockStateUpdate::from_traces(5, B256::ZERO, traces);
+
+        let account_commit = &update.accounts[0];
+        assert!(account_commit.deleted);
+
+        // All storage should be zeroed
+        let storage_map: HashMap<_, _> = account_commit.storage.iter().copied().collect();
+        assert_eq!(storage_map.get(&slot1), Some(&B256::ZERO));
+        assert_eq!(storage_map.get(&slot2), Some(&B256::ZERO));
+    }
+
+    #[test]
+    fn test_multiple_transactions_same_account() {
+        let account = Address::repeat_byte(0x60);
+
+        // Transaction 1: Balance changes from 1000 to 900
+        let mut state_diff1 = StateDiff::default();
+        state_diff1.0.insert(
+            account,
+            AccountDiff {
+                balance: Delta::Changed(ChangedType {
+                    from: U256::from(1000u64),
+                    to: U256::from(900u64),
+                }),
+                nonce: Delta::Changed(ChangedType {
+                    from: U64::from(0),
+                    to: U64::from(1),
+                }),
+                code: Delta::Unchanged,
+                storage: BTreeMap::default(),
+            },
+        );
+
+        // Transaction 2: Balance changes from 900 to 800
+        let mut state_diff2 = StateDiff::default();
+        state_diff2.0.insert(
+            account,
+            AccountDiff {
+                balance: Delta::Changed(ChangedType {
+                    from: U256::from(900u64),
+                    to: U256::from(800u64),
+                }),
+                nonce: Delta::Changed(ChangedType {
+                    from: U64::from(1),
+                    to: U64::from(2),
+                }),
+                code: Delta::Unchanged,
+                storage: BTreeMap::default(),
+            },
+        );
+
+        let traces = vec![
+            create_trace_with_diff(B256::from(U256::from(1)), state_diff1),
+            create_trace_with_diff(B256::from(U256::from(2)), state_diff2),
+        ];
+
+        let update = BlockStateUpdate::from_traces(6, B256::ZERO, traces);
+
+        assert_eq!(update.accounts.len(), 1);
+        let account_commit = &update.accounts[0];
+
+        // Should have the final state
+        assert_eq!(account_commit.balance, U256::from(800u64));
+        assert_eq!(account_commit.nonce, 2);
+    }
+
+    #[test]
+    fn test_unchanged_account_not_included() {
+        let account = Address::repeat_byte(0x70);
+
+        let mut state_diff = StateDiff::default();
+        state_diff.0.insert(
+            account,
+            AccountDiff {
+                balance: Delta::Unchanged,
+                nonce: Delta::Unchanged,
+                code: Delta::Unchanged,
+                storage: BTreeMap::default(),
+            },
+        );
+
+        let traces = vec![create_trace_with_diff(B256::ZERO, state_diff)];
+        let update = BlockStateUpdate::from_traces(7, B256::ZERO, traces);
+
+        // Account should not be included since nothing changed
+        assert_eq!(update.accounts.len(), 0);
+    }
+
+    #[test]
+    fn test_empty_traces() {
+        let traces = vec![];
+        let update = BlockStateUpdate::from_traces(8, B256::ZERO, traces);
+        assert_eq!(update.accounts.len(), 0);
+    }
+
+    #[test]
+    fn test_traces_without_state_diff() {
+        use alloy::primitives::Bytes;
+        use alloy_rpc_types_trace::parity::TraceResults;
+
+        let trace = TraceResultsWithTransactionHash {
+            transaction_hash: B256::ZERO,
+            full_trace: TraceResults {
+                output: Bytes::new(),
+                state_diff: None, // No state diff
+                trace: vec![],
+                vm_trace: None,
+            },
         };
 
-        let signed = tx.build(&deployer_wallet).await?;
-        let pending = provider.send_tx_envelope(signed).await?;
-        let tx_hash = *pending.tx_hash();
-        let receipt = pending.get_receipt().await?;
+        let traces = vec![trace];
+        let update = BlockStateUpdate::from_traces(9, B256::ZERO, traces);
+        assert_eq!(update.accounts.len(), 0);
+    }
 
-        let contract_address = receipt
-            .contract_address
-            .expect("deployment must include contract address");
-        let block_number = receipt
-            .block_number
-            .expect("block number must be present for mined tx");
-        let block_hash = receipt
-            .block_hash
-            .expect("block hash must be present for mined tx");
+    #[test]
+    fn test_complex_storage_scenario() {
+        let contract = Address::repeat_byte(0x80);
+        let tx_hash = B256::repeat_byte(0xee);
 
-        let contract_code = provider.get_code_at(contract_address).await?;
-        let contract_balance = provider.get_balance(contract_address).await?;
-        let contract_nonce = provider.get_transaction_count(contract_address).await?;
-        let deployer_balance_after = provider.get_balance(deployer).await?;
-        let deployer_nonce_after = provider.get_transaction_count(deployer).await?;
+        // Create 10 storage slots with various operations
+        let mut storage = BTreeMap::new();
+        for i in 0..10 {
+            let slot = B256::from(U256::from(i));
+            let delta = match i % 4 {
+                0 => Delta::Added(B256::from(U256::from(i * 100))),
+                1 => Delta::Removed(B256::from(U256::from(i * 100))),
+                2 => {
+                    Delta::Changed(ChangedType {
+                        from: B256::from(U256::from(i * 100)),
+                        to: B256::from(U256::from(i * 200)),
+                    })
+                }
+                _ => Delta::Unchanged,
+            };
+            storage.insert(slot, delta);
+        }
 
-        let mut pre = BTreeMap::new();
-        pre.insert(
-            deployer,
-            AccountState {
-                balance: Some(initial_deployer_balance),
-                nonce: Some(nonce),
-                code: None,
-                storage: BTreeMap::default(),
+        let mut state_diff = StateDiff::default();
+        state_diff.0.insert(
+            contract,
+            AccountDiff {
+                balance: Delta::Unchanged,
+                nonce: Delta::Unchanged,
+                code: Delta::Unchanged,
+                storage,
             },
         );
 
-        let mut post = BTreeMap::new();
-        post.insert(
-            deployer,
-            AccountState {
-                balance: Some(deployer_balance_after),
-                nonce: Some(deployer_nonce_after),
-                code: None,
-                storage: BTreeMap::default(),
-            },
-        );
-        post.insert(
-            contract_address,
-            AccountState {
-                balance: Some(contract_balance),
-                nonce: Some(contract_nonce),
-                code: Some(contract_code.clone()),
-                storage: BTreeMap::default(),
-            },
-        );
+        let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
+        let update = BlockStateUpdate::from_traces(10, B256::ZERO, traces);
 
-        let diff = DiffMode { pre, post };
-        let trace = GethTrace::PreStateTracer(PreStateFrame::Diff(diff));
-        let traces = vec![TraceResult::new_success(trace, Some(tx_hash))];
-        let update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
-        let accounts = collect_accounts(update.accounts);
+        let account = &update.accounts[0];
+        let storage_map: HashMap<_, _> = account.storage.iter().copied().collect();
 
-        let contract_commit = accounts
-            .get(&contract_address)
-            .expect("contract account should be present in diff");
-        assert_eq!(contract_commit.balance, contract_balance);
-        assert_eq!(contract_commit.nonce, contract_nonce);
+        // Check specific slots
         assert_eq!(
-            contract_commit.code.as_deref(),
-            Some(contract_code.as_ref())
+            storage_map.get(&B256::from(U256::from(0))),
+            Some(&B256::from(U256::from(0)))
         );
-        assert_eq!(contract_commit.code_hash, keccak256(contract_code.as_ref()));
-        assert!(contract_commit.storage.is_empty());
-        assert!(!contract_commit.deleted);
+        assert_eq!(
+            storage_map.get(&B256::from(U256::from(1))),
+            Some(&B256::ZERO)
+        );
+        assert_eq!(
+            storage_map.get(&B256::from(U256::from(2))),
+            Some(&B256::from(U256::from(400)))
+        );
+        // Slot 3 was unchanged, so shouldn't be in the map
+        assert_eq!(storage_map.get(&B256::from(U256::from(3))), None);
+    }
 
-        // The deployer's nonce should also advance in the diff.
-        let deployer_commit = accounts
-            .get(&deployer)
-            .expect("deployer account should appear in diff");
-        assert_eq!(deployer_commit.nonce, deployer_nonce_after);
+    #[test]
+    fn test_into_parts() {
+        let block_number = 12345u64;
+        let block_hash = B256::repeat_byte(0xab);
+        let traces = vec![];
 
-        Ok(())
+        let update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
+        let (num, hash, accounts) = update.into_parts();
+
+        assert_eq!(num, block_number);
+        assert_eq!(hash, block_hash);
+        assert_eq!(accounts.len(), 0);
     }
 }

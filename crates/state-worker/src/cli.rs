@@ -2,8 +2,6 @@
 
 use clap::Parser;
 
-pub const DEFAULT_TRACE_TIMEOUT_SECS: u64 = 30;
-
 /// Runtime configuration flags for the state worker.
 ///
 /// We expose each parameter as both a long-form CLI flag and an env var so the
@@ -26,8 +24,4 @@ pub struct Args {
     /// Optional block number to start syncing from.
     #[arg(long, env = "STATE_WORKER_START_BLOCK")]
     pub start_block: Option<u64>,
-
-    /// Timeout in seconds for debug trace requests.
-    #[arg(long, env = "STATE_WORKER_TRACE_TIMEOUT_SECS", default_value_t = DEFAULT_TRACE_TIMEOUT_SECS)]
-    pub trace_timeout_secs: u64,
 }

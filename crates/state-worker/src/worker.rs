@@ -5,15 +5,19 @@
 //! is traced with the pre-state tracer and written into Redis.
 
 use crate::critical;
-use alloy::rpc::types::{
-    BlockNumberOrTag,
-    Header,
+use alloy::{
+    eips::BlockId,
+    rpc::types::{
+        BlockNumberOrTag,
+        Header,
+    },
 };
 use alloy_provider::{
     Provider,
     RootProvider,
-    ext::DebugApi,
+    ext::TraceApi,
 };
+use alloy_rpc_types_trace::parity::TraceType;
 use anyhow::{
     Context,
     Result,
@@ -33,10 +37,7 @@ use tracing::{
 
 use crate::{
     redis::RedisStateWriter,
-    state::{
-        BlockStateUpdate,
-        build_trace_options,
-    },
+    state::BlockStateUpdate,
 };
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
@@ -45,21 +46,12 @@ const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 pub struct StateWorker {
     provider: Arc<RootProvider>,
     redis: RedisStateWriter,
-    trace_timeout: Duration,
 }
 
 impl StateWorker {
     /// Build a worker that shares the provider/Redis client across async tasks.
-    pub fn new(
-        provider: Arc<RootProvider>,
-        redis: RedisStateWriter,
-        trace_timeout: Duration,
-    ) -> Self {
-        Self {
-            provider,
-            redis,
-            trace_timeout,
-        }
+    pub fn new(provider: Arc<RootProvider>, redis: RedisStateWriter) -> Self {
+        Self { provider, redis }
     }
 
     /// Drive the catch-up + streaming loop. We keep retrying the subscription
@@ -156,10 +148,10 @@ impl StateWorker {
 
         // Use the standardized pre-state tracer options so we receive per-tx
         // diffs matching the sidecar's expectations.
-        let trace_options = build_trace_options(self.trace_timeout);
         let traces = match self
             .provider
-            .debug_trace_block_by_number(block_id, trace_options)
+            .trace_replay_block_transactions(BlockId::Number(block_number.into()))
+            .trace_type(TraceType::StateDiff)
             .await
         {
             Ok(traces) => traces,

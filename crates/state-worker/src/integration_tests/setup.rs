@@ -5,7 +5,6 @@ use crate::{
     worker::StateWorker,
 };
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
-use std::time::Duration;
 use tokio::net::TcpListener;
 use tracing::error;
 
@@ -42,7 +41,7 @@ impl LocalInstance {
         let redis = RedisStateWriter::new(&redis_url, Self::NAMESPACE.to_string())
             .expect("failed to initialize redis client");
 
-        let mut worker = StateWorker::new(provider, redis, Duration::from_secs(30));
+        let mut worker = StateWorker::new(provider, redis);
         let handle_worder = tokio::spawn(async move {
             if let Err(e) = worker.run(Some(0)).await {
                 error!("worker server error: {}", e);
