@@ -36,22 +36,6 @@ pub struct ChainArgs {
     #[arg(long = "chain.chain-id", default_value = "1", env = "CHAIN_CHAIN_ID")]
     pub chain_id: u64,
 
-    /// RPC node URL and port
-    #[arg(
-        long = "chain.rpc-url",
-        env = "CHAIN_RPC_URL",
-        default_value = "http://127.0.0.1:8545"
-    )]
-    pub rpc_url: String,
-
-    /// Besu client websocket URL
-    #[arg(
-        long = "chain.besu-client-ws-url",
-        default_value = "ws://127.0.0.1:8546",
-        env = "CHAIN_BESU_CLIENT_WS_URL"
-    )]
-    pub besu_client_ws_url: String,
-
     /// Minimum state diff to consider a cache synced
     #[arg(
         long = "chain.minimum-state-diff",
@@ -59,14 +43,6 @@ pub struct ChainArgs {
         env = "CHAIN_MINIMUM_STATE_DIFF"
     )]
     pub minimum_state_diff: u64,
-
-    /// Redis client URL
-    #[arg(
-        long = "chain.redis-client-url",
-        default_value = "http://127.0.0.1:6379",
-        env = "CHAIN_REDIS_CLIENT_URL"
-    )]
-    pub redis_client_url: String,
 }
 
 /// Parameters for Credible configuration
