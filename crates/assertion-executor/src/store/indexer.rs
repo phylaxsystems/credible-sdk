@@ -315,7 +315,7 @@ impl Indexer {
     /// Sync the indexer to the latest block
     #[instrument(skip(self))]
     pub async fn sync_to_head(&mut self) -> IndexerResult {
-        info!(
+        debug!(
             target = "assertion_executor::indexer",
             "Syncing indexer to latest block"
         );
@@ -377,7 +377,7 @@ impl Indexer {
                 pending_modifications.extend(pending_mods);
             }
         }
-        debug!(
+        trace!(
             target = "assertion_executor::indexer",
             to,
             ?pending_modifications,
@@ -404,7 +404,7 @@ impl Indexer {
                 .remove(&key)
                 .map_err(IndexerError::SledError)?;
         }
-        debug!(
+        trace!(
             target = "assertion_executor::indexer",
             from, "Pruned pending modifications and block hashes trees"
         );
@@ -534,7 +534,7 @@ impl Indexer {
         let pending_modifications = self.prune_to(upper_bound + 1)?;
 
         if pending_modifications.is_empty() {
-            debug!(
+            trace!(
                 target = "assertion_executor::indexer",
                 upper_bound, "No pending modifications to apply",
             );
@@ -556,7 +556,7 @@ impl Indexer {
     /// Fetch the events from the `State Oracle` contract.
     /// Store the events in the `pending_modifications` tree for the indexed blocks.
     async fn index_range(&self, from: u64, to: u64) -> IndexerResult {
-        debug!(
+        trace!(
             target = "assertion_executor::indexer",
             from, to, "Indexing range"
         );
