@@ -99,6 +99,8 @@ pub struct LocalInstance<T: TestTransport> {
     transport_handle: Option<JoinHandle<()>>,
     /// Engine task handle
     engine_handle: Option<JoinHandle<()>>,
+    /// State sync service task handle
+    sync_handle: Option<JoinHandle<()>>,
     /// Current block number
     block_number: u64,
     /// Shared transaction results from engine
@@ -130,6 +132,7 @@ impl<T: TestTransport> LocalInstance<T> {
         assertion_store: Arc<AssertionStore>,
         transport_handle: Option<JoinHandle<()>>,
         engine_handle: Option<JoinHandle<()>>,
+        sync_handle: Option<JoinHandle<()>>,
         block_number: u64,
         transaction_results: Arc<crate::TransactionsState>,
         default_account: Address,
@@ -145,6 +148,7 @@ impl<T: TestTransport> LocalInstance<T> {
             assertion_store,
             transport_handle,
             engine_handle,
+            sync_handle,
             block_number,
             transaction_results,
             default_account,
@@ -677,6 +681,9 @@ impl<T: TestTransport> Drop for LocalInstance<T> {
             handle.abort();
         }
         if let Some(handle) = self.engine_handle.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.sync_handle.take() {
             handle.abort();
         }
     }

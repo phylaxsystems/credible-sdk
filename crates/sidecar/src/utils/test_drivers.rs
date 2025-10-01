@@ -17,6 +17,7 @@ use crate::{
         TransactionQueueSender,
         TxQueueContents,
     },
+    sync_service::StateSyncService,
     transport::{
         Transport,
         grpc::{
@@ -38,6 +39,7 @@ use crate::{
         },
         mock::MockTransport,
     },
+    utils::ErrorRecoverability,
 };
 use alloy::primitives::TxHash;
 use assertion_executor::{
@@ -174,7 +176,8 @@ impl TestTransport for LocalInstanceMockDriver {
         info!(target: "test_transport", "Creating LocalInstance with MockTransport");
 
         // Create channels for communication
-        let (engine_tx, engine_rx) = channel::unbounded();
+        let (transport_tx, service_rx) = channel::unbounded();
+        let (service_tx, engine_rx) = channel::unbounded();
         let (mock_tx, mock_rx) = channel::unbounded();
 
         // Create the database and state
@@ -212,12 +215,46 @@ impl TestTransport for LocalInstanceMockDriver {
         let state_results = crate::TransactionsState::new();
         let mut engine = CoreEngine::new(
             state,
-            cache,
+            cache.clone(),
             engine_rx,
             assertion_executor,
             state_results.clone(),
             10,
         );
+
+        let cache_for_service = cache.clone();
+        let sync_handle = tokio::spawn(async move {
+            let service = StateSyncService::new(cache_for_service, service_rx, service_tx);
+            match service.run().await {
+                Ok(()) => info!(target: "test_transport", "State sync service exited cleanly"),
+                Err(e) => {
+                    match e {
+                        crate::sync_service::StateSyncError::InboundChannelClosed => {
+                            warn!(
+                                target: "test_transport",
+                                "State sync service inbound channel closed"
+                            );
+                        }
+                        crate::sync_service::StateSyncError::OutboundChannelClosed => {
+                            error!(
+                                target: "test_transport",
+                                "State sync service outbound channel closed"
+                            );
+                        }
+                        crate::sync_service::StateSyncError::BlockEnvReceived => {
+                            warn!(
+                                target: "test_transport",
+                                "State sync service received block while unsynced"
+                            );
+                        }
+                    }
+
+                    if !ErrorRecoverability::from(&e).is_recoverable() {
+                        error!(target: "test_transport", error = ?e, "State sync service exited");
+                    }
+                }
+            }
+        });
 
         // Spawn the engine task that manually processes items
         // This mimics what the tests do - manually processing items from the queue
@@ -233,7 +270,7 @@ impl TestTransport for LocalInstanceMockDriver {
         });
 
         // Create mock transport with the channels
-        let transport = MockTransport::with_receiver(engine_tx, mock_rx, state_results.clone());
+        let transport = MockTransport::with_receiver(transport_tx, mock_rx, state_results.clone());
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
@@ -254,6 +291,7 @@ impl TestTransport for LocalInstanceMockDriver {
             assertion_store,
             Some(transport_handle),
             Some(engine_handle),
+            Some(sync_handle),
             0,
             state_results,
             default_account,
@@ -368,7 +406,8 @@ impl TestTransport for LocalInstanceHttpDriver {
         info!(target: "LocalInstanceHttpDriver", "Creating LocalInstance with HttpTransport");
 
         // Create channels for communication
-        let (engine_tx, engine_rx) = channel::unbounded();
+        let (transport_tx, service_rx) = channel::unbounded();
+        let (service_tx, engine_rx) = channel::unbounded();
 
         // Create the database and state
         let sequencer_http_mock = DualProtocolMockServer::new()
@@ -406,12 +445,55 @@ impl TestTransport for LocalInstanceHttpDriver {
         let state_results = crate::TransactionsState::new();
         let mut engine = CoreEngine::new(
             state,
-            cache,
+            cache.clone(),
             engine_rx,
             assertion_executor,
             state_results.clone(),
             10,
         );
+
+        let cache_for_service = cache.clone();
+        let sync_handle = tokio::spawn(async move {
+            let service = StateSyncService::new(cache_for_service, service_rx, service_tx);
+            match service.run().await {
+                Ok(()) => {
+                    info!(
+                        target: "LocalInstanceHttpDriver",
+                        "State sync service exited cleanly"
+                    );
+                }
+                Err(e) => {
+                    match e {
+                        crate::sync_service::StateSyncError::InboundChannelClosed => {
+                            warn!(
+                                target: "LocalInstanceHttpDriver",
+                                "State sync inbound channel closed"
+                            );
+                        }
+                        crate::sync_service::StateSyncError::OutboundChannelClosed => {
+                            error!(
+                                target: "LocalInstanceHttpDriver",
+                                "State sync outbound channel closed"
+                            );
+                        }
+                        crate::sync_service::StateSyncError::BlockEnvReceived => {
+                            warn!(
+                                target: "LocalInstanceHttpDriver",
+                                "State sync service received block while unsynced"
+                            );
+                        }
+                    }
+
+                    if !ErrorRecoverability::from(&e).is_recoverable() {
+                        error!(
+                            target: "LocalInstanceHttpDriver",
+                            error = ?e,
+                            "State sync service exited"
+                        );
+                    }
+                }
+            }
+        });
 
         // Spawn the engine task that manually processes items
         // This mimics what the tests do - manually processing items from the queue
@@ -441,7 +523,7 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         // Create HTTP transport config with the dynamically assigned address
         let config = HttpTransportConfig { bind_addr: address };
-        let transport = HttpTransport::new(config, engine_tx, state_results.clone()).unwrap();
+        let transport = HttpTransport::new(config, transport_tx, state_results.clone()).unwrap();
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
@@ -466,6 +548,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             assertion_store,
             Some(transport_handle),
             Some(engine_handle),
+            Some(sync_handle),
             0,
             state_results,
             default_account,
@@ -757,7 +840,8 @@ impl TestTransport for LocalInstanceGrpcDriver {
         info!(target: "LocalInstanceGrpcDriver", "Creating LocalInstance with GrpcTransport");
 
         // Create channels for communication
-        let (engine_tx, engine_rx) = channel::unbounded();
+        let (transport_tx, service_rx) = channel::unbounded();
+        let (service_tx, engine_rx) = channel::unbounded();
 
         // Create the database and state
         let sequencer_http_mock = DualProtocolMockServer::new()
@@ -794,12 +878,55 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let state_results = crate::TransactionsState::new();
         let mut engine = CoreEngine::new(
             state,
-            cache,
+            cache.clone(),
             engine_rx,
             assertion_executor,
             state_results.clone(),
             10,
         );
+
+        let cache_for_service = cache.clone();
+        let sync_handle = tokio::spawn(async move {
+            let service = StateSyncService::new(cache_for_service, service_rx, service_tx);
+            match service.run().await {
+                Ok(()) => {
+                    info!(
+                        target: "LocalInstanceGrpcDriver",
+                        "State sync service exited cleanly"
+                    );
+                }
+                Err(e) => {
+                    match e {
+                        crate::sync_service::StateSyncError::InboundChannelClosed => {
+                            warn!(
+                                target: "LocalInstanceGrpcDriver",
+                                "State sync inbound channel closed"
+                            );
+                        }
+                        crate::sync_service::StateSyncError::OutboundChannelClosed => {
+                            error!(
+                                target: "LocalInstanceGrpcDriver",
+                                "State sync outbound channel closed"
+                            );
+                        }
+                        crate::sync_service::StateSyncError::BlockEnvReceived => {
+                            warn!(
+                                target: "LocalInstanceGrpcDriver",
+                                "State sync service received block while unsynced"
+                            );
+                        }
+                    }
+
+                    if !ErrorRecoverability::from(&e).is_recoverable() {
+                        error!(
+                            target: "LocalInstanceGrpcDriver",
+                            error = ?e,
+                            "State sync service exited"
+                        );
+                    }
+                }
+            }
+        });
 
         // Spawn the engine task
         let engine_handle = tokio::spawn(async move {
@@ -828,7 +955,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         // Create gRPC transport config with the dynamically assigned address
         let config = GrpcTransportConfig { bind_addr: address };
-        let transport = GrpcTransport::new(config, engine_tx, state_results.clone()).unwrap();
+        let transport = GrpcTransport::new(config, transport_tx, state_results.clone()).unwrap();
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
@@ -872,6 +999,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             assertion_store,
             Some(transport_handle),
             Some(engine_handle),
+            Some(sync_handle),
             0,
             state_results,
             default_account,
