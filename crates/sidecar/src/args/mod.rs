@@ -195,6 +195,30 @@ pub struct HttpTransportArgs {
     pub bind_addr: String,
 }
 
+/// State sources configuration
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+pub struct StateArgs {
+    /// Sequencer bind address and port
+    #[arg(long = "state.sequencer_url", env = "STATE_SEQUENCER_URL")]
+    pub sequencer_url: Option<String>,
+
+    /// Besu client bind address and port
+    #[arg(long = "state.besu_client_ws_url", env = "STATE_BESU_CLIENT_WS_URL")]
+    pub besu_client_ws_url: Option<String>,
+
+    /// Redis bind address and port
+    #[arg(long = "state.redis_url", env = "STATE_REDIS_URL")]
+    pub redis_url: Option<String>,
+
+    /// Minimum state diff to consider a cache synced
+    #[arg(
+        long = "state.minimum-state-diff",
+        default_value = "100",
+        env = "STATE_MINIMUM_STATE_DIFF"
+    )]
+    pub minimum_state_diff: u64,
+}
+
 /// Main sidecar arguments that extend `TelemetryArgs` and `CredibleArgs`
 #[derive(Debug, Clone, PartialEq, Eq, clap::Parser)]
 #[command(name = "sidecar", about = "Credible layer sidecar")]
@@ -213,4 +237,6 @@ pub struct SidecarArgs {
     pub credible: CredibleArgs,
     #[command(flatten)]
     pub transport: HttpTransportArgs,
+    #[command(flatten)]
+    pub state: StateArgs,
 }

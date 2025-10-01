@@ -41,6 +41,7 @@ structured naming pattern with the following prefixes:
 - `credible.*` - Credible layer specific settings
 - `transport.*` - Transport layer configuration
 - `telemetry.*` - Telemetry and monitoring settings
+- `state.*` - State source configuration
 
 Run `cargo run -p sidecar -- --help` to see all available options.
 
@@ -51,15 +52,19 @@ Chain:
 
       --chain.chain-id <CHAIN_ID>
           Chain ID [env: CHAIN_CHAIN_ID=] [default: 1]
+          
+State:
+      --state.sequencer-url <SEQUENCER_URL>
+          Sequencer RPC node URL and port [env: STATE_SEQUENCER_URL=] [default: disabled]
 
-      --chain.rpc-url <RPC_URL>
-          RPC node URL and port [env: CHAIN_RPC_URL=] [default: http://127.0.0.1:8545]
+      --state.besu-client-ws-url <BESU_CLIENT_WS_URL>
+          Besu client websocket URL [env: STATE_BESU_CLIENT_WS_URL=] [default: disabled]
+          
+      --state.redis-url <REDIS_URL>
+          Redis URL [env: STATE_REDIS_URL=] [default: disabled]
 
-      --chain.besu-client-ws-url <BESU_CLIENT_WS_URL>
-          Besu client websocket URL [env: CHAIN_BESU_CLIENT_WS_URL=] [default: ws://127.0.0.1:8546]
-
-      --chain.minimum-state-diff <MINIMUM_STATE_DIFF>
-          Minimum state diff to consider a block valid [env: CHAIN_MINIMUM_STATE_DIFF=] [default: 100]
+      --state.minimum-state-diff <MINIMUM_STATE_DIFF>
+          Minimum state diff to consider a block valid [env: STATE_MINIMUM_STATE_DIFF=] [default: 100]
 
 Credible:
       --credible.assertion-gas-limit <ASSERTION_GAS_LIMIT>
