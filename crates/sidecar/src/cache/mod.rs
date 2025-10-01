@@ -172,6 +172,11 @@ impl Cache {
 
         sources
     }
+
+    /// Returns `true` when at least one state source reports as synced.
+    pub fn has_synced_source(&self) -> bool {
+        self.iter_synced_sources().next().is_some()
+    }
 }
 
 impl DatabaseRef for Cache {

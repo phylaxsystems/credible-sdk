@@ -10,6 +10,7 @@ mod config;
 pub mod engine;
 mod indexer;
 mod metrics;
+mod sync_service;
 pub(crate) mod transactions_state;
 pub mod transport;
 mod utils;
@@ -25,6 +26,7 @@ use crate::{
         CoreEngine,
         queue::TransactionQueueSender,
     },
+    sync_service::StateSyncService,
     transport::Transport,
 };
 use assertion_executor::{
@@ -131,14 +133,19 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or(1024 * 1024 * 1024) as u64,
         );
 
-        let (tx_sender, tx_receiver) = unbounded();
+        let (transport_sender, service_receiver) = unbounded();
+        let (engine_sender, engine_receiver) = unbounded();
+
         let mut transport =
-            create_transport_from_args(&args, tx_sender, engine_state_results.clone())?;
+            create_transport_from_args(&args, transport_sender, engine_state_results.clone())?;
+
+        let _sync_service_handle =
+            StateSyncService::new(cache.clone(), service_receiver, engine_sender).spawn();
 
         let mut engine = CoreEngine::new(
             state,
             cache,
-            tx_receiver,
+            engine_receiver,
             assertion_executor.clone(),
             engine_state_results.clone(),
             args.credible.transaction_results_max_capacity,
