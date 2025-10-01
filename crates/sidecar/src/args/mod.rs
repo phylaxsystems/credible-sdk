@@ -169,15 +169,15 @@ pub struct HttpTransportArgs {
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct StateArgs {
     /// Sequencer bind address and port
-    #[arg(long = "state.sequencer_url", env = "STATE_SEQUENCER_URL")]
+    #[arg(long = "state.sequencer-url", env = "STATE_SEQUENCER_URL")]
     pub sequencer_url: Option<String>,
 
     /// Besu client bind address and port
-    #[arg(long = "state.besu_client_ws_url", env = "STATE_BESU_CLIENT_WS_URL")]
+    #[arg(long = "state.besu-client-ws-url", env = "STATE_BESU_CLIENT_WS_URL")]
     pub besu_client_ws_url: Option<String>,
 
     /// Redis bind address and port
-    #[arg(long = "state.redis_url", env = "STATE_REDIS_URL")]
+    #[arg(long = "state.redis-url", env = "STATE_REDIS_URL")]
     pub redis_url: Option<String>,
 
     /// Minimum state diff to consider a cache synced
