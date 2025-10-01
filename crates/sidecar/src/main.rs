@@ -105,19 +105,25 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         let mut sources: Vec<Arc<dyn Source>> = vec![];
-        if let Ok(sequencer) = Sequencer::try_new(&args.chain.rpc_url).await {
+        if let Some(sequencer_url) = &args.state.sequencer_url
+            && let Ok(sequencer) = Sequencer::try_new(sequencer_url).await
+        {
             sources.push(Arc::new(sequencer));
         }
-        if let Ok(besu_client) = BesuClient::try_build(&args.chain.besu_client_ws_url).await {
+        if let Some(besu_client_url) = &args.state.besu_client_ws_url
+            && let Ok(besu_client) = BesuClient::try_build(besu_client_url).await
+        {
             sources.push(besu_client);
         }
-        if let Ok(redis_client) = RedisClientBackend::from_url(&args.chain.redis_client_url) {
+        if let Some(redis_url) = &args.state.redis_url
+            && let Ok(redis_client) = RedisClientBackend::from_url(redis_url)
+        {
             let redis_cache = Arc::new(RedisCache::new(redis_client));
             sources.push(redis_cache);
         }
 
         // The cache is flushed on restart
-        let cache = Arc::new(Cache::new(sources, args.chain.minimum_state_diff));
+        let cache = Arc::new(Cache::new(sources, args.state.minimum_state_diff));
         let state: OverlayDb<Cache> = OverlayDb::new(
             Some(cache.clone()),
             args.credible
