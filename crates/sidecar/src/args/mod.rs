@@ -35,14 +35,6 @@ pub struct ChainArgs {
     // Chain ID
     #[arg(long = "chain.chain-id", default_value = "1", env = "CHAIN_CHAIN_ID")]
     pub chain_id: u64,
-
-    /// Minimum state diff to consider a cache synced
-    #[arg(
-        long = "chain.minimum-state-diff",
-        default_value = "100",
-        env = "CHAIN_MINIMUM_STATE_DIFF"
-    )]
-    pub minimum_state_diff: u64,
 }
 
 /// Parameters for Credible configuration
@@ -166,7 +158,7 @@ pub struct HttpTransportArgs {
 }
 
 /// State sources configuration
-#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, clap::Args)]
 pub struct StateArgs {
     /// Sequencer bind address and port
     #[arg(long = "state.sequencer-url", env = "STATE_SEQUENCER_URL")]
