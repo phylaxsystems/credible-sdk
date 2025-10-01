@@ -26,7 +26,10 @@ use crate::{
         CoreEngine,
         queue::TransactionQueueSender,
     },
-    sync_service::StateSyncService,
+    sync_service::{
+        StateSyncError,
+        StateSyncService,
+    },
     transport::Transport,
 };
 use assertion_executor::{
@@ -139,8 +142,9 @@ async fn main() -> anyhow::Result<()> {
         let mut transport =
             create_transport_from_args(&args, transport_sender, engine_state_results.clone())?;
 
-        let _sync_service_handle =
-            StateSyncService::new(cache.clone(), service_receiver, engine_sender).spawn();
+        let sync_service_future =
+            StateSyncService::new(cache.clone(), service_receiver, engine_sender).run();
+        tokio::pin!(sync_service_future);
 
         let mut engine = CoreEngine::new(
             state,
@@ -183,6 +187,15 @@ async fn main() -> anyhow::Result<()> {
                         tracing::error!(error = ?e, "Indexer exited");
                     } else {
                         critical!(error = ?e, "Indexer exited");
+                    }
+                }
+            }
+            result = &mut sync_service_future => {
+                if let Err(e) = result {
+                    if ErrorRecoverability::from(&e).is_recoverable() {
+                        tracing::error!(error = ?e, "Sync service exited");
+                    } else {
+                        critical!(error = ?e, "Sync service exited");
                     }
                 }
             }

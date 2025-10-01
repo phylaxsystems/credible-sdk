@@ -5,6 +5,7 @@ use crate::{
         TransactionQueueSender,
         TxQueueContents,
     },
+    utils::ErrorRecoverability,
 };
 use crossbeam::channel::TryRecvError;
 use std::{
@@ -12,31 +13,38 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::{
-    task::JoinHandle,
-    time::sleep,
-};
+use thiserror::Error;
+use tokio::time::sleep;
 use tracing::{
     debug,
-    trace,
     info,
     warn,
-    error,
 };
 
 /// Buffers transaction events until at least one state source reports as synced.
 ///
-/// The service sits between the transport and the core engine. While no sources
-/// are synced, it stores transaction events in memory and periodically polls the
-/// cache to check if a source becomes available. Block and reorg events continue
-/// to flow so the engine can advance head information. Once synchronization is
-/// confirmed, the buffered transactions are flushed in FIFO order and subsequent
-/// events pass through without additional processing.
+/// Block and reorg events are forwarded immediately so the engine can keep track
+/// of head changes. Once a source reports as synced, buffered transactions are
+/// flushed and the service becomes a passthrough.
 pub struct StateSyncService {
     cache: Arc<Cache>,
     inbound: TransactionQueueReceiver,
     outbound: TransactionQueueSender,
     poll_interval: Duration,
+}
+
+#[derive(Debug, Error)]
+pub enum StateSyncError {
+    #[error("inbound transaction channel closed")]
+    InboundChannelClosed,
+    #[error("outbound transaction channel closed")]
+    OutboundChannelClosed,
+}
+
+impl From<&StateSyncError> for ErrorRecoverability {
+    fn from(_: &StateSyncError) -> Self {
+        ErrorRecoverability::Recoverable
+    }
 }
 
 impl StateSyncService {
@@ -49,25 +57,18 @@ impl StateSyncService {
             cache,
             inbound,
             outbound,
-            poll_interval: Duration::from_millis(250),
+            poll_interval: Duration::from_millis(100),
         }
     }
 
-    pub fn spawn(self) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            self.run().await;
-        })
-    }
-
-    async fn run(mut self) {
+    pub async fn run(mut self) -> Result<(), StateSyncError> {
         let mut buffer = VecDeque::new();
         if self.cache.has_synced_source() {
             debug!(
                 target = "state_sync_service",
                 "Cache already synced, running passthrough"
             );
-            self.passthrough().await;
-            return;
+            return self.passthrough().await;
         }
 
         info!(
@@ -79,16 +80,22 @@ impl StateSyncService {
             match self.inbound.try_recv() {
                 Ok(event) => {
                     if matches!(event, TxQueueContents::Tx(..)) {
-                        trace!(
+                        debug!(
                             target = "state_sync_service",
                             "Buffering transaction event while sources are unsynced"
                         );
                         buffer.push_back(event);
                     } else if self.outbound.send(event).is_err() {
-                        return;
+                        warn!(
+                            target = "state_sync_service",
+                            "Unable to forward event; outbound channel closed"
+                        );
+                        return Err(StateSyncError::OutboundChannelClosed);
                     }
                 }
                 Err(TryRecvError::Empty) => {
+                    tokio::task::yield_now().await;
+
                     if self.cache.has_synced_source() {
                         debug!(
                             target = "state_sync_service",
@@ -98,38 +105,40 @@ impl StateSyncService {
 
                         while let Some(event) = buffer.pop_front() {
                             if self.outbound.send(event).is_err() {
-                                return;
+                                warn!(
+                                    target = "state_sync_service",
+                                    "Unable to forward buffered event; outbound channel closed"
+                                );
+                                return Err(StateSyncError::OutboundChannelClosed);
                             }
                         }
 
-                        break;
+                        return self.passthrough().await;
                     }
 
                     sleep(self.poll_interval).await;
                 }
                 Err(TryRecvError::Disconnected) => {
-                    debug!(
+                    warn!(
                         target = "state_sync_service",
                         "Inbound transaction channel disconnected"
                     );
-                    return;
+                    return Err(StateSyncError::InboundChannelClosed);
                 }
             }
         }
-
-        self.passthrough().await;
     }
 
-    async fn passthrough(&mut self) {
+    async fn passthrough(&mut self) -> Result<(), StateSyncError> {
         loop {
             match self.inbound.try_recv() {
                 Ok(event) => {
                     if self.outbound.send(event).is_err() {
-                        error!(
+                        warn!(
                             target = "state_sync_service",
                             "Failed to forward event; engine down"
                         );
-                        return;
+                        return Err(StateSyncError::OutboundChannelClosed);
                     }
                 }
                 Err(TryRecvError::Empty) => {
@@ -143,6 +152,7 @@ impl StateSyncService {
             target = "state_sync_service",
             "Inbound channel closed; shutting down state sync service"
         );
+        Ok(())
     }
 }
 
@@ -156,7 +166,7 @@ mod tests {
         },
         engine::queue::{
             QueueBlockEnv,
-            TxQueueContents,
+            QueueTransaction,
         },
     };
     use assertion_executor::{
@@ -239,7 +249,9 @@ mod tests {
         let (transport_sender, service_receiver) = crossbeam::channel::unbounded();
         let (engine_sender, engine_receiver) = crossbeam::channel::unbounded();
 
-        let handle = StateSyncService::new(cache.clone(), service_receiver, engine_sender).spawn();
+        let handle = tokio::spawn(
+            StateSyncService::new(cache.clone(), service_receiver, engine_sender).run(),
+        );
 
         // Block events pass through immediately even when unsynced.
         transport_sender
@@ -253,26 +265,26 @@ mod tests {
             move || receiver.recv_timeout(Duration::from_millis(200))
         })
         .await
-        .expect("spawn block failure")
+        .expect("spawn blocking")
         .expect("block event should pass through");
         assert!(matches!(block, TxQueueContents::Block(..)));
 
         // Transaction events are buffered while unsynced.
         let tx = TxQueueContents::Tx(
-            crate::engine::queue::QueueTransaction {
+            QueueTransaction {
                 tx_hash: B256::ZERO,
                 tx_env: revm::context::TxEnv::default(),
             },
             Span::none(),
         );
         transport_sender.send(tx).unwrap();
-        let rx_res = tokio::task::spawn_blocking({
+        let buffered = tokio::task::spawn_blocking({
             let receiver = engine_receiver.clone();
             move || receiver.recv_timeout(Duration::from_millis(200))
         })
         .await
-        .expect("spawn block failure");
-        assert!(rx_res.is_err());
+        .expect("spawn blocking");
+        assert!(buffered.is_err());
 
         // Flip source to synced and ensure buffered tx is released.
         source.set_synced(true);
@@ -281,13 +293,13 @@ mod tests {
             move || receiver.recv_timeout(Duration::from_secs(1))
         })
         .await
-        .expect("spawn block failure")
+        .expect("spawn blocking")
         .expect("buffered transaction should be released once synced");
         assert!(matches!(released, TxQueueContents::Tx(..)));
 
         // Subsequent transactions flow immediately after release.
         let next_tx = TxQueueContents::Tx(
-            crate::engine::queue::QueueTransaction {
+            QueueTransaction {
                 tx_hash: B256::from([0x01; 32]),
                 tx_env: revm::context::TxEnv::default(),
             },
@@ -295,15 +307,18 @@ mod tests {
         );
         transport_sender.send(next_tx).unwrap();
         let subsequent = tokio::task::spawn_blocking({
-            let receiver = engine_receiver.clone();
+            let receiver = engine_receiver;
             move || receiver.recv_timeout(Duration::from_millis(200))
         })
         .await
-        .expect("spawn block failure")
+        .expect("spawn blocking")
         .expect("transaction should flow once synced");
         assert!(matches!(subsequent, TxQueueContents::Tx(..)));
 
         drop(transport_sender);
-        handle.await.expect("state sync service task should finish");
+        handle
+            .await
+            .expect("state sync service join failed")
+            .expect("state sync service should exit cleanly");
     }
 }
