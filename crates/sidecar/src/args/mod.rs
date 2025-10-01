@@ -6,20 +6,13 @@ use assertion_executor::{
     },
     store::BlockTag,
 };
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    str::FromStr,
+};
 
-/// Wrapper for `SpecId` that implements `clap::ValueEnum`
-#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum, Default)]
-pub enum SpecIdArg {
-    #[default]
-    #[value(name = "latest")]
-    Latest,
-}
-
-impl From<SpecIdArg> for SpecId {
-    fn from(_arg: SpecIdArg) -> Self {
-        SpecId::default()
-    }
+fn parse_spec_id(s: &str) -> Result<SpecId, String> {
+    SpecId::from_str(s).map_err(|_| format!("Invalid spec id: {s}"))
 }
 
 /// Default contract address for the state oracle contract. Used for indexing assertions
@@ -34,9 +27,10 @@ pub struct ChainArgs {
         long = "chain.spec-id",
         env = "CHAIN_SPEC_ID",
         default_value = "latest",
+        value_parser = parse_spec_id,
         value_enum
     )]
-    pub spec_id: SpecIdArg,
+    pub spec_id: SpecId,
 
     // Chain ID
     #[arg(long = "chain.chain-id", default_value = "1", env = "CHAIN_CHAIN_ID")]

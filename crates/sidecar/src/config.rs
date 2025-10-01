@@ -24,7 +24,7 @@ use tracing::{
 /// Initialize `ExecutorConfig` from `SidecarArgs`
 pub fn init_executor_config(args: &SidecarArgs) -> ExecutorConfig {
     let config = ExecutorConfig::default()
-        .with_spec_id(args.chain.spec_id.clone().into())
+        .with_spec_id(args.chain.spec_id)
         .with_chain_id(args.chain.chain_id)
         .with_assertion_gas_limit(args.credible.assertion_gas_limit);
 
