@@ -1,3 +1,14 @@
+//! `sync_service`
+//!
+//! The sync service ensures that we do not forward transactions to the core engine unless
+//! we have at least one state source synced.
+//!
+//! Once this is done we forward all txs and blockenvs directly to the core engine.
+//!
+//! If we receive a blockenv before we are synced, we will error out and restart.
+//! We do this to not have outdated txs on an updated state when the state worker
+//! catches up.
+
 use crate::{
     cache::Cache,
     engine::queue::{
@@ -23,9 +34,10 @@ use tracing::{
 
 /// Buffers transaction events until at least one state source reports as synced.
 ///
-/// Block and reorg events are forwarded immediately so the engine can keep track
-/// of head changes. Once a source reports as synced, buffered transactions are
+/// Once a source reports as synced, buffered transactions are
 /// flushed and the service becomes a passthrough.
+///
+/// If a blockenv is received we exit early with an error.
 pub struct StateSyncService {
     cache: Arc<Cache>,
     inbound: TransactionQueueReceiver,
@@ -39,6 +51,8 @@ pub enum StateSyncError {
     InboundChannelClosed,
     #[error("outbound transaction channel closed")]
     OutboundChannelClosed,
+    #[error("BlockEnv received before state sources have been synced")]
+    BlockEnvReceived,
 }
 
 impl From<&StateSyncError> for ErrorRecoverability {
@@ -85,12 +99,22 @@ impl StateSyncService {
                             "Buffering transaction event while sources are unsynced"
                         );
                         buffer.push_back(event);
-                    } else if self.outbound.send(event).is_err() {
+                    } else {
+                        // Instead of storing blockenvs we crash on purpose if no state sources
+                        // are synced.
+                        //
+                        // This is to prevent transactions from previous blockenvs being executed
+                        // on an a version of the state higher than they were initially sent at.
+                        // FIXME: the proper solution to this is probably to store our sidecar
+                        // desired height in redis and have the state worker respect that and
+                        // not sync higher than the desired height.
+                        //
+                        // We can also clear the buffer from outdated blockenvs
                         warn!(
                             target = "state_sync_service",
-                            "Unable to forward event; outbound channel closed"
+                            "Received BlockEnv before our state sources have been synced!"
                         );
-                        return Err(StateSyncError::OutboundChannelClosed);
+                        return Err(StateSyncError::BlockEnvReceived);
                     }
                 }
                 Err(TryRecvError::Empty) => {
@@ -107,7 +131,7 @@ impl StateSyncService {
                             if self.outbound.send(event).is_err() {
                                 warn!(
                                     target = "state_sync_service",
-                                    "Unable to forward buffered event; outbound channel closed"
+                                    "Unable to forward buffered event; outbound channel closed!"
                                 );
                                 return Err(StateSyncError::OutboundChannelClosed);
                             }
@@ -121,7 +145,7 @@ impl StateSyncService {
                 Err(TryRecvError::Disconnected) => {
                     warn!(
                         target = "state_sync_service",
-                        "Inbound transaction channel disconnected"
+                        "Inbound transaction channel disconnected!"
                     );
                     return Err(StateSyncError::InboundChannelClosed);
                 }
@@ -129,6 +153,10 @@ impl StateSyncService {
         }
     }
 
+    /// Passes through transactions received from the sync service
+    /// to the core engine.
+    ///
+    /// Will continue to do this until its killed.
     async fn passthrough(&mut self) -> Result<(), StateSyncError> {
         loop {
             match self.inbound.try_recv() {
@@ -253,22 +281,6 @@ mod tests {
             StateSyncService::new(cache.clone(), service_receiver, engine_sender).run(),
         );
 
-        // Block events pass through immediately even when unsynced.
-        transport_sender
-            .send(TxQueueContents::Block(
-                QueueBlockEnv::default(),
-                Span::none(),
-            ))
-            .unwrap();
-        let block = tokio::task::spawn_blocking({
-            let receiver = engine_receiver.clone();
-            move || receiver.recv_timeout(Duration::from_millis(200))
-        })
-        .await
-        .expect("spawn blocking")
-        .expect("block event should pass through");
-        assert!(matches!(block, TxQueueContents::Block(..)));
-
         // Transaction events are buffered while unsynced.
         let tx = TxQueueContents::Tx(
             QueueTransaction {
@@ -320,5 +332,35 @@ mod tests {
             .await
             .expect("state sync service join failed")
             .expect("state sync service should exit cleanly");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[should_panic]
+    async fn does_not_bufer_blockenv() {
+        let source = Arc::new(ToggleSource::new());
+        let cache = Arc::new(Cache::new(vec![source.clone()], 10));
+
+        let (transport_sender, service_receiver) = crossbeam::channel::unbounded();
+        let (engine_sender, engine_receiver) = crossbeam::channel::unbounded();
+
+        let _handle = tokio::spawn(
+            StateSyncService::new(cache.clone(), service_receiver, engine_sender).run(),
+        );
+
+        // Block events pass through immediately even when unsynced.
+        transport_sender
+            .send(TxQueueContents::Block(
+                QueueBlockEnv::default(),
+                Span::none(),
+            ))
+            .unwrap();
+        let block = tokio::task::spawn_blocking({
+            let receiver = engine_receiver.clone();
+            move || receiver.recv_timeout(Duration::from_millis(200))
+        })
+        .await
+        .expect("spawn blocking")
+        .expect("block event should pass through");
+        assert!(matches!(block, TxQueueContents::Block(..)));
     }
 }

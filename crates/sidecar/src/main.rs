@@ -3,6 +3,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::unreadable_literal)]
 #![allow(clippy::similar_names)]
+#![allow(clippy::should_panic_without_expect)]
 
 mod args;
 mod cache;
@@ -26,10 +27,7 @@ use crate::{
         CoreEngine,
         queue::TransactionQueueSender,
     },
-    sync_service::{
-        StateSyncError,
-        StateSyncService,
-    },
+    sync_service::StateSyncService,
     transport::Transport,
 };
 use assertion_executor::{
@@ -91,6 +89,7 @@ fn create_transport_from_args(
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
     // Initialize the rustls CryptoProvider for HTTPS support
     rustls::crypto::aws_lc_rs::default_provider()
