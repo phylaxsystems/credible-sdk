@@ -153,7 +153,7 @@ impl Cache {
     ///
     /// Sources are returned in priority order, with the highest priority
     /// synced source returned first.
-    fn iter_synced_sources(&self) -> impl Iterator<Item = Arc<dyn Source>> {
+    pub fn iter_synced_sources(&self) -> impl Iterator<Item = Arc<dyn Source>> {
         let instant = Instant::now();
 
         // MAX(latest BlockEnv - MINIMUM_STATE_DIFF, First block env processed)

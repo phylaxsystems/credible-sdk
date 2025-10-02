@@ -61,8 +61,12 @@ use assertion_executor::primitives::{
 use std::{
     fmt::Debug,
     sync::Arc,
-    time::Instant,
+    time::{
+        Duration,
+        Instant,
+    },
 };
+use tokio::time::sleep;
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -177,6 +181,8 @@ pub enum EngineError {
         "Nothing to commit. We expect a reorg for a failed transaction due to an internal EVM error."
     )]
     NothingToCommit,
+    #[error("No sources are synced!")]
+    NoSyncedSources,
 }
 
 impl From<&EngineError> for ErrorRecoverability {
@@ -188,7 +194,8 @@ impl From<&EngineError> for ErrorRecoverability {
             | EngineError::BadReorgHash => ErrorRecoverability::Unrecoverable,
             EngineError::TransactionError
             | EngineError::ChannelClosed
-            | EngineError::GetTxResultChannelClosed => ErrorRecoverability::Recoverable,
+            | EngineError::GetTxResultChannelClosed
+            | EngineError::NoSyncedSources => ErrorRecoverability::Recoverable,
         }
     }
 }
@@ -591,6 +598,32 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.block_env_transaction_counter = 0;
     }
 
+    /// Verifies that all state sources are synced, and if not stall until they are.
+    ///
+    /// If the sources do not become synced after a set amount of time, the function
+    /// errors.
+    async fn verify_state_sources_synced(&self) -> Result<(), EngineError> {
+        let mut iterations: usize = 0;
+        loop {
+            let count = self.cache.iter_synced_sources().count();
+            if count != 0 {
+                trace!(
+                    target = "engine",
+                    sources_synced = %count,
+                    "Sources synced, continuing"
+                );
+                return Ok(());
+            } else if iterations >= 5 {
+                error!(target = "engine", "No synced sources after 5 tries!");
+                return Err(EngineError::NoSyncedSources);
+            }
+
+            debug!(target = "engine", "No synced sources, trying again in 15ms");
+            sleep(Duration::from_millis(15)).await;
+            iterations += 1;
+        }
+    }
+
     /// Run the engine and process transactions and blocks received
     /// via the transaction queue.
     // TODO: fn should probably not be async but we do it because
@@ -656,6 +689,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 }
                 TxQueueContents::Tx(queue_transaction, current_span) => {
                     let _guard = current_span.enter();
+                    self.verify_state_sources_synced().await?;
 
                     let tx_hash = queue_transaction.tx_hash;
                     let tx_env = queue_transaction.tx_env;
@@ -875,6 +909,28 @@ mod tests {
             10,
         );
         (engine, tx_sender)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_core_engine_errors_when_no_synced_sources() {
+        let (mut engine, tx_sender) = create_test_engine();
+
+        let engine_handle = tokio::spawn(async move { engine.run().await });
+
+        let queue_tx = queue::QueueTransaction {
+            tx_hash: B256::ZERO,
+            tx_env: revm::context::TxEnv::default(),
+        };
+
+        tx_sender
+            .send(TxQueueContents::Tx(queue_tx, tracing::Span::none()))
+            .expect("queue send should succeed");
+
+        let result = engine_handle.await.expect("engine task should not panic");
+        assert!(
+            matches!(result, Err(EngineError::NoSyncedSources)),
+            "expected NoSyncedSources error, got {result:?}"
+        );
     }
 
     #[test]
