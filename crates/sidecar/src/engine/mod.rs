@@ -157,6 +157,11 @@ impl LastExecutedTx {
             self.hashes[self.len - 1].as_ref()
         }
     }
+
+    fn clear(&mut self) {
+        self.hashes = [None, None];
+        self.len = 0;
+    }
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
@@ -550,6 +555,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             // Measure cache invalidation time and set its new min required driver height
             let instant = Instant::now();
             self.state.invalidate_all();
+            self.clear_previous_txs();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
@@ -566,6 +572,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             // Measure cache invalidation time and set its new min required driver height
             let instant = Instant::now();
             self.state.invalidate_all();
+            self.clear_previous_txs();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
@@ -584,6 +591,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             // Measure cache invalidation time and set its new min required driver height
             let instant = Instant::now();
             self.state.invalidate_all();
+            self.clear_previous_txs();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
@@ -765,6 +773,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         // If we received a reorg event before executing a tx,
         // or if the tx hashes dont match something bad happened and we need to exit
         Err(EngineError::BadReorgHash)
+    }
+
+    /// Clears `LastExecutedTxs`. Used when invalidating the cache
+    fn clear_previous_txs(&mut self) {
+        self.last_executed_tx.clear();
     }
 }
 
