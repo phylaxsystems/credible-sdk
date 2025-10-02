@@ -89,7 +89,14 @@ impl Listener {
     pub fn new(provider: Arc<RootProvider>, sidecar_url: &str) -> Self {
         Self {
             provider,
-            sidecar_client: Client::new(),
+            sidecar_client: reqwest::Client::builder()
+                .pool_idle_timeout(Duration::from_secs(90))
+                .pool_max_idle_per_host(100)
+                .timeout(Duration::from_secs(1))
+                .connect_timeout(Duration::from_millis(500))
+                .tcp_keepalive(Duration::from_secs(60))
+                .build()
+                .expect("failed to create sidecar HTTP client"),
             sidecar_url: sidecar_url.to_string(),
             // If we set `skip_txs` to true, we enforce sending first the BlockEnv to the sidecar
             skip_txs: true,
@@ -418,7 +425,11 @@ impl Listener {
             ));
         }
 
-        debug!("Successfully sent transaction {}", tx_index);
+        debug!(
+            "Successfully sent transaction {} with hash {:#x}",
+            tx_index,
+            tx.inner.hash()
+        );
         Ok(())
     }
 }
