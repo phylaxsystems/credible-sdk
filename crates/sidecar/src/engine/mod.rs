@@ -1400,7 +1400,6 @@ mod tests {
         assert_eq!(new_values.len(), 1);
     }
 
-    #[tracing_test::traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_block_env_wrong_last_tx_hash(mut instance: crate::utils::LocalInstance) {
         // Send and verify a reverting CREATE transaction
@@ -1451,6 +1450,7 @@ mod tests {
 
         // Send a blockEnv with the wrong last tx hash
         instance.new_block().await.unwrap();
+        instance.reset_nonce(0);
 
         // Send and verify a successful CREATE transaction
         let tx_hash = instance
