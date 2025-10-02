@@ -608,7 +608,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// errors.
     async fn verify_state_sources_synced(&self) -> Result<(), EngineError> {
         const RETRY_INTERVAL: Duration = Duration::from_millis(10);
-        
+
         let start = Instant::now();
         loop {
             let count = self.cache.iter_synced_sources().count();
@@ -673,6 +673,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 TxQueueContents::Block(queue_block_env, current_span) => {
                     let block_env = &queue_block_env.block_env;
                     let _guard = current_span.enter();
+                    self.verify_state_sources_synced().await?;
 
                     self.check_cache(&queue_block_env);
 
@@ -709,7 +710,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 }
                 TxQueueContents::Tx(queue_transaction, current_span) => {
                     let _guard = current_span.enter();
-                    self.verify_state_sources_synced().await?;
 
                     let tx_hash = queue_transaction.tx_hash;
                     let tx_env = queue_transaction.tx_env;
@@ -947,13 +947,17 @@ mod tests {
 
         let engine_handle = tokio::spawn(async move { engine.run().await });
 
-        let queue_tx = queue::QueueTransaction {
-            tx_hash: B256::ZERO,
-            tx_env: revm::context::TxEnv::default(),
+        let queue_block_env = queue::QueueBlockEnv {
+            block_env: BlockEnv::default(),
+            last_tx_hash: None,
+            n_transactions: 0,
         };
 
         tx_sender
-            .send(TxQueueContents::Tx(queue_tx, tracing::Span::none()))
+            .send(TxQueueContents::Block(
+                queue_block_env,
+                tracing::Span::none(),
+            ))
             .expect("queue send should succeed");
 
         let result = engine_handle.await.expect("engine task should not panic");
