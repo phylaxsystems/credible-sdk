@@ -33,6 +33,7 @@ use assertion_executor::{
         AssertionStore,
     },
     test_utils::{
+        COUNTER_ADDRESS,
         bytecode,
         counter_call,
     },
@@ -40,7 +41,10 @@ use assertion_executor::{
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use rand::Rng;
 use revm::{
-    context::tx::TxEnvBuilder,
+    context::{
+        transaction::AccessListItem,
+        tx::TxEnvBuilder,
+    },
     database::CacheDB,
     primitives::{
         Bytes,
@@ -479,7 +483,7 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Sends transactions of all tx types and verifies they pass
-    /// and properly produce desired outcomes (proper gas accounting etc...)
+    /// and properly produce desired outcomes (proper gas accounting etc...).
     pub async fn send_all_tx_types(&mut self) -> Result<(), String> {
         // legacy tx
         self.send_successful_create_tx(U256::default(), Bytes::default())
@@ -487,23 +491,28 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // type 1, eip-2930 optional access lists
         // verify that we spend less gas on storage reads
-        // TODO: populate access list with a contract we will actually interact with
+        // interact with the pre-loaded counter contract so the access list actually matters
         self.transport.new_block(self.block_number).await?;
         self.block_number += 1;
 
         let nonce = self.next_nonce();
         let caller = self.default_account;
 
-        let access_list = AccessList::default();
+        let access_list = AccessList::from(vec![AccessListItem {
+            address: COUNTER_ADDRESS,
+            // slot 0 stores the counter value and becomes warm via the access list
+            storage_keys: vec![B256::ZERO],
+        }]);
+        let counter_call_data = counter_call().data;
 
         // Create call transaction
         let tx_env = TxEnvBuilder::new()
             .caller(caller)
             .gas_limit(100_000)
-            .gas_price(0)
-            .kind(TxKind::Call(Address::default()))
+            .gas_price(1)
+            .kind(TxKind::Call(COUNTER_ADDRESS))
             .value(U256::default())
-            .data(Bytes::default())
+            .data(counter_call_data)
             .nonce(nonce)
             .access_list(access_list)
             .build()
