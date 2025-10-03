@@ -6,7 +6,18 @@ use crate::{
     engine::TransactionResult,
     transactions_state::RequestTransactionResult,
 };
-use alloy::primitives::TxHash;
+use alloy::{
+    eips::eip7702::{
+        RecoveredAuthority,
+        RecoveredAuthorization,
+    },
+    primitives::TxHash,
+    rpc::types::{
+        AccessList,
+        Authorization,
+    },
+    signers::Either,
+};
 use assertion_executor::{
     primitives::{
         AccountInfo,
@@ -29,6 +40,7 @@ use assertion_executor::{
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use rand::Rng;
 use revm::{
+    context::tx::TxEnvBuilder,
     database::CacheDB,
     primitives::{
         Bytes,
@@ -464,6 +476,97 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
         Ok(tx_hash)
+    }
+
+    /// Sends transactions of all tx types and verifies they pass
+    /// and properly produce desired outcomes (proper gas accounting etc...)
+    pub async fn send_all_tx_types(&mut self) -> Result<(), String> {
+        // legacy tx
+        self.send_successful_create_tx(U256::default(), Bytes::default())
+            .await?;
+
+        // type 1, eip-2930 optional access lists
+        // verify that we spend less gas on storage reads
+        // TODO: populate access list with a contract we will actually interact with
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
+
+        let nonce = self.next_nonce();
+        let caller = self.default_account;
+
+        let access_list = AccessList::default();
+
+        // Create call transaction
+        let tx_env = TxEnv {
+            caller,
+            gas_limit: 100_000,
+            gas_price: 0,
+            kind: TxKind::Call(Address::default()),
+            value: U256::default(),
+            data: Bytes::default(),
+            nonce,
+            access_list,
+            ..Default::default()
+        };
+
+        // Generate transaction hash
+        let tx_hash = Self::generate_random_tx_hash();
+
+        // Send transaction
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
+        // type2, eip-1559
+        // verify we correctly decrement gas for the account sending the tx
+        // according to eip-1559 rules
+        // TODO: send blockenv with gas price of 2 and verify we include the
+        // tx below and properly decrement gas
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
+
+        let nonce = self.next_nonce();
+        let caller = self.default_account;
+
+        // Create call transaction
+        let tx_env = TxEnv {
+            caller,
+            gas_limit: 100_000,
+            gas_price: 0,
+            kind: TxKind::Call(Address::default()),
+            value: U256::default(),
+            data: Bytes::default(),
+            nonce,
+            gas_priority_fee: Some(2),
+            ..Default::default()
+        };
+
+        // Generate transaction hash
+        let tx_hash = Self::generate_random_tx_hash();
+
+        // Send transaction
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
+        // type4, eip-7702
+        // Authorization list present, should derive EIP-7702
+        // TODO: check if the account has code
+        let auth = RecoveredAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::from(1),
+                nonce: 0,
+                address: Address::default(),
+            },
+            RecoveredAuthority::Valid(Address::default()),
+        );
+        let tx_env = TxEnvBuilder::new()
+            .caller(Address::from([1u8; 20]))
+            .gas_priority_fee(Some(10))
+            .authorization_list(vec![Either::Right(auth)])
+            .kind(TxKind::Call(Address::from([2u8; 20])))
+            .build()
+            .unwrap();
+        let tx_hash = Self::generate_random_tx_hash();
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
+        Ok(())
     }
 
     /// Insert a custom assertion from bytecode artifact name

@@ -1464,6 +1464,11 @@ mod tests {
         assert_eq!(new_values.len(), 1);
     }
 
+    #[crate::utils::engine_test(all)]
+    async fn test_all_tx_types(mut instance: crate::utils::LocalInstance) {
+        instance.send_all_tx_types().await.unwrap();
+    }
+
     #[tracing_test::traced_test]
     #[crate::utils::engine_test(http)]
     async fn test_block_env_transaction_number_greater_than_zero_and_no_last_tx_hash(
