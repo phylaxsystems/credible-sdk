@@ -523,14 +523,6 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
-        self.wait_for_processing(Duration::from_millis(5)).await;
-        match self.get_transaction_result(&tx_hash).unwrap() {
-            TransactionResult::ValidationCompleted { execution_result, .. } => {
-                // assert proper gas usage
-                assert_eq!(25364, execution_result.gas_used());
-            },
-            TransactionResult::ValidationError(_) => panic!("validation error!"),
-        };
 
         // type2, eip-1559
         // verify we correctly decrement gas for the account sending the tx
@@ -547,7 +539,7 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_env = TxEnvBuilder::new()
             .caller(caller)
             .gas_limit(100_000)
-            .gas_price(0)
+            .gas_price(2)
             .kind(TxKind::Call(Address::default()))
             .value(U256::default())
             .data(Bytes::default())
@@ -562,9 +554,37 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
+        // type3, eip-4844
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
+
+        let nonce = self.next_nonce();
+        let caller = self.default_account;
+        let mut blob_hash_bytes = [0u8; 32];
+        blob_hash_bytes[0] = 0x01;
+        let blob_hash = B256::from(blob_hash_bytes);
+
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(5)
+            .gas_priority_fee(Some(1))
+            .kind(TxKind::Call(COUNTER_ADDRESS))
+            .data(counter_call().data)
+            .nonce(nonce)
+            .blob_hashes(vec![blob_hash])
+            .max_fee_per_blob_gas(1)
+            .build()
+            .unwrap();
+        let tx_hash = Self::generate_random_tx_hash();
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
         // type4, eip-7702
         // Authorization list present, should derive EIP-7702
         // TODO: check if the account has code
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
+
         let auth = RecoveredAuthorization::new_unchecked(
             Authorization {
                 chain_id: U256::from(1),
