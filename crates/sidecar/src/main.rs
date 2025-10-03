@@ -63,7 +63,6 @@ use args::{
     TransportProtocolArg,
 };
 use clap::Parser;
-use rust_tracing::trace;
 use tracing::log::info;
 
 fn create_transport_from_args(
@@ -93,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    trace();
+    let _guard = rust_tracing::trace();
 
     let args = SidecarArgs::parse();
 
