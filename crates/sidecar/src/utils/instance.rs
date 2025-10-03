@@ -562,6 +562,17 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
+        // type3, eip-4844
+        let tx_env = TxEnvBuilder::new()
+            .caller(Address::from([1u8; 20]))
+            .gas_priority_fee(Some(10))
+            .kind(TxKind::Call(Address::from([2u8; 20])))
+            .blob_hashes(Vec::default())
+            .build()
+            .unwrap();
+        let tx_hash = Self::generate_random_tx_hash();
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
         // type4, eip-7702
         // Authorization list present, should derive EIP-7702
         // TODO: check if the account has code
