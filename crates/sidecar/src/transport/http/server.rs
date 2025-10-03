@@ -229,7 +229,7 @@ pub async fn handle_transaction_rpc(
     };
 
     debug!(
-        has_error = response.error.is_some(),
+        has_failure = response.error.is_some(),
         "Sending JSON-RPC response"
     );
 
