@@ -61,8 +61,12 @@ use assertion_executor::primitives::{
 use std::{
     fmt::Debug,
     sync::Arc,
-    time::Instant,
+    time::{
+        Duration,
+        Instant,
+    },
 };
+use tokio::time::sleep;
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -177,6 +181,8 @@ pub enum EngineError {
         "Nothing to commit. We expect a reorg for a failed transaction due to an internal EVM error."
     )]
     NothingToCommit,
+    #[error("No sources are synced!")]
+    NoSyncedSources,
 }
 
 impl From<&EngineError> for ErrorRecoverability {
@@ -188,7 +194,8 @@ impl From<&EngineError> for ErrorRecoverability {
             | EngineError::BadReorgHash => ErrorRecoverability::Unrecoverable,
             EngineError::TransactionError
             | EngineError::ChannelClosed
-            | EngineError::GetTxResultChannelClosed => ErrorRecoverability::Recoverable,
+            | EngineError::GetTxResultChannelClosed
+            | EngineError::NoSyncedSources => ErrorRecoverability::Recoverable,
         }
     }
 }
@@ -219,6 +226,7 @@ pub struct CoreEngine<DB> {
     block_metrics: BlockMetrics,
     last_executed_tx: LastExecutedTx,
     block_env_transaction_counter: u64,
+    state_sources_sync_timeout: Duration,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -230,6 +238,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         assertion_executor: AssertionExecutor,
         state_results: Arc<TransactionsState>,
         transaction_results_max_capacity: usize,
+        state_sources_sync_timeout: Duration,
     ) -> Self {
         Self {
             state,
@@ -244,6 +253,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_metrics: BlockMetrics::new(),
             last_executed_tx: LastExecutedTx::new(),
             block_env_transaction_counter: 0,
+            state_sources_sync_timeout,
         }
     }
 
@@ -267,6 +277,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_metrics: BlockMetrics::new(),
             last_executed_tx: LastExecutedTx::new(),
             block_env_transaction_counter: 0,
+            state_sources_sync_timeout: Duration::from_millis(100),
         }
     }
 
@@ -591,6 +602,48 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.block_env_transaction_counter = 0;
     }
 
+    /// Verifies that all state sources are synced, and if not stall until they are.
+    ///
+    /// If the sources do not become synced after a set amount of time, the function
+    /// errors.
+    async fn verify_state_sources_synced(&self) -> Result<(), EngineError> {
+        const RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+        let start = Instant::now();
+        loop {
+            let count = self.cache.iter_synced_sources().count();
+            if count != 0 {
+                trace!(
+                    target = "engine",
+                    sources_synced = %count,
+                    waited_ms = start.elapsed().as_millis(),
+                    "Sources synced, continuing"
+                );
+                return Ok(());
+            }
+
+            let waited = start.elapsed();
+            if waited >= self.state_sources_sync_timeout {
+                error!(
+                    target = "engine",
+                    waited_ms = waited.as_millis(),
+                    timeout_ms = self.state_sources_sync_timeout.as_millis(),
+                    "No synced sources within timeout"
+                );
+                return Err(EngineError::NoSyncedSources);
+            }
+
+            debug!(
+                target = "engine",
+                waited_ms = waited.as_millis(),
+                next_retry_ms = RETRY_INTERVAL.as_millis(),
+                timeout_ms = self.state_sources_sync_timeout.as_millis(),
+                "No synced sources, retrying"
+            );
+            sleep(RETRY_INTERVAL).await;
+        }
+    }
+
     /// Run the engine and process transactions and blocks received
     /// via the transaction queue.
     // TODO: fn should probably not be async but we do it because
@@ -620,6 +673,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 TxQueueContents::Block(queue_block_env, current_span) => {
                     let block_env = &queue_block_env.block_env;
                     let _guard = current_span.enter();
+                    self.verify_state_sources_synced().await?;
 
                     self.check_cache(&queue_block_env);
 
@@ -853,7 +907,9 @@ mod tests {
         },
     };
 
-    fn create_test_engine() -> (
+    fn create_test_engine_with_timeout(
+        timeout: Duration,
+    ) -> (
         CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
         crossbeam::channel::Sender<TxQueueContents>,
     ) {
@@ -873,8 +929,42 @@ mod tests {
             assertion_executor,
             state_results,
             10,
+            timeout,
         );
         (engine, tx_sender)
+    }
+
+    fn create_test_engine() -> (
+        CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+        crossbeam::channel::Sender<TxQueueContents>,
+    ) {
+        create_test_engine_with_timeout(Duration::from_millis(100))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_core_engine_errors_when_no_synced_sources() {
+        let (mut engine, tx_sender) = create_test_engine_with_timeout(Duration::from_millis(10));
+
+        let engine_handle = tokio::spawn(async move { engine.run().await });
+
+        let queue_block_env = queue::QueueBlockEnv {
+            block_env: BlockEnv::default(),
+            last_tx_hash: None,
+            n_transactions: 0,
+        };
+
+        tx_sender
+            .send(TxQueueContents::Block(
+                queue_block_env,
+                tracing::Span::none(),
+            ))
+            .expect("queue send should succeed");
+
+        let result = engine_handle.await.expect("engine task should not panic");
+        assert!(
+            matches!(result, Err(EngineError::NoSyncedSources)),
+            "expected NoSyncedSources error, got {result:?}"
+        );
     }
 
     #[test]

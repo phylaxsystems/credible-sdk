@@ -32,7 +32,10 @@ use assertion_executor::{
     db::overlay::OverlayDb,
 };
 use crossbeam::channel::unbounded;
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::{
     cache::{
@@ -142,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
             assertion_executor.clone(),
             engine_state_results.clone(),
             args.credible.transaction_results_max_capacity,
+            Duration::from_millis(args.state.sources_sync_timeout_ms),
         );
 
         let indexer_cfg =

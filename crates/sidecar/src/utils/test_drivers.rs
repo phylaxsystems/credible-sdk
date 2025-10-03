@@ -75,6 +75,7 @@ use serde_json::json;
 use std::{
     net::SocketAddr,
     sync::Arc,
+    time::Duration,
 };
 use tonic::transport::Channel;
 use tracing::{
@@ -217,6 +218,7 @@ impl TestTransport for LocalInstanceMockDriver {
             assertion_executor,
             state_results.clone(),
             10,
+            Duration::from_millis(100),
         );
 
         // Spawn the engine task that manually processes items
@@ -411,6 +413,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             assertion_executor,
             state_results.clone(),
             10,
+            Duration::from_millis(100),
         );
 
         // Spawn the engine task that manually processes items
@@ -799,6 +802,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             assertion_executor,
             state_results.clone(),
             10,
+            Duration::from_millis(100),
         );
 
         // Spawn the engine task

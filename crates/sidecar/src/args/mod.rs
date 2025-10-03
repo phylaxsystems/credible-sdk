@@ -158,7 +158,7 @@ pub struct HttpTransportArgs {
 }
 
 /// State sources configuration
-#[derive(Debug, Default, Clone, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct StateArgs {
     /// Sequencer bind address and port
     #[arg(long = "state.sequencer-url", env = "STATE_SEQUENCER_URL")]
@@ -179,6 +179,27 @@ pub struct StateArgs {
         env = "STATE_MINIMUM_STATE_DIFF"
     )]
     pub minimum_state_diff: u64,
+
+    /// Maximum time (ms) the engine will wait for a state source to report as
+    /// synced before failing a transaction.
+    #[arg(
+        long = "state.sources-sync-timeout-ms",
+        default_value = "1000",
+        env = "STATE_SOURCES_SYNC_TIMEOUT_MS"
+    )]
+    pub sources_sync_timeout_ms: u64,
+}
+
+impl Default for StateArgs {
+    fn default() -> Self {
+        Self {
+            sequencer_url: None,
+            besu_client_ws_url: None,
+            redis_url: None,
+            minimum_state_diff: 100,
+            sources_sync_timeout_ms: 100,
+        }
+    }
 }
 
 /// Main sidecar arguments that extend `TelemetryArgs` and `CredibleArgs`
