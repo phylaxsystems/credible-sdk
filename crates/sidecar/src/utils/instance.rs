@@ -523,6 +523,14 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
+        self.wait_for_processing(Duration::from_millis(5)).await;
+        match self.get_transaction_result(&tx_hash).unwrap() {
+            TransactionResult::ValidationCompleted { execution_result, .. } => {
+                // assert proper gas usage
+                assert_eq!(25364, execution_result.gas_used());
+            },
+            TransactionResult::ValidationError(_) => panic!("validation error!"),
+        };
 
         // type2, eip-1559
         // verify we correctly decrement gas for the account sending the tx
