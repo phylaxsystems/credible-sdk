@@ -259,16 +259,16 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Create a simple test transaction using the default account
     pub fn create_test_transaction(&mut self, value: U256, data: Bytes) -> TxEnv {
         let nonce = self.next_nonce();
-        TxEnv {
-            caller: self.default_account,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value,
-            data,
-            nonce,
-            ..Default::default()
-        }
+        TxEnvBuilder::new()
+            .caller(self.default_account)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .value(value)
+            .data(data)
+            .nonce(nonce)
+            .build()
+            .expect("failed to build create test transaction")
     }
 
     /// Generate a random transaction hash
@@ -317,16 +317,16 @@ impl<T: TestTransport> LocalInstance<T> {
         let caller = self.default_account;
 
         // Create transaction
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value,
-            data,
-            nonce,
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .value(value)
+            .data(data)
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -347,16 +347,16 @@ impl<T: TestTransport> LocalInstance<T> {
         let caller = self.default_account;
 
         // Create transaction
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value,
-            data,
-            nonce,
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .value(value)
+            .data(data)
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -393,16 +393,16 @@ impl<T: TestTransport> LocalInstance<T> {
         let caller = Self::generate_random_address();
 
         // Create transaction
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value: U256::ZERO,
-            data: Bytes::from(vec![0xff, 0xff, 0xff, 0xff, 0xff]),
-            nonce,
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .value(U256::ZERO)
+            .data(Bytes::from(vec![0xff, 0xff, 0xff, 0xff, 0xff]))
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -423,16 +423,16 @@ impl<T: TestTransport> LocalInstance<T> {
         let caller = self.default_account;
 
         // Create reverting transaction (PUSH1 0x00 PUSH1 0x00 REVERT)
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value: U256::ZERO,
-            data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]),
-            nonce,
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .value(U256::ZERO)
+            .data(Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]))
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -458,16 +458,16 @@ impl<T: TestTransport> LocalInstance<T> {
         let caller = self.default_account;
 
         // Create call transaction
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Call(to),
-            value,
-            data,
-            nonce,
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Call(to))
+            .value(value)
+            .data(data)
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -497,17 +497,17 @@ impl<T: TestTransport> LocalInstance<T> {
         let access_list = AccessList::default();
 
         // Create call transaction
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Call(Address::default()),
-            value: U256::default(),
-            data: Bytes::default(),
-            nonce,
-            access_list,
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Call(Address::default()))
+            .value(U256::default())
+            .data(Bytes::default())
+            .nonce(nonce)
+            .access_list(access_list)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -527,17 +527,17 @@ impl<T: TestTransport> LocalInstance<T> {
         let caller = self.default_account;
 
         // Create call transaction
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Call(Address::default()),
-            value: U256::default(),
-            data: Bytes::default(),
-            nonce,
-            gas_priority_fee: Some(2),
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Call(Address::default()))
+            .value(U256::default())
+            .data(Bytes::default())
+            .nonce(nonce)
+            .gas_priority_fee(Some(2))
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
