@@ -1453,10 +1453,15 @@ mod tests {
 
         // Send and verify a successful CREATE transaction
         tracing::info!("test_block_env_wrong_last_tx_hash: sending post-flush tx");
-        instance
+        let tx_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&tx_hash).await.unwrap(),
+            "Transaction should execute successfully and pass assertions"
+        );
         tracing::info!("test_block_env_wrong_last_tx_hash: test completed");
     }
 
