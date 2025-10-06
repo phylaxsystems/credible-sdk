@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
 
     let provider = connect_provider(&args.ws_url).await?;
 
-    let mut listener = Listener::new(provider, &args.sidecar_url);
+    let mut listener = Listener::new(provider, &args.sidecar_url, args.request_timeout_seconds);
     listener.run().await.context("listener unexpectedly")
 }
 
