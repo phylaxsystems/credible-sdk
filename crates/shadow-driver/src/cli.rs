@@ -18,6 +18,10 @@ pub struct Args {
     pub sidecar_url: String,
 
     /// Request timeout in seconds
-    #[arg(long, env = "SHADOW_DRIVER_REQUEST_TIMEOUT_SECONDS")]
+    #[arg(
+        long,
+        default_value = "1",
+        env = "SHADOW_DRIVER_REQUEST_TIMEOUT_SECONDS"
+    )]
     pub request_timeout_seconds: u64,
 }
