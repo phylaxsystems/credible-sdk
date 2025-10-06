@@ -1351,7 +1351,6 @@ mod tests {
         }
     }
 
-    #[tracing_test::traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_block_env_wrong_transaction_number(mut instance: crate::utils::LocalInstance) {
         // Send and verify a reverting CREATE transaction
@@ -1367,10 +1366,16 @@ mod tests {
 
         instance.transport.set_n_transactions(2);
 
-        let snapshot = (*instance.sequencer_http_mock.eth_balance_counter).clone();
-
         // Send a blockEnv with the wrong number of transactions
-        instance.new_block().await.unwrap();
+        instance
+            .expect_cache_flush(|instance| {
+                Box::pin(async move {
+                    instance.new_block().await?;
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
 
         let tx_hash = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -1381,29 +1386,18 @@ mod tests {
             instance.is_transaction_successful(&tx_hash).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
-
-        // We verify the cache was flushed by checking that there is a new entry in the sequencer request
-        // for the same transaction we already requested before
-        let new_snapshot = (*instance.sequencer_http_mock.eth_balance_counter).clone();
-
-        let new_values = new_snapshot
-            .iter()
-            .filter(|entry| !snapshot.contains_key(entry.key()))
-            .map(|entry| *entry.key())
-            .collect::<Vec<_>>();
-
-        assert_eq!(new_values.len(), 1);
     }
 
-    // #[tracing_test::traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_block_env_wrong_last_tx_hash(mut instance: crate::utils::LocalInstance) {
+        tracing::info!("test_block_env_wrong_last_tx_hash: sending first tx");
         // Send and verify a reverting CREATE transaction
         let tx_hash_1 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
+        tracing::info!("test_block_env_wrong_last_tx_hash: sending second tx (dry)");
         // Send and verify a reverting CREATE transaction
         let tx_hash_2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
@@ -1425,6 +1419,7 @@ mod tests {
             "Transaction should execute successfully and pass assertions"
         );
 
+        tracing::info!("test_block_env_wrong_last_tx_hash: overriding last tx hash");
         instance.transport.set_last_tx_hash(Some(tx_hash_1));
 
         assert!(
@@ -1442,29 +1437,27 @@ mod tests {
                 .is_none()
         );
 
-        // let snapshot = (*instance.sequencer_http_mock.eth_balance_counter).clone();
-
         // Send a blockEnv with the wrong last tx hash
-        instance.new_block().await.unwrap();
-
-        // Send and verify a successful CREATE transaction
+        tracing::info!("test_block_env_wrong_last_tx_hash: forcing block env flush");
         instance
             .expect_cache_flush(|instance| {
                 Box::pin(async move {
-                    instance
-                        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-                        .await?;
+                    tracing::info!("test_block_env_wrong_last_tx_hash: calling new_block inside expect_cache_flush");
+                    instance.new_block().await?;
+                    tracing::info!("test_block_env_wrong_last_tx_hash: new_block inside expect_cache_flush finished");
                     Ok(())
                 })
             })
             .await
             .unwrap();
 
-        // Verify transaction was successful
-        // assert!(
-        //     instance.is_transaction_successful(&tx_hash).await.unwrap(),
-        //     "Transaction should execute successfully and pass assertions"
-        // );
+        // Send and verify a successful CREATE transaction
+        tracing::info!("test_block_env_wrong_last_tx_hash: sending post-flush tx");
+        instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+        tracing::info!("test_block_env_wrong_last_tx_hash: test completed");
     }
 
     #[tracing_test::traced_test]

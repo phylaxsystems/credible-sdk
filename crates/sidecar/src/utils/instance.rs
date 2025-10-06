@@ -302,7 +302,6 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Execute an async action and assert it results in a cache flush.
-    ///
     // TODO: because we do not commit state to underlying sources properly we lose all state
     // made during tests when we flush, thus we have to set the nonce to 0
     pub async fn expect_cache_flush<F>(&mut self, action: F) -> Result<(), String>
@@ -350,7 +349,6 @@ impl<T: TestTransport> LocalInstance<T> {
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
 
-        // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
         Ok(tx_hash)
