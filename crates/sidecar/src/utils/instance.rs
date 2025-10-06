@@ -317,20 +317,8 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport.new_block(self.block_number).await?;
         self.block_number += 1;
 
-        let nonce = self.next_nonce();
-        let caller = self.default_account;
-
         // Create transaction
-        let tx_env = TxEnvBuilder::new()
-            .caller(caller)
-            .gas_limit(100_000)
-            .gas_price(0)
-            .kind(TxKind::Create)
-            .value(value)
-            .data(data)
-            .nonce(nonce)
-            .build()
-            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
+        let tx_env = self.create_test_transaction(value, data);
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -527,7 +515,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // type2, eip-1559
         // verify we correctly decrement gas for the account sending the tx
         // according to eip-1559 rules
-        // TODO: send blockenv with gas price of 2 and verify we include the
+        // TODO: send blockenv with base fee of 2 and verify we include the
         // tx below and properly decrement gas
         self.transport.new_block(self.block_number).await?;
         self.block_number += 1;
