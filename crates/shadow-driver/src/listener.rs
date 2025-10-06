@@ -86,13 +86,17 @@ pub struct Listener {
 
 impl Listener {
     /// Build a worker that shares the provider/Redis client across async tasks.
-    pub fn new(provider: Arc<RootProvider>, sidecar_url: &str) -> Self {
+    pub fn new(
+        provider: Arc<RootProvider>,
+        sidecar_url: &str,
+        request_timeout_seconds: u64,
+    ) -> Self {
         Self {
             provider,
             sidecar_client: reqwest::Client::builder()
                 .pool_idle_timeout(Duration::from_secs(90))
                 .pool_max_idle_per_host(100)
-                .timeout(Duration::from_secs(1))
+                .timeout(Duration::from_secs(request_timeout_seconds))
                 .connect_timeout(Duration::from_millis(500))
                 .tcp_keepalive(Duration::from_secs(60))
                 .build()
