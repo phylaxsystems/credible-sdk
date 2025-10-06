@@ -303,15 +303,17 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Execute an async action and assert it results in a cache flush.
     ///
-    /// TODO: because we do not commit state to underlying sources properly we lose all state
-    /// made during tests when we flush, thus we have to set the nonce to 0
+    // TODO: because we do not commit state to underlying sources properly we lose all state
+    // made during tests when we flush, thus we have to set the nonce to 0
     pub async fn expect_cache_flush<F>(&mut self, action: F) -> Result<(), String>
     where
         for<'a> F: FnOnce(&'a mut Self) -> Pin<Box<dyn Future<Output = Result<(), String>> + 'a>>,
     {
         let before = self.cache_reset_count();
         action(self).await?;
+        self.wait_for_processing(Duration::from_millis(5)).await;
         let after = self.cache_reset_count();
+        tracing::debug!("Flushes before {}, after {}", before, after);
         if after <= before {
             return Err("cache flush was not observed".to_string());
         }
