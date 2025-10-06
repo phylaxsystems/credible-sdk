@@ -149,6 +149,14 @@ impl Cache {
             .store(required_block_number, Ordering::Relaxed);
     }
 
+    /// Returns how many times the cache has been explicitly reset.
+    #[cfg(any(test, feature = "test"))]
+    pub fn reset_required_block_number_count(&self) -> u64 {
+        self.metrics
+            .reset_required_block_number_counter
+            .load(Ordering::Relaxed)
+    }
+
     /// Returns an iterator over sources that are currently synced.
     ///
     /// Sources are returned in priority order, with the highest priority

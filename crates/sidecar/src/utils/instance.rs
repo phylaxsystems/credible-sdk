@@ -53,6 +53,7 @@ use revm::{
 };
 use std::{
     net::SocketAddr,
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
@@ -103,6 +104,8 @@ pub struct LocalInstance<T: TestTransport> {
     // mock_sender: TransactionQueueSender,
     /// The underlying database
     db: Arc<CacheDB<Arc<Cache>>>,
+    /// Underlying cache
+    cache: Arc<Cache>,
     /// List of cache sources
     pub sources: Vec<Arc<dyn Source>>,
     /// The mock HTTP representing the sequencer
@@ -141,6 +144,7 @@ impl<T: TestTransport> LocalInstance<T> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_internal(
         db: Arc<CacheDB<Arc<Cache>>>,
+        cache: Arc<Cache>,
         sequencer_http_mock: DualProtocolMockServer,
         besu_client_http_mock: DualProtocolMockServer,
         assertion_store: Arc<AssertionStore>,
@@ -156,6 +160,7 @@ impl<T: TestTransport> LocalInstance<T> {
     ) -> Self {
         Self {
             db,
+            cache,
             sequencer_http_mock,
             besu_client_http_mock,
             assertion_store,
@@ -193,6 +198,11 @@ impl<T: TestTransport> LocalInstance<T> {
         &self.db
     }
 
+    /// Return the number of cache resets observed so far.
+    pub fn cache_reset_count(&self) -> u64 {
+        self.cache.reset_required_block_number_count()
+    }
+
     /// Get a reference to the assertion store
     pub fn assertion_store(&self) -> &Arc<AssertionStore> {
         &self.assertion_store
@@ -216,7 +226,7 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Reset the nonce to a specific value
-    pub fn reset_nonce(&mut self, nonce: u64) {
+    pub fn set_nonce(&mut self, nonce: u64) {
         self.current_nonce = nonce;
     }
 
@@ -307,6 +317,26 @@ impl<T: TestTransport> LocalInstance<T> {
         Ok(())
     }
 
+    /// Execute an async action and assert it results in a cache flush.
+    // TODO: because we do not commit state to underlying sources properly we lose all state
+    // made during tests when we flush, thus we have to set the nonce to 0
+    pub async fn expect_cache_flush<F>(&mut self, action: F) -> Result<(), String>
+    where
+        for<'a> F: FnOnce(&'a mut Self) -> Pin<Box<dyn Future<Output = Result<(), String>> + 'a>>,
+    {
+        let before = self.cache_reset_count();
+        action(self).await?;
+        self.wait_for_processing(Duration::from_millis(5)).await;
+        let after = self.cache_reset_count();
+        tracing::debug!("Flushes before {}, after {}", before, after);
+        if after <= before {
+            return Err("cache flush was not observed".to_string());
+        }
+        self.set_nonce(0);
+
+        Ok(())
+    }
+
     /// Send a successful CREATE transaction using the default account
     pub async fn send_successful_create_tx(
         &mut self,
@@ -323,7 +353,6 @@ impl<T: TestTransport> LocalInstance<T> {
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
 
-        // Send transaction
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
         Ok(tx_hash)
