@@ -6,7 +6,18 @@ use crate::{
     engine::TransactionResult,
     transactions_state::RequestTransactionResult,
 };
-use alloy::primitives::TxHash;
+use alloy::{
+    eips::eip7702::{
+        RecoveredAuthority,
+        RecoveredAuthorization,
+    },
+    primitives::TxHash,
+    rpc::types::{
+        AccessList,
+        Authorization,
+    },
+    signers::Either,
+};
 use assertion_executor::{
     primitives::{
         AccountInfo,
@@ -22,6 +33,7 @@ use assertion_executor::{
         AssertionStore,
     },
     test_utils::{
+        COUNTER_ADDRESS,
         bytecode,
         counter_call,
     },
@@ -29,6 +41,10 @@ use assertion_executor::{
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use rand::Rng;
 use revm::{
+    context::{
+        transaction::AccessListItem,
+        tx::TxEnvBuilder,
+    },
     database::CacheDB,
     primitives::{
         Bytes,
@@ -247,16 +263,16 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Create a simple test transaction using the default account
     pub fn create_test_transaction(&mut self, value: U256, data: Bytes) -> TxEnv {
         let nonce = self.next_nonce();
-        TxEnv {
-            caller: self.default_account,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value,
-            data,
-            nonce,
-            ..Default::default()
-        }
+        TxEnvBuilder::new()
+            .caller(self.default_account)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .value(value)
+            .data(data)
+            .nonce(nonce)
+            .build()
+            .expect("failed to build create test transaction")
     }
 
     /// Generate a random transaction hash
@@ -301,20 +317,8 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport.new_block(self.block_number).await?;
         self.block_number += 1;
 
-        let nonce = self.next_nonce();
-        let caller = self.default_account;
-
         // Create transaction
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value,
-            data,
-            nonce,
-            ..Default::default()
-        };
+        let tx_env = self.create_test_transaction(value, data);
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -335,16 +339,16 @@ impl<T: TestTransport> LocalInstance<T> {
         let caller = self.default_account;
 
         // Create transaction
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value,
-            data,
-            nonce,
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .value(value)
+            .data(data)
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -381,16 +385,16 @@ impl<T: TestTransport> LocalInstance<T> {
         let caller = Self::generate_random_address();
 
         // Create transaction
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value: U256::ZERO,
-            data: Bytes::from(vec![0xff, 0xff, 0xff, 0xff, 0xff]),
-            nonce,
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .value(U256::ZERO)
+            .data(Bytes::from(vec![0xff, 0xff, 0xff, 0xff, 0xff]))
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -411,16 +415,16 @@ impl<T: TestTransport> LocalInstance<T> {
         let caller = self.default_account;
 
         // Create reverting transaction (PUSH1 0x00 PUSH1 0x00 REVERT)
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Create,
-            value: U256::ZERO,
-            data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]),
-            nonce,
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .value(U256::ZERO)
+            .data(Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]))
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -446,16 +450,16 @@ impl<T: TestTransport> LocalInstance<T> {
         let caller = self.default_account;
 
         // Create call transaction
-        let tx_env = TxEnv {
-            caller,
-            gas_limit: 100_000,
-            gas_price: 0,
-            kind: TxKind::Call(to),
-            value,
-            data,
-            nonce,
-            ..Default::default()
-        };
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Call(to))
+            .value(value)
+            .data(data)
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -464,6 +468,134 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport.send_transaction(tx_hash, tx_env).await?;
 
         Ok(tx_hash)
+    }
+
+    /// Sends transactions of all tx types and verifies they pass
+    /// and properly produce desired outcomes (proper gas accounting etc...).
+    pub async fn send_all_tx_types(&mut self) -> Result<(), String> {
+        // legacy tx
+        self.send_successful_create_tx(U256::default(), Bytes::default())
+            .await?;
+
+        // type 1, eip-2930 optional access lists
+        // verify that we spend less gas on storage reads
+        // interact with the pre-loaded counter contract so the access list actually matters
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
+
+        let nonce = self.next_nonce();
+        let caller = self.default_account;
+
+        let access_list = AccessList::from(vec![AccessListItem {
+            address: COUNTER_ADDRESS,
+            // slot 0 stores the counter value and becomes warm via the access list
+            storage_keys: vec![B256::ZERO],
+        }]);
+        let counter_call_data = counter_call().data;
+
+        // Create call transaction
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(1)
+            .kind(TxKind::Call(COUNTER_ADDRESS))
+            .value(U256::default())
+            .data(counter_call_data)
+            .nonce(nonce)
+            .access_list(access_list)
+            .tx_type(Some(1))
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
+
+        // Generate transaction hash
+        let tx_hash = Self::generate_random_tx_hash();
+
+        // Send transaction
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
+        // type2, eip-1559
+        // verify we correctly decrement gas for the account sending the tx
+        // according to eip-1559 rules
+        // TODO: send blockenv with base fee of 2 and verify we include the
+        // tx below and properly decrement gas
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
+
+        let nonce = self.next_nonce();
+        let caller = self.default_account;
+
+        // Create call transaction
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(2)
+            .kind(TxKind::Call(Address::default()))
+            .value(U256::default())
+            .data(Bytes::default())
+            .nonce(nonce)
+            .gas_priority_fee(Some(2))
+            .tx_type(Some(2))
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
+
+        // Generate transaction hash
+        let tx_hash = Self::generate_random_tx_hash();
+
+        // Send transaction
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
+        // type3, eip-4844
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
+
+        let nonce = self.next_nonce();
+        let caller = self.default_account;
+        let mut blob_hash_bytes = [0u8; 32];
+        blob_hash_bytes[0] = 0x01;
+        let blob_hash = B256::from(blob_hash_bytes);
+
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(5)
+            .gas_priority_fee(Some(1))
+            .kind(TxKind::Call(COUNTER_ADDRESS))
+            .data(counter_call().data)
+            .nonce(nonce)
+            .blob_hashes(vec![blob_hash])
+            .max_fee_per_blob_gas(1)
+            .tx_type(Some(3))
+            .build()
+            .unwrap();
+        let tx_hash = Self::generate_random_tx_hash();
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
+        // type4, eip-7702
+        // Authorization list present, should derive EIP-7702
+        // TODO: check if the account has code
+        self.transport.new_block(self.block_number).await?;
+        self.block_number += 1;
+
+        let auth = RecoveredAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::from(1),
+                nonce: 0,
+                address: Address::default(),
+            },
+            RecoveredAuthority::Valid(Address::default()),
+        );
+        let tx_env = TxEnvBuilder::new()
+            .caller(Address::from([1u8; 20]))
+            .gas_priority_fee(Some(10))
+            .authorization_list(vec![Either::Right(auth)])
+            .kind(TxKind::Call(Address::from([2u8; 20])))
+            .tx_type(Some(4))
+            .build()
+            .unwrap();
+        let tx_hash = Self::generate_random_tx_hash();
+        self.transport.send_transaction(tx_hash, tx_env).await?;
+
+        Ok(())
     }
 
     /// Insert a custom assertion from bytecode artifact name
