@@ -129,9 +129,7 @@ async fn main() -> anyhow::Result<()> {
         let cache = Arc::new(Cache::new(sources, args.state.minimum_state_diff));
         let state: OverlayDb<Cache> = OverlayDb::new(
             Some(cache.clone()),
-            args.credible
-                .overlay_cache_capacity_bytes
-                .unwrap_or(1024 * 1024 * 1024) as u64,
+            args.credible.overlay_cache_capacity.unwrap_or(100_000) as u64,
         );
 
         let (tx_sender, tx_receiver) = unbounded();

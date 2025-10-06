@@ -70,8 +70,8 @@ Credible:
       --credible.assertion-gas-limit <ASSERTION_GAS_LIMIT>
           Gas limit for assertion execution [env: CREDIBLE_ASSERTION_GAS_LIMIT=] [default: 3000000]
 
-      --credible.overlay-cache-capacity-bytes <OVERLAY_CACHE_CAPACITY_BYTES>
-          Overlay cache capacity, 1gb default [env: CREDIBLE_OVERLAY_CACHE_CAPACITY_BYTES=] [default: 1024000000]
+      --credible.overlay-cache-capacity <OVERLAY_CACHE_CAPACITY>
+          Overlay cache capacity, 1gb default [env: CREDIBLE_OVERLAY_CACHE_CAPACITY=] [default: 100000]
 
       --credible.cache-capacity-bytes <CACHE_CAPACITY_BYTES>
           Sled cache capacity, used in the FsDb, 256mb default [env: CREDIBLE_CACHE_CAPACITY_BYTES=] [default: 256000000]
