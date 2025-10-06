@@ -174,15 +174,38 @@ impl DappSubmitArgs {
             return Err(DappSubmitError::NoProjectsFound);
         }
 
-        let project_names: Vec<String> = projects.iter().map(|p| p.project_name.clone()).collect();
+        let display_name = |project: &Project| {
+            if project.project_networks.is_empty() {
+                project.project_name.clone()
+            } else {
+                format!(
+                    "{} ({})",
+                    project.project_name,
+                    project.project_networks.join(", ")
+                )
+            }
+        };
+
+        let project_display_names: Vec<String> = projects.iter().map(display_name).collect();
+
+        let provided_project = self.project_name.as_ref().and_then(|provided| {
+            projects
+                .iter()
+                .map(|p| (p, display_name(p)))
+                .find(|(project, display)| {
+                    project.project_name == *provided || *display == *provided
+                })
+                .map(|(_, display)| display)
+        });
+
         let project_name = Self::provide_or_select(
-            self.project_name.clone(),
-            project_names,
+            provided_project,
+            project_display_names.clone(),
             "Select a project to submit the assertion to:",
         )?;
         let project = projects
             .iter()
-            .find(|p| p.project_name == project_name)
+            .find(|p| display_name(p) == project_name)
             .ok_or(DappSubmitError::NoProjectsFound)?;
         Ok(project)
     }
