@@ -212,7 +212,7 @@ impl TestTransport for LocalInstanceMockDriver {
         let state_results = crate::TransactionsState::new();
         let mut engine = CoreEngine::new(
             state,
-            cache,
+            cache.clone(),
             engine_rx,
             assertion_executor,
             state_results.clone(),
@@ -249,6 +249,7 @@ impl TestTransport for LocalInstanceMockDriver {
 
         Ok(LocalInstance::new_internal(
             underlying_db,
+            cache.clone(),
             sequencer_http_mock,
             besu_client_http_mock,
             assertion_store,
@@ -406,7 +407,7 @@ impl TestTransport for LocalInstanceHttpDriver {
         let state_results = crate::TransactionsState::new();
         let mut engine = CoreEngine::new(
             state,
-            cache,
+            cache.clone(),
             engine_rx,
             assertion_executor,
             state_results.clone(),
@@ -461,6 +462,7 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         Ok(LocalInstance::new_internal(
             underlying_db,
+            cache.clone(),
             sequencer_http_mock,
             besu_client_http_mock,
             assertion_store,
@@ -794,7 +796,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let state_results = crate::TransactionsState::new();
         let mut engine = CoreEngine::new(
             state,
-            cache,
+            cache.clone(),
             engine_rx,
             assertion_executor,
             state_results.clone(),
@@ -867,6 +869,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         Ok(LocalInstance::new_internal(
             underlying_db,
+            cache.clone(),
             sequencer_http_mock,
             besu_client_http_mock,
             assertion_store,
