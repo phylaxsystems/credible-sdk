@@ -230,6 +230,38 @@ impl CacheMetrics {
         gauge!("sidecar_cache_current_block_number").set(block_number as f64);
     }
 
+    /// Track the number of times the `basic_ref` was called
+    /// (`sidecar_cache_basic_ref_counter`)
+    ///
+    /// Commited as a `Counter`.
+    pub fn increase_basic_ref_counter(&self) {
+        counter!("sidecar_cache_basic_ref_counter").increment(1);
+    }
+
+    /// Track the number of times the `code_by_hash_ref` was called
+    /// (`sidecar_cache_code_by_hash_ref_counter`)
+    ///
+    /// Commited as a `Counter`.
+    pub fn increase_code_by_hash_ref_counter(&self) {
+        counter!("sidecar_cache_code_by_hash_ref_counter").increment(1);
+    }
+
+    /// Track the number of times the `block_hash_ref` was called
+    /// (`sidecar_cache_block_hash_ref_counter`)
+    ///
+    /// Commited as a `Counter`.
+    pub fn increase_block_hash_ref_counter(&self) {
+        counter!("sidecar_cache_block_hash_ref_counter").increment(1);
+    }
+
+    /// Track the number of times the `storage_ref` was called
+    /// (`sidecar_cache_storage_ref_counter`)
+    ///
+    /// Commited as a `Counter`.
+    pub fn increase_storage_ref_counter_counter(&self) {
+        counter!("sidecar_cache_storage_ref_counter").increment(1);
+    }
+
     /// Track the number of times the required block number was reset
     /// (`sidecar_cache_reset_required_block_number_counter`)
     ///
