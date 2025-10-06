@@ -38,6 +38,8 @@
 //! This is possible due to assertions being read only. We must verify that no
 //! assertion reverts before approving a transaction.
 
+#[cfg(feature = "shadow")]
+mod cache_checker;
 pub mod queue;
 mod transactions_results;
 
@@ -94,6 +96,10 @@ use assertion_executor::{
     ForkTxExecutionError,
     db::Database,
 };
+#[cfg(feature = "shadow")]
+use cache_checker::CacheChecker;
+#[cfg(feature = "shadow")]
+use dashmap::DashMap;
 #[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
@@ -109,6 +115,8 @@ use revm::{
 };
 #[cfg(test)]
 use std::collections::HashMap;
+#[cfg(feature = "shadow")]
+use tokio::task::AbortHandle;
 use tracing::{
     debug,
     error,
@@ -234,11 +242,16 @@ pub struct CoreEngine<DB> {
     block_env_transaction_counter: u64,
     state_sources_sync_timeout: Duration,
     check_sources_available: bool,
+    #[cfg(feature = "shadow")]
+    processed_transactions: Arc<DashMap<TxHash, EvmState>>,
+    #[cfg(feature = "shadow")]
+    _cache_checker: Option<AbortHandle>,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
+    #[allow(clippy::too_many_arguments)]
     #[instrument(name = "engine::new", skip_all, level = "debug")]
-    pub fn new(
+    pub async fn new(
         state: OverlayDb<DB>,
         cache: Arc<Cache>,
         tx_receiver: TransactionQueueReceiver,
@@ -246,7 +259,23 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         state_results: Arc<TransactionsState>,
         transaction_results_max_capacity: usize,
         state_sources_sync_timeout: Duration,
+        #[cfg(feature = "shadow")] provider_ws_url: Option<&str>,
     ) -> Self {
+        #[cfg(feature = "shadow")]
+        let (processed_transactions, cache_checker) = {
+            let processed_transactions: Arc<DashMap<TxHash, EvmState>> = Arc::new(DashMap::new());
+            let handle = if let Some(provider_ws_url) = provider_ws_url
+                && let Ok(cache_checker) =
+                    CacheChecker::try_new(provider_ws_url, processed_transactions.clone()).await
+            {
+                let handle = tokio::spawn(cache_checker.run());
+                Some(handle.abort_handle())
+            } else {
+                None
+            };
+
+            (processed_transactions, handle)
+        };
         Self {
             state,
             cache,
@@ -262,6 +291,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env_transaction_counter: 0,
             state_sources_sync_timeout,
             check_sources_available: true,
+            #[cfg(feature = "shadow")]
+            processed_transactions,
+            #[cfg(feature = "shadow")]
+            _cache_checker: cache_checker,
         }
     }
 
@@ -287,6 +320,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env_transaction_counter: 0,
             state_sources_sync_timeout: Duration::from_millis(100),
             check_sources_available: true,
+            #[cfg(feature = "shadow")]
+            processed_transactions: Arc::new(DashMap::new()),
+            #[cfg(feature = "shadow")]
+            _cache_checker: None,
         }
     }
 
@@ -499,6 +536,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         // Log the result of the transaction execution
         self.trace_execute_transaction_result(tx_hash, tx_env, &rax);
+
+        #[cfg(feature = "shadow")]
+        self.processed_transactions
+            .insert(tx_hash, rax.result_and_state.state.clone());
 
         self.add_transaction_result(
             tx_hash,
@@ -829,7 +870,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     ///
     /// If `self.last_executed_tx` is empty, we dont do anything.
     fn apply_state_buffer(&mut self) -> Result<(), EngineError> {
-        if let Some((_, state)) = self.last_executed_tx.current() {
+        #[allow(clippy::used_underscore_binding)]
+        if let Some((_tx_hash, state)) = self.last_executed_tx.current() {
             let changes = state.clone();
             let changes = changes.ok_or(EngineError::NothingToCommit)?;
             self.state.commit(changes);
@@ -972,7 +1014,7 @@ mod tests {
         },
     };
 
-    fn create_test_engine_with_timeout(
+    async fn create_test_engine_with_timeout(
         timeout: Duration,
     ) -> (
         CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
@@ -995,20 +1037,24 @@ mod tests {
             state_results,
             10,
             timeout,
-        );
+            #[cfg(feature = "shadow")]
+            None,
+        )
+        .await;
         (engine, tx_sender)
     }
 
-    fn create_test_engine() -> (
+    async fn create_test_engine() -> (
         CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
         crossbeam::channel::Sender<TxQueueContents>,
     ) {
-        create_test_engine_with_timeout(Duration::from_millis(100))
+        create_test_engine_with_timeout(Duration::from_millis(100)).await
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_core_engine_errors_when_no_synced_sources() {
-        let (mut engine, tx_sender) = create_test_engine_with_timeout(Duration::from_millis(10));
+        let (mut engine, tx_sender) =
+            create_test_engine_with_timeout(Duration::from_millis(10)).await;
 
         let engine_handle = tokio::spawn(async move { engine.run().await });
 
@@ -1353,11 +1399,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_database_commit_verification() {
+    #[tokio::test]
+    async fn test_database_commit_verification() {
         use revm::primitives::address;
 
-        let (mut engine, _) = create_test_engine();
+        let (mut engine, _) = create_test_engine().await;
         let block_env = create_test_block_env();
 
         // Create a simple create transaction that will succeed
@@ -1473,9 +1519,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_engine_requires_block_env_before_tx() {
-        let (mut engine, _) = create_test_engine();
+    #[tokio::test]
+    async fn test_engine_requires_block_env_before_tx() {
+        let (mut engine, _) = create_test_engine().await;
         let tx_env = TxEnv {
             caller: Address::from([0x04; 20]),
             gas_limit: 100000,
@@ -1674,9 +1720,9 @@ mod tests {
         assert!(res.is_err());
     }
 
-    #[test]
-    fn test_failed_transaction_commit() {
-        let (mut engine, _) = create_test_engine();
+    #[tokio::test]
+    async fn test_failed_transaction_commit() {
+        let (mut engine, _) = create_test_engine().await;
         let tx_hash = B256::from([0x44; 32]);
 
         engine.last_executed_tx.push(tx_hash, None);

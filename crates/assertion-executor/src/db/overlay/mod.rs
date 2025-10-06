@@ -1,3 +1,5 @@
+#![allow(clippy::double_parens)]
+
 //! # overlay
 //!
 //! The overlay is a primitive used to cache EVM state in-memory from a on-disk store.
