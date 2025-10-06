@@ -503,6 +503,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .data(counter_call_data)
             .nonce(nonce)
             .access_list(access_list)
+            .tx_type(Some(1))
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
@@ -533,6 +534,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .data(Bytes::default())
             .nonce(nonce)
             .gas_priority_fee(Some(2))
+            .tx_type(Some(2))
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
@@ -562,6 +564,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .nonce(nonce)
             .blob_hashes(vec![blob_hash])
             .max_fee_per_blob_gas(1)
+            .tx_type(Some(3))
             .build()
             .unwrap();
         let tx_hash = Self::generate_random_tx_hash();
@@ -586,6 +589,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .gas_priority_fee(Some(10))
             .authorization_list(vec![Either::Right(auth)])
             .kind(TxKind::Call(Address::from([2u8; 20])))
+            .tx_type(Some(4))
             .build()
             .unwrap();
         let tx_hash = Self::generate_random_tx_hash();
