@@ -228,7 +228,6 @@ impl Listener {
             .sidecar_client
             .post(format!("{}/tx", self.sidecar_url))
             .json(&block_env_payload)
-            .timeout(Duration::from_secs(30))
             .send()
             .await
             .context("failed to send block env request to sidecar")?;
@@ -407,7 +406,6 @@ impl Listener {
             .sidecar_client
             .post(format!("{}/tx", self.sidecar_url))
             .json(&tx_payload)
-            .timeout(Duration::from_secs(30))
             .send()
             .await
             .context("failed to send transaction request to sidecar")?;

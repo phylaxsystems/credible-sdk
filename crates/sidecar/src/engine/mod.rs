@@ -227,6 +227,7 @@ pub struct CoreEngine<DB> {
     last_executed_tx: LastExecutedTx,
     block_env_transaction_counter: u64,
     state_sources_sync_timeout: Duration,
+    check_sources_available: bool,
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -254,6 +255,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             last_executed_tx: LastExecutedTx::new(),
             block_env_transaction_counter: 0,
             state_sources_sync_timeout,
+            check_sources_available: true,
         }
     }
 
@@ -278,6 +280,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             last_executed_tx: LastExecutedTx::new(),
             block_env_transaction_counter: 0,
             state_sources_sync_timeout: Duration::from_millis(100),
+            check_sources_available: true,
         }
     }
 
@@ -560,6 +563,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
             // Measure cache invalidation time and set its new min required driver height
             let instant = Instant::now();
+            self.check_sources_available = true;
             self.state.invalidate_all();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
@@ -576,6 +580,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
             // Measure cache invalidation time and set its new min required driver height
             let instant = Instant::now();
+            self.check_sources_available = true;
             self.state.invalidate_all();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
@@ -594,6 +599,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
             // Measure cache invalidation time and set its new min required driver height
             let instant = Instant::now();
+            self.check_sources_available = true;
             self.state.invalidate_all();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
@@ -602,12 +608,18 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.block_env_transaction_counter = 0;
     }
 
+    // FIXME: It would be cleaner to have this in another struct
     /// Verifies that all state sources are synced, and if not stall until they are.
     ///
     /// If the sources do not become synced after a set amount of time, the function
     /// errors.
-    async fn verify_state_sources_synced(&self) -> Result<(), EngineError> {
+    async fn verify_state_sources_synced_for_tx(&mut self) -> Result<(), EngineError> {
         const RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+        if !self.check_sources_available {
+            return Ok(());
+        }
+        self.check_sources_available = false;
 
         let start = Instant::now();
         loop {
@@ -673,7 +685,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 TxQueueContents::Block(queue_block_env, current_span) => {
                     let block_env = &queue_block_env.block_env;
                     let _guard = current_span.enter();
-                    self.verify_state_sources_synced().await?;
 
                     self.check_cache(&queue_block_env);
 
@@ -710,6 +721,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 }
                 TxQueueContents::Tx(queue_transaction, current_span) => {
                     let _guard = current_span.enter();
+                    self.verify_state_sources_synced_for_tx().await?;
 
                     let tx_hash = queue_transaction.tx_hash;
                     let tx_env = queue_transaction.tx_env;
@@ -952,12 +964,19 @@ mod tests {
             last_tx_hash: None,
             n_transactions: 0,
         };
+        let queue_tx = queue::QueueTransaction {
+            tx_hash: B256::from([0x11; 32]),
+            tx_env: TxEnv::default(),
+        };
 
         tx_sender
             .send(TxQueueContents::Block(
                 queue_block_env,
                 tracing::Span::none(),
             ))
+            .expect("queue send should succeed");
+        tx_sender
+            .send(TxQueueContents::Tx(queue_tx, tracing::Span::none()))
             .expect("queue send should succeed");
 
         let result = engine_handle.await.expect("engine task should not panic");

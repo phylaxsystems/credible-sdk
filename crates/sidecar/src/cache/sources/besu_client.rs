@@ -41,6 +41,7 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
+use tokio::task::AbortHandle;
 use tracing::{
     error,
     info,
@@ -50,6 +51,12 @@ use tracing::{
 /// Besu state sync manager using Alloy
 #[derive(Debug)]
 pub struct BesuClient {
+    inner: Arc<BesuClientInner>,
+    _handler: AbortHandle,
+}
+
+#[derive(Debug)]
+struct BesuClientInner {
     /// Provider
     provider: Arc<RootProvider>,
     /// Current block
@@ -58,8 +65,6 @@ pub struct BesuClient {
 }
 
 impl BesuClient {
-    const MAX_BACKOFF: Duration = Duration::from_secs(60);
-
     /// Create a new `BesuStateSync` instance
     pub async fn try_build(ws_url: impl Into<String>) -> Result<Arc<Self>, BesuClientError> {
         let ws = WsConnect::new(ws_url.into());
@@ -71,14 +76,21 @@ impl BesuClient {
                 .root()
                 .clone(),
         );
-        let inner = Arc::new(Self {
+        let inner = Arc::new(BesuClientInner {
             current_block: Arc::new(AtomicU64::new(0)),
             json_rpc_db: JsonRpcDb::new_with_provider(provider.clone()),
             provider,
         });
-        tokio::task::spawn(inner.clone().run_with_reconnect());
-        Ok(inner)
+        let handler = tokio::task::spawn(inner.clone().run_with_reconnect());
+        Ok(Arc::new(Self {
+            inner,
+            _handler: handler.abort_handle(),
+        }))
     }
+}
+
+impl BesuClientInner {
+    const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
     /// Connect to Besu node and start syncing
     async fn connect_and_sync_head(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
@@ -142,17 +154,24 @@ impl BesuClient {
 impl DatabaseRef for BesuClient {
     type Error = SourceError;
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.json_rpc_db.basic_ref(address).map_err(Into::into)
+        self.inner
+            .json_rpc_db
+            .basic_ref(address)
+            .map_err(Into::into)
     }
 
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        self.json_rpc_db
+        self.inner
+            .json_rpc_db
             .code_by_hash_ref(code_hash)
             .map_err(Into::into)
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        self.json_rpc_db.block_hash_ref(number).map_err(Into::into)
+        self.inner
+            .json_rpc_db
+            .block_hash_ref(number)
+            .map_err(Into::into)
     }
 
     fn storage_ref(
@@ -160,7 +179,8 @@ impl DatabaseRef for BesuClient {
         address: Address,
         index: StorageKey,
     ) -> Result<StorageValue, Self::Error> {
-        self.json_rpc_db
+        self.inner
+            .json_rpc_db
             .storage_ref(address, index)
             .map_err(Into::into)
     }
@@ -173,14 +193,14 @@ impl Source for BesuClient {
 
     fn is_synced(&self, current_block_number: u64) -> bool {
         if current_block_number > 0 {
-            self.get_current_block() >= current_block_number
+            self.inner.get_current_block() >= current_block_number
         } else {
             false
         }
     }
 
     fn update_target_block(&self, block_number: u64) {
-        self.json_rpc_db.set_target_block(block_number);
+        self.inner.json_rpc_db.set_target_block(block_number);
     }
 }
 

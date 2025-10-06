@@ -48,13 +48,13 @@ pub struct CredibleArgs {
     )]
     pub assertion_gas_limit: u64,
 
-    /// Overlay cache capacity, 1gb default
+    /// Overlay cache capacity in elements
     #[arg(
-        long = "credible.overlay-cache-capacity-bytes",
-        env = "CREDIBLE_OVERLAY_CACHE_CAPACITY_BYTES",
-        default_value = "1024000000"
+        long = "credible.overlay-cache-capacity",
+        env = "CREDIBLE_OVERLAY_CACHE_CAPACITY",
+        default_value = "100000"
     )]
-    pub overlay_cache_capacity_bytes: Option<usize>,
+    pub overlay_cache_capacity: Option<usize>,
 
     /// Sled cache capacity, used in the `FsDb`, 256mb default
     #[arg(
