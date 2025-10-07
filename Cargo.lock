@@ -10826,7 +10826,6 @@ dependencies = [
  "dashmap",
  "futures",
  "hex",
- "int-test-utils",
  "metrics",
  "moka",
  "prost 0.14.1",

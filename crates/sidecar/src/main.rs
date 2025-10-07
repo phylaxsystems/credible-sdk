@@ -4,6 +4,11 @@
 #![allow(clippy::unreadable_literal)]
 #![allow(clippy::similar_names)]
 
+use assertion_executor::{
+    AssertionExecutor,
+    db::overlay::OverlayDb,
+};
+use crossbeam::channel::unbounded;
 use sidecar::{
     cache::sources::redis::RedisCache,
     config::{
@@ -17,17 +22,17 @@ use sidecar::{
     },
     transport::Transport,
 };
-use assertion_executor::{
-    AssertionExecutor,
-    db::overlay::OverlayDb,
-};
-use crossbeam::channel::unbounded;
 use std::{
     sync::Arc,
     time::Duration,
 };
 
+use clap::Parser;
 use sidecar::{
+    args::{
+        SidecarArgs,
+        TransportProtocolArg,
+    },
     cache::{
         Cache,
         sources::{
@@ -37,6 +42,7 @@ use sidecar::{
             sequencer::Sequencer,
         },
     },
+    critical,
     indexer,
     transactions_state::TransactionsState,
     transport::{
@@ -52,12 +58,6 @@ use sidecar::{
     },
     utils::ErrorRecoverability,
 };
-use sidecar::critical;
-use sidecar::args::{
-    SidecarArgs,
-    TransportProtocolArg,
-};
-use clap::Parser;
 use tracing::log::info;
 
 fn create_transport_from_args(

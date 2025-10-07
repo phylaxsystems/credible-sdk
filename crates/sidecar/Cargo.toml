@@ -56,13 +56,11 @@ test = [
     "assertion-executor/test",
     "ctor",
     "sidecar-test-macros",
-    "int-test-utils",
 ]
 bench-utils = [
     "assertion-executor/test",
     "ctor",
     "sidecar-test-macros",
-    "int-test-utils",
 ]
 
 [dev-dependencies]
@@ -71,7 +69,6 @@ sidecar-test-macros = { path = "src/utils/test-macros" }
 assertion-executor = { workspace = true, features = ["test"] }
 tracing-test = "0.2.5"
 redis-test = { workspace = true }
-int-test-utils = { path = "../int-test-utils" }
 
 [profile.release]
 lto = "fat"

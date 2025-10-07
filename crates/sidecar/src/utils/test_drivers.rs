@@ -234,10 +234,8 @@ impl CommonSetup {
         engine_rx: channel::Receiver<TxQueueContents>,
     ) -> tokio::task::JoinHandle<()> {
         let state = OverlayDb::new(Some(self.underlying_db.clone()), 1024);
-        let assertion_executor = AssertionExecutor::new(
-            ExecutorConfig::default(),
-            (*self.assertion_store).clone(),
-        );
+        let assertion_executor =
+            AssertionExecutor::new(ExecutorConfig::default(), (*self.assertion_store).clone());
 
         let mut engine = CoreEngine::new(
             state,
@@ -267,7 +265,9 @@ impl CommonSetup {
 
 impl LocalInstanceMockDriver {
     /// Same as `new()`, but takes in an `AssertionStore` as an argument
-    pub async fn new_with_store(assertion_store: AssertionStore) -> Result<LocalInstance<Self>, String> {
+    pub async fn new_with_store(
+        assertion_store: AssertionStore,
+    ) -> Result<LocalInstance<Self>, String> {
         info!(target: "test_transport", "Creating LocalInstance with MockTransport");
 
         let setup = CommonSetup::new(Some(assertion_store)).await?;
@@ -280,7 +280,8 @@ impl LocalInstanceMockDriver {
         let engine_handle = setup.spawn_engine(engine_rx);
 
         // Create mock transport with the channels
-        let transport = MockTransport::with_receiver(engine_tx, mock_rx, setup.state_results.clone());
+        let transport =
+            MockTransport::with_receiver(engine_tx, mock_rx, setup.state_results.clone());
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
@@ -332,7 +333,8 @@ impl TestTransport for LocalInstanceMockDriver {
         let engine_handle = setup.spawn_engine(engine_rx);
 
         // Create mock transport with the channels
-        let transport = MockTransport::with_receiver(engine_tx, mock_rx, setup.state_results.clone());
+        let transport =
+            MockTransport::with_receiver(engine_tx, mock_rx, setup.state_results.clone());
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {

@@ -13,10 +13,12 @@ pub mod transactions_state;
 pub mod transport;
 pub mod utils;
 
-pub use cache::Cache;
-pub use cache::sources::{
-    Source,
-    SourceError,
+pub use cache::{
+    Cache,
+    sources::{
+        Source,
+        SourceError,
+    },
 };
 pub use engine::CoreEngine;
 pub use transactions_state::TransactionsState;

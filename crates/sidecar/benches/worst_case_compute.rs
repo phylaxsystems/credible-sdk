@@ -1,158 +1,178 @@
 use assertion_executor::{
     primitives::{
         Address,
-        address,
-        Bytecode,
         Bytes,
+        TxEnv,
+        U256,
         hex,
     },
-    store::AssertionState,
+    store::{
+        AssertionState,
+        AssertionStore,
+    },
 };
-
 use criterion::Criterion;
-use revm::{context::{tx::TxEnvBuilder, TxEnv}, primitives::FixedBytes};
+use revm::{
+    context::tx::TxEnvBuilder,
+    primitives::{
+        B256,
+        TxKind,
+    },
+};
+use sidecar::utils::{
+    instance::LocalInstance,
+    test_drivers::LocalInstanceMockDriver,
+};
 use std::{
-    hint::black_box,
+    fs::File,
+    io::BufReader,
+    sync::Arc,
     time::Duration,
 };
+use tokio::runtime::Runtime;
 
-use sidecar::utils::test_drivers::LocalInstanceMockDriver;
-use sidecar::utils::instance::LocalInstance;
+const ASSERTIONS_PER_ADOPTER: usize = 5;
+const GAS_LIMIT_PER_TX: u64 = 1_500_000;
+const PROCESSING_WAIT_MS: u64 = 50;
 
-const TARGET: Address = address!("118dd24a3b0d02f90d8896e242d3838b4d37c181");
+fn read_assertions_file(input: &str) -> Vec<Bytes> {
+    let file = File::open(input).expect("Failed to open assertions file");
+    let reader = BufReader::new(file);
+    let artifacts: Vec<String> =
+        serde_json::from_reader(reader).expect("Failed to parse assertions JSON");
 
-fn create_txs_vec(i: u64, caller: Address) -> Vec<(FixedBytes::<32>, TxEnv)> {
-    let mut txs = vec![];
-
-    for n in 0..i {
-        let tx = TxEnvBuilder::new().nonce(n).gas_limit(130_000).caller(caller).kind(revm::primitives::TxKind::Call(TARGET)).build();
-        txs.push((FixedBytes::<32>::random(), tx));
-    }
-
-    txs
-}
-
-/// Reads a json file in the format of `["deployed_bytecode", ...]` and
-/// returns a `Vec<Bytecode>`.
-fn read_assertions_file(input: &str) -> Vec<Bytecode> {
-    println!("Reading assertions from: {input}");
-
-    let file = std::fs::File::open(input).expect("Failed to open file");
-    let reader = std::io::BufReader::new(file);
-    let artifacts: Vec<String> = serde_json::from_reader(reader).expect("Failed to parse JSON");
-
-    let mut bytecodes = vec![];
-    for bytecode in artifacts {
-        // the bytecode we get is a hex string of bytecode
-        let bytecode = hex::decode(bytecode).expect("Failed to decode bytecode");
-        let bytecode = Bytecode::new_raw(bytecode.into());
-        bytecodes.push(bytecode);
-    }
-
-    bytecodes
-}
-
-/// Reads a json file in the format of `["address", ...]` and
-/// returns a `Vec<Address>`.
-fn read_adopters_file(input: &str) -> Vec<Address> {
-    println!("Reading assertions from: {input}");
-
-    let file = std::fs::File::open(input).expect("Failed to open file");
-    let reader = std::io::BufReader::new(file);
-    let artifacts: Vec<String> = serde_json::from_reader(reader).expect("Failed to parse JSON");
-
-    let mut addresses = vec![];
-    for address in artifacts {
-        // the bytecode we get is a hex string of bytecode
-        let address = hex::decode(address).expect("Failed to decode bytecode");
-        let address = Address::from_slice(&address);
-        addresses.push(address);
-    }
-
-    addresses
-}
-
-fn worst_case_compute(c: &mut Criterion, local_instance: &mut LocalInstance<_>) {
-    group.bench_function("worst_case_compute", |b| {
-        b.iter(|| {
-            // Create fresh overlay_db and store for each iteration
-            let mut overlay_db = create_test_overlaydb();
-            let store = create_mock_store();
-
-            // Clone bytecodes for this iteration
-            let mut bytecodes = bytecodes_orig.clone();
-
-            // Insert all of the assertions
-            for adopter in &adopters {
-                for _ in 0..5 {
-                    let assertion_state =
-                        AssertionState::new_test(bytecodes.pop().unwrap().bytes());
-                    store.insert(*adopter, assertion_state).unwrap();
-                }
-            }
-
-            insert_account_info(&mut overlay_db, TARGET, bytecode_call.clone());
-
-            // Set up executor and overlay for this iteration
-            let executor = create_test_executor_with_store(store);
-            {
-                let mut lock = EXECUTOR.lock().unwrap();
-                *lock = Some(executor);
-            }
-            let _ = OVERLAY.set(overlay_db.clone());
-
-            let mut info = create_execution_info();
-            let txs = create_valid_txs_vec(10);
-
-            // Execute benchmarked function
-            black_box({
-                local_instance.send_block_with_txs(transactions);
-                local_instance.get_transaction_result(txs.last().0).await;
-            })
-            .unwrap();
+    artifacts
+        .into_iter()
+        .map(|bytecode| {
+            let raw = hex::decode(bytecode).expect("Failed to decode assertion bytecode");
+            Bytes::from(raw)
         })
-    });
+        .collect()
 }
 
-fn main() {
-    use tracing_subscriber;
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .finish();
+fn read_adopters_file(input: &str) -> Vec<Address> {
+    let file = File::open(input).expect("Failed to open adopters file");
+    let reader = BufReader::new(file);
+    let artifacts: Vec<String> =
+        serde_json::from_reader(reader).expect("Failed to parse adopters JSON");
 
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    artifacts
+        .into_iter()
+        .map(|address| {
+            let raw = hex::decode(address).expect("Failed to decode adopter address");
+            Address::from_slice(&raw)
+        })
+        .collect()
+}
 
-    let mut criterion = Criterion::default();
+fn build_assertion_store(bytecodes: &[Bytes], adopters: &[Address]) -> AssertionStore {
+    let needed = adopters.len() * ASSERTIONS_PER_ADOPTER;
+    assert!(
+        bytecodes.len() >= needed,
+        "expected at least {needed} bytecodes, found {}",
+        bytecodes.len()
+    );
 
-    let pwd = std::env::current_dir().unwrap();
-    // When running cargo bench from the crate, pwd is already in the crate directory
-    let dir_str = "/benches/assertions.json";
-    let adopters_str = "/benches/adopters.json";
+    let store = AssertionStore::new_ephemeral().expect("Failed to create assertion store");
 
-    //50 unique assertion bytecodes
-    let bytecodes_orig = read_assertions_file(&(pwd.to_str().unwrap().to_owned() + dir_str));
-    // 10 adopters
-    let adopters = read_adopters_file(&(pwd.to_str().unwrap().to_owned() + adopters_str));
-
-    let bytecode_call: Bytes = hex::decode(
-        "5f5f60805f5f73000000000000000000000000000000000000000063fffffffff1505f5f60805f5f73000000000000000000000000000000000000000163fffffffff1505f5f60805f5f73000000000000000000000000000000000000000263fffffffff1505f5f60805f5f73000000000000000000000000000000000000000363fffffffff1505f5f60805f5f73000000000000000000000000000000000000000463fffffffff1505f5f60805f5f73000000000000000000000000000000000000000563fffffffff1505f5f60805f5f73000000000000000000000000000000000000000663fffffffff1505f5f60805f5f73000000000000000000000000000000000000000763fffffffff1505f5f60805f5f73000000000000000000000000000000000000000863fffffffff1505f5f60805f5f73000000000000000000000000000000000000000963fffffffff150",
-    ).unwrap().into();
-
-    let assertion_store = AssertionStore::new_ephemeral().unwrap();
-
-    // Clone bytecodes for this iteration
-    let mut bytecodes = bytecodes_orig.clone();
-
-    // Insert all of the assertions
-    for adopter in &adopters {
-        for _ in 0..5 {
-            let assertion_state = AssertionState::new_test(&bytecodes.pop().unwrap().bytes());
-            store.insert(*adopter, assertion_state).unwrap();
+    for (idx, adopter) in adopters.iter().enumerate() {
+        let start = idx * ASSERTIONS_PER_ADOPTER;
+        let end = start + ASSERTIONS_PER_ADOPTER;
+        for bytecode in &bytecodes[start..end] {
+            let assertion = AssertionState::new_test(bytecode);
+            store
+                .insert(*adopter, assertion)
+                .expect("Failed to insert assertion into store");
         }
     }
 
-    let mut local_instance = LocalInstanceMockDriver::new_with_store(assertion_store);
+    store
+}
 
-    worst_case_compute(&mut criterion, &mut local_instance);
+fn build_transactions(
+    instance: &mut LocalInstance<LocalInstanceMockDriver>,
+    adopters: &[Address],
+) -> (Vec<(B256, TxEnv)>, Vec<B256>) {
+    let mut transactions = Vec::with_capacity(adopters.len());
+    let mut hashes = Vec::with_capacity(adopters.len());
+
+    for (idx, adopter) in adopters.iter().enumerate() {
+        let mut payload = vec![0u8; 32];
+        payload[..4].copy_from_slice(&(idx as u32).to_be_bytes());
+        let call_data = Bytes::from(payload);
+
+        let nonce = instance.next_nonce();
+        let tx_env = TxEnvBuilder::new()
+            .caller(instance.default_account())
+            .gas_limit(GAS_LIMIT_PER_TX)
+            .gas_price(0)
+            .value(U256::ZERO)
+            .nonce(nonce)
+            .kind(TxKind::Call(*adopter))
+            .data(call_data)
+            .build()
+            .expect("Failed to build transaction");
+
+        let tx_hash = LocalInstance::<LocalInstanceMockDriver>::generate_random_tx_hash();
+        hashes.push(tx_hash);
+        transactions.push((tx_hash, tx_env));
+    }
+
+    (transactions, hashes)
+}
+
+async fn execute_iteration(bytecodes: Arc<Vec<Bytes>>, adopters: Arc<Vec<Address>>) {
+    let store = build_assertion_store(&bytecodes, &adopters);
+    let mut instance = LocalInstanceMockDriver::new_with_store(store)
+        .await
+        .expect("Failed to create LocalInstance");
+
+    let (transactions, hashes) = build_transactions(&mut instance, &adopters);
+
+    instance
+        .send_block_with_txs(transactions)
+        .await
+        .expect("Failed to send block with transactions");
+
+    instance
+        .wait_for_processing(Duration::from_millis(PROCESSING_WAIT_MS))
+        .await;
+
+    for hash in hashes {
+        let ok = instance
+            .is_transaction_successful(&hash)
+            .await
+            .expect("Failed to fetch transaction result");
+        assert!(ok, "transaction {hash:?} did not complete successfully");
+    }
+}
+
+fn main() {
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .finish();
+    let _ = tracing::subscriber::set_global_default(subscriber);
+
+    let runtime = Runtime::new().expect("Failed to create Tokio runtime");
+
+    let working_dir = std::env::current_dir().expect("Failed to read current directory");
+    let assertions_path = working_dir.join("benches/assertions.json");
+    let adopters_path = working_dir.join("benches/adopters.json");
+
+    let bytecodes = Arc::new(read_assertions_file(&assertions_path.to_string_lossy()));
+    let adopters = Arc::new(read_adopters_file(&adopters_path.to_string_lossy()));
+
+    let mut criterion = Criterion::default();
+
+    criterion.bench_function("worst_case_compute", |b| {
+        let bytecodes = Arc::clone(&bytecodes);
+        let adopters = Arc::clone(&adopters);
+        b.iter(|| {
+            let bytecodes = Arc::clone(&bytecodes);
+            let adopters = Arc::clone(&adopters);
+            runtime.block_on(async move { execute_iteration(bytecodes, adopters).await });
+        });
+    });
+
     criterion.final_summary();
 }
