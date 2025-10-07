@@ -174,10 +174,6 @@ type PubSubProvider = RootProvider;
 /// reduce this value to something acceptable in your case.
 const MAX_BLOCKS_PER_CALL: u64 = 50_000;
 
-// FIXME: Make this configurable.
-/// Maximum reorg depth the indexer will go into the past
-const MAX_REORG_DEPTH: u64 = 5;
-
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
     #[error("Transport error")]
@@ -432,7 +428,7 @@ impl Indexer {
         let block_hashes_tree = self.block_hash_tree().map_err(IndexerError::SledError)?;
 
         let mut cursor_hash = cursor_hash;
-        for _ in 0..MAX_REORG_DEPTH {
+        loop {
             let cursor = self
                 .provider
                 .get_block_by_hash(cursor_hash)
@@ -453,7 +449,6 @@ impl Indexer {
                 return Err(IndexerError::NoCommonAncestor);
             }
         }
-        Err(IndexerError::NoCommonAncestor)
     }
 
     /// Handle the latest block, sync the indexer to the latest block, and moving

@@ -752,7 +752,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         // We need to set the block number to BlockEnv + 1, since BlockEnv is the previous block
-        self.cache.set_block_number(block_env.number + 1);
+        self.cache.set_block_number(block_env.number);
 
         self.block_metrics.block_processing_duration = block_processing_time.elapsed();
         self.block_metrics.current_height = block_env.number;
