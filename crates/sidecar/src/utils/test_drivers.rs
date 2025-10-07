@@ -170,14 +170,21 @@ impl LocalInstanceMockDriver {
     }
 }
 
-impl TestTransport for LocalInstanceMockDriver {
-    async fn new() -> Result<LocalInstance<Self>, String> {
-        info!(target: "test_transport", "Creating LocalInstance with MockTransport");
+/// Common initialization for all driver types
+struct CommonSetup {
+    underlying_db: Arc<CacheDB<Arc<Cache>>>,
+    cache: Arc<Cache>,
+    sequencer_http_mock: DualProtocolMockServer,
+    besu_client_http_mock: DualProtocolMockServer,
+    assertion_store: Arc<AssertionStore>,
+    state_results: Arc<crate::TransactionsState>,
+    default_account: Address,
+    sources: Vec<Arc<dyn Source>>,
+}
 
-        // Create channels for communication
-        let (engine_tx, engine_rx) = channel::unbounded();
-        let (mock_tx, mock_rx) = channel::unbounded();
-
+impl CommonSetup {
+    /// Initialize common database, cache, and mocks for test drivers
+    async fn new(assertion_store: Option<AssertionStore>) -> Result<Self, String> {
         // Create the database and state
         let sequencer_http_mock = DualProtocolMockServer::new()
             .await
@@ -201,22 +208,43 @@ impl TestTransport for LocalInstanceMockDriver {
 
         let underlying_db = Arc::new(underlying_db);
 
-        let state = OverlayDb::new(Some(underlying_db.clone()), 1024);
+        // Create assertion store if not provided
+        let assertion_store = match assertion_store {
+            Some(store) => Arc::new(store),
+            None => setup_assertion_store()?,
+        };
 
-        // Create assertion store and executor
-        let assertion_store = setup_assertion_store()?;
-
-        let assertion_executor =
-            AssertionExecutor::new(ExecutorConfig::default(), (*assertion_store).clone());
-
-        // Create the engine with TransactionsState
         let state_results = crate::TransactionsState::new();
+
+        Ok(CommonSetup {
+            underlying_db,
+            cache,
+            sequencer_http_mock,
+            besu_client_http_mock,
+            assertion_store,
+            state_results,
+            default_account,
+            sources,
+        })
+    }
+
+    /// Spawn the engine task with the provided receiver
+    fn spawn_engine(
+        &self,
+        engine_rx: channel::Receiver<TxQueueContents>,
+    ) -> tokio::task::JoinHandle<()> {
+        let state = OverlayDb::new(Some(self.underlying_db.clone()), 1024);
+        let assertion_executor = AssertionExecutor::new(
+            ExecutorConfig::default(),
+            (*self.assertion_store).clone(),
+        );
+
         let mut engine = CoreEngine::new(
             state,
-            cache.clone(),
+            self.cache.clone(),
             engine_rx,
             assertion_executor,
-            state_results.clone(),
+            self.state_results.clone(),
             10,
             Duration::from_millis(100),
             #[cfg(feature = "cache_validation")]
@@ -224,21 +252,35 @@ impl TestTransport for LocalInstanceMockDriver {
         )
         .await;
 
-        // Spawn the engine task that manually processes items
-        // This mimics what the tests do - manually processing items from the queue
-        let engine_handle = tokio::spawn(async move {
-            info!(target: "test_transport", "Engine task started, waiting for items...");
-            info!(target: "test_transport", "Engine about to call run()");
+        tokio::spawn(async move {
+            info!(target: "test_driver", "Engine task started, waiting for items...");
+            info!(target: "test_driver", "Engine about to call run()");
             let result = engine.run().await;
             match result {
-                Ok(()) => info!(target: "test_transport", "Engine run() completed successfully"),
-                Err(e) => error!(target: "test_transport", "Engine run() failed: {:?}", e),
+                Ok(()) => info!(target: "test_driver", "Engine run() completed successfully"),
+                Err(e) => error!(target: "test_driver", "Engine run() failed: {:?}", e),
             }
-            info!(target: "test_transport", "Engine task completed");
-        });
+            info!(target: "test_driver", "Engine task completed");
+        })
+    }
+}
+
+impl LocalInstanceMockDriver {
+    /// Same as `new()`, but takes in an `AssertionStore` as an argument
+    pub async fn new_with_store(assertion_store: AssertionStore) -> Result<LocalInstance<Self>, String> {
+        info!(target: "test_transport", "Creating LocalInstance with MockTransport");
+
+        let setup = CommonSetup::new(Some(assertion_store)).await?;
+
+        // Create channels for communication
+        let (engine_tx, engine_rx) = channel::unbounded();
+        let (mock_tx, mock_rx) = channel::unbounded();
+
+        // Spawn the engine task
+        let engine_handle = setup.spawn_engine(engine_rx);
 
         // Create mock transport with the channels
-        let transport = MockTransport::with_receiver(engine_tx, mock_rx, state_results.clone());
+        let transport = MockTransport::with_receiver(engine_tx, mock_rx, setup.state_results.clone());
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
@@ -253,19 +295,71 @@ impl TestTransport for LocalInstanceMockDriver {
         });
 
         Ok(LocalInstance::new_internal(
-            underlying_db,
-            cache.clone(),
-            sequencer_http_mock,
-            besu_client_http_mock,
-            assertion_store,
+            setup.underlying_db,
+            setup.cache.clone(),
+            setup.sequencer_http_mock,
+            setup.besu_client_http_mock,
+            setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
             0,
-            state_results,
-            default_account,
+            setup.state_results,
+            setup.default_account,
             0,
             None,
-            sources,
+            setup.sources,
+            LocalInstanceMockDriver {
+                mock_sender: mock_tx,
+                block_tx_hashes: Vec::new(),
+                override_n_transactions: None,
+                override_last_tx_hash: None,
+            },
+        ))
+    }
+}
+
+impl TestTransport for LocalInstanceMockDriver {
+    async fn new() -> Result<LocalInstance<Self>, String> {
+        info!(target: "test_transport", "Creating LocalInstance with MockTransport");
+
+        let setup = CommonSetup::new(None).await?;
+
+        // Create channels for communication
+        let (engine_tx, engine_rx) = channel::unbounded();
+        let (mock_tx, mock_rx) = channel::unbounded();
+
+        // Spawn the engine task
+        let engine_handle = setup.spawn_engine(engine_rx);
+
+        // Create mock transport with the channels
+        let transport = MockTransport::with_receiver(engine_tx, mock_rx, setup.state_results.clone());
+
+        // Spawn the transport task
+        let transport_handle = tokio::spawn(async move {
+            info!(target: "test_transport", "Transport task started");
+            info!(target: "test_transport", "Transport about to call run()");
+            let result = transport.run().await;
+            match result {
+                Ok(()) => info!(target: "test_transport", "Transport run() completed successfully"),
+                Err(e) => warn!(target: "test_transport", "Transport stopped with error: {}", e),
+            }
+            info!(target: "test_transport", "Transport task completed");
+        });
+
+        Ok(LocalInstance::new_internal(
+            setup.underlying_db,
+            setup.cache.clone(),
+            setup.sequencer_http_mock,
+            setup.besu_client_http_mock,
+            setup.assertion_store,
+            Some(transport_handle),
+            Some(engine_handle),
+            0,
+            setup.state_results,
+            setup.default_account,
+            0,
+            None,
+            setup.sources,
             LocalInstanceMockDriver {
                 mock_sender: mock_tx,
                 block_tx_hashes: Vec::new(),
@@ -373,70 +467,13 @@ impl TestTransport for LocalInstanceHttpDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
         info!(target: "LocalInstanceHttpDriver", "Creating LocalInstance with HttpTransport");
 
+        let setup = CommonSetup::new(None).await?;
+
         // Create channels for communication
         let (engine_tx, engine_rx) = channel::unbounded();
 
-        // Create the database and state
-        let sequencer_http_mock = DualProtocolMockServer::new()
-            .await
-            .expect("Failed to create sequencer mock");
-        let besu_client_http_mock = DualProtocolMockServer::new()
-            .await
-            .expect("Failed to create besu client mock");
-        let mock_sequencer_db: Arc<dyn Source> = Arc::new(
-            Sequencer::try_new(&sequencer_http_mock.http_url())
-                .await
-                .expect("Failed to create sequencer mock"),
-        );
-        let mock_besu_client_db: Arc<dyn Source> =
-            BesuClient::try_build(besu_client_http_mock.ws_url())
-                .await
-                .expect("Failed to create besu client mock");
-
-        let sources = vec![mock_besu_client_db, mock_sequencer_db];
-        let cache = Arc::new(Cache::new(sources.clone(), 10));
-        let mut underlying_db = revm::database::CacheDB::new(cache.clone());
-        let default_account = populate_test_database(&mut underlying_db);
-
-        let underlying_db = Arc::new(underlying_db);
-
-        let state = OverlayDb::new(Some(underlying_db.clone()), 1024);
-
-        // Create assertion store and executor
-        let assertion_store = setup_assertion_store()?;
-
-        let assertion_executor =
-            AssertionExecutor::new(ExecutorConfig::default(), (*assertion_store).clone());
-
-        // Create the engine with TransactionsState
-        let state_results = crate::TransactionsState::new();
-        let mut engine = CoreEngine::new(
-            state,
-            cache.clone(),
-            engine_rx,
-            assertion_executor,
-            state_results.clone(),
-            10,
-            Duration::from_millis(100),
-            #[cfg(feature = "cache_validation")]
-            Some(&besu_client_http_mock.ws_url()),
-        )
-        .await;
-
-        // Spawn the engine task that manually processes items
-        // This mimics what the tests do - manually processing items from the queue
-        let engine_handle = tokio::spawn(async move {
-            info!(target: "LocalInstanceHttpDriver", "Engine task started, waiting for items...");
-            info!(target: "LocalInstanceHttpDriver", "Engine about to call run()");
-            let result = engine.run().await;
-            match result {
-                Ok(()) => {
-                    info!(target: "LocalInstanceHttpDriver", "Engine run() completed successfully");
-                }
-                Err(e) => error!(target: "LocalInstanceHttpDriver", "Engine run() failed: {:?}", e),
-            }
-            info!(target: "LocalInstanceHttpDriver", "Engine task completed");
-        });
+        // Spawn the engine task
+        let engine_handle = setup.spawn_engine(engine_rx);
 
         // Find an available port dynamically
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -451,7 +488,7 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         // Create HTTP transport config with the dynamically assigned address
         let config = HttpTransportConfig { bind_addr: address };
-        let transport = HttpTransport::new(config, engine_tx, state_results.clone()).unwrap();
+        let transport = HttpTransport::new(config, engine_tx, setup.state_results.clone()).unwrap();
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
@@ -470,19 +507,19 @@ impl TestTransport for LocalInstanceHttpDriver {
         });
 
         Ok(LocalInstance::new_internal(
-            underlying_db,
-            cache.clone(),
-            sequencer_http_mock,
-            besu_client_http_mock,
-            assertion_store,
+            setup.underlying_db,
+            setup.cache.clone(),
+            setup.sequencer_http_mock,
+            setup.besu_client_http_mock,
+            setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
             0,
-            state_results,
-            default_account,
+            setup.state_results,
+            setup.default_account,
             0,
             Some(&address),
-            sources,
+            setup.sources,
             LocalInstanceHttpDriver {
                 client: reqwest::Client::new(),
                 address,
@@ -767,68 +804,13 @@ impl TestTransport for LocalInstanceGrpcDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
         info!(target: "LocalInstanceGrpcDriver", "Creating LocalInstance with GrpcTransport");
 
+        let setup = CommonSetup::new(None).await?;
+
         // Create channels for communication
         let (engine_tx, engine_rx) = channel::unbounded();
 
-        // Create the database and state
-        let sequencer_http_mock = DualProtocolMockServer::new()
-            .await
-            .expect("Failed to create sequencer mock");
-        let besu_client_http_mock = DualProtocolMockServer::new()
-            .await
-            .expect("Failed to create besu client mock");
-        let mock_sequencer_db: Arc<dyn Source> = Arc::new(
-            Sequencer::try_new(&sequencer_http_mock.http_url())
-                .await
-                .expect("Failed to create sequencer mock"),
-        );
-        let mock_besu_client_db: Arc<dyn Source> =
-            BesuClient::try_build(besu_client_http_mock.ws_url())
-                .await
-                .expect("Failed to create besu client mock");
-        let sources = vec![mock_besu_client_db, mock_sequencer_db];
-        let cache = Arc::new(Cache::new(sources.clone(), 10));
-        let mut underlying_db = revm::database::CacheDB::new(cache.clone());
-        let default_account = populate_test_database(&mut underlying_db);
-
-        let underlying_db = Arc::new(underlying_db);
-
-        let state = OverlayDb::new(Some(underlying_db.clone()), 1024);
-
-        // Create assertion store and executor
-        let assertion_store = setup_assertion_store()?;
-
-        let assertion_executor =
-            AssertionExecutor::new(ExecutorConfig::default(), (*assertion_store).clone());
-
-        // Create the engine with TransactionsState
-        let state_results = crate::TransactionsState::new();
-        let mut engine = CoreEngine::new(
-            state,
-            cache.clone(),
-            engine_rx,
-            assertion_executor,
-            state_results.clone(),
-            10,
-            Duration::from_millis(100),
-            #[cfg(feature = "cache_validation")]
-            Some(&besu_client_http_mock.ws_url()),
-        )
-        .await;
-
         // Spawn the engine task
-        let engine_handle = tokio::spawn(async move {
-            info!(target: "LocalInstanceGrpcDriver", "Engine task started, waiting for items...");
-            info!(target: "LocalInstanceGrpcDriver", "Engine about to call run()");
-            let result = engine.run().await;
-            match result {
-                Ok(()) => {
-                    info!(target: "LocalInstanceGrpcDriver", "Engine run() completed successfully");
-                }
-                Err(e) => error!(target: "LocalInstanceGrpcDriver", "Engine run() failed: {:?}", e),
-            }
-            info!(target: "LocalInstanceGrpcDriver", "Engine task completed");
-        });
+        let engine_handle = setup.spawn_engine(engine_rx);
 
         // Find an available port dynamically
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -843,7 +825,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         // Create gRPC transport config with the dynamically assigned address
         let config = GrpcTransportConfig { bind_addr: address };
-        let transport = GrpcTransport::new(config, engine_tx, state_results.clone()).unwrap();
+        let transport = GrpcTransport::new(config, engine_tx, setup.state_results.clone()).unwrap();
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
@@ -881,19 +863,19 @@ impl TestTransport for LocalInstanceGrpcDriver {
         };
 
         Ok(LocalInstance::new_internal(
-            underlying_db,
-            cache.clone(),
-            sequencer_http_mock,
-            besu_client_http_mock,
-            assertion_store,
+            setup.underlying_db,
+            setup.cache.clone(),
+            setup.sequencer_http_mock,
+            setup.besu_client_http_mock,
+            setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
             0,
-            state_results,
-            default_account,
+            setup.state_results,
+            setup.default_account,
             0,
             Some(&address),
-            sources,
+            setup.sources,
             LocalInstanceGrpcDriver {
                 client,
                 block_tx_hashes: Vec::new(),
