@@ -673,14 +673,21 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let mut processed_blocks = 0u64;
         let mut processed_txs = 0u64;
         let mut block_processing_time = Instant::now();
+        let mut idle_start = Instant::now();
 
         loop {
             // Use try_recv and yield when empty to be async-friendly
             let event = match self.tx_receiver.try_recv() {
-                Ok(event) => event,
+                Ok(event) => {
+                    // We received an event, accumulate time spent idle
+                    self.block_metrics.idle_time += idle_start.elapsed();
+                    event
+                }
                 Err(crossbeam::channel::TryRecvError::Empty) => {
                     // Channel is empty, yield to allow other tasks to run
                     tokio::task::yield_now().await;
+                    // Reset idle timer after yield
+                    idle_start = Instant::now();
                     continue;
                 }
                 Err(crossbeam::channel::TryRecvError::Disconnected) => {
@@ -688,6 +695,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     return Err(EngineError::ChannelClosed);
                 }
             };
+
+            // Track event processing time
+            let event_start = Instant::now();
 
             match event {
                 TxQueueContents::Block(queue_block_env, current_span) => {
@@ -708,6 +718,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     self.execute_reorg(hash)?;
                 }
             }
+
+            // Accumulate event processing time
+            self.block_metrics.event_processing_time += event_start.elapsed();
+
+            // Reset idle timer after processing event
+            idle_start = Instant::now();
 
             if processed_blocks > 0 && processed_blocks.is_multiple_of(100) {
                 info!(
