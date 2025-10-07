@@ -20,7 +20,7 @@ pub struct Args {
     /// Request timeout in seconds
     #[arg(
         long,
-        default_value = "1",
+        default_value = "2",
         env = "SHADOW_DRIVER_REQUEST_TIMEOUT_SECONDS"
     )]
     pub request_timeout_seconds: u64,

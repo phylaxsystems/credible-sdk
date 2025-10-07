@@ -13,10 +13,7 @@ use alloy::{
         B256,
         Bytes,
     },
-    rpc::types::{
-        BlockNumberOrTag,
-        Header,
-    },
+    rpc::types::Header,
     signers::Either,
 };
 use alloy_provider::{
@@ -120,26 +117,18 @@ impl Listener {
     /// Follow the `newHeads` stream and process new blocks in order, tolerating
     /// duplicate/stale headers after reconnects.
     async fn stream_blocks(&mut self) -> Result<()> {
-        let subscription = self.provider.subscribe_blocks().await?;
-        let mut stream = subscription.into_stream();
+        let subscription = self.provider.subscribe_full_blocks().full();
+        let mut stream = subscription.into_stream().await?;
 
         info!("Started block subscription");
 
-        while let Some(header) = stream.next().await {
-            let Header { hash: _, inner, .. } = header;
+        while let Some(Ok(block)) = stream.next().await {
+            let Header {
+                hash: _, ref inner, ..
+            } = block.header;
             let block_number = inner.number;
 
             info!("Processing block {}", block_number);
-
-            // Fetch the full block with full transaction details
-            let block_id = BlockNumberOrTag::Number(block_number);
-            let block = self
-                .provider
-                .get_block_by_number(block_id)
-                .full()
-                .await?
-                .with_context(|| format!("block {block_number} not found"))?;
-
             // Extract transactions from the block (already included when using .full())
             let transactions = match &block.transactions {
                 alloy::rpc::types::BlockTransactions::Full(txs) => txs.clone(),

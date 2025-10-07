@@ -52,7 +52,14 @@ use tracing::{
 #[derive(Debug)]
 pub struct BesuClient {
     inner: Arc<BesuClientInner>,
-    _handler: AbortHandle,
+    handler: AbortHandle,
+}
+
+impl Drop for BesuClient {
+    fn drop(&mut self) {
+        self.handler.abort();
+        info!("BesuClient subscription cleaned up");
+    }
 }
 
 #[derive(Debug)]
@@ -84,7 +91,7 @@ impl BesuClient {
         let handler = tokio::task::spawn(inner.clone().run_with_reconnect());
         Ok(Arc::new(Self {
             inner,
-            _handler: handler.abort_handle(),
+            handler: handler.abort_handle(),
         }))
     }
 }

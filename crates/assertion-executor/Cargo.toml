@@ -17,6 +17,7 @@ assertion-da-client = { workspace = true }
 bincode = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 metrics = { workspace = true }
+futures = { workspace = true }
 
 
 # ETH deps
@@ -71,7 +72,6 @@ criterion = { workspace = true }
 bollard = { workspace = true }
 int-test-utils = { workspace = true }
 assertion-executor = { path = ".", default-features = false, features = ["test"] }
-futures = { workspace = true }
 anyhow = { workspace = true }
 evm-glue = { workspace = true }
 
