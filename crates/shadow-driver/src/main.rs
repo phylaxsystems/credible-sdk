@@ -32,9 +32,32 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let provider = connect_provider(&args.ws_url).await?;
-
     let mut listener = Listener::new(provider, &args.sidecar_url, args.request_timeout_seconds);
-    listener.run().await.context("listener unexpectedly")
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received Ctrl+C, shutting down gracefully...");
+        }
+        () = wait_for_sigterm() => {
+            tracing::info!("Received SIGTERM, shutting down gracefully...");
+        }
+        result = listener.run() => {
+            match result {
+                Ok(()) => tracing::info!("Listener exited normally"),
+                Err(e) => tracing::error!(error = ?e, "Listener exited with error"),
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn wait_for_sigterm() {
+    use tokio::signal::unix::{
+        SignalKind,
+        signal,
+    };
+    let mut sigterm = signal(SignalKind::terminate()).expect("failed to setup SIGTERM handler");
+    sigterm.recv().await;
 }
 
 /// Establish a WebSocket connection to the execution node and expose the

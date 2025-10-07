@@ -10,6 +10,8 @@ use alloy_rpc_types::{
     Filter,
 };
 use alloy_transport::TransportError;
+use futures::StreamExt;
+use std::collections::HashMap;
 
 use alloy_network_primitives::HeaderResponse;
 
@@ -27,6 +29,7 @@ use bincode::{
 
 use tracing::{
     debug,
+    error,
     info,
     instrument,
     trace,
@@ -65,6 +68,7 @@ use assertion_da_client::{
     DaFetchResponse,
 };
 
+use futures::stream;
 use std::collections::BTreeMap;
 
 sol! {
@@ -286,30 +290,35 @@ impl Indexer {
     #[instrument(skip(self))]
     pub async fn run(&self) -> IndexerResult {
         if !self.is_synced {
+            error!(
+                target = "assertion_executor::indexer",
+                "Indexer must be synced before running"
+            );
             return Err(IndexerError::StoreNotSynced);
         }
 
-        let mut block_stream = self
+        let block_stream = self
             .provider
             .subscribe_blocks()
             .await
             .map_err(IndexerError::TransportError)?;
-        loop {
+        let mut stream = block_stream.into_stream();
+
+        // Process incoming header
+        while let Some(latest_block) = stream.next().await {
             // FIXME: Sometimes when op-talos is syncing from scratch,
             // the below might fail with `Lagged` on the recv.
             // When op-talos is initially syncing, writes indexer data to disk,
             // and then restarts this problem does not appear.
-            let latest_block = block_stream
-                .recv()
-                .await
-                .map_err(IndexerError::BlockStreamError)?;
-            trace!(
+            debug!(
                 target = "assertion_executor::indexer",
                 ?latest_block,
                 "Received new block"
             );
             self.handle_latest_block(latest_block).await?;
         }
+        warn!(target = "assertion_executor::indexer", "Block stream ended");
+        Ok(())
     }
 
     /// Sync the indexer to the latest block
@@ -555,6 +564,7 @@ impl Indexer {
 
     /// Fetch the events from the `State Oracle` contract.
     /// Store the events in the `pending_modifications` tree for the indexed blocks.
+    #[allow(clippy::too_many_lines)]
     async fn index_range(&self, from: u64, to: u64) -> IndexerResult {
         trace!(
             target = "assertion_executor::indexer",
@@ -576,7 +586,7 @@ impl Indexer {
         let mut pending_modifications: BTreeMap<u64, BTreeMap<u64, PendingModification>> =
             BTreeMap::new();
 
-        for log in logs {
+        for log in &logs {
             let log_index = log.log_index.ok_or(IndexerError::LogIndexMissing)?;
             let block_number = log.block_number.ok_or(IndexerError::BlockNumberMissing)?;
 
@@ -617,24 +627,49 @@ impl Indexer {
             from, to, "Building block hashes batch"
         );
 
-        // Build the block hashes batch
-        let mut block_hashes = vec![];
+        let mut block_hashes_map: HashMap<u64, B256> = logs
+            .iter()
+            .filter_map(|log| {
+                log.block_number
+                    .and_then(|number| log.block_hash.map(|hash| (number, hash)))
+            })
+            .collect();
 
-        for i in from..=to {
-            let block_hash = self
-                .provider
-                .get_block(BlockId::Number(BlockNumberOrTag::Number(i)))
+        // Find missing blocks (blocks with no logs)
+        let missing_blocks: Vec<u64> = (from..=to)
+            .filter(|block_num| !block_hashes_map.contains_key(block_num))
+            .collect();
+
+        // Fetch missing block hashes if needed
+        if !missing_blocks.is_empty() {
+            let missing_hashes: Vec<(u64, B256)> = stream::iter(missing_blocks)
+                .map(|num| {
+                    async move {
+                        let block = self
+                            .provider
+                            .get_block(BlockId::Number(BlockNumberOrTag::Number(num)))
+                            .await
+                            .map_err(IndexerError::TransportError)?
+                            .ok_or(IndexerError::BlockHashMissing)?;
+
+                        Ok::<_, IndexerError>((num, block.header().hash()))
+                    }
+                })
+                .buffer_unordered(20) // Concurrent fetches
+                .collect::<Vec<_>>()
                 .await
-                .map_err(IndexerError::TransportError)?
-                .ok_or(IndexerError::BlockHashMissing)?
-                .header()
-                .hash();
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
 
-            block_hashes.push(BlockNumHash {
-                number: i,
-                hash: block_hash,
-            });
+            block_hashes_map.extend(missing_hashes);
         }
+
+        // Convert to sorted Vec
+        let mut block_hashes: Vec<BlockNumHash> = block_hashes_map
+            .into_iter()
+            .map(|(number, hash)| BlockNumHash { number, hash })
+            .collect();
+        block_hashes.sort_by_key(|b| b.number);
 
         if let Some(last_indexed_block_num_hash) = block_hashes.last() {
             self.insert_last_indexed_block_num_hash(*last_indexed_block_num_hash)?;

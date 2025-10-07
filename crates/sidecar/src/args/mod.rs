@@ -132,7 +132,7 @@ pub struct CredibleArgs {
     #[arg(
         long = "credible.transaction-results-max-capacity",
         env = "CREDIBLE_TRANSACTION_RESULTS_MAX_CAPACITY",
-        default_value = "1000000"
+        default_value = "1000"
     )]
     pub transaction_results_max_capacity: usize,
 }
