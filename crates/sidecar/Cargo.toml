@@ -40,6 +40,7 @@ redis = { workspace = true }
 hex = { workspace = true }
 moka = { version = "0.12.10", features = ["sync"], optional = true }
 alloy-rpc-types-trace = { workspace = true, optional = true }
+criterion = "0.6"
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"
@@ -66,3 +67,8 @@ lto = "fat"
 opt-level = 3
 codegen-units = 1
 strip = true
+
+[[bench]]
+name = "worst_case_compute"
+path = "benches/worst_case_compute.rs"
+harness = false
