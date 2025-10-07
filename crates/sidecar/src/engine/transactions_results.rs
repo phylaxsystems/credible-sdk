@@ -52,6 +52,11 @@ impl TransactionsResults {
         self.transactions_state.remove_transaction_result(&tx_hash);
     }
 
+    pub fn clear_all(&mut self) {
+        self.transactions.clear();
+        self.transactions_state.clear_all();
+    }
+
     #[cfg(test)]
     pub fn get_transaction_result(
         &self,

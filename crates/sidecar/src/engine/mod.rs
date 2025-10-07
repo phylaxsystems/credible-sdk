@@ -572,6 +572,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.check_sources_available = true;
             self.state.invalidate_all();
             self.last_executed_tx.clear();
+            self.transaction_results.clear_all();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
@@ -590,6 +591,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.check_sources_available = true;
             self.state.invalidate_all();
             self.last_executed_tx.clear();
+            self.transaction_results.clear_all();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
@@ -610,6 +612,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.check_sources_available = true;
             self.state.invalidate_all();
             self.last_executed_tx.clear();
+            self.transaction_results.clear_all();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }

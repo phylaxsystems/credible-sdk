@@ -107,6 +107,17 @@ impl TransactionsState {
             RequestTransactionResult::Channel(response_rx)
         }
     }
+
+    /// Clears all cached transaction state, canceling any pending result waiters.
+    ///
+    /// This should be used when the engine invalidates its cache (e.g. because of a
+    /// block environment mismatch) so that callers waiting on results do not hang
+    /// indefinitely for transactions that will never complete.
+    pub fn clear_all(&self) {
+        self.transaction_results.clear();
+        self.transaction_results_pending_requests.clear();
+        self.accepted_txs.clear();
+    }
 }
 
 pub enum RequestTransactionResult {
