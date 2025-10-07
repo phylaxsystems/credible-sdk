@@ -5,23 +5,23 @@
 //! - `instance` test instance for running engine tests with mock transport
 //! - `test_drivers` transport driver implementations for testing
 
-#[cfg(test)]
+#[cfg(any(test, feature = "bench-utils"))]
 #[allow(dead_code)]
 pub mod instance;
 pub(crate) mod macros;
-#[cfg(test)]
+#[cfg(any(test, feature = "bench-utils"))]
 #[allow(dead_code)]
 pub mod test_drivers;
-#[cfg(test)]
+#[cfg(any(test, feature = "bench-utils"))]
 mod test_util;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "bench-utils"))]
 pub use test_util::{
     TestDbError,
     engine_test,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "bench-utils"))]
 pub use crate::utils::instance::LocalInstance;
 
 pub enum ErrorRecoverability {

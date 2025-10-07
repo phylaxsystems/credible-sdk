@@ -41,6 +41,7 @@ hex = { workspace = true }
 moka = { version = "0.12.10", features = ["sync"], optional = true }
 alloy-rpc-types-trace = { workspace = true, optional = true }
 criterion = "0.6"
+sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"
@@ -51,8 +52,18 @@ protoc-bin-vendored = "3"
 default = ["linea"]
 linea = ["assertion-executor/linea"]
 optimism = ["assertion-executor/optimism"]
-test = ["assertion-executor/test", "ctor", "cache_validation"]
-cache_validation = ["alloy-rpc-types-trace", "moka"]
+test = [
+    "assertion-executor/test",
+    "ctor",
+    "sidecar-test-macros",
+    "int-test-utils",
+]
+bench-utils = [
+    "assertion-executor/test",
+    "ctor",
+    "sidecar-test-macros",
+    "int-test-utils",
+]
 
 [dev-dependencies]
 ctor = "0.5.0"
@@ -72,3 +83,4 @@ strip = true
 name = "worst_case_compute"
 path = "benches/worst_case_compute.rs"
 harness = false
+required-features = ["bench-utils"]

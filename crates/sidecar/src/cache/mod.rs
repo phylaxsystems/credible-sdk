@@ -151,7 +151,7 @@ impl Cache {
     }
 
     /// Returns how many times the cache has been explicitly reset.
-    #[cfg(any(test, feature = "test"))]
+    #[cfg(any(test, feature = "test", feature = "bench-utils"))]
     pub fn reset_required_block_number_count(&self) -> u64 {
         self.metrics
             .reset_required_block_number_counter

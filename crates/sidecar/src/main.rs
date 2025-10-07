@@ -4,17 +4,7 @@
 #![allow(clippy::unreadable_literal)]
 #![allow(clippy::similar_names)]
 
-mod args;
-mod cache;
-mod config;
-pub mod engine;
-mod indexer;
-mod metrics;
-pub(crate) mod transactions_state;
-pub mod transport;
-mod utils;
-
-use crate::{
+use sidecar::{
     cache::sources::redis::RedisCache,
     config::{
         init_assertion_store,
@@ -37,7 +27,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{
+use sidecar::{
     cache::{
         Cache,
         sources::{
@@ -47,6 +37,7 @@ use crate::{
             sequencer::Sequencer,
         },
     },
+    indexer,
     transactions_state::TransactionsState,
     transport::{
         AnyTransport,
@@ -61,7 +52,8 @@ use crate::{
     },
     utils::ErrorRecoverability,
 };
-use args::{
+use sidecar::critical;
+use sidecar::args::{
     SidecarArgs,
     TransportProtocolArg,
 };
