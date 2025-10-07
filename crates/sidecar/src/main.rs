@@ -154,6 +154,9 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("Received Ctrl+C, shutting down...");
                 break;
             }
+            () = wait_for_sigterm() => {
+                tracing::info!("Received SIGTERM, shutting down...");
+            }
             result = engine.run() => {
                 if let Err(e) = result {
                     if ErrorRecoverability::from(&e).is_recoverable() {
@@ -191,4 +194,13 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Sidecar shutdown complete.");
     Ok(())
+}
+
+async fn wait_for_sigterm() {
+    use tokio::signal::unix::{
+        SignalKind,
+        signal,
+    };
+    let mut sigterm = signal(SignalKind::terminate()).expect("failed to setup SIGTERM handler");
+    sigterm.recv().await;
 }

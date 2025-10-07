@@ -176,7 +176,7 @@ const MAX_BLOCKS_PER_CALL: u64 = 50_000;
 
 // FIXME: Make this configurable.
 /// Maximum reorg depth the indexer will go into the past
-const MAX_REORG_DEPTH: u64 = 100;
+const MAX_REORG_DEPTH: u64 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
