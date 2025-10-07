@@ -43,6 +43,7 @@ mod transactions_results;
 
 use super::engine::queue::{
     QueueBlockEnv,
+    QueueTransaction,
     TransactionQueueReceiver,
     TxQueueContents,
 };
@@ -668,11 +669,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// via the transaction queue.
     // TODO: fn should probably not be async but we do it because
     // so we can easily select on result in main. too bad!
-    #[instrument(name = "engine::run", skip_all, level = "info")]
     pub async fn run(&mut self) -> Result<(), EngineError> {
         let mut processed_blocks = 0u64;
         let mut processed_txs = 0u64;
-        let mut block_processing_time = std::time::Instant::now();
+        let mut block_processing_time = Instant::now();
 
         loop {
             // Use try_recv and yield when empty to be async-friendly
@@ -691,77 +691,17 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
             match event {
                 TxQueueContents::Block(queue_block_env, current_span) => {
-                    let block_env = &queue_block_env.block_env;
                     let _guard = current_span.enter();
-
-                    self.check_cache(&queue_block_env);
-
-                    // Apply the previously executed transaction state changes
-                    self.apply_state_buffer()?;
-
-                    processed_blocks += 1;
-                    info!(
-                        target = "engine",
-                        block_number = block_env.number,
-                        processed_blocks,
-                        "Processing new block",
-                    );
-                    debug!(
-                        target = "engine",
-                        timestamp = block_env.timestamp,
-                        number = block_env.number,
-                        gas_limit = block_env.gas_limit,
-                        base_fee = ?block_env.basefee,
-                        "Block details"
-                    );
-
-                    self.cache.set_block_number(block_env.number);
-
-                    self.block_metrics.block_processing_duration = block_processing_time.elapsed();
-                    self.block_metrics.current_height = block_env.number;
-                    // Commit all values inside of `block_metrics` to prometheus collector
-                    self.block_metrics.commit();
-                    // Reset the values inside to their defaults
-                    self.block_metrics.reset();
-                    block_processing_time = std::time::Instant::now();
-
-                    self.block_env = Some(queue_block_env.block_env);
+                    self.process_block_event(
+                        queue_block_env,
+                        &mut processed_blocks,
+                        &mut block_processing_time,
+                    )?;
                 }
                 TxQueueContents::Tx(queue_transaction, current_span) => {
                     let _guard = current_span.enter();
-                    self.verify_state_sources_synced_for_tx().await?;
-
-                    let tx_hash = queue_transaction.tx_hash;
-                    let tx_env = queue_transaction.tx_env;
-                    processed_txs += 1;
-                    self.block_metrics.transactions_considered += 1;
-
-                    if self.block_env.is_none() {
-                        error!(
-                            target = "engine",
-                            tx_hash = %tx_hash,
-                            caller = %tx_env.caller,
-                            processed_txs,
-                            "Received transaction without first receiving a BlockEnv"
-                        );
-                        return Err(EngineError::TransactionError);
-                    }
-
-                    debug!(
-                        target = "engine",
-                        tx_hash = %tx_hash,
-                        caller = %tx_env.caller,
-                        gas_limit = tx_env.gas_limit,
-                        processed_txs,
-                        current_block = self.block_env.as_ref().map(|b| b.number),
-                        "Processing transaction"
-                    );
-
-                    // Apply the previously executed transaction state changes
-                    self.apply_state_buffer()?;
-
-                    // Process the transaction with the current block environment
-                    self.execute_transaction(tx_hash, &tx_env)?;
+                    self.process_transaction_event(queue_transaction, &mut processed_txs)
+                        .await?;
                 }
                 TxQueueContents::Reorg(hash, current_span) => {
                     let _guard = current_span.enter();
@@ -779,6 +719,94 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 );
             }
         }
+    }
+
+    #[instrument(name = "engine::process_block_event", skip_all, level = "info")]
+    fn process_block_event(
+        &mut self,
+        queue_block_env: QueueBlockEnv,
+        processed_blocks: &mut u64,
+        block_processing_time: &mut Instant,
+    ) -> Result<(), EngineError> {
+        let block_env = &queue_block_env.block_env;
+
+        self.check_cache(&queue_block_env);
+
+        // Apply the previously executed transaction state changes
+        self.apply_state_buffer()?;
+
+        *processed_blocks += 1;
+        info!(
+            target = "engine",
+            block_number = block_env.number,
+            processed_blocks = *processed_blocks,
+            "Processing new block",
+        );
+        debug!(
+            target = "engine",
+            timestamp = block_env.timestamp,
+            number = block_env.number,
+            gas_limit = block_env.gas_limit,
+            base_fee = ?block_env.basefee,
+            "Block details"
+        );
+
+        self.cache.set_block_number(block_env.number);
+
+        self.block_metrics.block_processing_duration = block_processing_time.elapsed();
+        self.block_metrics.current_height = block_env.number;
+        // Commit all values inside of `block_metrics` to prometheus collector
+        self.block_metrics.commit();
+        // Reset the values inside to their defaults
+        self.block_metrics.reset();
+        *block_processing_time = Instant::now();
+
+        self.block_env = Some(queue_block_env.block_env);
+
+        Ok(())
+    }
+
+    #[instrument(name = "engine::process_transaction_event", skip_all, level = "info")]
+    async fn process_transaction_event(
+        &mut self,
+        queue_transaction: QueueTransaction,
+        processed_txs: &mut u64,
+    ) -> Result<(), EngineError> {
+        self.verify_state_sources_synced_for_tx().await?;
+
+        let tx_hash = queue_transaction.tx_hash;
+        let tx_env = queue_transaction.tx_env;
+        *processed_txs += 1;
+        self.block_metrics.transactions_considered += 1;
+
+        if self.block_env.is_none() {
+            error!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                caller = %tx_env.caller,
+                processed_txs = *processed_txs,
+                "Received transaction without first receiving a BlockEnv"
+            );
+            return Err(EngineError::TransactionError);
+        }
+
+        debug!(
+            target = "engine",
+            tx_hash = %tx_hash,
+            caller = %tx_env.caller,
+            gas_limit = tx_env.gas_limit,
+            processed_txs = *processed_txs,
+            current_block = self.block_env.as_ref().map(|b| b.number),
+            "Processing transaction"
+        );
+
+        // Apply the previously executed transaction state changes
+        self.apply_state_buffer()?;
+
+        // Process the transaction with the current block environment
+        self.execute_transaction(tx_hash, &tx_env)?;
+
+        Ok(())
     }
 
     /// Applies the state inside `self.last_executed_tx` to `self.state`.
@@ -805,6 +833,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// an acceptable solution.
     // TODO: when we star receiving tx bundles this should be expanded such
     // that we can go `n` transactions deep inside of a block.
+    #[instrument(name = "engine::execute_reorg", skip_all, level = "info")]
     fn execute_reorg(&mut self, tx_hash: B256) -> Result<(), EngineError> {
         trace!(
             target = "engine",
