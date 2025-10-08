@@ -11,6 +11,8 @@
 //! be commited manually or when it becomes full. It is recommended to clear the buffer during
 //! downtime, i.e., when calculating the state root.
 
+#![allow(clippy::double_parens)]
+
 use crate::{
     db::{
         Database,
