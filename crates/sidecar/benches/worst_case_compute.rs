@@ -122,37 +122,41 @@ fn build_transactions(
 }
 
 async fn execute_iteration(bytecodes: Arc<Vec<Bytes>>, adopters: Arc<Vec<Address>>) {
+    // This creates 1 adopter × 5 assertions = 5 total assertions in the store
     let store = build_assertion_store(&bytecodes, &adopters[..1]);
     let mut instance = LocalInstanceMockDriver::new_with_store(store)
         .await
         .expect("Failed to create LocalInstance");
 
-    let (transactions, _hashes) = build_transactions(&mut instance, &adopters[..1]);
+    // Build 1 transaction (1 per adopter)
+    // Each transaction will execute against all 5 assertions for that adopter
+    let (transactions, hashes) = build_transactions(&mut instance, &adopters[..1]);
 
     instance.new_block().await;
 
-    // Send transactions one at a time in individual blocks
+    // Send all transactions to the engine
+    // Total: 1 transaction × 5 assertions = 5 assertion executions
     for (idx, (tx_hash, tx_env)) in transactions.into_iter().enumerate() {
         tracing::debug!("Sending transaction {}/{}: {}", idx + 1, adopters.len(), tx_hash);
 
         instance.transport.send_transaction(tx_hash, tx_env).await.unwrap();
+    }
 
-        tracing::debug!("Waiting for transaction {} to complete", tx_hash);
-
-        // Wait for this transaction to complete
-        loop {
-            match instance.is_transaction_successful(&tx_hash).await {
-                Ok(success) => {
-                    tracing::debug!("Transaction {} completed with success={}", tx_hash, success);
-                    break;
-                }
-                Err(e) => {
-                    if e.to_string().contains("Timeout") {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                        continue;
-                    } else {
-                        panic!("error getting hash {tx_hash:?}: {}", e)
-                    }
+    // Wait for the last (and only) transaction to complete
+    let tx_hash = hashes.last().unwrap();
+    tracing::debug!("Waiting for last transaction {} to complete", tx_hash);
+    loop {
+        match instance.is_transaction_successful(&tx_hash).await {
+            Ok(success) => {
+                tracing::debug!("Transaction {} completed with success={}", tx_hash, success);
+                break;
+            }
+            Err(e) => {
+                if e.to_string().contains("Timeout") {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    continue;
+                } else {
+                    panic!("error getting hash {tx_hash:?}: {}", e)
                 }
             }
         }
