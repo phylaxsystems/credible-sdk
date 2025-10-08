@@ -672,7 +672,17 @@ impl Indexer {
         block_hashes.sort_by_key(|b| b.number);
 
         if let Some(last_indexed_block_num_hash) = block_hashes.last() {
+            trace!(
+                target = "assertion_executor::indexer",
+                last_indexed_block_num_hash = ?last_indexed_block_num_hash,
+                "Last indexed block number hash updated"
+            );
             self.insert_last_indexed_block_num_hash(*last_indexed_block_num_hash)?;
+        } else {
+            trace!(
+                target = "assertion_executor::indexer",
+                "Last indexed block number hash not updated"
+            );
         }
 
         self.write_block_num_hash_batch(block_hashes)?;

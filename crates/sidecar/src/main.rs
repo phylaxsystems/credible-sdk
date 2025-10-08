@@ -144,7 +144,10 @@ async fn main() -> anyhow::Result<()> {
             engine_state_results.clone(),
             args.credible.transaction_results_max_capacity,
             Duration::from_millis(args.state.sources_sync_timeout_ms),
-        );
+            #[cfg(feature = "cache_validation")]
+            Some(&args.credible.cache_checker_ws_url),
+        )
+        .await;
 
         let indexer_cfg =
             init_indexer_config(&args, assertion_store.clone(), &executor_config).await?;

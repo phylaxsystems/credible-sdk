@@ -10791,6 +10791,7 @@ version = "0.6.2"
 dependencies = [
  "alloy",
  "alloy-provider",
+ "alloy-rpc-types-trace",
  "anyhow",
  "assertion-da-client 0.6.2",
  "assertion-executor 0.6.2",
@@ -10803,6 +10804,7 @@ dependencies = [
  "hex",
  "int-test-utils",
  "metrics",
+ "moka",
  "prost 0.14.1",
  "prost-build",
  "protoc-bin-vendored",

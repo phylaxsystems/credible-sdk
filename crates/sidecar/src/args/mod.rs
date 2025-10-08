@@ -135,6 +135,14 @@ pub struct CredibleArgs {
         default_value = "1000"
     )]
     pub transaction_results_max_capacity: usize,
+
+    #[cfg(feature = "cache_validation")]
+    /// Cache checker client websocket url
+    #[arg(
+        long = "credible.cache-checker-ws-url",
+        env = "CREDIBLE_CACHE_CHECKER_WS_URL"
+    )]
+    pub cache_checker_ws_url: String,
 }
 
 /// Select which transport protocol to run

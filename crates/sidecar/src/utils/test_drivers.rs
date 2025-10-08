@@ -219,7 +219,10 @@ impl TestTransport for LocalInstanceMockDriver {
             state_results.clone(),
             10,
             Duration::from_millis(100),
-        );
+            #[cfg(feature = "cache_validation")]
+            Some(&besu_client_http_mock.ws_url()),
+        )
+        .await;
 
         // Spawn the engine task that manually processes items
         // This mimics what the tests do - manually processing items from the queue
@@ -415,7 +418,10 @@ impl TestTransport for LocalInstanceHttpDriver {
             state_results.clone(),
             10,
             Duration::from_millis(100),
-        );
+            #[cfg(feature = "cache_validation")]
+            Some(&besu_client_http_mock.ws_url()),
+        )
+        .await;
 
         // Spawn the engine task that manually processes items
         // This mimics what the tests do - manually processing items from the queue
@@ -805,7 +811,10 @@ impl TestTransport for LocalInstanceGrpcDriver {
             state_results.clone(),
             10,
             Duration::from_millis(100),
-        );
+            #[cfg(feature = "cache_validation")]
+            Some(&besu_client_http_mock.ws_url()),
+        )
+        .await;
 
         // Spawn the engine task
         let engine_handle = tokio::spawn(async move {
