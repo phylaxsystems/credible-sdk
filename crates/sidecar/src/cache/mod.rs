@@ -1,9 +1,6 @@
-use crate::{
-    cache::sources::{
-        Source,
-        SourceError,
-    },
-    metrics::CacheMetrics,
+use crate::cache::sources::{
+    Source,
+    SourceError,
 };
 use assertion_executor::primitives::{
     AccountInfo,
@@ -85,8 +82,6 @@ pub struct Cache {
     required_block_number: AtomicU64,
     /// The maximum depth of the cache to be considered synced.
     max_depth: u64,
-    /// Metrics for the cache.
-    metrics: CacheMetrics,
 }
 
 impl Cache {
@@ -106,7 +101,6 @@ impl Cache {
             sources,
             required_block_number: AtomicU64::new(0),
             max_depth,
-            metrics: CacheMetrics::new(),
         }
     }
 
@@ -126,11 +120,9 @@ impl Cache {
         if self.current_block_number.load(Ordering::Acquire) == 0 {
             self.required_block_number
                 .store(block_number, Ordering::Relaxed);
-            self.metrics.set_required_block_number(block_number);
         }
         self.current_block_number
             .store(block_number, Ordering::Relaxed);
-        self.metrics.set_current_block_number(block_number);
 
         for source in &self.sources {
             source.update_target_block(block_number);
@@ -145,18 +137,13 @@ impl Cache {
     /// If the internal cache is flushed, this method must be called to sync the required head to
     /// the latest block, as the current cache is stale
     pub fn reset_required_block_number(&self, required_block_number: u64) {
-        self.metrics.increase_reset_required_block_number_counter();
         self.required_block_number
             .store(required_block_number, Ordering::Relaxed);
     }
 
     /// Returns how many times the cache has been explicitly reset.
     #[cfg(any(test, feature = "test"))]
-    pub fn reset_required_block_number_count(&self) -> u64 {
-        self.metrics
-            .reset_required_block_number_counter
-            .load(Ordering::Relaxed)
-    }
+    pub fn reset_required_block_number_count(&self) -> u64 {}
 
     /// Returns an iterator over sources that are currently synced.
     ///
@@ -177,8 +164,6 @@ impl Cache {
             .filter(move |source| source.is_synced(block_number))
             .cloned();
 
-        self.metrics.is_sync_duration(instant.elapsed());
-
         sources
     }
 }
@@ -191,16 +176,11 @@ impl DatabaseRef for Cache {
             address = %address,
             "Function call",
         );
-        self.metrics.increase_basic_ref_counter();
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();
             match source.basic_ref(address) {
                 Ok(Some(account)) => {
-                    self.metrics
-                        .basic_ref_duration(source.name(), source_instant.elapsed());
-                    self.metrics
-                        .total_basic_ref_duration(total_operation_instant.elapsed());
                     return Ok(Some(account));
                 }
                 Ok(None) => {
@@ -230,12 +210,8 @@ impl DatabaseRef for Cache {
                     );
                 }
             }
-            self.metrics
-                .basic_ref_duration(source.name(), source_instant.elapsed());
         }
 
-        self.metrics
-            .total_basic_ref_duration(total_operation_instant.elapsed());
         Err(CacheError::NoCacheSourceAvailable)
     }
 
@@ -245,7 +221,6 @@ impl DatabaseRef for Cache {
             number = number,
             "Function call",
         );
-        self.metrics.increase_block_hash_ref_counter();
         let total_operation_instant = Instant::now();
         let result = self
             .iter_synced_sources()
@@ -260,13 +235,9 @@ impl DatabaseRef for Cache {
                         error = ?e,
                         "Failed to fetch block hash from cache source");
                 }
-                self.metrics
-                    .block_hash_ref_duration(source.name(), source_instant.elapsed());
                 res.ok()
             })
             .ok_or(CacheError::NoCacheSourceAvailable);
-        self.metrics
-            .total_block_hash_ref_duration(total_operation_instant.elapsed());
         result
     }
 
@@ -276,7 +247,6 @@ impl DatabaseRef for Cache {
             code_hash = %code_hash,
             "Function call",
         );
-        self.metrics.increase_code_by_hash_ref_counter();
         let total_operation_instant = Instant::now();
         let result = self
             .iter_synced_sources()
@@ -291,13 +261,9 @@ impl DatabaseRef for Cache {
                         error = ?e,
                         "Failed to fetch code by hash from cache source");
                 }
-                self.metrics
-                    .code_by_hash_ref_duration(source.name(), source_instant.elapsed());
                 res.ok()
             })
             .ok_or(CacheError::NoCacheSourceAvailable);
-        self.metrics
-            .total_code_by_hash_ref_duration(total_operation_instant.elapsed());
         result
     }
 
@@ -312,16 +278,11 @@ impl DatabaseRef for Cache {
             index = %index,
             "Function call",
         );
-        self.metrics.increase_storage_ref_counter_counter();
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();
             match source.storage_ref(address, index) {
                 Ok(value) => {
-                    self.metrics
-                        .storage_ref_duration(source.name(), source_instant.elapsed());
-                    self.metrics
-                        .total_storage_ref_duration(total_operation_instant.elapsed());
                     return Ok(value);
                 }
                 Err(SourceError::CacheMiss) => {
@@ -344,12 +305,8 @@ impl DatabaseRef for Cache {
                     );
                 }
             }
-            self.metrics
-                .storage_ref_duration(source.name(), source_instant.elapsed());
         }
 
-        self.metrics
-            .total_storage_ref_duration(total_operation_instant.elapsed());
         Err(CacheError::NoCacheSourceAvailable)
     }
 }

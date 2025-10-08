@@ -15,8 +15,8 @@ use std::{
 /// a FIFO model. The maximum capacity can be configurable.
 #[derive(Debug)]
 pub struct TransactionsResults {
-    transactions_state: Arc<TransactionsState>,
-    transactions: VecDeque<TxHash>,
+    pub transactions_state: Arc<TransactionsState>,
+    pub transactions: VecDeque<TxHash>,
     max_capacity: usize,
 }
 

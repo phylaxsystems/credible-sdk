@@ -9,7 +9,6 @@ mod cache;
 mod config;
 pub mod engine;
 mod indexer;
-mod metrics;
 pub(crate) mod transactions_state;
 pub mod transport;
 mod utils;
@@ -129,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
         let cache = Arc::new(Cache::new(sources, args.state.minimum_state_diff));
         let state: OverlayDb<Cache> = OverlayDb::new(
             Some(cache.clone()),
-            args.credible.overlay_cache_capacity.unwrap_or(100_000) as u64,
+            args.credible.overlay_cache_capacity.unwrap_or(100) as u64,
         );
 
         let (tx_sender, tx_receiver) = unbounded();
@@ -145,9 +144,6 @@ async fn main() -> anyhow::Result<()> {
             args.credible.transaction_results_max_capacity,
             Duration::from_millis(args.state.sources_sync_timeout_ms),
         );
-
-        let indexer_cfg =
-            init_indexer_config(&args, assertion_store.clone(), &executor_config).await?;
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -172,15 +168,6 @@ async fn main() -> anyhow::Result<()> {
                         tracing::error!(error = ?e, "Transport exited");
                     } else {
                         critical!(error = ?e, "Transport exited");
-                    }
-                }
-            }
-            result = indexer::run_indexer(indexer_cfg) => {
-                if let Err(e) = result {
-                    if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = ?e, "Indexer exited");
-                    } else {
-                        critical!(error = ?e, "Indexer exited");
                     }
                 }
             }

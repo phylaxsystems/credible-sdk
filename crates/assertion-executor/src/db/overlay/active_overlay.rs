@@ -39,7 +39,7 @@ use moka::sync::Cache;
 /// is holding a refrance that is not valid anymore. There are no protections for this.
 pub struct ActiveOverlay<Db> {
     active_db: Arc<UnsafeCell<Db>>,
-    overlay: Cache<TableKey, TableValue>,
+    overlay: Arc<Cache<TableKey, TableValue>>,
 }
 
 unsafe impl<Db> Send for ActiveOverlay<Db> {}
@@ -56,7 +56,7 @@ impl<Db> Clone for ActiveOverlay<Db> {
 
 impl<Db> ActiveOverlay<Db> {
     /// Creates a new `ActiveOverlay` given a `revm::DatabaseRef` and an `OverlayDb` cache.
-    pub fn new(active_db: Arc<UnsafeCell<Db>>, overlay: Cache<TableKey, TableValue>) -> Self {
+    pub fn new(active_db: Arc<UnsafeCell<Db>>, overlay: Arc<Cache<TableKey, TableValue>>) -> Self {
         Self { active_db, overlay }
     }
 

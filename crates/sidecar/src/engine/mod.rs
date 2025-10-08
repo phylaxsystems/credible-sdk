@@ -50,10 +50,6 @@ use super::engine::queue::{
 use crate::{
     TransactionsState,
     critical,
-    metrics::{
-        BlockMetrics,
-        TransactionMetrics,
-    },
 };
 use assertion_executor::primitives::{
     EVMError,
@@ -229,7 +225,6 @@ pub struct CoreEngine<DB> {
     assertion_executor: AssertionExecutor,
     block_env: Option<BlockEnv>,
     transaction_results: TransactionsResults,
-    block_metrics: BlockMetrics,
     last_executed_tx: LastExecutedTx,
     block_env_transaction_counter: u64,
     state_sources_sync_timeout: Duration,
@@ -257,7 +252,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 state_results,
                 transaction_results_max_capacity,
             ),
-            block_metrics: BlockMetrics::new(),
             last_executed_tx: LastExecutedTx::new(),
             block_env_transaction_counter: 0,
             state_sources_sync_timeout,
@@ -410,10 +404,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     tx_hash = %tx_hash,
                     "Commiting state of successful tx to buffer"
                 );
-                self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
-                self.block_metrics.transactions_simulated_success += 1;
             } else {
-                self.block_metrics.transactions_simulated_failure += 1;
             }
         } else {
             warn!(
@@ -428,8 +419,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 assertions_executions = ?rax.assertions_executions,
                 "Transaction validation details"
             );
-
-            self.block_metrics.invalidated_transactions += 1;
         }
     }
 
@@ -446,7 +435,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             error!("No block environment set for transaction execution");
             EngineError::TransactionError
         })?;
-        let mut tx_metrics = TransactionMetrics::new(tx_hash, block_env.number);
         let instant = std::time::Instant::now();
 
         trace!(
@@ -480,22 +468,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             &mut self.state,
         );
 
-        tx_metrics.transaction_processing_duration = instant.elapsed();
-
         let rax = match rax {
             Ok(rax) => rax,
             Err(e) => {
                 return self.process_transaction_validation_error(tx_hash, tx_env, &e);
             }
         };
-
-        // Update metrics
-        tx_metrics.assertions_per_transaction = rax.total_assertion_funcs_ran();
-        self.block_metrics.assertions_per_block += rax.total_assertion_funcs_ran();
-        tx_metrics.assertion_gas_per_transaction = rax.total_assertions_gas();
-        self.block_metrics.assertion_gas_per_block += rax.total_assertions_gas();
-        self.block_metrics.transactions_simulated += 1;
-        tx_metrics.commit();
 
         // Log the result of the transaction execution
         self.trace_execute_transaction_result(tx_hash, tx_env, &rax);
@@ -572,8 +550,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.check_sources_available = true;
             self.state.invalidate_all();
             self.last_executed_tx.clear();
-            self.block_metrics
-                .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
 
         // If the last tx hash from the block env is different from the last tx hash from the
@@ -590,8 +566,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.check_sources_available = true;
             self.state.invalidate_all();
             self.last_executed_tx.clear();
-            self.block_metrics
-                .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
 
         // If the number of transactions in the block env is different from the number of
@@ -610,8 +584,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.check_sources_available = true;
             self.state.invalidate_all();
             self.last_executed_tx.clear();
-            self.block_metrics
-                .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
 
         self.block_env_transaction_counter = 0;
@@ -675,15 +647,18 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let mut block_processing_time = Instant::now();
         let mut idle_start = Instant::now();
 
+        let mut counter = 0;
         loop {
+            counter += 1;
             // Use try_recv and yield when empty to be async-friendly
             let event = match self.tx_receiver.try_recv() {
                 Ok(event) => {
                     // We received an event, accumulate time spent idle
-                    self.block_metrics.idle_time += idle_start.elapsed();
                     event
                 }
                 Err(crossbeam::channel::TryRecvError::Empty) => {
+                    // Clean up the cache when there is nothing to do
+                    self.state.run_pending_tasks();
                     // Channel is empty, yield to allow other tasks to run
                     tokio::task::yield_now().await;
                     continue;
@@ -693,6 +668,28 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     return Err(EngineError::ChannelClosed);
                 }
             };
+
+            if counter % 25 == 0 {
+                info!("Cache entry count: {}", self.state.overlay.entry_count());
+                info!(
+                    "transactions entry count: {}",
+                    self.transaction_results.transactions.len()
+                );
+                info!(
+                    "transaction_results entry count: {}",
+                    self.transaction_results
+                        .transactions_state
+                        .transaction_results
+                        .len()
+                );
+                info!(
+                    "transaction_results_pending_requests entry count: {}",
+                    self.transaction_results
+                        .transactions_state
+                        .transaction_results_pending_requests
+                        .len()
+                );
+            }
 
             // Track event processing time
             let event_start = Instant::now();
@@ -716,9 +713,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     self.execute_reorg(hash)?;
                 }
             }
-
-            // Accumulate event processing time
-            self.block_metrics.event_processing_time += event_start.elapsed();
 
             // Reset idle timer after processing event
             idle_start = Instant::now();
@@ -767,14 +761,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         self.cache.set_block_number(block_env.number);
 
-        self.block_metrics.block_processing_duration = block_processing_time.elapsed();
-        self.block_metrics.current_height = block_env.number;
-        // Commit all values inside of `block_metrics` to prometheus collector
-        self.block_metrics.commit();
-        // Reset the values inside to their defaults
-        self.block_metrics.reset();
-        *block_processing_time = Instant::now();
-
         self.block_env = Some(queue_block_env.block_env);
 
         Ok(())
@@ -791,7 +777,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let tx_hash = queue_transaction.tx_hash;
         let tx_env = queue_transaction.tx_env;
         *processed_txs += 1;
-        self.block_metrics.transactions_considered += 1;
 
         if self.block_env.is_none() {
             error!(

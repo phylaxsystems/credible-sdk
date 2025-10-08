@@ -79,7 +79,7 @@ pub enum TableValue {
 #[derive(Debug)]
 pub struct OverlayDb<Db> {
     underlying_db: Option<Arc<Db>>,
-    pub overlay: Cache<TableKey, TableValue>,
+    pub overlay: Arc<Cache<TableKey, TableValue>>,
 }
 
 impl<Db> Clone for OverlayDb<Db> {
@@ -95,7 +95,7 @@ impl<Db> Default for OverlayDb<Db> {
     fn default() -> Self {
         Self {
             underlying_db: None,
-            overlay: Cache::builder().max_capacity(1024).build(),
+            overlay: Arc::new(Cache::builder().max_capacity(1024).build()),
         }
     }
 }
@@ -103,7 +103,7 @@ impl<Db> Default for OverlayDb<Db> {
 impl<Db> OverlayDb<Db> {
     /// Creates a new `OverlayDB` with the max cache size in bytes.
     pub fn new(underlying_db: Option<Arc<Db>>, max_capacity: u64) -> Self {
-        let cache = Cache::builder().max_capacity(max_capacity).build();
+        let cache = Arc::new(Cache::builder().max_capacity(max_capacity).build());
         Self {
             underlying_db,
             overlay: cache,
@@ -113,7 +113,7 @@ impl<Db> OverlayDb<Db> {
     /// Creates a new `OverlayDb` with the max capacity being determined by the number
     /// of elements inside of the cache instead of the size.
     pub fn new_with_len(underlying_db: Option<Arc<Db>>, max_capacity: u64) -> Self {
-        let cache = Cache::new(max_capacity);
+        let cache = Arc::new(Cache::new(max_capacity));
         Self {
             underlying_db,
             overlay: cache,
@@ -210,18 +210,6 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
                         // Found in DB, cache it
                         self.overlay
                             .insert(key, TableValue::Basic(account_info.clone()));
-
-                        // If the code is present, already populate the cache with the code hash, so we save one call to the underlying DB
-                        if let Some(code) = account_info.code.as_ref() {
-                            let code_byte = code.original_byte_slice();
-                            let code_hash =
-                                TableKey::CodeByHash(revm::primitives::keccak256(code_byte));
-                            let bytecode = TableValue::CodeByHash(Bytecode::new_raw(
-                                code_byte.to_vec().into(),
-                            ));
-                            self.overlay.insert(code_hash, bytecode);
-                        }
-
                         Ok(Some(account_info)) // Return the found info
                     }
                     None => {

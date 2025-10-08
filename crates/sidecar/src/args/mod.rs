@@ -52,7 +52,7 @@ pub struct CredibleArgs {
     #[arg(
         long = "credible.overlay-cache-capacity",
         env = "CREDIBLE_OVERLAY_CACHE_CAPACITY",
-        default_value = "100000"
+        default_value = "100"
     )]
     pub overlay_cache_capacity: Option<usize>,
 
@@ -60,7 +60,7 @@ pub struct CredibleArgs {
     #[arg(
         long = "credible.cache-capacity-bytes",
         env = "CREDIBLE_CACHE_CAPACITY_BYTES",
-        default_value = "256000000"
+        default_value = "256"
     )]
     pub cache_capacity_bytes: Option<usize>,
 
@@ -132,7 +132,7 @@ pub struct CredibleArgs {
     #[arg(
         long = "credible.transaction-results-max-capacity",
         env = "CREDIBLE_TRANSACTION_RESULTS_MAX_CAPACITY",
-        default_value = "1000"
+        default_value = "100"
     )]
     pub transaction_results_max_capacity: usize,
 }
