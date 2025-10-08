@@ -299,6 +299,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env_transaction_counter: 0,
             state_sources_sync_timeout,
             check_sources_available: true,
+
             #[cfg(feature = "cache_validation")]
             processed_transactions,
             #[cfg(feature = "cache_validation")]
@@ -529,6 +530,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             &mut self.state,
         );
 
+        // if self.thing == 1 {
+        //     panic!("a");
+        // }
+
+        self.thing +=1;
         tx_metrics.transaction_processing_duration = instant.elapsed();
 
         let rax = match rax {

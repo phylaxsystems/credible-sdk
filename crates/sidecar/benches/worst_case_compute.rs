@@ -20,7 +20,7 @@ use revm::{
     },
 };
 use sidecar::utils::{
-    instance::LocalInstance,
+    instance::{LocalInstance, TestTransport},
     test_drivers::LocalInstanceMockDriver,
 };
 use std::{
@@ -122,29 +122,41 @@ fn build_transactions(
 }
 
 async fn execute_iteration(bytecodes: Arc<Vec<Bytes>>, adopters: Arc<Vec<Address>>) {
-    let store = build_assertion_store(&bytecodes, &adopters);
+    let store = build_assertion_store(&bytecodes, &adopters[..1]);
     let mut instance = LocalInstanceMockDriver::new_with_store(store)
         .await
         .expect("Failed to create LocalInstance");
 
-    let (transactions, hashes) = build_transactions(&mut instance, &adopters);
+    let (transactions, _hashes) = build_transactions(&mut instance, &adopters[..1]);
 
-    instance
-        .send_block_with_txs(transactions)
-        .await
-        .expect("Failed to send block with transactions");
+    instance.new_block().await;
 
-    // instance
-    //     .wait_for_processing(Duration::from_millis(PROCESSING_WAIT_MS))
-    //     .await;
+    // Send transactions one at a time in individual blocks
+    for (idx, (tx_hash, tx_env)) in transactions.into_iter().enumerate() {
+        tracing::debug!("Sending transaction {}/{}: {}", idx + 1, adopters.len(), tx_hash);
 
-    // for hash in hashes {
-    //     let ok = instance
-    //         .is_transaction_successful(&hash)
-    //         .await
-    //         .expect("Failed to fetch transaction result");
-    //     assert!(ok, "transaction {hash:?} did not complete successfully");
-    // }
+        instance.transport.send_transaction(tx_hash, tx_env).await.unwrap();
+
+        tracing::debug!("Waiting for transaction {} to complete", tx_hash);
+
+        // Wait for this transaction to complete
+        loop {
+            match instance.is_transaction_successful(&tx_hash).await {
+                Ok(success) => {
+                    tracing::debug!("Transaction {} completed with success={}", tx_hash, success);
+                    break;
+                }
+                Err(e) => {
+                    if e.to_string().contains("Timeout") {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    } else {
+                        panic!("error getting hash {tx_hash:?}: {}", e)
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn main() {
@@ -152,8 +164,7 @@ fn main() {
         .with_writer(std::io::stderr)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set tracing subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
     let runtime = Runtime::new().expect("Failed to create Tokio runtime");
 
