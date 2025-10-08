@@ -80,6 +80,12 @@ opt-level = 3
 codegen-units = 1
 strip = true
 
+[profile.bench]
+debug = true
+lto = "fat"
+opt-level = 3
+codegen-units = 1
+
 [[bench]]
 name = "worst_case_compute"
 path = "benches/worst_case_compute.rs"

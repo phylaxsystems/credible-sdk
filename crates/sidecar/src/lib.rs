@@ -2,6 +2,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::unreadable_literal)]
 #![allow(clippy::similar_names)]
+#![allow(unused)]
 
 pub mod args;
 pub mod cache;
