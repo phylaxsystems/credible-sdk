@@ -38,7 +38,7 @@
 //! This is possible due to assertions being read only. We must verify that no
 //! assertion reverts before approving a transaction.
 
-#[cfg(feature = "shadow")]
+#[cfg(feature = "cache_validation")]
 mod cache_checker;
 pub mod queue;
 mod transactions_results;
@@ -96,7 +96,7 @@ use assertion_executor::{
     ForkTxExecutionError,
     db::Database,
 };
-#[cfg(feature = "shadow")]
+#[cfg(feature = "cache_validation")]
 use cache_checker::CacheChecker;
 #[allow(unused_imports)]
 use revm::{
@@ -113,7 +113,7 @@ use revm::{
 };
 #[cfg(test)]
 use std::collections::HashMap;
-#[cfg(feature = "shadow")]
+#[cfg(feature = "cache_validation")]
 use tokio::task::AbortHandle;
 use tracing::{
     debug,
@@ -240,9 +240,9 @@ pub struct CoreEngine<DB> {
     block_env_transaction_counter: u64,
     state_sources_sync_timeout: Duration,
     check_sources_available: bool,
-    #[cfg(feature = "shadow")]
+    #[cfg(feature = "cache_validation")]
     processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
-    #[cfg(feature = "shadow")]
+    #[cfg(feature = "cache_validation")]
     _cache_checker: Option<AbortHandle>,
 }
 
@@ -257,9 +257,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         state_results: Arc<TransactionsState>,
         transaction_results_max_capacity: usize,
         state_sources_sync_timeout: Duration,
-        #[cfg(feature = "shadow")] provider_ws_url: Option<&str>,
+        #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
     ) -> Self {
-        #[cfg(feature = "shadow")]
+        #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
             let processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>> =
                 Arc::new(moka::sync::Cache::builder().max_capacity(100).build());
@@ -290,9 +290,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env_transaction_counter: 0,
             state_sources_sync_timeout,
             check_sources_available: true,
-            #[cfg(feature = "shadow")]
+            #[cfg(feature = "cache_validation")]
             processed_transactions,
-            #[cfg(feature = "shadow")]
+            #[cfg(feature = "cache_validation")]
             _cache_checker: cache_checker,
         }
     }
@@ -319,11 +319,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env_transaction_counter: 0,
             state_sources_sync_timeout: Duration::from_millis(100),
             check_sources_available: true,
-            #[cfg(feature = "shadow")]
+            #[cfg(feature = "cache_validation")]
             processed_transactions: Arc::new(
                 moka::sync::Cache::builder().max_capacity(100).build(),
             ),
-            #[cfg(feature = "shadow")]
+            #[cfg(feature = "cache_validation")]
             _cache_checker: None,
         }
     }
@@ -400,7 +400,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         result: &TransactionResult,
         state: Option<EvmState>,
     ) {
-        #[cfg(feature = "shadow")]
+        #[cfg(feature = "cache_validation")]
         self.processed_transactions.insert(tx_hash, state.clone());
         self.last_executed_tx.push(tx_hash, state);
         self.transaction_results
@@ -1036,7 +1036,7 @@ mod tests {
             state_results,
             10,
             timeout,
-            #[cfg(feature = "shadow")]
+            #[cfg(feature = "cache_validation")]
             None,
         )
         .await;

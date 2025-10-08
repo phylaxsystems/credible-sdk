@@ -50,8 +50,8 @@ protoc-bin-vendored = "3"
 default = ["linea"]
 linea = ["assertion-executor/linea"]
 optimism = ["assertion-executor/optimism"]
-test = ["assertion-executor/test", "ctor", "shadow"]
-shadow = ["alloy-rpc-types-trace", "moka"]
+test = ["assertion-executor/test", "ctor", "cache_validation"]
+cache_validation = ["alloy-rpc-types-trace", "moka"]
 
 [dev-dependencies]
 ctor = "0.5.0"

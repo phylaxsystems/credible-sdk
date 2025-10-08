@@ -143,9 +143,8 @@ impl CacheChecker {
 
         'main: for trace in traces {
             {
-                // It can happen that there is a tx error and the tx is discarded by the engine.
-                // Therefore, we need to add a timeout to skip a transaction check if we don't see it
-                // in the results
+                // We need to add a timeout to skip a transaction check if we don't see it
+                // in the results. It could happen than the engine didn't receive a TX (transport error)
                 let mut counter = 100;
                 while self
                     .processed_transactions
@@ -169,7 +168,7 @@ impl CacheChecker {
                 && let Some(client_tx_state_diff) = trace.full_trace.state_diff
             {
                 let Some(engine_tx_state_diff) = engine_tx_state_diff else {
-                    error!(
+                    critical!(
                         "Transaction failed to execute in the engine: {}",
                         trace.transaction_hash
                     );

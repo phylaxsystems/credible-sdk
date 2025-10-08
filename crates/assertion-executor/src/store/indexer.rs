@@ -555,6 +555,7 @@ impl Indexer {
 
     /// Fetch the events from the `State Oracle` contract.
     /// Store the events in the `pending_modifications` tree for the indexed blocks.
+    #[allow(clippy::too_many_lines)]
     async fn index_range(&self, from: u64, to: u64) -> IndexerResult {
         trace!(
             target = "assertion_executor::indexer",
@@ -637,7 +638,17 @@ impl Indexer {
         }
 
         if let Some(last_indexed_block_num_hash) = block_hashes.last() {
+            trace!(
+                target = "assertion_executor::indexer",
+                last_indexed_block_num_hash = ?last_indexed_block_num_hash,
+                "Last indexed block number hash updated"
+            );
             self.insert_last_indexed_block_num_hash(*last_indexed_block_num_hash)?;
+        } else {
+            trace!(
+                target = "assertion_executor::indexer",
+                "Last indexed block number hash not updated"
+            );
         }
 
         self.write_block_num_hash_batch(block_hashes)?;
