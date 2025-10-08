@@ -98,8 +98,6 @@ use assertion_executor::{
 };
 #[cfg(feature = "shadow")]
 use cache_checker::CacheChecker;
-#[cfg(feature = "shadow")]
-use dashmap::DashMap;
 #[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
@@ -243,7 +241,7 @@ pub struct CoreEngine<DB> {
     state_sources_sync_timeout: Duration,
     check_sources_available: bool,
     #[cfg(feature = "shadow")]
-    processed_transactions: Arc<DashMap<TxHash, EvmState>>,
+    processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
     #[cfg(feature = "shadow")]
     _cache_checker: Option<AbortHandle>,
 }
@@ -263,7 +261,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     ) -> Self {
         #[cfg(feature = "shadow")]
         let (processed_transactions, cache_checker) = {
-            let processed_transactions: Arc<DashMap<TxHash, EvmState>> = Arc::new(DashMap::new());
+            let processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>> =
+                Arc::new(moka::sync::Cache::builder().max_capacity(100).build());
             let handle = if let Some(provider_ws_url) = provider_ws_url
                 && let Ok(cache_checker) =
                     CacheChecker::try_new(provider_ws_url, processed_transactions.clone()).await
@@ -321,7 +320,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             state_sources_sync_timeout: Duration::from_millis(100),
             check_sources_available: true,
             #[cfg(feature = "shadow")]
-            processed_transactions: Arc::new(DashMap::new()),
+            processed_transactions: Arc::new(
+                moka::sync::Cache::builder().max_capacity(100).build(),
+            ),
             #[cfg(feature = "shadow")]
             _cache_checker: None,
         }
@@ -399,6 +400,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         result: &TransactionResult,
         state: Option<EvmState>,
     ) {
+        #[cfg(feature = "shadow")]
+        self.processed_transactions.insert(tx_hash, state.clone());
         self.last_executed_tx.push(tx_hash, state);
         self.transaction_results
             .add_transaction_result(tx_hash, result);
@@ -536,10 +539,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         // Log the result of the transaction execution
         self.trace_execute_transaction_result(tx_hash, tx_env, &rax);
-
-        #[cfg(feature = "shadow")]
-        self.processed_transactions
-            .insert(tx_hash, rax.result_and_state.state.clone());
 
         self.add_transaction_result(
             tx_hash,
