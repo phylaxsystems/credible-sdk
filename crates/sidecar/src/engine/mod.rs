@@ -686,8 +686,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 Err(crossbeam::channel::TryRecvError::Empty) => {
                     // Channel is empty, yield to allow other tasks to run
                     tokio::task::yield_now().await;
-                    // Reset idle timer after yield
-                    idle_start = Instant::now();
                     continue;
                 }
                 Err(crossbeam::channel::TryRecvError::Disconnected) => {
