@@ -1,3 +1,7 @@
+//! `worst-case-compute`
+//!
+//! Send 100 transactions targeting the same adopter (500 total assertion executions)
+
 use assertion_executor::{
     primitives::{
         Address,
@@ -20,7 +24,10 @@ use revm::{
     },
 };
 use sidecar::utils::{
-    instance::{LocalInstance, TestTransport},
+    instance::{
+        LocalInstance,
+        TestTransport,
+    },
     test_drivers::LocalInstanceMockDriver,
 };
 use std::{
@@ -32,8 +39,7 @@ use std::{
 use tokio::runtime::Runtime;
 
 const ASSERTIONS_PER_ADOPTER: usize = 5;
-const GAS_LIMIT_PER_TX: u64 = 1_500_000;
-const PROCESSING_WAIT_MS: u64 = 250;
+const GAS_LIMIT_PER_TX: u64 = 50_000;
 
 fn read_assertions_file(input: &str) -> Vec<Bytes> {
     let file = File::open(input).expect("Failed to open assertions file");
@@ -122,24 +128,52 @@ fn build_transactions(
 }
 
 async fn execute_iteration(bytecodes: Arc<Vec<Bytes>>, adopters: Arc<Vec<Address>>) {
-    // This creates 1 adopter × 5 assertions = 5 total assertions in the store
+    // this creates 1 adopter with 5 assertions, 5 total assertions in the store
     let store = build_assertion_store(&bytecodes, &adopters[..1]);
     let mut instance = LocalInstanceMockDriver::new_with_store(store)
         .await
         .expect("Failed to create LocalInstance");
 
-    // Build 1 transaction (1 per adopter)
-    // Each transaction will execute against all 5 assertions for that adopter
-    let (transactions, hashes) = build_transactions(&mut instance, &adopters[..1]);
+    // build 100 transactions all targeting the same adopter
+    // each transaction will execute against all 5 assertions for that adopter
+    let adopter = adopters[0];
+    let mut transactions = Vec::with_capacity(100);
+    let mut hashes = Vec::with_capacity(100);
+
+    for idx in 0..100 {
+        let mut payload = vec![0u8; 32];
+        payload[..4].copy_from_slice(&(idx as u32).to_be_bytes());
+        let call_data = Bytes::from(payload);
+
+        let nonce = instance.next_nonce();
+        let tx_env = TxEnvBuilder::new()
+            .caller(instance.default_account())
+            .gas_limit(GAS_LIMIT_PER_TX)
+            .gas_price(0)
+            .value(U256::ZERO)
+            .nonce(nonce)
+            .kind(TxKind::Call(adopter))
+            .data(call_data)
+            .build()
+            .expect("Failed to build transaction");
+
+        let tx_hash = LocalInstance::<LocalInstanceMockDriver>::generate_random_tx_hash();
+        hashes.push(tx_hash);
+        transactions.push((tx_hash, tx_env));
+    }
 
     instance.new_block().await;
 
-    // Send all transactions to the engine
-    // Total: 1 transaction × 5 assertions = 5 assertion executions
+    // send all 100 transactions to the engine in a single block
+    // 100 transactions with 5 assertions, 500 assertion executions
     for (idx, (tx_hash, tx_env)) in transactions.into_iter().enumerate() {
-        tracing::debug!("Sending transaction {}/{}: {}", idx + 1, adopters.len(), tx_hash);
+        tracing::debug!("Sending transaction {}/{}: {}", idx + 1, 100, tx_hash);
 
-        instance.transport.send_transaction(tx_hash, tx_env).await.unwrap();
+        instance
+            .transport
+            .send_transaction(tx_hash, tx_env)
+            .await
+            .unwrap();
     }
 
     // Wait for the last (and only) transaction to complete
@@ -170,7 +204,7 @@ fn main() {
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
-    let runtime = Runtime::new().expect("Failed to create Tokio runtime");
+    let runtime = Runtime::new().unwrap();
 
     let working_dir = std::env::current_dir().expect("Failed to read current directory");
     let assertions_path = working_dir.join("benches/assertions.json");

@@ -530,11 +530,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             &mut self.state,
         );
 
-        // if self.thing == 1 {
-        //     panic!("a");
-        // }
-
-        self.thing +=1;
         tx_metrics.transaction_processing_duration = instant.elapsed();
 
         let rax = match rax {
