@@ -724,6 +724,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     event
                 }
                 Err(crossbeam::channel::TryRecvError::Empty) => {
+                    // Clean up the cache when there is nothing to do
+                    self.state.run_pending_tasks();
                     // Channel is empty, yield to allow other tasks to run
                     tokio::task::yield_now().await;
                     continue;

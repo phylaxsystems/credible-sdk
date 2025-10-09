@@ -89,7 +89,6 @@ fn create_transport_from_args(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    info!("Starting sidecar...");
     // Initialize the rustls CryptoProvider for HTTPS support
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
@@ -98,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
     let _guard = rust_tracing::trace();
 
     let args = SidecarArgs::parse();
+    info!("Starting sidecar with args: {args:?}");
 
     let executor_config = init_executor_config(&args);
     let assertion_store = init_assertion_store(&args)?;
