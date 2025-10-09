@@ -243,7 +243,16 @@ pub struct CoreEngine<DB> {
     #[cfg(feature = "cache_validation")]
     processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
     #[cfg(feature = "cache_validation")]
-    _cache_checker: Option<AbortHandle>,
+    cache_checker: Option<AbortHandle>,
+}
+
+#[cfg(feature = "cache_validation")]
+impl<DB> Drop for CoreEngine<DB> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.cache_checker.take() {
+            handle.abort();
+        }
+    }
 }
 
 impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
@@ -486,7 +495,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             error!("No block environment set for transaction execution");
             EngineError::TransactionError
         })?;
-        let mut tx_metrics = TransactionMetrics::new(tx_hash, block_env.number);
+        let mut tx_metrics = TransactionMetrics::new();
         let instant = std::time::Instant::now();
 
         trace!(
