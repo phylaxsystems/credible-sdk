@@ -63,3 +63,8 @@ regenerate-dev:
 	@echo "Regenerating dapp-api-client from development API (localhost:3000)..."
 	cd crates/dapp-api-client && DAPP_ENV=development FORCE_SPEC_REGENERATE=true cargo build --features regenerate
 	@echo "Client regenerated! Review changes with: git diff crates/dapp-api-client/src/generated/"
+
+.PHONY: run-sidecar-host
+run-sidecar-host:
+	docker compose -f docker/maru-besu-sidecar/docker-compose.yml up -d --scale credible-sidecar=0
+	./scripts/run-sidecar-host.sh
