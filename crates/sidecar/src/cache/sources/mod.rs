@@ -30,7 +30,9 @@ pub mod sequencer;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
+/// use std::sync::atomic::{AtomicU64, Ordering};
+///
 /// #[derive(Debug)]
 /// struct MySource {
 ///     name: &'static str,
@@ -38,16 +40,21 @@ pub mod sequencer;
 /// }
 ///
 /// impl Source for MySource {
-///     fn is_synced(&self, current_block: &AtomicU64) -> bool {
-///         let current = current_block.load(Ordering::Acquire);
+///     fn is_synced(&self, current_block: u64) -> bool {
 ///         let max = self.max_block.load(Ordering::Acquire);
-///         current <= max
+///         current_block <= max
 ///     }
 ///
 ///     fn name(&self) -> &'static str {
 ///         self.name
 ///     }
+///
+///     fn update_target_block(&self, _block_number: u64) {
+///         // No-op for this example
+///     }
 /// }
+///
+/// // Also implement DatabaseRef trait methods...
 /// ```
 pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     /// Checks if this source is synchronized up to the specified block number.
@@ -70,7 +77,7 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     /// Implementations should use atomic operations when accessing the block
     /// number to ensure thread safety. The typical pattern is:
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// fn is_synced(&self, current_block: u64) -> bool {
     ///     // Check if this source has data for `current`
     /// }

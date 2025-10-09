@@ -62,6 +62,10 @@ The decoder module (`decoder.rs`) is shared across transports and handles conver
 All transports communicate with the core engine through a unified message queue:
 
 ```rust
+use sidecar::engine::queue::{QueueTransaction, QueueBlockEnv};
+use alloy::primitives::B256;
+use tracing::Span;
+
 pub enum TxQueueContents {
     Tx(QueueTransaction, Span),
     Block(QueueBlockEnv, Span),

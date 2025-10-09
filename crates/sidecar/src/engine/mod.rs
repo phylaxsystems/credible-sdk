@@ -9,7 +9,7 @@
 //! associated trasnactions, the engine will advance its state and verify that
 //! txs pass assertions.
 //!
-//! ```no_run
+//! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │                        CORE ENGINE                          │
 //! ├─────────────────────────────────────────────────────────────┤

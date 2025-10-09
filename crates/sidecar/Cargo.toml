@@ -65,6 +65,7 @@ bench-utils = [
     "sidecar-test-macros",
     "int-test-utils",
 ]
+cache_validation = ["moka"]
 
 [dev-dependencies]
 ctor = "0.5.0"

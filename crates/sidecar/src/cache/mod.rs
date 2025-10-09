@@ -61,7 +61,7 @@ pub mod sources;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use std::sync::Arc;
 ///
 /// let source1 = Arc::new(MySource::new("primary"));

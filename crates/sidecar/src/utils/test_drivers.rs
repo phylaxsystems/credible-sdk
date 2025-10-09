@@ -229,7 +229,7 @@ impl CommonSetup {
     }
 
     /// Spawn the engine task with the provided receiver
-    fn spawn_engine(
+    async fn spawn_engine(
         &self,
         engine_rx: channel::Receiver<TxQueueContents>,
     ) -> tokio::task::JoinHandle<()> {
@@ -277,7 +277,7 @@ impl LocalInstanceMockDriver {
         let (mock_tx, mock_rx) = channel::unbounded();
 
         // Spawn the engine task
-        let engine_handle = setup.spawn_engine(engine_rx);
+        let engine_handle = setup.spawn_engine(engine_rx).await;
 
         // Create mock transport with the channels
         let transport =
@@ -330,7 +330,7 @@ impl TestTransport for LocalInstanceMockDriver {
         let (mock_tx, mock_rx) = channel::unbounded();
 
         // Spawn the engine task
-        let engine_handle = setup.spawn_engine(engine_rx);
+        let engine_handle = setup.spawn_engine(engine_rx).await;
 
         // Create mock transport with the channels
         let transport =
@@ -475,7 +475,7 @@ impl TestTransport for LocalInstanceHttpDriver {
         let (engine_tx, engine_rx) = channel::unbounded();
 
         // Spawn the engine task
-        let engine_handle = setup.spawn_engine(engine_rx);
+        let engine_handle = setup.spawn_engine(engine_rx).await;
 
         // Find an available port dynamically
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -812,7 +812,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let (engine_tx, engine_rx) = channel::unbounded();
 
         // Spawn the engine task
-        let engine_handle = setup.spawn_engine(engine_rx);
+        let engine_handle = setup.spawn_engine(engine_rx).await;
 
         // Find an available port dynamically
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

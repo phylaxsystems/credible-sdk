@@ -69,6 +69,7 @@ enum WaitError {
     ChannelClosed,
 }
 
+#[allow(async_fn_in_trait)]
 pub trait TestTransport: Sized {
     /// Creates a `LocalInstance` with a specific transport
     async fn new() -> Result<LocalInstance<Self>, String>;
@@ -271,6 +272,10 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Create a simple test transaction using the default account
+    ///
+    /// # Panics
+    ///
+    /// Panics if the transaction builder fails to build a valid transaction.
     pub fn create_test_transaction(&mut self, value: U256, data: Bytes) -> TxEnv {
         let nonce = self.next_nonce();
         TxEnvBuilder::new()
@@ -501,6 +506,10 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Sends transactions of all tx types and verifies they pass
     /// and properly produce desired outcomes (proper gas accounting etc...).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the transaction builder fails to build any of the test transactions.
     pub async fn send_all_tx_types(&mut self) -> Result<(), String> {
         // legacy tx
         self.send_successful_create_tx(U256::default(), Bytes::default())
