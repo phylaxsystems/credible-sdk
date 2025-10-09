@@ -302,7 +302,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             #[cfg(feature = "cache_validation")]
             processed_transactions,
             #[cfg(feature = "cache_validation")]
-            _cache_checker: cache_checker,
+            cache_checker,
         }
     }
 
@@ -333,7 +333,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 moka::sync::Cache::builder().max_capacity(100).build(),
             ),
             #[cfg(feature = "cache_validation")]
-            _cache_checker: None,
+            cache_checker: None,
         }
     }
 
