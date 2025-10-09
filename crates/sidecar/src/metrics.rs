@@ -11,7 +11,6 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::unused_self)]
 
-use assertion_executor::primitives::FixedBytes;
 use metrics::{
     counter,
     gauge,
@@ -151,8 +150,6 @@ impl Drop for BlockMetrics {
 /// Will commit metrics when dropped.
 #[derive(Clone, Debug)]
 pub struct TransactionMetrics {
-    pub hash: FixedBytes<32>,
-    pub block_number: u64,
     /// How much assertion gas a transaction spent
     pub assertion_gas_per_transaction: u64,
     /// How many assertions we have executed per transaction
@@ -164,10 +161,8 @@ pub struct TransactionMetrics {
 }
 
 impl TransactionMetrics {
-    pub fn new(hash: FixedBytes<32>, block_number: u64) -> Self {
+    pub fn new() -> Self {
         Self {
-            hash,
-            block_number,
             assertion_gas_per_transaction: 0,
             assertions_per_transaction: 0,
             transaction_processing_duration: std::time::Duration::default(),
@@ -177,14 +172,13 @@ impl TransactionMetrics {
 
     /// Commits the per tx metrics
     pub fn commit(&self) {
-        histogram!("sidecar_assertion_gas_per_transaction", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
+        histogram!("sidecar_assertion_gas_per_transaction")
             .record(self.assertion_gas_per_transaction as f64);
-        histogram!("sidecar_assertions_per_transaction", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
+        histogram!("sidecar_assertions_per_transaction")
             .record(self.assertions_per_transaction as f64);
-        histogram!("sidecar_transaction_processing_duration", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
+        histogram!("sidecar_transaction_processing_duration")
             .record(self.transaction_processing_duration);
-        histogram!("sidecar_gas_per_assertion", "tx_hash" => self.hash.to_string(), "block_number" => self.block_number.to_string())
-            .record(self.gas_per_assertion as f64);
+        histogram!("sidecar_gas_per_assertion").record(self.gas_per_assertion as f64);
     }
 }
 
