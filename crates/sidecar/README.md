@@ -1,7 +1,5 @@
 # `sidecar`
 
-**This is a dummy binary to set up infra so we are ready to integrate when the sidecar is ready for use**.
-
 The sidecar is driven by a rollup sequencer(or driver) that validates transactions against credible layer assertions.
 The sequencer sends transactions either in bulk or transaction-by-transaction, and the sidecar approves or denies
 transactions for inclusion. See the associated sidecar spec for more info.

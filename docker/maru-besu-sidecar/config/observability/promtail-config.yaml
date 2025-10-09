@@ -1,0 +1,43 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: credible-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(credible-sidecar|assertion-da)'
+        action: keep
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: container
+        replacement: '$1'
+    pipeline_stages:
+      - docker: {}
+      - json:
+          expressions:
+            level: level
+            msg: message
+            time: time
+          source: log
+          drop_malformed: true
+      - labels:
+          container:
+          level:
+      - timestamp:
+          source: time
+          format: RFC3339
+          fallback_formats:
+            - RFC3339Nano
+          action_on_failure: 'skip'
+      - output:
+          source: msg

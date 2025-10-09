@@ -1,4 +1,6 @@
 //! # The credible layer sidecar
+#![doc = include_str!("../README.md")]
+
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::unreadable_literal)]

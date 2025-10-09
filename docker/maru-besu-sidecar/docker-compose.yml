@@ -1,0 +1,245 @@
+services:
+  l2-genesis-initialization:
+    image: busybox:latest
+    container_name: l2-genesis-initialization
+    environment:
+      CREATE_EMPTY_BLOCKS: ${CREATE_EMPTY_BLOCKS:-false}
+    entrypoint: ["sh", "/initialization/init.sh"]
+    volumes:
+      - ./config/l2-genesis-initialization/:/initialization:rw
+      - ./config/coordinator/coordinator-config-v2.toml:/coordinator/coordinator-config-v2.toml:ro
+
+  sequencer:
+    image: ghcr.io/phylaxsystems/linea-monorepo/linea-besu-package:b3040a0806e3f97b06c94fca1908837b513e3365
+    container_name: sequencer
+    hostname: sequencer
+    depends_on:
+      l2-genesis-initialization:
+        condition: service_completed_successfully
+    ports:
+      - "8545:8545"
+      - "8546:8546"
+      - "8550:8550"
+      - "19545:9545"
+      - "30301:30301"
+      - "30305:30303"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c \"[ -f /tmp/pid ]\""]
+      interval: 1s
+      timeout: 1s
+      retries: 120
+    restart: "no"
+    environment:
+      LOG4J_CONFIGURATION_FILE: /var/lib/besu/log4j.xml
+    entrypoint: besu-untuned
+    command:
+      - --config-file=/var/lib/besu/sequencer-credible-grpc.config.toml
+      - --node-private-key-file=/var/lib/besu/key
+      - --plugin-linea-l1-polling-interval=PT12S
+      - --plugin-linea-l1-smart-contract-address=0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9
+      - --plugin-linea-l1-rpc-endpoint=http://l1-el-node:8545
+      - --plugin-linea-rejected-tx-endpoint=http://transaction-exclusion-api:8080
+      - --plugin-linea-node-type=SEQUENCER
+    volumes:
+      - ./config/linea-besu-sequencer/sequencer-credible-grpc.config.toml:/var/lib/besu/sequencer-credible-grpc.config.toml:ro
+      - ./config/linea-besu-sequencer/deny-list.txt:/var/lib/besu/deny-list.txt:ro
+      - ./config/linea-besu-sequencer/key:/var/lib/besu/key:ro
+      - ./config/linea-besu-sequencer/log4j.xml:/var/lib/besu/log4j.xml:ro
+      - ./config/linea-besu-sequencer/tls-files:/var/lib/besu/tls-files/
+      - ./config/common/traces-limits-limitless.toml:/var/lib/besu/traces-limits.toml:ro
+      - ./config/l2-genesis-initialization:/initialization/:ro
+    networks:
+      linea:
+        ipv4_address: 11.11.11.101
+
+  maru:
+    image: consensys/maru:${MARU_TAG:-dbb6c73}
+    container_name: maru
+    hostname: maru
+    depends_on:
+      sequencer:
+        condition: service_healthy
+    command: ["java", "-Dlog4j2.configurationFile=configs/log4j.xml", "-jar", "maru.jar", "--maru-genesis-file", "/initialization/genesis-maru.json", "--config", "configs/config.toml"]
+    volumes:
+      - ./config/maru/sequencer.config.toml:/opt/consensys/maru/configs/config.toml:ro
+      - ./config/maru/log4j.xml:/opt/consensys/maru/configs/log4j.xml:ro
+      - ./config/maru/0x083e11f14b68d5ebeb4be3e3e0237ebbc5675ab5.key:/tmp/maru-db/private-key
+      - ./config/l2-genesis-initialization:/initialization/:ro
+    ports:
+      - "5005:5005"
+      - "8080:8080"
+    networks:
+      linea:
+        ipv4_address: 11.11.11.210
+
+  assertion-da:
+    image: ghcr.io/phylaxsystems/credible-sdk/assertion-da-dev:main
+    container_name: assertion-da
+    hostname: assertion-da
+    depends_on:
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+      - "9012:9012"
+    environment:
+      - RUST_LOG=debug
+      - OTEL_LEVEL=debug
+      - TRACING_LOG_JSON=true
+      - DB_PATH=/etc/credible/assertions
+      - DA_LISTEN_ADDR=0.0.0.0:5001
+      - DA_CACHE_SIZE=1000000
+      - DA_PRIVATE_KEY=0xdd7e619d26d7eef795e3b5144307204f2f5d7d08298d04b926e874c6d9d43e75
+      - OTEL_SERVICE_NAME=assertion-da
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+      - DA_LOG_LEVEL=debug
+      - DA_METRICS_ADDR=0.0.0.0:9012
+      - TRACING_METRICS_PORT=9000
+    volumes:
+      - assertion-store:/etc/credible/assertions
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+    networks:
+      linea:
+        ipv4_address: 11.11.11.206
+
+  credible-sidecar:
+    image: ghcr.io/phylaxsystems/credible-sdk/sidecar-linea:sha-e7c930b
+    container_name: credible-sidecar
+    hostname: credible-sidecar
+    depends_on:
+      sequencer:
+        condition: service_healthy
+      assertion-da:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    command:
+      - "--transport.protocol=grpc"
+      - "--transport.bind-addr=0.0.0.0:50051"
+      - "--chain.spec-id=Cancun"
+      - "--chain.chain-id=1337"
+      - "--credible.assertion-da-rpc-url=http://assertion-da:5001"
+      - "--credible.assertion-gas-limit=3000000"
+      - "--credible.block-tag=latest"
+      - "--credible.indexer-rpc-url=ws://sequencer:8546"
+      - "--state.sequencer-url=http://sequencer:8545"
+      - "--state.besu-client-ws-url=ws://sequencer:8546"
+    environment:
+      - RUST_LOG=debug
+      - OTEL_LEVEL=debug
+      - TRACING_LOG_JSON=true
+      - OTEL_SERVICE_NAME=credible-sidecar
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+      - TRACING_METRICS_PORT=9000
+    ports:
+      - "50051:50051"
+      - "9013:9000"
+    restart: unless-stopped
+    volumes:
+      - sidecar-store:/var/lib/credible
+    networks:
+      linea:
+        ipv4_address: 11.11.11.205
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.99.0
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    depends_on:
+      tempo:
+        condition: service_started
+    volumes:
+      - ./config/observability/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      linea:
+
+  tempo:
+    image: grafana/tempo:2.4.1
+    container_name: tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./config/observability/tempo-config.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "4319:4317"
+    networks:
+      linea:
+
+  loki:
+    image: grafana/loki:2.9.7
+    container_name: loki
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./config/observability/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/var/loki
+    ports:
+      - "3100:3100"
+    networks:
+      linea:
+
+  promtail:
+    image: grafana/promtail:2.9.7
+    container_name: promtail
+    command: ["--config.file=/etc/promtail/promtail-config.yaml"]
+    depends_on:
+      - loki
+    volumes:
+      - ./config/observability/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - promtail-positions:/tmp
+    networks:
+      linea:
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    volumes:
+      - ./config/observability/prometheus-config.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      linea:
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: grafana
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - ./config/observability/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./config/observability/grafana-datasources:/etc/grafana/provisioning/datasources:ro
+      - ./config/observability/grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      linea:
+
+networks:
+  linea:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 11.11.11.0/24
+
+volumes:
+  assertion-store:
+  sidecar-store:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  tempo-data:
+  promtail-positions:
