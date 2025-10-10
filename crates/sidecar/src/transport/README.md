@@ -283,14 +283,14 @@ Transport configuration can be set via command-line arguments or environment var
 - **CLI Flag**: `--transport.protocol <value>`
 - **Environment Variable**: `TRANSPORT_PROTOCOL`
 - **Values**: `http` or `grpc`
-- **Default**: `http`
+- **Default**: `grpc`
 
 ### HTTP Transport Configuration
 
 - **Bind Address**:
   - **CLI Flag**: `--transport.bind-addr <address:port>`
   - **Environment Variable**: `TRANSPORT_BIND_ADDR`
-  - **Default**: `127.0.0.1:8080`
+  - **Default**: `0.0.0.0:50051`
 
 ### gRPC Transport Configuration
 

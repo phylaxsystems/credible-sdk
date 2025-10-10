@@ -67,3 +67,7 @@ regenerate-dev:
 .PHONY: run-sidecar-host
 run-sidecar-host:
 	./scripts/run-sidecar-host.sh
+
+.PHONY: down-sidecar-host
+down-sidecar-host:
+	docker compose -f docker/maru-besu-sidecar/docker-compose.yml down -v

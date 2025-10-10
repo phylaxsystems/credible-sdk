@@ -291,5 +291,5 @@ The HTTP transport can be configured via command-line arguments or environment v
 
 - **CLI Flag**: `--transport.bind-addr <address:port>`
 - **Environment Variable**: `TRANSPORT_BIND_ADDR`
-- **Default**: `127.0.0.1:8080`
+- **Default**: `0.0.0.0:50051`
 - **Example**: `--transport.bind-addr 0.0.0.0:9000` or `TRANSPORT_BIND_ADDR=0.0.0.0:9000`

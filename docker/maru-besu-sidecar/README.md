@@ -30,4 +30,17 @@ This target will:
 
 You can override endpoints or other CLI arguments by exporting any of the `SIDECAR_*` environment variables defined in `scripts/run-sidecar-host.sh` before running the command. Additional arguments passed to the script can be appended by exporting `SIDECAR_EXTRA_ARGS` or by invoking the script directly.
 
+Common examples:
+
+```bash
+SIDECAR_RUST_LOG=info make run-sidecar-host      # adjust log level
+SIDECAR_TRANSPORT_PROTOCOL=http make run-sidecar-host
+```
+
 If you already have the compose stack running, set `SIDECAR_SKIP_COMPOSE=true` to leave it untouched.
+
+To tear the stack down and remove the associated volumes:
+
+```bash
+make down-sidecar-host
+```

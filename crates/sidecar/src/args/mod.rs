@@ -19,22 +19,35 @@ fn parse_spec_id(s: &str) -> Result<SpecId, String> {
 pub const DEFAULT_STATE_ORACLE_ADDRESS: &str = "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b";
 
 /// Parameters for the chain we receive tx from
-#[derive(Default, Debug, Clone, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 #[command(next_help_heading = "Rollup")]
 pub struct ChainArgs {
     /// What EVM specification to use. Only latest for now
     #[arg(
         long = "chain.spec-id",
         env = "CHAIN_SPEC_ID",
-        default_value = "latest",
+        default_value = "Cancun",
         value_parser = parse_spec_id,
         value_enum
     )]
     pub spec_id: SpecId,
 
     // Chain ID
-    #[arg(long = "chain.chain-id", default_value = "1", env = "CHAIN_CHAIN_ID")]
+    #[arg(
+        long = "chain.chain-id",
+        default_value = "1337",
+        env = "CHAIN_CHAIN_ID"
+    )]
     pub chain_id: u64,
+}
+
+impl Default for ChainArgs {
+    fn default() -> Self {
+        Self {
+            spec_id: SpecId::CANCUN,
+            chain_id: 1337,
+        }
+    }
 }
 
 /// Parameters for Credible configuration
@@ -76,7 +89,7 @@ pub struct CredibleArgs {
     #[arg(
         long = "credible.assertion-da-rpc-url",
         env = "CREDIBLE_ASSERTION_DA_RPC_URL",
-        default_value = "http://localhost:5001"
+        default_value = "http://127.0.0.1:5001"
     )]
     pub assertion_da_rpc_url: String,
 
@@ -84,14 +97,14 @@ pub struct CredibleArgs {
     #[arg(
         long = "credible.indexer-rpc-url",
         env = "CREDIBLE_INDEXER_RPC_URL",
-        default_value = "ws://localhost:8546"
+        default_value = "ws://127.0.0.1:8546"
     )]
     pub indexer_rpc_url: String,
     /// Path to the indexer database (separate from main assertion store)
     #[arg(
         long = "credible.indexer-db-path",
         env = "CREDIBLE_INDEXER_DB_PATH",
-        default_value = "indexer_database"
+        default_value = ".local/sidecar-host/indexer_database"
     )]
     pub indexer_db_path: PathBuf,
 
@@ -99,7 +112,7 @@ pub struct CredibleArgs {
     #[arg(
         long = "credible.assertion-store-db-path",
         env = "CREDIBLE_ASSERTION_STORE_DB_PATH",
-        default_value = "assertion_store_database"
+        default_value = ".local/sidecar-host/assertion_store_database"
     )]
     pub assertion_store_db_path: PathBuf,
 
@@ -107,7 +120,7 @@ pub struct CredibleArgs {
     #[arg(
         long = "credible.block-tag",
         env = "CREDIBLE_BLOCK_TAG",
-        default_value = "finalized",
+        default_value = "latest",
         value_enum
     )]
     pub block_tag: BlockTag,
@@ -160,7 +173,7 @@ pub struct HttpTransportArgs {
     #[arg(
         long = "transport.bind-addr",
         env = "TRANSPORT_BIND_ADDR",
-        default_value = "127.0.0.1:8080"
+        default_value = "0.0.0.0:50051"
     )]
     pub bind_addr: String,
 }
@@ -169,11 +182,19 @@ pub struct HttpTransportArgs {
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct StateArgs {
     /// Sequencer bind address and port
-    #[arg(long = "state.sequencer-url", env = "STATE_SEQUENCER_URL")]
+    #[arg(
+        long = "state.sequencer-url",
+        env = "STATE_SEQUENCER_URL",
+        default_value = "http://127.0.0.1:8545"
+    )]
     pub sequencer_url: Option<String>,
 
     /// Besu client bind address and port
-    #[arg(long = "state.besu-client-ws-url", env = "STATE_BESU_CLIENT_WS_URL")]
+    #[arg(
+        long = "state.besu-client-ws-url",
+        env = "STATE_BESU_CLIENT_WS_URL",
+        default_value = "ws://127.0.0.1:8546"
+    )]
     pub besu_client_ws_url: Option<String>,
 
     /// Redis bind address and port
@@ -201,11 +222,11 @@ pub struct StateArgs {
 impl Default for StateArgs {
     fn default() -> Self {
         Self {
-            sequencer_url: None,
-            besu_client_ws_url: None,
+            sequencer_url: Some("http://127.0.0.1:8545".to_string()),
+            besu_client_ws_url: Some("ws://127.0.0.1:8546".to_string()),
             redis_url: None,
             minimum_state_diff: 100,
-            sources_sync_timeout_ms: 100,
+            sources_sync_timeout_ms: 1000,
         }
     }
 }
@@ -218,7 +239,7 @@ pub struct SidecarArgs {
     #[arg(
         long = "transport.protocol",
         env = "TRANSPORT_PROTOCOL",
-        default_value = "http",
+        default_value = "grpc",
         value_enum
     )]
     pub transport_protocol: TransportProtocolArg,
