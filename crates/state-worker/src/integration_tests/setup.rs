@@ -139,10 +139,7 @@ async fn handle_redis_client(
             _ => Frame::Error("ERR invalid redis command".into()),
         };
 
-        connection
-            .write_frame(&response)
-            .await
-            .map_err(Box::new)?;
+        connection.write_frame(&response).await.map_err(Box::new)?;
     }
 
     Ok(())

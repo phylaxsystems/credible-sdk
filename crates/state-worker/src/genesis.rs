@@ -177,7 +177,10 @@ fn parse_b256(value: &str) -> Result<B256> {
 }
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>> {
-    let normalized = if let Some(hex_str) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+    let normalized = if let Some(hex_str) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
         if hex_str.len() % 2 != 0 {
             format!("0x0{hex_str}")
         } else {
