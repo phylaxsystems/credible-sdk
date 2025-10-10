@@ -263,10 +263,10 @@ async fn process_command(
 
 fn parse_bulk_string(frame: &Frame) -> mini_redis::Result<String> {
     match frame {
-        Frame::Bulk(bytes) => Ok(
-            String::from_utf8(bytes.to_vec())
-                .map_err(|err| -> mini_redis::Error { Box::new(err) })?,
-        ),
+        Frame::Bulk(bytes) => {
+            Ok(String::from_utf8(bytes.to_vec())
+                .map_err(|err| -> mini_redis::Error { Box::new(err) })?)
+        }
         Frame::Simple(value) => Ok(value.clone()),
         _ => Err("expected bulk string".into()),
     }

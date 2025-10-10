@@ -37,18 +37,17 @@ async fn test_state_worker_hydrates_genesis_state() {
         account = genesis_account.trim_start_matches("0x"),
         code = genesis_code
     );
-    let genesis_state = genesis::parse_from_str(&genesis_json)
-        .expect("failed to parse test genesis json");
+    let genesis_state =
+        genesis::parse_from_str(&genesis_json).expect("failed to parse test genesis json");
     assert_eq!(
         genesis_state.accounts().len(),
         1,
         "expected single alloc entry in test genesis"
     );
 
-    let instance =
-        LocalInstance::new_with_setup_and_genesis(|_| {}, Some(genesis_state))
-            .await
-            .expect("Failed to start instance");
+    let instance = LocalInstance::new_with_setup_and_genesis(|_| {}, Some(genesis_state))
+        .await
+        .expect("Failed to start instance");
 
     sleep(Duration::from_millis(200)).await;
 

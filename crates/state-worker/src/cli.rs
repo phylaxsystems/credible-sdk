@@ -1,8 +1,6 @@
 //! Command-line configuration for the state worker.
 
 use clap::Parser;
-use std::path::PathBuf;
-
 /// Runtime configuration flags for the state worker.
 ///
 /// We expose each parameter as both a long-form CLI flag and an env var so the
@@ -26,7 +24,7 @@ pub struct Args {
     #[arg(long, env = "STATE_WORKER_START_BLOCK")]
     pub start_block: Option<u64>,
 
-    /// Optional path to the genesis JSON used to hydrate block 0.
-    #[arg(long, env = "STATE_WORKER_GENESIS_PATH")]
-    pub genesis_path: Option<PathBuf>,
+    /// Optional chain identifier used to select an embedded genesis snapshot.
+    #[arg(long, env = "STATE_WORKER_CHAIN_ID")]
+    pub chain_id: Option<u64>,
 }

@@ -1,7 +1,9 @@
+#![recursion_limit = "1024"]
 #![doc = include_str!("../README.md")]
 
 mod cli;
 mod genesis;
+mod genesis_data;
 #[cfg(test)]
 mod integration_tests;
 mod macros;
@@ -45,15 +47,14 @@ async fn main() -> Result<()> {
     let provider = connect_provider(&args.ws_url).await?;
     let redis = RedisStateWriter::new(&args.redis_url, args.redis_namespace.clone())
         .context("failed to initialize redis client")?;
-    let genesis_state = if let Some(path) = args.genesis_path.as_ref() {
-        Some(
-            crate::genesis::load_from_path(path).with_context(|| {
-                format!("failed to load genesis file from {}", path.display())
-            })?,
-        )
-    } else {
-        None
-    };
+    let genesis_state =
+        if let Some(chain_id) = args.chain_id {
+            Some(crate::genesis::load_embedded(chain_id).with_context(|| {
+                format!("failed to load embedded genesis for chain id {chain_id}")
+            })?)
+        } else {
+            None
+        };
 
     let mut worker = StateWorker::new(provider, redis, genesis_state);
     worker

@@ -202,5 +202,4 @@ impl StateWorker {
         info!(block_number, "block persisted to redis");
         Ok(())
     }
-
 }

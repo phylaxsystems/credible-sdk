@@ -1,6 +1,8 @@
 //! Helpers for hydrating the worker's view of block 0 from a genesis JSON file.
-
-use crate::state::AccountCommit;
+use crate::{
+    genesis_data,
+    state::AccountCommit,
+};
 use alloy::primitives::{
     Address,
     B256,
@@ -17,8 +19,7 @@ use serde::Deserialize;
 use std::{
     borrow::Cow,
     collections::HashMap,
-    fs,
-    path::Path,
+    str::FromStr,
 };
 
 /// Parsed representation of the genesis state. The worker consumes this when
@@ -29,6 +30,7 @@ pub struct GenesisState {
 
 impl GenesisState {
     /// Immutable view of the parsed account commits.
+    #[cfg(test)]
     pub fn accounts(&self) -> &[AccountCommit] {
         &self.accounts
     }
@@ -57,20 +59,24 @@ struct GenesisAccount {
     storage: HashMap<String, String>,
 }
 
-/// Parse accounts from a genesis JSON file on disk.
-pub fn load_from_path(path: impl AsRef<Path>) -> Result<GenesisState> {
-    let path = path.as_ref();
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read genesis file {}", path.display()))?;
-    parse_from_str(&contents)
-        .with_context(|| format!("failed to parse genesis file {}", path.display()))
-}
-
 /// Parse accounts from a genesis JSON blob.
 pub fn parse_from_str(data: &str) -> Result<GenesisState> {
     let genesis: GenesisFile =
         serde_json::from_str(data).context("failed to deserialize genesis JSON")?;
     build_state(genesis)
+}
+
+/// Parse accounts from an embedded JSON value.
+pub fn parse_from_value(value: &serde_json::Value) -> Result<GenesisState> {
+    let data = serde_json::to_string(value).context("failed to serialize genesis JSON value")?;
+    parse_from_str(&data)
+}
+
+/// Load a genesis state for a known chain id embedded in the binary.
+pub fn load_embedded(chain_id: u64) -> Result<GenesisState> {
+    let value = genesis_data::for_chain_id(chain_id)
+        .ok_or_else(|| anyhow!("no embedded genesis for chain id {chain_id}"))?;
+    parse_from_value(value)
 }
 
 fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
@@ -112,45 +118,17 @@ fn parse_address(value: &str) -> Result<Address> {
             Address::len_bytes()
         ));
     }
-    Ok(Address::left_padding_from(&bytes))
+    Ok(Address::from_str(value).unwrap())
 }
 
 fn parse_u256(value: Option<&str>) -> Result<U256> {
     let value = value.unwrap_or("0x0").trim();
-    if value.is_empty() {
-        return Ok(U256::ZERO);
-    }
-
-    let radix = if value.starts_with("0x") || value.starts_with("0X") {
-        16
-    } else {
-        10
-    };
-
-    let digits = if radix == 16 {
-        &value[2..]
-    } else {
-        value
-    };
-
-    U256::from_str_radix(digits, radix as u64)
-        .map_err(|err| anyhow!("failed to parse numeric value {value}: {err}"))
+    U256::from_str(value).map_err(|err| anyhow!("failed to parse numeric value: {err}"))
 }
 
 fn parse_u64(value: Option<&str>) -> Result<u64> {
     let value = value.unwrap_or("0x0").trim();
-    if value.is_empty() {
-        return Ok(0);
-    }
-
-    if let Some(stripped) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
-        u64::from_str_radix(stripped, 16)
-            .map_err(|err| anyhow!("failed to parse hex value {value}: {err}"))
-    } else {
-        value
-            .parse::<u64>()
-            .map_err(|err| anyhow!("failed to parse decimal value {value}: {err}"))
-    }
+    Ok(u64::from_str(value).unwrap())
 }
 
 fn parse_code(code: Option<&str>) -> Result<(Option<Vec<u8>>, B256)> {
@@ -184,10 +162,7 @@ fn parse_storage(storage: HashMap<String, String>) -> Result<Vec<(B256, B256)>> 
 fn parse_b256(value: &str) -> Result<B256> {
     let bytes = decode_hex_bytes(value)?;
     if bytes.len() > B256::len_bytes() {
-        return Err(anyhow!(
-            "value {value} exceeds {} bytes",
-            B256::len_bytes()
-        ));
+        return Err(anyhow!("value {value} exceeds {} bytes", B256::len_bytes()));
     }
     Ok(B256::left_padding_from(&bytes))
 }
