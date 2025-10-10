@@ -6,6 +6,7 @@ use crate::{
 use alloy::primitives::{
     Address,
     B256,
+    Bytes,
     U256,
     keccak256,
 };
@@ -17,7 +18,6 @@ use anyhow::{
 use revm::primitives::KECCAK_EMPTY;
 use serde::Deserialize;
 use std::{
-    borrow::Cow,
     collections::HashMap,
     str::FromStr,
 };
@@ -111,14 +111,12 @@ fn convert_account(address: &str, account: GenesisAccount) -> Result<AccountComm
 }
 
 fn parse_address(value: &str) -> Result<Address> {
-    let bytes = decode_hex_bytes(value)?;
-    if bytes.len() > Address::len_bytes() {
-        return Err(anyhow!(
-            "address {value} exceeds {} bytes",
-            Address::len_bytes()
-        ));
-    }
-    Ok(Address::from_str(value).unwrap())
+    let formatted = if value.starts_with("0x") || value.starts_with("0X") {
+        value.to_string()
+    } else {
+        format!("0x{value}")
+    };
+    Address::from_str(&formatted).map_err(|err| anyhow!("failed to parse address {value}: {err}"))
 }
 
 fn parse_u256(value: Option<&str>) -> Result<U256> {
@@ -128,7 +126,15 @@ fn parse_u256(value: Option<&str>) -> Result<U256> {
 
 fn parse_u64(value: Option<&str>) -> Result<u64> {
     let value = value.unwrap_or("0x0").trim();
-    Ok(u64::from_str(value).unwrap())
+    if let Some(hex_str) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u64::from_str_radix(hex_str, 16)
+            .map_err(|err| anyhow!("failed to parse u64 value {value}: {err}"))
+    } else {
+        u64::from_str(value).map_err(|err| anyhow!("failed to parse u64 value {value}: {err}"))
+    }
 }
 
 fn parse_code(code: Option<&str>) -> Result<(Option<Vec<u8>>, B256)> {
@@ -160,36 +166,329 @@ fn parse_storage(storage: HashMap<String, String>) -> Result<Vec<(B256, B256)>> 
 }
 
 fn parse_b256(value: &str) -> Result<B256> {
-    let bytes = decode_hex_bytes(value)?;
+    let bytes = decode_hex_bytes(value)
+        .map_err(|err| anyhow!("failed to parse B256 value {value}: {err}"))?;
+
     if bytes.len() > B256::len_bytes() {
         return Err(anyhow!("value {value} exceeds {} bytes", B256::len_bytes()));
     }
+
     Ok(B256::left_padding_from(&bytes))
 }
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let without_prefix = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-        .unwrap_or(trimmed);
-    if without_prefix.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let normalized: Cow<'_, str> = if without_prefix.len() % 2 == 0 {
-        Cow::Borrowed(without_prefix)
+    let normalized = if let Some(hex_str) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+        if hex_str.len() % 2 != 0 {
+            format!("0x0{hex_str}")
+        } else {
+            value.to_string()
+        }
     } else {
-        let mut owned = String::with_capacity(without_prefix.len() + 1);
-        owned.push('0');
-        owned.push_str(without_prefix);
-        Cow::Owned(owned)
+        value.to_string()
     };
 
-    hex::decode(normalized.as_ref())
+    Bytes::from_str(&normalized)
+        .map(|bytes| bytes.to_vec())
         .map_err(|err| anyhow!("failed to decode hex value {value}: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_valid_genesis() {
+        let genesis_json = r#"{
+            "alloc": {
+                "00000000000000000000000000000000000000f0": {
+                    "balance": "0x100",
+                    "nonce": "0x5",
+                    "code": "0x6080604052",
+                    "storage": {
+                        "0x0": "0x123",
+                        "0x1": "0x456"
+                    }
+                }
+            }
+        }"#;
+
+        let state = parse_from_str(genesis_json).expect("should parse valid genesis");
+        assert_eq!(state.accounts().len(), 1);
+
+        let account = &state.accounts()[0];
+        assert_eq!(
+            account.address,
+            Address::from_str("00000000000000000000000000000000000000f0").unwrap()
+        );
+        assert_eq!(account.balance, U256::from(0x100));
+        assert_eq!(account.nonce, 5);
+        assert_eq!(account.storage.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_genesis_with_missing_fields() {
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000002": {
+                    "balance": "0x200"
+                }
+            }
+        }"#;
+
+        let state =
+            parse_from_str(genesis_json).expect("should parse with missing optional fields");
+        assert_eq!(state.accounts().len(), 1);
+
+        let account = &state.accounts()[0];
+        assert_eq!(account.balance, U256::from(0x200));
+        assert_eq!(account.nonce, 0);
+        assert_eq!(account.code, None);
+        assert_eq!(account.code_hash, KECCAK_EMPTY);
+        assert_eq!(account.storage.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_empty_genesis() {
+        let genesis_json = r#"{"alloc": {}}"#;
+        let state = parse_from_str(genesis_json).expect("should parse empty genesis");
+        assert_eq!(state.accounts().len(), 0);
+    }
+
+    #[test]
+    fn test_parse_malformed_json() {
+        let malformed = r#"{"alloc": {"invalid json"#;
+        assert!(
+            parse_from_str(malformed).is_err(),
+            "should fail on malformed JSON"
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_address() {
+        let genesis_json = r#"{
+            "alloc": {
+                "not_a_valid_address": {
+                    "balance": "0x100"
+                }
+            }
+        }"#;
+
+        assert!(
+            parse_from_str(genesis_json).is_err(),
+            "should fail on invalid address"
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_balance() {
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000001": {
+                    "balance": "not_a_number"
+                }
+            }
+        }"#;
+
+        assert!(
+            parse_from_str(genesis_json).is_err(),
+            "should fail on invalid balance"
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_nonce() {
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000001": {
+                    "balance": "0x100",
+                    "nonce": "not_a_number"
+                }
+            }
+        }"#;
+
+        assert!(
+            parse_from_str(genesis_json).is_err(),
+            "should fail on invalid nonce"
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_hex_code() {
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000001": {
+                    "balance": "0x100",
+                    "code": "0xZZZZ"
+                }
+            }
+        }"#;
+
+        assert!(
+            parse_from_str(genesis_json).is_err(),
+            "should fail on invalid hex in code"
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_storage_slot() {
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000001": {
+                    "balance": "0x100",
+                    "storage": {
+                        "not_hex": "0x123"
+                    }
+                }
+            }
+        }"#;
+
+        assert!(
+            parse_from_str(genesis_json).is_err(),
+            "should fail on invalid storage slot key"
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_storage_value() {
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000001": {
+                    "balance": "0x100",
+                    "storage": {
+                        "0x0": "not_hex"
+                    }
+                }
+            }
+        }"#;
+
+        assert!(
+            parse_from_str(genesis_json).is_err(),
+            "should fail on invalid storage value"
+        );
+    }
+
+    #[test]
+    fn test_parse_oversized_address() {
+        // Address longer than 20 bytes
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000000000000": {
+                    "balance": "0x100"
+                }
+            }
+        }"#;
+
+        assert!(
+            parse_from_str(genesis_json).is_err(),
+            "should fail on oversized address"
+        );
+    }
+
+    #[test]
+    fn test_parse_oversized_storage_value() {
+        // Value longer than 32 bytes (64 hex chars)
+        let oversized_value = format!("0x{}", "1".repeat(65));
+        let genesis_json = format!(
+            r#"{{
+                "alloc": {{
+                    "0000000000000000000000000000000000000001": {{
+                        "balance": "0x100",
+                        "storage": {{
+                            "0x0": "{oversized_value}"
+                        }}
+                    }}
+                }}
+            }}"#
+        );
+
+        assert!(
+            parse_from_str(&genesis_json).is_err(),
+            "should fail on oversized storage value"
+        );
+    }
+
+    #[test]
+    fn test_parse_hex_with_uppercase() {
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000001": {
+                    "balance": "0xABCDEF",
+                    "nonce": "0xA"
+                }
+            }
+        }"#;
+
+        let state = parse_from_str(genesis_json).expect("should parse uppercase hex");
+        assert_eq!(state.accounts().len(), 1);
+        assert_eq!(state.accounts()[0].balance, U256::from(0x00AB_CDEF));
+        assert_eq!(state.accounts()[0].nonce, 10);
+    }
+
+    #[test]
+    fn test_parse_hex_without_prefix() {
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000001": {
+                    "balance": "256",
+                    "nonce": "10"
+                }
+            }
+        }"#;
+
+        let state = parse_from_str(genesis_json).expect("should parse decimal values");
+        assert_eq!(state.accounts().len(), 1);
+        assert_eq!(state.accounts()[0].balance, U256::from(256));
+        assert_eq!(state.accounts()[0].nonce, 10);
+    }
+
+    #[test]
+    fn test_parse_empty_code() {
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000001": {
+                    "balance": "0x100",
+                    "code": "0x"
+                }
+            }
+        }"#;
+
+        let state = parse_from_str(genesis_json).expect("should handle empty code");
+        assert_eq!(state.accounts().len(), 1);
+        assert_eq!(state.accounts()[0].code, None);
+        assert_eq!(state.accounts()[0].code_hash, KECCAK_EMPTY);
+    }
+
+    #[test]
+    fn test_parse_multiple_accounts() {
+        let genesis_json = r#"{
+            "alloc": {
+                "0000000000000000000000000000000000000001": {
+                    "balance": "0x100"
+                },
+                "0000000000000000000000000000000000000002": {
+                    "balance": "0x200"
+                },
+                "0000000000000000000000000000000000000003": {
+                    "balance": "0x300"
+                }
+            }
+        }"#;
+
+        let state = parse_from_str(genesis_json).expect("should parse multiple accounts");
+        assert_eq!(state.accounts().len(), 3);
+
+        // Verify accounts are sorted by address
+        for i in 0..state.accounts().len() - 1 {
+            assert!(
+                state.accounts()[i].address < state.accounts()[i + 1].address,
+                "accounts should be sorted by address"
+            );
+        }
+    }
+
+    #[test]
+    fn test_load_embedded_invalid_chain() {
+        let result = load_embedded(999_999);
+        assert!(result.is_err(), "should fail for unknown chain id");
+    }
 }

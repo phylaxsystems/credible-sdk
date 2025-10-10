@@ -62,7 +62,7 @@ async fn test_state_worker_hydrates_genesis_state() {
     let code_hash = format!(
         "0x{}",
         hex::encode(keccak256(
-            &hex::decode(genesis_code.trim_start_matches("0x")).unwrap()
+            hex::decode(genesis_code.trim_start_matches("0x")).unwrap()
         ))
     );
     let code_key = format!(

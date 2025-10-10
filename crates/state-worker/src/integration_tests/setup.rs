@@ -142,12 +142,13 @@ async fn handle_redis_client(
         connection
             .write_frame(&response)
             .await
-            .map_err(|err| Box::new(err))?;
+            .map_err(Box::new)?;
     }
 
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn process_command(
     parts: Vec<Frame>,
     state: &Arc<Mutex<EmbeddedRedisState>>,
@@ -185,7 +186,7 @@ async fn process_command(
         }
         "hset" => {
             let key = parse_bulk_string(&parts[1])?;
-            if parts.len() < 4 || parts.len() % 2 != 0 {
+            if parts.len() < 4 || !parts.len().is_multiple_of(2) {
                 return Err("ERR wrong number of arguments for 'hset' command".into());
             }
             debug!(
@@ -220,15 +221,12 @@ async fn process_command(
                 .get(&key)
                 .and_then(|entry| entry.get(&field))
                 .cloned();
-            match value {
-                Some(value) => {
-                    debug!(command = "hget", key = %key, field = %field, value = %value);
-                    Ok(Frame::Bulk(Bytes::from(value)))
-                }
-                None => {
-                    debug!(command = "hget", key = %key, field = %field, result = "nil");
-                    Ok(Frame::Null)
-                }
+            if let Some(value) = value {
+                debug!(command = "hget", key = %key, field = %field, value = %value);
+                Ok(Frame::Bulk(Bytes::from(value)))
+            } else {
+                debug!(command = "hget", key = %key, field = %field, result = "nil");
+                Ok(Frame::Null)
             }
         }
         "keys" => {
@@ -257,7 +255,7 @@ async fn process_command(
         }
         "ping" => Ok(Frame::Simple("PONG".into())),
         "command" => Ok(Frame::Array(vec![])),
-        _ => Ok(Frame::Error(format!("ERR unknown command '{}'", command))),
+        _ => Ok(Frame::Error(format!("ERR unknown command '{command}'"))),
     }
 }
 
