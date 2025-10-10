@@ -40,8 +40,42 @@ pub struct HttpTransactionDecoder;
 impl HttpTransactionDecoder {
     fn to_transaction(req: &JsonRpcRequest) -> Result<Vec<TxQueueContents>, HttpDecoderError> {
         let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
+
         let send_params: SendTransactionsParams =
-            serde_json::from_value(params.clone()).map_err(|_| HttpDecoderError::SchemaError)?;
+            serde_json::from_value(params.clone()).map_err(|e| {
+                let msg = e.to_string();
+
+                // Map serde errors to specific HttpDecoderError variants
+                if msg.contains("missing field `transactions`") {
+                    HttpDecoderError::MissingTransactionsField
+                } else if msg.contains("missing field `txEnv`") {
+                    HttpDecoderError::MissingTxEnv
+                } else if msg.contains("missing field `hash`") {
+                    HttpDecoderError::MissingHashField
+                } else if msg.contains("invalid txEnv") {
+                    HttpDecoderError::InvalidTransaction(msg)
+                } else if msg.contains("invalid hash") {
+                    HttpDecoderError::InvalidHash(msg)
+                } else if msg.contains("invalid transactions array") {
+                    HttpDecoderError::InvalidTransaction(msg)
+                } else if msg.contains("caller") || msg.contains("address") {
+                    HttpDecoderError::InvalidAddress(msg)
+                } else if msg.contains("value") {
+                    HttpDecoderError::InvalidValue
+                } else if msg.contains("data") {
+                    HttpDecoderError::InvalidData
+                } else if msg.contains("nonce") {
+                    HttpDecoderError::InvalidNonce(msg)
+                } else if msg.contains("gas_limit") {
+                    HttpDecoderError::InvalidGasLimit(msg)
+                } else if msg.contains("gas_price") {
+                    HttpDecoderError::InvalidGasPrice(msg)
+                } else if msg.contains("chain_id") {
+                    HttpDecoderError::InvalidChainId(msg)
+                } else {
+                    HttpDecoderError::InvalidTransaction(msg)
+                }
+            })?;
 
         if send_params.transactions.is_empty() {
             return Err(HttpDecoderError::NoTransactions);
@@ -77,7 +111,7 @@ impl Decoder for HttpTransactionDecoder {
             METHOD_BLOCK_ENV => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
                 let block = serde_json::from_value::<QueueBlockEnv>(params.clone())
-                    .map_err(|_| HttpDecoderError::SchemaError)?;
+                    .map_err(|e| map_block_env_error(&e))?;
                 let current_span = tracing::Span::current();
                 Ok(vec![TxQueueContents::Block(block, current_span)])
             }
@@ -98,9 +132,60 @@ impl Decoder for HttpTransactionDecoder {
                 let current_span = tracing::Span::current();
                 Ok(vec![TxQueueContents::Reorg(hash, current_span)])
             }
-            _ => Err(HttpDecoderError::SchemaError),
+            _ => {
+                Err(HttpDecoderError::InvalidTransaction(
+                    "unknown method".to_string(),
+                ))
+            }
         }
     }
+}
+
+fn map_block_env_error(e: &serde_json::Error) -> HttpDecoderError {
+    let msg = e.to_string();
+    let msg_lower = msg.to_lowercase();
+
+    // Check for missing fields
+    if msg_lower.contains("missing field: number") {
+        return HttpDecoderError::MissingBlockNumber;
+    } else if msg.contains("missing field: beneficiary") {
+        return HttpDecoderError::MissingBeneficiary;
+    } else if msg.contains("missing field: timestamp") {
+        return HttpDecoderError::MissingTimestamp;
+    } else if msg.contains("missing field: gas_limit") {
+        return HttpDecoderError::MissingBlockGasLimit;
+    } else if msg.contains("missing field: basefee") {
+        return HttpDecoderError::MissingBasefee;
+    } else if msg.contains("missing field: difficulty") {
+        return HttpDecoderError::MissingDifficulty;
+    }
+
+    // Check for invalid field values
+    if msg_lower.contains("invalid block number") {
+        return HttpDecoderError::InvalidBlockNumber(msg);
+    } else if msg.contains("invalid beneficiary address") {
+        return HttpDecoderError::InvalidBeneficiary(msg);
+    } else if msg.contains("invalid timestamp") {
+        return HttpDecoderError::InvalidTimestamp(msg);
+    } else if msg.contains("invalid gas_limit") {
+        return HttpDecoderError::InvalidBlockGasLimit(msg);
+    } else if msg.contains("invalid basefee") {
+        return HttpDecoderError::InvalidBasefee(msg);
+    } else if msg.contains("invalid difficulty") {
+        return HttpDecoderError::InvalidDifficulty(msg);
+    } else if msg.contains("invalid prevrandao") {
+        return HttpDecoderError::InvalidPrevrandao(msg);
+    } else if msg.contains("invalid blob_excess_gas_and_price") {
+        return HttpDecoderError::InvalidBlobExcessGas(msg);
+    } else if msg.contains("invalid last_tx_hash") {
+        return HttpDecoderError::InvalidLastTxHash(msg);
+    } else if msg.contains("invalid n_transactions") {
+        return HttpDecoderError::InvalidNTransactions(msg);
+    } else if msg.contains("validation error:") {
+        return HttpDecoderError::BlockEnvValidation(msg);
+    }
+
+    HttpDecoderError::BlockEnvValidation(msg)
 }
 
 #[cfg(test)]
@@ -298,6 +383,10 @@ mod tests {
         let request = create_test_request_json("wrongMethod", &[transaction]);
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidTransaction("unknown method".to_string()),
+        );
     }
 
     #[test]
@@ -357,7 +446,10 @@ mod tests {
 
         let request = create_test_request_json("sendTransactions", &[transaction]);
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert!(matches!(result, Err(HttpDecoderError::SchemaError)));
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::InvalidTransaction(_))
+        ));
     }
 
     #[test]
@@ -378,7 +470,13 @@ mod tests {
 
         let request = create_test_request_json("sendTransactions", &[transaction]);
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert!(matches!(result, Err(HttpDecoderError::SchemaError)));
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidTransaction(
+                "invalid transactions array: invalid txEnv: invalid value: string \"invalid_value\", expected a 32 byte hex string"
+                    .to_string()
+            )
+        );
     }
 
     #[test]
@@ -399,7 +497,10 @@ mod tests {
 
         let request = create_test_request_json("sendTransactions", &[transaction]);
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert!(matches!(result, Err(HttpDecoderError::SchemaError)));
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid type: string \"invalid_gas_price\", expected u128".to_string())
+        );
     }
 
     #[test]
@@ -420,11 +521,14 @@ mod tests {
 
         let request = create_test_request_json("sendTransactions", &[transaction]);
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert!(matches!(result, Err(HttpDecoderError::SchemaError)));
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid value: string \"invalid_hex_data\", expected a valid hex string".to_string())
+        );
     }
 
     #[test]
-    fn test_invalid_schema_error() {
+    fn test_missing_transactions_field() {
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "sendTransactions".to_string(),
@@ -435,7 +539,12 @@ mod tests {
         };
 
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert!(matches!(result, Err(HttpDecoderError::SchemaError)));
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidTransaction(
+                "unknown field `invalid_field`, expected `transactions`".to_string()
+            )
+        );
     }
 
     #[test]
@@ -535,7 +644,10 @@ mod tests {
 
         let request = create_test_request_json("sendTransactions", &transactions);
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert!(matches!(result, Err(HttpDecoderError::SchemaError)));
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid type: string \"20000000000\", expected u128".to_string())
+        );
     }
 
     #[test]
@@ -579,7 +691,10 @@ mod tests {
 
         let request = create_test_request_json("sendTransactions", &[transaction]);
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert!(matches!(result, Err(HttpDecoderError::SchemaError)));
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid value: string \"0xgg\", expected a valid hex string".to_string())
+        );
     }
 
     #[test]
@@ -638,6 +753,225 @@ mod tests {
 
         let contents = result.unwrap();
         assert_eq!(contents.len(), 2);
+    }
+
+    #[test]
+    fn test_missing_tx_env_field() {
+        let transaction = json!({
+            "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            // Missing txEnv field
+        });
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(matches!(result, Err(HttpDecoderError::MissingTxEnv)));
+    }
+
+    #[test]
+    fn test_missing_hash_field() {
+        let transaction = json!({
+            "txEnv": {
+                "caller": "0x1234567890123456789012345678901234567890",
+                "kind": "0x9876543210987654321098765432109876543210",
+                "value": "1000000000000000000",
+                "data": "0x",
+                "gas_limit": 21000,
+                "gas_price": 20000000000_u64,
+                "nonce": 0,
+                "chain_id": 1,
+                "tx_type": 0,
+                "access_list": [],
+                "gas_priority_fee": null,
+                "blob_hashes": [],
+                "max_fee_per_blob_gas": 0,
+                "authorization_list": []
+            }
+            // Missing hash field
+        });
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(matches!(result, Err(HttpDecoderError::MissingHashField)));
+    }
+
+    #[test]
+    fn test_invalid_nonce_error() {
+        let transaction = json!({
+            "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "txEnv": {
+                "caller": "0x1234567890123456789012345678901234567890",
+                "kind": "0x9876543210987654321098765432109876543210",
+                "value": "1000000000000000000",
+                "data": "0x",
+                "gas_limit": 21000,
+                "gas_price": 20000000000_u64,
+                "nonce": "invalid_nonce",
+                "chain_id": 1,
+                "tx_type": 0,
+                "access_list": [],
+                "gas_priority_fee": null,
+                "blob_hashes": [],
+                "max_fee_per_blob_gas": 0,
+                "authorization_list": []
+            }
+        });
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid type: string \"invalid_nonce\", expected u64".to_string())
+        );
+    }
+
+    #[test]
+    fn test_invalid_gas_limit_error() {
+        let transaction = json!({
+            "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "txEnv": {
+                "caller": "0x1234567890123456789012345678901234567890",
+                "kind": "0x9876543210987654321098765432109876543210",
+                "value": "1000000000000000000",
+                "data": "0x",
+                "gas_limit": "invalid_gas_limit",
+                "gas_price": 20000000000_u64,
+                "nonce": 0,
+                "chain_id": 1,
+                "tx_type": 0,
+                "access_list": [],
+                "gas_priority_fee": null,
+                "blob_hashes": [],
+                "max_fee_per_blob_gas": 0,
+                "authorization_list": []
+            }
+        });
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid type: string \"invalid_gas_limit\", expected u64".to_string())
+        );
+    }
+
+    #[test]
+    fn test_invalid_chain_id_error() {
+        let transaction = json!({
+            "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "txEnv": {
+                "caller": "0x1234567890123456789012345678901234567890",
+                "kind": "0x9876543210987654321098765432109876543210",
+                "value": "1000000000000000000",
+                "data": "0x",
+                "gas_limit": 21000,
+                "gas_price": 20000000000_u64,
+                "nonce": 0,
+                "chain_id": "invalid_chain_id",
+                "tx_type": 0,
+                "access_list": [],
+                "gas_priority_fee": null,
+                "blob_hashes": [],
+                "max_fee_per_blob_gas": 0,
+                "authorization_list": []
+            }
+        });
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid type: string \"invalid_chain_id\", expected u64".to_string())
+        );
+    }
+
+    #[test]
+    fn test_negative_nonce_error() {
+        let transaction = json!({
+            "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "txEnv": {
+                "caller": "0x1234567890123456789012345678901234567890",
+                "kind": "0x9876543210987654321098765432109876543210",
+                "value": "1000000000000000000",
+                "data": "0x",
+                "gas_limit": 21000,
+                "gas_price": "20000000000",
+                "nonce": -1,
+                "chain_id": 1,
+                "tx_type": 0,
+                "access_list": [],
+                "gas_priority_fee": null,
+                "blob_hashes": [],
+                "max_fee_per_blob_gas": 0,
+                "authorization_list": []
+            }
+        });
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::InvalidTransaction(_))
+        ));
+    }
+
+    #[test]
+    fn test_invalid_to_address_error() {
+        let transaction = json!({
+            "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "txEnv": {
+                "caller": "0x1234567890123456789012345678901234567890",
+                "kind": "invalid_to_address",
+                "value": "1000000000000000000",
+                "data": "0x",
+                "gas_limit": 21000,
+                "gas_price": 2000000000_u64,
+                "nonce": 0,
+                "chain_id": 1,
+                "tx_type": 0,
+                "access_list": [],
+                "gas_priority_fee": null,
+                "blob_hashes": [],
+                "max_fee_per_blob_gas": 0,
+                "authorization_list": []
+            }
+        });
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::InvalidTransaction(_))
+        ));
+    }
+
+    #[test]
+    fn test_invalid_hash_in_transactions_array() {
+        let transaction = json!({
+            "hash": "not_64_chars",
+            "txEnv": {
+                "caller": "0x1234567890123456789012345678901234567890",
+                "kind": "0x9876543210987654321098765432109876543210",
+                "value": "1000000000000000000",
+                "data": "0x",
+                "gas_limit": 21000,
+                "gas_price": 20000000000_u64,
+                "nonce": 0,
+                "chain_id": 1,
+                "tx_type": 0,
+                "access_list": [],
+                "gas_priority_fee": null,
+                "blob_hashes": [],
+                "max_fee_per_blob_gas": 0,
+                "authorization_list": []
+            }
+        });
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert_eq!(
+            result.unwrap_err(),
+            HttpDecoderError::InvalidHash("not_64_chars".to_string())
+        );
     }
 
     #[test]
@@ -1428,7 +1762,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "Should fail validation when n_transactions > 0 but last_tx_hash is null"
+            "Should fail validation when n_transactions = 0 but last_tx_hash is present"
         );
         assert!(
             result
@@ -1544,6 +1878,401 @@ mod tests {
         assert_eq!(deserialized.last_tx_hash, queue_block_env.last_tx_hash);
         assert_eq!(deserialized.n_transactions, queue_block_env.n_transactions);
     }
+
+    #[test]
+    fn test_block_env_missing_number() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(result, Err(HttpDecoderError::MissingBlockNumber)));
+    }
+
+    #[test]
+    fn test_block_env_missing_beneficiary() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(result, Err(HttpDecoderError::MissingBeneficiary)));
+    }
+
+    #[test]
+    fn test_block_env_invalid_beneficiary() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "invalid_address",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::BlockEnvValidation(_))
+        ));
+    }
+
+    #[test]
+    fn test_block_env_missing_timestamp() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(result, Err(HttpDecoderError::MissingTimestamp)));
+    }
+
+    #[test]
+    fn test_block_env_invalid_timestamp() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": "invalid_timestamp",
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::BlockEnvValidation(_))
+        ));
+    }
+
+    #[test]
+    fn test_block_env_missing_gas_limit() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::MissingBlockGasLimit)
+        ));
+    }
+
+    #[test]
+    fn test_block_env_invalid_gas_limit() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": "invalid_gas_limit",
+                "basefee": 1000000000u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::BlockEnvValidation(_))
+        ));
+    }
+
+    #[test]
+    fn test_block_env_missing_basefee() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(result, Err(HttpDecoderError::MissingBasefee)));
+    }
+
+    #[test]
+    fn test_block_env_invalid_basefee() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": "invalid_basefee",
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::BlockEnvValidation(_))
+        ));
+    }
+
+    #[test]
+    fn test_block_env_missing_difficulty() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(result, Err(HttpDecoderError::MissingDifficulty)));
+    }
+
+    #[test]
+    fn test_block_env_invalid_difficulty() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "invalid_difficulty"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::BlockEnvValidation(_))
+        ));
+    }
+
+    #[test]
+    fn test_block_env_invalid_prevrandao() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "invalid_hash"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::BlockEnvValidation(_))
+        ));
+    }
+
+    #[test]
+    fn test_block_env_invalid_blob_excess_gas_and_price() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "blob_excess_gas_and_price": "invalid"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::BlockEnvValidation(_))
+        ));
+    }
+
+    #[test]
+    fn test_block_env_invalid_last_tx_hash() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "last_tx_hash": "invalid_hash",
+                "n_transactions": 5
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::InvalidLastTxHash(_))
+        ));
+    }
+
+    #[test]
+    fn test_block_env_invalid_n_transactions() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "n_transactions": "invalid"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::InvalidNTransactions(_))
+        ));
+    }
+
+    #[test]
+    fn test_block_env_validation_error() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "n_transactions": 0
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::BlockEnvValidation(_))
+        ));
+    }
+
+    #[test]
+    fn test_block_env_invalid_block_number() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendBlockEnv",
+            "params": {
+                "number": "not_a_number",
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0"
+            },
+            "id": 1
+        });
+
+        let json_request: JsonRpcRequest = serde_json::from_value(request).unwrap();
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&json_request);
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::BlockEnvValidation(_))
+        ));
+    }
+
     #[test]
     fn test_decode_reorg_valid() {
         let valid_reorg_request = json!({

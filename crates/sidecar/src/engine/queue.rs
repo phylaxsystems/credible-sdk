@@ -79,6 +79,7 @@ pub struct QueueBlockEnv {
 // for `u128`.
 
 impl<'de> Deserialize<'de> for QueueBlockEnv {
+    #[allow(clippy::too_many_lines)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -94,13 +95,19 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
                 Some(Value::Null) | None => None, // Handle explicit null and missing fields
                 Some(Value::String(s)) if s.is_empty() => None, // Handle empty string
                 Some(v) => {
-                    Some(serde_json::from_value(v.clone()).map_err(serde::de::Error::custom)?)
+                    Some(serde_json::from_value(v.clone()).map_err(|e| {
+                        serde::de::Error::custom(format!("invalid last_tx_hash: {e}"))
+                    })?)
                 }
             };
 
             let n_transactions = match map.get("n_transactions") {
                 Some(Value::Null) | None => 0, // Treat null as default value and missing fields as 0
-                Some(v) => serde_json::from_value(v.clone()).map_err(serde::de::Error::custom)?,
+                Some(v) => {
+                    serde_json::from_value(v.clone()).map_err(|e| {
+                        serde::de::Error::custom(format!("invalid n_transactions: {e}"))
+                    })?
+                }
             };
 
             // Validate sequencer requirements:
@@ -111,7 +118,7 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
                     // When n_transactions is 0, last_tx_hash must be None, empty string, null, or missing
                     if last_tx_hash.is_some() {
                         return Err(serde::de::Error::custom(
-                            "When n_transactions is 0, last_tx_hash must be null, empty, or missing",
+                            "validation error: last_tx_hash must be null, empty, or missing when n_transactions is 0",
                         ));
                     }
                 }
@@ -119,18 +126,68 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
                     // When n_transactions > 0, last_tx_hash must be present and valid
                     if last_tx_hash.is_none() {
                         return Err(serde::de::Error::custom(
-                            "When n_transactions > 0, last_tx_hash must be provided and non-empty",
+                            "validation error: last_tx_hash must be provided and non-empty when n_transactions > 0",
                         ));
                     }
                 }
             }
+
             // Create a value without our custom fields for BlockEnv deserialization
             let mut block_env_map = map.clone();
             block_env_map.remove("last_tx_hash");
             block_env_map.remove("n_transactions");
 
-            let block_env = serde_json::from_value(Value::Object(block_env_map))
-                .map_err(serde::de::Error::custom)?;
+            let block_env = serde_json::from_value(Value::Object(block_env_map)).map_err(|e| {
+                let msg = e.to_string();
+
+                // Be very specific with field name matching - check for backticks or exact field references
+                // Serde typically formats errors as: missing field `fieldname` or invalid value for `fieldname`
+                let custom_msg = if msg.contains("missing field `number`")
+                    || msg.contains("missing field \"number\"")
+                {
+                    "missing field: number"
+                } else if msg.contains("missing field `beneficiary`")
+                    || msg.contains("missing field \"beneficiary\"")
+                {
+                    "missing field: beneficiary"
+                } else if msg.contains("missing field `timestamp`")
+                    || msg.contains("missing field \"timestamp\"")
+                {
+                    "missing field: timestamp"
+                } else if msg.contains("missing field `gas_limit`")
+                    || msg.contains("missing field \"gas_limit\"")
+                {
+                    "missing field: gas_limit"
+                } else if msg.contains("missing field `basefee`")
+                    || msg.contains("missing field \"basefee\"")
+                {
+                    "missing field: basefee"
+                } else if msg.contains("missing field `difficulty`")
+                    || msg.contains("missing field \"difficulty\"")
+                {
+                    "missing field: difficulty"
+                } else if msg.contains("`number`") && !msg.contains("missing field") {
+                    "invalid block number"
+                } else if msg.contains("`beneficiary`") && !msg.contains("missing field") {
+                    "invalid beneficiary address"
+                } else if msg.contains("`timestamp`") && !msg.contains("missing field") {
+                    "invalid timestamp"
+                } else if msg.contains("`gas_limit`") && !msg.contains("missing field") {
+                    "invalid gas_limit"
+                } else if msg.contains("`basefee`") && !msg.contains("missing field") {
+                    "invalid basefee"
+                } else if msg.contains("`difficulty`") && !msg.contains("missing field") {
+                    "invalid difficulty"
+                } else if msg.contains("`prevrandao`") {
+                    "invalid prevrandao"
+                } else if msg.contains("blob_excess_gas_and_price") {
+                    "invalid blob_excess_gas_and_price"
+                } else {
+                    &msg
+                };
+
+                serde::de::Error::custom(custom_msg)
+            })?;
 
             return Ok(QueueBlockEnv {
                 block_env,
@@ -140,7 +197,56 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
         }
 
         // Old format - just deserialize as BlockEnv
-        let block_env = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        let block_env = serde_json::from_value(value).map_err(|e| {
+            let msg = e.to_string();
+
+            // Same specific matching for old format
+            let custom_msg = if msg.contains("missing field `number`")
+                || msg.contains("missing field \"number\"")
+            {
+                "missing field: number"
+            } else if msg.contains("missing field `beneficiary`")
+                || msg.contains("missing field \"beneficiary\"")
+            {
+                "missing field: beneficiary"
+            } else if msg.contains("missing field `timestamp`")
+                || msg.contains("missing field \"timestamp\"")
+            {
+                "missing field: timestamp"
+            } else if msg.contains("missing field `gas_limit`")
+                || msg.contains("missing field \"gas_limit\"")
+            {
+                "missing field: gas_limit"
+            } else if msg.contains("missing field `basefee`")
+                || msg.contains("missing field \"basefee\"")
+            {
+                "missing field: basefee"
+            } else if msg.contains("missing field `difficulty`")
+                || msg.contains("missing field \"difficulty\"")
+            {
+                "missing field: difficulty"
+            } else if msg.contains("`number`") && !msg.contains("missing field") {
+                "invalid block number"
+            } else if msg.contains("`beneficiary`") && !msg.contains("missing field") {
+                "invalid beneficiary address"
+            } else if msg.contains("`timestamp`") && !msg.contains("missing field") {
+                "invalid timestamp"
+            } else if msg.contains("`gas_limit`") && !msg.contains("missing field") {
+                "invalid gas_limit"
+            } else if msg.contains("`basefee`") && !msg.contains("missing field") {
+                "invalid basefee"
+            } else if msg.contains("`difficulty`") && !msg.contains("missing field") {
+                "invalid difficulty"
+            } else if msg.contains("`prevrandao`") {
+                "invalid prevrandao"
+            } else if msg.contains("blob_excess_gas_and_price") {
+                "invalid blob_excess_gas_and_price"
+            } else {
+                &msg
+            };
+
+            serde::de::Error::custom(custom_msg)
+        })?;
 
         Ok(QueueBlockEnv {
             block_env,

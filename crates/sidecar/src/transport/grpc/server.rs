@@ -62,9 +62,11 @@ use revm::{
     primitives::{
         B256,
         alloy_primitives::TxHash,
+        ruint::ParseError,
     },
 };
 use std::{
+    num::ParseIntError,
     str::FromStr,
     sync::{
         Arc,
@@ -329,7 +331,7 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
 /// Convert a Transaction to queue transaction contents
 pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
     let tx_env =
-        convert_pb_tx_env_to_revm(t.tx_env.as_ref().ok_or(HttpDecoderError::SchemaError)?)?;
+        convert_pb_tx_env_to_revm(t.tx_env.as_ref().ok_or(HttpDecoderError::MissingTxEnv)?)?;
 
     let tx_hash =
         B256::from_str(&t.hash).map_err(|_| HttpDecoderError::InvalidHash(t.hash.clone()))?;
@@ -343,22 +345,26 @@ pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError>
 /// Convert protobuf TransactionEnv to revm TxEnv
 pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, HttpDecoderError> {
     // Parse caller address
-    let caller = parse_address(&pb_tx_env.caller)?;
+    let caller = parse_address(&pb_tx_env.caller)
+        .map_err(|_| HttpDecoderError::InvalidCaller(pb_tx_env.caller.clone()))?;
 
     // Parse gas price
-    let gas_price = parse_u128(&pb_tx_env.gas_price)?;
+    let gas_price = parse_u128(&pb_tx_env.gas_price)
+        .map_err(|_| HttpDecoderError::InvalidGasPrice(pb_tx_env.gas_price.clone()))?;
 
     // Parse transaction kind (to address or create)
-    let kind = parse_tx_kind(&pb_tx_env.kind)?;
+    let kind = parse_tx_kind(&pb_tx_env.kind)
+        .map_err(|_| HttpDecoderError::InvalidKind(pb_tx_env.kind.clone()))?;
 
     // Parse value
-    let value = parse_u256(&pb_tx_env.value)?;
+    let value = parse_u256(&pb_tx_env.value).map_err(|_| HttpDecoderError::InvalidValue)?;
 
     // Parse data
-    let data = parse_bytes(&pb_tx_env.data)?;
+    let data = parse_bytes(&pb_tx_env.data).map_err(|_| HttpDecoderError::InvalidData)?;
 
     // Parse access list
-    let access_list = parse_access_list(&pb_tx_env.access_list)?;
+    let access_list = parse_access_list(&pb_tx_env.access_list)
+        .map_err(|_| HttpDecoderError::InvalidAccessList)?;
 
     // Parse priority fee (optional)
     let gas_priority_fee = pb_tx_env
@@ -366,19 +372,25 @@ pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, Ht
         .as_ref()
         .filter(|s| !s.is_empty())
         .map(|s| parse_u128(s))
-        .transpose()?;
+        .transpose()
+        .map_err(|_| HttpDecoderError::InvalidGasPriorityFee)?;
 
     // Parse blob hashes
-    let blob_hashes = parse_blob_hashes(&pb_tx_env.blob_hashes)?;
+    let blob_hashes = parse_blob_hashes(&pb_tx_env.blob_hashes)
+        .map_err(|_| HttpDecoderError::InvalidBlobHashes)?;
 
     // Parse max fee per blob gas
-    let max_fee_per_blob_gas = parse_u128(&pb_tx_env.max_fee_per_blob_gas)?;
+    let max_fee_per_blob_gas = parse_u128(&pb_tx_env.max_fee_per_blob_gas).map_err(|_| {
+        HttpDecoderError::InvalidMaxFeePerBlobGas(pb_tx_env.max_fee_per_blob_gas.clone())
+    })?;
 
     // Parse authorization list
-    let authorization_list = parse_authorization_list(&pb_tx_env.authorization_list)?;
+    let authorization_list = parse_authorization_list(&pb_tx_env.authorization_list)
+        .map_err(|_| HttpDecoderError::InvalidAuthorizationList)?;
 
     Ok(TxEnv {
-        tx_type: u8::try_from(pb_tx_env.tx_type).map_err(|_| HttpDecoderError::SchemaError)?,
+        tx_type: u8::try_from(pb_tx_env.tx_type)
+            .map_err(|_| HttpDecoderError::InvalidTxType(pb_tx_env.tx_type.to_string()))?,
         caller,
         gas_limit: pb_tx_env.gas_limit,
         gas_price,
@@ -409,33 +421,29 @@ fn parse_tx_kind(to_str: &str) -> Result<TxKind, HttpDecoderError> {
 }
 
 /// Parse a U256 from a decimal string
-fn parse_u256(value_str: &str) -> Result<U256, HttpDecoderError> {
+fn parse_u256(value_str: &str) -> Result<U256, ParseError> {
     // Handle both decimal and hex strings
     if value_str.starts_with("0x") || value_str.starts_with("0X") {
-        U256::from_str(value_str).map_err(|_| HttpDecoderError::SchemaError)
+        U256::from_str(value_str)
     } else {
         // Parse as decimal
-        U256::from_str_radix(value_str, 10).map_err(|_| HttpDecoderError::SchemaError)
+        U256::from_str_radix(value_str, 10)
     }
 }
 
 /// Parse a u128 from a decimal string
-fn parse_u128(value_str: &str) -> Result<u128, HttpDecoderError> {
-    value_str
-        .parse::<u128>()
-        .map_err(|_| HttpDecoderError::SchemaError)
+fn parse_u128(value_str: &str) -> Result<u128, ParseIntError> {
+    value_str.parse::<u128>()
 }
 
 /// Parse a U8 from a decimal string
-fn parse_u8(value_str: &str) -> Result<u8, HttpDecoderError> {
+fn parse_u8(value_str: &str) -> Result<u8, ParseIntError> {
     // Handle both decimal and hex strings
     if value_str.starts_with("0x") || value_str.starts_with("0X") {
-        u8::from_str(value_str).map_err(|_| HttpDecoderError::SchemaError)
+        u8::from_str(value_str)
     } else {
         // Parse as decimal
-        value_str
-            .parse::<u8>()
-            .map_err(|_| HttpDecoderError::SchemaError)
+        value_str.parse::<u8>()
     }
 }
 
@@ -500,14 +508,16 @@ fn parse_authorization_list(
             let nonce = auth.nonce;
 
             // Parse chain_id
-            let chain_id = parse_u256(&auth.chain_id)?;
+            let chain_id = parse_u256(&auth.chain_id)
+                .map_err(|_| HttpDecoderError::InvalidChainId(auth.chain_id.clone()))?;
 
             // Parse y_parity
-            let y_parity = parse_u8(&auth.y_parity)?;
+            let y_parity = parse_u8(&auth.y_parity)
+                .map_err(|_| HttpDecoderError::InvalidYParity(auth.y_parity.clone()))?;
 
             // Parse signature components
-            let r = parse_u256(&auth.r)?;
-            let s = parse_u256(&auth.s)?;
+            let r = parse_u256(&auth.r).map_err(|_| HttpDecoderError::InvalidSignature)?;
+            let s = parse_u256(&auth.s).map_err(|_| HttpDecoderError::InvalidSignature)?;
 
             // Create the inner Authorization
             let inner = Authorization {

@@ -37,7 +37,13 @@ use revm::{
 };
 use serde::{
     Deserialize,
+    Deserializer,
     Serialize,
+    de::{
+        self,
+        MapAccess,
+        Visitor,
+    },
 };
 use std::sync::{
     Arc,
@@ -60,16 +66,132 @@ pub(in crate::transport) const METHOD_BLOCK_ENV: &str = "sendBlockEnv";
 pub(in crate::transport) const METHOD_REORG: &str = "reorg";
 pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransactions";
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Transaction {
     #[serde(rename = "txEnv")]
     pub tx_env: TxEnv,
     pub hash: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+impl<'de> Deserialize<'de> for Transaction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "camelCase")]
+        enum Field {
+            TxEnv,
+            Hash,
+        }
+
+        struct TransactionVisitor;
+
+        impl<'de> Visitor<'de> for TransactionVisitor {
+            type Value = Transaction;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("struct Transaction")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<Transaction, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut tx_env = None;
+                let mut hash = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::TxEnv => {
+                            if tx_env.is_some() {
+                                return Err(de::Error::duplicate_field("txEnv"));
+                            }
+                            tx_env =
+                                Some(map.next_value().map_err(|e| {
+                                    de::Error::custom(format!("invalid txEnv: {e}"))
+                                })?);
+                        }
+                        Field::Hash => {
+                            if hash.is_some() {
+                                return Err(de::Error::duplicate_field("hash"));
+                            }
+                            hash = Some(
+                                map.next_value()
+                                    .map_err(|_| de::Error::custom("invalid hash field"))?,
+                            );
+                        }
+                    }
+                }
+
+                let tx_env = tx_env.ok_or_else(|| de::Error::missing_field("txEnv"))?;
+                let hash = hash.ok_or_else(|| de::Error::missing_field("hash"))?;
+
+                Ok(Transaction { tx_env, hash })
+            }
+        }
+
+        deserializer.deserialize_struct("Transaction", &["txEnv", "hash"], TransactionVisitor)
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub struct SendTransactionsParams {
     pub transactions: Vec<Transaction>,
+}
+
+impl<'de> Deserialize<'de> for SendTransactionsParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "lowercase")]
+        enum Field {
+            Transactions,
+        }
+
+        struct SendTransactionsParamsVisitor;
+
+        impl<'de> Visitor<'de> for SendTransactionsParamsVisitor {
+            type Value = SendTransactionsParams;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("struct SendTransactionsParams")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<SendTransactionsParams, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut transactions = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::Transactions => {
+                            if transactions.is_some() {
+                                return Err(de::Error::duplicate_field("transactions"));
+                            }
+                            transactions = Some(map.next_value().map_err(|e| {
+                                de::Error::custom(format!("invalid transactions array: {e}"))
+                            })?);
+                        }
+                    }
+                }
+
+                let transactions =
+                    transactions.ok_or_else(|| de::Error::missing_field("transactions"))?;
+
+                Ok(SendTransactionsParams { transactions })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "SendTransactionsParams",
+            &["transactions"],
+            SendTransactionsParamsVisitor,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
