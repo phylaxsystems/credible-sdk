@@ -18,6 +18,7 @@ use crate::{
 };
 
 use rust_tracing::trace;
+use tracing::warn;
 
 use alloy_provider::{
     Provider,
@@ -53,6 +54,7 @@ async fn main() -> Result<()> {
                 format!("failed to load embedded genesis for chain id {chain_id}")
             })?)
         } else {
+            warn!("Chain Id not specified, not loading genesis block!");
             None
         };
 

@@ -174,19 +174,31 @@ impl StateWorker {
         let mut update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
 
         if block_number == 0 && update.accounts.is_empty() {
-            match self.genesis_state.take() {
-                Some(genesis) => {
-                    let accounts = genesis.into_accounts();
-                    if accounts.is_empty() {
-                        warn!("genesis file contained no accounts; skipping hydration");
-                    } else {
-                        debug!("hydrating genesis state from genesis file");
-                        update =
-                            BlockStateUpdate::from_accounts(block_number, block_hash, accounts);
+            // Check if block 0 already exists in Redis to avoid reapplying genesis
+            let already_exists = self
+                .redis
+                .latest_block_number()
+                .await
+                .context("failed to check if genesis already exists")?
+                .is_some();
+
+            if already_exists {
+                info!("block 0 already exists in redis; skipping genesis hydration");
+            } else {
+                match self.genesis_state.take() {
+                    Some(genesis) => {
+                        let accounts = genesis.into_accounts();
+                        if accounts.is_empty() {
+                            warn!("genesis file contained no accounts; skipping hydration");
+                        } else {
+                            info!("hydrating genesis state from genesis file");
+                            update =
+                                BlockStateUpdate::from_accounts(block_number, block_hash, accounts);
+                        }
                     }
-                }
-                None => {
-                    warn!("no genesis state configured; skipping genesis hydration");
+                    None => {
+                        warn!("no genesis state configured; skipping genesis hydration");
+                    }
                 }
             }
         }
