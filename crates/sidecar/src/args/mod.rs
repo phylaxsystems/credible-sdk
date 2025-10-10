@@ -26,18 +26,14 @@ pub struct ChainArgs {
     #[arg(
         long = "chain.spec-id",
         env = "CHAIN_SPEC_ID",
-        default_value = "Cancun",
+        required = true,
         value_parser = parse_spec_id,
         value_enum
     )]
     pub spec_id: SpecId,
 
     // Chain ID
-    #[arg(
-        long = "chain.chain-id",
-        default_value = "1337",
-        env = "CHAIN_CHAIN_ID"
-    )]
+    #[arg(long = "chain.chain-id", env = "CHAIN_CHAIN_ID", required = true)]
     pub chain_id: u64,
 }
 

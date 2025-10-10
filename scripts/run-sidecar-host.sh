@@ -121,6 +121,58 @@ if [[ -n "${SIDECAR_EXTRA_ARGS:-}" ]]; then
 else
   EXTRA_ARGS=()
 fi
+POSITIONAL_ARGS=("$@")
+
+CHAIN_ID_VALUE="${SIDECAR_CHAIN_ID:-${CHAIN_CHAIN_ID:-1337}}"
+chain_id_cli_present=false
+
+SPEC_ID_VALUE="${SIDECAR_CHAIN_SPEC_ID:-${CHAIN_SPEC_ID:-Cancun}}"
+spec_id_cli_present=false
+
+check_chain_id_args() {
+  local awaiting_value="false"
+  for arg in "$@"; do
+    if [[ "${awaiting_value}" == "true" ]]; then
+      chain_id_cli_present=true
+      awaiting_value="false"
+      continue
+    fi
+
+    case "${arg}" in
+      --chain.chain-id)
+        awaiting_value="true"
+        ;;
+      --chain.chain-id=*)
+        chain_id_cli_present=true
+        ;;
+    esac
+  done
+}
+
+check_spec_id_args() {
+  local awaiting_value="false"
+  for arg in "$@"; do
+    if [[ "${awaiting_value}" == "true" ]]; then
+      spec_id_cli_present=true
+      awaiting_value="false"
+      continue
+    fi
+
+    case "${arg}" in
+      --chain.spec-id)
+        awaiting_value="true"
+        ;;
+      --chain.spec-id=*)
+        spec_id_cli_present=true
+        ;;
+    esac
+  done
+}
+
+check_chain_id_args "${EXTRA_ARGS[@]}"
+check_chain_id_args "${POSITIONAL_ARGS[@]}"
+check_spec_id_args "${EXTRA_ARGS[@]}"
+check_spec_id_args "${POSITIONAL_ARGS[@]}"
 
 CARGO_RUN_ARGS=(
   cargo
@@ -134,6 +186,26 @@ CARGO_RUN_ARGS=(
 )
 
 cd "${ROOT_DIR}"
+
+SIDECAR_ARGS=(
+)
+
+if [[ "${spec_id_cli_present}" != "true" ]]; then
+  SIDECAR_ARGS+=(
+    --chain.spec-id
+    "${SPEC_ID_VALUE}"
+  )
+fi
+
+if [[ "${chain_id_cli_present}" != "true" ]]; then
+  SIDECAR_ARGS+=(
+    --chain.chain-id
+    "${CHAIN_ID_VALUE}"
+  )
+fi
+
+SIDECAR_ARGS+=("${EXTRA_ARGS[@]}")
+SIDECAR_ARGS+=("${POSITIONAL_ARGS[@]}")
 
 cleanup_db_path() {
   local resolved_path="$1"
@@ -175,14 +247,12 @@ cleanup() {
 
 trap cleanup EXIT
 
-if (( ${#EXTRA_ARGS[@]} > 0 || $# > 0 )); then
-  CARGO_RUN_ARGS+=(--)
-fi
+CARGO_RUN_ARGS+=(--)
 
 SHOULD_CLEANUP=true
 
 set +e
-"${CARGO_RUN_ARGS[@]}" "${EXTRA_ARGS[@]}" "$@"
+"${CARGO_RUN_ARGS[@]}" "${SIDECAR_ARGS[@]}"
 EXIT_CODE=$?
 set -e
 
