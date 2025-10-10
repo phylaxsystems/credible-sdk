@@ -110,6 +110,7 @@ impl Listener {
         let max_delay = Duration::from_secs(300); // 5 minutes
         loop {
             if let Err(err) = self.stream_blocks().await {
+                self.skip_txs = true;
                 warn!(error = %err, "block subscription ended, retrying");
                 time::sleep(retry_delay).await;
                 // Exponential backoff with cap
@@ -155,6 +156,7 @@ impl Listener {
                 // Send each transaction to sidecar
                 for (index, tx) in transactions.iter().enumerate() {
                     if let Err(e) = self.send_transaction(tx, index as u64).await {
+                        self.skip_txs = true;
                         error!(
                             "Failed to send transaction {} in block {}: {:?}",
                             index, block_number, e
