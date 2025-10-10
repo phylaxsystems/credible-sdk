@@ -9,7 +9,7 @@
 //! associated trasnactions, the engine will advance its state and verify that
 //! txs pass assertions.
 //!
-//! ```no_run
+//! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │                        CORE ENGINE                          │
 //! ├─────────────────────────────────────────────────────────────┤
@@ -299,6 +299,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env_transaction_counter: 0,
             state_sources_sync_timeout,
             check_sources_available: true,
+
             #[cfg(feature = "cache_validation")]
             processed_transactions,
             #[cfg(feature = "cache_validation")]

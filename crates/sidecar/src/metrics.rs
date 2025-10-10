@@ -148,7 +148,7 @@ impl Drop for BlockMetrics {
 /// Individual metrics that we commit on a per transaction basis.
 ///
 /// Will commit metrics when dropped.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TransactionMetrics {
     /// How much assertion gas a transaction spent
     pub assertion_gas_per_transaction: u64,

@@ -4,17 +4,12 @@
 #![allow(clippy::unreadable_literal)]
 #![allow(clippy::similar_names)]
 
-mod args;
-mod cache;
-mod config;
-pub mod engine;
-mod indexer;
-mod metrics;
-pub(crate) mod transactions_state;
-pub mod transport;
-mod utils;
-
-use crate::{
+use assertion_executor::{
+    AssertionExecutor,
+    db::overlay::OverlayDb,
+};
+use crossbeam::channel::unbounded;
+use sidecar::{
     cache::sources::redis::RedisCache,
     config::{
         init_assertion_store,
@@ -27,17 +22,17 @@ use crate::{
     },
     transport::Transport,
 };
-use assertion_executor::{
-    AssertionExecutor,
-    db::overlay::OverlayDb,
-};
-use crossbeam::channel::unbounded;
 use std::{
     sync::Arc,
     time::Duration,
 };
 
-use crate::{
+use clap::Parser;
+use sidecar::{
+    args::{
+        SidecarArgs,
+        TransportProtocolArg,
+    },
     cache::{
         Cache,
         sources::{
@@ -47,6 +42,8 @@ use crate::{
             sequencer::Sequencer,
         },
     },
+    critical,
+    indexer,
     transactions_state::TransactionsState,
     transport::{
         AnyTransport,
@@ -61,11 +58,6 @@ use crate::{
     },
     utils::ErrorRecoverability,
 };
-use args::{
-    SidecarArgs,
-    TransportProtocolArg,
-};
-use clap::Parser;
 use tracing::log::info;
 
 fn create_transport_from_args(
