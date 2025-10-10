@@ -80,6 +80,19 @@ impl BlockStateUpdate {
         }
     }
 
+    /// Construct an update from a pre-built set of account commits.
+    pub fn from_accounts(
+        block_number: u64,
+        block_hash: B256,
+        accounts: Vec<AccountCommit>,
+    ) -> Self {
+        Self {
+            block_number,
+            block_hash,
+            accounts,
+        }
+    }
+
     /// Consume the update and return its constituent parts for downstream
     /// writers. This keeps the write path ergonomic without cloning vectors.
     pub fn into_parts(self) -> (u64, B256, Vec<AccountCommit>) {

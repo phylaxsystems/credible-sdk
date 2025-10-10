@@ -1,6 +1,7 @@
 //! Command-line configuration for the state worker.
 
 use clap::Parser;
+use std::path::PathBuf;
 
 /// Runtime configuration flags for the state worker.
 ///
@@ -24,4 +25,8 @@ pub struct Args {
     /// Optional block number to start syncing from.
     #[arg(long, env = "STATE_WORKER_START_BLOCK")]
     pub start_block: Option<u64>,
+
+    /// Optional path to the genesis JSON used to hydrate block 0.
+    #[arg(long, env = "STATE_WORKER_GENESIS_PATH")]
+    pub genesis_path: Option<PathBuf>,
 }

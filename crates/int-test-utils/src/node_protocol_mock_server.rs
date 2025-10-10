@@ -235,6 +235,14 @@ impl DualProtocolMockServer {
         self.responses
             .insert("debug_traceBlockByNumber".to_string(), trace_response);
 
+        let replay_response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": []
+        });
+        self.responses
+            .insert("trace_replayBlockTransactions".to_string(), replay_response);
+
         // Default block: genesis-like block
         let block_response = json!({
             "jsonrpc": "2.0",

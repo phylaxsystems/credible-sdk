@@ -1,10 +1,177 @@
 #![allow(clippy::too_many_lines)]
-use crate::integration_tests::setup::LocalInstance;
+use crate::{
+    genesis,
+    integration_tests::setup::LocalInstance,
+};
+use alloy::primitives::{
+    B256,
+    U256,
+    keccak256,
+};
 use redis::Commands;
 use serde_json::json;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing_test::traced_test;
+
+#[traced_test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_state_worker_hydrates_genesis_state() {
+    let genesis_account = "0x00000000000000000000000000000000000000aa";
+    let genesis_code = "0x6000";
+
+    let genesis_json = format!(
+        r#"{{
+            "alloc": {{
+                "{account}": {{
+                    "balance": "0x5",
+                    "nonce": "0x1",
+                    "code": "{code}",
+                    "storage": {{
+                        "0x0": "0x1",
+                        "0x1": "0x2"
+                    }}
+                }}
+            }}
+        }}"#,
+        account = genesis_account.trim_start_matches("0x"),
+        code = genesis_code
+    );
+    let genesis_state = genesis::parse_from_str(&genesis_json)
+        .expect("failed to parse test genesis json");
+    assert_eq!(
+        genesis_state.accounts().len(),
+        1,
+        "expected single alloc entry in test genesis"
+    );
+
+    let instance =
+        LocalInstance::new_with_setup_and_genesis(|_| {}, Some(genesis_state))
+            .await
+            .expect("Failed to start instance");
+
+    sleep(Duration::from_millis(200)).await;
+
+    let client =
+        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
+    let mut conn = client
+        .get_connection()
+        .expect("Failed to get Redis connection");
+
+    let account_key = format!("state_worker_test:account:{}", &genesis_account[2..]);
+    let storage_key = format!("state_worker_test:storage:{}", &genesis_account[2..]);
+    let code_hash = format!(
+        "0x{}",
+        hex::encode(keccak256(
+            &hex::decode(genesis_code.trim_start_matches("0x")).unwrap()
+        ))
+    );
+    let code_key = format!(
+        "state_worker_test:code:{}",
+        code_hash.trim_start_matches("0x")
+    );
+
+    let mut balance: Option<String> = None;
+    let mut nonce: Option<String> = None;
+    let mut stored_code: Option<String> = None;
+    let mut stored_code_hash: Option<String> = None;
+    let mut storage_slot_zero: Option<String> = None;
+    let mut storage_slot_one: Option<String> = None;
+
+    for _ in 0..30 {
+        balance = redis::cmd("HGET")
+            .arg(&account_key)
+            .arg("balance")
+            .query::<Option<String>>(&mut conn)
+            .ok()
+            .flatten();
+
+        nonce = redis::cmd("HGET")
+            .arg(&account_key)
+            .arg("nonce")
+            .query::<Option<String>>(&mut conn)
+            .ok()
+            .flatten();
+
+        stored_code_hash = redis::cmd("HGET")
+            .arg(&account_key)
+            .arg("code_hash")
+            .query::<Option<String>>(&mut conn)
+            .ok()
+            .flatten();
+
+        stored_code = redis::cmd("GET")
+            .arg(&code_key)
+            .query::<Option<String>>(&mut conn)
+            .ok()
+            .flatten();
+
+        storage_slot_zero = redis::cmd("HGET")
+            .arg(&storage_key)
+            .arg("0x0000000000000000000000000000000000000000000000000000000000000000")
+            .query::<Option<String>>(&mut conn)
+            .ok()
+            .flatten();
+
+        storage_slot_one = redis::cmd("HGET")
+            .arg(&storage_key)
+            .arg("0x0000000000000000000000000000000000000000000000000000000000000001")
+            .query::<Option<String>>(&mut conn)
+            .ok()
+            .flatten();
+
+        if balance.is_some()
+            && nonce.is_some()
+            && stored_code.is_some()
+            && stored_code_hash.is_some()
+            && storage_slot_zero.is_some()
+            && storage_slot_one.is_some()
+        {
+            break;
+        }
+
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    if balance.is_none()
+        || nonce.is_none()
+        || stored_code.is_none()
+        || stored_code_hash.is_none()
+        || storage_slot_zero.is_none()
+        || storage_slot_one.is_none()
+    {
+        let keys: Vec<String> = redis::cmd("KEYS")
+            .arg("state_worker_test:*")
+            .query(&mut conn)
+            .unwrap_or_default();
+        panic!("missing genesis data in redis. keys present: {keys:?}");
+    }
+
+    let balance = balance.unwrap();
+    let nonce = nonce.unwrap();
+    let stored_code = stored_code.unwrap();
+    let storage_slot_zero = storage_slot_zero.unwrap();
+    let storage_slot_one = storage_slot_one.unwrap();
+    let stored_code_hash = stored_code_hash.unwrap();
+
+    assert_eq!(balance, "5");
+    assert_eq!(nonce, "1");
+    assert_eq!(stored_code_hash.to_lowercase(), code_hash.to_lowercase());
+    assert_eq!(stored_code.to_lowercase(), genesis_code.to_lowercase());
+    assert_eq!(
+        storage_slot_zero,
+        format!("0x{}", hex::encode(B256::from(U256::from(1))))
+    );
+    assert_eq!(
+        storage_slot_one,
+        format!("0x{}", hex::encode(B256::from(U256::from(2))))
+    );
+
+    let current_block: String = conn
+        .get("state_worker_test:current_block")
+        .expect("Failed to read current block");
+    assert_eq!(current_block, "0");
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_state_worker_processes_multiple_state_changes() {

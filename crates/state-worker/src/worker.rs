@@ -36,6 +36,7 @@ use tracing::{
 };
 
 use crate::{
+    genesis::GenesisState,
     redis::RedisStateWriter,
     state::BlockStateUpdate,
 };
@@ -46,12 +47,21 @@ const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 pub struct StateWorker {
     provider: Arc<RootProvider>,
     redis: RedisStateWriter,
+    genesis_state: Option<GenesisState>,
 }
 
 impl StateWorker {
     /// Build a worker that shares the provider/Redis client across async tasks.
-    pub fn new(provider: Arc<RootProvider>, redis: RedisStateWriter) -> Self {
-        Self { provider, redis }
+    pub fn new(
+        provider: Arc<RootProvider>,
+        redis: RedisStateWriter,
+        genesis_state: Option<GenesisState>,
+    ) -> Self {
+        Self {
+            provider,
+            redis,
+            genesis_state,
+        }
     }
 
     /// Drive the catch-up + streaming loop. We keep retrying the subscription
@@ -161,7 +171,26 @@ impl StateWorker {
             }
         };
 
-        let update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
+        let mut update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
+
+        if block_number == 0 && update.accounts.is_empty() {
+            match self.genesis_state.take() {
+                Some(genesis) => {
+                    let accounts = genesis.into_accounts();
+                    if accounts.is_empty() {
+                        warn!("genesis file contained no accounts; skipping hydration");
+                    } else {
+                        debug!("hydrating genesis state from genesis file");
+                        update =
+                            BlockStateUpdate::from_accounts(block_number, block_hash, accounts);
+                    }
+                }
+                None => {
+                    warn!("no genesis state configured; skipping genesis hydration");
+                }
+            }
+        }
+
         match self.redis.commit_block(update).await {
             Ok(()) => (),
             Err(err) => {
@@ -173,4 +202,5 @@ impl StateWorker {
         info!(block_number, "block persisted to redis");
         Ok(())
     }
+
 }
