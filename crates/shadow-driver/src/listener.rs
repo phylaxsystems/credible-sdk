@@ -106,10 +106,14 @@ impl Listener {
 
     /// We keep retrying the subscription because websocket connections can drop in practice.
     pub async fn run(&mut self) -> Result<()> {
+        let mut retry_delay = Duration::from_secs(SUBSCRIPTION_RETRY_DELAY_SECS);
+        let max_delay = Duration::from_secs(300); // 5 minutes
         loop {
             if let Err(err) = self.stream_blocks().await {
                 warn!(error = %err, "block subscription ended, retrying");
-                time::sleep(Duration::from_secs(SUBSCRIPTION_RETRY_DELAY_SECS)).await;
+                time::sleep(retry_delay).await;
+                // Exponential backoff with cap
+                retry_delay = std::cmp::min(retry_delay * 2, max_delay);
             }
         }
     }
