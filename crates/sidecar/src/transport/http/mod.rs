@@ -232,7 +232,7 @@ mod tests {
         let res = send_raw_request(invalid_request, local_address)
             .await
             .unwrap();
-        assert!(res.contains("Failed to decode transactions: Request not in proper schema"));
+        assert!(res.contains("Failed to decode transactions: Block env validation error: invalid type: string \\\"invalid_number\\\", expected u64\""));
     }
 
     #[crate::utils::engine_test(http)]
@@ -291,7 +291,7 @@ mod tests {
         let res = send_raw_request(invalid_request, local_address)
             .await
             .unwrap();
-        assert!(res.contains("Failed to decode transactions: Request not in proper schema"));
+        assert!(res.contains("Failed to decode transactions: Invalid transaction format: invalid transactions array: invalid txEnv: invalid type: string \\\"1000\\\", expected u128\""));
     }
 
     async fn send_raw_request(
