@@ -1,7 +1,6 @@
 //! Command-line configuration for the state worker.
 
 use clap::Parser;
-
 /// Runtime configuration flags for the state worker.
 ///
 /// We expose each parameter as both a long-form CLI flag and an env var so the
@@ -24,4 +23,8 @@ pub struct Args {
     /// Optional block number to start syncing from.
     #[arg(long, env = "STATE_WORKER_START_BLOCK")]
     pub start_block: Option<u64>,
+
+    /// Optional chain identifier used to select an embedded genesis snapshot.
+    #[arg(long, env = "STATE_WORKER_CHAIN_ID")]
+    pub chain_id: Option<u64>,
 }
