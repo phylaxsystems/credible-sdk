@@ -66,5 +66,4 @@ regenerate-dev:
 
 .PHONY: run-sidecar-host
 run-sidecar-host:
-	docker compose -f docker/maru-besu-sidecar/docker-compose.yml up -d --scale credible-sidecar=0
 	./scripts/run-sidecar-host.sh

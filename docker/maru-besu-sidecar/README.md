@@ -24,8 +24,10 @@ make run-sidecar-host
 
 This target will:
 
-- Start the compose stack with the `credible-sidecar` service scaled to zero.
-- Build a native `sidecar` binary (using Docker on Linux and `cargo` directly on macOS).
-- Place the runtime data (assertion/indexer databases) under `.local/sidecar-host/`, then launch with endpoints rewired to `localhost` so it can reach the in-cluster services. The compiled binary is emitted to `target/sidecar-host/sidecar`.
+- Start (or reuse) the compose stack with the `credible-sidecar` service scaled to zero.
+- Launch the `sidecar` using `cargo run --release` on the host so you can rebuild and iterate quickly.
+- Place the runtime data (assertion/indexer databases) under `.local/sidecar-host/`, then launch with endpoints rewired to `localhost` so it can reach the in-cluster services.
 
 You can override endpoints or other CLI arguments by exporting any of the `SIDECAR_*` environment variables defined in `scripts/run-sidecar-host.sh` before running the command. Additional arguments passed to the script can be appended by exporting `SIDECAR_EXTRA_ARGS` or by invoking the script directly.
+
+If you already have the compose stack running, set `SIDECAR_SKIP_COMPOSE=true` to leave it untouched.

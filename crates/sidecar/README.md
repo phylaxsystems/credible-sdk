@@ -113,7 +113,11 @@ Transport:
 
 The sidecar is a binary in the credible-sdk workspace, you can run it from the cli like so:
 
-`cargo run -p sidecar`
+```cargo run -p sidecar```
+
+Alternatively, you can run a sidecar locally with all services needed to get it running + an observability stack via:
+
+```make run-sidecar-host```
 
 ### Dockerfile
 

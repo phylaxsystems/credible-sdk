@@ -2,38 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_DIR="${ROOT_DIR}/target/sidecar-host"
 LOCAL_DB_DIR="${ROOT_DIR}/.local/sidecar-host"
-BIN_PATH="${BIN_DIR}/sidecar"
+COMPOSE_FILE="${ROOT_DIR}/docker/maru-besu-sidecar/docker-compose.yml"
 
-mkdir -p "${BIN_DIR}"
 mkdir -p "${LOCAL_DB_DIR}"
 
-OS_NAME="$(uname -s)"
-
-case "${OS_NAME}" in
-  Linux)
-    IMAGE_NAME="credible-sidecar-host-builder"
-    docker build \
-      --file "${ROOT_DIR}/dockerfile/Dockerfile.sidecar.host" \
-      --tag "${IMAGE_NAME}" \
-      "${ROOT_DIR}"
-
-    CONTAINER_ID="$(docker create "${IMAGE_NAME}")"
-    trap 'docker rm -f "${CONTAINER_ID}" >/dev/null 2>&1 || true' EXIT
-    docker cp "${CONTAINER_ID}:/dist/sidecar" "${BIN_PATH}"
-    docker rm "${CONTAINER_ID}" >/dev/null
-    trap - EXIT
-    ;;
-  Darwin)
-    cargo build --manifest-path "${ROOT_DIR}/Cargo.toml" --locked --release --bin sidecar
-    cp "${ROOT_DIR}/target/release/sidecar" "${BIN_PATH}"
-    ;;
-  *)
-    echo "Unsupported OS '${OS_NAME}'. Only macOS and Linux are supported." >&2
-    exit 1
-    ;;
-esac
+if [[ "${SIDECAR_SKIP_COMPOSE:-false}" != "true" ]]; then
+  docker compose -f "${COMPOSE_FILE}" up -d --scale credible-sidecar=0
+fi
 
 DEFAULT_ASSERTION_STORE_DB_PATH="${SIDECAR_ASSERTION_STORE_DB_PATH:-${LOCAL_DB_DIR}/assertion_store_database}"
 DEFAULT_INDEXER_DB_PATH="${SIDECAR_INDEXER_DB_PATH:-${LOCAL_DB_DIR}/indexer_database}"
@@ -71,4 +47,16 @@ else
   EXTRA_ARGS=()
 fi
 
-exec "${BIN_PATH}" "${DEFAULT_ARGS[@]}" "${EXTRA_ARGS[@]}" "$@"
+CARGO_RUN_ARGS=(
+  cargo
+  run
+  --manifest-path
+  "${ROOT_DIR}/Cargo.toml"
+  --locked
+  --release
+  --bin
+  sidecar
+  --
+)
+
+exec "${CARGO_RUN_ARGS[@]}" "${DEFAULT_ARGS[@]}" "${EXTRA_ARGS[@]}" "$@"
