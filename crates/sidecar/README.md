@@ -1,7 +1,5 @@
 # `sidecar`
 
-**This is a dummy binary to set up infra so we are ready to integrate when the sidecar is ready for use**.
-
 The sidecar is driven by a rollup sequencer(or driver) that validates transactions against credible layer assertions.
 The sequencer sends transactions either in bulk or transaction-by-transaction, and the sidecar approves or denies
 transactions for inclusion. See the associated sidecar spec for more info.
@@ -48,17 +46,17 @@ Run `cargo run -p sidecar -- --help` to see all available options.
 ```
 Chain:
       --chain.spec-id <SPEC_ID>
-          What EVM specification to use. Only latest for now [env: CHAIN_SPEC_ID=] [default: latest] [possible values: latest]
+          What EVM specification to use. Only latest for now [env: CHAIN_SPEC_ID=] [default: Cancun] [possible values: latest]
 
       --chain.chain-id <CHAIN_ID>
-          Chain ID [env: CHAIN_CHAIN_ID=] [default: 1]
+          Chain ID [env: CHAIN_CHAIN_ID=] [default: 1337]
           
 State:
       --state.sequencer-url <SEQUENCER_URL>
-          Sequencer RPC node URL and port [env: STATE_SEQUENCER_URL=] [default: disabled]
+          Sequencer RPC node URL and port [env: STATE_SEQUENCER_URL=] [default: http://127.0.0.1:8545]
 
       --state.besu-client-ws-url <BESU_CLIENT_WS_URL>
-          Besu client websocket URL [env: STATE_BESU_CLIENT_WS_URL=] [default: disabled]
+          Besu client websocket URL [env: STATE_BESU_CLIENT_WS_URL=] [default: ws://127.0.0.1:8546]
           
       --state.redis-url <REDIS_URL>
           Redis URL [env: STATE_REDIS_URL=] [default: disabled]
@@ -80,19 +78,19 @@ Credible:
           How often in ms will the FsDb be flushed to disk, 5 sec default [env: CREDIBLE_FLUSH_EVERY_MS=] [default: 5000]
 
       --credible.assertion-da-rpc-url <ASSERTION_DA_RPC_URL>
-          HTTP URL of the assertion DA [env: CREDIBLE_ASSERTION_DA_RPC_URL=] [default: http://localhost:5001]
+          HTTP URL of the assertion DA [env: CREDIBLE_ASSERTION_DA_RPC_URL=] [default: http://127.0.0.1:5001]
 
       --credible.indexer-rpc-url <INDEXER_RPC_URL>
-          WS URL the RPC store will use to index assertions [env: CREDIBLE_INDEXER_RPC_URL=] [default: ws://localhost:8546]
+          WS URL the RPC store will use to index assertions [env: CREDIBLE_INDEXER_RPC_URL=] [default: ws://127.0.0.1:8546]
 
       --credible.indexer-db-path <INDEXER_DB_PATH>
-          Path to the indexer database (separate from assertion store) [env: CREDIBLE_INDEXER_DB_PATH=] [default: indexer_database]
+          Path to the indexer database (separate from assertion store) [env: CREDIBLE_INDEXER_DB_PATH=] [default: .local/sidecar-host/indexer_database]
 
       --credible.assertion-store-db-path <ASSERTION_STORE_DB_PATH>
-          Path to the assertion store database [env: CREDIBLE_ASSERTION_STORE_DB_PATH=] [default: assertion_store_database]
+          Path to the assertion store database [env: CREDIBLE_ASSERTION_STORE_DB_PATH=] [default: .local/sidecar-host/assertion_store_database]
 
       --credible.block-tag <BLOCK_TAG>
-          Block tag to use for indexing assertions [env: CREDIBLE_BLOCK_TAG=] [default: finalized] [possible values: latest, safe, finalized]
+          Block tag to use for indexing assertions [env: CREDIBLE_BLOCK_TAG=] [default: latest] [possible values: latest, safe, finalized]
 
       --credible.state-oracle <STATE_ORACLE>
           Contract address of the state oracle contract, used to query assertion info [env: CREDIBLE_STATE_ORACLE=] [default: 0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b]
@@ -105,17 +103,21 @@ Credible:
 
 Transport:
       --transport.protocol <TRANSPORT_PROTOCOL>
-          Which transport protocol to run [env: TRANSPORT_PROTOCOL=] [default: http] [possible values: http, grpc]
+          Which transport protocol to run [env: TRANSPORT_PROTOCOL=] [default: grpc] [possible values: http, grpc]
 
       --transport.bind-addr <BIND_ADDR>
-          Server bind address and port [env: TRANSPORT_BIND_ADDR=] [default: 127.0.0.1:8080]
+          Server bind address and port [env: TRANSPORT_BIND_ADDR=] [default: 0.0.0.0:50051]
 ```
 
 ## Running the sidecar
 
 The sidecar is a binary in the credible-sdk workspace, you can run it from the cli like so:
 
-`cargo run -p sidecar`
+```cargo run -p sidecar```
+
+Alternatively, you can run a sidecar locally with all services needed to get it running + an observability stack via:
+
+```make run-sidecar-host```
 
 ### Dockerfile
 

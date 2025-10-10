@@ -13,7 +13,7 @@ pub struct HttpTransportConfig {
 impl Default for HttpTransportConfig {
     fn default() -> Self {
         Self {
-            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            bind_addr: "0.0.0.0:50051".parse().unwrap(),
         }
     }
 }

@@ -40,3 +40,8 @@ tasks/
 
 # OpenAPI cache
 crates/dapp-api-client/openapi/
+
+# Local sidecar artifacts
+.local/
+assertion_store_database/
+indexer_database/
