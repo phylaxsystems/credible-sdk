@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/docker/maru-besu-sidecar/docker-compose.yml"
 
+SHOULD_CLEANUP=false
+
 if [[ "${SIDECAR_SKIP_COMPOSE:-false}" != "true" ]]; then
   docker compose -f "${COMPOSE_FILE}" up -d --scale credible-sidecar=0
 fi
@@ -31,6 +33,33 @@ ensure_parent_dir "${INDEXER_DB_PATH}"
 
 export CREDIBLE_ASSERTION_STORE_DB_PATH="${ASSERTION_STORE_DB_PATH}"
 export CREDIBLE_INDEXER_DB_PATH="${INDEXER_DB_PATH}"
+
+resolve_path() {
+  local raw_path="$1"
+  local parent
+  local name
+
+  if [[ "${raw_path}" == /* ]]; then
+    parent="$(dirname "${raw_path}")"
+    name="$(basename "${raw_path}")"
+    (
+      cd "${parent}"
+      printf "%s/%s\n" "$(pwd -P)" "${name}"
+    )
+  else
+    parent="$(dirname "${raw_path}")"
+    name="$(basename "${raw_path}")"
+    (
+      cd "${ROOT_DIR}/${parent}"
+      printf "%s/%s\n" "$(pwd -P)" "${name}"
+    )
+  fi
+}
+
+DEFAULT_ASSERTION_STORE_DB_ABS="$(resolve_path "${DEFAULT_ASSERTION_STORE_DB_PATH}")"
+DEFAULT_INDEXER_DB_ABS="$(resolve_path "${DEFAULT_INDEXER_DB_PATH}")"
+ASSERTION_STORE_DB_ABS="$(resolve_path "${ASSERTION_STORE_DB_PATH}")"
+INDEXER_DB_ABS="$(resolve_path "${INDEXER_DB_PATH}")"
 
 maybe_export() {
   local source="$1"
@@ -106,8 +135,55 @@ CARGO_RUN_ARGS=(
 
 cd "${ROOT_DIR}"
 
+cleanup_db_path() {
+  local resolved_path="$1"
+  local default_resolved="$2"
+
+  if [[ "${resolved_path}" != "${default_resolved}" ]]; then
+    return
+  fi
+
+  if [[ -z "${resolved_path}" ]]; then
+    return
+  fi
+
+  if [[ ! -e "${resolved_path}" ]]; then
+    return
+  fi
+
+  rm -rf -- "${resolved_path}"
+}
+
+cleanup() {
+  if [[ "${SHOULD_CLEANUP}" != "true" ]]; then
+    return
+  fi
+
+  cleanup_db_path "${ASSERTION_STORE_DB_ABS}" "${DEFAULT_ASSERTION_STORE_DB_ABS}"
+  cleanup_db_path "${INDEXER_DB_ABS}" "${DEFAULT_INDEXER_DB_ABS}"
+
+  local sidecar_host_dir="${ROOT_DIR}/.local/sidecar-host"
+  if [[ -d "${sidecar_host_dir}" ]]; then
+    rmdir "${sidecar_host_dir}" 2>/dev/null || true
+  fi
+
+  local local_dir="${ROOT_DIR}/.local"
+  if [[ -d "${local_dir}" ]]; then
+    rmdir "${local_dir}" 2>/dev/null || true
+  fi
+}
+
+trap cleanup EXIT
+
 if (( ${#EXTRA_ARGS[@]} > 0 || $# > 0 )); then
   CARGO_RUN_ARGS+=(--)
 fi
 
-exec "${CARGO_RUN_ARGS[@]}" "${EXTRA_ARGS[@]}" "$@"
+SHOULD_CLEANUP=true
+
+set +e
+"${CARGO_RUN_ARGS[@]}" "${EXTRA_ARGS[@]}" "$@"
+EXIT_CODE=$?
+set -e
+
+exit "${EXIT_CODE}"
