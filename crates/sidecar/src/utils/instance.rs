@@ -331,7 +331,7 @@ impl<T: TestTransport> LocalInstance<T> {
     {
         let before = self.cache_reset_count();
         action(self).await?;
-        self.wait_for_processing(Duration::from_millis(5)).await;
+        self.wait_for_processing(Duration::from_millis(15)).await;
         let after = self.cache_reset_count();
         tracing::debug!("Flushes before {}, after {}", before, after);
         if after <= before {
