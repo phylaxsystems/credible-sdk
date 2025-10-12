@@ -650,7 +650,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             warn!(
                 sidecar_n_transactions = self.block_env_transaction_counter,
                 block_env_n_transactions = queue_block_env.n_transactions,
-                "The number of transactions in the BlockEnv does not much the transactions processed, invalidating cache"
+                "The number of transactions in the BlockEnv does not match the transactions processed, invalidating cache"
             );
             self.cache
                 .reset_required_block_number(queue_block_env.block_env.number);
