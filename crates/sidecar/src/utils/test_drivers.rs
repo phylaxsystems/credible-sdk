@@ -463,21 +463,17 @@ impl LocalInstanceHttpDriver {
 
         (n_transactions, last_tx_hash)
     }
-}
 
-impl TestTransport for LocalInstanceHttpDriver {
-    async fn new() -> Result<LocalInstance<Self>, String> {
+    async fn create(
+        assertion_store: Option<AssertionStore>,
+    ) -> Result<LocalInstance<Self>, String> {
         info!(target: "LocalInstanceHttpDriver", "Creating LocalInstance with HttpTransport");
 
-        let setup = CommonSetup::new(None).await?;
+        let setup = CommonSetup::new(assertion_store).await?;
 
-        // Create channels for communication
         let (engine_tx, engine_rx) = channel::unbounded();
-
-        // Spawn the engine task
         let engine_handle = setup.spawn_engine(engine_rx).await;
 
-        // Find an available port dynamically
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|e| format!("Failed to bind to available port: {e}"))?;
@@ -485,14 +481,11 @@ impl TestTransport for LocalInstanceHttpDriver {
             .local_addr()
             .map_err(|e| format!("Failed to get local address: {e}"))?;
 
-        // Drop the listener so the port becomes available for HttpTransport
         drop(listener);
 
-        // Create HTTP transport config with the dynamically assigned address
         let config = HttpTransportConfig { bind_addr: address };
         let transport = HttpTransport::new(config, engine_tx, setup.state_results.clone()).unwrap();
 
-        // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
             info!(target: "LocalInstanceHttpDriver", "Transport task started");
             info!(target: "LocalInstanceHttpDriver", "Transport about to call run()");
@@ -530,6 +523,19 @@ impl TestTransport for LocalInstanceHttpDriver {
                 override_last_tx_hash: None,
             },
         ))
+    }
+
+    /// Same as `new()`, but takes in an `AssertionStore` as an argument
+    pub async fn new_with_store(
+        assertion_store: AssertionStore,
+    ) -> Result<LocalInstance<Self>, String> {
+        Self::create(Some(assertion_store)).await
+    }
+}
+
+impl TestTransport for LocalInstanceHttpDriver {
+    async fn new() -> Result<LocalInstance<Self>, String> {
+        Self::create(None).await
     }
 
     async fn new_block(&mut self, block_number: u64) -> Result<(), String> {
@@ -800,21 +806,17 @@ impl LocalInstanceGrpcDriver {
 
         (n_transactions, last_tx_hash)
     }
-}
 
-impl TestTransport for LocalInstanceGrpcDriver {
-    async fn new() -> Result<LocalInstance<Self>, String> {
+    async fn create(
+        assertion_store: Option<AssertionStore>,
+    ) -> Result<LocalInstance<Self>, String> {
         info!(target: "LocalInstanceGrpcDriver", "Creating LocalInstance with GrpcTransport");
 
-        let setup = CommonSetup::new(None).await?;
+        let setup = CommonSetup::new(assertion_store).await?;
 
-        // Create channels for communication
         let (engine_tx, engine_rx) = channel::unbounded();
-
-        // Spawn the engine task
         let engine_handle = setup.spawn_engine(engine_rx).await;
 
-        // Find an available port dynamically
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|e| format!("Failed to bind to available port: {e}"))?;
@@ -822,14 +824,11 @@ impl TestTransport for LocalInstanceGrpcDriver {
             .local_addr()
             .map_err(|e| format!("Failed to get local address: {e}"))?;
 
-        // Drop the listener so the port becomes available for GrpcTransport
         drop(listener);
 
-        // Create gRPC transport config with the dynamically assigned address
         let config = GrpcTransportConfig { bind_addr: address };
         let transport = GrpcTransport::new(config, engine_tx, setup.state_results.clone()).unwrap();
 
-        // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
             info!(target: "LocalInstanceGrpcDriver", "Transport task started");
             info!(target: "LocalInstanceGrpcDriver", "Transport about to call run()");
@@ -845,7 +844,6 @@ impl TestTransport for LocalInstanceGrpcDriver {
             info!(target: "LocalInstanceGrpcDriver", "Transport task completed");
         });
 
-        // Create gRPC client with retry logic
         let mut attempts = 0;
         let client = loop {
             attempts += 1;
@@ -885,6 +883,19 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 override_last_tx_hash: None,
             },
         ))
+    }
+
+    /// Same as `new()`, but takes in an `AssertionStore` as an argument
+    pub async fn new_with_store(
+        assertion_store: AssertionStore,
+    ) -> Result<LocalInstance<Self>, String> {
+        Self::create(Some(assertion_store)).await
+    }
+}
+
+impl TestTransport for LocalInstanceGrpcDriver {
+    async fn new() -> Result<LocalInstance<Self>, String> {
+        Self::create(None).await
     }
 
     async fn new_block(&mut self, block_number: u64) -> Result<(), String> {
