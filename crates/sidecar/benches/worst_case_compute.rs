@@ -31,18 +31,56 @@ use sidecar::utils::{
         LocalInstance,
         TestTransport,
     },
-    test_drivers::LocalInstanceMockDriver,
+    profiling::{
+        self,
+        ProfilingGuard,
+    },
+    test_drivers::{
+        LocalInstanceGrpcDriver,
+        LocalInstanceHttpDriver,
+        LocalInstanceMockDriver,
+    },
 };
 use std::{
     fs::File,
+    future::Future,
     io::BufReader,
     sync::Arc,
     time::Duration,
 };
 use tokio::runtime::Runtime;
 
+use serde::{
+    Deserialize,
+    de::value::StringDeserializer,
+};
+
 const ASSERTIONS_PER_ADOPTER: usize = 5;
 const GAS_LIMIT_PER_TX: u64 = 50_000;
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum BenchTransport {
+    Mock,
+    Http,
+    Grpc,
+}
+
+impl Default for BenchTransport {
+    fn default() -> Self {
+        Self::Mock
+    }
+}
+
+impl BenchTransport {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mock => "mock",
+            Self::Http => "http",
+            Self::Grpc => "grpc",
+        }
+    }
+}
 
 fn read_assertions_file(input: &str) -> Vec<Bytes> {
     let file = File::open(input).expect("Failed to open assertions file");
@@ -99,17 +137,19 @@ fn build_assertion_store(bytecodes: &[Bytes], adopters: &[Address]) -> Assertion
 }
 
 // Setup function: creates instance and builds transactions (not measured)
-async fn setup_iteration(
+async fn setup_iteration<T, F, Fut>(
     bytecodes: Arc<Vec<Bytes>>,
     adopters: Arc<Vec<Address>>,
-) -> (
-    LocalInstance<LocalInstanceMockDriver>,
-    Vec<(B256, TxEnv)>,
-    Vec<B256>,
-) {
+    builder: F,
+) -> (LocalInstance<T>, Vec<(B256, TxEnv)>, Vec<B256>)
+where
+    T: TestTransport,
+    F: FnOnce(AssertionStore) -> Fut,
+    Fut: Future<Output = Result<LocalInstance<T>, String>>,
+{
     // this creates 1 adopter with 5 assertions, 5 total assertions in the store
     let store = build_assertion_store(&bytecodes, &adopters[..1]);
-    let mut instance = LocalInstanceMockDriver::new_with_store(store)
+    let mut instance = builder(store)
         .await
         .expect("Failed to create LocalInstance");
 
@@ -136,7 +176,7 @@ async fn setup_iteration(
             .build()
             .expect("Failed to build transaction");
 
-        let tx_hash = LocalInstance::<LocalInstanceMockDriver>::generate_random_tx_hash();
+        let tx_hash = LocalInstance::<T>::generate_random_tx_hash();
         hashes.push(tx_hash);
         transactions.push((tx_hash, tx_env));
     }
@@ -147,8 +187,8 @@ async fn setup_iteration(
 }
 
 // Execution function: sends transactions and waits for completion (measured)
-async fn execute_iteration(
-    mut instance: LocalInstance<LocalInstanceMockDriver>,
+async fn execute_iteration<T: TestTransport>(
+    mut instance: LocalInstance<T>,
     transactions: Vec<(B256, TxEnv)>,
     hashes: Vec<B256>,
 ) {
@@ -188,14 +228,41 @@ async fn execute_iteration(
     }
 }
 
-fn main() {
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
+fn run_benchmark_for_driver<T, SetupFn, Fut>(
+    criterion: &mut Criterion,
+    runtime: &Runtime,
+    label: &str,
+    bytecodes: Arc<Vec<Bytes>>,
+    adopters: Arc<Vec<Address>>,
+    setup_fn: SetupFn,
+) where
+    T: TestTransport + 'static,
+    SetupFn: Fn(AssertionStore) -> Fut + Copy + Send + 'static,
+    Fut: Future<Output = Result<LocalInstance<T>, String>>,
+{
+    criterion.bench_function(label, |b| {
+        let bytecodes = Arc::clone(&bytecodes);
+        let adopters = Arc::clone(&adopters);
+        b.iter_batched(
+            || {
+                let bytecodes = Arc::clone(&bytecodes);
+                let adopters = Arc::clone(&adopters);
+                runtime.block_on(setup_iteration::<T, _, _>(bytecodes, adopters, setup_fn))
+            },
+            |(instance, transactions, hashes)| {
+                std::hint::black_box(runtime.block_on(async move {
+                    execute_iteration(instance, transactions, hashes).await
+                }));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
 
+fn main() {
     let runtime = Runtime::new().unwrap();
+    let _profiling_guard: ProfilingGuard = profiling::init_profiling(runtime.handle())
+        .expect("Failed to initialize profiling utilities");
 
     // for flamegraphs w/ root: .../credible-sdk
     // for non root its: ...credible-sdk/crates/sidecar
@@ -211,24 +278,48 @@ fn main() {
 
     let mut criterion = Criterion::default();
 
-    criterion.bench_function("worst_case_compute", |b| {
-        let bytecodes = Arc::clone(&bytecodes);
-        let adopters = Arc::clone(&adopters);
-        b.iter_batched(
-            || {
-                // setup (not measured): create instance and build transactions
-                let bytecodes = Arc::clone(&bytecodes);
-                let adopters = Arc::clone(&adopters);
-                runtime.block_on(async move { setup_iteration(bytecodes, adopters).await })
-            },
-            |(instance, transactions, hashes)| {
-                std::hint::black_box(runtime.block_on(async move {
-                    execute_iteration(instance, transactions, hashes).await
-                }));
-            },
-            BatchSize::SmallInput,
-        );
-    });
+    let transport = std::env::var("SIDECAR_BENCH_TRANSPORT")
+        .ok()
+        .and_then(|raw| {
+            let de = StringDeserializer::<serde::de::value::Error>::new(raw.to_ascii_lowercase());
+            BenchTransport::deserialize(de).ok()
+        })
+        .unwrap_or_default();
+    let bench_label = format!("worst_case_compute ({})", transport.as_str());
+    tracing::info!("Running benchmark with `{}` transport", transport.as_str());
+
+    match transport {
+        BenchTransport::Grpc => {
+            run_benchmark_for_driver::<LocalInstanceGrpcDriver, _, _>(
+                &mut criterion,
+                &runtime,
+                &bench_label,
+                Arc::clone(&bytecodes),
+                Arc::clone(&adopters),
+                LocalInstanceGrpcDriver::new_with_store,
+            )
+        }
+        BenchTransport::Http => {
+            run_benchmark_for_driver::<LocalInstanceHttpDriver, _, _>(
+                &mut criterion,
+                &runtime,
+                &bench_label,
+                Arc::clone(&bytecodes),
+                Arc::clone(&adopters),
+                LocalInstanceHttpDriver::new_with_store,
+            )
+        }
+        BenchTransport::Mock => {
+            run_benchmark_for_driver::<LocalInstanceMockDriver, _, _>(
+                &mut criterion,
+                &runtime,
+                &bench_label,
+                Arc::clone(&bytecodes),
+                Arc::clone(&adopters),
+                LocalInstanceMockDriver::new_with_store,
+            )
+        }
+    }
 
     criterion.final_summary();
 }

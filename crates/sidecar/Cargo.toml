@@ -41,6 +41,8 @@ hex = { workspace = true }
 moka = { version = "0.12.10", features = ["sync"], optional = true }
 alloy-rpc-types-trace = { workspace = true, optional = true }
 criterion = "0.6"
+console-subscriber = { workspace = true, optional = true }
+tokio-metrics = { workspace = true, optional = true }
 sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
 int-test-utils = { path = "../int-test-utils", optional = true }
 
@@ -65,7 +67,13 @@ bench-utils = [
     "sidecar-test-macros",
     "int-test-utils",
 ]
+tokio-console = [
+    "console-subscriber",
+    "tokio-metrics",
+]
 cache_validation = ["moka"]
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 [dev-dependencies]
 ctor = "0.5.0"

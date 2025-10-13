@@ -9,6 +9,7 @@
 #[allow(dead_code)]
 pub mod instance;
 pub(crate) mod macros;
+pub mod profiling;
 #[cfg(any(test, feature = "bench-utils"))]
 #[allow(dead_code)]
 pub mod test_drivers;
