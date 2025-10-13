@@ -2,6 +2,7 @@ use crate::{
     cache::sources::{
         Source,
         SourceError,
+        SourceName,
     },
     metrics::CacheMetrics,
 };
@@ -110,6 +111,11 @@ impl Cache {
         }
     }
 
+    /// Returns a list of configured sources for the cache
+    pub fn list_configured_sources(&self) -> Vec<SourceName> {
+        self.sources.iter().map(|s| s.name()).collect::<Vec<_>>()
+    }
+
     /// Updates the current block number.
     ///
     /// This affects which sources are considered synchronized and eligible
@@ -198,7 +204,7 @@ impl DatabaseRef for Cache {
             match source.basic_ref(address) {
                 Ok(Some(account)) => {
                     self.metrics
-                        .basic_ref_duration(source.name(), source_instant.elapsed());
+                        .basic_ref_duration(&source.name(), source_instant.elapsed());
                     self.metrics
                         .total_basic_ref_duration(total_operation_instant.elapsed());
                     return Ok(Some(account));
@@ -231,7 +237,7 @@ impl DatabaseRef for Cache {
                 }
             }
             self.metrics
-                .basic_ref_duration(source.name(), source_instant.elapsed());
+                .basic_ref_duration(&source.name(), source_instant.elapsed());
         }
 
         self.metrics
@@ -261,7 +267,7 @@ impl DatabaseRef for Cache {
                         "Failed to fetch block hash from cache source");
                 }
                 self.metrics
-                    .block_hash_ref_duration(source.name(), source_instant.elapsed());
+                    .block_hash_ref_duration(&source.name(), source_instant.elapsed());
                 res.ok()
             })
             .ok_or(CacheError::NoCacheSourceAvailable);
@@ -292,7 +298,7 @@ impl DatabaseRef for Cache {
                         "Failed to fetch code by hash from cache source");
                 }
                 self.metrics
-                    .code_by_hash_ref_duration(source.name(), source_instant.elapsed());
+                    .code_by_hash_ref_duration(&source.name(), source_instant.elapsed());
                 res.ok()
             })
             .ok_or(CacheError::NoCacheSourceAvailable);
@@ -319,7 +325,7 @@ impl DatabaseRef for Cache {
             match source.storage_ref(address, index) {
                 Ok(value) => {
                     self.metrics
-                        .storage_ref_duration(source.name(), source_instant.elapsed());
+                        .storage_ref_duration(&source.name(), source_instant.elapsed());
                     self.metrics
                         .total_storage_ref_duration(total_operation_instant.elapsed());
                     return Ok(value);
@@ -345,7 +351,7 @@ impl DatabaseRef for Cache {
                 }
             }
             self.metrics
-                .storage_ref_duration(source.name(), source_instant.elapsed());
+                .storage_ref_duration(&source.name(), source_instant.elapsed());
         }
 
         self.metrics
@@ -413,7 +419,7 @@ mod tests {
     // Mock Source implementation for testing
     #[derive(Debug)]
     struct MockSource {
-        name: &'static str,
+        name: SourceName,
         synced_threshold: u64,
         account_info: Option<AccountInfo>,
         block_hash: Option<B256>,
@@ -429,7 +435,7 @@ mod tests {
     }
 
     impl MockSource {
-        fn new(name: &'static str) -> Self {
+        fn new(name: SourceName) -> Self {
             Self {
                 name,
                 synced_threshold: 0,
@@ -511,7 +517,7 @@ mod tests {
 
         fn update_target_block(&self, _block_number: u64) {}
 
-        fn name(&self) -> &'static str {
+        fn name(&self) -> SourceName {
             self.name
         }
     }
@@ -694,8 +700,8 @@ mod tests {
 
     #[test]
     fn test_cache_new_with_sources() {
-        let source1: Arc<dyn Source> = Arc::new(MockSource::new("source1"));
-        let source2: Arc<dyn Source> = Arc::new(MockSource::new("source2"));
+        let source1: Arc<dyn Source> = Arc::new(MockSource::new(SourceName::Sequencer));
+        let source2: Arc<dyn Source> = Arc::new(MockSource::new(SourceName::BesuClient));
         let sources = vec![source1, source2];
 
         let cache = Cache::new(sources, 10);
@@ -716,24 +722,24 @@ mod tests {
 
     #[test]
     fn test_synced_sources_filters_correctly() {
-        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
-        let source3 = Arc::new(MockSource::new("source3").with_synced_threshold(0));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_synced_threshold(50));
+        let source3 = Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(0));
 
         let cache = Cache::new(vec![source1, source2, source3], 10);
 
         // Block 0 - only source3 should be synced
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), "source3");
+        assert_eq!(synced[0].name(), SourceName::Redis);
 
         // Block 15 - source1 and source3 should be synced
         cache.set_block_number(15);
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
         let names: Vec<_> = synced.iter().map(|s| s.name()).collect();
-        assert!(names.contains(&"source1"));
-        assert!(names.contains(&"source3"));
+        assert!(names.contains(&SourceName::Sequencer));
+        assert!(names.contains(&SourceName::Redis));
 
         // Block 60 - all sources should be synced
         cache.set_block_number(60);
@@ -744,8 +750,10 @@ mod tests {
     #[test]
     fn test_basic_ref_success_first_source() {
         let account_info = create_test_account_info();
-        let source1 = Arc::new(MockSource::new("source1").with_account_info(account_info.clone()));
-        let source2 = Arc::new(MockSource::new("source2"));
+        let source1 = Arc::new(
+            MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
+        );
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         let address = create_test_address();
@@ -769,8 +777,10 @@ mod tests {
     #[test]
     fn test_basic_ref_success_second_source_after_first_fails() {
         let account_info = create_test_account_info();
-        let source1 = Arc::new(MockSource::new("source1").with_error());
-        let source2 = Arc::new(MockSource::new("source2").with_account_info(account_info.clone()));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source2 = Arc::new(
+            MockSource::new(SourceName::BesuClient).with_account_info(account_info.clone()),
+        );
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         let address = create_test_address();
@@ -793,9 +803,11 @@ mod tests {
 
     #[test]
     fn test_basic_ref_returns_none_on_cache_miss() {
-        let source1 = Arc::new(MockSource::new("redis").with_cache_miss_for_account());
-        let source2 =
-            Arc::new(MockSource::new("rpc").with_account_info(create_test_account_info()));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_cache_miss_for_account());
+        let source2 = Arc::new(
+            MockSource::new(SourceName::BesuClient).with_account_info(create_test_account_info()),
+        );
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         cache.set_block_number(1);
@@ -809,9 +821,10 @@ mod tests {
 
     #[test]
     fn test_basic_ref_returns_none_without_fallback_when_first_source_has_no_data() {
-        let source1 = Arc::new(MockSource::new("redis"));
-        let source2 =
-            Arc::new(MockSource::new("rpc").with_account_info(create_test_account_info()));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer));
+        let source2 = Arc::new(
+            MockSource::new(SourceName::BesuClient).with_account_info(create_test_account_info()),
+        );
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         cache.set_block_number(1);
@@ -830,8 +843,9 @@ mod tests {
         let redis_source = Arc::new(RedisCache::new(backend));
 
         let account_info = create_test_account_info();
-        let fallback_source =
-            Arc::new(MockSource::new("rpc").with_account_info(account_info.clone()));
+        let fallback_source = Arc::new(
+            MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
+        );
 
         let cache = Cache::new(vec![redis_source, fallback_source.clone()], 10);
         cache.set_block_number(1);
@@ -849,8 +863,9 @@ mod tests {
         let redis_source = Arc::new(RedisCache::new(backend));
 
         let account_info = create_test_account_info();
-        let fallback_source =
-            Arc::new(MockSource::new("rpc").with_account_info(account_info.clone()));
+        let fallback_source = Arc::new(
+            MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
+        );
 
         let cache = Cache::new(vec![redis_source, fallback_source.clone()], 10);
         cache.set_block_number(15);
@@ -863,8 +878,8 @@ mod tests {
 
     #[test]
     fn test_basic_ref_no_cache_source_available() {
-        let source1 = Arc::new(MockSource::new("source1").with_error());
-        let source2 = Arc::new(MockSource::new("source2").with_error());
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_error());
 
         let cache = Cache::new(vec![source1, source2], 10);
         let address = create_test_address();
@@ -875,7 +890,7 @@ mod tests {
 
     #[test]
     fn test_basic_ref_no_synced_sources() {
-        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
         let cache = Cache::new(vec![source1], 10);
 
         // Block 0, source needs block 10 to be synced
@@ -887,8 +902,8 @@ mod tests {
     #[test]
     fn test_block_hash_ref_success_first_source() {
         let block_hash = B256::from([3u8; 32]);
-        let source1 = Arc::new(MockSource::new("source1").with_block_hash(block_hash));
-        let source2 = Arc::new(MockSource::new("source2"));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_block_hash(block_hash));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
 
@@ -911,8 +926,8 @@ mod tests {
     #[test]
     fn test_block_hash_ref_fallback_to_second_source() {
         let block_hash = B256::from([3u8; 32]);
-        let source1 = Arc::new(MockSource::new("source1").with_error());
-        let source2 = Arc::new(MockSource::new("source2").with_block_hash(block_hash));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_block_hash(block_hash));
 
         let cache = Cache::new(vec![source1, source2], 10);
 
@@ -922,8 +937,8 @@ mod tests {
 
     #[test]
     fn test_block_hash_ref_no_cache_source_available() {
-        let source1 = Arc::new(MockSource::new("source1").with_error());
-        let source2 = Arc::new(MockSource::new("source2"));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient));
 
         let cache = Cache::new(vec![source1, source2], 10);
 
@@ -934,8 +949,9 @@ mod tests {
     #[test]
     fn test_code_by_hash_ref_success_first_source() {
         let bytecode = create_test_bytecode();
-        let source1 = Arc::new(MockSource::new("source1").with_bytecode(bytecode.clone()));
-        let source2 = Arc::new(MockSource::new("source2"));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_bytecode(bytecode.clone()));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         let code_hash = B256::from([4u8; 32]);
@@ -959,8 +975,9 @@ mod tests {
     #[test]
     fn test_code_by_hash_ref_fallback_to_second_source() {
         let bytecode = create_test_bytecode();
-        let source1 = Arc::new(MockSource::new("source1").with_error());
-        let source2 = Arc::new(MockSource::new("source2").with_bytecode(bytecode.clone()));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source2 =
+            Arc::new(MockSource::new(SourceName::BesuClient).with_bytecode(bytecode.clone()));
 
         let cache = Cache::new(vec![source1, source2], 10);
         let code_hash = B256::from([4u8; 32]);
@@ -971,8 +988,8 @@ mod tests {
 
     #[test]
     fn test_code_by_hash_ref_no_cache_source_available() {
-        let source1 = Arc::new(MockSource::new("source1").with_error());
-        let source2 = Arc::new(MockSource::new("source2"));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient));
 
         let cache = Cache::new(vec![source1, source2], 10);
         let code_hash = B256::from([4u8; 32]);
@@ -984,8 +1001,9 @@ mod tests {
     #[test]
     fn test_storage_ref_success_first_source() {
         let storage_value = U256::from(12345);
-        let source1 = Arc::new(MockSource::new("source1").with_storage_value(storage_value));
-        let source2 = Arc::new(MockSource::new("source2"));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_storage_value(storage_value));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         let address = create_test_address();
@@ -1010,8 +1028,9 @@ mod tests {
     #[test]
     fn test_storage_ref_fallback_to_second_source() {
         let storage_value = U256::from(12345);
-        let source1 = Arc::new(MockSource::new("source1").with_error());
-        let source2 = Arc::new(MockSource::new("source2").with_storage_value(storage_value));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source2 =
+            Arc::new(MockSource::new(SourceName::BesuClient).with_storage_value(storage_value));
 
         let cache = Cache::new(vec![source1, source2], 10);
         let address = create_test_address();
@@ -1024,8 +1043,10 @@ mod tests {
     #[test]
     fn test_storage_ref_fallback_on_cache_miss() {
         let storage_value = U256::from(0xdeadbeefu64);
-        let source1 = Arc::new(MockSource::new("redis").with_cache_miss_for_storage());
-        let source2 = Arc::new(MockSource::new("rpc").with_storage_value(storage_value));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_cache_miss_for_storage());
+        let source2 =
+            Arc::new(MockSource::new(SourceName::BesuClient).with_storage_value(storage_value));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 10);
         cache.set_block_number(1);
@@ -1040,8 +1061,8 @@ mod tests {
 
     #[test]
     fn test_storage_ref_no_cache_source_available() {
-        let source1 = Arc::new(MockSource::new("source1").with_error());
-        let source2 = Arc::new(MockSource::new("source2").with_error());
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_error());
 
         let cache = Cache::new(vec![source1, source2], 10);
         let address = create_test_address();
@@ -1055,8 +1076,9 @@ mod tests {
     fn test_concurrent_access_thread_safety() {
         use std::thread;
 
-        let source1 =
-            Arc::new(MockSource::new("source1").with_account_info(create_test_account_info()));
+        let source1 = Arc::new(
+            MockSource::new(SourceName::Sequencer).with_account_info(create_test_account_info()),
+        );
         let cache = Arc::new(Cache::new(vec![source1], 10));
         let mut handles = vec![];
 
@@ -1128,10 +1150,12 @@ mod tests {
         let block_hash = B256::from([5u8; 32]);
 
         // Source 1: Has account info, fails on block hash
-        let source1 = Arc::new(MockSource::new("source1").with_account_info(account_info.clone()));
+        let source1 = Arc::new(
+            MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
+        );
 
         // Source 2: Fails on account info, has block hash
-        let source2 = Arc::new(MockSource::new("source2").with_block_hash(block_hash));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_block_hash(block_hash));
 
         let cache = Cache::new(vec![source1, source2], 10);
         let address = create_test_address();
@@ -1160,7 +1184,7 @@ mod tests {
 
         // Both sources have all data, but we should only call the first
         let source1 = Arc::new(
-            MockSource::new("source1")
+            MockSource::new(SourceName::Sequencer)
                 .with_account_info(account_info.clone())
                 .with_block_hash(block_hash)
                 .with_bytecode(bytecode.clone())
@@ -1168,7 +1192,7 @@ mod tests {
         );
 
         let source2 = Arc::new(
-            MockSource::new("source2")
+            MockSource::new(SourceName::BesuClient)
                 .with_account_info(account_info.clone())
                 .with_block_hash(block_hash)
                 .with_bytecode(bytecode.clone())
@@ -1201,9 +1225,9 @@ mod tests {
 
     #[test]
     fn test_cache_max_depth_filtering() {
-        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
-        let source3 = Arc::new(MockSource::new("source3").with_synced_threshold(100));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_synced_threshold(50));
+        let source3 = Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(100));
 
         // Test with max_depth = 20
         let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 20);
@@ -1224,9 +1248,9 @@ mod tests {
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
         let names: Vec<_> = synced.iter().map(|s| s.name()).collect();
-        assert!(names.contains(&"source1"));
-        assert!(names.contains(&"source2"));
-        assert!(!names.contains(&"source3"));
+        assert!(names.contains(&SourceName::Sequencer));
+        assert!(names.contains(&SourceName::BesuClient));
+        assert!(!names.contains(&SourceName::Redis));
 
         // Test with max_depth = 60
         let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 60);
@@ -1237,7 +1261,7 @@ mod tests {
         // Sources: source1 (40 >= 10 ✓), source2 (40 >= 50 ✗), source3 (40 >= 100 ✗)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), "source1");
+        assert_eq!(synced[0].name(), SourceName::Sequencer);
 
         // Test with max_depth = 200 (larger than current block)
         let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 200);
@@ -1252,8 +1276,8 @@ mod tests {
 
     #[test]
     fn test_cache_required_block_number_override() {
-        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_synced_threshold(50));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 20);
 
@@ -1283,8 +1307,8 @@ mod tests {
 
     #[test]
     fn test_cache_reset_required_block_number() {
-        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_synced_threshold(50));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 30);
 
@@ -1327,9 +1351,9 @@ mod tests {
 
     #[test]
     fn test_cache_out_of_sync_scenarios() {
-        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(100));
-        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(200));
-        let source3 = Arc::new(MockSource::new("source3").with_synced_threshold(300));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(100));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_synced_threshold(200));
+        let source3 = Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(300));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
 
@@ -1340,7 +1364,7 @@ mod tests {
         // Sources synced at block 100: only source1 (100 >= 100)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), "source1");
+        assert_eq!(synced[0].name(), SourceName::Sequencer);
 
         // Scenario 2: Lower block number
         let cache = Cache::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
@@ -1363,15 +1387,16 @@ mod tests {
 
     #[test]
     fn test_cache_edge_cases() {
-        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(0));
-        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(u64::MAX));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(0));
+        let source2 =
+            Arc::new(MockSource::new(SourceName::BesuClient).with_synced_threshold(u64::MAX));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], u64::MAX);
 
         // Test with zero block number - only source1 should be synced (0 >= 0)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), "source1");
+        assert_eq!(synced[0].name(), SourceName::Sequencer);
 
         // Test with maximum block number
         let cache = Cache::new(vec![source1.clone(), source2.clone()], u64::MAX);
@@ -1381,7 +1406,7 @@ mod tests {
         // Only source1 synced at block 0 (0 >= 0)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), "source1");
+        assert_eq!(synced[0].name(), SourceName::Sequencer);
 
         // Test with zero max_depth
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 0);
@@ -1391,22 +1416,22 @@ mod tests {
         // Both sources: source1 (100 >= 0 ✓), source2 (100 >= u64::MAX ✗)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), "source1");
+        assert_eq!(synced[0].name(), SourceName::Sequencer);
     }
 
     #[test]
     fn test_original_test_understanding() {
         // This replicates the original test to understand the correct behavior
-        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
-        let source3 = Arc::new(MockSource::new("source3").with_synced_threshold(0));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_synced_threshold(50));
+        let source3 = Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(0));
 
         let cache = Cache::new(vec![source1, source2, source3], 10);
 
         // Block 0 - effective block is 0, only source3 (0 >= 0) should be synced
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), "source3");
+        assert_eq!(synced[0].name(), SourceName::Redis);
 
         // Block 15 - this sets required_block_number to 15
         cache.set_block_number(15);
@@ -1425,8 +1450,8 @@ mod tests {
 
     #[test]
     fn test_cache_invalidation_simulation() {
-        let source1 = Arc::new(MockSource::new("source1").with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new("source2").with_synced_threshold(50));
+        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
+        let source2 = Arc::new(MockSource::new(SourceName::BesuClient).with_synced_threshold(50));
 
         let cache = Cache::new(vec![source1.clone(), source2.clone()], 40);
 
@@ -1449,7 +1474,7 @@ mod tests {
         // Only source1 synced (30 >= 10, but 30 < 50)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), "source1");
+        assert_eq!(synced[0].name(), SourceName::Sequencer);
     }
 
     #[crate::utils::engine_test(all)]

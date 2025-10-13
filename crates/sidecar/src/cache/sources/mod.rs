@@ -1,6 +1,9 @@
 use assertion_executor::db::DatabaseRef;
 use revm::context::DBErrorMarker;
-use std::fmt::Debug;
+use std::fmt::{
+    Debug,
+    Display,
+};
 use thiserror::Error;
 
 pub mod besu_client;
@@ -92,8 +95,8 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     ///
     /// # Returns
     ///
-    /// A static string that uniquely identifies this source.
-    fn name(&self) -> &'static str;
+    /// A `SourceName` that uniquely identifies this source.
+    fn name(&self) -> SourceName;
 
     /// Updates the block number that queries should target.
     ///
@@ -101,6 +104,25 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     /// block rather than the latest head. The default implementation is a
     /// no-op for sources that do not depend on block context.
     fn update_target_block(&self, block_number: u64);
+}
+
+/// Names for a particular source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SourceName {
+    BesuClient,
+    Redis,
+    Sequencer,
+}
+
+// FIXME: Derive `strum`
+impl Display for SourceName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SourceName::BesuClient => write!(f, "BesuClient"),
+            SourceName::Redis => write!(f, "Redis"),
+            SourceName::Sequencer => write!(f, "Sequencer"),
+        }
+    }
 }
 
 #[derive(Error, Debug)]

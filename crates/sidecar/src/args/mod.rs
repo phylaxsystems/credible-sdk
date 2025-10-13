@@ -213,6 +213,14 @@ pub struct StateArgs {
         env = "STATE_SOURCES_SYNC_TIMEOUT_MS"
     )]
     pub sources_sync_timeout_ms: u64,
+
+    /// Period (ms) the engine will check if the state sources are synced.
+    #[arg(
+        long = "state.sources-monitoring-period-ms",
+        default_value = "500",
+        env = "STATE_SOURCES_MONITORING_PERIOD_MS"
+    )]
+    pub sources_monitoring_period_ms: u64,
 }
 
 impl Default for StateArgs {
@@ -223,6 +231,7 @@ impl Default for StateArgs {
             redis_url: None,
             minimum_state_diff: 100,
             sources_sync_timeout_ms: 1000,
+            sources_monitoring_period_ms: 500,
         }
     }
 }
