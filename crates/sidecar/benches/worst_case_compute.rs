@@ -31,7 +31,7 @@ use sidecar::utils::{
         LocalInstance,
         TestTransport,
     },
-    test_drivers::LocalInstanceMockDriver,
+    test_drivers::LocalInstanceGrpcDriver,
 };
 use std::{
     fs::File,
@@ -103,13 +103,13 @@ async fn setup_iteration(
     bytecodes: Arc<Vec<Bytes>>,
     adopters: Arc<Vec<Address>>,
 ) -> (
-    LocalInstance<LocalInstanceMockDriver>,
+    LocalInstance<LocalInstanceGrpcDriver>,
     Vec<(B256, TxEnv)>,
     Vec<B256>,
 ) {
     // this creates 1 adopter with 5 assertions, 5 total assertions in the store
     let store = build_assertion_store(&bytecodes, &adopters[..1]);
-    let mut instance = LocalInstanceMockDriver::new_with_store(store)
+    let mut instance = LocalInstanceGrpcDriver::new_with_store(store)
         .await
         .expect("Failed to create LocalInstance");
 
@@ -136,7 +136,7 @@ async fn setup_iteration(
             .build()
             .expect("Failed to build transaction");
 
-        let tx_hash = LocalInstance::<LocalInstanceMockDriver>::generate_random_tx_hash();
+        let tx_hash = LocalInstance::<LocalInstanceGrpcDriver>::generate_random_tx_hash();
         hashes.push(tx_hash);
         transactions.push((tx_hash, tx_env));
     }
@@ -148,7 +148,7 @@ async fn setup_iteration(
 
 // Execution function: sends transactions and waits for completion (measured)
 async fn execute_iteration(
-    mut instance: LocalInstance<LocalInstanceMockDriver>,
+    mut instance: LocalInstance<LocalInstanceGrpcDriver>,
     transactions: Vec<(B256, TxEnv)>,
     hashes: Vec<B256>,
 ) {
