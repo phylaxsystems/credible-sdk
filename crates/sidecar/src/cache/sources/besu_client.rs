@@ -1,6 +1,7 @@
 use crate::cache::sources::{
     Source,
     SourceError,
+    SourceName,
     json_rpc_db::JsonRpcDb,
 };
 use alloy::{
@@ -194,8 +195,8 @@ impl DatabaseRef for BesuClient {
 }
 
 impl Source for BesuClient {
-    fn name(&self) -> &'static str {
-        "Besu client"
+    fn name(&self) -> SourceName {
+        SourceName::BesuClient
     }
 
     fn is_synced(&self, current_block_number: u64) -> bool {

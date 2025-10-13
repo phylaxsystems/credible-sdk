@@ -38,8 +38,7 @@
 //! This is possible due to assertions being read only. We must verify that no
 //! assertion reverts before approving a transaction.
 
-#[cfg(feature = "cache_validation")]
-mod cache_checker;
+mod monitoring;
 pub mod queue;
 mod transactions_results;
 
@@ -97,7 +96,7 @@ use assertion_executor::{
     db::Database,
 };
 #[cfg(feature = "cache_validation")]
-use cache_checker::CacheChecker;
+use monitoring::cache::CacheChecker;
 #[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
@@ -240,6 +239,7 @@ pub struct CoreEngine<DB> {
     block_env_transaction_counter: u64,
     state_sources_sync_timeout: Duration,
     check_sources_available: bool,
+    sources_monitoring: Arc<monitoring::sources::Sources>,
     #[cfg(feature = "cache_validation")]
     processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
     #[cfg(feature = "cache_validation")]
@@ -266,6 +266,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         state_results: Arc<TransactionsState>,
         transaction_results_max_capacity: usize,
         state_sources_sync_timeout: Duration,
+        source_monitoring_period: Duration,
         #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
     ) -> Self {
         #[cfg(feature = "cache_validation")]
@@ -286,7 +287,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         };
         Self {
             state,
-            cache,
+            cache: cache.clone(),
             tx_receiver,
             assertion_executor,
             block_env: None,
@@ -299,7 +300,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env_transaction_counter: 0,
             state_sources_sync_timeout,
             check_sources_available: true,
-
+            sources_monitoring: monitoring::sources::Sources::new(cache, source_monitoring_period),
             #[cfg(feature = "cache_validation")]
             processed_transactions,
             #[cfg(feature = "cache_validation")]
@@ -314,6 +315,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[allow(clippy::missing_panics_doc)]
     pub fn new_test() -> Self {
         let (_, tx_receiver) = crossbeam::channel::unbounded();
+        let cache = Arc::new(Cache::new(vec![], 10));
         Self {
             state: OverlayDb::new(None, 64),
             tx_receiver,
@@ -322,7 +324,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 AssertionStore::new_ephemeral().expect("REASON"),
             ),
             block_env: None,
-            cache: Arc::new(Cache::new(vec![], 10)),
+            cache: cache.clone(),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
             block_metrics: BlockMetrics::new(),
             last_executed_tx: LastExecutedTx::new(),
@@ -335,6 +337,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             ),
             #[cfg(feature = "cache_validation")]
             cache_checker: None,
+            sources_monitoring: monitoring::sources::Sources::new(cache, Duration::from_millis(20)),
         }
     }
 
@@ -667,7 +670,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.block_env_transaction_counter = 0;
     }
 
-    // FIXME: It would be cleaner to have this in another struct
     /// Verifies that all state sources are synced, and if not stall until they are.
     ///
     /// If the sources do not become synced after a set amount of time, the function
@@ -682,14 +684,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         let start = Instant::now();
         loop {
-            let count = self.cache.iter_synced_sources().count();
-            if count != 0 {
-                trace!(
-                    target = "engine",
-                    sources_synced = %count,
-                    waited_ms = start.elapsed().as_millis(),
-                    "Sources synced, continuing"
-                );
+            if self.sources_monitoring.has_synced_source() {
                 return Ok(());
             }
 
@@ -1044,6 +1039,7 @@ mod tests {
             state_results,
             10,
             timeout,
+            timeout / 2, // We divide by 2 to ensure we read the cache status before we timeout
             #[cfg(feature = "cache_validation")]
             None,
         )

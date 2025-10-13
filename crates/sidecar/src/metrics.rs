@@ -17,7 +17,9 @@ use metrics::{
     histogram,
 };
 use std::sync::atomic::{
+    AtomicBool,
     AtomicU64,
+    AtomicUsize,
     Ordering,
 };
 
@@ -290,7 +292,7 @@ impl CacheMetrics {
     /// (`sidecar_cache_basic_ref_duration`)
     ///
     /// Commited as a `Histogram`.
-    pub fn basic_ref_duration(&self, source: &str, duration: std::time::Duration) {
+    pub fn basic_ref_duration(&self, source: &impl ToString, duration: std::time::Duration) {
         histogram!("sidecar_cache_basic_ref_duration", "source" => source.to_string())
             .record(duration);
     }
@@ -307,7 +309,7 @@ impl CacheMetrics {
     /// (`sidecar_cache_block_hash_ref_duration`)
     ///
     /// Commited as a `Histogram`.
-    pub fn block_hash_ref_duration(&self, source: &str, duration: std::time::Duration) {
+    pub fn block_hash_ref_duration(&self, source: &impl ToString, duration: std::time::Duration) {
         histogram!("sidecar_cache_block_hash_ref_duration", "source" => source.to_string())
             .record(duration);
     }
@@ -324,7 +326,7 @@ impl CacheMetrics {
     /// (`sidecar_cache_code_by_hash_ref_duration`)
     ///
     /// Commited as a `Histogram`.
-    pub fn code_by_hash_ref_duration(&self, source: &str, duration: std::time::Duration) {
+    pub fn code_by_hash_ref_duration(&self, source: &impl ToString, duration: std::time::Duration) {
         histogram!("sidecar_cache_code_by_hash_ref_duration", "source" => source.to_string())
             .record(duration);
     }
@@ -341,8 +343,77 @@ impl CacheMetrics {
     /// (`sidecar_cache_storage_ref_duration`)
     ///
     /// Commited as a `Histogram`.
-    pub fn storage_ref_duration(&self, source: &str, duration: std::time::Duration) {
+    pub fn storage_ref_duration(&self, source: &impl ToString, duration: std::time::Duration) {
         histogram!("sidecar_cache_storage_ref_duration", "source" => source.to_string())
             .record(duration);
+    }
+}
+
+/// Metrics for an individual source
+///
+/// Tracks per-source synchronization status and statistics including
+/// sync state, check timestamps, and transition counts.
+#[derive(Debug, Default)]
+pub struct SourceMetrics {
+    /// Whether this source is currently synced
+    pub is_synced: AtomicBool,
+    /// Last time this source was checked (seconds since monitoring started)
+    pub last_checked: AtomicU64,
+    /// Number of times this source has transitioned to synced state
+    pub sync_count: AtomicUsize,
+    /// Number of times this source has transitioned to unsynced state
+    pub unsync_count: AtomicUsize,
+}
+
+impl SourceMetrics {
+    /// Updates the synchronization status
+    ///
+    /// Tracks state transitions internally without committing to Prometheus.
+    /// Call `commit()` to export metrics.
+    ///
+    /// # Arguments
+    ///
+    /// * `is_synced` - Whether the source is currently synced
+    /// * `timestamp` - Current timestamp in seconds
+    pub fn update_sync_status(&self, is_synced: bool, timestamp: u64) {
+        let was_synced = self.is_synced.swap(is_synced, Ordering::SeqCst);
+        self.last_checked.store(timestamp, Ordering::Relaxed);
+
+        // Track transitions
+        if is_synced && !was_synced {
+            self.sync_count.fetch_add(1, Ordering::Relaxed);
+        } else if !is_synced && was_synced {
+            self.unsync_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Commits the per-source metrics to Prometheus
+    ///
+    /// Exports the following metrics with the source label:
+    /// - `sidecar_source_is_synced`: Current sync status (0 or 1)
+    /// - `sidecar_source_last_checked`: Timestamp of last check
+    /// - `sidecar_source_total_syncs`: Total number of sync transitions
+    /// - `sidecar_source_total_unsyncs`: Total number of unsync transitions
+    ///
+    /// # Arguments
+    ///
+    /// * `source_name` - The name of the source (used as a label in metrics)
+    pub fn commit(&self, source_name: &impl ToString) {
+        let is_synced = self.is_synced.load(Ordering::Acquire);
+        let last_checked = self.last_checked.load(Ordering::Relaxed);
+        let sync_count = self.sync_count.load(Ordering::Relaxed);
+        let unsync_count = self.unsync_count.load(Ordering::Relaxed);
+
+        gauge!("sidecar_source_is_synced", "source" => source_name.to_string()).set(if is_synced {
+            1.0
+        } else {
+            0.0
+        });
+        gauge!("sidecar_source_last_checked", "source" => source_name.to_string())
+            .set(last_checked as f64);
+        gauge!("sidecar_source_total_syncs", "source" => source_name.to_string())
+            .set(sync_count as f64);
+        gauge!("sidecar_source_total_unsyncs", "source" => source_name.to_string())
+            .set(unsync_count as f64);
     }
 }

@@ -21,6 +21,7 @@
 
 use crate::{
     Source,
+    cache::sources::SourceName,
     critical,
 };
 use alloy::hex;
@@ -432,8 +433,8 @@ impl<B: RedisBackend> Source for RedisCache<B> {
     }
 
     /// Provides an identifier used in logs and metrics.
-    fn name(&self) -> &'static str {
-        "redis-cache"
+    fn name(&self) -> SourceName {
+        SourceName::Redis
     }
 }
 

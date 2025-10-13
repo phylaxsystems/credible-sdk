@@ -63,6 +63,12 @@ State:
 
       --state.minimum-state-diff <MINIMUM_STATE_DIFF>
           Minimum state diff to consider a block valid [env: STATE_MINIMUM_STATE_DIFF=] [default: 100]
+          
+      --state.sources-sync-timeout-ms <SOURCES_SYNC_TIMEOUT_MS>
+          Maximum time (ms) the engine will wait for a state source to report as synced before failing a transaction [env: STATE_SOURCES_SYNC_TIMEOUT_MS=] [default: 1000]
+          
+      --state.sources-monitoring-period-ms <SSOURCES_MONITORING_PERIOD_MS>
+          Period (ms) the engine will check if the state sources are synced [env: STATE_SOURCES_MONITORING_PERIOD_MS=] [default: 500]
 
 Credible:
       --credible.assertion-gas-limit <ASSERTION_GAS_LIMIT>

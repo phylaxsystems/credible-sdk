@@ -1,5 +1,6 @@
 use crate::cache::sources::{
     Source,
+    SourceName,
     json_rpc_db::{
         JsonRpcDb,
         JsonRpcDbError,
@@ -40,8 +41,8 @@ impl Source for Sequencer {
     }
 
     #[inline]
-    fn name(&self) -> &'static str {
-        "sequencer"
+    fn name(&self) -> SourceName {
+        SourceName::Sequencer
     }
 
     #[inline]
