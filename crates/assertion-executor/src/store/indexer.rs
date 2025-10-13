@@ -69,6 +69,7 @@ use assertion_da_client::{
 };
 
 use futures::stream;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 
 sol! {
@@ -150,7 +151,8 @@ pub struct Indexer {
 
 /// Restricted version of `BlockNumberOrTag` enum.
 /// Only exposes the `Latest`, `Finalized`, and `Safe` variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BlockTag {
     Latest,
     Safe,

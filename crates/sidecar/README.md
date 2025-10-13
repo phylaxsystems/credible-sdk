@@ -32,8 +32,9 @@ name` resource key according to the OTEL conventions.
 
 ### Sidecar config
 
-The sidecar accepts configuration through command-line arguments and environment variables. All configuration follows a
-structured naming pattern with the following prefixes:
+The sidecar accepts configuration through a combination of command-line arguments (or environment variables) and a
+configuration file in a JSON format.
+All configuration follows a structured naming pattern with the following prefixes:
 
 - `chain.*` - Rollup chain configuration
 - `credible.*` - Credible layer specific settings
@@ -44,75 +45,305 @@ structured naming pattern with the following prefixes:
 Run `cargo run -p sidecar -- --help` to see all available options.
 
 ```
+      --config-file-path <CHAIN_ID>
+          Path to the configuration file [env: CONFIG_FILE_PATH=] 
+          
 Chain:
       --chain.spec-id <SPEC_ID>
           What EVM specification to use. Only latest for now [env: CHAIN_SPEC_ID=] [default: Cancun] [possible values: latest]
 
       --chain.chain-id <CHAIN_ID>
           Chain ID [env: CHAIN_CHAIN_ID=] [default: 1337]
-          
-State:
-      --state.sequencer-url <SEQUENCER_URL>
-          Sequencer RPC node URL and port [env: STATE_SEQUENCER_URL=] [default: http://127.0.0.1:8545]
+```
 
-      --state.besu-client-ws-url <BESU_CLIENT_WS_URL>
-          Besu client websocket URL [env: STATE_BESU_CLIENT_WS_URL=] [default: ws://127.0.0.1:8546]
-          
-      --state.redis-url <REDIS_URL>
-          Redis URL [env: STATE_REDIS_URL=] [default: disabled]
+The configuration file is a JSON file with the following schema:
 
-      --state.minimum-state-diff <MINIMUM_STATE_DIFF>
-          Minimum state diff to consider a block valid [env: STATE_MINIMUM_STATE_DIFF=] [default: 100]
-          
-      --state.sources-sync-timeout-ms <SOURCES_SYNC_TIMEOUT_MS>
-          Maximum time (ms) the engine will wait for a state source to report as synced before failing a transaction [env: STATE_SOURCES_SYNC_TIMEOUT_MS=] [default: 1000]
-          
-      --state.sources-monitoring-period-ms <STATE_SOURCES_MONITORING_PERIOD_MS>
-          Period (ms) the engine will check if the state sources are synced [env: STATE_SOURCES_MONITORING_PERIOD_MS=] [default: 500]
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Sidecar Configuration",
+  "description": "Configuration schema for the Credible layer sidecar",
+  "type": "object",
+  "required": [
+    "credible",
+    "transport",
+    "state"
+  ],
+  "properties": {
+    "credible": {
+      "type": "object",
+      "description": "Credible execution engine configuration",
+      "required": [
+        "assertion_gas_limit",
+        "assertion_da_rpc_url",
+        "indexer_rpc_url",
+        "indexer_db_path",
+        "assertion_store_db_path",
+        "block_tag",
+        "state_oracle",
+        "state_oracle_deployment_block",
+        "transaction_results_max_capacity"
+      ],
+      "properties": {
+        "assertion_gas_limit": {
+          "type": "integer",
+          "description": "Gas limit for assertion execution",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "examples": [
+            30000000
+          ]
+        },
+        "overlay_cache_capacity": {
+          "type": "integer",
+          "description": "Overlay cache capacity in elements (optional)",
+          "minimum": 0,
+          "examples": [
+            1000
+          ]
+        },
+        "cache_capacity_bytes": {
+          "type": "integer",
+          "description": "Sled cache capacity used in FsDb, in bytes (256MB default)",
+          "minimum": 0,
+          "examples": [
+            268435456
+          ]
+        },
+        "flush_every_ms": {
+          "type": "integer",
+          "description": "How often in milliseconds the FsDb will be flushed to disk (5 seconds default)",
+          "minimum": 0,
+          "examples": [
+            5000
+          ]
+        },
+        "assertion_da_rpc_url": {
+          "type": "string",
+          "description": "HTTP URL of the assertion DA",
+          "format": "uri",
+          "pattern": "^https?://",
+          "examples": [
+            "http://localhost:8545",
+            "https://mainnet.infura.io/v3/YOUR-PROJECT-ID"
+          ]
+        },
+        "indexer_rpc_url": {
+          "type": "string",
+          "description": "WebSocket URL the RPC store will use to index assertions",
+          "format": "uri",
+          "pattern": "^wss?://",
+          "examples": [
+            "ws://localhost:8546",
+            "wss://mainnet.infura.io/ws/v3/YOUR-PROJECT-ID"
+          ]
+        },
+        "indexer_db_path": {
+          "type": "string",
+          "description": "Path to the indexer database (separate from main assertion store)",
+          "minLength": 1,
+          "examples": [
+            "/tmp/indexer.db",
+            "/var/lib/sidecar/indexer.db"
+          ]
+        },
+        "assertion_store_db_path": {
+          "type": "string",
+          "description": "Path to the RPC store database",
+          "minLength": 1,
+          "examples": [
+            "/tmp/store.db",
+            "/var/lib/sidecar/store.db"
+          ]
+        },
+        "block_tag": {
+          "type": "string",
+          "description": "Block tag to use for indexing assertions",
+          "enum": [
+            "latest",
+            "earliest",
+            "pending",
+            "safe",
+            "finalized"
+          ],
+          "examples": [
+            "latest"
+          ]
+        },
+        "state_oracle": {
+          "type": "string",
+          "description": "Contract address of the state oracle contract, used to query assertion info",
+          "pattern": "^0x[a-fA-F0-9]{40}$",
+          "examples": [
+            "0x1234567890123456789012345678901234567890"
+          ]
+        },
+        "state_oracle_deployment_block": {
+          "type": "integer",
+          "description": "Block number of the state oracle deployment",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "examples": [
+            100,
+            18000000
+          ]
+        },
+        "transaction_results_max_capacity": {
+          "type": "integer",
+          "description": "Maximum capacity for transaction results cache",
+          "minimum": 1,
+          "examples": [
+            10000
+          ]
+        },
+        "cache_checker_ws_url": {
+          "type": "string",
+          "description": "Cache checker client websocket URL (only when cache_validation feature is enabled)",
+          "format": "uri",
+          "pattern": "^wss?://",
+          "examples": [
+            "ws://localhost:8549"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "transport": {
+      "type": "object",
+      "description": "Transport protocol configuration",
+      "required": [
+        "protocol",
+        "bind_addr"
+      ],
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "description": "Select which transport protocol to run",
+          "enum": [
+            "http",
+            "grpc"
+          ],
+          "examples": [
+            "http"
+          ]
+        },
+        "bind_addr": {
+          "type": "string",
+          "description": "Server bind address and port",
+          "pattern": "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|[a-zA-Z0-9.-]+):[0-9]{1,5}$",
+          "examples": [
+            "127.0.0.1:3000",
+            "0.0.0.0:8080",
+            "localhost:9000"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "state": {
+      "type": "object",
+      "description": "State source configuration",
+      "required": [
+        "minimum_state_diff",
+        "sources_sync_timeout_ms",
+        "sources_monitoring_period_ms"
+      ],
+      "properties": {
+        "sequencer_url": {
+          "type": "string",
+          "description": "Sequencer bind address and port (optional)",
+          "format": "uri",
+          "pattern": "^https?://",
+          "examples": [
+            "http://localhost:8547",
+            "http://sequencer-service:8547"
+          ]
+        },
+        "besu_client_ws_url": {
+          "type": "string",
+          "description": "Besu client WebSocket bind address and port (optional)",
+          "format": "uri",
+          "pattern": "^wss?://",
+          "examples": [
+            "ws://localhost:8548",
+            "ws://besu-service:8548"
+          ]
+        },
+        "redis_url": {
+          "type": "string",
+          "description": "Redis bind address and port (optional)",
+          "format": "uri",
+          "pattern": "^redis://",
+          "examples": [
+            "redis://localhost:6379",
+            "redis://redis-service:6379"
+          ]
+        },
+        "minimum_state_diff": {
+          "type": "integer",
+          "description": "Minimum state diff to consider a cache synced",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "examples": [
+            10
+          ]
+        },
+        "sources_sync_timeout_ms": {
+          "type": "integer",
+          "description": "Maximum time (ms) the engine will wait for a state source to report as synced before failing a transaction",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "examples": [
+            30000
+          ]
+        },
+        "sources_monitoring_period_ms": {
+          "type": "integer",
+          "description": "Period (ms) the engine will check if the state sources are synced",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "examples": [
+            1000
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
+```
 
-Credible:
-      --credible.assertion-gas-limit <ASSERTION_GAS_LIMIT>
-          Gas limit for assertion execution [env: CREDIBLE_ASSERTION_GAS_LIMIT=] [default: 3000000]
+The default configuration can be found in [default_config.json](default_config.json):
 
-      --credible.overlay-cache-capacity <OVERLAY_CACHE_CAPACITY>
-          Overlay cache capacity, 1gb default [env: CREDIBLE_OVERLAY_CACHE_CAPACITY=] [default: 100000]
-
-      --credible.cache-capacity-bytes <CACHE_CAPACITY_BYTES>
-          Sled cache capacity, used in the FsDb, 256mb default [env: CREDIBLE_CACHE_CAPACITY_BYTES=] [default: 256000000]
-
-      --credible.flush-every-ms <FLUSH_EVERY_MS>
-          How often in ms will the FsDb be flushed to disk, 5 sec default [env: CREDIBLE_FLUSH_EVERY_MS=] [default: 5000]
-
-      --credible.assertion-da-rpc-url <ASSERTION_DA_RPC_URL>
-          HTTP URL of the assertion DA [env: CREDIBLE_ASSERTION_DA_RPC_URL=] [default: http://127.0.0.1:5001]
-
-      --credible.indexer-rpc-url <INDEXER_RPC_URL>
-          WS URL the RPC store will use to index assertions [env: CREDIBLE_INDEXER_RPC_URL=] [default: ws://127.0.0.1:8546]
-
-      --credible.indexer-db-path <INDEXER_DB_PATH>
-          Path to the indexer database (separate from assertion store) [env: CREDIBLE_INDEXER_DB_PATH=] [default: .local/sidecar-host/indexer_database]
-
-      --credible.assertion-store-db-path <ASSERTION_STORE_DB_PATH>
-          Path to the assertion store database [env: CREDIBLE_ASSERTION_STORE_DB_PATH=] [default: .local/sidecar-host/assertion_store_database]
-
-      --credible.block-tag <BLOCK_TAG>
-          Block tag to use for indexing assertions [env: CREDIBLE_BLOCK_TAG=] [default: latest] [possible values: latest, safe, finalized]
-
-      --credible.state-oracle <STATE_ORACLE>
-          Contract address of the state oracle contract, used to query assertion info [env: CREDIBLE_STATE_ORACLE=] [default: 0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b]
-
-      --credible.state-oracle-deployment-block <STATE_ORACLE_DEPLOYMENT_BLOCK>
-          Block number of the state oracle deployment [env: CREDIBLE_STATE_ORACLE_DEPLOYMENT_BLOCK=] [default: 0]
-
-      --credible.transaction-results-max-capacity <TRANSACTION_RESULTS_MAX_CAPACITY>
-          Maximum capacity for transaction results cache [env: CREDIBLE_TRANSACTION_RESULTS_MAX_CAPACITY=] [default: 1000000]
-
-Transport:
-      --transport.protocol <TRANSPORT_PROTOCOL>
-          Which transport protocol to run [env: TRANSPORT_PROTOCOL=] [default: grpc] [possible values: http, grpc]
-
-      --transport.bind-addr <BIND_ADDR>
-          Server bind address and port [env: TRANSPORT_BIND_ADDR=] [default: 0.0.0.0:50051]
+```json
+{
+  "credible": {
+    "assertion_gas_limit": 3000000,
+    "overlay_cache_capacity": 100000,
+    "cache_capacity_bytes": 256000000,
+    "flush_every_ms": 5000,
+    "assertion_da_rpc_url": "http://127.0.0.1:5001",
+    "indexer_rpc_url": "ws://127.0.0.1:8546",
+    "indexer_db_path": ".local/sidecar-host/indexer_database",
+    "assertion_store_db_path": ".local/sidecar-host/assertion_store_database",
+    "block_tag": "latest",
+    "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
+    "state_oracle_deployment_block": 0,
+    "transaction_results_max_capacity": 1000
+  },
+  "transport": {
+    "protocol": "grpc",
+    "bind_addr": "0.0.0.0:50051"
+  },
+  "state": {
+    "sequencer_url": "http://127.0.0.1:8545",
+    "besu_client_ws_url": "ws://127.0.0.1:8546",
+    "minimum_state_diff": 100,
+    "sources_sync_timeout_ms": 1000,
+    "sources_monitoring_period_ms": 500
+  }
+}
 ```
 
 ## Running the sidecar

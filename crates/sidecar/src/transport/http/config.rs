@@ -1,4 +1,4 @@
-use crate::args::HttpTransportArgs;
+use crate::args::file::TransportConfig;
 use std::net::{
     AddrParseError,
     SocketAddr,
@@ -18,9 +18,9 @@ impl Default for HttpTransportConfig {
     }
 }
 
-impl TryFrom<HttpTransportArgs> for HttpTransportConfig {
+impl TryFrom<TransportConfig> for HttpTransportConfig {
     type Error = AddrParseError;
-    fn try_from(value: HttpTransportArgs) -> Result<Self, Self::Error> {
+    fn try_from(value: TransportConfig) -> Result<Self, Self::Error> {
         Ok(Self {
             bind_addr: value.bind_addr.parse()?,
         })

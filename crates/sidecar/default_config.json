@@ -1,0 +1,27 @@
+{
+  "credible": {
+    "assertion_gas_limit": 3000000,
+    "overlay_cache_capacity": 100000,
+    "cache_capacity_bytes": 256000000,
+    "flush_every_ms": 5000,
+    "assertion_da_rpc_url": "http://127.0.0.1:5001",
+    "indexer_rpc_url": "ws://127.0.0.1:8546",
+    "indexer_db_path": ".local/sidecar-host/indexer_database",
+    "assertion_store_db_path": ".local/sidecar-host/assertion_store_database",
+    "block_tag": "latest",
+    "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
+    "state_oracle_deployment_block": 0,
+    "transaction_results_max_capacity": 1000
+  },
+  "transport": {
+    "protocol": "grpc",
+    "bind_addr": "0.0.0.0:50051"
+  },
+  "state": {
+    "sequencer_url": "http://127.0.0.1:8545",
+    "besu_client_ws_url": "ws://127.0.0.1:8546",
+    "minimum_state_diff": 100,
+    "sources_sync_timeout_ms": 1000,
+    "sources_monitoring_period_ms": 500
+  }
+}

@@ -1,6 +1,6 @@
 //! # Configuration for the `GrpcTransport`.
 
-use crate::args::HttpTransportArgs;
+use crate::args::file::TransportConfig;
 use std::net::{
     AddrParseError,
     SocketAddr,
@@ -20,9 +20,9 @@ impl Default for GrpcTransportConfig {
     }
 }
 
-impl TryFrom<HttpTransportArgs> for GrpcTransportConfig {
+impl TryFrom<TransportConfig> for GrpcTransportConfig {
     type Error = AddrParseError;
-    fn try_from(value: HttpTransportArgs) -> Result<Self, Self::Error> {
+    fn try_from(value: TransportConfig) -> Result<Self, Self::Error> {
         Ok(Self {
             bind_addr: value.bind_addr.parse()?,
         })
