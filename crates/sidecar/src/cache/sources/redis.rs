@@ -76,7 +76,7 @@ const CODE_PREFIX: &str = "code";
 const BLOCK_HASH_PREFIX: &str = "block_hash";
 const CURRENT_BLOCK_KEY: &str = "current_block";
 /// How frequently (in milliseconds) the background task polls Redis for the current block.
-const CURRENT_BLOCK_REFRESH_INTERVAL_MS: u64 = 75;
+const CURRENT_BLOCK_REFRESH_INTERVAL_MS: Duration = Duration::from_millis(75);
 
 /// Contract metadata stored alongside bytecode when present.
 const BALANCE_FIELD: &str = "balance";
@@ -123,7 +123,7 @@ pub struct RedisClientBackend {
 /// Coordinates the task that keeps the cached block height fresh.
 struct RefreshCoordinator {
     started: AtomicBool,
-    stop: AtomicBool,
+    stop: Arc<AtomicBool>,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -131,7 +131,7 @@ impl RefreshCoordinator {
     fn new() -> Self {
         Self {
             started: AtomicBool::new(false),
-            stop: AtomicBool::new(false),
+            stop: Arc::new(AtomicBool::new(false)),
             handle: Mutex::new(None),
         }
     }
@@ -141,15 +141,20 @@ impl RefreshCoordinator {
         let mut guard = self.handle.lock().expect("refresh handle poisoned");
         *guard = Some(handle);
     }
+
+    /// Returns a clone of the stop flag that the refresh task observes.
+    fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
+    }
 }
 
 impl Drop for RefreshCoordinator {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Ok(mut guard) = self.handle.lock() {
-            if let Some(handle) = guard.take() {
-                handle.abort();
-            }
+        if let Ok(mut guard) = self.handle.lock()
+            && let Some(handle) = guard.take()
+        {
+            handle.abort();
         }
     }
 }
@@ -214,23 +219,40 @@ impl RedisClientBackend {
 
     /// Updates the local atomic cache with the latest block height observed by the refresher.
     fn set_cached_current_block_value(&self, value: Option<u64>) {
+        Self::write_cached_current_block(
+            &self.current_block_cache,
+            &self.current_block_initialized,
+            value,
+        );
+    }
+
+    fn write_cached_current_block(
+        cache: &Arc<AtomicU64>,
+        initialized: &Arc<AtomicBool>,
+        value: Option<u64>,
+    ) {
         match value {
             Some(block) => {
-                self.current_block_cache.store(block, Ordering::Release);
-                self.current_block_initialized
-                    .store(true, Ordering::Release);
+                cache.store(block, Ordering::Release);
+                initialized.store(true, Ordering::Release);
             }
             None => {
-                self.current_block_initialized
-                    .store(false, Ordering::Release);
+                initialized.store(false, Ordering::Release);
             }
         }
     }
 
     /// Returns the cached block height when the refresher has populated it at least once.
     fn cached_current_block_value(&self) -> Option<u64> {
-        if self.current_block_initialized.load(Ordering::Acquire) {
-            Some(self.current_block_cache.load(Ordering::Acquire))
+        Self::read_cached_current_block(&self.current_block_cache, &self.current_block_initialized)
+    }
+
+    fn read_cached_current_block(
+        cache: &Arc<AtomicU64>,
+        initialized: &Arc<AtomicBool>,
+    ) -> Option<u64> {
+        if initialized.load(Ordering::Acquire) {
+            Some(cache.load(Ordering::Acquire))
         } else {
             None
         }
@@ -238,11 +260,7 @@ impl RedisClientBackend {
 
     /// Reads the current block straight from Redis when the local cache is cold.
     fn read_current_block(&self, current_block_key: &str) -> Result<Option<u64>, RedisCacheError> {
-        self.with_connection(|conn| conn.get::<_, Option<String>>(current_block_key))
-            .and_then(|opt| {
-                opt.map(|value| parse_u64(&value, current_block_key, CURRENT_BLOCK_KEY))
-                    .transpose()
-            })
+        Self::read_current_block_with_client(&self.client, current_block_key)
     }
 
     /// Starts the task that periodically refreshes our cached block height.
@@ -255,17 +273,19 @@ impl RedisClientBackend {
             return Ok(());
         }
 
-        let backend = self.clone();
-        let coordinator = self.refresh.clone();
+        let client = self.client.clone();
+        let cache = self.current_block_cache.clone();
+        let initialized = self.current_block_initialized.clone();
+        let stop_flag = self.refresh.stop_flag();
         let handle = Handle::try_current()
             .map_err(|err| {
-                RedisCacheError::Other(format!(
-                    "Error trying to spawn block refresh task: {err}"
-                ))
+                RedisCacheError::Other(format!("Error trying to spawn block refresh task: {err}"))
             })?
             .spawn(Self::refresh_current_block_loop(
-                backend,
-                coordinator,
+                client,
+                cache,
+                initialized,
+                stop_flag.clone(),
                 current_block_key,
                 interval,
             ));
@@ -276,36 +296,80 @@ impl RedisClientBackend {
 
     /// Worker loop that polls Redis at the configured interval and keeps the cache warm.
     async fn refresh_current_block_loop(
-        backend: RedisClientBackend,
-        coordinator: Arc<RefreshCoordinator>,
+        client: redis::Client,
+        current_block_cache: Arc<AtomicU64>,
+        current_block_initialized: Arc<AtomicBool>,
+        stop_flag: Arc<AtomicBool>,
         current_block_key: String,
         interval: Duration,
     ) {
         let mut ticker = time::interval(interval);
         loop {
-            if coordinator.stop.load(Ordering::Acquire) {
+            if stop_flag.load(Ordering::Acquire) {
                 break;
             }
 
-            let backend_clone = backend.clone();
             let key = current_block_key.clone();
-            let result = task::spawn_blocking(move || backend_clone.read_current_block(&key)).await;
+            let client_clone = client.clone();
+            let result = task::spawn_blocking(move || {
+                Self::read_current_block_with_client(&client_clone, &key)
+            })
+            .await;
 
             match result {
-                Ok(Ok(Some(block))) => backend.set_cached_current_block_value(Some(block)),
-                Ok(Ok(None)) => backend.set_cached_current_block_value(None),
-                Ok(Err(err)) => {
-                    critical!(error = ?err, "failed to refresh current block from redis")
+                Ok(Ok(Some(block))) => {
+                    Self::write_cached_current_block(
+                        &current_block_cache,
+                        &current_block_initialized,
+                        Some(block),
+                    );
                 }
-                Err(err) => critical!(error = ?err, "redis current block refresh task join error"),
+                Ok(Ok(None)) => {
+                    Self::write_cached_current_block(
+                        &current_block_cache,
+                        &current_block_initialized,
+                        None,
+                    );
+                }
+                Ok(Err(err)) => {
+                    critical!(error = ?err, "failed to refresh current block from redis");
+                }
+                Err(err) => {
+                    critical!(error = ?err, "redis current block refresh task join error");
+                }
             }
 
-            if coordinator.stop.load(Ordering::Acquire) {
+            if stop_flag.load(Ordering::Acquire) {
                 break;
             }
 
             ticker.tick().await;
         }
+    }
+
+    fn read_current_block_with_client(
+        client: &redis::Client,
+        current_block_key: &str,
+    ) -> Result<Option<u64>, RedisCacheError> {
+        let mut connection = match client.get_connection() {
+            Ok(connection) => connection,
+            Err(err) => {
+                critical!(error = ?err, "redis backend connection error");
+                return Err(RedisCacheError::Backend(err));
+            }
+        };
+
+        let response = match connection.get::<_, Option<String>>(current_block_key) {
+            Ok(value) => value,
+            Err(err) => {
+                critical!(error = ?err, "redis backend command error");
+                return Err(RedisCacheError::Backend(err));
+            }
+        };
+
+        response
+            .map(|value| parse_u64(&value, current_block_key, CURRENT_BLOCK_KEY))
+            .transpose()
     }
 }
 
@@ -371,10 +435,9 @@ impl<B: RedisBackend> RedisCache<B> {
     pub fn with_namespace(backend: B, namespace: impl Into<String>) -> Self {
         let namespace = namespace.into();
         let current_block_key = format!("{namespace}:{CURRENT_BLOCK_KEY}");
-        if let Err(err) = backend.ensure_current_block_service(
-            current_block_key,
-            Duration::from_millis(CURRENT_BLOCK_REFRESH_INTERVAL_MS),
-        ) {
+        if let Err(err) = backend
+            .ensure_current_block_service(current_block_key, CURRENT_BLOCK_REFRESH_INTERVAL_MS)
+        {
             critical!(error = ?err, "failed to start redis current block refresh service");
         }
 
