@@ -35,7 +35,13 @@ use revm::database::{
     CacheDB,
     EmptyDBTyped,
 };
-use std::convert::Infallible;
+use std::{
+    convert::Infallible,
+    path::{
+        Path,
+        PathBuf,
+    },
+};
 
 use alloy_rpc_types::{
     BlockId,
@@ -120,13 +126,29 @@ pub fn random_bytes32() -> FixedBytes<32> {
     random_bytes::<32>()
 }
 
+const ARTIFACT_ROOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../testdata/mock-protocol/out"
+);
+
+fn artifact_path(file_name: &str, contract_name: &str) -> PathBuf {
+    Path::new(ARTIFACT_ROOT)
+        .join(file_name)
+        .join(format!("{contract_name}.json"))
+}
+
 fn read_artifact(input: &str) -> serde_json::Value {
     let mut parts = input.split(':');
     let file_name = parts.next().expect("Failed to read filename");
     let contract_name = parts.next().expect("Failed to read contract name");
-    let path = format!("../../testdata/mock-protocol/out/{file_name}/{contract_name}.json");
+    let path = artifact_path(file_name, contract_name);
 
-    let file = std::fs::File::open(path).expect("Failed to open file");
+    let file = std::fs::File::open(&path).unwrap_or_else(|e| {
+        panic!(
+            "Failed to open file `{}` resolved from artifact `{input}`: {e}",
+            path.display()
+        )
+    });
     serde_json::from_reader(file).expect("Failed to parse JSON")
 }
 
