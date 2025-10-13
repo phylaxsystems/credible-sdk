@@ -118,19 +118,24 @@ impl SourcesInner {
         let start = Instant::now();
         loop {
             let head_block_number = self.head_block_number.load(Ordering::Relaxed);
-            let synced_sources = self.cache.iter_synced_sources();
             let timestamp = Instant::now().duration_since(start).as_secs();
 
             let mut any_synced = false;
 
-            for source in synced_sources {
-                let source_name = source.name();
-                let is_synced = source.is_synced(head_block_number);
+            // Iterate over all configured sources
+            for entry in &self.metrics {
+                let (source_name, source_metric) = entry.pair();
+
+                // Get the source from cache and check its sync status
+                let is_synced = self
+                    .cache
+                    .iter_synced_sources()
+                    .find(|s| s.name() == *source_name)
+                    .is_some_and(|source| source.is_synced(head_block_number)); // Default to not
+                // synced if source not found
 
                 // Update per-source metrics
-                if let Some(s) = self.metrics.get(&source_name) {
-                    s.update_sync_status(is_synced, timestamp);
-                }
+                source_metric.update_sync_status(is_synced, timestamp);
 
                 if is_synced {
                     any_synced = true;
