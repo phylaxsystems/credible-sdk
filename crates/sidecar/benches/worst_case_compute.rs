@@ -50,8 +50,37 @@ use std::{
 };
 use tokio::runtime::Runtime;
 
+use serde::{
+    Deserialize,
+    de::value::StringDeserializer,
+};
+
 const ASSERTIONS_PER_ADOPTER: usize = 5;
 const GAS_LIMIT_PER_TX: u64 = 50_000;
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum BenchTransport {
+    Mock,
+    Http,
+    Grpc,
+}
+
+impl Default for BenchTransport {
+    fn default() -> Self {
+        Self::Mock
+    }
+}
+
+impl BenchTransport {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mock => "mock",
+            Self::Http => "http",
+            Self::Grpc => "grpc",
+        }
+    }
+}
 
 fn read_assertions_file(input: &str) -> Vec<Bytes> {
     let file = File::open(input).expect("Failed to open assertions file");
@@ -250,13 +279,17 @@ fn main() {
     let mut criterion = Criterion::default();
 
     let transport = std::env::var("SIDECAR_BENCH_TRANSPORT")
-        .unwrap_or_else(|_| "mock".to_string())
-        .to_ascii_lowercase();
-    let bench_label = format!("worst_case_compute ({transport})");
-    tracing::info!("Running benchmark with `{transport}` transport");
+        .ok()
+        .and_then(|raw| {
+            let de = StringDeserializer::<serde::de::value::Error>::new(raw.to_ascii_lowercase());
+            BenchTransport::deserialize(de).ok()
+        })
+        .unwrap_or_default();
+    let bench_label = format!("worst_case_compute ({})", transport.as_str());
+    tracing::info!("Running benchmark with `{}` transport", transport.as_str());
 
-    match transport.as_str() {
-        "grpc" => {
+    match transport {
+        BenchTransport::Grpc => {
             run_benchmark_for_driver::<LocalInstanceGrpcDriver, _, _>(
                 &mut criterion,
                 &runtime,
@@ -266,7 +299,7 @@ fn main() {
                 LocalInstanceGrpcDriver::new_with_store,
             )
         }
-        "http" => {
+        BenchTransport::Http => {
             run_benchmark_for_driver::<LocalInstanceHttpDriver, _, _>(
                 &mut criterion,
                 &runtime,
@@ -276,7 +309,7 @@ fn main() {
                 LocalInstanceHttpDriver::new_with_store,
             )
         }
-        _ => {
+        BenchTransport::Mock => {
             run_benchmark_for_driver::<LocalInstanceMockDriver, _, _>(
                 &mut criterion,
                 &runtime,
