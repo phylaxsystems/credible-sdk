@@ -408,6 +408,8 @@ mod tests {
             Arc,
             Mutex,
             atomic::{
+                AtomicBool,
+                AtomicU64,
                 AtomicUsize,
                 Ordering,
             },
@@ -573,6 +575,10 @@ mod tests {
     struct RedisTestBackend {
         connection: Mutex<MockRedisConnection>,
         hgetall_calls: Arc<AtomicUsize>,
+        /// Mimics the async refresher cache for tests.
+        current_block: Arc<AtomicU64>,
+        /// Tracks whether the mock cache has been primed with a value.
+        current_block_initialized: Arc<AtomicBool>,
     }
 
     impl fmt::Debug for RedisTestBackend {
@@ -591,6 +597,8 @@ mod tests {
                 Self {
                     connection: Mutex::new(MockRedisConnection::new(commands)),
                     hgetall_calls: calls.clone(),
+                    current_block: Arc::new(AtomicU64::new(0)),
+                    current_block_initialized: Arc::new(AtomicBool::new(false)),
                 },
                 calls,
             )
@@ -670,6 +678,49 @@ mod tests {
 
         fn set(&self, _key: &str, _value: &str) -> Result<(), RedisCacheError> {
             panic!("unexpected redis set command in RedisTestBackend");
+        }
+
+        fn ensure_current_block_service(
+            &self,
+            current_block_key: String,
+            _interval: Duration,
+        ) -> Result<(), RedisCacheError> {
+            match self.get(&current_block_key)? {
+                Some(value) => {
+                    let block = value.trim().parse::<u64>().map_err(|source| {
+                        RedisCacheError::InvalidInteger {
+                            key: current_block_key.clone(),
+                            field: "current_block",
+                            source,
+                        }
+                    })?;
+                    self.update_cached_current_block(Some(block));
+                }
+                None => self.update_cached_current_block(None),
+            }
+            Ok(())
+        }
+
+        fn cached_current_block(&self) -> Option<u64> {
+            if self.current_block_initialized.load(Ordering::Acquire) {
+                Some(self.current_block.load(Ordering::Acquire))
+            } else {
+                None
+            }
+        }
+
+        fn update_cached_current_block(&self, value: Option<u64>) {
+            match value {
+                Some(block) => {
+                    self.current_block.store(block, Ordering::Release);
+                    self.current_block_initialized
+                        .store(true, Ordering::Release);
+                }
+                None => {
+                    self.current_block_initialized
+                        .store(false, Ordering::Release);
+                }
+            }
         }
     }
 

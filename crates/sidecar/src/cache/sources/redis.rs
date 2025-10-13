@@ -49,13 +49,24 @@ use std::{
     str::FromStr,
     sync::{
         Arc,
+        Mutex,
         atomic::{
+            AtomicBool,
             AtomicU64,
             Ordering,
         },
     },
+    time::Duration,
 };
 use thiserror::Error;
+use tokio::{
+    runtime::Handle,
+    task::{
+        self,
+        JoinHandle,
+    },
+    time,
+};
 
 /// Prefix used to group all cache keys.
 const DEFAULT_NAMESPACE: &str = "state";
@@ -64,6 +75,8 @@ const STORAGE_PREFIX: &str = "storage";
 const CODE_PREFIX: &str = "code";
 const BLOCK_HASH_PREFIX: &str = "block_hash";
 const CURRENT_BLOCK_KEY: &str = "current_block";
+/// How frequently (in milliseconds) the background task polls Redis for the current block.
+const CURRENT_BLOCK_REFRESH_INTERVAL_MS: u64 = 75;
 
 /// Contract metadata stored alongside bytecode when present.
 const BALANCE_FIELD: &str = "balance";
@@ -84,16 +97,71 @@ pub trait RedisBackend: Debug + Send + Sync {
     fn get(&self, key: &str) -> Result<Option<String>, RedisCacheError>;
     /// Writes a plain string value at `key` for block metadata and bytecode.
     fn set(&self, key: &str, value: &str) -> Result<(), RedisCacheError>;
+    /// Ensures a background refresh service keeps the current block cached locally.
+    fn ensure_current_block_service(
+        &self,
+        current_block_key: String,
+        interval: Duration,
+    ) -> Result<(), RedisCacheError>;
+    /// Returns the last current block observed by the refresh service, if any.
+    fn cached_current_block(&self) -> Option<u64>;
+    /// Updates the cached current block value maintained by the backend.
+    fn update_cached_current_block(&self, value: Option<u64>);
 }
 
-/// Real Redis backend that delegates commands to `redis::Client`.
+/// Redis backend that delegates commands to `redis::Client`.
 pub struct RedisClientBackend {
     client: redis::Client,
+    /// Stores the freshest block height pulled from Redis.
+    current_block_cache: Arc<AtomicU64>,
+    /// Marks whether the cache has been initialised by the refresher.
+    current_block_initialized: Arc<AtomicBool>,
+    /// Manages the task that keeps `current_block_cache` up to date.
+    refresh: Arc<RefreshCoordinator>,
+}
+
+/// Coordinates the task that keeps the cached block height fresh.
+struct RefreshCoordinator {
+    started: AtomicBool,
+    stop: AtomicBool,
+    handle: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl RefreshCoordinator {
+    fn new() -> Self {
+        Self {
+            started: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+            handle: Mutex::new(None),
+        }
+    }
+
+    /// Stores the background task handle so we can later abort it.
+    fn set_handle(&self, handle: JoinHandle<()>) {
+        let mut guard = self.handle.lock().expect("refresh handle poisoned");
+        *guard = Some(handle);
+    }
+}
+
+impl Drop for RefreshCoordinator {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Ok(mut guard) = self.handle.lock() {
+            if let Some(handle) = guard.take() {
+                handle.abort();
+            }
+        }
+    }
 }
 
 impl Clone for RedisClientBackend {
     fn clone(&self) -> Self {
-        Self::new(self.client.clone())
+        Self {
+            client: self.client.clone(),
+            current_block_cache: self.current_block_cache.clone(),
+            current_block_initialized: self.current_block_initialized.clone(),
+            refresh: self.refresh.clone(),
+        }
     }
 }
 
@@ -108,7 +176,12 @@ impl Debug for RedisClientBackend {
 impl RedisClientBackend {
     /// Wraps an existing `redis::Client`, allowing callers to share clients across caches.
     pub fn new(client: redis::Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            current_block_cache: Arc::new(AtomicU64::new(0)),
+            current_block_initialized: Arc::new(AtomicBool::new(false)),
+            refresh: Arc::new(RefreshCoordinator::new()),
+        }
     }
 
     /// Constructs a new backend by opening a client from the provided connection URL.
@@ -138,6 +211,102 @@ impl RedisClientBackend {
             }
         }
     }
+
+    /// Updates the local atomic cache with the latest block height observed by the refresher.
+    fn set_cached_current_block_value(&self, value: Option<u64>) {
+        match value {
+            Some(block) => {
+                self.current_block_cache.store(block, Ordering::Release);
+                self.current_block_initialized
+                    .store(true, Ordering::Release);
+            }
+            None => {
+                self.current_block_initialized
+                    .store(false, Ordering::Release);
+            }
+        }
+    }
+
+    /// Returns the cached block height when the refresher has populated it at least once.
+    fn cached_current_block_value(&self) -> Option<u64> {
+        if self.current_block_initialized.load(Ordering::Acquire) {
+            Some(self.current_block_cache.load(Ordering::Acquire))
+        } else {
+            None
+        }
+    }
+
+    /// Reads the current block straight from Redis when the local cache is cold.
+    fn read_current_block(&self, current_block_key: &str) -> Result<Option<u64>, RedisCacheError> {
+        self.with_connection(|conn| conn.get::<_, Option<String>>(current_block_key))
+            .and_then(|opt| {
+                opt.map(|value| parse_u64(&value, current_block_key, CURRENT_BLOCK_KEY))
+                    .transpose()
+            })
+    }
+
+    /// Starts the task that periodically refreshes our cached block height.
+    fn spawn_current_block_refresh(
+        &self,
+        current_block_key: String,
+        interval: Duration,
+    ) -> Result<(), RedisCacheError> {
+        if self.refresh.started.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+
+        let backend = self.clone();
+        let coordinator = self.refresh.clone();
+        let handle = Handle::try_current()
+            .map_err(|err| {
+                RedisCacheError::Other(format!(
+                    "Error trying to spawn block refresh task: {err}"
+                ))
+            })?
+            .spawn(Self::refresh_current_block_loop(
+                backend,
+                coordinator,
+                current_block_key,
+                interval,
+            ));
+
+        self.refresh.set_handle(handle);
+        Ok(())
+    }
+
+    /// Worker loop that polls Redis at the configured interval and keeps the cache warm.
+    async fn refresh_current_block_loop(
+        backend: RedisClientBackend,
+        coordinator: Arc<RefreshCoordinator>,
+        current_block_key: String,
+        interval: Duration,
+    ) {
+        let mut ticker = time::interval(interval);
+        loop {
+            if coordinator.stop.load(Ordering::Acquire) {
+                break;
+            }
+
+            let backend_clone = backend.clone();
+            let key = current_block_key.clone();
+            let result = task::spawn_blocking(move || backend_clone.read_current_block(&key)).await;
+
+            match result {
+                Ok(Ok(Some(block))) => backend.set_cached_current_block_value(Some(block)),
+                Ok(Ok(None)) => backend.set_cached_current_block_value(None),
+                Ok(Err(err)) => {
+                    critical!(error = ?err, "failed to refresh current block from redis")
+                }
+                Err(err) => critical!(error = ?err, "redis current block refresh task join error"),
+            }
+
+            if coordinator.stop.load(Ordering::Acquire) {
+                break;
+            }
+
+            ticker.tick().await;
+        }
+    }
 }
 
 impl RedisBackend for RedisClientBackend {
@@ -165,6 +334,22 @@ impl RedisBackend for RedisClientBackend {
     fn set(&self, key: &str, value: &str) -> Result<(), RedisCacheError> {
         self.with_connection(|conn| conn.set(key, value))
     }
+
+    fn ensure_current_block_service(
+        &self,
+        current_block_key: String,
+        interval: Duration,
+    ) -> Result<(), RedisCacheError> {
+        self.spawn_current_block_refresh(current_block_key, interval)
+    }
+
+    fn cached_current_block(&self) -> Option<u64> {
+        self.cached_current_block_value()
+    }
+
+    fn update_cached_current_block(&self, value: Option<u64>) {
+        self.set_cached_current_block_value(value);
+    }
 }
 
 #[derive(Debug)]
@@ -181,11 +366,21 @@ impl<B: RedisBackend> RedisCache<B> {
         Self::with_namespace(backend, DEFAULT_NAMESPACE)
     }
 
-    /// Creates a cache that stores entries under a custom namespace prefix.
+    /// Creates a cache that stores entries under a custom namespace prefix and wires up the
+    /// background current block refresher.
     pub fn with_namespace(backend: B, namespace: impl Into<String>) -> Self {
+        let namespace = namespace.into();
+        let current_block_key = format!("{namespace}:{CURRENT_BLOCK_KEY}");
+        if let Err(err) = backend.ensure_current_block_service(
+            current_block_key,
+            Duration::from_millis(CURRENT_BLOCK_REFRESH_INTERVAL_MS),
+        ) {
+            critical!(error = ?err, "failed to start redis current block refresh service");
+        }
+
         Self {
             backend,
-            namespace: namespace.into(),
+            namespace,
             current_block: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -331,10 +526,13 @@ impl<B: RedisBackend> RedisCache<B> {
         self.backend.set(&key, &encode_hex(block_hash.as_slice()))
     }
 
-    /// Records the highest block number that has been synchronized into the cache.
+    /// Records the highest block number that has been synchronized into the cache and primes the
+    /// in-process cache with the same value.
     pub fn set_current_block_number(&self, block_number: u64) -> Result<(), RedisCacheError> {
         self.backend
-            .set(&self.current_block_key(), &block_number.to_string())
+            .set(&self.current_block_key(), &block_number.to_string())?;
+        self.backend.update_cached_current_block(Some(block_number));
+        Ok(())
     }
 
     /// Helper that reads a raw storage slot value without converting it yet.
@@ -417,12 +615,25 @@ impl<B: RedisBackend> DatabaseRef for RedisCache<B> {
 impl<B: RedisBackend> Source for RedisCache<B> {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, required_block_number: u64) -> bool {
+        if let Some(block) = self.backend.cached_current_block() {
+            return block >= required_block_number
+                && block <= self.current_block.load(Ordering::Relaxed);
+        }
+
         match self.fetch_current_block_number() {
             Ok(Some(block)) => {
+                self.backend.update_cached_current_block(Some(block));
                 block >= required_block_number
                     && block <= self.current_block.load(Ordering::Relaxed)
             }
-            _ => false,
+            Ok(None) => {
+                self.backend.update_cached_current_block(None);
+                false
+            }
+            Err(err) => {
+                critical!(error = ?err, "failed to read current block number");
+                false
+            }
         }
     }
 
@@ -567,11 +778,36 @@ mod tests {
         Source,
         SourceError,
     };
-    use std::sync::RwLock;
+    use std::{
+        sync::{
+            Arc,
+            RwLock,
+            atomic::{
+                AtomicBool,
+                AtomicU64,
+                Ordering,
+            },
+        },
+        time::Duration,
+    };
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     struct InMemoryBackend {
         entries: RwLock<HashMap<String, Entry>>,
+        /// Mirrors the production refresher by holding the last observed block height.
+        current_block: Arc<AtomicU64>,
+        /// Indicates if the cached block height has been initialised.
+        current_block_initialized: Arc<AtomicBool>,
+    }
+
+    impl Default for InMemoryBackend {
+        fn default() -> Self {
+            Self {
+                entries: RwLock::new(HashMap::new()),
+                current_block: Arc::new(AtomicU64::new(0)),
+                current_block_initialized: Arc::new(AtomicBool::new(false)),
+            }
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -638,7 +874,57 @@ mod tests {
         fn set(&self, key: &str, value: &str) -> Result<(), RedisCacheError> {
             let mut guard = self.entries.write().unwrap();
             guard.insert(key.to_string(), Entry::String(value.to_string()));
+            drop(guard);
+
+            if key.ends_with(CURRENT_BLOCK_KEY) {
+                let block = parse_u64(value, key, CURRENT_BLOCK_KEY)?;
+                self.update_cached_current_block(Some(block));
+            }
+
             Ok(())
+        }
+
+        fn ensure_current_block_service(
+            &self,
+            current_block_key: String,
+            _interval: Duration,
+        ) -> Result<(), RedisCacheError> {
+            let entry = {
+                let guard = self.entries.read().unwrap();
+                guard.get(&current_block_key).cloned()
+            };
+
+            match entry {
+                Some(Entry::String(value)) => {
+                    let block = parse_u64(&value, &current_block_key, CURRENT_BLOCK_KEY)?;
+                    self.update_cached_current_block(Some(block));
+                }
+                _ => self.update_cached_current_block(None),
+            }
+
+            Ok(())
+        }
+
+        fn cached_current_block(&self) -> Option<u64> {
+            if self.current_block_initialized.load(Ordering::Acquire) {
+                Some(self.current_block.load(Ordering::Acquire))
+            } else {
+                None
+            }
+        }
+
+        fn update_cached_current_block(&self, value: Option<u64>) {
+            match value {
+                Some(block) => {
+                    self.current_block.store(block, Ordering::Release);
+                    self.current_block_initialized
+                        .store(true, Ordering::Release);
+                }
+                None => {
+                    self.current_block_initialized
+                        .store(false, Ordering::Release);
+                }
+            }
         }
     }
 
