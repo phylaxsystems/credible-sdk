@@ -1,4 +1,4 @@
-//! Lightweight blocking Redis client tailored to the worker's state schema.
+//! Lightweight blocking Redis client with circular buffer support for multiple states.
 //!
 //! The worker runs on Tokio, but the upstream `redis` crate is synchronous. We
 //! hide the spawn-blocking logic in this module so callers can commit state
@@ -18,61 +18,73 @@ use crate::state::{
 };
 use alloy::primitives::B256;
 
-/// Thin wrapper that writes account/state data into Redis using the schema
-/// documented in `README.md`.
+/// Configuration for the circular buffer of states in Redis.
+#[derive(Clone)]
+pub struct CircularBufferConfig {
+    /// Number of historical states to maintain (X in the design doc)
+    pub buffer_size: usize,
+}
+
+impl CircularBufferConfig {
+    pub fn new(buffer_size: usize) -> Self {
+        Self { buffer_size }
+    }
+}
+
+impl Default for CircularBufferConfig {
+    fn default() -> Self {
+        Self { buffer_size: 3 }
+    }
+}
+
+/// Thin wrapper that writes account/state data into Redis using a circular buffer
+/// approach to maintain multiple historical states.
 #[derive(Clone)]
 pub struct RedisStateWriter {
     client: Arc<redis::Client>,
-    namespace: String,
+    base_namespace: String,
+    buffer_config: CircularBufferConfig,
 }
 
 impl RedisStateWriter {
-    /// Build a new writer. We store the client in an `Arc` so clones can reuse
-    /// the underlying connection pool when the worker is shared across tasks.
-    pub fn new(redis_url: &str, namespace: String) -> RedisResult<Self> {
+    /// Build a new writer with circular buffer support.
+    pub fn new(
+        redis_url: &str,
+        base_namespace: String,
+        buffer_config: CircularBufferConfig,
+    ) -> RedisResult<Self> {
         let client = redis::Client::open(redis_url)?;
         Ok(Self {
             client: Arc::new(client),
-            namespace,
+            base_namespace,
+            buffer_config,
         })
     }
 
-    /// Read the most recently persisted block number from Redis, if any.
+    /// Read the most recently persisted block number from Redis by checking all namespaces.
     pub async fn latest_block_number(&self) -> Result<Option<u64>> {
-        let key = self.current_block_key();
-        self.with_connection(move |conn| read_latest_block_number(conn, &key))
-            .await
-    }
+        let base_namespace = self.base_namespace.clone();
+        let buffer_size = self.buffer_config.buffer_size;
 
-    /// Persist all account mutations for the block followed by metadata.
-    pub async fn commit_block(&self, update: BlockStateUpdate) -> Result<()> {
-        if update.accounts.is_empty() {
-            return self
-                .update_block_metadata(update.block_number, update.block_hash)
-                .await;
-        }
-
-        let namespace = self.namespace.clone();
-        self.with_connection(move |conn| commit_block_with_connection(conn, &namespace, update))
-            .await
-    }
-
-    /// Update the `current_block` pointer and per-block hash mapping without
-    /// touching any accounts. Used when trace output is empty.
-    pub async fn update_block_metadata(&self, block_number: u64, block_hash: B256) -> Result<()> {
-        let namespace = self.namespace.clone();
         self.with_connection(move |conn| {
-            write_block_metadata(conn, &namespace, block_number, block_hash)
+            read_latest_block_number(conn, &base_namespace, buffer_size)
         })
         .await
     }
 
-    fn current_block_key(&self) -> String {
-        format!("{namespace}:current_block", namespace = self.namespace)
+    /// Persist all account mutations for the block using atomic transactions.
+    /// This implements the circular buffer pattern where `namespace_idx` = `block_number` % `buffer_size`.
+    pub async fn commit_block(&self, update: BlockStateUpdate) -> Result<()> {
+        let base_namespace = self.base_namespace.clone();
+        let buffer_size = self.buffer_config.buffer_size;
+
+        self.with_connection(move |conn| {
+            commit_block_atomic(conn, &base_namespace, buffer_size, &update)
+        })
+        .await
     }
 
-    /// Execute a synchronous Redis operation on a dedicated blocking thread so
-    /// the async runtime remains responsive.
+    /// Execute a synchronous Redis operation on a dedicated blocking thread.
     async fn with_connection<T, F>(&self, func: F) -> Result<T>
     where
         T: Send + 'static,
@@ -88,34 +100,74 @@ impl RedisStateWriter {
     }
 }
 
-/// Write the account header + storage entries expected by the sidecar overlay.
-fn write_account<C>(conn: &mut C, namespace: &str, account: &AccountCommit) -> Result<()>
+/// Get the namespace for a given block number using circular buffer logic.
+fn get_namespace_for_block(
+    base_namespace: &str,
+    block_number: u64,
+    buffer_size: usize,
+) -> Result<String> {
+    let namespace_idx = usize::try_from(block_number)? % buffer_size;
+    Ok(format!("{base_namespace}:{namespace_idx}"))
+}
+
+/// Get the key for storing state diffs.
+fn get_diff_key(base_namespace: &str, block_number: u64) -> String {
+    format!("{base_namespace}:diff:{block_number}")
+}
+
+/// Read the current block number stored in a namespace.
+fn read_namespace_block_number<C>(conn: &mut C, namespace: &str) -> Result<Option<u64>>
 where
     C: redis::ConnectionLike,
 {
+    let block_key = format!("{namespace}:block");
+    let value: Option<String> = redis::cmd("GET")
+        .arg(&block_key)
+        .query(conn)
+        .map_err(|err| anyhow!(err))?;
+
+    value
+        .map(|v| v.parse::<u64>().context("invalid block number"))
+        .transpose()
+}
+
+/// Deserialize a state diff from JSON.
+fn deserialize_state_diff(json: &str) -> Result<BlockStateUpdate> {
+    serde_json::from_str(json).context("failed to deserialize state diff")
+}
+
+/// Apply a state diff to an existing namespace by updating accounts atomically.
+fn apply_state_diff_to_namespace(
+    pipe: &mut redis::Pipeline,
+    namespace: &str,
+    diff: &BlockStateUpdate,
+) {
+    // Apply each account update from the diff
+    for account in &diff.accounts {
+        write_account_to_pipe(pipe, namespace, account);
+    }
+}
+
+/// Write account data to a specific namespace within an atomic pipeline.
+fn write_account_to_pipe(pipe: &mut redis::Pipeline, namespace: &str, account: &AccountCommit) {
     let account_key = format!("{namespace}:account:{}", hex::encode(account.address));
     let balance = account.balance.to_string();
     let nonce = account.nonce.to_string();
     let code_hash = encode_b256(account.code_hash);
-    redis::cmd("HSET")
-        .arg(&account_key)
-        .arg("balance")
-        .arg(&balance)
-        .arg("nonce")
-        .arg(&nonce)
-        .arg("code_hash")
-        .arg(&code_hash)
-        .query::<()>(conn)
-        .map_err(|err| anyhow!(err))?;
+
+    pipe.hset_multiple(
+        &account_key,
+        &[
+            ("balance", balance.as_str()),
+            ("nonce", nonce.as_str()),
+            ("code_hash", code_hash.as_str()),
+        ],
+    );
 
     if let Some(code) = &account.code {
         let code_key = format!("{namespace}:code:{}", hex::encode(account.code_hash));
         let code_hex = encode_bytes(code);
-        redis::cmd("SET")
-            .arg(&code_key)
-            .arg(code_hex)
-            .query::<()>(conn)
-            .map_err(|err| anyhow!(err))?;
+        pipe.set(&code_key, code_hex);
     }
 
     if !account.storage.is_empty() || account.deleted {
@@ -123,43 +175,150 @@ where
         for (slot, value) in &account.storage {
             let slot_hex = encode_b256(*slot);
             let value_hex = encode_b256(*value);
-            redis::cmd("HSET")
-                .arg(&storage_key)
-                .arg(slot_hex)
-                .arg(value_hex)
-                .query::<()>(conn)
-                .map_err(|err| anyhow!(err))?;
+            pipe.hset(&storage_key, slot_hex, value_hex);
         }
     }
-
-    Ok(())
 }
 
-/// Store block-level metadata so consumers can resume sync or map numbers to
-/// hashes.
-fn write_block_metadata<C>(
-    conn: &mut C,
+/// Write block metadata to a namespace within an atomic pipeline.
+fn write_block_metadata_to_pipe(
+    pipe: &mut redis::Pipeline,
     namespace: &str,
+    base_namespace: &str,
     block_number: u64,
     block_hash: B256,
+) {
+    // Write block number to namespace
+    let block_key = format!("{namespace}:block");
+    pipe.set(&block_key, block_number.to_string());
+
+    // Write block hash mapping (shared across all namespaces)
+    let block_hash_key = format!("{base_namespace}:block_hash:{block_number}");
+    let block_hash_hex = encode_b256(block_hash);
+    pipe.set(&block_hash_key, block_hash_hex);
+}
+
+/// Serialize state diff for storage (simple JSON serialization).
+fn serialize_state_diff(update: &BlockStateUpdate) -> Result<String> {
+    serde_json::to_string(update).context("failed to serialize state diff")
+}
+
+/// Commit a block atomically using Redis MULTI/EXEC transaction.
+///
+/// CRITICAL: When overwriting a namespace, this function applies all intermediate
+/// state diffs to maintain cumulative state history.
+fn commit_block_atomic<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    buffer_size: usize,
+    update: &BlockStateUpdate,
 ) -> Result<()>
 where
     C: redis::ConnectionLike,
 {
-    let block_hash_key = format!("{namespace}:block_hash:{block_number}");
-    let block_hash_hex = encode_b256(block_hash);
-    redis::cmd("SET")
-        .arg(&block_hash_key)
-        .arg(block_hash_hex)
-        .query::<()>(conn)
-        .map_err(|err| anyhow!(err))?;
-    let current_block_key = format!("{namespace}:current_block");
-    redis::cmd("SET")
-        .arg(&current_block_key)
-        .arg(block_number.to_string())
-        .query::<()>(conn)
-        .map_err(|err| anyhow!(err))?;
+    let block_number = update.block_number;
+    let block_hash = update.block_hash;
+
+    // Determine target namespace using circular buffer logic
+    let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
+
+    // Check what block is currently in this namespace
+    let current_block = read_namespace_block_number(conn, &namespace)?;
+
+    // Create atomic pipeline
+    let mut pipe = redis::pipe();
+    pipe.atomic();
+
+    // If we're overwriting an old block, apply intermediate diffs
+    if let Some(old_block) = current_block
+        && block_number > old_block + 1
+    {
+        // We need to apply diffs from (old_block + 1) to (block_number - 1)
+        // to maintain cumulative state
+        for intermediate_block in (old_block + 1)..block_number {
+            let diff_key = get_diff_key(base_namespace, intermediate_block);
+            let diff_json: Option<String> = redis::cmd("GET")
+                .arg(&diff_key)
+                .query(conn)
+                .map_err(|err| anyhow!(err))?;
+
+            if let Some(json) = diff_json {
+                let diff = deserialize_state_diff(&json)?;
+                apply_state_diff_to_namespace(&mut pipe, &namespace, &diff);
+            } else {
+                // If we can't find an intermediate diff, we have a problem
+                // This shouldn't happen in normal operation
+                return Err(anyhow!(
+                    "Missing state diff for block {} needed to reconstruct state at block {}",
+                    intermediate_block,
+                    block_number
+                ));
+            }
+        }
+    }
+
+    // Apply the current block's state diff
+    for account in &update.accounts {
+        write_account_to_pipe(&mut pipe, &namespace, account);
+    }
+
+    // Write block metadata
+    write_block_metadata_to_pipe(
+        &mut pipe,
+        &namespace,
+        base_namespace,
+        block_number,
+        block_hash,
+    );
+
+    // Store the state diff for this block
+    let diff_key = get_diff_key(base_namespace, block_number);
+    let diff_data = serialize_state_diff(update)?;
+    pipe.set(&diff_key, diff_data);
+
+    // Delete old state diff (block_number - buffer_size)
+    if block_number >= buffer_size as u64 {
+        let old_block = block_number - buffer_size as u64;
+        let old_diff_key = get_diff_key(base_namespace, old_block);
+        pipe.del(&old_diff_key);
+    }
+
+    // Execute the atomic transaction
+    pipe.query::<()>(conn).map_err(|err| anyhow!(err))?;
+
     Ok(())
+}
+
+/// Read the latest block number by checking all namespaces in the circular buffer.
+fn read_latest_block_number<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    buffer_size: usize,
+) -> Result<Option<u64>>
+where
+    C: redis::ConnectionLike,
+{
+    let mut max_block: Option<u64> = None;
+
+    for idx in 0..buffer_size {
+        let namespace = format!("{base_namespace}:{idx}");
+        let block_key = format!("{namespace}:block");
+
+        let value: Option<String> = redis::cmd("GET")
+            .arg(&block_key)
+            .query(conn)
+            .map_err(|err| anyhow!(err))?;
+
+        if let Some(v) = value {
+            let block_num = v
+                .parse::<u64>()
+                .with_context(|| format!("invalid block number in namespace {idx}: {v}"))?;
+
+            max_block = Some(max_block.map_or(block_num, |current| current.max(block_num)));
+        }
+    }
+
+    Ok(max_block)
 }
 
 /// Helper to render 32-byte words in `0x`-prefixed hex for Redis consumers.
@@ -170,44 +329,6 @@ fn encode_b256(value: B256) -> String {
 /// Helper to render arbitrary byte slices for the code cache.
 fn encode_bytes(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
-}
-
-fn commit_block_with_connection<C>(
-    conn: &mut C,
-    namespace: &str,
-    update: BlockStateUpdate,
-) -> Result<()>
-where
-    C: redis::ConnectionLike,
-{
-    let (block_number, block_hash, accounts) = update.into_parts();
-
-    if accounts.is_empty() {
-        return write_block_metadata(conn, namespace, block_number, block_hash);
-    }
-
-    for account in &accounts {
-        write_account(conn, namespace, account)?;
-    }
-
-    write_block_metadata(conn, namespace, block_number, block_hash)
-}
-
-fn read_latest_block_number<C>(conn: &mut C, key: &str) -> Result<Option<u64>>
-where
-    C: redis::ConnectionLike,
-{
-    let value: Option<String> = redis::cmd("GET")
-        .arg(key)
-        .query(conn)
-        .map_err(|err| anyhow!(err))?;
-    let parsed = value
-        .map(|v| {
-            v.parse::<u64>()
-                .with_context(|| format!("invalid block number: {v}"))
-        })
-        .transpose()?;
-    Ok(parsed)
 }
 
 #[cfg(test)]
@@ -224,6 +345,7 @@ mod tests {
         keccak256,
     };
     use anyhow::Result;
+    use redis::Commands;
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::redis::Redis;
 
@@ -252,356 +374,733 @@ mod tests {
         (container, connection)
     }
 
+    // Helper to create a test update with specific account data
+    fn create_test_update(
+        block_number: u64,
+        address: Address,
+        balance: u64,
+        nonce: u64,
+        storage: Vec<(B256, B256)>,
+        code: Option<Vec<u8>>,
+    ) -> BlockStateUpdate {
+        let code_hash = code.as_ref().map_or(B256::ZERO, keccak256);
+
+        BlockStateUpdate {
+            block_number,
+            block_hash: B256::repeat_byte(u8::try_from(block_number).unwrap()),
+            accounts: vec![AccountCommit {
+                address,
+                balance: U256::from(balance),
+                nonce,
+                code_hash,
+                code,
+                storage,
+                deleted: false,
+            }],
+        }
+    }
+
+    // Helper to verify account state in Redis
+    fn verify_account_state(
+        conn: &mut redis::Connection,
+        namespace: &str,
+        address: Address,
+        expected_balance: u64,
+        expected_nonce: u64,
+    ) -> Result<()> {
+        let account_key = format!("{namespace}:account:{}", hex::encode(address));
+
+        let balance: String = conn.hget(&account_key, "balance")?;
+        assert_eq!(balance, expected_balance.to_string(), "Balance mismatch");
+
+        let nonce: String = conn.hget(&account_key, "nonce")?;
+        assert_eq!(nonce, expected_nonce.to_string(), "Nonce mismatch");
+
+        Ok(())
+    }
+
+    // Helper to verify storage in Redis
+    fn verify_storage(
+        conn: &mut redis::Connection,
+        namespace: &str,
+        address: Address,
+        slot: B256,
+        expected_value: B256,
+    ) -> Result<()> {
+        let storage_key = format!("{namespace}:storage:{}", hex::encode(address));
+        let slot_hex = encode_b256(slot);
+
+        let value: String = conn.hget(&storage_key, &slot_hex)?;
+        assert_eq!(value, encode_b256(expected_value), "Storage value mismatch");
+
+        Ok(())
+    }
+
     #[tokio::test]
-    async fn commit_block_persists_accounts_and_metadata() -> Result<()> {
+    async fn test_cumulative_state_with_different_accounts() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "cumulative_accounts".to_string();
+        let config = CircularBufferConfig { buffer_size: 3 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        // Block 0: Account 0x11 with balance 1000
+        let addr_0x11 = Address::repeat_byte(0x11);
+        let update0 = create_test_update(0, addr_0x11, 1000, 5, vec![], None);
+        writer.commit_block(update0).await?;
+
+        // Block 1: Account 0x22 with balance 2000 (0x11 not touched)
+        let addr_0x22 = Address::repeat_byte(0x22);
+        let update1 = create_test_update(1, addr_0x22, 2000, 10, vec![], None);
+        writer.commit_block(update1).await?;
+
+        // Block 2: Account 0x33 with balance 3000 (0x11 and 0x22 not touched)
+        let addr_0x33 = Address::repeat_byte(0x33);
+        let update2 = create_test_update(2, addr_0x33, 3000, 15, vec![], None);
+        writer.commit_block(update2).await?;
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        // Block 3: Account 0x44 with balance 4000 (should apply to namespace 0)
+        let addr_0x44 = Address::repeat_byte(0x44);
+        let update3 = create_test_update(3, addr_0x44, 4000, 20, vec![], None);
+        writer.commit_block(update3).await?;
+
+        // CRITICAL: Namespace 0 should have CUMULATIVE state:
+        // - Account 0x11 from block 0
+        // - Account 0x22 from block 1 (applied as diff)
+        // - Account 0x33 from block 2 (applied as diff)
+        // - Account 0x44 from block 3 (applied as diff)
+
+        verify_account_state(&mut conn, &format!("{namespace}:0"), addr_0x11, 1000, 5)?;
+        verify_account_state(&mut conn, &format!("{namespace}:0"), addr_0x22, 2000, 10)?;
+        verify_account_state(&mut conn, &format!("{namespace}:0"), addr_0x33, 3000, 15)?;
+        verify_account_state(&mut conn, &format!("{namespace}:0"), addr_0x44, 4000, 20)?;
+
+        // Verify block number is updated
+        let block_key = format!("{namespace}:0:block");
+        let block: String = conn.get(&block_key)?;
+        assert_eq!(block, "3");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cumulative_state_with_account_updates() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "cumulative_updates".to_string();
+        let config = CircularBufferConfig { buffer_size: 3 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let address = Address::repeat_byte(0x55);
+
+        // Block 0: Account with balance 1000, nonce 0
+        let update0 = create_test_update(0, address, 1000, 0, vec![], None);
+        writer.commit_block(update0).await?;
+
+        // Block 1: Same account, balance increases to 1500, nonce to 1
+        let update1 = create_test_update(1, address, 1500, 1, vec![], None);
+        writer.commit_block(update1).await?;
+
+        // Block 2: Same account, balance decreases to 1200, nonce to 2
+        let update2 = create_test_update(2, address, 1200, 2, vec![], None);
+        writer.commit_block(update2).await?;
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        // Block 3: Same account, balance to 2000, nonce to 3
+        let update3 = create_test_update(3, address, 2000, 3, vec![], None);
+        writer.commit_block(update3).await?;
+
+        // Namespace 0 should have the FINAL state after applying all diffs
+        verify_account_state(&mut conn, &format!("{namespace}:0"), address, 2000, 3)?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cumulative_storage_updates() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "cumulative_storage".to_string();
+        let config = CircularBufferConfig { buffer_size: 3 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let address = Address::repeat_byte(0x66);
+
+        // Block 0: Set storage slot 1 = 100
+        let storage_0 = vec![(b256_from_u64(1), b256_from_u64(100))];
+        let update0 = create_test_update(0, address, 1000, 0, storage_0, None);
+        writer.commit_block(update0).await?;
+
+        // Block 1: Set storage slot 2 = 200 (slot 1 not touched)
+        let storage_1 = vec![(b256_from_u64(2), b256_from_u64(200))];
+        let update1 = create_test_update(1, address, 1000, 1, storage_1, None);
+        writer.commit_block(update1).await?;
+
+        // Block 2: Update storage slot 1 = 150 (slot 2 not touched)
+        let storage_2 = vec![(b256_from_u64(1), b256_from_u64(150))];
+        let update2 = create_test_update(2, address, 1000, 2, storage_2, None);
+        writer.commit_block(update2).await?;
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        // Block 3: Set storage slot 3 = 300
+        let storage_3 = vec![(b256_from_u64(3), b256_from_u64(300))];
+        let update3 = create_test_update(3, address, 1000, 3, storage_3, None);
+        writer.commit_block(update3).await?;
+
+        // Namespace 0 should have ALL storage slots with their latest values:
+        // - Slot 1 = 150 (updated in block 2)
+        // - Slot 2 = 200 (set in block 1)
+        // - Slot 3 = 300 (set in block 3)
+        verify_storage(
+            &mut conn,
+            &format!("{namespace}:0"),
+            address,
+            b256_from_u64(1),
+            b256_from_u64(150),
+        )?;
+        verify_storage(
+            &mut conn,
+            &format!("{namespace}:0"),
+            address,
+            b256_from_u64(2),
+            b256_from_u64(200),
+        )?;
+        verify_storage(
+            &mut conn,
+            &format!("{namespace}:0"),
+            address,
+            b256_from_u64(3),
+            b256_from_u64(300),
+        )?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_single_block_only_one_state_available() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "single_block".to_string();
+        let config = CircularBufferConfig { buffer_size: 3 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let latest = writer.latest_block_number().await?;
+        assert_eq!(latest, None, "Should have no blocks initially");
+
+        let address = Address::repeat_byte(0x11);
+        let update = create_test_update(0, address, 1000, 5, vec![], None);
+        writer.commit_block(update).await?;
+
+        let latest = writer.latest_block_number().await?;
+        assert_eq!(latest, Some(0), "Should have block 0");
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        verify_account_state(&mut conn, &format!("{namespace}:0"), address, 1000, 5)?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_state_diff_storage_and_cleanup() -> Result<()> {
         let (_container, mut conn) = setup_redis().await;
 
-        let namespace = "state-worker:test";
-        let block_number = 42_u64;
-        let block_hash = B256::repeat_byte(0x2a);
+        let base_namespace = "diff_cleanup";
+        let buffer_size = 3;
 
-        let primary_address = Address::repeat_byte(0x11);
-        let primary_code = vec![0x60, 0x2a, 0x60, 0x00, 0xf3];
-        let primary_code_hash = keccak256(&primary_code);
-        let primary_storage = vec![
-            (b256_from_u64(1), b256_from_u64(0xdead_beef)),
-            (b256_from_u64(2), b256_from_u64(0xcafe_babe)),
-        ];
+        // Write blocks 0, 1, 2
+        for block_num in 0..3 {
+            let update = BlockStateUpdate {
+                block_number: block_num,
+                block_hash: B256::repeat_byte(u8::try_from(block_num).unwrap()),
+                accounts: vec![],
+            };
+            commit_block_atomic(&mut conn, base_namespace, buffer_size, &update)?;
+        }
 
-        let deleted_address = Address::repeat_byte(0x33);
-        let deleted_storage = vec![(b256_from_u64(3), B256::ZERO)];
+        // Write block 3 (should delete block 0's diff)
+        let update3 = BlockStateUpdate {
+            block_number: 3,
+            block_hash: B256::repeat_byte(3),
+            accounts: vec![],
+        };
+        commit_block_atomic(&mut conn, base_namespace, buffer_size, &update3)?;
 
-        let update = BlockStateUpdate {
-            block_number,
-            block_hash,
+        // Block 0's diff should be deleted
+        let diff_key_0 = get_diff_key(base_namespace, 0);
+        let exists_0: bool = redis::cmd("EXISTS").arg(&diff_key_0).query(&mut conn)?;
+        assert!(!exists_0, "Diff for block 0 should be deleted");
+
+        // Blocks 1, 2, 3 diffs should exist
+        for block_num in 1..=3 {
+            let diff_key = get_diff_key(base_namespace, block_num);
+            let exists: bool = redis::cmd("EXISTS").arg(&diff_key).query(&mut conn)?;
+            assert!(exists, "Diff for block {block_num} should exist");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_large_scale_rotation() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "large_scale".to_string();
+        let config = CircularBufferConfig { buffer_size: 5 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let address = Address::repeat_byte(0xcc);
+
+        // Write 20 blocks - each increments the balance by 10
+        for block_num in 0..20 {
+            let update =
+                create_test_update(block_num, address, block_num * 10, block_num, vec![], None);
+            writer.commit_block(update).await?;
+        }
+
+        let latest = writer.latest_block_number().await?;
+        assert_eq!(latest, Some(19));
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        // Each namespace should have cumulative state at its block number
+        // For example, namespace 0 (which now has block 15) should have the account
+        // with balance 150 (from block 15)
+
+        // Block 15 -> namespace 0 (15 % 5 = 0)
+        verify_account_state(&mut conn, &format!("{namespace}:0"), address, 150, 15)?;
+
+        // Block 16 -> namespace 1 (16 % 5 = 1)
+        verify_account_state(&mut conn, &format!("{namespace}:1"), address, 160, 16)?;
+
+        // Block 17 -> namespace 1 (17 % 5 = 2)
+        verify_account_state(&mut conn, &format!("{namespace}:2"), address, 170, 17)?;
+
+        // Block 18 -> namespace 1 (18 % 5 = 3)
+        verify_account_state(&mut conn, &format!("{namespace}:3"), address, 180, 18)?;
+
+        // Block 19 -> namespace 1 (19 % 5 = 4)
+        verify_account_state(&mut conn, &format!("{namespace}:4"), address, 190, 19)?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_account_deletion_persists() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "deletion_test".to_string();
+        let config = CircularBufferConfig { buffer_size: 3 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let address = Address::repeat_byte(0x77);
+
+        // Block 0: Account exists with balance
+        let update0 = create_test_update(0, address, 1000, 5, vec![], None);
+        writer.commit_block(update0).await?;
+
+        // Block 1: Account DELETED
+        let update1 = BlockStateUpdate {
+            block_number: 1,
+            block_hash: B256::repeat_byte(1),
+            accounts: vec![AccountCommit {
+                address,
+                balance: U256::ZERO,
+                nonce: 0,
+                code_hash: B256::ZERO,
+                code: None,
+                storage: vec![],
+                deleted: true,
+            }],
+        };
+        writer.commit_block(update1).await?;
+
+        // Block 2: Different account (doesn't touch deleted one)
+        let other_addr = Address::repeat_byte(0x88);
+        let update2 = create_test_update(2, other_addr, 2000, 10, vec![], None);
+        writer.commit_block(update2).await?;
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        // Block 3: Another different account (overwrites namespace 0)
+        let third_addr = Address::repeat_byte(0x99);
+        let update3 = create_test_update(3, third_addr, 3000, 15, vec![], None);
+        writer.commit_block(update3).await?;
+
+        // Namespace 0 should have:
+        // - Deleted account from block 1 (with zero values)
+        // - Other account from block 2
+        // - Third account from block 3
+        verify_account_state(&mut conn, &format!("{namespace}:0"), address, 0, 0)?;
+        verify_account_state(&mut conn, &format!("{namespace}:0"), other_addr, 2000, 10)?;
+        verify_account_state(&mut conn, &format!("{namespace}:0"), third_addr, 3000, 15)?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_buffer_size_one() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "buffer_one".to_string();
+        let config = CircularBufferConfig { buffer_size: 1 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let address = Address::repeat_byte(0xd1);
+
+        // Write blocks 0, 1, 2, 3 - all go to namespace 0
+        for block_num in 0..4 {
+            let update = create_test_update(
+                block_num,
+                address,
+                (block_num + 1) * 100,
+                block_num,
+                vec![],
+                None,
+            );
+            writer.commit_block(update).await?;
+        }
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        // Namespace 0 should have cumulative state at block 3
+        verify_account_state(&mut conn, &format!("{namespace}:0"), address, 400, 3)?;
+
+        // Verify block number
+        let block_key = format!("{namespace}:0:block");
+        let block: String = conn.get(&block_key)?;
+        assert_eq!(block, "3");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_code_updates_across_rotations() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "code_updates".to_string();
+        let config = CircularBufferConfig { buffer_size: 3 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let address = Address::repeat_byte(0xe1);
+
+        // Block 0: Deploy contract with code X
+        let code_x = vec![0x60, 0x80, 0x60, 0x40];
+        let update0 = create_test_update(0, address, 0, 1, vec![], Some(code_x.clone()));
+        writer.commit_block(update0).await?;
+
+        // Block 1: Doesn't touch the contract
+        let other_addr = Address::repeat_byte(0xe2);
+        let update1 = create_test_update(1, other_addr, 1000, 1, vec![], None);
+        writer.commit_block(update1).await?;
+
+        // Block 2: Update contract code to Y
+        let code_y = vec![0x61, 0x90, 0x61, 0x50];
+        let code_hash_y = keccak256(&code_y);
+        let update2 = create_test_update(2, address, 0, 2, vec![], Some(code_y.clone()));
+        writer.commit_block(update2).await?;
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        // Block 3: Overwrites namespace 0
+        let third_addr = Address::repeat_byte(0xe3);
+        let update3 = create_test_update(3, third_addr, 3000, 3, vec![], None);
+        writer.commit_block(update3).await?;
+
+        // Contract should have code Y (not X)
+        let account_key = format!("{}:0:account:{}", namespace, hex::encode(address));
+        let stored_code_hash: String = conn.hget(&account_key, "code_hash")?;
+        assert_eq!(stored_code_hash, encode_b256(code_hash_y));
+
+        // Verify code Y exists
+        let code_key_y = format!("{}:0:code:{}", namespace, hex::encode(code_hash_y));
+        let stored_code: String = conn.get(&code_key_y)?;
+        assert_eq!(stored_code, encode_bytes(&code_y));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_storage_slot_zeroing() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "storage_zero".to_string();
+        let config = CircularBufferConfig { buffer_size: 3 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let address = Address::repeat_byte(0xf1);
+
+        // Block 0: Set storage slot 1 = 100
+        let storage_0 = vec![(b256_from_u64(1), b256_from_u64(100))];
+        let update0 = create_test_update(0, address, 1000, 0, storage_0, None);
+        writer.commit_block(update0).await?;
+
+        // Block 1: Set storage slot 1 = 0 (deleted/zeroed)
+        let storage_1 = vec![(b256_from_u64(1), B256::ZERO)];
+        let update1 = create_test_update(1, address, 1000, 1, storage_1, None);
+        writer.commit_block(update1).await?;
+
+        // Block 2: Different account (doesn't touch storage)
+        let other_addr = Address::repeat_byte(0xf2);
+        let update2 = create_test_update(2, other_addr, 2000, 2, vec![], None);
+        writer.commit_block(update2).await?;
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        // Block 3: Overwrites namespace 0
+        let third_addr = Address::repeat_byte(0xf3);
+        let update3 = create_test_update(3, third_addr, 3000, 3, vec![], None);
+        writer.commit_block(update3).await?;
+
+        // Storage slot 1 should be ZERO (not 100)
+        verify_storage(
+            &mut conn,
+            &format!("{namespace}:0"),
+            address,
+            b256_from_u64(1),
+            B256::ZERO,
+        )?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_missing_intermediate_diffs_should_error() -> Result<()> {
+        let (_container, mut conn) = setup_redis().await;
+
+        let base_namespace = "missing_diffs";
+        let buffer_size = 3;
+
+        // Manually set up namespace 0 with block 0
+        let namespace = format!("{base_namespace}:0");
+        let block_key = format!("{namespace}:block");
+        redis::cmd("SET")
+            .arg(&block_key)
+            .arg("0")
+            .query::<()>(&mut conn)?;
+
+        // Store only diff for block 3 (skip 1 and 2)
+        let update3 = BlockStateUpdate {
+            block_number: 3,
+            block_hash: B256::repeat_byte(3),
+            accounts: vec![],
+        };
+        let diff_key_3 = get_diff_key(base_namespace, 3);
+        let diff_data = serialize_state_diff(&update3)?;
+        redis::cmd("SET")
+            .arg(&diff_key_3)
+            .arg(diff_data)
+            .query::<()>(&mut conn)?;
+
+        // Try to commit block 3 (should fail because diffs 1 and 2 are missing)
+        let result = commit_block_atomic(&mut conn, base_namespace, buffer_size, &update3);
+
+        assert!(
+            result.is_err(),
+            "Should error when intermediate diffs are missing"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Missing state diff"),
+            "Error should mention missing state diff"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_multiple_complete_rotations() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "multi_rotation".to_string();
+        let config = CircularBufferConfig { buffer_size: 3 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let address = Address::repeat_byte(0xaa);
+
+        // Write 9 blocks (3 complete rotations)
+        // Each block increments balance by 100
+        for block_num in 0..9 {
+            let update = create_test_update(
+                block_num,
+                address,
+                (block_num + 1) * 100,
+                block_num,
+                vec![],
+                None,
+            );
+            writer.commit_block(update).await?;
+        }
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        // After 9 blocks:
+        // Namespace 0 has block 6 (0 -> 3 -> 6)
+        // Namespace 1 has block 7 (1 -> 4 -> 7)
+        // Namespace 2 has block 8 (2 -> 5 -> 8)
+
+        verify_account_state(&mut conn, &format!("{namespace}:0"), address, 700, 6)?;
+        verify_account_state(&mut conn, &format!("{namespace}:1"), address, 800, 7)?;
+        verify_account_state(&mut conn, &format!("{namespace}:2"), address, 900, 8)?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_multiple_accounts_with_mixed_operations() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "mixed_ops".to_string();
+        let config = CircularBufferConfig { buffer_size: 3 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let addr_a = Address::repeat_byte(0xa1);
+        let addr_b = Address::repeat_byte(0xb1);
+        let addr_c = Address::repeat_byte(0xc1);
+
+        // Block 0: Create accounts A and B
+        let update0 = BlockStateUpdate {
+            block_number: 0,
+            block_hash: B256::ZERO,
             accounts: vec![
                 AccountCommit {
-                    address: primary_address,
-                    balance: U256::from(1_000_000_u64),
-                    nonce: 7,
-                    code_hash: primary_code_hash,
-                    code: Some(primary_code.clone()),
-                    storage: primary_storage.clone(),
+                    address: addr_a,
+                    balance: U256::from(1000u64),
+                    nonce: 1,
+                    code_hash: B256::ZERO,
+                    code: None,
+                    storage: vec![],
                     deleted: false,
                 },
                 AccountCommit {
-                    address: deleted_address,
+                    address: addr_b,
+                    balance: U256::from(2000u64),
+                    nonce: 2,
+                    code_hash: B256::ZERO,
+                    code: None,
+                    storage: vec![],
+                    deleted: false,
+                },
+            ],
+        };
+        writer.commit_block(update0).await?;
+
+        // Block 1: Update A, delete B, create C
+        let update1 = BlockStateUpdate {
+            block_number: 1,
+            block_hash: B256::repeat_byte(1),
+            accounts: vec![
+                AccountCommit {
+                    address: addr_a,
+                    balance: U256::from(1500u64),
+                    nonce: 2,
+                    code_hash: B256::ZERO,
+                    code: None,
+                    storage: vec![],
+                    deleted: false,
+                },
+                AccountCommit {
+                    address: addr_b,
                     balance: U256::ZERO,
                     nonce: 0,
                     code_hash: B256::ZERO,
                     code: None,
-                    storage: deleted_storage.clone(),
+                    storage: vec![],
                     deleted: true,
+                },
+                AccountCommit {
+                    address: addr_c,
+                    balance: U256::from(3000u64),
+                    nonce: 1,
+                    code_hash: B256::ZERO,
+                    code: None,
+                    storage: vec![],
+                    deleted: false,
                 },
             ],
         };
+        writer.commit_block(update1).await?;
 
-        // Write to Redis
-        commit_block_with_connection(&mut conn, namespace, update)?;
-
-        // Verify primary account was written correctly
-        let account_key = format!("{namespace}:account:{}", hex::encode(primary_address));
-        let balance: String = redis::cmd("HGET")
-            .arg(&account_key)
-            .arg("balance")
-            .query(&mut conn)?;
-        assert_eq!(balance, "1000000");
-
-        let nonce: String = redis::cmd("HGET")
-            .arg(&account_key)
-            .arg("nonce")
-            .query(&mut conn)?;
-        assert_eq!(nonce, "7");
-
-        let code_hash: String = redis::cmd("HGET")
-            .arg(&account_key)
-            .arg("code_hash")
-            .query(&mut conn)?;
-        assert_eq!(code_hash, encode_b256(primary_code_hash));
-
-        // Verify code was stored
-        let code_key = format!("{namespace}:code:{}", hex::encode(primary_code_hash));
-        let stored_code: String = redis::cmd("GET").arg(&code_key).query(&mut conn)?;
-        assert_eq!(stored_code, encode_bytes(&primary_code));
-
-        // Verify storage slots
-        let storage_key = format!("{namespace}:storage:{}", hex::encode(primary_address));
-        for (slot, expected_value) in &primary_storage {
-            let value: String = redis::cmd("HGET")
-                .arg(&storage_key)
-                .arg(encode_b256(*slot))
-                .query(&mut conn)?;
-            assert_eq!(value, encode_b256(*expected_value));
-        }
-
-        // Verify deleted account
-        let deleted_key = format!("{namespace}:account:{}", hex::encode(deleted_address));
-        let deleted_balance: String = redis::cmd("HGET")
-            .arg(&deleted_key)
-            .arg("balance")
-            .query(&mut conn)?;
-        assert_eq!(deleted_balance, "0");
-
-        let deleted_nonce: String = redis::cmd("HGET")
-            .arg(&deleted_key)
-            .arg("nonce")
-            .query(&mut conn)?;
-        assert_eq!(deleted_nonce, "0");
-
-        // Verify deleted storage
-        let deleted_storage_key = format!("{namespace}:storage:{}", hex::encode(deleted_address));
-        for (slot, expected_value) in &deleted_storage {
-            let value: String = redis::cmd("HGET")
-                .arg(&deleted_storage_key)
-                .arg(encode_b256(*slot))
-                .query(&mut conn)?;
-            assert_eq!(value, encode_b256(*expected_value));
-        }
-
-        // Verify block metadata
-        let block_hash_key = format!("{namespace}:block_hash:{block_number}");
-        let stored_hash: String = redis::cmd("GET").arg(&block_hash_key).query(&mut conn)?;
-        assert_eq!(stored_hash, encode_b256(block_hash));
-
-        let current_block_key = format!("{namespace}:current_block");
-        let stored_block: String = redis::cmd("GET").arg(&current_block_key).query(&mut conn)?;
-        assert_eq!(stored_block, block_number.to_string());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn commit_block_without_accounts_updates_metadata_only() -> Result<()> {
-        let (_container, mut conn) = setup_redis().await;
-
-        let namespace = "state-worker:metadata";
-        let block_number = 100_u64;
-        let block_hash = B256::repeat_byte(0x44);
-
-        let update = BlockStateUpdate {
-            block_number,
-            block_hash,
-            accounts: Vec::new(),
-        };
-
-        // Write to Redis
-        commit_block_with_connection(&mut conn, namespace, update)?;
-
-        // Verify block metadata was written
-        let block_hash_key = format!("{namespace}:block_hash:{block_number}");
-        let stored_hash: String = redis::cmd("GET").arg(&block_hash_key).query(&mut conn)?;
-        assert_eq!(stored_hash, encode_b256(block_hash));
-
-        let current_block_key = format!("{namespace}:current_block");
-        let stored_block: String = redis::cmd("GET").arg(&current_block_key).query(&mut conn)?;
-        assert_eq!(stored_block, block_number.to_string());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn read_latest_block_number_parses_successfully() -> Result<()> {
-        let (_container, mut conn) = setup_redis().await;
-
-        let key = "ns:current";
-
-        // Set up the data
-        redis::cmd("SET")
-            .arg(key)
-            .arg("123")
-            .query::<()>(&mut conn)?;
-
-        // Test reading it back
-        let value = read_latest_block_number(&mut conn, key)?;
-        assert_eq!(value, Some(123));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn read_latest_block_number_handles_missing_key() -> Result<()> {
-        let (_container, mut conn) = setup_redis().await;
-
-        let key = "ns:current";
-
-        // Don't set anything - key doesn't exist
-        let value = read_latest_block_number(&mut conn, key)?;
-        assert_eq!(value, None);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn read_latest_block_number_surfaces_parse_error() {
-        let (_container, mut conn) = setup_redis().await;
-
-        let key = "ns:current";
-
-        // Set invalid data
-        redis::cmd("SET")
-            .arg(key)
-            .arg("invalid")
-            .query::<()>(&mut conn)
-            .unwrap();
-
-        // Test that parsing fails
-        let err = read_latest_block_number(&mut conn, key).expect_err("expected parse failure");
-        assert!(err.to_string().contains("invalid block number"));
-    }
-
-    #[tokio::test]
-    async fn async_writer_commit_block() -> Result<()> {
-        let container = Redis::default()
-            .start()
-            .await
-            .expect("Failed to start Redis container");
-
-        let host = container.get_host().await.expect("Failed to get host");
-        let port = container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get port");
-
-        let namespace = "state-worker:async".to_string();
-        let writer = RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone())?;
-
-        let block_number = 99_u64;
-        let block_hash = B256::repeat_byte(0x99);
-        let address = Address::repeat_byte(0xaa);
-
-        let update = BlockStateUpdate {
-            block_number,
-            block_hash,
+        // Block 2: Update C
+        let update2 = BlockStateUpdate {
+            block_number: 2,
+            block_hash: B256::repeat_byte(2),
             accounts: vec![AccountCommit {
-                address,
-                balance: U256::from(5000u64),
-                nonce: 3,
+                address: addr_c,
+                balance: U256::from(3500u64),
+                nonce: 2,
                 code_hash: B256::ZERO,
                 code: None,
                 storage: vec![],
                 deleted: false,
             }],
         };
+        writer.commit_block(update2).await?;
 
-        // Commit through the async writer
-        writer.commit_block(update).await?;
-
-        // Verify with a fresh connection
         let client = redis::Client::open(format!("redis://{host}:{port}"))?;
         let mut conn = client.get_connection()?;
 
-        let account_key = format!("{}:account:{}", namespace, hex::encode(address));
-        let balance: String = redis::cmd("HGET")
-            .arg(&account_key)
-            .arg("balance")
-            .query(&mut conn)?;
-        assert_eq!(balance, "5000");
+        // Block 3: Overwrites namespace 0
+        let addr_d = Address::repeat_byte(0xd1);
+        let update3 = create_test_update(3, addr_d, 4000, 4, vec![], None);
+        writer.commit_block(update3).await?;
 
-        let current_block_key = format!("{namespace}:current_block");
-        let stored_block: String = redis::cmd("GET").arg(&current_block_key).query(&mut conn)?;
-        assert_eq!(stored_block, "99");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn async_writer_latest_block_number() -> Result<()> {
-        let container = Redis::default()
-            .start()
-            .await
-            .expect("Failed to start Redis container");
-
-        let host = container.get_host().await.expect("Failed to get host");
-        let port = container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get port");
-
-        let namespace = "state-worker:latest".to_string();
-        let writer = RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone())?;
-
-        // Initially should be None
-        let latest = writer.latest_block_number().await?;
-        assert_eq!(latest, None);
-
-        // Write a block
-        let block_number = 42_u64;
-        let block_hash = B256::repeat_byte(0x42);
-        writer
-            .update_block_metadata(block_number, block_hash)
-            .await?;
-
-        // Should now return the block number
-        let latest = writer.latest_block_number().await?;
-        assert_eq!(latest, Some(42));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn write_account_with_all_fields() -> Result<()> {
-        let (_container, mut conn) = setup_redis().await;
-
-        let namespace = "test";
-        let address = Address::repeat_byte(0xbb);
-        let code = vec![0x60, 0x80, 0x60, 0x40];
-        let code_hash = keccak256(&code);
-
-        let account = AccountCommit {
-            address,
-            balance: U256::from(999u64),
-            nonce: 5,
-            code_hash,
-            code: Some(code.clone()),
-            storage: vec![
-                (b256_from_u64(10), b256_from_u64(100)),
-                (b256_from_u64(20), b256_from_u64(200)),
-            ],
-            deleted: false,
-        };
-
-        // Write the account
-        write_account(&mut conn, namespace, &account)?;
-
-        // Verify all fields
-        let account_key = format!("{namespace}:account:{}", hex::encode(address));
-
-        let balance: String = redis::cmd("HGET")
-            .arg(&account_key)
-            .arg("balance")
-            .query(&mut conn)?;
-        assert_eq!(balance, "999");
-
-        let nonce: String = redis::cmd("HGET")
-            .arg(&account_key)
-            .arg("nonce")
-            .query(&mut conn)?;
-        assert_eq!(nonce, "5");
-
-        let stored_code_hash: String = redis::cmd("HGET")
-            .arg(&account_key)
-            .arg("code_hash")
-            .query(&mut conn)?;
-        assert_eq!(stored_code_hash, encode_b256(code_hash));
-
-        // Verify code
-        let code_key = format!("{namespace}:code:{}", hex::encode(code_hash));
-        let stored_code: String = redis::cmd("GET").arg(&code_key).query(&mut conn)?;
-        assert_eq!(stored_code, encode_bytes(&code));
-
-        // Verify storage
-        let storage_key = format!("{namespace}:storage:{}", hex::encode(address));
-        let slot10_value: String = redis::cmd("HGET")
-            .arg(&storage_key)
-            .arg(encode_b256(b256_from_u64(10)))
-            .query(&mut conn)?;
-        assert_eq!(slot10_value, encode_b256(b256_from_u64(100)));
-
-        let slot20_value: String = redis::cmd("HGET")
-            .arg(&storage_key)
-            .arg(encode_b256(b256_from_u64(20)))
-            .query(&mut conn)?;
-        assert_eq!(slot20_value, encode_b256(b256_from_u64(200)));
+        // Namespace 0 should have cumulative state:
+        // A: updated (1500, 2)
+        // B: deleted (0, 0)
+        // C: updated (3500, 2)
+        // D: new (4000, 4)
+        verify_account_state(&mut conn, &format!("{namespace}:0"), addr_a, 1500, 2)?;
+        verify_account_state(&mut conn, &format!("{namespace}:0"), addr_b, 0, 0)?;
+        verify_account_state(&mut conn, &format!("{namespace}:0"), addr_c, 3500, 2)?;
+        verify_account_state(&mut conn, &format!("{namespace}:0"), addr_d, 4000, 4)?;
 
         Ok(())
     }

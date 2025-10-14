@@ -2,7 +2,10 @@
 use crate::{
     connect_provider,
     genesis::GenesisState,
-    redis::RedisStateWriter,
+    redis::{
+        CircularBufferConfig,
+        RedisStateWriter,
+    },
     worker::StateWorker,
 };
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
@@ -73,8 +76,12 @@ impl LocalInstance {
 
         let redis_url = format!("redis://{host}:{port}");
 
-        let redis = RedisStateWriter::new(&redis_url, Self::NAMESPACE.to_string())
-            .map_err(|e| format!("Failed to initialize redis client: {e}"))?;
+        let redis = RedisStateWriter::new(
+            &redis_url,
+            Self::NAMESPACE.to_string(),
+            CircularBufferConfig::new(3),
+        )
+        .map_err(|e| format!("Failed to initialize redis client: {e}"))?;
 
         let mut worker = StateWorker::new(provider, redis, genesis_state);
         let handle_worker = tokio::spawn(async move {

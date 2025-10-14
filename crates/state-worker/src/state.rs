@@ -18,6 +18,10 @@ use alloy_rpc_types_trace::parity::{
     TraceResultsWithTransactionHash,
 };
 use revm::primitives::KECCAK_EMPTY;
+use serde::{
+    Deserialize,
+    Serialize,
+};
 
 #[derive(Default)]
 struct AccountSnapshot {
@@ -36,6 +40,7 @@ struct AccountSnapshot {
 }
 
 /// Aggregate of all state changes produced while processing a block.
+#[derive(Serialize, Deserialize)]
 pub struct BlockStateUpdate {
     pub block_number: u64,
     pub block_hash: B256,
@@ -43,6 +48,7 @@ pub struct BlockStateUpdate {
 }
 
 /// Flattened representation of an account diff that mirrors the Redis schema.
+#[derive(Serialize, Deserialize)]
 pub struct AccountCommit {
     pub address: Address,
     pub balance: U256,
@@ -91,12 +97,6 @@ impl BlockStateUpdate {
             block_hash,
             accounts,
         }
-    }
-
-    /// Consume the update and return its constituent parts for downstream
-    /// writers. This keeps the write path ergonomic without cloning vectors.
-    pub fn into_parts(self) -> (u64, B256, Vec<AccountCommit>) {
-        (self.block_number, self.block_hash, self.accounts)
     }
 }
 
@@ -270,6 +270,14 @@ mod tests {
         Delta,
     };
     use std::collections::BTreeMap;
+
+    impl BlockStateUpdate {
+        /// Consume the update and return its constituent parts for downstream
+        /// writers. This keeps the write path ergonomic without cloning vectors.
+        pub fn into_parts(self) -> (u64, B256, Vec<AccountCommit>) {
+            (self.block_number, self.block_hash, self.accounts)
+        }
+    }
 
     // Helper function to create a StateDiff wrapped in TraceResultsWithTransactionHash
     fn create_trace_with_diff(
