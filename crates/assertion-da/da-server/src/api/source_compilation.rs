@@ -1,15 +1,12 @@
 use anyhow::Result;
 use bollard::{
     Docker,
-    container::{
-        Config,
-        CreateContainerOptions,
+    query_parameters::{
         LogsOptions,
         RemoveContainerOptions,
         StartContainerOptions,
         WaitContainerOptions,
     },
-    image::ListImagesOptions,
 };
 use futures::TryStreamExt;
 use futures_util::stream::StreamExt;
@@ -137,7 +134,7 @@ impl DockerImageManager {
         // Check if the image exists locally first
         let images = self
             .docker
-            .list_images(None::<ListImagesOptions<String>>)
+            .list_images(None::<bollard::query_parameters::ListImagesOptions>)
             .await
             .map_err(CompilationError::DockerError)?;
         let image_exists = images
@@ -151,8 +148,8 @@ impl DockerImageManager {
             debug!(target: "solidity_compilation", "Pulling image: {}", image_name);
             self.docker
                 .create_image(
-                    Some(bollard::image::CreateImageOptions {
-                        from_image: image_name.to_string(),
+                    Some(bollard::query_parameters::CreateImageOptions {
+                        from_image: Some(image_name.to_string()),
                         platform: "linux/amd64".to_string(), // Force amd64 platform
                         ..Default::default()
                     }),
@@ -198,7 +195,7 @@ impl ContainerManager {
         cmd: Vec<String>,
         binds: Vec<String>,
     ) -> Result<(), CompilationError> {
-        let container_config = Config {
+        let container_config = bollard::models::ContainerCreateBody {
             image: Some(image.to_string()),
             cmd: Some(cmd),
             host_config: Some(bollard::service::HostConfig {
@@ -208,9 +205,9 @@ impl ContainerManager {
             ..Default::default()
         };
 
-        let create_options = Some(CreateContainerOptions {
-            name: self.container_name.clone(),
-            platform: Some("linux/amd64".to_string()), // Force amd64 platform
+        let create_options = Some(bollard::query_parameters::CreateContainerOptions {
+            name: Some(self.container_name.clone()),
+            platform: "linux/amd64".to_string(), // Force amd64 platform
         });
 
         debug!(
@@ -237,7 +234,7 @@ impl ContainerManager {
         self.docker
             .start_container(
                 self.container_id.as_ref().unwrap(),
-                None::<StartContainerOptions<String>>,
+                None::<StartContainerOptions>,
             )
             .await
             .map_err(CompilationError::DockerError)?;
@@ -253,7 +250,7 @@ impl ContainerManager {
             .ok_or_else(|| CompilationError::NoContainerCreated)?;
 
         let options = Some(WaitContainerOptions {
-            condition: "not-running",
+            condition: "not-running".to_string(),
         });
 
         // Wait for the container to stop running
@@ -288,7 +285,7 @@ impl ContainerManager {
             .as_ref()
             .ok_or_else(|| CompilationError::NoContainerCreated)?;
 
-        let options = Some(LogsOptions::<String> {
+        let options = Some(LogsOptions {
             stdout,
             stderr,
             ..Default::default()
@@ -371,7 +368,7 @@ impl Drop for ContainerManager {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.block_on(async {
                 // Remove the container
-                let remove_options = Some(RemoveContainerOptions {
+                let remove_options = Some(bollard::query_parameters::RemoveContainerOptions {
                     force: true,
                     ..Default::default()
                 });
@@ -705,6 +702,11 @@ pub enum CompilationError {
 #[cfg(all(test, feature = "full-test"))]
 mod tests {
     use super::*;
+    use bollard::query_parameters::{
+        ListContainersOptions,
+        ListImagesOptions,
+        RemoveImageOptions,
+    };
 
     // Shared Docker client for all tests
     #[cfg(feature = "full-test")]
@@ -951,7 +953,7 @@ mod tests {
 
         // Verify the container was actually created and is in the list
         let containers_after_creation = docker
-            .list_containers(Some(bollard::container::ListContainersOptions::<String> {
+            .list_containers(Some(ListContainersOptions {
                 all: true,
                 ..Default::default()
             }))
@@ -984,7 +986,7 @@ mod tests {
             .expect("Failed to clean up container");
 
         let containers_after_cleanup = docker
-            .list_containers(Some(bollard::container::ListContainersOptions::<String> {
+            .list_containers(Some(ListContainersOptions {
                 all: true, // Include stopped containers
                 ..Default::default()
             }))
@@ -1021,7 +1023,7 @@ mod tests {
 
         // After compilation, check that no containers with the contract name exist
         let containers = docker
-            .list_containers(Some(bollard::container::ListContainersOptions::<String> {
+            .list_containers(Some(ListContainersOptions {
                 all: true, // Include stopped containers
                 ..Default::default()
             }))
@@ -1058,7 +1060,7 @@ mod tests {
         let _ = docker
             .remove_image(
                 &image_name,
-                Some(bollard::image::RemoveImageOptions {
+                Some(RemoveImageOptions {
                     force: true,
                     ..Default::default()
                 }),
@@ -1068,7 +1070,7 @@ mod tests {
 
         // Verify the image is gone
         let images = docker
-            .list_images(None::<ListImagesOptions<String>>)
+            .list_images(None::<ListImagesOptions>)
             .await
             .expect("Failed to list images");
 
@@ -1107,7 +1109,7 @@ mod tests {
 
         // Verify the image now exists
         let images_after = docker
-            .list_images(None::<ListImagesOptions<String>>)
+            .list_images(None::<ListImagesOptions>)
             .await
             .expect("Failed to list images");
 
