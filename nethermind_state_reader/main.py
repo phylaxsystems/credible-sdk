@@ -381,8 +381,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--include-storage",
-        action="store_true",
-        help="Traverse per-account storage tries and include slot values.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Traverse per-account storage tries and include slot values (use --no-include-storage to skip).",
     )
     parser.add_argument(
         "--storage-limit",

@@ -1,41 +1,29 @@
 # Nethermind State Reader
 
-This project provides a small Python CLI (managed with `uv`) that can open a Nethermind
-RocksDB state database, enumerate all live accounts for a given state root, and (optionally)
-explore each account's storage trie.
 
-## Prerequisites
-
-- Python 3.9+ (handled automatically by `uv`)
-- The `uv` package manager
-- Access to Nethermind RocksDB directories:
+- To use you need access to Nethermind RocksDB directories:
   - `state/0` (the state trie column family)
   - `headers` (used to discover state roots)
-
-## Installation
-
-```bash
-uv sync
-```
 
 ## Usage
 
 ```bash
+uv sync
+
 uv run python main.py \
   --state-db /path/to/nethermind_db/state/0 \
   --headers-db /path/to/nethermind_db/headers \
-  --include-storage \
   --limit 5
 ```
 
 This emits newline-delimited JSON objects, each describing an account at the most recent
-block whose state root is present in the database. Storage slots (if requested) are included
-under a `storage` key.
+block whose state root is present in the database. Storage slots are included under a
+`storage` key. Slot numbers are stored as keccak hashes.
 
-### Useful Flags
+### Flags
 
 - `--block-number <N>` — pin the traversal to a specific block.
-- `--include-storage` — gather storage slots for each account.
+- `--[no-]include-storage` — gather storage slots for each account (enabled by default).
 - `--storage-limit <M>` — cap the number of storage slots collected per account.
 - `--limit <K>` — limit the number of accounts emitted.
 - `--output FILE` — write JSON lines to a file instead of stdout.
@@ -65,4 +53,3 @@ Each JSON object looks like:
 
 `address_hash` and `slot_hash` are Keccak-256 hashes of the address/slot keys (the
 pre-images are not stored in Nethermind's state database).
-
