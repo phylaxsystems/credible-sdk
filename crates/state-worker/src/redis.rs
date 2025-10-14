@@ -224,14 +224,8 @@ mod tests {
         keccak256,
     };
     use anyhow::Result;
-    use redis::{
-        RedisError,
-        Value,
-    };
-    use redis_test::{
-        MockCmd,
-        MockRedisConnection,
-    };
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::redis::Redis;
 
     fn b256_from_u64(value: u64) -> B256 {
         let mut bytes = [0u8; 32];
@@ -239,9 +233,29 @@ mod tests {
         B256::from(bytes)
     }
 
-    #[test]
-    #[allow(clippy::too_many_lines)]
-    fn commit_block_persists_accounts_and_metadata() -> Result<()> {
+    // Helper to setup Redis connection for each test (now async!)
+    async fn setup_redis() -> (testcontainers::ContainerAsync<Redis>, redis::Connection) {
+        let container = Redis::default()
+            .start()
+            .await
+            .expect("Failed to start Redis container");
+
+        let host = container.get_host().await.expect("Failed to get host");
+        let port = container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Failed to get port");
+
+        let client = redis::Client::open(format!("redis://{host}:{port}")).unwrap();
+        let connection = client.get_connection().unwrap();
+
+        (container, connection)
+    }
+
+    #[tokio::test]
+    async fn commit_block_persists_accounts_and_metadata() -> Result<()> {
+        let (_container, mut conn) = setup_redis().await;
+
         let namespace = "state-worker:test";
         let block_number = 42_u64;
         let block_hash = B256::repeat_byte(0x2a);
@@ -282,148 +296,313 @@ mod tests {
             ],
         };
 
-        let account_key = format!("{namespace}:account:{}", hex::encode(primary_address));
-        let code_key = format!("{namespace}:code:{}", hex::encode(primary_code_hash));
-        let storage_key = format!("{namespace}:storage:{}", hex::encode(primary_address));
-        let deleted_key = format!("{namespace}:account:{}", hex::encode(deleted_address));
-        let deleted_storage_key = format!("{namespace}:storage:{}", hex::encode(deleted_address));
-        let block_hash_key = format!("{namespace}:block_hash:{block_number}");
-        let current_block_key = format!("{namespace}:current_block");
-
-        let mut commands = Vec::new();
-        commands.push(MockCmd::new(
-            redis::cmd("HSET")
-                .arg(&account_key)
-                .arg("balance")
-                .arg("1000000")
-                .arg("nonce")
-                .arg("7")
-                .arg("code_hash")
-                .arg(encode_b256(primary_code_hash)),
-            Ok::<i64, RedisError>(1),
-        ));
-        commands.push(MockCmd::new(
-            redis::cmd("SET")
-                .arg(&code_key)
-                .arg(encode_bytes(&primary_code)),
-            Ok::<_, RedisError>("OK"),
-        ));
-        for (slot, value) in &primary_storage {
-            commands.push(MockCmd::new(
-                redis::cmd("HSET")
-                    .arg(&storage_key)
-                    .arg(encode_b256(*slot))
-                    .arg(encode_b256(*value)),
-                Ok::<i64, RedisError>(1),
-            ));
-        }
-        commands.push(MockCmd::new(
-            redis::cmd("HSET")
-                .arg(&deleted_key)
-                .arg("balance")
-                .arg("0")
-                .arg("nonce")
-                .arg("0")
-                .arg("code_hash")
-                .arg(encode_b256(B256::ZERO)),
-            Ok::<i64, RedisError>(1),
-        ));
-        for (slot, value) in &deleted_storage {
-            commands.push(MockCmd::new(
-                redis::cmd("HSET")
-                    .arg(&deleted_storage_key)
-                    .arg(encode_b256(*slot))
-                    .arg(encode_b256(*value)),
-                Ok::<i64, RedisError>(1),
-            ));
-        }
-        commands.push(MockCmd::new(
-            redis::cmd("SET")
-                .arg(&block_hash_key)
-                .arg(encode_b256(block_hash)),
-            Ok::<_, RedisError>("OK"),
-        ));
-        commands.push(MockCmd::new(
-            redis::cmd("SET")
-                .arg(&current_block_key)
-                .arg(block_number.to_string()),
-            Ok::<_, RedisError>("OK"),
-        ));
-
-        let mut conn = MockRedisConnection::new(commands);
+        // Write to Redis
         commit_block_with_connection(&mut conn, namespace, update)?;
+
+        // Verify primary account was written correctly
+        let account_key = format!("{namespace}:account:{}", hex::encode(primary_address));
+        let balance: String = redis::cmd("HGET")
+            .arg(&account_key)
+            .arg("balance")
+            .query(&mut conn)?;
+        assert_eq!(balance, "1000000");
+
+        let nonce: String = redis::cmd("HGET")
+            .arg(&account_key)
+            .arg("nonce")
+            .query(&mut conn)?;
+        assert_eq!(nonce, "7");
+
+        let code_hash: String = redis::cmd("HGET")
+            .arg(&account_key)
+            .arg("code_hash")
+            .query(&mut conn)?;
+        assert_eq!(code_hash, encode_b256(primary_code_hash));
+
+        // Verify code was stored
+        let code_key = format!("{namespace}:code:{}", hex::encode(primary_code_hash));
+        let stored_code: String = redis::cmd("GET").arg(&code_key).query(&mut conn)?;
+        assert_eq!(stored_code, encode_bytes(&primary_code));
+
+        // Verify storage slots
+        let storage_key = format!("{namespace}:storage:{}", hex::encode(primary_address));
+        for (slot, expected_value) in &primary_storage {
+            let value: String = redis::cmd("HGET")
+                .arg(&storage_key)
+                .arg(encode_b256(*slot))
+                .query(&mut conn)?;
+            assert_eq!(value, encode_b256(*expected_value));
+        }
+
+        // Verify deleted account
+        let deleted_key = format!("{namespace}:account:{}", hex::encode(deleted_address));
+        let deleted_balance: String = redis::cmd("HGET")
+            .arg(&deleted_key)
+            .arg("balance")
+            .query(&mut conn)?;
+        assert_eq!(deleted_balance, "0");
+
+        let deleted_nonce: String = redis::cmd("HGET")
+            .arg(&deleted_key)
+            .arg("nonce")
+            .query(&mut conn)?;
+        assert_eq!(deleted_nonce, "0");
+
+        // Verify deleted storage
+        let deleted_storage_key = format!("{namespace}:storage:{}", hex::encode(deleted_address));
+        for (slot, expected_value) in &deleted_storage {
+            let value: String = redis::cmd("HGET")
+                .arg(&deleted_storage_key)
+                .arg(encode_b256(*slot))
+                .query(&mut conn)?;
+            assert_eq!(value, encode_b256(*expected_value));
+        }
+
+        // Verify block metadata
+        let block_hash_key = format!("{namespace}:block_hash:{block_number}");
+        let stored_hash: String = redis::cmd("GET").arg(&block_hash_key).query(&mut conn)?;
+        assert_eq!(stored_hash, encode_b256(block_hash));
+
+        let current_block_key = format!("{namespace}:current_block");
+        let stored_block: String = redis::cmd("GET").arg(&current_block_key).query(&mut conn)?;
+        assert_eq!(stored_block, block_number.to_string());
+
         Ok(())
     }
 
-    #[test]
-    fn commit_block_without_accounts_updates_metadata_only() -> Result<()> {
+    #[tokio::test]
+    async fn commit_block_without_accounts_updates_metadata_only() -> Result<()> {
+        let (_container, mut conn) = setup_redis().await;
+
         let namespace = "state-worker:metadata";
         let block_number = 100_u64;
         let block_hash = B256::repeat_byte(0x44);
+
         let update = BlockStateUpdate {
             block_number,
             block_hash,
             accounts: Vec::new(),
         };
 
-        let block_hash_key = format!("{namespace}:block_hash:{block_number}");
-        let current_block_key = format!("{namespace}:current_block");
-
-        let commands = vec![
-            MockCmd::new(
-                redis::cmd("SET")
-                    .arg(&block_hash_key)
-                    .arg(encode_b256(block_hash)),
-                Ok::<_, RedisError>("OK"),
-            ),
-            MockCmd::new(
-                redis::cmd("SET")
-                    .arg(&current_block_key)
-                    .arg(block_number.to_string()),
-                Ok::<_, RedisError>("OK"),
-            ),
-        ];
-
-        let mut conn = MockRedisConnection::new(commands);
+        // Write to Redis
         commit_block_with_connection(&mut conn, namespace, update)?;
+
+        // Verify block metadata was written
+        let block_hash_key = format!("{namespace}:block_hash:{block_number}");
+        let stored_hash: String = redis::cmd("GET").arg(&block_hash_key).query(&mut conn)?;
+        assert_eq!(stored_hash, encode_b256(block_hash));
+
+        let current_block_key = format!("{namespace}:current_block");
+        let stored_block: String = redis::cmd("GET").arg(&current_block_key).query(&mut conn)?;
+        assert_eq!(stored_block, block_number.to_string());
+
         Ok(())
     }
 
-    #[test]
-    fn read_latest_block_number_parses_successfully() -> Result<()> {
-        let key = "ns:current";
-        let mut conn = MockRedisConnection::new(vec![MockCmd::new(
-            redis::cmd("GET").arg(key),
-            Ok::<_, RedisError>("123"),
-        )]);
+    #[tokio::test]
+    async fn read_latest_block_number_parses_successfully() -> Result<()> {
+        let (_container, mut conn) = setup_redis().await;
 
+        let key = "ns:current";
+
+        // Set up the data
+        redis::cmd("SET")
+            .arg(key)
+            .arg("123")
+            .query::<()>(&mut conn)?;
+
+        // Test reading it back
         let value = read_latest_block_number(&mut conn, key)?;
         assert_eq!(value, Some(123));
+
         Ok(())
     }
 
-    #[test]
-    fn read_latest_block_number_handles_missing_key() -> Result<()> {
-        let key = "ns:current";
-        let mut conn = MockRedisConnection::new(vec![MockCmd::new(
-            redis::cmd("GET").arg(key),
-            Ok::<_, RedisError>(Value::Nil),
-        )]);
+    #[tokio::test]
+    async fn read_latest_block_number_handles_missing_key() -> Result<()> {
+        let (_container, mut conn) = setup_redis().await;
 
+        let key = "ns:current";
+
+        // Don't set anything - key doesn't exist
         let value = read_latest_block_number(&mut conn, key)?;
         assert_eq!(value, None);
+
         Ok(())
     }
 
-    #[test]
-    fn read_latest_block_number_surfaces_parse_error() {
-        let key = "ns:current";
-        let mut conn = MockRedisConnection::new(vec![MockCmd::new(
-            redis::cmd("GET").arg(key),
-            Ok::<_, RedisError>("invalid"),
-        )]);
+    #[tokio::test]
+    async fn read_latest_block_number_surfaces_parse_error() {
+        let (_container, mut conn) = setup_redis().await;
 
+        let key = "ns:current";
+
+        // Set invalid data
+        redis::cmd("SET")
+            .arg(key)
+            .arg("invalid")
+            .query::<()>(&mut conn)
+            .unwrap();
+
+        // Test that parsing fails
         let err = read_latest_block_number(&mut conn, key).expect_err("expected parse failure");
         assert!(err.to_string().contains("invalid block number"));
+    }
+
+    #[tokio::test]
+    async fn async_writer_commit_block() -> Result<()> {
+        let container = Redis::default()
+            .start()
+            .await
+            .expect("Failed to start Redis container");
+
+        let host = container.get_host().await.expect("Failed to get host");
+        let port = container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Failed to get port");
+
+        let namespace = "state-worker:async".to_string();
+        let writer = RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone())?;
+
+        let block_number = 99_u64;
+        let block_hash = B256::repeat_byte(0x99);
+        let address = Address::repeat_byte(0xaa);
+
+        let update = BlockStateUpdate {
+            block_number,
+            block_hash,
+            accounts: vec![AccountCommit {
+                address,
+                balance: U256::from(5000u64),
+                nonce: 3,
+                code_hash: B256::ZERO,
+                code: None,
+                storage: vec![],
+                deleted: false,
+            }],
+        };
+
+        // Commit through the async writer
+        writer.commit_block(update).await?;
+
+        // Verify with a fresh connection
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        let account_key = format!("{}:account:{}", namespace, hex::encode(address));
+        let balance: String = redis::cmd("HGET")
+            .arg(&account_key)
+            .arg("balance")
+            .query(&mut conn)?;
+        assert_eq!(balance, "5000");
+
+        let current_block_key = format!("{namespace}:current_block");
+        let stored_block: String = redis::cmd("GET").arg(&current_block_key).query(&mut conn)?;
+        assert_eq!(stored_block, "99");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn async_writer_latest_block_number() -> Result<()> {
+        let container = Redis::default()
+            .start()
+            .await
+            .expect("Failed to start Redis container");
+
+        let host = container.get_host().await.expect("Failed to get host");
+        let port = container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Failed to get port");
+
+        let namespace = "state-worker:latest".to_string();
+        let writer = RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone())?;
+
+        // Initially should be None
+        let latest = writer.latest_block_number().await?;
+        assert_eq!(latest, None);
+
+        // Write a block
+        let block_number = 42_u64;
+        let block_hash = B256::repeat_byte(0x42);
+        writer
+            .update_block_metadata(block_number, block_hash)
+            .await?;
+
+        // Should now return the block number
+        let latest = writer.latest_block_number().await?;
+        assert_eq!(latest, Some(42));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_account_with_all_fields() -> Result<()> {
+        let (_container, mut conn) = setup_redis().await;
+
+        let namespace = "test";
+        let address = Address::repeat_byte(0xbb);
+        let code = vec![0x60, 0x80, 0x60, 0x40];
+        let code_hash = keccak256(&code);
+
+        let account = AccountCommit {
+            address,
+            balance: U256::from(999u64),
+            nonce: 5,
+            code_hash,
+            code: Some(code.clone()),
+            storage: vec![
+                (b256_from_u64(10), b256_from_u64(100)),
+                (b256_from_u64(20), b256_from_u64(200)),
+            ],
+            deleted: false,
+        };
+
+        // Write the account
+        write_account(&mut conn, namespace, &account)?;
+
+        // Verify all fields
+        let account_key = format!("{namespace}:account:{}", hex::encode(address));
+
+        let balance: String = redis::cmd("HGET")
+            .arg(&account_key)
+            .arg("balance")
+            .query(&mut conn)?;
+        assert_eq!(balance, "999");
+
+        let nonce: String = redis::cmd("HGET")
+            .arg(&account_key)
+            .arg("nonce")
+            .query(&mut conn)?;
+        assert_eq!(nonce, "5");
+
+        let stored_code_hash: String = redis::cmd("HGET")
+            .arg(&account_key)
+            .arg("code_hash")
+            .query(&mut conn)?;
+        assert_eq!(stored_code_hash, encode_b256(code_hash));
+
+        // Verify code
+        let code_key = format!("{namespace}:code:{}", hex::encode(code_hash));
+        let stored_code: String = redis::cmd("GET").arg(&code_key).query(&mut conn)?;
+        assert_eq!(stored_code, encode_bytes(&code));
+
+        // Verify storage
+        let storage_key = format!("{namespace}:storage:{}", hex::encode(address));
+        let slot10_value: String = redis::cmd("HGET")
+            .arg(&storage_key)
+            .arg(encode_b256(b256_from_u64(10)))
+            .query(&mut conn)?;
+        assert_eq!(slot10_value, encode_b256(b256_from_u64(100)));
+
+        let slot20_value: String = redis::cmd("HGET")
+            .arg(&storage_key)
+            .arg(encode_b256(b256_from_u64(20)))
+            .query(&mut conn)?;
+        assert_eq!(slot20_value, encode_b256(b256_from_u64(200)));
+
+        Ok(())
     }
 }

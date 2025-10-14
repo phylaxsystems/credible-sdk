@@ -27,12 +27,12 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-redis-test = { workspace = true }
-mini-redis = "0.4.1"
 int-test-utils = { path = "../int-test-utils" }
 serde_json = { workspace = true }
 tracing-test = "0.2.5"
 bytes = "1.6.0"
+testcontainers = "0.25.0"
+testcontainers-modules = { version = "0.13.0", features = ["redis"] }
 
 [profile.release]
 lto = "fat"

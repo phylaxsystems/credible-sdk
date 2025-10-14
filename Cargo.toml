@@ -68,7 +68,7 @@ wiremock = "0.6.1"
 redis-test = "0.12.0"
 redis = "0.32.5"
 directories = "6.0.0"
-bollard = "0.18"
+bollard = "0.19"
 
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }
