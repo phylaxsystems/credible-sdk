@@ -1,0 +1,11 @@
+[project]
+name = "nethermind-state-reader"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pysha3>=1.0.2",
+    "rlp>=4.1.0",
+    "rocksdict>=0.3.27",
+]
