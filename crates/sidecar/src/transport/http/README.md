@@ -194,7 +194,7 @@ Reorg the last sent transaction. Hash of the last sent transaction must be the s
 }
 ```
 
-### `getTransactions`
+### `getTransactions` & `getTransaction`
 
 Retrieves transaction results by hash. Can retrieve one or many transactions at once. Uses long-polling semantics. Responds when all requested transactions are available. `results` field contains all transactions we have results for, `not_found` contains txhashes the sidecar does not have stored.
 
@@ -239,6 +239,43 @@ Retrieves transaction results by hash. Can retrieve one or many transactions at 
         "gas_used": null,
         "error": null
       }
+    ],
+    "not_found": []
+  }
+}
+```
+
+#### `getTransaction`
+
+Same as `getTransactions`, but only works for one txhash
+
+**Request:**
+
+```json
+{
+  "id": 3,
+  "jsonrpc": "2.0",
+  "method": "getTransaction",
+  "params": [
+    "0xabcd1234567890abcdef...",
+  ]
+}
+```
+
+**Response:**
+
+```json
+{
+  "id": 3,
+  "jsonrpc": "2.0",
+  "result": {
+    "results": [
+      {
+        "hash": "0xabcd1234567890abcdef...",
+        "status": "success",
+        "gas_used": 21000,
+        "error": null
+      },
     ],
     "not_found": []
   }

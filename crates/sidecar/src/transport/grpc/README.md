@@ -38,6 +38,13 @@ Retrieves transaction results by hash with long-polling support.
 - **Request:** `GetTransactionsRequest`
 - **Response:** `GetTransactionsResponse`
 
+### `GetTransaction`
+
+Retrieves a single transaction result by hash with long-polling support.
+
+- **Request:** `GetTransactionRequest`
+- **Response:** `GetTransactionResponse`
+
 ## Transaction Encoding
 
 For comprehensive transaction type documentation and examples, see the [Transport Transaction Types Documentation](../README.md#transaction-types).
