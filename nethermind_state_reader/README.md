@@ -16,9 +16,39 @@ uv run python main.py \
   --limit 5
 ```
 
-This emits newline-delimited JSON objects, each describing an account at the most recent
-block whose state root is present in the database. Storage slots are included under a
-`storage` key. Slot numbers are stored as keccak hashes.
+## Redis export
+
+To mirror the extracted state into Redis, provide a connection URL (and optionally the code
+database so that contract bytecode can be stored):
+
+```bash
+uv run python main.py \
+      --state-db ../nethermind_db/linea-mainnet_archive/state/0 \
+      --headers-db ../nethermind_db/linea-mainnet_archive/headers \
+      --code-db ../nethermind_db/linea-mainnet_archive/code \
+      --redis-url redis://localhost:6379/0 \
+      --no-json-output \
+      --no-verify \
+      --redis-pipeline-size 50000
+```
+
+Keys are written using the following schema:
+
+- `state:account:{address_hash}` → Redis hash containing `balance`, `nonce`, `code_hash`.
+- `state:storage:{address_hash}` → Redis hash `{slot_hash: value, ...}` for non-empty slots.
+- `state:code:{code_hash}` → hex-encoded bytecode when available.
+- `state:current_block` → latest synced block number.
+- `state:block_hash:{number}` → corresponding block hash (hex string).
+
+Nethermind stores all trie keys and code references as Keccak-256 hashes, so:
+
+- `{address_hash}` is the Keccak-256 of the 20-byte address (i.e., `0xF06B7BD371e46e96DF807d45ED1298BeeE8894BA`).
+- `{slot_hash}` is the Keccak-256 of the 32-byte storage slot index.
+- `{code_hash}` is the Keccak-256 of the raw contract bytecode.
+
+To look up a known address or storage slot, hash the canonical value first and use the
+resulting `0x`-prefixed digest in the Redis key/value lookups. The original preimages are
+not persisted by Nethermind.
 
 ### Flags
 
@@ -27,6 +57,10 @@ block whose state root is present in the database. Storage slots are included un
 - `--storage-limit <M>` — cap the number of storage slots collected per account.
 - `--limit <K>` — limit the number of accounts emitted.
 - `--output FILE` — write JSON lines to a file instead of stdout.
+- `--[no-]json-output` — toggle JSON emission (enabled by default).
+- `--redis-url URL` — stream results into Redis using the schema above.
+- `--redis-pipeline-size N` — number of commands to batch before flushing to Redis.
+- `--code-db PATH` — path to the code RocksDB (required to resolve contract bytecode).
 - `--verbose` — print progress information to stderr.
 - `--no-verify` — skip hash validation when indexing nodes (faster, but unsafe).
 

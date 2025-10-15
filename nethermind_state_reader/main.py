@@ -3,11 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Dict, Iterable, Iterator, List, Optional
 
 import rlp
 from eth_hash.auto import keccak
+from redis import Redis
+from redis.exceptions import RedisError
 from rocksdict import AccessType, Options, Rdict
 
 EMPTY_TRIE_HASH = bytes.fromhex(
@@ -174,6 +177,7 @@ def build_node_index(state_path: str, verify: bool = True, verbose: bool = False
 @dataclass
 class ResolvedRoot:
     block_number: int
+    block_hash: bytes
     state_root: bytes
 
 
@@ -190,16 +194,18 @@ def find_state_root(
         if block_number is None:
             iterator.seek_to_last()
             while iterator.valid():
-                header = rlp.decode(iterator.value())
+                header_bytes = iterator.value()
+                header = rlp.decode(header_bytes)
                 candidate = header[3]
                 if candidate in nodes:
                     number = int.from_bytes(header[8], "big")
+                    block_hash = keccak(header_bytes)
                     if verbose:
                         print(
                             f"[info] using block {number} with state root {candidate.hex()}",
                             file=sys.stderr,
                         )
-                    return ResolvedRoot(number, candidate)
+                    return ResolvedRoot(number, block_hash, candidate)
                 iterator.prev()
             raise RuntimeError("Failed to locate any header whose state root is present in the state DB")
 
@@ -210,19 +216,21 @@ def find_state_root(
             key = iterator.key()
             number = int.from_bytes(key[:8], "big")
             if number == block_number:
-                header = rlp.decode(iterator.value())
+                header_bytes = iterator.value()
+                header = rlp.decode(header_bytes)
                 state_root = header[3]
                 if state_root not in nodes:
                     raise RuntimeError(
                         f"Requested block {block_number} has state root {state_root.hex()}, "
                         "but the node is not present in the state DB."
                     )
+                block_hash = keccak(header_bytes)
                 if verbose:
                     print(
                         f"[info] using block {block_number} with state root {state_root.hex()}",
                         file=sys.stderr,
                     )
-                return ResolvedRoot(block_number, state_root)
+                return ResolvedRoot(block_number, block_hash, state_root)
             iterator.next()
 
     raise RuntimeError(f"Header for block {block_number} not found")
@@ -402,6 +410,26 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Optional path to write JSON Lines output. Defaults to stdout.",
     )
     parser.add_argument(
+        "--json-output",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Emit newline-delimited JSON (enabled by default). Use --no-json-output to suppress output.",
+    )
+    parser.add_argument(
+        "--redis-url",
+        help="Redis connection URL (e.g. redis://localhost:6379/0). When set, state is mirrored into Redis.",
+    )
+    parser.add_argument(
+        "--redis-pipeline-size",
+        type=int,
+        default=1000,
+        help="Number of Redis commands to buffer before flushing (requires --redis-url).",
+    )
+    parser.add_argument(
+        "--code-db",
+        help="Path to the Nethermind code RocksDB (used to fetch contract bytecode).",
+    )
+    parser.add_argument(
         "--no-verify",
         action="store_true",
         help="Skip verifying that node hashes match the key suffix (faster but unsafe).",
@@ -441,18 +469,79 @@ def main(argv: Optional[List[str]] = None) -> None:
         storage_limit=args.storage_limit,
     )
 
-    output_handle = open(args.output, "w") if args.output else sys.stdout
     emitted = 0
-    try:
+    redis_pipeline = None
+    seen_code_hashes: set[bytes] = set()
+    block_hash_hex = "0x" + resolved_root.block_hash.hex()
+
+    with ExitStack() as stack:
+        output_handle = None
+        if args.json_output:
+            output_handle = sys.stdout
+            if args.output:
+                output_handle = stack.enter_context(open(args.output, "w"))
+
+        code_db: Optional[Rdict] = None
+        if args.code_db:
+            options = Options(raw_mode=True)
+            code_db = stack.enter_context(Rdict(args.code_db, options=options, access_type=AccessType.read_only()))
+
+        if args.redis_url:
+            try:
+                redis_client = Redis.from_url(args.redis_url)
+            except RedisError as exc:
+                raise RuntimeError(f"Failed to connect to Redis at {args.redis_url}: {exc}") from exc
+            redis_pipeline = redis_client.pipeline(transaction=False)
+            redis_pipeline.set("state:current_block", str(resolved_root.block_number))
+            redis_pipeline.set(f"state:block_hash:{resolved_root.block_number}", block_hash_hex)
+
         for account in account_iter:
             if args.limit is not None and emitted >= args.limit:
                 break
-            json.dump(account, output_handle)
-            output_handle.write("\n")
+
+            if output_handle is not None:
+                json.dump(account, output_handle)
+                output_handle.write("\n")
+
+            if redis_pipeline is not None:
+                address_hex = account["address_hash"]
+                account_key = f"state:account:{address_hex}"
+                redis_pipeline.hset(
+                    account_key,
+                    mapping={
+                        "balance": account["balance"],
+                        "nonce": str(account["nonce"]),
+                        "code_hash": account["code_hash"],
+                    },
+                )
+
+                storage_entries = {}
+                if args.include_storage:
+                    storage_entries = {
+                        slot["slot_hash"]: slot["value"]
+                        for slot in account.get("storage", [])
+                    }
+                if storage_entries:
+                    redis_pipeline.hset(f"state:storage:{address_hex}", mapping=storage_entries)
+
+                if code_db is not None:
+                    code_hash_hex = account["code_hash"]
+                    if code_hash_hex.startswith("0x"):
+                        code_hash_bytes = bytes.fromhex(code_hash_hex[2:])
+                    else:
+                        code_hash_bytes = bytes.fromhex(code_hash_hex)
+                    if code_hash_bytes not in seen_code_hashes:
+                        seen_code_hashes.add(code_hash_bytes)
+                        code_bytes = code_db.get(code_hash_bytes)
+                        if code_bytes:
+                            redis_pipeline.set(f"state:code:{code_hash_hex}", "0x" + code_bytes.hex())
+
+                if len(redis_pipeline.command_stack) >= args.redis_pipeline_size:
+                    redis_pipeline.execute()
+
             emitted += 1
-    finally:
-        if output_handle is not sys.stdout:
-            output_handle.close()
+    if redis_pipeline is not None and redis_pipeline.command_stack:
+        redis_pipeline.execute()
 
     if args.verbose:
         print(f"[info] emitted {emitted} accounts", file=sys.stderr)
