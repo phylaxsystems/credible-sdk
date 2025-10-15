@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
     let redis = RedisStateWriter::new(
         &args.redis_url,
         args.redis_namespace.clone(),
-        CircularBufferConfig::new(args.state_depth),
+        CircularBufferConfig::new(args.state_depth)?,
     )
     .context("failed to initialize redis client")?;
     let genesis_state =

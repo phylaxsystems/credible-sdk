@@ -79,7 +79,7 @@ impl LocalInstance {
         let redis = RedisStateWriter::new(
             &redis_url,
             Self::NAMESPACE.to_string(),
-            CircularBufferConfig::new(3),
+            CircularBufferConfig::new(3).map_err(|e| e.to_string())?,
         )
         .map_err(|e| format!("Failed to initialize redis client: {e}"))?;
 

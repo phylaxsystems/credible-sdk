@@ -26,8 +26,11 @@ pub struct CircularBufferConfig {
 }
 
 impl CircularBufferConfig {
-    pub fn new(buffer_size: usize) -> Self {
-        Self { buffer_size }
+    pub fn new(buffer_size: usize) -> Result<Self> {
+        if buffer_size == 0 {
+            return Err(anyhow!("buffer_size must be greater than 0"));
+        }
+        Ok(Self { buffer_size })
     }
 }
 
