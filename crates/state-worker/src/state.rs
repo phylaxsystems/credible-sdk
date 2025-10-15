@@ -44,6 +44,7 @@ struct AccountSnapshot {
 pub struct BlockStateUpdate {
     pub block_number: u64,
     pub block_hash: B256,
+    pub state_root: B256,
     pub accounts: Vec<AccountCommit>,
 }
 
@@ -64,6 +65,7 @@ impl BlockStateUpdate {
     pub fn from_traces(
         block_number: u64,
         block_hash: B256,
+        state_root: B256,
         traces: Vec<TraceResultsWithTransactionHash>,
     ) -> Self {
         let mut accounts: HashMap<Address, AccountSnapshot> = HashMap::new();
@@ -82,6 +84,7 @@ impl BlockStateUpdate {
         Self {
             block_number,
             block_hash,
+            state_root,
             accounts,
         }
     }
@@ -90,11 +93,13 @@ impl BlockStateUpdate {
     pub fn from_accounts(
         block_number: u64,
         block_hash: B256,
+        state_root: B256,
         accounts: Vec<AccountCommit>,
     ) -> Self {
         Self {
             block_number,
             block_hash,
+            state_root,
             accounts,
         }
     }
@@ -271,14 +276,6 @@ mod tests {
     };
     use std::collections::BTreeMap;
 
-    impl BlockStateUpdate {
-        /// Consume the update and return its constituent parts for downstream
-        /// writers. This keeps the write path ergonomic without cloning vectors.
-        pub fn into_parts(self) -> (u64, B256, Vec<AccountCommit>) {
-            (self.block_number, self.block_hash, self.accounts)
-        }
-    }
-
     // Helper function to create a StateDiff wrapped in TraceResultsWithTransactionHash
     fn create_trace_with_diff(
         tx_hash: B256,
@@ -334,7 +331,7 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(1, B256::ZERO, traces);
+        let update = BlockStateUpdate::from_traces(1, B256::ZERO, B256::ZERO, traces);
 
         assert_eq!(update.accounts.len(), 2);
 
@@ -395,7 +392,7 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(2, B256::ZERO, traces);
+        let update = BlockStateUpdate::from_traces(2, B256::ZERO, B256::ZERO, traces);
 
         let accounts: HashMap<_, _> = update
             .accounts
@@ -449,7 +446,7 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(3, B256::ZERO, traces);
+        let update = BlockStateUpdate::from_traces(3, B256::ZERO, B256::ZERO, traces);
 
         assert_eq!(update.accounts.len(), 1);
         let account = &update.accounts[0];
@@ -481,7 +478,7 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(4, B256::ZERO, traces);
+        let update = BlockStateUpdate::from_traces(4, B256::ZERO, B256::ZERO, traces);
 
         assert_eq!(update.accounts.len(), 1);
         let account_commit = &update.accounts[0];
@@ -517,7 +514,7 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(5, B256::ZERO, traces);
+        let update = BlockStateUpdate::from_traces(5, B256::ZERO, B256::ZERO, traces);
 
         let account_commit = &update.accounts[0];
         assert!(account_commit.deleted);
@@ -573,7 +570,7 @@ mod tests {
             create_trace_with_diff(B256::from(U256::from(2)), state_diff2),
         ];
 
-        let update = BlockStateUpdate::from_traces(6, B256::ZERO, traces);
+        let update = BlockStateUpdate::from_traces(6, B256::ZERO, B256::ZERO, traces);
 
         assert_eq!(update.accounts.len(), 1);
         let account_commit = &update.accounts[0];
@@ -599,7 +596,7 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(B256::ZERO, state_diff)];
-        let update = BlockStateUpdate::from_traces(7, B256::ZERO, traces);
+        let update = BlockStateUpdate::from_traces(7, B256::ZERO, B256::ZERO, traces);
 
         // Account should not be included since nothing changed
         assert_eq!(update.accounts.len(), 0);
@@ -608,7 +605,7 @@ mod tests {
     #[test]
     fn test_empty_traces() {
         let traces = vec![];
-        let update = BlockStateUpdate::from_traces(8, B256::ZERO, traces);
+        let update = BlockStateUpdate::from_traces(8, B256::ZERO, B256::ZERO, traces);
         assert_eq!(update.accounts.len(), 0);
     }
 
@@ -628,7 +625,7 @@ mod tests {
         };
 
         let traces = vec![trace];
-        let update = BlockStateUpdate::from_traces(9, B256::ZERO, traces);
+        let update = BlockStateUpdate::from_traces(9, B256::ZERO, B256::ZERO, traces);
         assert_eq!(update.accounts.len(), 0);
     }
 
@@ -667,7 +664,7 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(10, B256::ZERO, traces);
+        let update = BlockStateUpdate::from_traces(10, B256::ZERO, B256::ZERO, traces);
 
         let account = &update.accounts[0];
         let storage_map: HashMap<_, _> = account.storage.iter().copied().collect();
@@ -687,19 +684,5 @@ mod tests {
         );
         // Slot 3 was unchanged, so shouldn't be in the map
         assert_eq!(storage_map.get(&B256::from(U256::from(3))), None);
-    }
-
-    #[test]
-    fn test_into_parts() {
-        let block_number = 12345u64;
-        let block_hash = B256::repeat_byte(0xab);
-        let traces = vec![];
-
-        let update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
-        let (num, hash, accounts) = update.into_parts();
-
-        assert_eq!(num, block_number);
-        assert_eq!(hash, block_hash);
-        assert_eq!(accounts.len(), 0);
     }
 }

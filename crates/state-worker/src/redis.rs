@@ -187,6 +187,7 @@ fn write_block_metadata_to_pipe(
     base_namespace: &str,
     block_number: u64,
     block_hash: B256,
+    state_root: B256,
 ) {
     // Write block number to namespace
     let block_key = format!("{namespace}:block");
@@ -196,6 +197,10 @@ fn write_block_metadata_to_pipe(
     let block_hash_key = format!("{base_namespace}:block_hash:{block_number}");
     let block_hash_hex = encode_b256(block_hash);
     pipe.set(&block_hash_key, block_hash_hex);
+
+    let state_root_hash_key = format!("{base_namespace}:state_root:{block_number}");
+    let state_root_hex = encode_b256(state_root);
+    pipe.set(&state_root_hash_key, state_root_hex);
 }
 
 /// Serialize state diff for storage (simple JSON serialization).
@@ -218,6 +223,7 @@ where
 {
     let block_number = update.block_number;
     let block_hash = update.block_hash;
+    let state_root = update.state_root;
 
     // Determine target namespace using circular buffer logic
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
@@ -269,6 +275,7 @@ where
         base_namespace,
         block_number,
         block_hash,
+        state_root,
     );
 
     // Store the state diff for this block
@@ -377,6 +384,7 @@ mod tests {
     // Helper to create a test update with specific account data
     fn create_test_update(
         block_number: u64,
+        state_root: B256,
         address: Address,
         balance: u64,
         nonce: u64,
@@ -387,6 +395,7 @@ mod tests {
 
         BlockStateUpdate {
             block_number,
+            state_root,
             block_hash: B256::repeat_byte(u8::try_from(block_number).unwrap()),
             accounts: vec![AccountCommit {
                 address,
@@ -449,17 +458,34 @@ mod tests {
 
         // Block 0: Account 0x11 with balance 1000
         let addr_0x11 = Address::repeat_byte(0x11);
-        let update0 = create_test_update(0, addr_0x11, 1000, 5, vec![], None);
+        let update0 =
+            create_test_update(0, B256::repeat_byte(0xAA), addr_0x11, 1000, 5, vec![], None);
         writer.commit_block(update0).await?;
 
         // Block 1: Account 0x22 with balance 2000 (0x11 not touched)
         let addr_0x22 = Address::repeat_byte(0x22);
-        let update1 = create_test_update(1, addr_0x22, 2000, 10, vec![], None);
+        let update1 = create_test_update(
+            1,
+            B256::repeat_byte(0xBB),
+            addr_0x22,
+            2000,
+            10,
+            vec![],
+            None,
+        );
         writer.commit_block(update1).await?;
 
         // Block 2: Account 0x33 with balance 3000 (0x11 and 0x22 not touched)
         let addr_0x33 = Address::repeat_byte(0x33);
-        let update2 = create_test_update(2, addr_0x33, 3000, 15, vec![], None);
+        let update2 = create_test_update(
+            2,
+            B256::repeat_byte(0xCC),
+            addr_0x33,
+            3000,
+            15,
+            vec![],
+            None,
+        );
         writer.commit_block(update2).await?;
 
         let client = redis::Client::open(format!("redis://{host}:{port}"))?;
@@ -467,7 +493,15 @@ mod tests {
 
         // Block 3: Account 0x44 with balance 4000 (should apply to namespace 0)
         let addr_0x44 = Address::repeat_byte(0x44);
-        let update3 = create_test_update(3, addr_0x44, 4000, 20, vec![], None);
+        let update3 = create_test_update(
+            3,
+            B256::repeat_byte(0xDD),
+            addr_0x44,
+            4000,
+            20,
+            vec![],
+            None,
+        );
         writer.commit_block(update3).await?;
 
         // CRITICAL: Namespace 0 should have CUMULATIVE state:
@@ -503,22 +537,26 @@ mod tests {
         let address = Address::repeat_byte(0x55);
 
         // Block 0: Account with balance 1000, nonce 0
-        let update0 = create_test_update(0, address, 1000, 0, vec![], None);
+        let update0 =
+            create_test_update(0, B256::repeat_byte(0xBB), address, 1000, 0, vec![], None);
         writer.commit_block(update0).await?;
 
         // Block 1: Same account, balance increases to 1500, nonce to 1
-        let update1 = create_test_update(1, address, 1500, 1, vec![], None);
+        let update1 =
+            create_test_update(1, B256::repeat_byte(0xBB), address, 1500, 1, vec![], None);
         writer.commit_block(update1).await?;
 
         // Block 2: Same account, balance decreases to 1200, nonce to 2
-        let update2 = create_test_update(2, address, 1200, 2, vec![], None);
+        let update2 =
+            create_test_update(2, B256::repeat_byte(0xBB), address, 1200, 2, vec![], None);
         writer.commit_block(update2).await?;
 
         let client = redis::Client::open(format!("redis://{host}:{port}"))?;
         let mut conn = client.get_connection()?;
 
         // Block 3: Same account, balance to 2000, nonce to 3
-        let update3 = create_test_update(3, address, 2000, 3, vec![], None);
+        let update3 =
+            create_test_update(3, B256::repeat_byte(0xBB), address, 2000, 3, vec![], None);
         writer.commit_block(update3).await?;
 
         // Namespace 0 should have the FINAL state after applying all diffs
@@ -542,17 +580,41 @@ mod tests {
 
         // Block 0: Set storage slot 1 = 100
         let storage_0 = vec![(b256_from_u64(1), b256_from_u64(100))];
-        let update0 = create_test_update(0, address, 1000, 0, storage_0, None);
+        let update0 = create_test_update(
+            0,
+            B256::repeat_byte(0xBB),
+            address,
+            1000,
+            0,
+            storage_0,
+            None,
+        );
         writer.commit_block(update0).await?;
 
         // Block 1: Set storage slot 2 = 200 (slot 1 not touched)
         let storage_1 = vec![(b256_from_u64(2), b256_from_u64(200))];
-        let update1 = create_test_update(1, address, 1000, 1, storage_1, None);
+        let update1 = create_test_update(
+            1,
+            B256::repeat_byte(0xBB),
+            address,
+            1000,
+            1,
+            storage_1,
+            None,
+        );
         writer.commit_block(update1).await?;
 
         // Block 2: Update storage slot 1 = 150 (slot 2 not touched)
         let storage_2 = vec![(b256_from_u64(1), b256_from_u64(150))];
-        let update2 = create_test_update(2, address, 1000, 2, storage_2, None);
+        let update2 = create_test_update(
+            2,
+            B256::repeat_byte(0xBB),
+            address,
+            1000,
+            2,
+            storage_2,
+            None,
+        );
         writer.commit_block(update2).await?;
 
         let client = redis::Client::open(format!("redis://{host}:{port}"))?;
@@ -560,7 +622,15 @@ mod tests {
 
         // Block 3: Set storage slot 3 = 300
         let storage_3 = vec![(b256_from_u64(3), b256_from_u64(300))];
-        let update3 = create_test_update(3, address, 1000, 3, storage_3, None);
+        let update3 = create_test_update(
+            3,
+            B256::repeat_byte(0xBB),
+            address,
+            1000,
+            3,
+            storage_3,
+            None,
+        );
         writer.commit_block(update3).await?;
 
         // Namespace 0 should have ALL storage slots with their latest values:
@@ -607,7 +677,7 @@ mod tests {
         assert_eq!(latest, None, "Should have no blocks initially");
 
         let address = Address::repeat_byte(0x11);
-        let update = create_test_update(0, address, 1000, 5, vec![], None);
+        let update = create_test_update(0, B256::repeat_byte(0xBB), address, 1000, 5, vec![], None);
         writer.commit_block(update).await?;
 
         let latest = writer.latest_block_number().await?;
@@ -633,6 +703,7 @@ mod tests {
             let update = BlockStateUpdate {
                 block_number: block_num,
                 block_hash: B256::repeat_byte(u8::try_from(block_num).unwrap()),
+                state_root: B256::repeat_byte(u8::try_from(block_num).unwrap()),
                 accounts: vec![],
             };
             commit_block_atomic(&mut conn, base_namespace, buffer_size, &update)?;
@@ -642,6 +713,7 @@ mod tests {
         let update3 = BlockStateUpdate {
             block_number: 3,
             block_hash: B256::repeat_byte(3),
+            state_root: B256::repeat_byte(u8::try_from(3).unwrap()),
             accounts: vec![],
         };
         commit_block_atomic(&mut conn, base_namespace, buffer_size, &update3)?;
@@ -676,8 +748,15 @@ mod tests {
 
         // Write 20 blocks - each increments the balance by 10
         for block_num in 0..20 {
-            let update =
-                create_test_update(block_num, address, block_num * 10, block_num, vec![], None);
+            let update = create_test_update(
+                block_num,
+                B256::repeat_byte(0xAA),
+                address,
+                block_num * 10,
+                block_num,
+                vec![],
+                None,
+            );
             writer.commit_block(update).await?;
         }
 
@@ -723,13 +802,15 @@ mod tests {
         let address = Address::repeat_byte(0x77);
 
         // Block 0: Account exists with balance
-        let update0 = create_test_update(0, address, 1000, 5, vec![], None);
+        let update0 =
+            create_test_update(0, B256::repeat_byte(0xBB), address, 1000, 5, vec![], None);
         writer.commit_block(update0).await?;
 
         // Block 1: Account DELETED
         let update1 = BlockStateUpdate {
             block_number: 1,
             block_hash: B256::repeat_byte(1),
+            state_root: B256::repeat_byte(0xAA),
             accounts: vec![AccountCommit {
                 address,
                 balance: U256::ZERO,
@@ -744,7 +825,15 @@ mod tests {
 
         // Block 2: Different account (doesn't touch deleted one)
         let other_addr = Address::repeat_byte(0x88);
-        let update2 = create_test_update(2, other_addr, 2000, 10, vec![], None);
+        let update2 = create_test_update(
+            2,
+            B256::repeat_byte(0xBB),
+            other_addr,
+            2000,
+            10,
+            vec![],
+            None,
+        );
         writer.commit_block(update2).await?;
 
         let client = redis::Client::open(format!("redis://{host}:{port}"))?;
@@ -752,7 +841,15 @@ mod tests {
 
         // Block 3: Another different account (overwrites namespace 0)
         let third_addr = Address::repeat_byte(0x99);
-        let update3 = create_test_update(3, third_addr, 3000, 15, vec![], None);
+        let update3 = create_test_update(
+            3,
+            B256::repeat_byte(0xBB),
+            third_addr,
+            3000,
+            15,
+            vec![],
+            None,
+        );
         writer.commit_block(update3).await?;
 
         // Namespace 0 should have:
@@ -783,6 +880,7 @@ mod tests {
         for block_num in 0..4 {
             let update = create_test_update(
                 block_num,
+                B256::repeat_byte(0xAA),
                 address,
                 (block_num + 1) * 100,
                 block_num,
@@ -821,18 +919,42 @@ mod tests {
 
         // Block 0: Deploy contract with code X
         let code_x = vec![0x60, 0x80, 0x60, 0x40];
-        let update0 = create_test_update(0, address, 0, 1, vec![], Some(code_x.clone()));
+        let update0 = create_test_update(
+            0,
+            B256::repeat_byte(0xBB),
+            address,
+            0,
+            1,
+            vec![],
+            Some(code_x.clone()),
+        );
         writer.commit_block(update0).await?;
 
         // Block 1: Doesn't touch the contract
         let other_addr = Address::repeat_byte(0xe2);
-        let update1 = create_test_update(1, other_addr, 1000, 1, vec![], None);
+        let update1 = create_test_update(
+            1,
+            B256::repeat_byte(0xBB),
+            other_addr,
+            1000,
+            1,
+            vec![],
+            None,
+        );
         writer.commit_block(update1).await?;
 
         // Block 2: Update contract code to Y
         let code_y = vec![0x61, 0x90, 0x61, 0x50];
         let code_hash_y = keccak256(&code_y);
-        let update2 = create_test_update(2, address, 0, 2, vec![], Some(code_y.clone()));
+        let update2 = create_test_update(
+            2,
+            B256::repeat_byte(0xBB),
+            address,
+            0,
+            2,
+            vec![],
+            Some(code_y.clone()),
+        );
         writer.commit_block(update2).await?;
 
         let client = redis::Client::open(format!("redis://{host}:{port}"))?;
@@ -840,7 +962,15 @@ mod tests {
 
         // Block 3: Overwrites namespace 0
         let third_addr = Address::repeat_byte(0xe3);
-        let update3 = create_test_update(3, third_addr, 3000, 3, vec![], None);
+        let update3 = create_test_update(
+            3,
+            B256::repeat_byte(0xBB),
+            third_addr,
+            3000,
+            3,
+            vec![],
+            None,
+        );
         writer.commit_block(update3).await?;
 
         // Contract should have code Y (not X)
@@ -871,17 +1001,41 @@ mod tests {
 
         // Block 0: Set storage slot 1 = 100
         let storage_0 = vec![(b256_from_u64(1), b256_from_u64(100))];
-        let update0 = create_test_update(0, address, 1000, 0, storage_0, None);
+        let update0 = create_test_update(
+            0,
+            B256::repeat_byte(0xBB),
+            address,
+            1000,
+            0,
+            storage_0,
+            None,
+        );
         writer.commit_block(update0).await?;
 
         // Block 1: Set storage slot 1 = 0 (deleted/zeroed)
         let storage_1 = vec![(b256_from_u64(1), B256::ZERO)];
-        let update1 = create_test_update(1, address, 1000, 1, storage_1, None);
+        let update1 = create_test_update(
+            1,
+            B256::repeat_byte(0xBB),
+            address,
+            1000,
+            1,
+            storage_1,
+            None,
+        );
         writer.commit_block(update1).await?;
 
         // Block 2: Different account (doesn't touch storage)
         let other_addr = Address::repeat_byte(0xf2);
-        let update2 = create_test_update(2, other_addr, 2000, 2, vec![], None);
+        let update2 = create_test_update(
+            2,
+            B256::repeat_byte(0xBB),
+            other_addr,
+            2000,
+            2,
+            vec![],
+            None,
+        );
         writer.commit_block(update2).await?;
 
         let client = redis::Client::open(format!("redis://{host}:{port}"))?;
@@ -889,7 +1043,15 @@ mod tests {
 
         // Block 3: Overwrites namespace 0
         let third_addr = Address::repeat_byte(0xf3);
-        let update3 = create_test_update(3, third_addr, 3000, 3, vec![], None);
+        let update3 = create_test_update(
+            3,
+            B256::repeat_byte(0xBB),
+            third_addr,
+            3000,
+            3,
+            vec![],
+            None,
+        );
         writer.commit_block(update3).await?;
 
         // Storage slot 1 should be ZERO (not 100)
@@ -923,6 +1085,7 @@ mod tests {
         let update3 = BlockStateUpdate {
             block_number: 3,
             block_hash: B256::repeat_byte(3),
+            state_root: B256::repeat_byte(0xAA),
             accounts: vec![],
         };
         let diff_key_3 = get_diff_key(base_namespace, 3);
@@ -966,6 +1129,7 @@ mod tests {
         for block_num in 0..9 {
             let update = create_test_update(
                 block_num,
+                B256::repeat_byte(0xAA),
                 address,
                 (block_num + 1) * 100,
                 block_num,
@@ -1009,6 +1173,7 @@ mod tests {
         let update0 = BlockStateUpdate {
             block_number: 0,
             block_hash: B256::ZERO,
+            state_root: B256::ZERO,
             accounts: vec![
                 AccountCommit {
                     address: addr_a,
@@ -1036,6 +1201,7 @@ mod tests {
         let update1 = BlockStateUpdate {
             block_number: 1,
             block_hash: B256::repeat_byte(1),
+            state_root: B256::repeat_byte(0xAA),
             accounts: vec![
                 AccountCommit {
                     address: addr_a,
@@ -1072,6 +1238,7 @@ mod tests {
         let update2 = BlockStateUpdate {
             block_number: 2,
             block_hash: B256::repeat_byte(2),
+            state_root: B256::repeat_byte(0xAA),
             accounts: vec![AccountCommit {
                 address: addr_c,
                 balance: U256::from(3500u64),
@@ -1089,7 +1256,7 @@ mod tests {
 
         // Block 3: Overwrites namespace 0
         let addr_d = Address::repeat_byte(0xd1);
-        let update3 = create_test_update(3, addr_d, 4000, 4, vec![], None);
+        let update3 = create_test_update(3, B256::repeat_byte(0xBB), addr_d, 4000, 4, vec![], None);
         writer.commit_block(update3).await?;
 
         // Namespace 0 should have cumulative state:
