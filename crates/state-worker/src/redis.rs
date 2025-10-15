@@ -285,13 +285,14 @@ where
     let mut pipe = redis::pipe();
     pipe.atomic();
 
-    // If we're overwriting an old block, apply intermediate diffs
-    if let Some(old_block) = current_block
-        && block_number > old_block + 1
-    {
+    // Determine the starting block for the diff application
+    let start_block = current_block.map_or(0, |old| old + 1);
+
+    // Apply intermediate diffs if there's a gap
+    if block_number > start_block {
         // We need to apply diffs from (old_block + 1) to (block_number - 1)
         // to maintain cumulative state
-        for intermediate_block in (old_block + 1)..block_number {
+        for intermediate_block in start_block..block_number {
             let diff_key = get_diff_key(base_namespace, intermediate_block);
             let diff_json: Option<String> = redis::cmd("GET")
                 .arg(&diff_key)
@@ -1318,6 +1319,37 @@ mod tests {
         verify_account_state(&mut conn, &format!("{namespace}:0"), addr_b, 0, 0)?;
         verify_account_state(&mut conn, &format!("{namespace}:0"), addr_c, 3500, 2)?;
         verify_account_state(&mut conn, &format!("{namespace}:0"), addr_d, 4000, 4)?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_initial_fill_cumulative_state() -> Result<()> {
+        let container = Redis::default().start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(6379).await?;
+
+        let namespace = "initial_fill".to_string();
+        let config = CircularBufferConfig { buffer_size: 3 };
+        let writer =
+            RedisStateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+
+        let addr_a = Address::repeat_byte(0xa1);
+        let addr_b = Address::repeat_byte(0xb1);
+
+        // Block 0: Create account A
+        let update0 = create_test_update(0, B256::ZERO, addr_a, 1000, 1, vec![], None);
+        writer.commit_block(update0).await?;
+
+        // Block 1: Create account B
+        let update1 = create_test_update(1, B256::ZERO, addr_b, 2000, 2, vec![], None);
+        writer.commit_block(update1).await?;
+
+        let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+        let mut conn = client.get_connection()?;
+
+        verify_account_state(&mut conn, &format!("{namespace}:1"), addr_a, 1000, 1)?;
+        verify_account_state(&mut conn, &format!("{namespace}:1"), addr_b, 2000, 2)?;
 
         Ok(())
     }
