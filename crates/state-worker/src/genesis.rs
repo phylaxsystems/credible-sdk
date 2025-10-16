@@ -90,7 +90,7 @@ fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
 }
 
 fn convert_account(address: &str, account: GenesisAccount) -> Result<AccountState> {
-    let address = parse_address(address)?;
+    let address = keccak256(parse_address(address)?);
     let balance = parse_u256(account.balance.as_deref())?;
     let nonce = parse_u64(account.nonce.as_deref())
         .with_context(|| format!("failed to parse nonce for address {address}"))?;
@@ -207,7 +207,7 @@ mod tests {
         let account = &state.accounts()[0];
         assert_eq!(
             account.address,
-            Address::from_str("00000000000000000000000000000000000000f0").unwrap()
+            keccak256(Address::from_str("00000000000000000000000000000000000000f0").unwrap())
         );
         assert_eq!(account.balance, U256::from(0x100));
         assert_eq!(account.nonce, 5);

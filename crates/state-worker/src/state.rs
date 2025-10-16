@@ -9,7 +9,6 @@ use state_store::common::BlockStateUpdate;
 use std::collections::HashMap;
 
 use alloy::primitives::{
-    Address,
     B256,
     U256,
     keccak256,
@@ -58,7 +57,7 @@ impl BlockStateUpdateBuilder {
         state_root: B256,
         traces: Vec<TraceResultsWithTransactionHash>,
     ) -> BlockStateUpdate {
-        let mut accounts: HashMap<Address, AccountSnapshot> = HashMap::new();
+        let mut accounts: HashMap<B256, AccountSnapshot> = HashMap::new();
 
         for trace in traces {
             if let Some(state_diff) = trace.full_trace.state_diff {
@@ -99,7 +98,7 @@ impl AccountSnapshot {
     /// Convert the accumulated snapshot into a commit payload if anything
     /// meaningful changed. Returning `None` allows callsites to drop untouched
     /// snapshots without extra bookkeeping.
-    fn finalize(mut self, address: Address) -> Option<AccountState> {
+    fn finalize(mut self, address: B256) -> Option<AccountState> {
         if !self.touched && !self.deleted && self.storage_updates.is_empty() {
             return None;
         }
@@ -142,9 +141,9 @@ impl AccountSnapshot {
 }
 
 /// Merge a single transaction diff into the pending account snapshots.
-fn process_diff(accounts: &mut HashMap<Address, AccountSnapshot>, state_diff: &StateDiff) {
+fn process_diff(accounts: &mut HashMap<B256, AccountSnapshot>, state_diff: &StateDiff) {
     for (address, account_diff) in &state_diff.0 {
-        let snapshot = accounts.entry(*address).or_default();
+        let snapshot = accounts.entry(keccak256(*address)).or_default();
 
         // Handle balance changes
         match &account_diff.balance {
@@ -263,6 +262,7 @@ fn process_diff(accounts: &mut HashMap<Address, AccountSnapshot>, state_diff: &S
 mod tests {
     use super::*;
     use alloy::primitives::{
+        Address,
         Bytes,
         U64,
     };
@@ -344,13 +344,13 @@ mod tests {
             .collect();
 
         // Check sender
-        let sender_commit = accounts.get(&sender.0.0).unwrap();
+        let sender_commit = accounts.get(&keccak256(sender)).unwrap();
         assert_eq!(sender_commit.balance, U256::from(900u64));
         assert_eq!(sender_commit.nonce, 6);
         assert!(!sender_commit.deleted);
 
         // Check recipient
-        let recipient_commit = accounts.get(&recipient.0.0).unwrap();
+        let recipient_commit = accounts.get(&keccak256(recipient)).unwrap();
         assert_eq!(recipient_commit.balance, U256::from(100u64));
         assert_eq!(recipient_commit.nonce, 0);
         assert!(!recipient_commit.deleted);
@@ -408,7 +408,7 @@ mod tests {
             .collect();
 
         // Check contract
-        let contract_commit = accounts.get(&contract.0.0).unwrap();
+        let contract_commit = accounts.get(&keccak256(contract)).unwrap();
         assert_eq!(contract_commit.code, Some(contract_code.clone()));
         assert_eq!(contract_commit.code_hash, keccak256(&contract_code));
         assert_eq!(contract_commit.nonce, 1);

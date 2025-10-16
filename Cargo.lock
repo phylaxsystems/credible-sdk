@@ -920,9 +920,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-trie"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bada1fc392a33665de0dc50d401a3701b62583c655e3522a323490a5da016962"
+checksum = "e3412d52bb97c6c6cc27ccc28d4e6e8cf605469101193b50b0bd5813b1f990b5"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -11327,6 +11327,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "state-checker"
+version = "0.6.2"
+dependencies = [
+ "alloy",
+ "alloy-rpc-types",
+ "alloy-transport-ws",
+ "alloy-trie",
+ "anyhow",
+ "clap",
+ "hex",
+ "log",
+ "revm",
+ "rust-tracing",
+ "rustls",
+ "state-store",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "state-store"
 version = "0.6.2"
 dependencies = [
@@ -11348,11 +11368,8 @@ version = "0.6.2"
 dependencies = [
  "alloy",
  "alloy-provider",
- "alloy-rpc-types",
  "alloy-rpc-types-trace",
- "alloy-transport-ws",
  "anyhow",
- "bytes",
  "clap",
  "futures",
  "hex",
@@ -11368,7 +11385,6 @@ dependencies = [
  "testcontainers-modules",
  "tokio",
  "tracing",
- "tracing-subscriber 0.3.19",
  "tracing-test",
 ]
 

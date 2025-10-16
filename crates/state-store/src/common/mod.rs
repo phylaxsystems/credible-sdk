@@ -3,7 +3,6 @@
 pub mod error;
 
 use alloy::primitives::{
-    Address,
     B256,
     U256,
 };
@@ -94,24 +93,33 @@ pub fn get_block_key(namespace: &str) -> String {
 }
 
 /// Get the key for account data in a namespace.
-pub fn get_account_key(namespace: &str, address_hex: &str) -> String {
+pub fn get_account_key(namespace: &str, hashed_address: &B256) -> String {
     format!(
         "{namespace}{}{}{}{}",
         keys::SEPARATOR,
         keys::ACCOUNT,
         keys::SEPARATOR,
-        address_hex
+        hex::encode(hashed_address)
     )
 }
 
+/// Returns the pattern for all accounts in a namespace.
+pub fn get_all_accounts_patter(namespace: &str) -> String {
+    format!(
+        "{namespace}{}{}{}*",
+        keys::SEPARATOR,
+        keys::ACCOUNT,
+        keys::SEPARATOR,
+    )
+}
 /// Get the key for storage data in a namespace.
-pub fn get_storage_key(namespace: &str, address_hex: &str) -> String {
+pub fn get_storage_key(namespace: &str, hashed_address: &B256) -> String {
     format!(
         "{namespace}{}{}{}{}",
         keys::SEPARATOR,
         keys::STORAGE,
         keys::SEPARATOR,
-        address_hex
+        hex::encode(hashed_address)
     )
 }
 
@@ -186,7 +194,7 @@ where
 /// This is the canonical representation used by both reader and writer.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AccountState {
-    pub address: Address,
+    pub address: B256,
     pub balance: U256,
     pub nonce: u64,
     pub code_hash: B256,
@@ -302,6 +310,7 @@ pub fn decode_bytes(s: &str) -> StateResult<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::keccak256;
 
     #[test]
     fn test_circular_buffer_config() {
@@ -353,12 +362,12 @@ mod tests {
         assert_eq!(get_diff_key(base, 42), "test:diff:42");
         assert_eq!(get_block_key(namespace), "test:0:block");
         assert_eq!(
-            get_account_key(namespace, address),
-            "test:0:account:1234567890abcdef"
+            get_account_key(namespace, &keccak256(address)),
+            "test:0:account:25e4fcd3b1ecd473d5393d9636435394b77da34df77e9474db337f4e980d16d1"
         );
         assert_eq!(
-            get_storage_key(namespace, address),
-            "test:0:storage:1234567890abcdef"
+            get_storage_key(namespace, &keccak256(address)),
+            "test:0:storage:25e4fcd3b1ecd473d5393d9636435394b77da34df77e9474db337f4e980d16d1"
         );
         assert_eq!(
             get_code_key(namespace, code_hash),

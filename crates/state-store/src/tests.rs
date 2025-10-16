@@ -5,7 +5,9 @@ use crate::{
     common::{
         AccountState,
         BlockStateUpdate,
+        get_account_key,
         get_diff_key,
+        get_storage_key,
     },
     writer::commit_block_atomic,
 };
@@ -66,7 +68,7 @@ fn create_test_update(
         state_root,
         block_hash: B256::repeat_byte(u8::try_from(block_number).unwrap_or(0xff)),
         accounts: vec![AccountState {
-            address,
+            address: keccak256(address),
             balance: U256::from(balance),
             nonce,
             code_hash,
@@ -85,7 +87,7 @@ fn verify_account_state(
     expected_balance: u64,
     expected_nonce: u64,
 ) -> Result<()> {
-    let account_key = format!("{namespace}:account:{}", hex::encode(address));
+    let account_key = get_account_key(namespace, &keccak256(address));
 
     let balance: String = conn.hget(&account_key, "balance")?;
     assert_eq!(balance, expected_balance.to_string(), "Balance mismatch");
@@ -104,7 +106,7 @@ fn verify_storage(
     slot: U256,
     expected_value: U256,
 ) -> Result<()> {
-    let storage_key = format!("{namespace}:storage:{}", hex::encode(address));
+    let storage_key = get_storage_key(namespace, &keccak256(address));
     let slot_hex = encode_u256(slot);
 
     let value: String = conn.hget(&storage_key, &slot_hex)?;
@@ -608,11 +610,11 @@ async fn test_roundtrip_basic_account_read() -> Result<()> {
     writer.commit_block(update)?;
 
     // Read back
-    let account = reader.get_account(&address, 0)?;
+    let account = reader.get_account(keccak256(address), 0)?;
     assert!(account.is_some());
 
     let account = account.unwrap();
-    assert_eq!(account.address, address);
+    assert_eq!(account.address, keccak256(address));
     assert_eq!(account.balance, U256::from(1000u64));
     assert_eq!(account.nonce, 5);
     assert_eq!(account.code, None);
@@ -658,7 +660,7 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
     writer.commit_block(update)?;
 
     // Read back full account
-    let account = reader.get_account(&address, 0)?;
+    let account = reader.get_account(keccak256(address), 0)?;
     assert!(account.is_some());
 
     let account = account.unwrap();
@@ -679,7 +681,7 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
     );
 
     // Test individual storage slot read
-    let slot_value = reader.get_storage(&address, u256_from_u64(2), 0)?;
+    let slot_value = reader.get_storage(keccak256(address), u256_from_u64(2), 0)?;
     assert_eq!(slot_value, Some(u256_from_u64(200)));
 
     Ok(())
@@ -716,7 +718,7 @@ async fn test_roundtrip_account_with_code() -> Result<()> {
     writer.commit_block(update)?;
 
     // Read back
-    let account = reader.get_account(&address, 0)?;
+    let account = reader.get_account(keccak256(address), 0)?;
     assert!(account.is_some());
 
     let account = account.unwrap();
@@ -780,21 +782,21 @@ async fn test_roundtrip_circular_buffer_rotation() -> Result<()> {
     assert!(available);
 
     // Read block 3
-    let account = reader.get_account(&address, 3)?;
+    let account = reader.get_account(keccak256(address), 3)?;
     assert!(account.is_some());
     let account = account.unwrap();
     assert_eq!(account.balance, U256::from(300u64));
     assert_eq!(account.nonce, 3);
 
     // Read block 5
-    let account = reader.get_account(&address, 5)?;
+    let account = reader.get_account(keccak256(address), 5)?;
     assert!(account.is_some());
     let account = account.unwrap();
     assert_eq!(account.balance, U256::from(500u64));
     assert_eq!(account.nonce, 5);
 
     // Try to read block 0 (should fail - outside buffer)
-    let result = reader.get_account(&address, 0);
+    let result = reader.get_account(keccak256(address), 0);
     assert!(result.is_err());
 
     Ok(())
@@ -838,7 +840,7 @@ async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
         block_hash: B256::repeat_byte(3),
         state_root: B256::ZERO,
         accounts: vec![AccountState {
-            address: addr_a,
+            address: keccak256(addr_a),
             balance: U256::from(1500u64),
             nonce: 5,
             code_hash: B256::ZERO,
@@ -851,21 +853,21 @@ async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
 
     // Read block 3 - should have cumulative state of all accounts
     // Account A with updated values
-    let account_a = reader.get_account(&addr_a, 3)?;
+    let account_a = reader.get_account(keccak256(addr_a), 3)?;
     assert!(account_a.is_some());
     let account_a = account_a.unwrap();
     assert_eq!(account_a.balance, U256::from(1500u64));
     assert_eq!(account_a.nonce, 5);
 
     // Account B should still exist (from block 1 diff)
-    let account_b = reader.get_account(&addr_b, 3)?;
+    let account_b = reader.get_account(keccak256(addr_b), 3)?;
     assert!(account_b.is_some());
     let account_b = account_b.unwrap();
     assert_eq!(account_b.balance, U256::from(2000u64));
     assert_eq!(account_b.nonce, 2);
 
     // Account C should still exist (from block 2 diff)
-    let account_c = reader.get_account(&addr_c, 3)?;
+    let account_c = reader.get_account(keccak256(addr_c), 3)?;
     assert!(account_c.is_some());
     let account_c = account_c.unwrap();
     assert_eq!(account_c.balance, U256::from(3000u64));
@@ -902,7 +904,7 @@ async fn test_roundtrip_block_metadata() -> Result<()> {
             block_hash,
             state_root,
             accounts: vec![AccountState {
-                address,
+                address: keccak256(address),
                 balance: U256::from(block_num * 100),
                 nonce: block_num,
                 code_hash: B256::ZERO,
@@ -996,7 +998,7 @@ async fn test_roundtrip_storage_evolution() -> Result<()> {
     writer.commit_block(update3)?;
 
     // Read block 3 and verify all storage
-    let all_storage = reader.get_all_storage(&address, 3)?;
+    let all_storage = reader.get_all_storage(keccak256(address), 3)?;
     assert_eq!(all_storage.len(), 5);
     assert_eq!(
         all_storage.get(&u256_from_u64(1)),
@@ -1042,7 +1044,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
         state_root: B256::ZERO,
         accounts: vec![
             AccountState {
-                address: Address::repeat_byte(0x01),
+                address: keccak256(Address::repeat_byte(0x01)),
                 balance: U256::from(1000u64),
                 nonce: 1,
                 code_hash: B256::ZERO,
@@ -1051,7 +1053,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
                 deleted: false,
             },
             AccountState {
-                address: Address::repeat_byte(0x02),
+                address: keccak256(Address::repeat_byte(0x02)),
                 balance: U256::from(2000u64),
                 nonce: 2,
                 code_hash: B256::ZERO,
@@ -1060,7 +1062,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
                 deleted: false,
             },
             AccountState {
-                address: Address::repeat_byte(0x03),
+                address: keccak256(Address::repeat_byte(0x03)),
                 balance: U256::from(3000u64),
                 nonce: 3,
                 code_hash: B256::ZERO,
@@ -1074,7 +1076,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
 
     // Read all three accounts
     for i in 1..=3 {
-        let account = reader.get_account(&Address::repeat_byte(i), 0)?;
+        let account = reader.get_account(keccak256(Address::repeat_byte(i)), 0)?;
         assert!(account.is_some());
         let account = account.unwrap();
         assert_eq!(account.balance, U256::from(u64::from(i) * 1000));
