@@ -104,12 +104,14 @@ message GetTransactionsResponse {
 }
 
 message GetTransactionRequest {
-  string tx_hashes = 1; // single 0x-prefixed hash string
+  string tx_hash = 1; // single 0x-prefixed hash string
 }
 
 message GetTransactionResponse {
-  TransactionResult results = 1; // single transaction result
-  string not_found = 2;
+  oneof outcome {
+    TransactionResult result = 1; // single transaction result
+    string not_found = 2;         // original hash when no result available
+  }
 }
 
 service SidecarTransport {
@@ -117,4 +119,5 @@ service SidecarTransport {
   rpc SendTransactions(SendTransactionsRequest) returns (SendTransactionsResponse);
   rpc Reorg(ReorgRequest) returns (BasicAck);
   rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
+  rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
 }

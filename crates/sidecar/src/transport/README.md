@@ -35,6 +35,7 @@ Both transports implement the same core API methods:
 - **`sendBlockEnv`**: Initialize block environment before processing transactions
 - **`sendTransactions`**: Submit batch of transactions for execution
 - **`getTransactions`**: Retrieve transaction results by hash
+- **`getTransaction`**: Retrieve a single transaction result by hash
 - **`reorg`**: Handle chain reorganizations
 
 ### State Synchronization

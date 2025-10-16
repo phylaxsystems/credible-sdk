@@ -9,6 +9,8 @@
 use super::pb::{
     BasicAck,
     BlockEnvEnvelope,
+    GetTransactionRequest,
+    GetTransactionResponse,
     GetTransactionsRequest,
     GetTransactionsResponse,
     ReorgRequest,
@@ -17,6 +19,7 @@ use super::pb::{
     Transaction,
     TransactionEnv,
     TransactionResult as PbTransactionResult,
+    get_transaction_response::Outcome as GetTransactionOutcome,
     sidecar_transport_server::SidecarTransport,
 };
 use crate::{
@@ -271,6 +274,63 @@ impl SidecarTransport for GrpcService {
         Ok(Response::new(GetTransactionsResponse {
             results,
             not_found,
+        }))
+    }
+
+    /// Handle gRPC request for `GetTransaction` messages.
+    #[instrument(
+        name = "grpc_server::GetTransaction",
+        skip(self, request),
+        level = "debug"
+    )]
+    async fn get_transaction(
+        &self,
+        request: Request<GetTransactionRequest>,
+    ) -> Result<Response<GetTransactionResponse>, Status> {
+        trace!("Processing gRPC GetTransaction request");
+
+        if !self.has_blockenv.load(Ordering::Relaxed) {
+            debug!("Rejecting query - no block environment available");
+            return Err(Status::failed_precondition(
+                "block environment not available",
+            ));
+        }
+
+        let payload = request.into_inner();
+        let hash_value = payload.tx_hash;
+
+        let parsed_hash = match hash_value.parse::<TxHash>() {
+            Ok(hash) => hash,
+            Err(_) => {
+                return Ok(Response::new(GetTransactionResponse {
+                    outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
+                }));
+            }
+        };
+
+        if !self.transactions_results.is_tx_received(&parsed_hash) {
+            return Ok(Response::new(GetTransactionResponse {
+                outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
+            }));
+        }
+
+        let result = match self
+            .transactions_results
+            .request_transaction_result(&parsed_hash)
+        {
+            crate::transactions_state::RequestTransactionResult::Result(r) => r,
+            crate::transactions_state::RequestTransactionResult::Channel(rx) => {
+                match rx.await {
+                    Ok(r) => r,
+                    Err(_) => return Err(Status::internal("engine unavailable")),
+                }
+            }
+        };
+
+        Ok(Response::new(GetTransactionResponse {
+            outcome: Some(GetTransactionOutcome::Result(into_pb_transaction_result(
+                hash_value, &result,
+            ))),
         }))
     }
 }

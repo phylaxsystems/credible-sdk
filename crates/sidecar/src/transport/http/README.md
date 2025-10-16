@@ -247,37 +247,46 @@ Retrieves transaction results by hash. Can retrieve one or many transactions at 
 
 #### `getTransaction`
 
-Same as `getTransactions`, but only works for one txhash
+Same as `getTransactions`, but only works for one tx hash and returns a single result payload.
 
 **Request:**
 
 ```json
 {
-  "id": 3,
+  "id": 4,
   "jsonrpc": "2.0",
   "method": "getTransaction",
   "params": [
-    "0xabcd1234567890abcdef...",
+    "0xabcd1234567890abcdef..."
   ]
 }
 ```
 
-**Response:**
+**Response (found):**
 
 ```json
 {
-  "id": 3,
+  "id": 4,
   "jsonrpc": "2.0",
   "result": {
-    "results": [
-      {
-        "hash": "0xabcd1234567890abcdef...",
-        "status": "success",
-        "gas_used": 21000,
-        "error": null
-      },
-    ],
-    "not_found": []
+    "result": {
+      "hash": "0xabcd1234567890abcdef...",
+      "status": "success",
+      "gas_used": 21000,
+      "error": null
+    }
+  }
+}
+```
+
+**Response (not found):**
+
+```json
+{
+  "id": 4,
+  "jsonrpc": "2.0",
+  "result": {
+    "not_found": "0xabcd1234567890abcdef..."
   }
 }
 ```

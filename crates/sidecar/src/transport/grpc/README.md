@@ -44,6 +44,7 @@ Retrieves a single transaction result by hash with long-polling support.
 
 - **Request:** `GetTransactionRequest`
 - **Response:** `GetTransactionResponse`
+- **Response semantics:** Returns either `result` populated with a `TransactionResult` or `not_found` containing the original hash when the sidecar has no record of the request.
 
 ## Transaction Encoding
 

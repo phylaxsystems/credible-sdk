@@ -64,7 +64,8 @@ use tracing::{
 pub(in crate::transport) const METHOD_SEND_TRANSACTIONS: &str = "sendTransactions";
 pub(in crate::transport) const METHOD_BLOCK_ENV: &str = "sendBlockEnv";
 pub(in crate::transport) const METHOD_REORG: &str = "reorg";
-pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransactions";
+pub(in crate::transport) const METHOD_GET_TRANSACTIONS: &str = "getTransactions";
+pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransaction";
 
 #[derive(Debug, Serialize)]
 pub struct Transaction {
@@ -340,7 +341,8 @@ pub async fn handle_transaction_rpc(
         METHOD_SEND_TRANSACTIONS => handle_send_transactions(&state, &request).await?,
         METHOD_BLOCK_ENV => handle_block_env(&state, &request).await?,
         METHOD_REORG => handle_reorg(&state, &request).await?,
-        METHOD_GET_TRANSACTION => handle_get_transactions(&state, &request).await?,
+        METHOD_GET_TRANSACTIONS => handle_get_transactions(&state, &request).await?,
+        METHOD_GET_TRANSACTION => handle_get_transaction(&state, &request).await?,
         _ => {
             debug!(
                 method = %request.method,
@@ -506,37 +508,12 @@ async fn handle_get_transactions(
         .into_iter()
         .partition(|tx_hash| state.transactions_results.is_tx_received(tx_hash));
 
-    // Can you write me here the sending to the queue + waiting for the result?
     let mut results = Vec::with_capacity(received_tx_hashes.len());
-
-    // Process each transaction hash
     for tx_hash in received_tx_hashes {
-        let result = match state
-            .transactions_results
-            .request_transaction_result(&tx_hash)
-        {
-            RequestTransactionResult::Result(result) => result,
-            RequestTransactionResult::Channel(receiver) => {
-                if let Ok(result) = receiver.await {
-                    result
-                } else {
-                    error!(
-                    tx_hash = %tx_hash,
-                    "Engine dropped response channel for transaction query"
-                    );
-                    return Ok(JsonRpcResponse::internal_error(
-                        request,
-                        "Internal error: engine unavailable",
-                    ));
-                }
-            }
-        };
-
-        // Convert result to JSON format
-        results.push(into_transaction_result_response(
-            tx_hash.to_string(),
-            &result,
-        ));
+        match resolve_transaction_result(state, request, tx_hash).await {
+            Ok(result) => results.push(result),
+            Err(error_response) => return Ok(error_response),
+        }
     }
 
     debug!(
@@ -548,9 +525,103 @@ async fn handle_get_transactions(
         request,
         serde_json::json!({
             "results": results,
-            "not_found": not_found_hashes,
+            "not_found": not_found_hashes.into_iter().map(|hash| hash.to_string()).collect::<Vec<_>>(),
         }),
     ))
+}
+
+async fn handle_get_transaction(
+    state: &ServerState,
+    request: &JsonRpcRequest,
+) -> Result<JsonRpcResponse, StatusCode> {
+    trace!("Processing getTransaction request");
+
+    if !state.has_blockenv.load(Ordering::Relaxed) {
+        debug!("Rejecting transaction - no block environment available");
+        return Ok(JsonRpcResponse::block_not_available(request));
+    }
+
+    let Some(params) = &request.params else {
+        debug!("getTransaction request missing required parameters");
+        return Ok(JsonRpcResponse::invalid_params(
+            request,
+            "Missing params for getTransaction",
+        ));
+    };
+
+    let Ok(mut tx_hashes) = serde_json::from_value::<Vec<TxHash>>(params.clone()) else {
+        debug!("getTransaction request invalid tx hash format");
+        return Ok(JsonRpcResponse::invalid_request(
+            request,
+            "Invalid params for getTransaction",
+        ));
+    };
+
+    if tx_hashes.len() != 1 {
+        debug!(
+            hash_count = tx_hashes.len(),
+            "getTransaction requires exactly one transaction hash"
+        );
+        return Ok(JsonRpcResponse::invalid_params(
+            request,
+            "getTransaction expects exactly one transaction hash",
+        ));
+    }
+
+    let tx_hash = tx_hashes.remove(0);
+
+    if !state.transactions_results.is_tx_received(&tx_hash) {
+        return Ok(JsonRpcResponse::success(
+            request,
+            serde_json::json!({
+                "not_found": tx_hash.to_string(),
+            }),
+        ));
+    }
+
+    let result = match resolve_transaction_result(state, request, tx_hash).await {
+        Ok(result) => result,
+        Err(error_response) => return Ok(error_response),
+    };
+
+    Ok(JsonRpcResponse::success(
+        request,
+        serde_json::json!({
+            "result": result,
+        }),
+    ))
+}
+
+async fn resolve_transaction_result(
+    state: &ServerState,
+    request: &JsonRpcRequest,
+    tx_hash: TxHash,
+) -> Result<TransactionResultResponse, JsonRpcResponse> {
+    let hash_string = tx_hash.to_string();
+
+    let result = match state
+        .transactions_results
+        .request_transaction_result(&tx_hash)
+    {
+        RequestTransactionResult::Result(result) => result,
+        RequestTransactionResult::Channel(receiver) => {
+            match receiver.await {
+                Ok(result) => result,
+                Err(_) => {
+                    error!(
+                        tx_hash = %hash_string,
+                        "Engine dropped response channel for transaction query"
+                    );
+                    return Err(JsonRpcResponse::internal_error(
+                        request,
+                        "Internal error: engine unavailable",
+                    ));
+                }
+            }
+        }
+    };
+
+    Ok(into_transaction_result_response(hash_string, &result))
 }
 
 /// Helper function to determine transaction status and error message
