@@ -28,7 +28,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::time;
+use tokio::{
+    sync::broadcast,
+    time,
+};
 use tracing::{
     debug,
     info,
@@ -66,13 +69,40 @@ impl StateWorker {
 
     /// Drive the catch-up + streaming loop. We keep retrying the subscription
     /// because websocket connections can drop in practice.
-    pub async fn run(&mut self, start_override: Option<u64>) -> Result<()> {
+    pub async fn run(
+        &mut self,
+        start_override: Option<u64>,
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) -> Result<()> {
         let mut next_block = self.compute_start_block(start_override).await?;
+
         loop {
-            self.catch_up(&mut next_block).await?;
-            if let Err(err) = self.stream_blocks(&mut next_block).await {
-                warn!(error = %err, "block subscription ended, retrying");
-                time::sleep(Duration::from_secs(SUBSCRIPTION_RETRY_DELAY_SECS)).await;
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!("Shutdown signal received");
+                    return Ok(());
+                }
+                result = self.catch_up(&mut next_block) => {
+                    result?;
+                }
+            }
+
+            match self.stream_blocks(&mut next_block, &mut shutdown_rx).await {
+                Ok(()) => {
+                    info!("Shutdown signal received during streaming");
+                    return Ok(());
+                }
+                Err(err) => {
+                    warn!(error = %err, "block subscription ended, retrying");
+
+                    tokio::select! {
+                        _ = shutdown_rx.recv() => {
+                            info!("Shutdown signal received during retry sleep");
+                            return Ok(());
+                        }
+                        () = time::sleep(Duration::from_secs(SUBSCRIPTION_RETRY_DELAY_SECS)) => {}
+                    }
+                }
             }
         }
     }
@@ -111,37 +141,54 @@ impl StateWorker {
 
     /// Follow the `newHeads` stream and process new blocks in order, tolerating
     /// duplicate/stale headers after reconnects.
-    async fn stream_blocks(&mut self, next_block: &mut u64) -> Result<()> {
+    async fn stream_blocks(
+        &mut self,
+        next_block: &mut u64,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<()> {
         let subscription = self.provider.subscribe_blocks().await?;
         let mut stream = subscription.into_stream();
 
-        while let Some(header) = stream.next().await {
-            let Header { hash: _, inner, .. } = header;
-            let block_number = inner.number;
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!("Shutdown signal received during block streaming");
+                    return Ok(());
+                }
+                maybe_header = stream.next() => {
+                    match maybe_header {
+                        Some(header) => {
+                            let Header { hash: _, inner, .. } = header;
+                            let block_number = inner.number;
 
-            // We may receive a header we already processed if the stream
-            // briefly disconnects; skip without rewinding because we do not
-            // currently handle reorgs.
-            if block_number + 1 < *next_block {
-                debug!(block_number, next_block, "skipping stale header");
-                continue;
-            }
+                            // We may receive a header we already processed if the stream
+                            // briefly disconnects; skip without rewinding because we do not
+                            // currently handle reorgs.
+                            if block_number + 1 < *next_block {
+                                debug!(block_number, next_block, "skipping stale header");
+                                continue;
+                            }
 
-            // If we are missing a block, trigger a critical error
-            if block_number > *next_block {
-                critical!("Missing block {block_number} (next block: {next_block})");
-                return Err(anyhow!(
-                    "Missing block {block_number} (next block: {next_block})"
-                ));
-            }
+                            // If we are missing a block, trigger a critical error
+                            if block_number > *next_block {
+                                critical!("Missing block {block_number} (next block: {next_block})");
+                                return Err(anyhow!(
+                                    "Missing block {block_number} (next block: {next_block})"
+                                ));
+                            }
 
-            while *next_block <= block_number {
-                self.process_block(*next_block).await?;
-                *next_block += 1;
+                            while *next_block <= block_number {
+                                self.process_block(*next_block).await?;
+                                *next_block += 1;
+                            }
+                        }
+                        None => {
+                            return Err(anyhow!("block subscription completed"));
+                        }
+                    }
+                }
             }
         }
-
-        Err(anyhow!("block subscription completed"))
     }
 
     /// Pull, trace, and persist a single block.

@@ -14,6 +14,7 @@ use testcontainers::{
     runners::AsyncRunner,
 };
 use testcontainers_modules::redis::Redis;
+use tokio::sync::broadcast;
 use tracing::error;
 
 pub(in crate::integration_tests) struct LocalInstance {
@@ -84,8 +85,9 @@ impl LocalInstance {
         .map_err(|e| format!("Failed to initialize redis client: {e}"))?;
 
         let mut worker = StateWorker::new(provider, redis, genesis_state);
+        let (shutdown_tx, _) = broadcast::channel(1);
         let handle_worker = tokio::spawn(async move {
-            if let Err(e) = worker.run(Some(0)).await {
+            if let Err(e) = worker.run(Some(0), shutdown_tx.subscribe()).await {
                 error!("worker server error: {}", e);
             }
         });
