@@ -1,17 +1,29 @@
 #![allow(clippy::too_many_lines)]
 use crate::{
+    connect_provider,
     genesis,
     integration_tests::setup::LocalInstance,
+    redis::{
+        CircularBufferConfig,
+        RedisStateWriter,
+    },
+    worker::StateWorker,
 };
 use alloy::primitives::{
     B256,
     U256,
     keccak256,
 };
+use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use redis::Commands;
 use serde_json::json;
 use std::time::Duration;
-use tokio::time::sleep;
+use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::redis::Redis;
+use tokio::{
+    sync::broadcast,
+    time::sleep,
+};
 use tracing_test::traced_test;
 
 /// Helper function to get the latest block number from the circular buffer.
@@ -696,5 +708,421 @@ async fn test_circular_buffer_rotation_with_state_diffs() {
             !exists,
             "Old state diff for block {block_num} should be deleted"
         );
+    }
+}
+
+/// Test basic restart: process blocks, stop, restart, verify continuation
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_restart_continues_from_last_block() {
+    // Start Redis container
+    let redis_container = Redis::default()
+        .start()
+        .await
+        .expect("Failed to start Redis container");
+
+    let host = redis_container
+        .get_host()
+        .await
+        .expect("Failed to get Redis host");
+    let port = redis_container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("Failed to get Redis port");
+    let redis_url = format!("redis://{host}:{port}");
+
+    // Setup mock server
+    let http_server_mock = DualProtocolMockServer::new()
+        .await
+        .expect("Failed to create mock server");
+
+    // Setup traces for blocks 1-3
+    for i in 1..=3 {
+        let parity_trace = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": [{
+                "transactionHash": format!("0x{:064x}", i),
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {},
+                "output": "0x"
+            }]
+        });
+        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+    }
+
+    // First run: process blocks 1-3
+    {
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let redis = RedisStateWriter::new(
+            &redis_url,
+            "restart_test".to_string(),
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let mut worker = StateWorker::new(provider, redis.clone(), None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        // Start worker in background
+        let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
+
+        // Send 3 blocks
+        for _ in 0..3 {
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        // Wait for blocks to be processed
+        sleep(Duration::from_millis(300)).await;
+
+        // Verify blocks 1-3 are processed
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
+        let latest = get_latest_block_from_redis(&mut conn, "restart_test", 3);
+        assert_eq!(latest, Some(3), "Should have processed 3 blocks");
+
+        // Shutdown first worker
+        shutdown_tx.send(()).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
+    }
+
+    // Setup traces for blocks 4-6
+    for i in 4..=6 {
+        let parity_trace = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": [{
+                "transactionHash": format!("0x{:064x}", i),
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {},
+                "output": "0x"
+            }]
+        });
+        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+    }
+
+    // Second run: restart and process blocks 4-6
+    {
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let redis = RedisStateWriter::new(
+            &redis_url,
+            "restart_test".to_string(),
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        // Verify it starts from the correct block
+        let start_block = redis.latest_block_number().await.unwrap();
+        assert_eq!(start_block, Some(3), "Should resume from block 3");
+
+        let mut worker = StateWorker::new(provider, redis.clone(), None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let worker_handle = tokio::spawn(async move {
+            // Pass None to use automatic detection
+            worker.run(None, shutdown_rx).await
+        });
+
+        // Send blocks 4-6
+        for _ in 0..3 {
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        sleep(Duration::from_millis(300)).await;
+
+        // Verify all blocks are processed
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
+        let latest = get_latest_block_from_redis(&mut conn, "restart_test", 3);
+        assert_eq!(
+            latest,
+            Some(6),
+            "Should have processed blocks 4-6 after restart"
+        );
+
+        // Verify block hashes for all blocks exist
+        for block_num in 1..=6 {
+            let key = format!("restart_test:block_hash:{block_num}");
+            let hash: Option<String> = conn.get(&key).ok();
+            assert!(
+                hash.is_some(),
+                "Block hash for block {block_num} should exist"
+            );
+        }
+
+        shutdown_tx.send(()).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
+    }
+}
+
+/// Test restart with circular buffer wrap: verify diffs are correctly applied
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_restart_with_buffer_wrap_applies_diffs() {
+    let redis_container = Redis::default()
+        .start()
+        .await
+        .expect("Failed to start Redis container");
+
+    let host = redis_container
+        .get_host()
+        .await
+        .expect("Failed to get Redis host");
+    let port = redis_container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("Failed to get Redis port");
+    let redis_url = format!("redis://{host}:{port}");
+
+    let http_server_mock = DualProtocolMockServer::new()
+        .await
+        .expect("Failed to create mock server");
+
+    // First run: process blocks to wrap the buffer (blocks 0-4)
+    {
+        for i in 0..=4 {
+            let parity_trace = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": [{
+                    "transactionHash": format!("0x{:064x}", i),
+                    "trace": [],
+                    "vmTrace": null,
+                    "stateDiff": {},
+                    "output": "0x"
+                }]
+            });
+            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+        }
+
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let redis = RedisStateWriter::new(
+            &redis_url,
+            "wrap_test".to_string(),
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let mut worker = StateWorker::new(provider, redis, None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
+
+        // Change this from 0..=4 to 0..4
+        for _ in 0..4 {
+            // ← CHANGED: 4 iterations instead of 5
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        sleep(Duration::from_millis(300)).await;
+
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
+        let latest = get_latest_block_from_redis(&mut conn, "wrap_test", 3);
+        assert_eq!(latest, Some(4), "Should have processed blocks 0-4");
+
+        // Verify namespace:1 contains block 4 (wrapped from block 1)
+        let namespace_1 = "wrap_test:1";
+        let block_key = format!("{namespace_1}:block");
+        let block: String = conn.get(&block_key).unwrap();
+        assert_eq!(block, "4", "Namespace 1 should contain block 4 after wrap");
+
+        shutdown_tx.send(()).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
+    }
+
+    // Second run: restart and verify diffs are still available for reconstruction
+    {
+        // Add traces for blocks 5-7
+        for i in 5..=7 {
+            let parity_trace = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": [{
+                    "transactionHash": format!("0x{:064x}", i),
+                    "trace": [],
+                    "vmTrace": null,
+                    "stateDiff": {},
+                    "output": "0x"
+                }]
+            });
+            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+        }
+
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let redis = RedisStateWriter::new(
+            &redis_url,
+            "wrap_test".to_string(),
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let mut worker = StateWorker::new(provider, redis, None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
+
+        for _ in 0..3 {
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        sleep(Duration::from_millis(300)).await;
+
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
+        let latest = get_latest_block_from_redis(&mut conn, "wrap_test", 3);
+        assert_eq!(latest, Some(7), "Should continue to block 7 after restart");
+
+        // Verify diffs exist for recent blocks
+        for block_num in 5..=7 {
+            let diff_key = format!("wrap_test:diff:{block_num}");
+            let exists: bool = redis::cmd("EXISTS")
+                .arg(&diff_key)
+                .query(&mut conn)
+                .unwrap();
+            assert!(exists, "Diff for block {block_num} should exist");
+        }
+
+        shutdown_tx.send(()).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
+    }
+}
+
+/// Test restart after crash during block processing
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_restart_after_mid_block_crash() {
+    let redis_container = Redis::default()
+        .start()
+        .await
+        .expect("Failed to start Redis container");
+
+    let host = redis_container
+        .get_host()
+        .await
+        .expect("Failed to get Redis host");
+    let port = redis_container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("Failed to get Redis port");
+    let redis_url = format!("redis://{host}:{port}");
+
+    let http_server_mock = DualProtocolMockServer::new()
+        .await
+        .expect("Failed to create mock server");
+
+    // Process blocks 0-2 successfully
+    for i in 0..=2 {
+        let parity_trace = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": [{
+                "transactionHash": format!("0x{:064x}", i),
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {},
+                "output": "0x"
+            }]
+        });
+        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+    }
+
+    {
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let redis = RedisStateWriter::new(
+            &redis_url,
+            "crash_test".to_string(),
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let mut worker = StateWorker::new(provider, redis, None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
+
+        // Change from 0..=2 to 0..2 (2 iterations, not 3)
+        for _ in 0..2 {
+            // ← CHANGED: 2 iterations to get blocks 0-2
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        sleep(Duration::from_millis(200)).await;
+
+        // Simulate crash - abrupt shutdown
+        drop(shutdown_tx);
+        drop(worker_handle);
+    }
+
+    // Restart: should continue from block 3
+    {
+        for i in 3..=5 {
+            let parity_trace = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": [{
+                    "transactionHash": format!("0x{:064x}", i),
+                    "trace": [],
+                "vmTrace": null,
+                    "stateDiff": {},
+                    "output": "0x"
+                }]
+            });
+            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+        }
+
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let redis = RedisStateWriter::new(
+            &redis_url,
+            "crash_test".to_string(),
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        // Verify it detects the correct resume point
+        let start_block = redis.latest_block_number().await.unwrap();
+        assert_eq!(start_block, Some(2), "Should detect last completed block");
+
+        let mut worker = StateWorker::new(provider, redis, None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
+
+        for _ in 0..3 {
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        sleep(Duration::from_millis(300)).await;
+
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
+        let latest = get_latest_block_from_redis(&mut conn, "crash_test", 3);
+        assert_eq!(latest, Some(5), "Should recover and process to block 5");
+
+        shutdown_tx.send(()).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
     }
 }
