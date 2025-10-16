@@ -3,21 +3,13 @@
 //! # Redis-backed cache source
 
 pub(crate) mod error;
+mod sync_task;
 pub(crate) mod utils;
 
 pub use error::RedisCacheError;
 use state_store::StateReader;
 
-use self::utils::{
-    decode_hex,
-    encode_hex,
-    encode_storage_key,
-    encode_u256_hex,
-    parse_b256,
-    parse_u64,
-    parse_u256,
-    to_hex_lower,
-};
+use self::utils::decode_hex;
 use crate::{
     Source,
     cache::sources::SourceName,
@@ -29,9 +21,7 @@ use assertion_executor::primitives::{
     Address,
     B256,
     Bytecode,
-    U256,
 };
-use redis::Commands;
 use revm::{
     DatabaseRef,
     primitives::{
@@ -40,36 +30,72 @@ use revm::{
     },
 };
 use std::{
-    collections::HashMap,
-    fmt::{
-        self,
-        Debug,
-    },
-    str::FromStr,
     sync::{
         Arc,
         atomic::{
+            AtomicBool,
             AtomicU64,
             Ordering,
         },
     },
+    time::Duration,
 };
-use thiserror::Error;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
 pub struct RedisCache {
     backend: StateReader,
     /// Current block
     current_block: Arc<AtomicU64>,
+    observed_block: Arc<AtomicU64>,
+    sync_status: Arc<AtomicBool>,
+    cancel_token: CancellationToken,
+    sync_task: JoinHandle<()>,
 }
 
 impl RedisCache {
     /// Creates a cache that stores entries under the default `state` namespace.
     pub fn new(backend: StateReader) -> Self {
+        let current_block = Arc::new(AtomicU64::new(0));
+        let observed_block = Arc::new(AtomicU64::new(0));
+        let sync_status = Arc::new(AtomicBool::new(false));
+        let cancel_token = CancellationToken::new();
+        let sync_task = sync_task::spawn_sync_task(
+            backend.clone(),
+            current_block.clone(),
+            observed_block.clone(),
+            sync_status.clone(),
+            cancel_token.clone(),
+            DEFAULT_SYNC_INTERVAL,
+        );
+
         Self {
             backend,
-            current_block: Arc::new(AtomicU64::new(0)),
+            current_block,
+            observed_block,
+            sync_status,
+            cancel_token,
+            sync_task,
         }
+    }
+
+    fn update_observed_block(&self, observed_block: u64) {
+        self.observed_block.store(observed_block, Ordering::Release);
+        let target_block = self.current_block.load(Ordering::Acquire);
+        let within_target = if target_block == 0 {
+            observed_block == 0
+        } else {
+            observed_block <= target_block
+        };
+        self.sync_status.store(within_target, Ordering::Release);
+    }
+
+    fn mark_unsynced(&self) {
+        self.observed_block.store(0, Ordering::Release);
+        self.sync_status.store(false, Ordering::Release);
     }
 }
 
@@ -132,13 +158,31 @@ impl DatabaseRef for RedisCache {
 impl Source for RedisCache {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, required_block_number: u64) -> bool {
-        match self.backend.latest_block_number() {
-            Ok(Some(block)) => {
-                block >= required_block_number
-                    && block <= self.current_block.load(Ordering::Relaxed)
+        let target_block = self.current_block.load(Ordering::Relaxed);
+
+        if !self.sync_status.load(Ordering::Acquire) {
+            match self.backend.latest_block_number() {
+                Ok(Some(observed_block)) => self.update_observed_block(observed_block),
+                Ok(None) => {
+                    self.mark_unsynced();
+                    return false;
+                }
+                Err(error) => {
+                    critical!(error = ?error, "failed to fetch latest block from redis");
+                    self.mark_unsynced();
+                    return false;
+                }
             }
-            _ => false,
         }
+
+        let observed_block = self.observed_block.load(Ordering::Acquire);
+        let within_target = if target_block == 0 {
+            observed_block == 0
+        } else {
+            observed_block <= target_block
+        };
+
+        observed_block >= required_block_number && within_target
     }
 
     /// No-op; we dont update the target block for redis.
@@ -150,5 +194,12 @@ impl Source for RedisCache {
     /// Provides an identifier used in logs and metrics.
     fn name(&self) -> SourceName {
         SourceName::Redis
+    }
+}
+
+impl Drop for RedisCache {
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
+        self.sync_task.abort();
     }
 }
