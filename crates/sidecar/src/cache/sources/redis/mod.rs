@@ -19,12 +19,26 @@
 //! state:block_hash:{number}   → block hash
 //! ```
 
+pub(crate) mod error;
+pub(crate) mod utils;
+
+pub use error::RedisCacheError;
+
+use self::utils::{
+    decode_hex,
+    encode_hex,
+    encode_storage_key,
+    encode_u256_hex,
+    parse_b256,
+    parse_u64,
+    parse_u256,
+    to_hex_lower,
+};
 use crate::{
     Source,
     cache::sources::SourceName,
     critical,
 };
-use alloy::hex;
 use assertion_executor::primitives::{
     AccountInfo,
     Address,
@@ -436,128 +450,6 @@ impl<B: RedisBackend> Source for RedisCache<B> {
     fn name(&self) -> SourceName {
         SourceName::Redis
     }
-}
-
-#[derive(Error, Debug)]
-pub enum RedisCacheError {
-    #[error("redis backend error: {0}")]
-    Backend(#[source] redis::RedisError),
-    #[error("missing field '{field}' for key '{key}'")]
-    MissingField { key: String, field: &'static str },
-    #[error("invalid integer for '{key}.{field}': {source}")]
-    InvalidInteger {
-        key: String,
-        field: &'static str,
-        source: std::num::ParseIntError,
-    },
-    #[error("invalid u256 for '{key}.{field}': {source}")]
-    InvalidU256 {
-        key: String,
-        field: &'static str,
-        source: alloy::primitives::ruint::ParseError,
-    },
-    #[error("invalid hex for '{kind}': {source}")]
-    InvalidHex {
-        kind: &'static str,
-        source: hex::FromHexError,
-    },
-    #[error("hex value for '{kind}' must be at most 32 bytes")]
-    HexLength { kind: &'static str },
-    #[error("block hash not found for block {0}")]
-    BlockHashNotFound(u64),
-    #[error("bytecode not found for hash {0}")]
-    CodeNotFound(B256),
-    #[error("cache miss for '{kind}'")]
-    CacheMiss { kind: &'static str },
-    #[error("{0}")]
-    Other(String),
-}
-
-impl From<RedisCacheError> for super::SourceError {
-    fn from(value: RedisCacheError) -> Self {
-        match value {
-            RedisCacheError::Backend(err) => super::SourceError::Request(Box::new(err)),
-            RedisCacheError::BlockHashNotFound(_) => super::SourceError::BlockNotFound,
-            RedisCacheError::CodeNotFound(_) => super::SourceError::CodeByHashNotFound,
-            RedisCacheError::CacheMiss { .. } => super::SourceError::CacheMiss,
-            other => super::SourceError::Other(other.to_string()),
-        }
-    }
-}
-
-/// Parses a decimal `u64` stored in Redis.
-fn parse_u64(value: &str, key: &str, field: &'static str) -> Result<u64, RedisCacheError> {
-    value.trim().parse::<u64>().map_err(|source| {
-        RedisCacheError::InvalidInteger {
-            key: key.to_string(),
-            field,
-            source,
-        }
-    })
-}
-
-/// Parses a decimal or hex-encoded `U256` stored in Redis.
-fn parse_u256(value: &str, key: &str, field: &'static str) -> Result<U256, RedisCacheError> {
-    let trimmed = value.trim();
-    if let Some(hex) = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-    {
-        let bytes = decode_hex(hex, field)?;
-        if bytes.len() > 32 {
-            return Err(RedisCacheError::HexLength { kind: field });
-        }
-        Ok(U256::from_be_slice(&bytes))
-    } else {
-        U256::from_str(trimmed).map_err(|source| {
-            RedisCacheError::InvalidU256 {
-                key: key.to_string(),
-                field,
-                source,
-            }
-        })
-    }
-}
-
-/// Parses a 32-byte hash stored in Redis.
-fn parse_b256(value: &str, kind: &'static str) -> Result<B256, RedisCacheError> {
-    let trimmed = value.trim();
-    let hex = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-        .unwrap_or(trimmed);
-    let bytes = decode_hex(hex, kind)?;
-    if bytes.len() != 32 {
-        return Err(RedisCacheError::HexLength { kind });
-    }
-    Ok(B256::from_slice(&bytes))
-}
-
-/// Decodes a hex string, returning a detailed error on failure.
-fn decode_hex(value: &str, kind: &'static str) -> Result<Vec<u8>, RedisCacheError> {
-    hex::decode(value).map_err(|source| RedisCacheError::InvalidHex { kind, source })
-}
-
-/// Formats bytes as a 0x-prefixed lower-case hex string.
-fn encode_hex(data: &[u8]) -> String {
-    format!("0x{}", hex::encode(data))
-}
-
-/// Converts raw bytes to a lower-case hex string without a prefix.
-fn to_hex_lower(data: &[u8]) -> String {
-    hex::encode(data)
-}
-
-/// Serializes a storage key into the format stored in Redis.
-fn encode_storage_key(slot: StorageKey) -> String {
-    let bytes = slot.to_be_bytes::<32>();
-    encode_hex(&bytes)
-}
-
-/// Serializes a `U256` into the format stored in Redis.
-fn encode_u256_hex(value: U256) -> String {
-    let bytes = value.to_be_bytes::<32>();
-    encode_hex(&bytes)
 }
 
 #[cfg(test)]
