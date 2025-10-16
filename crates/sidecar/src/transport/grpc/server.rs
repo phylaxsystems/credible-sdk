@@ -299,13 +299,10 @@ impl SidecarTransport for GrpcService {
         let payload = request.into_inner();
         let hash_value = payload.tx_hash;
 
-        let parsed_hash = match hash_value.parse::<TxHash>() {
-            Ok(hash) => hash,
-            Err(_) => {
-                return Ok(Response::new(GetTransactionResponse {
-                    outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
-                }));
-            }
+        let Ok(parsed_hash) = hash_value.parse::<TxHash>() else {
+            return Ok(Response::new(GetTransactionResponse {
+                outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
+            }));
         };
 
         if !self.transactions_results.is_tx_received(&parsed_hash) {

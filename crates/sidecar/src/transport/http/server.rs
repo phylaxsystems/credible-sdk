@@ -605,18 +605,17 @@ async fn resolve_transaction_result(
     {
         RequestTransactionResult::Result(result) => result,
         RequestTransactionResult::Channel(receiver) => {
-            match receiver.await {
-                Ok(result) => result,
-                Err(_) => {
-                    error!(
-                        tx_hash = %hash_string,
-                        "Engine dropped response channel for transaction query"
-                    );
-                    return Err(JsonRpcResponse::internal_error(
-                        request,
-                        "Internal error: engine unavailable",
-                    ));
-                }
+            if let Ok(result) = receiver.await {
+                result
+            } else {
+                error!(
+                    tx_hash = %hash_string,
+                    "Engine dropped response channel for transaction query"
+                );
+                return Err(JsonRpcResponse::internal_error(
+                    request,
+                    "Internal error: engine unavailable",
+                ));
             }
         }
     };

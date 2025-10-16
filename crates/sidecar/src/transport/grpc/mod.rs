@@ -165,3 +165,101 @@ impl Transport for GrpcTransport {
         self.shutdown_token.cancel();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::pb::{
+        GetTransactionRequest,
+        get_transaction_response::Outcome as GetTransactionOutcome,
+        sidecar_transport_client::SidecarTransportClient,
+    };
+    use alloy::primitives::B256;
+    use assertion_executor::primitives::{
+        Bytes,
+        U256,
+    };
+    use std::time::Duration;
+
+    #[crate::utils::engine_test(grpc)]
+    async fn test_get_transaction_returns_successful_result(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        let tx_hash = instance
+            .send_successful_create_tx(U256::from(0u64), Bytes::new())
+            .await
+            .expect("failed to send transaction");
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_hash)
+                .await
+                .expect("transaction query failed"),
+            "transaction expected to succeed"
+        );
+
+        let address = instance
+            .local_address
+            .expect("grpc transport should expose an address");
+
+        let mut client = SidecarTransportClient::connect(format!("http://{address}"))
+            .await
+            .expect("failed to connect grpc client");
+
+        let response = client
+            .get_transaction(GetTransactionRequest {
+                tx_hash: tx_hash.to_string(),
+            })
+            .await
+            .expect("get_transaction RPC failed")
+            .into_inner();
+
+        match response.outcome {
+            Some(GetTransactionOutcome::Result(result)) => {
+                let parsed_hash = result.hash.parse::<B256>().expect("invalid hash encoding");
+                assert_eq!(parsed_hash, tx_hash, "queried hash should match");
+                assert_eq!(result.status, "success");
+                assert!(result.gas_used > 0, "gas_used expected to be populated");
+                assert!(
+                    result.error.is_empty(),
+                    "error should be empty for successful transactions"
+                );
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[crate::utils::engine_test(grpc)]
+    async fn test_get_transaction_reports_not_found(mut instance: crate::utils::LocalInstance) {
+        instance
+            .new_block()
+            .await
+            .expect("failed to announce new block");
+        instance
+            .wait_for_processing(Duration::from_millis(10))
+            .await;
+
+        let missing_hash = B256::repeat_byte(0x24);
+        let address = instance
+            .local_address
+            .expect("grpc transport should expose an address");
+
+        let mut client = SidecarTransportClient::connect(format!("http://{address}"))
+            .await
+            .expect("failed to connect grpc client");
+
+        let response = client
+            .get_transaction(GetTransactionRequest {
+                tx_hash: missing_hash.to_string(),
+            })
+            .await
+            .expect("get_transaction RPC failed")
+            .into_inner();
+
+        match response.outcome {
+            Some(GetTransactionOutcome::NotFound(hash)) => {
+                assert_eq!(hash, missing_hash.to_string());
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+}

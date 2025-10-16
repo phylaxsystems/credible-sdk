@@ -202,9 +202,20 @@ impl Transport for HttpTransport {
 
 #[cfg(test)]
 mod tests {
+    use alloy::primitives::B256;
+    use assertion_executor::primitives::{
+        Bytes,
+        U256,
+    };
     use reqwest::Client;
-    use serde_json::json;
-    use std::net::SocketAddr;
+    use serde_json::{
+        Value,
+        json,
+    };
+    use std::{
+        net::SocketAddr,
+        time::Duration,
+    };
     use tracing::debug;
 
     #[crate::utils::engine_test(http)]
@@ -292,6 +303,125 @@ mod tests {
             .await
             .unwrap();
         assert!(res.contains("Failed to decode transactions: Invalid transaction format: invalid transactions array: invalid txEnv: invalid type: string \\\"1000\\\", expected u128\""));
+    }
+
+    #[crate::utils::engine_test(http)]
+    async fn test_get_transaction_returns_successful_result(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        let tx_hash = instance
+            .send_successful_create_tx(U256::from(0u64), Bytes::new())
+            .await
+            .expect("failed to send transaction");
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_hash)
+                .await
+                .expect("transaction query failed"),
+            "transaction expected to succeed"
+        );
+
+        let local_address = instance
+            .local_address
+            .expect("http transport should expose an address");
+
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "getTransaction",
+            "params": [tx_hash.to_string()],
+            "id": 1
+        });
+
+        let response_body = send_raw_request(request, local_address)
+            .await
+            .expect("HTTP request should succeed");
+
+        let response_json: Value =
+            serde_json::from_str(&response_body).expect("response must be valid json");
+        assert!(
+            response_json.get("error").is_none(),
+            "unexpected RPC error: {response_json:?}"
+        );
+
+        let payload = response_json
+            .get("result")
+            .expect("missing result payload in response");
+        let result = payload
+            .get("result")
+            .expect("missing transaction result object");
+
+        let hash_str = result
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .expect("hash field missing");
+        let parsed_hash = hash_str.parse::<B256>().expect("invalid hash encoding");
+        assert_eq!(parsed_hash, tx_hash, "queried hash should match");
+
+        let status = result
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .expect("status field missing");
+        assert_eq!(status, "success");
+
+        assert!(
+            result
+                .get("gas_used")
+                .and_then(serde_json::Value::as_u64)
+                .is_some(),
+            "gas_used expected to be populated"
+        );
+
+        if let Some(error) = result.get("error") {
+            assert!(
+                error.is_null(),
+                "error field should be null for successful transactions"
+            );
+        }
+    }
+
+    #[crate::utils::engine_test(http)]
+    async fn test_get_transaction_reports_not_found(mut instance: crate::utils::LocalInstance) {
+        instance
+            .new_block()
+            .await
+            .expect("failed to announce new block");
+        instance
+            .wait_for_processing(Duration::from_millis(10))
+            .await;
+
+        let missing_hash = B256::repeat_byte(0x42);
+
+        let local_address = instance
+            .local_address
+            .expect("http transport should expose an address");
+
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "getTransaction",
+            "params": [missing_hash.to_string()],
+            "id": 2
+        });
+
+        let response_body = send_raw_request(request, local_address)
+            .await
+            .expect("HTTP request should succeed");
+
+        let response_json: Value =
+            serde_json::from_str(&response_body).expect("response must be valid json");
+        assert!(
+            response_json.get("error").is_none(),
+            "unexpected RPC error: {response_json:?}"
+        );
+
+        let payload = response_json
+            .get("result")
+            .expect("missing result payload in response");
+        let not_found = payload
+            .get("not_found")
+            .and_then(serde_json::Value::as_str)
+            .expect("missing not_found field");
+        assert_eq!(not_found, missing_hash.to_string());
     }
 
     async fn send_raw_request(
