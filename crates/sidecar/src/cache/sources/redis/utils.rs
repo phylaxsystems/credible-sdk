@@ -64,7 +64,12 @@ pub(super) fn parse_b256(value: &str, kind: &'static str) -> Result<B256, RedisC
 
 /// Decodes a hex string, returning a detailed error on failure.
 pub(super) fn decode_hex(value: &str, kind: &'static str) -> Result<Vec<u8>, RedisCacheError> {
-    hex::decode(value).map_err(|source| RedisCacheError::InvalidHex { kind, source })
+    let trimmed = value.trim();
+    let hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    hex::decode(hex).map_err(|source| RedisCacheError::InvalidHex { kind, source })
 }
 
 /// Formats bytes as a 0x-prefixed lower-case hex string.
