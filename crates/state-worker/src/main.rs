@@ -18,7 +18,10 @@ use crate::{
 };
 
 use rust_tracing::trace;
-use tracing::warn;
+use tracing::{
+    info,
+    warn,
+};
 
 use crate::redis::CircularBufferConfig;
 use alloy_provider::{
@@ -33,6 +36,7 @@ use anyhow::{
 };
 use clap::Parser;
 use std::sync::Arc;
+use tokio::sync::broadcast;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -63,11 +67,63 @@ async fn main() -> Result<()> {
             None
         };
 
+    // Create shutdown channel
+    let (shutdown_tx, _) = broadcast::channel(1);
+    let shutdown_rx = shutdown_tx.subscribe();
+
+    // Spawn signal handler
+    let shutdown_tx_clone = shutdown_tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = shutdown_signal().await {
+            warn!("Error setting up signal handler: {}", e);
+        } else {
+            info!("Shutdown signal received, initiating graceful shutdown...");
+            let _ = shutdown_tx_clone.send(());
+        }
+    });
+
     let mut worker = StateWorker::new(provider, redis, genesis_state);
-    worker
-        .run(args.start_block)
-        .await
-        .context("state worker terminated unexpectedly")
+
+    // Run worker with shutdown signal
+    match worker.run(args.start_block, shutdown_rx).await {
+        Ok(()) => {
+            info!("State worker shutdown gracefully");
+            Ok(())
+        }
+        Err(e) => Err(e).context("state worker terminated unexpectedly"),
+    }
+}
+
+/// Wait for SIGTERM or SIGINT (Ctrl+C)
+async fn shutdown_signal() -> Result<()> {
+    use tokio::signal;
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+            .context("failed to install SIGTERM handler")?;
+        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
+            .context("failed to install SIGINT handler")?;
+
+        tokio::select! {
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM");
+            }
+            _ = sigint.recv() => {
+                info!("Received SIGINT");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        signal::ctrl_c()
+            .await
+            .context("failed to listen for ctrl-c")?;
+        info!("Received Ctrl+C");
+    }
+
+    Ok(())
 }
 
 /// Establish a WebSocket connection to the execution node and expose the
