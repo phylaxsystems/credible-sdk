@@ -475,6 +475,38 @@ async fn process_request(
     ))
 }
 
+fn ensure_block_environment_available(
+    state: &ServerState,
+    request: &JsonRpcRequest,
+) -> Option<JsonRpcResponse> {
+    if state.has_blockenv.load(Ordering::Relaxed) {
+        None
+    } else {
+        debug!("Rejecting transaction - no block environment available");
+        Some(JsonRpcResponse::block_not_available(request))
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_transaction_hashes(
+    request: &JsonRpcRequest,
+    method_name: &str,
+) -> Result<Vec<TxHash>, JsonRpcResponse> {
+    let Some(params) = &request.params else {
+        debug!("{method_name} request missing required parameters");
+        let message = format!("Missing params for {method_name}");
+        return Err(JsonRpcResponse::invalid_params(request, &message));
+    };
+
+    let Ok(tx_hashes) = serde_json::from_value::<Vec<TxHash>>(params.clone()) else {
+        debug!("{method_name} request invalid tx hash format");
+        let message = format!("Invalid params for {method_name}");
+        return Err(JsonRpcResponse::invalid_request(request, &message));
+    };
+
+    Ok(tx_hashes)
+}
+
 async fn handle_get_transactions(
     state: &ServerState,
     request: &JsonRpcRequest,
@@ -483,25 +515,13 @@ async fn handle_get_transactions(
 
     // Check if we have block environment before processing transactions
     // NOTE: This can be dropped once we implement the "not_found" feature, the result will be "not_found" by default because there cannot be any tx hash consumed if no BlockEnv was received first
-    if !state.has_blockenv.load(Ordering::Relaxed) {
-        debug!("Rejecting transaction - no block environment available");
-        return Ok(JsonRpcResponse::block_not_available(request));
+    if let Some(response) = ensure_block_environment_available(state, request) {
+        return Ok(response);
     }
 
-    let Some(params) = &request.params else {
-        debug!("getTransactions request missing required parameters");
-        return Ok(JsonRpcResponse::invalid_params(
-            request,
-            "Missing params for getTransactions",
-        ));
-    };
-
-    let Ok(tx_hashes) = serde_json::from_value::<Vec<TxHash>>(params.clone()) else {
-        debug!("getTransactions request invalid tx hash format");
-        return Ok(JsonRpcResponse::invalid_request(
-            request,
-            "Invalid params for getTransactions",
-        ));
+    let tx_hashes = match parse_transaction_hashes(request, "getTransactions") {
+        Ok(hashes) => hashes,
+        Err(error_response) => return Ok(error_response),
     };
 
     let (received_tx_hashes, not_found_hashes): (Vec<_>, Vec<_>) = tx_hashes
@@ -536,25 +556,13 @@ async fn handle_get_transaction(
 ) -> Result<JsonRpcResponse, StatusCode> {
     trace!("Processing getTransaction request");
 
-    if !state.has_blockenv.load(Ordering::Relaxed) {
-        debug!("Rejecting transaction - no block environment available");
-        return Ok(JsonRpcResponse::block_not_available(request));
+    if let Some(response) = ensure_block_environment_available(state, request) {
+        return Ok(response);
     }
 
-    let Some(params) = &request.params else {
-        debug!("getTransaction request missing required parameters");
-        return Ok(JsonRpcResponse::invalid_params(
-            request,
-            "Missing params for getTransaction",
-        ));
-    };
-
-    let Ok(mut tx_hashes) = serde_json::from_value::<Vec<TxHash>>(params.clone()) else {
-        debug!("getTransaction request invalid tx hash format");
-        return Ok(JsonRpcResponse::invalid_request(
-            request,
-            "Invalid params for getTransaction",
-        ));
+    let mut tx_hashes = match parse_transaction_hashes(request, "getTransaction") {
+        Ok(hashes) => hashes,
+        Err(error_response) => return Ok(error_response),
     };
 
     if tx_hashes.len() != 1 {
