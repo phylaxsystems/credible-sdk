@@ -20,6 +20,7 @@ use crate::{
 use rust_tracing::trace;
 use tracing::warn;
 
+use crate::redis::CircularBufferConfig;
 use alloy_provider::{
     Provider,
     ProviderBuilder,
@@ -46,8 +47,12 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let provider = connect_provider(&args.ws_url).await?;
-    let redis = RedisStateWriter::new(&args.redis_url, args.redis_namespace.clone())
-        .context("failed to initialize redis client")?;
+    let redis = RedisStateWriter::new(
+        &args.redis_url,
+        args.redis_namespace.clone(),
+        CircularBufferConfig::new(args.state_depth)?,
+    )
+    .context("failed to initialize redis client")?;
     let genesis_state =
         if let Some(chain_id) = args.chain_id {
             Some(crate::genesis::load_embedded(chain_id).with_context(|| {

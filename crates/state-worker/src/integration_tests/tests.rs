@@ -14,6 +14,34 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing_test::traced_test;
 
+/// Helper function to get the latest block number from the circular buffer.
+fn get_latest_block_from_redis(
+    conn: &mut redis::Connection,
+    base_namespace: &str,
+    buffer_size: usize,
+) -> Option<u64> {
+    let mut max_block: Option<u64> = None;
+
+    for idx in 0..buffer_size {
+        let namespace = format!("{base_namespace}:{idx}");
+        let block_key = format!("{namespace}:block");
+
+        if let Ok(Some(block_str)) = conn.get::<_, Option<String>>(&block_key)
+            && let Ok(block_num) = block_str.parse::<u64>()
+        {
+            max_block = Some(max_block.map_or(block_num, |current| current.max(block_num)));
+        }
+    }
+
+    max_block
+}
+
+/// Helper to get the namespace for a given block number.
+fn get_namespace_for_block(base_namespace: &str, block_number: u64, buffer_size: usize) -> String {
+    let namespace_idx = usize::try_from(block_number).unwrap() % buffer_size;
+    format!("{base_namespace}:{namespace_idx}")
+}
+
 #[traced_test]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_state_worker_hydrates_genesis_state() {
@@ -49,7 +77,7 @@ async fn test_state_worker_hydrates_genesis_state() {
         .await
         .expect("Failed to start instance");
 
-    sleep(Duration::from_millis(200)).await;
+    sleep(Duration::from_millis(500)).await;
 
     let client =
         redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
@@ -57,18 +85,16 @@ async fn test_state_worker_hydrates_genesis_state() {
         .get_connection()
         .expect("Failed to get Redis connection");
 
-    let account_key = format!("state_worker_test:account:{}", &genesis_account[2..]);
-    let storage_key = format!("state_worker_test:storage:{}", &genesis_account[2..]);
+    let namespace = "state_worker_test:0";
+    let account_key = format!("{namespace}:account:{}", &genesis_account[2..]);
+    let storage_key = format!("{namespace}:storage:{}", &genesis_account[2..]);
     let code_hash = format!(
         "0x{}",
         hex::encode(keccak256(
             hex::decode(genesis_code.trim_start_matches("0x")).unwrap()
         ))
     );
-    let code_key = format!(
-        "state_worker_test:code:{}",
-        code_hash.trim_start_matches("0x")
-    );
+    let code_key = format!("{namespace}:code:{}", code_hash.trim_start_matches("0x"));
 
     let mut balance: Option<String> = None;
     let mut nonce: Option<String> = None;
@@ -166,9 +192,10 @@ async fn test_state_worker_hydrates_genesis_state() {
         format!("0x{}", hex::encode(B256::from(U256::from(2))))
     );
 
+    let block_key = format!("{namespace}:block");
     let current_block: String = conn
-        .get("state_worker_test:current_block")
-        .expect("Failed to read current block");
+        .get(&block_key)
+        .expect("Failed to read current block from namespace 0");
     assert_eq!(current_block, "0");
 }
 
@@ -177,6 +204,8 @@ async fn test_state_worker_processes_multiple_state_changes() {
     let instance = LocalInstance::new()
         .await
         .expect("Failed to start instance");
+
+    sleep(Duration::from_millis(200)).await;
 
     let parity_trace_block_1 = json!({
         "jsonrpc": "2.0",
@@ -223,51 +252,42 @@ async fn test_state_worker_processes_multiple_state_changes() {
     instance
         .http_server_mock
         .add_response("trace_replayBlockTransactions", parity_trace_block_1);
-
     instance.http_server_mock.send_new_head();
-    sleep(Duration::from_millis(50)).await;
+    sleep(Duration::from_millis(200)).await;
 
     instance
         .http_server_mock
         .add_response("trace_replayBlockTransactions", parity_trace_block_2);
-
     instance.http_server_mock.send_new_head();
-    sleep(Duration::from_millis(50)).await;
+    sleep(Duration::from_millis(200)).await;
 
     instance
         .http_server_mock
         .add_response("trace_replayBlockTransactions", parity_trace_block_3);
-
     instance.http_server_mock.send_new_head();
-    sleep(Duration::from_millis(50)).await;
+    sleep(Duration::from_millis(200)).await;
 
-    // Connect to Redis to verify state changes were applied
     let client =
         redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
     let mut conn = client
         .get_connection()
         .expect("Failed to get Redis connection");
 
-    // Add retry logic for Redis key retrieval
-    let mut current_block = String::new();
-    for _ in 0..20 {
-        if let Ok(block) = conn.get::<_, String>("state_worker_test:current_block") {
-            current_block = block;
+    let mut current_block: Option<u64> = None;
+    for _ in 0..30 {
+        current_block = get_latest_block_from_redis(&mut conn, "state_worker_test", 3);
+        if current_block == Some(3) {
             break;
         }
         sleep(Duration::from_millis(100)).await;
     }
 
-    assert!(
-        !current_block.is_empty(),
-        "Failed to get current_block from Redis after timeout"
-    );
     assert_eq!(
-        current_block, "3",
-        "Expected current block to be 3, got {current_block}"
+        current_block,
+        Some(3),
+        "Expected current block to be 3, got {current_block:?}",
     );
 
-    // Verify block hashes are stored for all 3 blocks
     let expected_block_hashes = vec![
         (
             "state_worker_test:block_hash:1",
@@ -283,23 +303,62 @@ async fn test_state_worker_processes_multiple_state_changes() {
         ),
     ];
 
-    for (key, expected_hash) in expected_block_hashes {
-        let actual_hash: String = conn
-            .get(key)
-            .unwrap_or_else(|_| panic!("Failed to get {key} from Redis"));
+    for (key, expected_hash) in &expected_block_hashes {
+        let mut actual_hash: Option<String> = None;
+        for _ in 0..20 {
+            if let Ok(hash) = conn.get::<_, String>(key) {
+                actual_hash = Some(hash);
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+
+        let actual_hash = actual_hash.unwrap_or_else(|| panic!("Failed to get {key} from Redis"));
         assert_eq!(
-            actual_hash, expected_hash,
+            &actual_hash, expected_hash,
             "Expected block hash {expected_hash} for key {key}, got {actual_hash}",
         );
     }
 
-    // Verify the data format is consistent
-    let current_block_num: u64 = current_block
-        .parse()
-        .expect("Current block should be parseable as integer");
-    assert_eq!(current_block_num, 3, "Current block should be 3");
+    let namespace_1 = "state_worker_test:1";
+    let block_1_key = format!("{namespace_1}:block");
+    let mut block_1: Option<String> = None;
+    for _ in 0..30 {
+        if let Ok(b) = conn.get::<_, String>(&block_1_key) {
+            block_1 = Some(b);
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    let block_1 = block_1.expect("Failed to get block 1 from namespace 1");
+    assert_eq!(block_1, "1");
 
-    // Block hashes should be hex strings with 0x prefix and 64 hex characters
+    let namespace_2 = "state_worker_test:2";
+    let block_2_key = format!("{namespace_2}:block");
+    let mut block_2: Option<String> = None;
+    for _ in 0..20 {
+        if let Ok(b) = conn.get::<_, String>(&block_2_key) {
+            block_2 = Some(b);
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    let block_2 = block_2.expect("Failed to get block 2 from namespace 2");
+    assert_eq!(block_2, "2");
+
+    let namespace_0 = "state_worker_test:0";
+    let block_3_key = format!("{namespace_0}:block");
+    let mut block_3: Option<String> = None;
+    for _ in 0..20 {
+        if let Ok(b) = conn.get::<_, String>(&block_3_key) {
+            block_3 = Some(b);
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    let block_3 = block_3.expect("Failed to get block 3 from namespace 0");
+    assert_eq!(block_3, "3");
+
     for (key, expected_hash) in [
         (
             "state_worker_test:block_hash:1",
@@ -333,7 +392,6 @@ async fn test_state_worker_handles_rapid_state_changes() {
         .await
         .expect("Failed to start instance");
 
-    // Send multiple rapid state changes with empty blocks
     for i in 0..5 {
         let parity_trace = json!({
             "jsonrpc": "2.0",
@@ -352,12 +410,11 @@ async fn test_state_worker_handles_rapid_state_changes() {
         instance
             .http_server_mock
             .add_response("trace_replayBlockTransactions", parity_trace);
-
         instance.http_server_mock.send_new_head();
         sleep(Duration::from_millis(100)).await;
     }
 
-    sleep(Duration::from_millis(50)).await;
+    sleep(Duration::from_millis(200)).await;
 
     let client =
         redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
@@ -365,32 +422,57 @@ async fn test_state_worker_handles_rapid_state_changes() {
         .get_connection()
         .expect("Failed to get Redis connection");
 
-    let mut current_block = String::new();
-    for _ in 0..20 {
-        if let Ok(block) = conn.get::<_, String>("state_worker_test:current_block") {
-            current_block = block;
+    let mut current_block: Option<u64> = None;
+    for _ in 0..30 {
+        current_block = get_latest_block_from_redis(&mut conn, "state_worker_test", 3);
+        if current_block == Some(5) {
             break;
         }
         sleep(Duration::from_millis(100)).await;
     }
 
-    let current_block_num: u64 = current_block
-        .parse()
-        .expect("Current block should be parseable as integer");
+    let current_block_num = current_block.expect("Failed to get current block after timeout");
 
     assert_eq!(
         current_block_num, 5,
         "Expected 5 blocks to be processed, got {current_block_num}",
     );
 
-    // Verify block hashes exist for all processed blocks
     for block_num in 1..=current_block_num {
         let key = format!("state_worker_test:block_hash:{block_num}");
-        let hash: String = conn
-            .get(&key)
-            .unwrap_or_else(|_| panic!("Failed to get block hash for block {block_num}"));
+        let mut hash: Option<String> = None;
+        for _ in 0..20 {
+            if let Ok(h) = conn.get::<_, String>(&key) {
+                hash = Some(h);
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        let hash = hash.unwrap_or_else(|| panic!("Failed to get block hash for block {block_num}"));
         assert!(hash.starts_with("0x"), "Block hash should start with 0x");
         assert_eq!(hash.len(), 66, "Block hash should be 66 characters long");
+    }
+
+    for block_num in 3..=5 {
+        let namespace = get_namespace_for_block("state_worker_test", block_num, 3);
+        let block_key = format!("{namespace}:block");
+
+        let mut stored_block: Option<String> = None;
+        for _ in 0..20 {
+            if let Ok(b) = conn.get::<_, String>(&block_key) {
+                stored_block = Some(b);
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+
+        let stored_block = stored_block
+            .unwrap_or_else(|| panic!("Failed to get block {block_num} from {namespace}"));
+        assert_eq!(
+            stored_block,
+            block_num.to_string(),
+            "Namespace should contain block {block_num}"
+        );
     }
 }
 
@@ -419,8 +501,6 @@ async fn test_state_worker_non_consecutive_blocks_critical_alert() {
     instance
         .http_server_mock
         .add_response("trace_replayBlockTransactions", valid_parity_trace_1);
-
-    println!("Sending first new head (block 1)...");
     instance.http_server_mock.send_new_head_with_block_number(1);
     sleep(Duration::from_millis(50)).await;
 
@@ -430,7 +510,6 @@ async fn test_state_worker_non_consecutive_blocks_critical_alert() {
         -32000,
         "block not found",
     );
-
     instance.http_server_mock.send_new_head_with_block_number(2);
     sleep(Duration::from_millis(50)).await;
 
@@ -452,7 +531,6 @@ async fn test_state_worker_non_consecutive_blocks_critical_alert() {
     instance
         .http_server_mock
         .add_response("trace_replayBlockTransactions", valid_parity_trace_3);
-
     instance.http_server_mock.send_new_head_with_block_number(3);
     sleep(Duration::from_millis(50)).await;
 
@@ -466,7 +544,6 @@ async fn test_state_worker_missing_state_critical_alert() {
         .await
         .expect("Failed to start instance");
 
-    // Empty stateDiff for block 1
     let parity_trace_block_1 = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -484,11 +561,9 @@ async fn test_state_worker_missing_state_critical_alert() {
     instance
         .http_server_mock
         .add_response("trace_replayBlockTransactions", parity_trace_block_1);
-
     instance.http_server_mock.send_new_head_with_block_number(1);
     sleep(Duration::from_millis(50)).await;
 
-    // Empty stateDiff for block 3
     let parity_trace_block_3 = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -506,9 +581,120 @@ async fn test_state_worker_missing_state_critical_alert() {
     instance
         .http_server_mock
         .add_response("trace_replayBlockTransactions", parity_trace_block_3);
-
     instance.http_server_mock.send_new_head_with_block_number(3);
     sleep(Duration::from_millis(50)).await;
 
     assert!(logs_contain("critical"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_circular_buffer_rotation_with_state_diffs() {
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+
+    for i in 0..6 {
+        let parity_trace = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": [
+                {
+                    "transactionHash": format!("0x{:064x}", i + 1),
+                    "trace": [],
+                    "vmTrace": null,
+                    "stateDiff": {},
+                    "output": "0x"
+                }
+            ]
+        });
+
+        instance
+            .http_server_mock
+            .add_response("trace_replayBlockTransactions", parity_trace);
+        instance.http_server_mock.send_new_head();
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    sleep(Duration::from_millis(300)).await;
+
+    let client =
+        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
+    let mut conn = client
+        .get_connection()
+        .expect("Failed to get Redis connection");
+
+    let mut latest: Option<u64> = None;
+    for _ in 0..30 {
+        latest = get_latest_block_from_redis(&mut conn, "state_worker_test", 3);
+        if latest == Some(6) {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(latest, Some(6), "Latest block should be 6 after rotation");
+
+    for block_num in 4..=6 {
+        let namespace = get_namespace_for_block("state_worker_test", block_num, 3);
+        let block_key = format!("{namespace}:block");
+
+        let mut stored_block: Option<String> = None;
+        for _ in 0..20 {
+            if let Ok(b) = conn.get::<_, String>(&block_key) {
+                stored_block = Some(b);
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+
+        let stored_block = stored_block
+            .unwrap_or_else(|| panic!("Failed to get block {block_num} from {namespace}"));
+        assert_eq!(
+            stored_block,
+            block_num.to_string(),
+            "Namespace should contain block {block_num}"
+        );
+    }
+
+    for block_num in 1..=6 {
+        let key = format!("state_worker_test:block_hash:{block_num}");
+        let mut hash: Option<String> = None;
+        for _ in 0..20 {
+            if let Ok(h) = conn.get::<_, String>(&key) {
+                hash = Some(h);
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        let hash = hash.unwrap_or_else(|| panic!("Block hash for block {block_num} should exist"));
+        assert!(hash.starts_with("0x"));
+    }
+
+    for block_num in 4..=6 {
+        let diff_key = format!("state_worker_test:diff:{block_num}");
+        let mut exists = false;
+        for _ in 0..20 {
+            if let Ok(e) = redis::cmd("EXISTS").arg(&diff_key).query::<bool>(&mut conn) {
+                exists = e;
+                if exists {
+                    break;
+                }
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        assert!(exists, "State diff for block {block_num} should exist");
+    }
+
+    sleep(Duration::from_millis(100)).await;
+
+    for block_num in 1..=3 {
+        let diff_key = format!("state_worker_test:diff:{block_num}");
+        let exists: bool = redis::cmd("EXISTS")
+            .arg(&diff_key)
+            .query(&mut conn)
+            .unwrap_or(true);
+        assert!(
+            !exists,
+            "Old state diff for block {block_num} should be deleted"
+        );
+    }
 }

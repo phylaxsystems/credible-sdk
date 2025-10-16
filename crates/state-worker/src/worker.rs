@@ -155,6 +155,7 @@ impl StateWorker {
             .await?
             .with_context(|| format!("block {block_number} not found"))?;
         let block_hash = block.header.hash;
+        let state_root = block.header.state_root;
 
         // Use the standardized pre-state tracer options so we receive per-tx
         // diffs matching the sidecar's expectations.
@@ -171,7 +172,8 @@ impl StateWorker {
             }
         };
 
-        let mut update = BlockStateUpdate::from_traces(block_number, block_hash, traces);
+        let mut update =
+            BlockStateUpdate::from_traces(block_number, block_hash, state_root, traces);
 
         if block_number == 0 && update.accounts.is_empty() {
             // Check if block 0 already exists in Redis to avoid reapplying genesis
@@ -192,8 +194,12 @@ impl StateWorker {
                             warn!("genesis file contained no accounts; skipping hydration");
                         } else {
                             info!("hydrating genesis state from genesis file");
-                            update =
-                                BlockStateUpdate::from_accounts(block_number, block_hash, accounts);
+                            update = BlockStateUpdate::from_accounts(
+                                block_number,
+                                block_hash,
+                                state_root,
+                                accounts,
+                            );
                         }
                     }
                     None => {

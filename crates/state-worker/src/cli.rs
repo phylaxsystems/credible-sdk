@@ -27,4 +27,8 @@ pub struct Args {
     /// Optional chain identifier used to select an embedded genesis snapshot.
     #[arg(long, env = "STATE_WORKER_CHAIN_ID")]
     pub chain_id: Option<u64>,
+
+    /// Optional state depth (how many blocks behind head Redis will have the data from)
+    #[arg(long, env = "STATE_WORKER_STATE_DEPTH", default_value = "3")]
+    pub state_depth: usize,
 }
