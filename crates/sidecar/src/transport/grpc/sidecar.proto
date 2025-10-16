@@ -103,9 +103,21 @@ message GetTransactionsResponse {
   repeated string not_found = 2;
 }
 
+message GetTransactionRequest {
+  string tx_hash = 1; // single 0x-prefixed hash string
+}
+
+message GetTransactionResponse {
+  oneof outcome {
+    TransactionResult result = 1; // single transaction result
+    string not_found = 2;         // original hash when no result available
+  }
+}
+
 service SidecarTransport {
   rpc SendBlockEnv(BlockEnvEnvelope) returns (BasicAck);
   rpc SendTransactions(SendTransactionsRequest) returns (SendTransactionsResponse);
   rpc Reorg(ReorgRequest) returns (BasicAck);
   rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
+  rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
 }
