@@ -68,8 +68,7 @@ async fn main() -> Result<()> {
         };
 
     // Create shutdown channel
-    let (shutdown_tx, _) = broadcast::channel(1);
-    let shutdown_rx = shutdown_tx.subscribe();
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
     // Spawn signal handler
     let shutdown_tx_clone = shutdown_tx.clone();
