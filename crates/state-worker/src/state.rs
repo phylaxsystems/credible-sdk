@@ -5,6 +5,7 @@
 //! mirrors the Redis schema the sidecar expects.
 
 use alloy_rpc_types_trace::parity::Delta;
+use state_store::common::BlockStateUpdate;
 use std::collections::HashMap;
 
 use alloy::primitives::{
@@ -22,6 +23,7 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use state_store::common::AccountState;
 
 #[derive(Default)]
 struct AccountSnapshot {
@@ -32,7 +34,7 @@ struct AccountSnapshot {
     /// Optional bytecode blob; preserved so we can emit code updates exactly once.
     code: Option<Vec<u8>>,
     /// Sparse storage slots touched by the block (slot -> value).
-    storage_updates: HashMap<B256, B256>,
+    storage_updates: HashMap<U256, U256>,
     /// Whether we saw a post-state for this account.
     touched: bool,
     /// Whether the account was deleted by the block.
@@ -41,33 +43,21 @@ struct AccountSnapshot {
 
 /// Aggregate of all state changes produced while processing a block.
 #[derive(Serialize, Deserialize)]
-pub struct BlockStateUpdate {
+pub struct BlockStateUpdateBuilder {
     pub block_number: u64,
     pub block_hash: B256,
     pub state_root: B256,
-    pub accounts: Vec<AccountCommit>,
+    pub accounts: Vec<AccountState>,
 }
 
-/// Flattened representation of an account diff that mirrors the Redis schema.
-#[derive(Serialize, Deserialize)]
-pub struct AccountCommit {
-    pub address: Address,
-    pub balance: U256,
-    pub nonce: u64,
-    pub code_hash: B256,
-    pub code: Option<Vec<u8>>,
-    pub storage: Vec<(B256, B256)>,
-    pub deleted: bool,
-}
-
-impl BlockStateUpdate {
+impl BlockStateUpdateBuilder {
     /// Collapse the per-transaction pre-state traces into per-account updates.
-    pub fn from_traces(
+    pub fn into_block_state_update_from_traces(
         block_number: u64,
         block_hash: B256,
         state_root: B256,
         traces: Vec<TraceResultsWithTransactionHash>,
-    ) -> Self {
+    ) -> BlockStateUpdate {
         let mut accounts: HashMap<Address, AccountSnapshot> = HashMap::new();
 
         for trace in traces {
@@ -81,7 +71,7 @@ impl BlockStateUpdate {
             .filter_map(|(address, snapshot)| snapshot.finalize(address))
             .collect();
 
-        Self {
+        BlockStateUpdate {
             block_number,
             block_hash,
             state_root,
@@ -90,13 +80,13 @@ impl BlockStateUpdate {
     }
 
     /// Construct an update from a pre-built set of account commits.
-    pub fn from_accounts(
+    pub fn into_block_state_from_accounts(
         block_number: u64,
         block_hash: B256,
         state_root: B256,
-        accounts: Vec<AccountCommit>,
-    ) -> Self {
-        Self {
+        accounts: Vec<AccountState>,
+    ) -> BlockStateUpdate {
+        BlockStateUpdate {
             block_number,
             block_hash,
             state_root,
@@ -109,7 +99,7 @@ impl AccountSnapshot {
     /// Convert the accumulated snapshot into a commit payload if anything
     /// meaningful changed. Returning `None` allows callsites to drop untouched
     /// snapshots without extra bookkeeping.
-    fn finalize(mut self, address: Address) -> Option<AccountCommit> {
+    fn finalize(mut self, address: Address) -> Option<AccountState> {
         if !self.touched && !self.deleted && self.storage_updates.is_empty() {
             return None;
         }
@@ -137,9 +127,9 @@ impl AccountSnapshot {
             Some(code_bytes)
         };
 
-        let storage = self.storage_updates.into_iter().collect();
+        let storage = self.storage_updates;
 
-        Some(AccountCommit {
+        Some(AccountState {
             address,
             balance,
             nonce,
@@ -230,17 +220,24 @@ fn process_diff(accounts: &mut HashMap<Address, AccountSnapshot>, state_diff: &S
                 }
                 Delta::Added(value) => {
                     // New storage slot was set
-                    snapshot.storage_updates.insert(*slot, *value);
+                    snapshot
+                        .storage_updates
+                        .insert(U256::from_be_bytes(slot.0), U256::from_be_bytes(value.0));
                     snapshot.touched = true;
                 }
                 Delta::Removed(_) => {
                     // Storage slot was deleted (set to zero)
-                    snapshot.storage_updates.insert(*slot, B256::ZERO);
+                    snapshot
+                        .storage_updates
+                        .insert(U256::from_be_bytes(slot.0), U256::ZERO);
                     snapshot.touched = true;
                 }
                 Delta::Changed(change) => {
                     // Storage slot value changed
-                    snapshot.storage_updates.insert(*slot, change.to);
+                    snapshot.storage_updates.insert(
+                        U256::from_be_bytes(slot.0),
+                        U256::from_be_bytes(change.to.0),
+                    );
                     snapshot.touched = true;
                 }
             }
@@ -256,7 +253,7 @@ fn process_diff(accounts: &mut HashMap<Address, AccountSnapshot>, state_diff: &S
             snapshot.deleted = true;
             // Zero out all storage that was touched
             for value in snapshot.storage_updates.values_mut() {
-                *value = B256::ZERO;
+                *value = U256::ZERO;
             }
         }
     }
@@ -331,7 +328,12 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(1, B256::ZERO, B256::ZERO, traces);
+        let update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            1,
+            B256::ZERO,
+            B256::ZERO,
+            traces,
+        );
 
         assert_eq!(update.accounts.len(), 2);
 
@@ -342,13 +344,13 @@ mod tests {
             .collect();
 
         // Check sender
-        let sender_commit = accounts.get(&sender).unwrap();
+        let sender_commit = accounts.get(&sender.0.0).unwrap();
         assert_eq!(sender_commit.balance, U256::from(900u64));
         assert_eq!(sender_commit.nonce, 6);
         assert!(!sender_commit.deleted);
 
         // Check recipient
-        let recipient_commit = accounts.get(&recipient).unwrap();
+        let recipient_commit = accounts.get(&recipient.0.0).unwrap();
         assert_eq!(recipient_commit.balance, U256::from(100u64));
         assert_eq!(recipient_commit.nonce, 0);
         assert!(!recipient_commit.deleted);
@@ -392,7 +394,12 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(2, B256::ZERO, B256::ZERO, traces);
+        let update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            2,
+            B256::ZERO,
+            B256::ZERO,
+            traces,
+        );
 
         let accounts: HashMap<_, _> = update
             .accounts
@@ -401,7 +408,7 @@ mod tests {
             .collect();
 
         // Check contract
-        let contract_commit = accounts.get(&contract).unwrap();
+        let contract_commit = accounts.get(&contract.0.0).unwrap();
         assert_eq!(contract_commit.code, Some(contract_code.clone()));
         assert_eq!(contract_commit.code_hash, keccak256(&contract_code));
         assert_eq!(contract_commit.nonce, 1);
@@ -446,17 +453,22 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(3, B256::ZERO, B256::ZERO, traces);
+        let update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            3,
+            B256::ZERO,
+            B256::ZERO,
+            traces,
+        );
 
         assert_eq!(update.accounts.len(), 1);
         let account = &update.accounts[0];
 
         // Convert storage to HashMap for easier testing
-        let storage_map: HashMap<_, _> = account.storage.iter().copied().collect();
+        let storage_map: HashMap<_, _> = account.storage.clone();
 
-        assert_eq!(storage_map.get(&slot1), Some(&B256::from(U256::from(100))));
-        assert_eq!(storage_map.get(&slot2), Some(&B256::from(U256::from(300))));
-        assert_eq!(storage_map.get(&slot3), Some(&B256::ZERO));
+        assert_eq!(storage_map.get(&slot1.into()), Some(&U256::from(100)));
+        assert_eq!(storage_map.get(&slot2.into()), Some(&U256::from(300)));
+        assert_eq!(storage_map.get(&slot3.into()), Some(&U256::ZERO));
     }
 
     #[test]
@@ -478,7 +490,12 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(4, B256::ZERO, B256::ZERO, traces);
+        let update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            4,
+            B256::ZERO,
+            B256::ZERO,
+            traces,
+        );
 
         assert_eq!(update.accounts.len(), 1);
         let account_commit = &update.accounts[0];
@@ -514,15 +531,20 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(5, B256::ZERO, B256::ZERO, traces);
+        let update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            5,
+            B256::ZERO,
+            B256::ZERO,
+            traces,
+        );
 
         let account_commit = &update.accounts[0];
         assert!(account_commit.deleted);
 
         // All storage should be zeroed
-        let storage_map: HashMap<_, _> = account_commit.storage.iter().copied().collect();
-        assert_eq!(storage_map.get(&slot1), Some(&B256::ZERO));
-        assert_eq!(storage_map.get(&slot2), Some(&B256::ZERO));
+        let storage_map: HashMap<_, _> = account_commit.storage.clone();
+        assert_eq!(storage_map.get(&slot1.into()), Some(&U256::ZERO));
+        assert_eq!(storage_map.get(&slot2.into()), Some(&U256::ZERO));
     }
 
     #[test]
@@ -570,7 +592,12 @@ mod tests {
             create_trace_with_diff(B256::from(U256::from(2)), state_diff2),
         ];
 
-        let update = BlockStateUpdate::from_traces(6, B256::ZERO, B256::ZERO, traces);
+        let update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            6,
+            B256::ZERO,
+            B256::ZERO,
+            traces,
+        );
 
         assert_eq!(update.accounts.len(), 1);
         let account_commit = &update.accounts[0];
@@ -596,7 +623,12 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(B256::ZERO, state_diff)];
-        let update = BlockStateUpdate::from_traces(7, B256::ZERO, B256::ZERO, traces);
+        let update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            7,
+            B256::ZERO,
+            B256::ZERO,
+            traces,
+        );
 
         // Account should not be included since nothing changed
         assert_eq!(update.accounts.len(), 0);
@@ -605,7 +637,12 @@ mod tests {
     #[test]
     fn test_empty_traces() {
         let traces = vec![];
-        let update = BlockStateUpdate::from_traces(8, B256::ZERO, B256::ZERO, traces);
+        let update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            8,
+            B256::ZERO,
+            B256::ZERO,
+            traces,
+        );
         assert_eq!(update.accounts.len(), 0);
     }
 
@@ -625,7 +662,12 @@ mod tests {
         };
 
         let traces = vec![trace];
-        let update = BlockStateUpdate::from_traces(9, B256::ZERO, B256::ZERO, traces);
+        let update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            9,
+            B256::ZERO,
+            B256::ZERO,
+            traces,
+        );
         assert_eq!(update.accounts.len(), 0);
     }
 
@@ -664,25 +706,21 @@ mod tests {
         );
 
         let traces = vec![create_trace_with_diff(tx_hash, state_diff)];
-        let update = BlockStateUpdate::from_traces(10, B256::ZERO, B256::ZERO, traces);
+        let update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            10,
+            B256::ZERO,
+            B256::ZERO,
+            traces,
+        );
 
         let account = &update.accounts[0];
-        let storage_map: HashMap<_, _> = account.storage.iter().copied().collect();
+        let storage_map: HashMap<_, _> = account.storage.clone();
 
         // Check specific slots
-        assert_eq!(
-            storage_map.get(&B256::from(U256::from(0))),
-            Some(&B256::from(U256::from(0)))
-        );
-        assert_eq!(
-            storage_map.get(&B256::from(U256::from(1))),
-            Some(&B256::ZERO)
-        );
-        assert_eq!(
-            storage_map.get(&B256::from(U256::from(2))),
-            Some(&B256::from(U256::from(400)))
-        );
+        assert_eq!(storage_map.get(&U256::from(0)), Some(&U256::from(0)));
+        assert_eq!(storage_map.get(&U256::from(1)), Some(&U256::ZERO));
+        assert_eq!(storage_map.get(&U256::from(2)), Some(&U256::from(400)));
         // Slot 3 was unchanged, so shouldn't be in the map
-        assert_eq!(storage_map.get(&B256::from(U256::from(3))), None);
+        assert_eq!(storage_map.get(&U256::from(3)), None);
     }
 }

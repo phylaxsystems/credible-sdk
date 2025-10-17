@@ -7,15 +7,15 @@ mod genesis_data;
 #[cfg(test)]
 mod integration_tests;
 mod macros;
-mod redis;
+// mod redis;
 mod state;
 mod worker;
 
 use crate::{
     cli::Args,
-    redis::RedisStateWriter,
     worker::StateWorker,
 };
+use state_store::CircularBufferConfig;
 
 use rust_tracing::trace;
 use tracing::{
@@ -23,7 +23,6 @@ use tracing::{
     warn,
 };
 
-use crate::redis::CircularBufferConfig;
 use alloy_provider::{
     Provider,
     ProviderBuilder,
@@ -35,6 +34,7 @@ use anyhow::{
     Result,
 };
 use clap::Parser;
+use state_store::StateWriter;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -51,8 +51,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let provider = connect_provider(&args.ws_url).await?;
-    let redis = RedisStateWriter::new(
-        &args.redis_url,
+    let redis = StateWriter::new(
+        args.redis_url.as_str(),
         args.redis_namespace.clone(),
         CircularBufferConfig::new(args.state_depth)?,
     )

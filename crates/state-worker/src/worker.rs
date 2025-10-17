@@ -4,7 +4,11 @@
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
 //! is traced with the pre-state tracer and written into Redis.
 
-use crate::critical;
+use crate::{
+    critical,
+    genesis::GenesisState,
+    state::BlockStateUpdateBuilder,
+};
 use alloy::{
     eips::BlockId,
     rpc::types::{
@@ -24,6 +28,7 @@ use anyhow::{
     anyhow,
 };
 use futures::StreamExt;
+use state_store::StateWriter;
 use std::{
     sync::Arc,
     time::Duration,
@@ -38,18 +43,12 @@ use tracing::{
     warn,
 };
 
-use crate::{
-    genesis::GenesisState,
-    redis::RedisStateWriter,
-    state::BlockStateUpdate,
-};
-
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker {
     provider: Arc<RootProvider>,
-    redis: RedisStateWriter,
+    redis: StateWriter,
     genesis_state: Option<GenesisState>,
 }
 
@@ -57,7 +56,7 @@ impl StateWorker {
     /// Build a worker that shares the provider/Redis client across async tasks.
     pub fn new(
         provider: Arc<RootProvider>,
-        redis: RedisStateWriter,
+        redis: StateWriter,
         genesis_state: Option<GenesisState>,
     ) -> Self {
         Self {
@@ -74,7 +73,7 @@ impl StateWorker {
         start_override: Option<u64>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<()> {
-        let mut next_block = self.compute_start_block(start_override).await?;
+        let mut next_block = self.compute_start_block(start_override)?;
 
         loop {
             tokio::select! {
@@ -109,7 +108,7 @@ impl StateWorker {
 
     /// Determine the next block to ingest. We respect manual overrides so
     /// operators can force a resync of historical ranges when needed.
-    async fn compute_start_block(&self, override_start: Option<u64>) -> Result<u64> {
+    fn compute_start_block(&self, override_start: Option<u64>) -> Result<u64> {
         if let Some(block) = override_start {
             return Ok(block);
         }
@@ -117,7 +116,6 @@ impl StateWorker {
         let current = self
             .redis
             .latest_block_number()
-            .await
             .context("failed to read current block from redis")?;
 
         Ok(current.map_or(0, |b| b + 1))
@@ -219,15 +217,18 @@ impl StateWorker {
             }
         };
 
-        let mut update =
-            BlockStateUpdate::from_traces(block_number, block_hash, state_root, traces);
+        let mut update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
+            block_number,
+            block_hash,
+            state_root,
+            traces,
+        );
 
         if block_number == 0 && update.accounts.is_empty() {
             // Check if block 0 already exists in Redis to avoid reapplying genesis
             let already_exists = self
                 .redis
                 .latest_block_number()
-                .await
                 .context("failed to check if genesis already exists")?
                 .is_some();
 
@@ -241,7 +242,7 @@ impl StateWorker {
                             warn!("genesis file contained no accounts; skipping hydration");
                         } else {
                             info!("hydrating genesis state from genesis file");
-                            update = BlockStateUpdate::from_accounts(
+                            update = BlockStateUpdateBuilder::into_block_state_from_accounts(
                                 block_number,
                                 block_hash,
                                 state_root,
@@ -256,7 +257,7 @@ impl StateWorker {
             }
         }
 
-        match self.redis.commit_block(update).await {
+        match self.redis.commit_block(update) {
             Ok(()) => (),
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to persist block");

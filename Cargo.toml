@@ -14,6 +14,7 @@ members = [
     "crates/sidecar/src/utils/test-macros",
     "crates/state-worker",
     "crates/shadow-driver",
+    "crates/state-store",
 ]
 exclude = ["fuzz"]
 resolver = "2"

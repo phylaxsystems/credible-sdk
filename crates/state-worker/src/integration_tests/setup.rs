@@ -2,13 +2,13 @@
 use crate::{
     connect_provider,
     genesis::GenesisState,
-    redis::{
-        CircularBufferConfig,
-        RedisStateWriter,
-    },
     worker::StateWorker,
 };
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
+use state_store::{
+    CircularBufferConfig,
+    StateWriter,
+};
 use testcontainers::{
     ContainerAsync,
     runners::AsyncRunner,
@@ -77,7 +77,7 @@ impl LocalInstance {
 
         let redis_url = format!("redis://{host}:{port}");
 
-        let redis = RedisStateWriter::new(
+        let redis = StateWriter::new(
             &redis_url,
             Self::NAMESPACE.to_string(),
             CircularBufferConfig::new(3).map_err(|e| e.to_string())?,
