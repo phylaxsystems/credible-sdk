@@ -672,6 +672,10 @@ mod tests {
         fn set(&self, _key: &str, _value: &str) -> Result<(), RedisCacheError> {
             panic!("unexpected redis set command in RedisTestBackend");
         }
+
+        fn get_client(&self) -> redis::Client {
+            panic!("unexpected redis set command in RedisTestBackend");
+        }
     }
 
     // Helper functions

@@ -24,6 +24,7 @@ mod sync_task;
 pub(crate) mod utils;
 
 pub use error::RedisCacheError;
+use tokio::task::JoinHandle;
 
 use self::{
     sync_task::SyncTaskHandle,
@@ -66,13 +67,12 @@ use std::{
     },
     str::FromStr,
     sync::{
-        Arc,
         atomic::{
             AtomicBool,
             AtomicU64,
             Ordering,
-        },
-    },
+        }, Arc
+    }, time::Duration,
 };
 use thiserror::Error;
 
@@ -89,6 +89,8 @@ const BALANCE_FIELD: &str = "balance";
 const NONCE_FIELD: &str = "nonce";
 const CODE_HASH_FIELD: &str = "code_hash";
 
+const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
+
 /// Abstraction over the backing Redis client.
 pub trait RedisBackend: Debug + Send + Sync {
     /// Reads all fields stored in a Redis hash, returning `None` when the key is missing.
@@ -103,6 +105,8 @@ pub trait RedisBackend: Debug + Send + Sync {
     fn get(&self, key: &str) -> Result<Option<String>, RedisCacheError>;
     /// Writes a plain string value at `key` for block metadata and bytecode.
     fn set(&self, key: &str, value: &str) -> Result<(), RedisCacheError>;
+    /// Return a clone of the redis client
+    fn get_client(&self) -> redis::Client;
 }
 
 /// Real Redis backend that delegates commands to `redis::Client`.
@@ -184,20 +188,23 @@ impl RedisBackend for RedisClientBackend {
     fn set(&self, key: &str, value: &str) -> Result<(), RedisCacheError> {
         self.with_connection(|conn| conn.set(key, value))
     }
+    fn get_client(&self) -> redis::Client {
+        self.client.clone()
+    }
 }
 
 #[derive(Debug)]
-pub struct RedisCache<B: RedisBackend + 'static> {
+pub struct RedisCache<B: RedisBackend> {
     backend: Arc<B>,
     namespace: String,
     /// Current block
     current_block: Arc<AtomicU64>,
     observed_block: Arc<AtomicU64>,
     sync_status: Arc<AtomicBool>,
-    sync_task: SyncTaskHandle,
+    sync_join: JoinHandle<()>,
 }
 
-impl<B: RedisBackend + 'static> RedisCache<B> {
+impl<B: RedisBackend> RedisCache<B> {
     /// Creates a cache that stores entries under the default `state` namespace.
     pub fn new(backend: B) -> Self {
         Self::with_namespace(backend, DEFAULT_NAMESPACE)
@@ -210,13 +217,11 @@ impl<B: RedisBackend + 'static> RedisCache<B> {
         let current_block = Arc::new(AtomicU64::new(0));
         let observed_block = Arc::new(AtomicU64::new(0));
         let sync_status = Arc::new(AtomicBool::new(false));
-        let sync_task = sync_task::spawn(
-            Arc::clone(&backend),
-            namespace.clone(),
-            Arc::clone(&current_block),
-            Arc::clone(&observed_block),
-            Arc::clone(&sync_status),
-        );
+        let sync_task: SyncTaskHandle<RedisClientBackend> = SyncTaskHandle::new(backend.get_client(), namespace.clone(), current_block.clone(), observed_block.clone(), sync_status.clone());
+
+        let sync_join = tokio::spawn(async move {
+            sync_task.run(DEFAULT_SYNC_INTERVAL).await;
+        });
 
         Self {
             backend,
@@ -224,7 +229,7 @@ impl<B: RedisBackend + 'static> RedisCache<B> {
             current_block,
             observed_block,
             sync_status,
-            sync_task,
+            sync_join,
         }
     }
 
@@ -577,6 +582,11 @@ mod tests {
             guard.insert(key.to_string(), Entry::String(value.to_string()));
             Ok(())
         }
+
+        fn get_client(&self) -> redis::Client {
+            unimplemented!()
+        }
+
     }
 
     #[tokio::test]

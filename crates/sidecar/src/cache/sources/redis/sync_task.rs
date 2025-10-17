@@ -1,8 +1,5 @@
 use super::{
-    CURRENT_BLOCK_KEY,
-    RedisBackend,
-    RedisCacheError,
-    utils::parse_u64,
+    utils::parse_u64, RedisBackend, RedisCacheError, RedisClientBackend, CURRENT_BLOCK_KEY
 };
 use crate::critical;
 use std::{
@@ -29,25 +26,25 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(250);
-
 #[derive(Debug, Clone)]
 pub(crate) struct SyncTaskHandle<B> {
-    backend: Arc<B>,
+    backend: B,
     namespace: String,
     current_block: Arc<AtomicU64>,
     observed_block: Arc<AtomicU64>,
     sync_status: Arc<AtomicBool>,
 }
 
-impl<B: RedisBackend> SyncTaskHandle<B>  {
+impl SyncTaskHandle<RedisClientBackend> {
     pub fn new(
-        backend: Arc<B>,
+        client: redis::Client,
         namespace: String,
         current_block: Arc<AtomicU64>,
         observed_block: Arc<AtomicU64>,
         sync_status: Arc<AtomicBool>,
     ) -> Self {
+        let backend = RedisClientBackend::new(client);
+
         Self {
             backend,
             namespace,
@@ -56,9 +53,11 @@ impl<B: RedisBackend> SyncTaskHandle<B>  {
             sync_status,
         }
     }
+}
 
+impl<B: RedisBackend> SyncTaskHandle<B>  {
     pub async fn run(
-        &mut self,
+        &self,
         poll_interval: Duration,
     ) {
         let mut ticker = interval(poll_interval);
