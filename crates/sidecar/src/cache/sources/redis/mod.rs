@@ -20,19 +20,24 @@
 //! ```
 
 pub(crate) mod error;
+mod sync_task;
 pub(crate) mod utils;
 
 pub use error::RedisCacheError;
+use tokio::task::JoinHandle;
 
-use self::utils::{
-    decode_hex,
-    encode_hex,
-    encode_storage_key,
-    encode_u256_hex,
-    parse_b256,
-    parse_u64,
-    parse_u256,
-    to_hex_lower,
+use self::{
+    sync_task::SyncTaskHandle,
+    utils::{
+        decode_hex,
+        encode_hex,
+        encode_storage_key,
+        encode_u256_hex,
+        parse_b256,
+        parse_u64,
+        parse_u256,
+        to_hex_lower,
+    },
 };
 use crate::{
     Source,
@@ -62,12 +67,12 @@ use std::{
     },
     str::FromStr,
     sync::{
-        Arc,
         atomic::{
+            AtomicBool,
             AtomicU64,
             Ordering,
-        },
-    },
+        }, Arc
+    }, time::Duration,
 };
 use thiserror::Error;
 
@@ -84,6 +89,8 @@ const BALANCE_FIELD: &str = "balance";
 const NONCE_FIELD: &str = "nonce";
 const CODE_HASH_FIELD: &str = "code_hash";
 
+const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
+
 /// Abstraction over the backing Redis client.
 pub trait RedisBackend: Debug + Send + Sync {
     /// Reads all fields stored in a Redis hash, returning `None` when the key is missing.
@@ -98,6 +105,8 @@ pub trait RedisBackend: Debug + Send + Sync {
     fn get(&self, key: &str) -> Result<Option<String>, RedisCacheError>;
     /// Writes a plain string value at `key` for block metadata and bytecode.
     fn set(&self, key: &str, value: &str) -> Result<(), RedisCacheError>;
+    /// Return a clone of the redis client
+    fn get_client(&self) -> redis::Client;
 }
 
 /// Real Redis backend that delegates commands to `redis::Client`.
@@ -179,14 +188,20 @@ impl RedisBackend for RedisClientBackend {
     fn set(&self, key: &str, value: &str) -> Result<(), RedisCacheError> {
         self.with_connection(|conn| conn.set(key, value))
     }
+    fn get_client(&self) -> redis::Client {
+        self.client.clone()
+    }
 }
 
 #[derive(Debug)]
 pub struct RedisCache<B: RedisBackend> {
-    backend: B,
+    backend: Arc<B>,
     namespace: String,
     /// Current block
     current_block: Arc<AtomicU64>,
+    observed_block: Arc<AtomicU64>,
+    sync_status: Arc<AtomicBool>,
+    sync_join: JoinHandle<()>,
 }
 
 impl<B: RedisBackend> RedisCache<B> {
@@ -197,10 +212,24 @@ impl<B: RedisBackend> RedisCache<B> {
 
     /// Creates a cache that stores entries under a custom namespace prefix.
     pub fn with_namespace(backend: B, namespace: impl Into<String>) -> Self {
+        let backend = Arc::new(backend);
+        let namespace = namespace.into();
+        let current_block = Arc::new(AtomicU64::new(0));
+        let observed_block = Arc::new(AtomicU64::new(0));
+        let sync_status = Arc::new(AtomicBool::new(false));
+        let sync_task: SyncTaskHandle<RedisClientBackend> = SyncTaskHandle::new(backend.get_client(), namespace.clone(), current_block.clone(), observed_block.clone(), sync_status.clone());
+
+        let sync_join = tokio::spawn(async move {
+            sync_task.run(DEFAULT_SYNC_INTERVAL).await;
+        });
+
         Self {
             backend,
-            namespace: namespace.into(),
-            current_block: Arc::new(AtomicU64::new(0)),
+            namespace,
+            current_block,
+            observed_block,
+            sync_status,
+            sync_join,
         }
     }
 
@@ -363,7 +392,7 @@ impl<B: RedisBackend> RedisCache<B> {
     }
 }
 
-impl<B: RedisBackend> DatabaseRef for RedisCache<B> {
+impl<B: RedisBackend + 'static> DatabaseRef for RedisCache<B> {
     type Error = super::SourceError;
 
     /// Reconstructs an account from cached metadata, returning `None` when absent.
@@ -428,16 +457,16 @@ impl<B: RedisBackend> DatabaseRef for RedisCache<B> {
     }
 }
 
-impl<B: RedisBackend> Source for RedisCache<B> {
+impl<B: RedisBackend + 'static> Source for RedisCache<B> {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, required_block_number: u64) -> bool {
-        match self.fetch_current_block_number() {
-            Ok(Some(block)) => {
-                block >= required_block_number
-                    && block <= self.current_block.load(Ordering::Relaxed)
-            }
-            _ => false,
+        if !self.sync_status.load(Ordering::Acquire) {
+            return false;
         }
+
+        let observed_block = self.observed_block.load(Ordering::Acquire);
+        observed_block >= required_block_number
+            && observed_block <= self.current_block.load(Ordering::Relaxed)
     }
 
     /// No-op; we dont update the target block for redis.
@@ -460,6 +489,27 @@ mod tests {
         SourceError,
     };
     use std::sync::RwLock;
+    use tokio::{
+        task::yield_now,
+        time::{
+            Duration,
+            sleep,
+        },
+    };
+
+    async fn eventually<F>(mut condition: F)
+    where
+        F: FnMut() -> bool,
+    {
+        for _ in 0..50 {
+            if condition() {
+                return;
+            }
+            yield_now().await;
+            sleep(Duration::from_millis(10)).await;
+        }
+        panic!("condition not satisfied in time");
+    }
 
     #[derive(Debug, Default)]
     struct InMemoryBackend {
@@ -532,10 +582,15 @@ mod tests {
             guard.insert(key.to_string(), Entry::String(value.to_string()));
             Ok(())
         }
+
+        fn get_client(&self) -> redis::Client {
+            unimplemented!()
+        }
+
     }
 
-    #[test]
-    fn basic_ref_returns_account_info() {
+    #[tokio::test]
+    async fn basic_ref_returns_account_info() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
 
@@ -555,8 +610,8 @@ mod tests {
         assert!(result.code.is_none());
     }
 
-    #[test]
-    fn basic_ref_missing_returns_none() {
+    #[tokio::test]
+    async fn basic_ref_missing_returns_none() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
         let address = Address::from([0x42; 20]);
@@ -565,8 +620,8 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn storage_ref_returns_cache_miss_when_missing() {
+    #[tokio::test]
+    async fn storage_ref_returns_cache_miss_when_missing() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
         let address = Address::from([0x33; 20]);
@@ -576,8 +631,8 @@ mod tests {
         assert!(matches!(result, Err(SourceError::CacheMiss)));
     }
 
-    #[test]
-    fn storage_ref_returns_value() {
+    #[tokio::test]
+    async fn storage_ref_returns_value() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
         let address = Address::from([0x55; 20]);
@@ -594,8 +649,8 @@ mod tests {
         assert_eq!(result, value);
     }
 
-    #[test]
-    fn stores_and_loads_state_via_database_ref_interface() {
+    #[tokio::test]
+    async fn stores_and_loads_state_via_database_ref_interface() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
 
@@ -649,11 +704,11 @@ mod tests {
             .expect("block hash lookup failed");
         assert_eq!(fetched_block, block_hash);
 
-        assert!(cache.is_synced(block_number));
+        eventually(|| cache.is_synced(block_number)).await;
     }
 
-    #[test]
-    fn code_by_hash_returns_bytecode() {
+    #[tokio::test]
+    async fn code_by_hash_returns_bytecode() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
         let code_hash = B256::from_slice(&[0x10; 32]);
@@ -669,8 +724,8 @@ mod tests {
         assert_eq!(result.original_bytes(), bytecode);
     }
 
-    #[test]
-    fn block_hash_ref_returns_value() {
+    #[tokio::test]
+    async fn block_hash_ref_returns_value() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
         let block_hash = B256::from_slice(&[0x77; 32]);
@@ -686,8 +741,8 @@ mod tests {
         assert_eq!(result, block_hash);
     }
 
-    #[test]
-    fn put_code_helper_stores_bytecode() {
+    #[tokio::test]
+    async fn put_code_helper_stores_bytecode() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
         let code_hash = B256::from_slice(&[0xAB; 32]);
@@ -703,8 +758,8 @@ mod tests {
         assert_eq!(stored.original_bytes(), bytecode.original_bytes());
     }
 
-    #[test]
-    fn is_synced_checks_current_block() {
+    #[tokio::test]
+    async fn is_synced_checks_current_block() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
 
@@ -713,13 +768,14 @@ mod tests {
             .set_current_block_number(100)
             .expect("failed to set current block");
 
-        assert!(cache.is_synced(90));
-        assert!(cache.is_synced(100));
+        eventually(|| cache.is_synced(90)).await;
+        eventually(|| cache.is_synced(100)).await;
+        eventually(|| !cache.is_synced(110)).await;
         assert!(!cache.is_synced(110));
     }
 
-    #[test]
-    fn is_synced_checks_taget_block() {
+    #[tokio::test]
+    async fn is_synced_checks_taget_block() {
         let backend = InMemoryBackend::default();
         let cache = RedisCache::new(backend);
 
@@ -728,6 +784,9 @@ mod tests {
             .set_current_block_number(100)
             .expect("failed to set current block");
 
+        eventually(|| !cache.is_synced(90)).await;
+        eventually(|| !cache.is_synced(100)).await;
+        eventually(|| !cache.is_synced(110)).await;
         assert!(!cache.is_synced(90));
         assert!(!cache.is_synced(100));
         assert!(!cache.is_synced(110));

@@ -414,6 +414,7 @@ mod tests {
         },
         time::Duration,
     };
+    use tokio::time::sleep;
     use tracing_test::traced_test;
 
     // Mock Source implementation for testing
@@ -671,6 +672,10 @@ mod tests {
         fn set(&self, _key: &str, _value: &str) -> Result<(), RedisCacheError> {
             panic!("unexpected redis set command in RedisTestBackend");
         }
+
+        fn get_client(&self) -> redis::Client {
+            panic!("unexpected redis set command in RedisTestBackend");
+        }
     }
 
     // Helper functions
@@ -836,8 +841,8 @@ mod tests {
         assert_eq!(source2.basic_ref_call_count(), 0);
     }
 
-    #[test]
-    fn test_basic_ref_falls_back_when_redis_backend_errors() {
+    #[tokio::test]
+    async fn test_basic_ref_falls_back_when_redis_backend_errors() {
         let address = create_test_address();
         let (backend, redis_calls) = RedisTestBackend::for_backend_error(address);
         let redis_source = Arc::new(RedisCache::new(backend));
@@ -847,8 +852,17 @@ mod tests {
             MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
         );
 
-        let cache = Cache::new(vec![redis_source, fallback_source.clone()], 10);
+        let cache = Cache::new(vec![redis_source.clone(), fallback_source.clone()], 10);
         cache.set_block_number(1);
+
+        for _ in 0..20 {
+            if redis_source.is_synced(1) {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        assert!(redis_source.is_synced(1));
 
         let result = cache.basic_ref(address).unwrap();
         assert_eq!(result, Some(account_info));
@@ -856,8 +870,8 @@ mod tests {
         assert_eq!(redis_calls.load(Ordering::Acquire), 1);
     }
 
-    #[test]
-    fn test_basic_ref_uses_fallback_when_redis_unsynced() {
+    #[tokio::test]
+    async fn test_basic_ref_uses_fallback_when_redis_unsynced() {
         let address = create_test_address();
         let (backend, redis_calls) = RedisTestBackend::for_unsynced();
         let redis_source = Arc::new(RedisCache::new(backend));
@@ -867,8 +881,11 @@ mod tests {
             MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
         );
 
-        let cache = Cache::new(vec![redis_source, fallback_source.clone()], 10);
+        let cache = Cache::new(vec![redis_source.clone(), fallback_source.clone()], 10);
         cache.set_block_number(15);
+
+        sleep(Duration::from_millis(20)).await;
+        assert!(!redis_source.is_synced(15));
 
         let result = cache.basic_ref(address).unwrap();
         assert_eq!(result, Some(account_info));
