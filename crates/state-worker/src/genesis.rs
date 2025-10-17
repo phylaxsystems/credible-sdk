@@ -1,8 +1,5 @@
 //! Helpers for hydrating the worker's view of block 0 from a genesis JSON file.
-use crate::{
-    genesis_data,
-    state::AccountCommit,
-};
+use crate::genesis_data;
 use alloy::primitives::{
     Address,
     B256,
@@ -17,6 +14,7 @@ use anyhow::{
 };
 use revm::primitives::KECCAK_EMPTY;
 use serde::Deserialize;
+use state_store::common::AccountState;
 use std::{
     collections::HashMap,
     str::FromStr,
@@ -25,18 +23,18 @@ use std::{
 /// Parsed representation of the genesis state. The worker consumes this when
 /// hydrating block 0 in Redis.
 pub struct GenesisState {
-    accounts: Vec<AccountCommit>,
+    accounts: Vec<AccountState>,
 }
 
 impl GenesisState {
     /// Immutable view of the parsed account commits.
     #[cfg(test)]
-    pub fn accounts(&self) -> &[AccountCommit] {
+    pub fn accounts(&self) -> &[AccountState] {
         &self.accounts
     }
 
     /// Consume the state and return the owned account commits.
-    pub fn into_accounts(self) -> Vec<AccountCommit> {
+    pub fn into_accounts(self) -> Vec<AccountState> {
         self.accounts
     }
 }
@@ -91,7 +89,7 @@ fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
     Ok(GenesisState { accounts })
 }
 
-fn convert_account(address: &str, account: GenesisAccount) -> Result<AccountCommit> {
+fn convert_account(address: &str, account: GenesisAccount) -> Result<AccountState> {
     let address = parse_address(address)?;
     let balance = parse_u256(account.balance.as_deref())?;
     let nonce = parse_u64(account.nonce.as_deref())
@@ -99,7 +97,7 @@ fn convert_account(address: &str, account: GenesisAccount) -> Result<AccountComm
     let (code, code_hash) = parse_code(account.code.as_deref())?;
     let storage = parse_storage(account.storage)?;
 
-    Ok(AccountCommit {
+    Ok(AccountState {
         address,
         balance,
         nonce,
@@ -151,29 +149,17 @@ fn parse_code(code: Option<&str>) -> Result<(Option<Vec<u8>>, B256)> {
     Ok((Some(bytes), hash))
 }
 
-fn parse_storage(storage: HashMap<String, String>) -> Result<Vec<(B256, B256)>> {
-    let mut entries = Vec::with_capacity(storage.len());
+fn parse_storage(storage: HashMap<String, String>) -> Result<HashMap<U256, U256>> {
+    let mut entries = HashMap::new();
     for (slot, value) in storage {
-        let slot = parse_b256(&slot)
+        let slot = parse_u256(Some(&slot))
             .with_context(|| format!("failed to parse storage slot key {slot}"))?;
-        let value = parse_b256(&value)
+        let value = parse_u256(Some(&value))
             .with_context(|| format!("failed to parse storage slot value {value}"))?;
-        entries.push((slot, value));
+        entries.insert(slot, value);
     }
 
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(entries)
-}
-
-fn parse_b256(value: &str) -> Result<B256> {
-    let bytes = decode_hex_bytes(value)
-        .map_err(|err| anyhow!("failed to parse B256 value {value}: {err}"))?;
-
-    if bytes.len() > B256::len_bytes() {
-        return Err(anyhow!("value {value} exceeds {} bytes", B256::len_bytes()));
-    }
-
-    Ok(B256::left_padding_from(&bytes))
 }
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>> {

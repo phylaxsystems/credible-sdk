@@ -25,6 +25,7 @@ rust-tracing = { workspace = true }
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+state-store = { path = "../state-store", features = ["writer", "reader"] }
 
 [dev-dependencies]
 int-test-utils = { path = "../int-test-utils" }

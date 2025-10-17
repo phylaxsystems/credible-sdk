@@ -11325,6 +11325,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "state-store"
+version = "0.6.2"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "hex",
+ "redis",
+ "serde",
+ "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 2.0.12",
+ "tokio",
+]
+
+[[package]]
 name = "state-worker"
 version = "0.6.2"
 dependencies = [
@@ -11345,6 +11361,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "state-store",
  "testcontainers",
  "testcontainers-modules",
  "tokio",
