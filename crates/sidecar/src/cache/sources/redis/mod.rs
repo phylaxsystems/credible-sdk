@@ -22,7 +22,6 @@ use self::utils::{
 use crate::{
     Source,
     cache::sources::SourceName,
-    critical,
 };
 use alloy::primitives::keccak256;
 use assertion_executor::primitives::{
@@ -181,18 +180,7 @@ impl Source for RedisCache {
         let target_block = self.current_block.load(Ordering::Relaxed);
 
         if !self.sync_status.load(Ordering::Acquire) {
-            match self.backend.latest_block_number() {
-                Ok(Some(observed_block)) => self.update_observed_block(observed_block),
-                Ok(None) => {
-                    self.mark_unsynced();
-                    return false;
-                }
-                Err(error) => {
-                    critical!(error = ?error, "failed to fetch latest block from redis");
-                    self.mark_unsynced();
-                    return false;
-                }
-            }
+            return false;
         }
 
         let observed_block = self.observed_block.load(Ordering::Acquire);
