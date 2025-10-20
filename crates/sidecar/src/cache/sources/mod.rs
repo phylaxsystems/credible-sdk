@@ -1,5 +1,6 @@
 use assertion_executor::db::DatabaseRef;
 use revm::context::DBErrorMarker;
+use state_store::common::error::StateError;
 use std::fmt::{
     Debug,
     Display,
@@ -135,9 +136,16 @@ pub enum SourceError {
     CacheMiss,
     #[error("Request failed")]
     Request(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error("Failed to fetch code by hash from Redis")]
+    RedisCodeByHash(#[source] StateError),
+    #[error("Failed to fetch storage from Redis")]
+    RedisStorage(#[source] StateError),
+    #[error("Failed to fetch account info from Redis")]
+    RedisAccount(#[source] StateError),
+    #[error("Failed to fetch the block hash from Redis")]
+    RedisBlockHash(#[source] StateError),
     #[error("Other error: {0}")]
     Other(String),
-    #[cfg(test)]
     #[error("Storage not found")]
     StorageNotFound,
 }

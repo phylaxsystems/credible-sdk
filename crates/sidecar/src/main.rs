@@ -38,7 +38,6 @@ use sidecar::{
         sources::{
             Source,
             besu_client::BesuClient,
-            redis::RedisClientBackend,
             sequencer::Sequencer,
         },
     },
@@ -57,6 +56,10 @@ use sidecar::{
         },
     },
     utils::ErrorRecoverability,
+};
+use state_store::{
+    CircularBufferConfig,
+    StateReader,
 };
 use tracing::log::info;
 
@@ -112,7 +115,11 @@ async fn main() -> anyhow::Result<()> {
             sources.push(besu_client);
         }
         if let Some(redis_url) = &config.state.redis_url
-            && let Ok(redis_client) = RedisClientBackend::from_url(redis_url)
+            && let Ok(redis_client) = StateReader::new(
+                redis_url,
+                &config.state.redis_namespace,
+                CircularBufferConfig::new(config.state.redis_depth)?,
+            )
         {
             let redis_cache = Arc::new(RedisCache::new(redis_client));
             sources.push(redis_cache);

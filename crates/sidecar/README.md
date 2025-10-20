@@ -297,6 +297,8 @@ The configuration file is a JSON file with the following schema:
       "type": "object",
       "description": "State source configuration",
       "required": [
+        "redis_namespace",
+        "redis_depth",
         "minimum_state_diff",
         "sources_sync_timeout_ms",
         "sources_monitoring_period_ms"
@@ -330,6 +332,27 @@ The configuration file is a JSON file with the following schema:
           "examples": [
             "redis://localhost:6379",
             "redis://redis-service:6379"
+          ]
+        },
+        "redis_namespace": {
+          "type": "string",
+          "description": "Namespace prefix for Redis keys",
+          "minLength": 1,
+          "examples": [
+            "sidecar",
+            "credible",
+            "custom_namespace"
+          ]
+        },
+        "redis_depth": {
+          "type": "integer",
+          "description": "Redis state depth - how many blocks behind head Redis will have the data from",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "examples": [
+            100,
+            250,
+            500
           ]
         },
         "minimum_state_diff": {

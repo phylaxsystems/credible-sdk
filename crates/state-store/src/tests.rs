@@ -591,7 +591,7 @@ async fn test_roundtrip_basic_account_read() -> Result<()> {
         namespace.clone(),
         config.clone(),
     )?;
-    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let address = Address::repeat_byte(0xaa);
 
@@ -635,7 +635,7 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
         namespace.clone(),
         config.clone(),
     )?;
-    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let address = Address::repeat_byte(0xbb);
 
@@ -699,7 +699,7 @@ async fn test_roundtrip_account_with_code() -> Result<()> {
         namespace.clone(),
         config.clone(),
     )?;
-    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let address = Address::repeat_byte(0xcc);
     let code = vec![0x60, 0x80, 0x60, 0x40, 0x52];
@@ -745,7 +745,7 @@ async fn test_roundtrip_circular_buffer_rotation() -> Result<()> {
         namespace.clone(),
         config.clone(),
     )?;
-    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let address = Address::repeat_byte(0xdd);
 
@@ -814,7 +814,7 @@ async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
         namespace.clone(),
         config.clone(),
     )?;
-    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let addr_a = Address::repeat_byte(0xa1);
     let addr_b = Address::repeat_byte(0xb1);
@@ -888,7 +888,7 @@ async fn test_roundtrip_block_metadata() -> Result<()> {
         namespace.clone(),
         config.clone(),
     )?;
-    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let address = Address::repeat_byte(0xee);
 
@@ -961,7 +961,7 @@ async fn test_roundtrip_storage_evolution() -> Result<()> {
         namespace.clone(),
         config.clone(),
     )?;
-    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let address = Address::repeat_byte(0xff);
 
@@ -1033,7 +1033,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
         namespace.clone(),
         config.clone(),
     )?;
-    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     // Block 0: Create 3 accounts in one block
     let update0 = BlockStateUpdate {
