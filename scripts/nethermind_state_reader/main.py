@@ -420,6 +420,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Redis connection URL (e.g. redis://localhost:6379/0). When set, state is mirrored into Redis.",
     )
     parser.add_argument(
+        "--redis-namespace",
+        default="state",
+        help="Prefix used for Redis keys when mirroring state (requires --redis-url).",
+    )
+    parser.add_argument(
         "--redis-pipeline-size",
         type=int,
         default=1000,
@@ -491,9 +496,13 @@ def main(argv: Optional[List[str]] = None) -> None:
                 redis_client = Redis.from_url(args.redis_url)
             except RedisError as exc:
                 raise RuntimeError(f"Failed to connect to Redis at {args.redis_url}: {exc}") from exc
+            namespace = (args.redis_namespace or "state").rstrip(":") or "state"
+
+            def namespaced(*segments: object) -> str:
+                return ":".join((namespace, *(str(segment) for segment in segments)))
             redis_pipeline = redis_client.pipeline(transaction=False)
-            redis_pipeline.set("state:current_block", str(resolved_root.block_number))
-            redis_pipeline.set(f"state:block_hash:{resolved_root.block_number}", block_hash_hex)
+            redis_pipeline.set(namespaced("current_block"), str(resolved_root.block_number))
+            redis_pipeline.set(namespaced("block_hash", str(resolved_root.block_number)), block_hash_hex)
 
         for account in account_iter:
             if args.limit is not None and emitted >= args.limit:
@@ -505,7 +514,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
             if redis_pipeline is not None:
                 address_hex = account["address_hash"]
-                account_key = f"state:account:{address_hex}"
+                account_key = namespaced("account", address_hex)
                 redis_pipeline.hset(
                     account_key,
                     mapping={
@@ -522,7 +531,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         for slot in account.get("storage", [])
                     }
                 if storage_entries:
-                    redis_pipeline.hset(f"state:storage:{address_hex}", mapping=storage_entries)
+                    redis_pipeline.hset(namespaced("storage", address_hex), mapping=storage_entries)
 
                 if code_db is not None:
                     code_hash_hex = account["code_hash"]
@@ -534,7 +543,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         seen_code_hashes.add(code_hash_bytes)
                         code_bytes = code_db.get(code_hash_bytes)
                         if code_bytes:
-                            redis_pipeline.set(f"state:code:{code_hash_hex}", "0x" + code_bytes.hex())
+                            redis_pipeline.set(namespaced("code", code_hash_hex), "0x" + code_bytes.hex())
 
                 if len(redis_pipeline.command_stack) >= args.redis_pipeline_size:
                     redis_pipeline.execute()
