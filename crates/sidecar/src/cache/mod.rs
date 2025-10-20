@@ -407,8 +407,6 @@ mod tests {
             Arc,
             Mutex,
             atomic::{
-                AtomicBool,
-                AtomicU64,
                 AtomicUsize,
                 Ordering,
             },
@@ -574,10 +572,6 @@ mod tests {
     struct RedisTestBackend {
         connection: Mutex<MockRedisConnection>,
         hgetall_calls: Arc<AtomicUsize>,
-        /// Mimics the async refresher cache for tests.
-        current_block: Arc<AtomicU64>,
-        /// Tracks whether the mock cache has been primed with a value.
-        current_block_initialized: Arc<AtomicBool>,
     }
 
     impl fmt::Debug for RedisTestBackend {
@@ -596,8 +590,6 @@ mod tests {
                 Self {
                     connection: Mutex::new(MockRedisConnection::new(commands)),
                     hgetall_calls: calls.clone(),
-                    current_block: Arc::new(AtomicU64::new(0)),
-                    current_block_initialized: Arc::new(AtomicBool::new(false)),
                 },
                 calls,
             )
