@@ -246,6 +246,7 @@ impl CommonSetup {
             10,
             Duration::from_millis(100),
             Duration::from_millis(20),
+            false,
             #[cfg(feature = "cache_validation")]
             Some(&besu_client_http_mock.ws_url()),
         )
