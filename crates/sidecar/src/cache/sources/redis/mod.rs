@@ -9,15 +9,18 @@ pub(crate) mod utils;
 pub use error::RedisCacheError;
 use state_store::StateReader;
 
-use self::utils::{
-    decode_hex,
-    encode_hex,
-    encode_storage_key,
-    encode_u256_hex,
-    parse_b256,
-    parse_u64,
-    parse_u256,
-    to_hex_lower,
+use self::{
+    sync_task::publish_sync_state,
+    utils::{
+        decode_hex,
+        encode_hex,
+        encode_storage_key,
+        encode_u256_hex,
+        parse_b256,
+        parse_u64,
+        parse_u256,
+        to_hex_lower,
+    },
 };
 use crate::{
     Source,
@@ -68,6 +71,7 @@ pub struct RedisCache {
     /// Current block
     current_block: Arc<AtomicU64>,
     observed_block: Arc<AtomicU64>,
+    oldest_block: Arc<AtomicU64>,
     sync_status: Arc<AtomicBool>,
     cancel_token: CancellationToken,
     sync_task: JoinHandle<()>,
@@ -78,12 +82,14 @@ impl RedisCache {
     pub fn new(backend: StateReader) -> Self {
         let current_block = Arc::new(AtomicU64::new(0));
         let observed_block = Arc::new(AtomicU64::new(0));
+        let oldest_block = Arc::new(AtomicU64::new(0));
         let sync_status = Arc::new(AtomicBool::new(false));
         let cancel_token = CancellationToken::new();
         let sync_task = sync_task::spawn_sync_task(
             backend.clone(),
             current_block.clone(),
             observed_block.clone(),
+            oldest_block.clone(),
             sync_status.clone(),
             cancel_token.clone(),
             DEFAULT_SYNC_INTERVAL,
@@ -93,26 +99,34 @@ impl RedisCache {
             backend,
             current_block,
             observed_block,
+            oldest_block,
             sync_status,
             cancel_token,
             sync_task,
         }
     }
 
+    #[allow(dead_code)]
     fn update_observed_block(&self, observed_block: u64) {
-        self.observed_block.store(observed_block, Ordering::Release);
-        let target_block = self.current_block.load(Ordering::Acquire);
-        let within_target = if target_block == 0 {
-            observed_block == 0
-        } else {
-            observed_block <= target_block
-        };
-        self.sync_status.store(within_target, Ordering::Release);
+        publish_sync_state(
+            Some(observed_block),
+            Some(observed_block),
+            &self.current_block,
+            &self.observed_block,
+            &self.oldest_block,
+            &self.sync_status,
+        );
     }
 
     fn mark_unsynced(&self) {
-        self.observed_block.store(0, Ordering::Release);
-        self.sync_status.store(false, Ordering::Release);
+        publish_sync_state(
+            None,
+            None,
+            &self.current_block,
+            &self.observed_block,
+            &self.oldest_block,
+            &self.sync_status,
+        );
     }
 }
 
@@ -184,6 +198,11 @@ impl Source for RedisCache {
         }
 
         let observed_block = self.observed_block.load(Ordering::Acquire);
+        let oldest_block = self.oldest_block.load(Ordering::Acquire);
+        if required_block_number < oldest_block {
+            return false;
+        }
+
         let within_target = if target_block == 0 {
             observed_block == 0
         } else {
