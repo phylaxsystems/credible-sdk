@@ -37,7 +37,7 @@ pub(crate) fn spawn_sync_task(
 
         loop {
             tokio::select! {
-                _ = cancel.cancelled() => break,
+                () = cancel.cancelled() => break,
                 _ = ticker.tick() => {
                     let reader = reader.clone();
                     let latest_block = spawn_blocking(move || reader.latest_block_number()).await;
