@@ -6,7 +6,7 @@
   "credible": {
     "assertion_gas_limit": 3000000,
     "overlay_cache_capacity": 100000,
-    "overlay_cache_invalidation_every_block": true,
+    "overlay_cache_invalidation_every_block": false,
     "cache_capacity_bytes": 256000000,
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://127.0.0.1:5001",
