@@ -45,6 +45,7 @@ console-subscriber = { workspace = true, optional = true }
 tokio-metrics = { workspace = true, optional = true }
 sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
 int-test-utils = { path = "../int-test-utils", optional = true }
+state-store = { path = "../state-store", features = ["reader"] }
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"

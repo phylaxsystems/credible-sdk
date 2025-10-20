@@ -149,6 +149,10 @@ pub struct StateConfig {
     pub besu_client_ws_url: Option<String>,
     /// Redis bind address and port
     pub redis_url: Option<String>,
+    /// Namespace prefix for Redis keys.
+    pub redis_namespace: String,
+    /// Redis state depth (how many blocks behind head Redis will have the data from)
+    pub redis_depth: usize,
     /// Minimum state diff to consider a cache synced
     pub minimum_state_diff: u64,
     /// Maximum time (ms) the engine will wait for a state source to report as  synced before

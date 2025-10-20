@@ -375,7 +375,6 @@ mod tests {
     use crate::cache::sources::{
         Source,
         redis::{
-            RedisBackend,
             RedisCache,
             RedisCacheError,
         },
@@ -624,55 +623,6 @@ mod tests {
         RedisError::from((ErrorKind::IoError, "TEST", message.to_string()))
     }
 
-    impl RedisBackend for RedisTestBackend {
-        fn hgetall(&self, key: &str) -> Result<Option<HashMap<String, String>>, RedisCacheError> {
-            self.hgetall_calls.fetch_add(1, Ordering::Release);
-            let mut connection = self.connection.lock().unwrap();
-            let map: HashMap<String, String> = redis::cmd("HGETALL")
-                .arg(key)
-                .query(&mut *connection)
-                .map_err(RedisCacheError::Backend)?;
-            if map.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(map))
-            }
-        }
-
-        fn hget(&self, key: &str, field: &str) -> Result<Option<String>, RedisCacheError> {
-            let mut connection = self.connection.lock().unwrap();
-            redis::cmd("HGET")
-                .arg(key)
-                .arg(field)
-                .query(&mut *connection)
-                .map_err(RedisCacheError::Backend)
-        }
-
-        fn hset_multiple(
-            &self,
-            _key: &str,
-            _values: &[(String, String)],
-        ) -> Result<(), RedisCacheError> {
-            panic!("unexpected redis hset_multiple command in RedisTestBackend");
-        }
-
-        fn hset(&self, _key: &str, _field: &str, _value: &str) -> Result<(), RedisCacheError> {
-            panic!("unexpected redis hset command in RedisTestBackend");
-        }
-
-        fn get(&self, key: &str) -> Result<Option<String>, RedisCacheError> {
-            let mut connection = self.connection.lock().unwrap();
-            redis::cmd("GET")
-                .arg(key)
-                .query(&mut *connection)
-                .map_err(RedisCacheError::Backend)
-        }
-
-        fn set(&self, _key: &str, _value: &str) -> Result<(), RedisCacheError> {
-            panic!("unexpected redis set command in RedisTestBackend");
-        }
-    }
-
     // Helper functions
     fn create_test_address() -> Address {
         Address::from([1u8; 20])
@@ -837,43 +787,42 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_ref_falls_back_when_redis_backend_errors() {
+    fn test_basic_ref_falls_back_when_first_source_errors() {
         let address = create_test_address();
         let (backend, redis_calls) = RedisTestBackend::for_backend_error(address);
-        let redis_source = Arc::new(RedisCache::new(backend));
+        let first_source = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
 
         let account_info = create_test_account_info();
         let fallback_source = Arc::new(
             MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
         );
 
-        let cache = Cache::new(vec![redis_source, fallback_source.clone()], 10);
+        let cache = Cache::new(vec![first_source.clone(), fallback_source.clone()], 10);
         cache.set_block_number(1);
 
         let result = cache.basic_ref(address).unwrap();
         assert_eq!(result, Some(account_info));
         assert_eq!(fallback_source.basic_ref_call_count(), 1);
-        assert_eq!(redis_calls.load(Ordering::Acquire), 1);
+        assert_eq!(first_source.basic_ref_call_count(), 1);
     }
 
     #[test]
-    fn test_basic_ref_uses_fallback_when_redis_unsynced() {
+    fn test_basic_ref_uses_fallback_when_first_source_unsynced() {
         let address = create_test_address();
-        let (backend, redis_calls) = RedisTestBackend::for_unsynced();
-        let redis_source = Arc::new(RedisCache::new(backend));
+        let first_source =
+            Arc::new(MockSource::new(SourceName::BesuClient).with_cache_miss_for_account());
 
         let account_info = create_test_account_info();
         let fallback_source = Arc::new(
             MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
         );
 
-        let cache = Cache::new(vec![redis_source, fallback_source.clone()], 10);
+        let cache = Cache::new(vec![first_source, fallback_source.clone()], 10);
         cache.set_block_number(15);
 
         let result = cache.basic_ref(address).unwrap();
         assert_eq!(result, Some(account_info));
         assert_eq!(fallback_source.basic_ref_call_count(), 1);
-        assert_eq!(redis_calls.load(Ordering::Acquire), 0);
     }
 
     #[test]

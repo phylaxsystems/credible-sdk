@@ -10949,6 +10949,7 @@ dependencies = [
  "serde_json",
  "sidecar-test-macros",
  "sled",
+ "state-store",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",

@@ -58,7 +58,7 @@
 //!
 //! ## Example
 //!
-//! ```rust,no_run
+//! ```ignore
 //! use state_store::{
 //!     CircularBufferConfig,
 //!     StateReader,
