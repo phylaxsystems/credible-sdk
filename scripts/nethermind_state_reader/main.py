@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Dict, Iterable, Iterator, List, Optional
+from typing import Dict, Iterator, List, Mapping, Optional
 
 import rlp
 from eth_hash.auto import keccak
 from redis import Redis
 from redis.exceptions import RedisError
 from rocksdict import AccessType, Options, Rdict
+from sqlitedict import SqliteDict
 
 EMPTY_TRIE_HASH = bytes.fromhex(
     "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
@@ -122,20 +125,81 @@ def _nibbles_to_bytes(nibbles: List[int]) -> bytes:
     return bytes(out)
 
 
-def _resolve_ref(ref: bytes, nodes: Dict[bytes, bytes]) -> Optional[bytes]:
+def _ensure_bytes(blob: object, *, context: str = "value") -> bytes:
+    if isinstance(blob, bytes):
+        return blob
+    if isinstance(blob, bytearray):
+        return bytes(blob)
+    if isinstance(blob, memoryview):
+        return blob.tobytes()
+    if isinstance(blob, (list, tuple)):
+        return rlp.encode(blob)
+    raise TypeError(f"Expected byte-like {context}, got {type(blob).__name__}")
+
+
+class SqliteNodeStore:
+    """Disk-backed mapping used to cache state trie nodes by hash."""
+
+    def __init__(self, commit_interval: int = 50_000) -> None:
+        fd, path = tempfile.mkstemp(prefix="nethermind_nodes_", suffix=".sqlite3")
+        os.close(fd)
+        self._path = path
+        self._db = SqliteDict(path, autocommit=False)
+        self._commit_interval = commit_interval
+        self._pending = 0
+
+    def __contains__(self, key: bytes) -> bool:
+        return key in self._db
+
+    def __len__(self) -> int:
+        return len(self._db)
+
+    def keys(self):
+        return self._db.keys()
+
+    def get(self, key: bytes, default=None):
+        value = self._db.get(key, default)
+        if value is default:
+            return default
+        return _ensure_bytes(value, context="node payload from sqlite cache")
+
+    def __setitem__(self, key: bytes, value: bytes) -> None:
+        self._db[key] = _ensure_bytes(value, context="node payload to sqlite cache")
+        self._pending += 1
+        if self._pending >= self._commit_interval:
+            self.commit()
+
+    def commit(self) -> None:
+        self._db.commit()
+        self._pending = 0
+
+    def close(self) -> None:
+        try:
+            if self._pending:
+                self.commit()
+        finally:
+            self._db.close()
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                try:
+                    os.remove(self._path + suffix)
+                except FileNotFoundError:
+                    pass
+
+
+def _resolve_ref(ref: bytes, nodes: Mapping[bytes, bytes]) -> Optional[bytes]:
     if len(ref) == 0:
         return None
     if len(ref) == 32:
-        value = nodes.get(ref)
-        if value is None:
+        raw_value = nodes.get(ref)
+        if raw_value is None:
             raise KeyError(f"Missing trie node with hash {ref.hex()}")
-        return value
-    return _decompress(ref)
+        return _decompress(_ensure_bytes(raw_value, context="cached node payload"))
+    return _decompress(_ensure_bytes(ref, context="embedded node payload"))
 
 
-def build_node_index(state_path: str, verify: bool = True, verbose: bool = False) -> Dict[bytes, bytes]:
+def build_node_index(state_path: str, verify: bool = True, verbose: bool = False) -> SqliteNodeStore:
     options = Options(raw_mode=True)
-    nodes: Dict[bytes, bytes] = {}
+    nodes = SqliteNodeStore()
 
     with Rdict(state_path, options=options, access_type=AccessType.read_only()) as db:
         iterator = db.iter()
@@ -145,7 +209,8 @@ def build_node_index(state_path: str, verify: bool = True, verbose: bool = False
 
         while iterator.valid():
             key = iterator.key()
-            value = _decompress(iterator.value())
+            raw_value = iterator.value()
+            value = _decompress(_ensure_bytes(raw_value, context="node payload from RocksDB"))
             node_hash = keccak(value)
 
             if verify:
@@ -161,7 +226,7 @@ def build_node_index(state_path: str, verify: bool = True, verbose: bool = False
                     continue
 
             # keep the latest observation for a hash (pruning may leave duplicates)
-            nodes[node_hash] = value
+            nodes[node_hash] = raw_value
             iterator.next()
             total += 1
 
@@ -171,6 +236,7 @@ def build_node_index(state_path: str, verify: bool = True, verbose: bool = False
                 file=sys.stderr,
             )
 
+    nodes.commit()
     return nodes
 
 
@@ -183,7 +249,7 @@ class ResolvedRoot:
 
 def find_state_root(
     headers_path: str,
-    nodes: Dict[bytes, bytes],
+    nodes: Mapping[bytes, bytes],
     block_number: Optional[int] = None,
     verbose: bool = False,
 ) -> ResolvedRoot:
@@ -237,16 +303,17 @@ def find_state_root(
 
 
 def iter_storage_slots(
-    nodes: Dict[bytes, bytes],
+    nodes: Mapping[bytes, bytes],
     storage_root: bytes,
     limit: Optional[int] = None,
 ) -> Iterator[Dict[str, object]]:
     if storage_root == EMPTY_TRIE_HASH:
         return
 
-    root_bytes = nodes.get(storage_root)
-    if root_bytes is None:
+    root_blob = nodes.get(storage_root)
+    if root_blob is None:
         raise KeyError(f"Storage root {storage_root.hex()} missing from node index")
+    root_bytes = _decompress(_ensure_bytes(root_blob, context="storage root payload"))
 
     produced = 0
 
@@ -302,14 +369,15 @@ def iter_storage_slots(
 
 
 def iter_accounts(
-    nodes: Dict[bytes, bytes],
+    nodes: Mapping[bytes, bytes],
     state_root: bytes,
     include_storage: bool,
     storage_limit: Optional[int],
 ) -> Iterator[Dict[str, object]]:
-    root_bytes = nodes.get(state_root)
-    if root_bytes is None:
+    root_blob = nodes.get(state_root)
+    if root_blob is None:
         raise KeyError(f"State root {state_root.hex()} missing from node index")
+    root_bytes = _decompress(_ensure_bytes(root_blob, context="state root payload"))
 
     def walk(node_bytes: bytes, path: List[int]) -> Iterator[Dict[str, object]]:
         node = rlp.decode(node_bytes)
@@ -452,108 +520,111 @@ def main(argv: Optional[List[str]] = None) -> None:
         verbose=args.verbose,
     )
 
-    resolved_root = find_state_root(
-        headers_path=args.headers_db,
-        nodes=nodes,
-        block_number=args.block_number,
-        verbose=args.verbose,
-    )
-
-    if args.verbose:
-        print(
-            f"[info] extracting accounts from block {resolved_root.block_number}",
-            file=sys.stderr,
+    try:
+        resolved_root = find_state_root(
+            headers_path=args.headers_db,
+            nodes=nodes,
+            block_number=args.block_number,
+            verbose=args.verbose,
         )
 
-    sys.setrecursionlimit(max(10_000, sys.getrecursionlimit()))
+        if args.verbose:
+            print(
+                f"[info] extracting accounts from block {resolved_root.block_number}",
+                file=sys.stderr,
+            )
 
-    account_iter = iter_accounts(
-        nodes=nodes,
-        state_root=resolved_root.state_root,
-        include_storage=args.include_storage,
-        storage_limit=args.storage_limit,
-    )
+        sys.setrecursionlimit(max(10_000, sys.getrecursionlimit()))
 
-    emitted = 0
-    redis_pipeline = None
-    seen_code_hashes: set[bytes] = set()
-    block_hash_hex = "0x" + resolved_root.block_hash.hex()
+        account_iter = iter_accounts(
+            nodes=nodes,
+            state_root=resolved_root.state_root,
+            include_storage=args.include_storage,
+            storage_limit=args.storage_limit,
+        )
 
-    with ExitStack() as stack:
-        output_handle = None
-        if args.json_output:
-            output_handle = sys.stdout
-            if args.output:
-                output_handle = stack.enter_context(open(args.output, "w"))
+        emitted = 0
+        redis_pipeline = None
+        seen_code_hashes: set[bytes] = set()
+        block_hash_hex = "0x" + resolved_root.block_hash.hex()
 
-        code_db: Optional[Rdict] = None
-        if args.code_db:
-            options = Options(raw_mode=True)
-            code_db = stack.enter_context(Rdict(args.code_db, options=options, access_type=AccessType.read_only()))
+        with ExitStack() as stack:
+            output_handle = None
+            if args.json_output:
+                output_handle = sys.stdout
+                if args.output:
+                    output_handle = stack.enter_context(open(args.output, "w"))
 
-        if args.redis_url:
-            try:
-                redis_client = Redis.from_url(args.redis_url)
-            except RedisError as exc:
-                raise RuntimeError(f"Failed to connect to Redis at {args.redis_url}: {exc}") from exc
-            namespace = (args.redis_namespace or "state").rstrip(":") or "state"
+            code_db: Optional[Rdict] = None
+            if args.code_db:
+                options = Options(raw_mode=True)
+                code_db = stack.enter_context(Rdict(args.code_db, options=options, access_type=AccessType.read_only()))
 
-            def namespaced(*segments: object) -> str:
-                return ":".join((namespace, *(str(segment) for segment in segments)))
-            redis_pipeline = redis_client.pipeline(transaction=False)
-            redis_pipeline.set(namespaced("current_block"), str(resolved_root.block_number))
-            redis_pipeline.set(namespaced("block_hash", str(resolved_root.block_number)), block_hash_hex)
+            if args.redis_url:
+                try:
+                    redis_client = Redis.from_url(args.redis_url)
+                except RedisError as exc:
+                    raise RuntimeError(f"Failed to connect to Redis at {args.redis_url}: {exc}") from exc
+                namespace = (args.redis_namespace or "state").rstrip(":") or "state"
 
-        for account in account_iter:
-            if args.limit is not None and emitted >= args.limit:
-                break
+                def namespaced(*segments: object) -> str:
+                    return ":".join((namespace, *(str(segment) for segment in segments)))
+                redis_pipeline = redis_client.pipeline(transaction=False)
+                redis_pipeline.set(namespaced("current_block"), str(resolved_root.block_number))
+                redis_pipeline.set(namespaced("block_hash", str(resolved_root.block_number)), block_hash_hex)
 
-            if output_handle is not None:
-                json.dump(account, output_handle)
-                output_handle.write("\n")
+            for account in account_iter:
+                if args.limit is not None and emitted >= args.limit:
+                    break
 
-            if redis_pipeline is not None:
-                address_hex = account["address_hash"]
-                account_key = namespaced("account", address_hex)
-                redis_pipeline.hset(
-                    account_key,
-                    mapping={
-                        "balance": account["balance"],
-                        "nonce": str(account["nonce"]),
-                        "code_hash": account["code_hash"],
-                    },
-                )
+                if output_handle is not None:
+                    json.dump(account, output_handle)
+                    output_handle.write("\n")
 
-                storage_entries = {}
-                if args.include_storage:
-                    storage_entries = {
-                        slot["slot_hash"]: slot["value"]
-                        for slot in account.get("storage", [])
-                    }
-                if storage_entries:
-                    redis_pipeline.hset(namespaced("storage", address_hex), mapping=storage_entries)
+                if redis_pipeline is not None:
+                    address_hex = account["address_hash"]
+                    account_key = namespaced("account", address_hex)
+                    redis_pipeline.hset(
+                        account_key,
+                        mapping={
+                            "balance": account["balance"],
+                            "nonce": str(account["nonce"]),
+                            "code_hash": account["code_hash"],
+                        },
+                    )
 
-                if code_db is not None:
-                    code_hash_hex = account["code_hash"]
-                    if code_hash_hex.startswith("0x"):
-                        code_hash_bytes = bytes.fromhex(code_hash_hex[2:])
-                    else:
-                        code_hash_bytes = bytes.fromhex(code_hash_hex)
-                    if code_hash_bytes not in seen_code_hashes:
-                        seen_code_hashes.add(code_hash_bytes)
-                        code_bytes = code_db.get(code_hash_bytes)
-                        if code_bytes:
-                            redis_pipeline.set(namespaced("code", code_hash_hex), "0x" + code_bytes.hex())
+                    storage_entries = {}
+                    if args.include_storage:
+                        storage_entries = {
+                            slot["slot_hash"]: slot["value"]
+                            for slot in account.get("storage", [])
+                        }
+                    if storage_entries:
+                        redis_pipeline.hset(namespaced("storage", address_hex), mapping=storage_entries)
 
-                if len(redis_pipeline.command_stack) >= args.redis_pipeline_size:
-                    redis_pipeline.execute()
+                    if code_db is not None:
+                        code_hash_hex = account["code_hash"]
+                        if code_hash_hex.startswith("0x"):
+                            code_hash_bytes = bytes.fromhex(code_hash_hex[2:])
+                        else:
+                            code_hash_bytes = bytes.fromhex(code_hash_hex)
+                        if code_hash_bytes not in seen_code_hashes:
+                            seen_code_hashes.add(code_hash_bytes)
+                            code_bytes = code_db.get(code_hash_bytes)
+                            if code_bytes:
+                                redis_pipeline.set(namespaced("code", code_hash_hex), "0x" + code_bytes.hex())
 
-            emitted += 1
-    if redis_pipeline is not None and redis_pipeline.command_stack:
-        redis_pipeline.execute()
+                    if len(redis_pipeline.command_stack) >= args.redis_pipeline_size:
+                        redis_pipeline.execute()
 
-    if args.verbose:
-        print(f"[info] emitted {emitted} accounts", file=sys.stderr)
+                emitted += 1
+        if redis_pipeline is not None and redis_pipeline.command_stack:
+            redis_pipeline.execute()
+
+        if args.verbose:
+            print(f"[info] emitted {emitted} accounts", file=sys.stderr)
+    finally:
+        nodes.close()
 
 
 if __name__ == "__main__":
