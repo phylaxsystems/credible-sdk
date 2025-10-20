@@ -205,6 +205,8 @@ mod tests {
     "sequencer_url": "http://localhost:8547",
     "besu_client_ws_url": "ws://localhost:8548",
     "redis_url": "redis://localhost:6379",
+    "redis_namespace": "sidecar",
+    "redis_depth": 100,
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -258,9 +260,41 @@ mod tests {
             config.state.redis_url,
             Some("redis://localhost:6379".to_string())
         );
+        assert_eq!(config.state.redis_namespace, "sidecar");
+        assert_eq!(config.state.redis_depth, 100);
         assert_eq!(config.state.minimum_state_diff, 10);
         assert_eq!(config.state.sources_sync_timeout_ms, 30000);
         assert_eq!(config.state.sources_monitoring_period_ms, 1000);
+    }
+
+    #[test]
+    fn test_from_file_not_found() {
+        let result = Config::from_file("/nonexistent/path/config.json");
+
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::ReadError(msg)) => {
+                assert!(msg.contains("Failed to read"));
+            }
+            _ => panic!("Expected ReadError"),
+        }
+    }
+
+    #[test]
+    fn test_from_file_invalid_json() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "this is not valid JSON {{{{").unwrap();
+        temp_file.flush().unwrap();
+
+        let result = Config::from_file(temp_file.path());
+
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::ParseError(msg)) => {
+                assert!(msg.contains("Failed to parse"));
+            }
+            _ => panic!("Expected ParseError"),
+        }
     }
 
     #[test]
@@ -312,6 +346,8 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
+    "redis_namespace": "test",
+    "redis_depth": 50,
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -357,6 +393,8 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
+    "redis_namespace": "sidecar",
+    "redis_depth": 100,
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -397,6 +435,8 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
+    "redis_namespace": "sidecar",
+    "redis_depth": 100,
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000

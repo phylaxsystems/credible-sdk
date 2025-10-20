@@ -114,11 +114,11 @@ async fn main() -> anyhow::Result<()> {
         {
             sources.push(besu_client);
         }
-        if let Some(redis_url) = &args.state.redis_url
+        if let Some(redis_url) = &config.state.redis_url
             && let Ok(redis_client) = StateReader::new(
                 redis_url,
-                &args.state.redis_namespace,
-                CircularBufferConfig::new(args.state.redis_depth)?,
+                &config.state.redis_namespace,
+                CircularBufferConfig::new(config.state.redis_depth)?,
             )
         {
             let redis_cache = Arc::new(RedisCache::new(redis_client));
