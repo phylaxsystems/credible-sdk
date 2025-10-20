@@ -240,6 +240,7 @@ pub struct CoreEngine<DB> {
     state_sources_sync_timeout: Duration,
     check_sources_available: bool,
     sources_monitoring: Arc<monitoring::sources::Sources>,
+    overlay_cache_invalidation_every_block: bool,
     #[cfg(feature = "cache_validation")]
     processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
     #[cfg(feature = "cache_validation")]
@@ -267,6 +268,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         transaction_results_max_capacity: usize,
         state_sources_sync_timeout: Duration,
         source_monitoring_period: Duration,
+        overlay_cache_invalidation_every_block: bool,
         #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
     ) -> Self {
         #[cfg(feature = "cache_validation")]
@@ -301,6 +303,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             state_sources_sync_timeout,
             check_sources_available: true,
             sources_monitoring: monitoring::sources::Sources::new(cache, source_monitoring_period),
+            overlay_cache_invalidation_every_block,
             #[cfg(feature = "cache_validation")]
             processed_transactions,
             #[cfg(feature = "cache_validation")]
@@ -331,6 +334,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_env_transaction_counter: 0,
             state_sources_sync_timeout: Duration::from_millis(100),
             check_sources_available: true,
+            overlay_cache_invalidation_every_block: false,
             #[cfg(feature = "cache_validation")]
             processed_transactions: Arc::new(
                 moka::sync::Cache::builder().max_capacity(100).build(),
@@ -789,7 +793,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     ) -> Result<(), EngineError> {
         let block_env = &queue_block_env.block_env;
 
-        self.check_cache(&queue_block_env);
+        // If it is configured to invalidated the cache every block, do so
+        if self.overlay_cache_invalidation_every_block {
+            self.state.invalidate_all();
+        } else {
+            // If not, check if the cache should be invalidated.
+            self.check_cache(&queue_block_env);
+        }
 
         // Apply the previously executed transaction state changes
         self.apply_state_buffer()?;
@@ -1040,6 +1050,7 @@ mod tests {
             10,
             timeout,
             timeout / 2, // We divide by 2 to ensure we read the cache status before we timeout
+            false,
             #[cfg(feature = "cache_validation")]
             None,
         )

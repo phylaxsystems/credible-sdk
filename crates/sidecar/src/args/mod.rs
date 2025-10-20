@@ -98,6 +98,8 @@ pub struct CredibleConfig {
     pub assertion_gas_limit: u64,
     /// Overlay cache capacity in elements
     pub overlay_cache_capacity: Option<usize>,
+    /// Whether the overlay cache has to be invalidated every block
+    pub overlay_cache_invalidation_every_block: Option<bool>,
     /// Sled cache capacity, used in the `FsDb`, 256mb default
     pub cache_capacity_bytes: Option<usize>,
     /// How often in ms will the `FsDb` be flushed to disk, 5 sec default
@@ -186,6 +188,7 @@ mod tests {
   "credible": {
     "assertion_gas_limit": 30000000,
     "overlay_cache_capacity": 1000,
+    "overlay_cache_invalidation_every_block": true,
     "cache_capacity_bytes": 268435456,
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://localhost:8545",

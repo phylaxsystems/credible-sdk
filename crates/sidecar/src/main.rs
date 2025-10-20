@@ -82,6 +82,7 @@ fn create_transport_from_args(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize the rustls CryptoProvider for HTTPS support
@@ -145,6 +146,10 @@ async fn main() -> anyhow::Result<()> {
             config.credible.transaction_results_max_capacity,
             Duration::from_millis(config.state.sources_sync_timeout_ms),
             Duration::from_millis(config.state.sources_monitoring_period_ms),
+            config
+                .credible
+                .overlay_cache_invalidation_every_block
+                .unwrap_or(false),
             #[cfg(feature = "cache_validation")]
             Some(&config.credible.cache_checker_ws_url),
         )

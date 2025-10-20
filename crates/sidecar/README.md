@@ -155,6 +155,10 @@ The configuration file is a JSON file with the following schema:
             1000
           ]
         },
+        "overlay_cache_invalidation_every_block": {
+          "type": "boolean",
+          "description": "Whether the overlay cache has to be invalidated every block"
+        },
         "cache_capacity_bytes": {
           "type": "integer",
           "description": "Sled cache capacity used in FsDb, in bytes (256MB default)",
@@ -401,6 +405,7 @@ The default configuration can be found in [default_config.json](default_config.j
   "credible": {
     "assertion_gas_limit": 3000000,
     "overlay_cache_capacity": 100000,
+    "overlay_cache_invalidation_every_block": true,
     "cache_capacity_bytes": 256000000,
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://127.0.0.1:5001",
