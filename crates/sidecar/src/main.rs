@@ -31,7 +31,7 @@ use std::{
 use sidecar::{
     args::{
         Config,
-        file::TransportProtocol,
+        TransportProtocol,
     },
     cache::{
         Cache,

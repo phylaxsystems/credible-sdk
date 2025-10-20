@@ -1,6 +1,6 @@
 //! # Configuration for the `GrpcTransport`.
 
-use crate::args::file::TransportConfig;
+use crate::args::TransportConfig;
 use std::net::{
     AddrParseError,
     SocketAddr,

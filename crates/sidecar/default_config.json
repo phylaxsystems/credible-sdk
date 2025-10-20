@@ -1,4 +1,8 @@
 {
+  "chain": {
+    "spec_id": "CANCUN",
+    "chain_id": 1
+  },
   "credible": {
     "assertion_gas_limit": 3000000,
     "overlay_cache_capacity": 100000,

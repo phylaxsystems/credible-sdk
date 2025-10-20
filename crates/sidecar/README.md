@@ -65,11 +65,64 @@ The configuration file is a JSON file with the following schema:
   "description": "Configuration schema for the Credible layer sidecar",
   "type": "object",
   "required": [
+    "chain",
     "credible",
     "transport",
     "state"
   ],
   "properties": {
+    "chain": {
+      "type": "object",
+      "description": "Chain configuration for EVM specification and network",
+      "required": [
+        "spec_id",
+        "chain_id"
+      ],
+      "properties": {
+        "spec_id": {
+          "type": "string",
+          "description": "EVM specification identifier to use for transaction execution",
+          "enum": [
+            "FRONTIER",
+            "FRONTIER_THAWING",
+            "HOMESTEAD",
+            "DAO_FORK",
+            "TANGERINE",
+            "SPURIOUS_DRAGON",
+            "BYZANTIUM",
+            "CONSTANTINOPLE",
+            "PETERSBURG",
+            "ISTANBUL",
+            "MUIR_GLACIER",
+            "BERLIN",
+            "LONDON",
+            "ARROW_GLACIER",
+            "GRAY_GLACIER",
+            "MERGE",
+            "SHANGHAI",
+            "CANCUN",
+            "PRAGUE",
+            "LATEST"
+          ],
+          "examples": [
+            "CANCUN"
+          ]
+        },
+        "chain_id": {
+          "type": "integer",
+          "description": "Chain ID for the network",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "examples": [
+            1,
+            11155111,
+            137,
+            42161
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "credible": {
       "type": "object",
       "description": "Credible execution engine configuration",
@@ -318,6 +371,10 @@ The default configuration can be found in [default_config.json](default_config.j
 
 ```json
 {
+  "chain": {
+    "spec_id": "CANCUN",
+    "chain_id": 1
+  },
   "credible": {
     "assertion_gas_limit": 3000000,
     "overlay_cache_capacity": 100000,
