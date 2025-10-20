@@ -28,11 +28,10 @@ use std::{
     time::Duration,
 };
 
-use clap::Parser;
 use sidecar::{
     args::{
-        SidecarArgs,
-        TransportProtocolArg,
+        Config,
+        TransportProtocol,
     },
     cache::{
         Cache,
@@ -62,18 +61,18 @@ use sidecar::{
 use tracing::log::info;
 
 fn create_transport_from_args(
-    args: &SidecarArgs,
+    config: &Config,
     tx_sender: TransactionQueueSender,
     state_results: Arc<TransactionsState>,
 ) -> anyhow::Result<AnyTransport> {
-    match args.transport_protocol {
-        TransportProtocolArg::Http => {
-            let cfg = HttpTransportConfig::try_from(args.transport.clone())?;
+    match config.transport.protocol {
+        TransportProtocol::Http => {
+            let cfg = HttpTransportConfig::try_from(config.transport.clone())?;
             let t = HttpTransport::new(cfg, tx_sender, state_results)?;
             Ok(AnyTransport::Http(t))
         }
-        TransportProtocolArg::Grpc => {
-            let cfg = GrpcTransportConfig::try_from(args.transport.clone())?;
+        TransportProtocol::Grpc => {
+            let cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
             let t = GrpcTransport::new(cfg, tx_sender, state_results)?;
             Ok(AnyTransport::Grpc(t))
         }
@@ -89,11 +88,12 @@ async fn main() -> anyhow::Result<()> {
 
     let _guard = rust_tracing::trace();
 
-    let args = SidecarArgs::parse();
-    info!("Starting sidecar with args: {args:?}");
+    let config = Config::load()?;
 
-    let executor_config = init_executor_config(&args);
-    let assertion_store = init_assertion_store(&args)?;
+    info!("Starting sidecar with config: {config:?}");
+
+    let executor_config = init_executor_config(&config);
+    let assertion_store = init_assertion_store(&config)?;
     let assertion_executor =
         AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
 
@@ -101,17 +101,17 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         let mut sources: Vec<Arc<dyn Source>> = vec![];
-        if let Some(sequencer_url) = &args.state.sequencer_url
+        if let Some(sequencer_url) = &config.state.sequencer_url
             && let Ok(sequencer) = Sequencer::try_new(sequencer_url).await
         {
             sources.push(Arc::new(sequencer));
         }
-        if let Some(besu_client_url) = &args.state.besu_client_ws_url
+        if let Some(besu_client_url) = &config.state.besu_client_ws_url
             && let Ok(besu_client) = BesuClient::try_build(besu_client_url).await
         {
             sources.push(besu_client);
         }
-        if let Some(redis_url) = &args.state.redis_url
+        if let Some(redis_url) = &config.state.redis_url
             && let Ok(redis_client) = RedisClientBackend::from_url(redis_url)
         {
             let redis_cache = Arc::new(RedisCache::new(redis_client));
@@ -119,15 +119,15 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // The cache is flushed on restart
-        let cache = Arc::new(Cache::new(sources, args.state.minimum_state_diff));
+        let cache = Arc::new(Cache::new(sources, config.state.minimum_state_diff));
         let state: OverlayDb<Cache> = OverlayDb::new(
             Some(cache.clone()),
-            args.credible.overlay_cache_capacity.unwrap_or(100_000) as u64,
+            config.credible.overlay_cache_capacity.unwrap_or(100_000) as u64,
         );
 
         let (tx_sender, tx_receiver) = unbounded();
         let mut transport =
-            create_transport_from_args(&args, tx_sender, engine_state_results.clone())?;
+            create_transport_from_args(&config, tx_sender, engine_state_results.clone())?;
 
         let mut engine = CoreEngine::new(
             state,
@@ -135,16 +135,16 @@ async fn main() -> anyhow::Result<()> {
             tx_receiver,
             assertion_executor.clone(),
             engine_state_results.clone(),
-            args.credible.transaction_results_max_capacity,
-            Duration::from_millis(args.state.sources_sync_timeout_ms),
-            Duration::from_millis(args.state.sources_monitoring_period_ms),
+            config.credible.transaction_results_max_capacity,
+            Duration::from_millis(config.state.sources_sync_timeout_ms),
+            Duration::from_millis(config.state.sources_monitoring_period_ms),
             #[cfg(feature = "cache_validation")]
-            Some(&args.credible.cache_checker_ws_url),
+            Some(&config.credible.cache_checker_ws_url),
         )
         .await;
 
         let indexer_cfg =
-            init_indexer_config(&args, assertion_store.clone(), &executor_config).await?;
+            init_indexer_config(&config, assertion_store.clone(), &executor_config).await?;
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
