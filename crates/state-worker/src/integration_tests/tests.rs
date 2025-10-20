@@ -3,10 +3,6 @@ use crate::{
     connect_provider,
     genesis,
     integration_tests::setup::LocalInstance,
-    redis::{
-        CircularBufferConfig,
-        RedisStateWriter,
-    },
     worker::StateWorker,
 };
 use alloy::primitives::{
@@ -17,6 +13,10 @@ use alloy::primitives::{
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use redis::Commands;
 use serde_json::json;
+use state_store::{
+    CircularBufferConfig,
+    StateWriter,
+};
 use std::time::Duration;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
@@ -757,7 +757,7 @@ async fn test_restart_continues_from_last_block() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = RedisStateWriter::new(
+        let redis = StateWriter::new(
             &redis_url,
             "restart_test".to_string(),
             CircularBufferConfig::new(3).unwrap(),
@@ -812,7 +812,7 @@ async fn test_restart_continues_from_last_block() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = RedisStateWriter::new(
+        let redis = StateWriter::new(
             &redis_url,
             "restart_test".to_string(),
             CircularBufferConfig::new(3).unwrap(),
@@ -820,7 +820,7 @@ async fn test_restart_continues_from_last_block() {
         .unwrap();
 
         // Verify it starts from the correct block
-        let start_block = redis.latest_block_number().await.unwrap();
+        let start_block = redis.latest_block_number().unwrap();
         assert_eq!(start_block, Some(3), "Should resume from block 3");
 
         let mut worker = StateWorker::new(provider, redis.clone(), None);
@@ -907,7 +907,7 @@ async fn test_restart_with_buffer_wrap_applies_diffs() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = RedisStateWriter::new(
+        let redis = StateWriter::new(
             &redis_url,
             "wrap_test".to_string(),
             CircularBufferConfig::new(3).unwrap(),
@@ -965,7 +965,7 @@ async fn test_restart_with_buffer_wrap_applies_diffs() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = RedisStateWriter::new(
+        let redis = StateWriter::new(
             &redis_url,
             "wrap_test".to_string(),
             CircularBufferConfig::new(3).unwrap(),
@@ -1047,7 +1047,7 @@ async fn test_restart_after_mid_block_crash() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = RedisStateWriter::new(
+        let redis = StateWriter::new(
             &redis_url,
             "crash_test".to_string(),
             CircularBufferConfig::new(3).unwrap(),
@@ -1094,7 +1094,7 @@ async fn test_restart_after_mid_block_crash() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = RedisStateWriter::new(
+        let redis = StateWriter::new(
             &redis_url,
             "crash_test".to_string(),
             CircularBufferConfig::new(3).unwrap(),
@@ -1102,7 +1102,7 @@ async fn test_restart_after_mid_block_crash() {
         .unwrap();
 
         // Verify it detects the correct resume point
-        let start_block = redis.latest_block_number().await.unwrap();
+        let start_block = redis.latest_block_number().unwrap();
         assert_eq!(start_block, Some(2), "Should detect last completed block");
 
         let mut worker = StateWorker::new(provider, redis, None);
