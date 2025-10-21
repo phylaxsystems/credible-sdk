@@ -152,9 +152,9 @@ pub struct StateConfig {
     /// Redis bind address and port
     pub redis_url: Option<String>,
     /// Namespace prefix for Redis keys.
-    pub redis_namespace: String,
+    pub redis_namespace: Option<String>,
     /// Redis state depth (how many blocks behind head Redis will have the data from)
-    pub redis_depth: usize,
+    pub redis_depth: Option<usize>,
     /// Minimum state diff to consider a cache synced
     pub minimum_state_diff: u64,
     /// Maximum time (ms) the engine will wait for a state source to report as  synced before
@@ -263,8 +263,8 @@ mod tests {
             config.state.redis_url,
             Some("redis://localhost:6379".to_string())
         );
-        assert_eq!(config.state.redis_namespace, "sidecar");
-        assert_eq!(config.state.redis_depth, 100);
+        assert_eq!(config.state.redis_namespace, Some("sidecar".to_string()));
+        assert_eq!(config.state.redis_depth, Some(100));
         assert_eq!(config.state.minimum_state_diff, 10);
         assert_eq!(config.state.sources_sync_timeout_ms, 30000);
         assert_eq!(config.state.sources_monitoring_period_ms, 1000);
@@ -438,8 +438,6 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
-    "redis_namespace": "sidecar",
-    "redis_depth": 100,
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
