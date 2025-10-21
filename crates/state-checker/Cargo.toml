@@ -1,0 +1,23 @@
+[package]
+name = "state-checker"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+alloy = { workspace = true }
+alloy-trie = "0.9.1"
+anyhow = { workspace = true }
+clap = { workspace = true }
+revm = { workspace = true }
+rust-tracing = { workspace = true }
+tracing = { workspace = true }
+alloy-transport-ws = { workspace = true }
+alloy-rpc-types = { workspace = true }
+state-store = { path = "../state-store", features = ["writer"] }
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
+tokio = { workspace = true }
+hex = { workspace = true }
+log = "0.4.27"

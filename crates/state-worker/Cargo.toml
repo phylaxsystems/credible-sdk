@@ -11,12 +11,9 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 redis = { workspace = true }
 alloy = { workspace = true }
 alloy-provider = { workspace = true }
-alloy-transport-ws = { workspace = true }
-alloy-rpc-types = { workspace = true }
 alloy-rpc-types-trace = { workspace = true }
 futures = { workspace = true }
 revm = { workspace = true }
@@ -25,13 +22,12 @@ rust-tracing = { workspace = true }
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-state-store = { path = "../state-store", features = ["writer", "reader"] }
+state-store = { path = "../state-store", features = ["writer"] }
 
 [dev-dependencies]
 int-test-utils = { path = "../int-test-utils" }
 serde_json = { workspace = true }
 tracing-test = "0.2.5"
-bytes = "1.6.0"
 testcontainers = "0.25.0"
 testcontainers-modules = { version = "0.13.0", features = ["redis"] }
 

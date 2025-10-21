@@ -4,6 +4,7 @@ use crate::{
     CircularBufferConfig,
     common::{
         AccountState,
+        AddressHash,
         BlockMetadata,
         RedisStateClient,
         decode_b256,
@@ -15,6 +16,7 @@ use crate::{
             StateResult,
         },
         get_account_key,
+        get_all_accounts_patter,
         get_block_hash_key,
         get_code_key,
         get_namespace_for_block,
@@ -25,7 +27,6 @@ use crate::{
     },
 };
 use alloy::primitives::{
-    Address,
     B256,
     U256,
 };
@@ -63,53 +64,73 @@ impl StateReader {
     /// Optimized to fetch everything in a single Redis roundtrip.
     pub fn get_account(
         &self,
-        address: &Address,
+        address_hash: AddressHash,
         block_number: u64,
     ) -> StateResult<Option<AccountState>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
-        let address = *address;
 
         self.client.with_connection(move |conn| {
-            get_account_at_block(conn, &base_namespace, buffer_size, &address, block_number)
+            get_account_at_block(
+                conn,
+                &base_namespace,
+                buffer_size,
+                &address_hash,
+                block_number,
+            )
         })
     }
 
     /// Get a specific storage slot for an account at a block.
     pub fn get_storage(
         &self,
-        address: &Address,
+        address_hash: AddressHash,
         slot: U256,
         block_number: u64,
     ) -> StateResult<Option<U256>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
-        let address = *address;
 
         self.client.with_connection(move |conn| {
             get_storage_at_block(
                 conn,
                 &base_namespace,
                 buffer_size,
-                &address,
+                &address_hash,
                 slot,
                 block_number,
             )
         })
     }
 
+    /// Scan all account hashes (keccak of addresses) in a namespace for a specific block.
+    /// Returns a list of all keccak(address) hashes that have account data stored.
+    pub fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        self.client.with_connection(move |conn| {
+            scan_account_hashes_at_block(conn, &base_namespace, buffer_size, block_number)
+        })
+    }
+
     /// Get all storage slots for an account at a block.
     pub fn get_all_storage(
         &self,
-        address: &Address,
+        address_hash: AddressHash,
         block_number: u64,
     ) -> StateResult<HashMap<U256, B256>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
-        let address = *address;
 
         self.client.with_connection(move |conn| {
-            get_all_storage_at_block(conn, &base_namespace, buffer_size, &address, block_number)
+            get_all_storage_at_block(
+                conn,
+                &base_namespace,
+                buffer_size,
+                &address_hash,
+                block_number,
+            )
         })
     }
 
@@ -212,7 +233,7 @@ fn get_account_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
-    address: &Address,
+    address_hash: &AddressHash,
     block_number: u64,
 ) -> StateResult<Option<AccountState>>
 where
@@ -225,9 +246,8 @@ where
         return Err(StateError::BlockNotFound { block_number });
     }
 
-    let address_hex = hex::encode(address.as_slice());
-    let account_key = get_account_key(&namespace, &address_hex);
-    let storage_key = get_storage_key(&namespace, &address_hex);
+    let account_key = get_account_key(&namespace, address_hash);
+    let storage_key = get_storage_key(&namespace, address_hash);
 
     // Pipeline all reads together for single roundtrip
     let mut pipe = Pipeline::new();
@@ -280,7 +300,7 @@ where
         .map_err(|e| StateError::ParseInt(nonce.clone(), e))?;
 
     Ok(Some(AccountState {
-        address: *address,
+        address_hash: address_hash.clone(),
         balance: balance_parsed,
         nonce: nonce_parsed,
         code_hash: code_hash_decoded,
@@ -295,7 +315,7 @@ fn get_storage_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
-    address: &Address,
+    address_hash: &AddressHash,
     slot: U256,
     block_number: u64,
 ) -> StateResult<Option<U256>>
@@ -309,8 +329,7 @@ where
         return Err(StateError::BlockNotFound { block_number });
     }
 
-    let address_hex = hex::encode(address.as_slice());
-    let storage_key = get_storage_key(&namespace, &address_hex);
+    let storage_key = get_storage_key(&namespace, address_hash);
     let slot_hex = encode_u256(slot);
 
     let value: Option<String> = redis::cmd("HGET")
@@ -326,7 +345,7 @@ fn get_all_storage_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
-    address: &Address,
+    address_hash: &AddressHash,
     block_number: u64,
 ) -> StateResult<HashMap<U256, B256>>
 where
@@ -339,8 +358,7 @@ where
         return Err(StateError::BlockNotFound { block_number });
     }
 
-    let address_hex = hex::encode(address.as_slice());
-    let storage_key = get_storage_key(&namespace, &address_hex);
+    let storage_key = get_storage_key(&namespace, address_hash);
 
     let fields: HashMap<String, String> = redis::cmd("HGETALL").arg(&storage_key).query(conn)?;
 
@@ -378,6 +396,67 @@ where
     let value: Option<String> = redis::cmd("GET").arg(&code_key).query(conn)?;
 
     value.map(|v| decode_bytes(&v)).transpose()
+}
+
+/// Scan all account hashes at a specific block.
+/// Keys are stored as: namespace:account:KECCAK(ADDRESS)_HEX
+fn scan_account_hashes_at_block<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    buffer_size: usize,
+    block_number: u64,
+) -> StateResult<Vec<AddressHash>>
+where
+    C: redis::ConnectionLike,
+{
+    let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
+
+    // Verify the namespace contains the requested block
+    let namespace_block = read_namespace_block_number(conn, &namespace)?;
+    if namespace_block != Some(block_number) {
+        return Err(StateError::BlockNotFound { block_number });
+    }
+
+    // Scan for all account keys in this namespace
+    // Keys are: namespace:account:KECCAK_HEX
+    let pattern = get_all_accounts_patter(&namespace);
+    let mut cursor = 0u64;
+    let mut hashes = Vec::new();
+
+    loop {
+        let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(100)
+            .query(conn)?;
+
+        // Extract the keccak hash from each key
+        for key in keys {
+            // Key format: "namespace:account:KECCAK_HEX"
+            if let Some(hash_hex) = key.strip_prefix(&format!("{namespace}:account:")) {
+                // Remove 0x prefix if present
+                let hash_hex = hash_hex.strip_prefix("0x").unwrap_or(hash_hex);
+
+                let bytes = hex::decode(hash_hex)
+                    .map_err(|e| StateError::HexDecode(hash_hex.to_string(), e))?;
+
+                if bytes.len() == 32 {
+                    hashes.push(B256::from_slice(&bytes).into());
+                } else {
+                    return Err(StateError::InvalidB256Length(bytes.len()));
+                }
+            }
+        }
+
+        cursor = new_cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    Ok(hashes)
 }
 
 /// Get block hash (shared across namespaces).

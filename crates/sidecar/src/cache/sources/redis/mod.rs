@@ -40,6 +40,7 @@ use crate::{
     cache::sources::SourceName,
     critical,
 };
+use alloy::primitives::keccak256;
 use assertion_executor::primitives::{
     AccountInfo,
     Address,
@@ -96,7 +97,7 @@ impl DatabaseRef for RedisCache {
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let Some(account) = self
             .backend
-            .get_account(&address, self.current_block.load(Ordering::Relaxed))
+            .get_account(address.into(), self.current_block.load(Ordering::Relaxed))
             .map_err(Self::Error::RedisAccount)?
         else {
             return Ok(None);
@@ -135,7 +136,11 @@ impl DatabaseRef for RedisCache {
         index: StorageKey,
     ) -> Result<StorageValue, Self::Error> {
         self.backend
-            .get_storage(&address, index, self.current_block.load(Ordering::Relaxed))
+            .get_storage(
+                address.into(),
+                index,
+                self.current_block.load(Ordering::Relaxed),
+            )
             .map_err(Self::Error::RedisStorage)?
             .ok_or(Self::Error::StorageNotFound)
     }
