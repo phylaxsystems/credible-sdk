@@ -32,7 +32,12 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let provider = connect_provider(&args.ws_url).await?;
-    let mut listener = Listener::new(provider, &args.sidecar_url, args.request_timeout_seconds);
+    let mut listener = Listener::new(
+        provider,
+        &args.sidecar_url,
+        args.request_timeout_seconds,
+        args.starting_block,
+    );
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
