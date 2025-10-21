@@ -79,6 +79,7 @@ pub struct Listener {
     sidecar_client: Client,
     sidecar_url: String,
     skip_txs: bool,
+    last_processed_block: Option<u64>,
 }
 
 impl Listener {
@@ -101,6 +102,7 @@ impl Listener {
             sidecar_url: sidecar_url.to_string(),
             // If we set `skip_txs` to true, we enforce sending first the BlockEnv to the sidecar
             skip_txs: true,
+            last_processed_block: None,
         }
     }
 
@@ -119,9 +121,74 @@ impl Listener {
         }
     }
 
+    /// Catch up on any missed blocks by fetching them via RPC
+    async fn catch_up_missed_blocks(&mut self) -> Result<()> {
+        // Get the current head block
+        let current_block = self
+            .provider
+            .get_block_number()
+            .await
+            .context("failed to get current block number")?;
+
+        if let Some(last_processed) = self.last_processed_block {
+            // If we've processed blocks before and there's a gap, catch up
+            if current_block > last_processed {
+                let missed_count = current_block - last_processed;
+                info!(
+                    "Catching up on {} missed blocks (from {} to {})",
+                    missed_count,
+                    last_processed + 1,
+                    current_block
+                );
+
+                // Fetch and process each missed block
+                for block_num in (last_processed + 1)..=current_block {
+                    match self.provider.get_block_by_number(block_num.into()).await {
+                        Ok(Some(block)) => {
+                            info!("Catching up: processing block {block_num}");
+                            if let Err(e) = self.process_block(&block).await {
+                                error!(error = ?e, "Failed to process missed block {block_num}");
+                                // Don't update last_processed_block if we failed
+                                return Err(e);
+                            }
+                            self.last_processed_block = Some(block_num);
+                        }
+                        Ok(None) => {
+                            warn!("Block {} not found during catch-up", block_num);
+                            // Block might not be available yet, we'll retry on next reconnection
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            error!(
+                                error = ?e,
+                                "Failed to fetch block {block_num} during catch-up",
+                            );
+                            return Err(e.into());
+                        }
+                    }
+                }
+
+                info!("Catch-up complete, now at block {current_block}");
+            } else {
+                debug!("No missed blocks to catch up on");
+            }
+        } else {
+            // First time running, start from current block
+            info!("Starting from current block {current_block}");
+            self.last_processed_block = Some(current_block);
+        }
+
+        Ok(())
+    }
+
     /// Follow the `newHeads` stream and process new blocks in order, tolerating
     /// duplicate/stale headers after reconnects.
     async fn stream_blocks(&mut self) -> Result<()> {
+        // First, catch up on any missed blocks
+        self.catch_up_missed_blocks()
+            .await
+            .context("failed to catch up on missed blocks")?;
+
         let subscription = self.provider.subscribe_full_blocks().full();
         let mut stream = subscription.into_stream().await?;
 
@@ -133,54 +200,78 @@ impl Listener {
             } = block.header;
             let block_number = inner.number;
 
+            // Skip if we've already processed this block (can happen during reconnection)
+            if let Some(last_processed) = self.last_processed_block
+                && block_number <= last_processed
+            {
+                debug!("Skipping already processed block {}", block_number);
+                continue;
+            }
+
             info!("Processing block {}", block_number);
-            // Extract transactions from the block (already included when using .full())
-            let transactions = match &block.transactions {
-                alloy::rpc::types::BlockTransactions::Full(txs) => txs.clone(),
-                alloy::rpc::types::BlockTransactions::Hashes(_) => {
-                    // This shouldn't happen when using .full(), but handle it just in case
-                    warn!("Got hashes instead of full transactions despite using .full()");
-                    Vec::new()
-                }
-                alloy::rpc::types::BlockTransactions::Uncle => Vec::new(),
-            };
 
-            debug!(
-                "Block {} has {} transactions",
-                block_number,
-                transactions.len()
-            );
-
-            // We need to skip sending the transactions if the previous BlockEnv failed / was rejected by the sidecar
-            if !self.skip_txs {
-                // Send each transaction to sidecar
-                for (index, tx) in transactions.iter().enumerate() {
-                    if let Err(e) = self.send_transaction(tx, index as u64).await {
-                        self.skip_txs = true;
-                        error!(
-                            "Failed to send transaction {} in block {}: {:?}",
-                            index, block_number, e
-                        );
-                        // Stop processing this block
-                        break;
-                    }
-                }
+            if let Err(e) = self.process_block(&block).await {
+                error!("Failed to process block {}: {:?}", block_number, e);
+                // Return error to trigger reconnection and catch-up
+                return Err(e);
             }
 
-            // Send block environment to sidecar
-            if let Err(e) = self.send_block_env(&block, transactions.len()).await {
-                // If there is an error sending the BlockEnv, we skip sending the transactions in the next batch
-                self.skip_txs = true;
-                error!(
-                    "Failed to send block env for block {}: {:?}",
-                    block_number, e
-                );
-            } else {
-                self.skip_txs = false;
-            }
+            // Update last processed block number after successful processing
+            self.last_processed_block = Some(block_number);
         }
 
         Err(anyhow!("block subscription completed"))
+    }
+
+    /// Process a single block: extract transactions, send them, and send block env
+    async fn process_block(&mut self, block: &alloy::rpc::types::Block) -> Result<()> {
+        let block_number = block.header.number;
+
+        // Extract transactions from the block
+        let transactions = match &block.transactions {
+            alloy::rpc::types::BlockTransactions::Full(txs) => txs.clone(),
+            alloy::rpc::types::BlockTransactions::Hashes(_) => {
+                warn!("Got hashes instead of full transactions despite using .full()");
+                Vec::new()
+            }
+            alloy::rpc::types::BlockTransactions::Uncle => Vec::new(),
+        };
+
+        debug!(
+            "Block {} has {} transactions",
+            block_number,
+            transactions.len()
+        );
+
+        // We need to skip sending the transactions if the previous BlockEnv failed / was rejected by the sidecar
+        if !self.skip_txs {
+            // Send each transaction to sidecar
+            for (index, tx) in transactions.iter().enumerate() {
+                if let Err(e) = self.send_transaction(tx, index as u64).await {
+                    self.skip_txs = true;
+                    error!(
+                        "Failed to send transaction {} in block {}: {:?}",
+                        index, block_number, e
+                    );
+                    // Stop processing this block and return error
+                    return Err(e);
+                }
+            }
+        }
+
+        // Send block environment to sidecar
+        if let Err(e) = self.send_block_env(block, transactions.len()).await {
+            // If there is an error sending the BlockEnv, we skip sending the transactions in the next batch
+            self.skip_txs = true;
+            error!(
+                "Failed to send block env for block {}: {:?}",
+                block_number, e
+            );
+            return Err(e);
+        }
+        self.skip_txs = false;
+
+        Ok(())
     }
 
     /// Send block environment to the sidecar
