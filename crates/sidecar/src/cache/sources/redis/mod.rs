@@ -97,10 +97,7 @@ impl DatabaseRef for RedisCache {
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let Some(account) = self
             .backend
-            .get_account(
-                keccak256(address),
-                self.current_block.load(Ordering::Relaxed),
-            )
+            .get_account(address.into(), self.current_block.load(Ordering::Relaxed))
             .map_err(Self::Error::RedisAccount)?
         else {
             return Ok(None);
@@ -140,7 +137,7 @@ impl DatabaseRef for RedisCache {
     ) -> Result<StorageValue, Self::Error> {
         self.backend
             .get_storage(
-                keccak256(address),
+                address.into(),
                 index,
                 self.current_block.load(Ordering::Relaxed),
             )

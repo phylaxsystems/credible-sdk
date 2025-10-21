@@ -225,7 +225,6 @@ mod tests {
     use alloy::primitives::{
         Address,
         U256,
-        keccak256,
     };
 
     #[test]
@@ -235,7 +234,7 @@ mod tests {
             block_hash: B256::from([1u8; 32]),
             state_root: B256::from([2u8; 32]),
             accounts: vec![AccountState {
-                address: keccak256(Address::from([3u8; 20])),
+                address: Address::from([3u8; 20]).into(),
                 balance: U256::from(1000u64),
                 nonce: 5,
                 code_hash: B256::from([4u8; 32]),

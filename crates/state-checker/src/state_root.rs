@@ -187,7 +187,7 @@ impl StateRootCalculator {
             // Read a single account from Redis
             let account_data = self
                 .reader
-                .get_account(*address_hash, block_number)
+                .get_account(address_hash.clone(), block_number)
                 .context(format!("Failed to read account {address_hash:?}"))?;
 
             if let Some(data) = account_data {
@@ -207,7 +207,7 @@ impl StateRootCalculator {
                 let account_rlp = account.rlp_encode();
 
                 // Add to state trie
-                let nibbles = Nibbles::unpack(*address_hash);
+                let nibbles = Nibbles::unpack(address_hash.clone());
                 hash_builder.add_leaf(nibbles, &account_rlp);
             }
         }

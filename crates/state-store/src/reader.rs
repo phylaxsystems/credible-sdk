@@ -4,6 +4,7 @@ use crate::{
     CircularBufferConfig,
     common::{
         AccountState,
+        AddressHash,
         BlockMetadata,
         RedisStateClient,
         decode_b256,
@@ -63,7 +64,7 @@ impl StateReader {
     /// Optimized to fetch everything in a single Redis roundtrip.
     pub fn get_account(
         &self,
-        hashed_address: B256,
+        address_hash: AddressHash,
         block_number: u64,
     ) -> StateResult<Option<AccountState>> {
         let base_namespace = self.client.base_namespace.clone();
@@ -74,7 +75,7 @@ impl StateReader {
                 conn,
                 &base_namespace,
                 buffer_size,
-                &hashed_address,
+                &address_hash,
                 block_number,
             )
         })
@@ -83,7 +84,7 @@ impl StateReader {
     /// Get a specific storage slot for an account at a block.
     pub fn get_storage(
         &self,
-        address: B256,
+        address_hash: AddressHash,
         slot: U256,
         block_number: u64,
     ) -> StateResult<Option<U256>> {
@@ -95,7 +96,7 @@ impl StateReader {
                 conn,
                 &base_namespace,
                 buffer_size,
-                &address,
+                &address_hash,
                 slot,
                 block_number,
             )
@@ -104,7 +105,7 @@ impl StateReader {
 
     /// Scan all account hashes (keccak of addresses) in a namespace for a specific block.
     /// Returns a list of all keccak(address) hashes that have account data stored.
-    pub fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<B256>> {
+    pub fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
 
@@ -116,14 +117,20 @@ impl StateReader {
     /// Get all storage slots for an account at a block.
     pub fn get_all_storage(
         &self,
-        address: B256,
+        address_hash: AddressHash,
         block_number: u64,
     ) -> StateResult<HashMap<U256, B256>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
 
         self.client.with_connection(move |conn| {
-            get_all_storage_at_block(conn, &base_namespace, buffer_size, &address, block_number)
+            get_all_storage_at_block(
+                conn,
+                &base_namespace,
+                buffer_size,
+                &address_hash,
+                block_number,
+            )
         })
     }
 
@@ -226,7 +233,7 @@ fn get_account_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
-    hashed_address: &B256,
+    address_hash: &AddressHash,
     block_number: u64,
 ) -> StateResult<Option<AccountState>>
 where
@@ -239,8 +246,8 @@ where
         return Err(StateError::BlockNotFound { block_number });
     }
 
-    let account_key = get_account_key(&namespace, hashed_address);
-    let storage_key = get_storage_key(&namespace, hashed_address);
+    let account_key = get_account_key(&namespace, address_hash);
+    let storage_key = get_storage_key(&namespace, address_hash);
 
     // Pipeline all reads together for single roundtrip
     let mut pipe = Pipeline::new();
@@ -293,7 +300,7 @@ where
         .map_err(|e| StateError::ParseInt(nonce.clone(), e))?;
 
     Ok(Some(AccountState {
-        address: *hashed_address,
+        address: address_hash.clone(),
         balance: balance_parsed,
         nonce: nonce_parsed,
         code_hash: code_hash_decoded,
@@ -308,7 +315,7 @@ fn get_storage_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
-    hashed_address: &B256,
+    address_hash: &AddressHash,
     slot: U256,
     block_number: u64,
 ) -> StateResult<Option<U256>>
@@ -322,7 +329,7 @@ where
         return Err(StateError::BlockNotFound { block_number });
     }
 
-    let storage_key = get_storage_key(&namespace, hashed_address);
+    let storage_key = get_storage_key(&namespace, address_hash);
     let slot_hex = encode_u256(slot);
 
     let value: Option<String> = redis::cmd("HGET")
@@ -338,7 +345,7 @@ fn get_all_storage_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
-    address: &B256,
+    address_hash: &AddressHash,
     block_number: u64,
 ) -> StateResult<HashMap<U256, B256>>
 where
@@ -351,7 +358,7 @@ where
         return Err(StateError::BlockNotFound { block_number });
     }
 
-    let storage_key = get_storage_key(&namespace, address);
+    let storage_key = get_storage_key(&namespace, address_hash);
 
     let fields: HashMap<String, String> = redis::cmd("HGETALL").arg(&storage_key).query(conn)?;
 
@@ -398,7 +405,7 @@ fn scan_account_hashes_at_block<C>(
     base_namespace: &str,
     buffer_size: usize,
     block_number: u64,
-) -> StateResult<Vec<B256>>
+) -> StateResult<Vec<AddressHash>>
 where
     C: redis::ConnectionLike,
 {
@@ -436,7 +443,7 @@ where
                     .map_err(|e| StateError::HexDecode(hash_hex.to_string(), e))?;
 
                 if bytes.len() == 32 {
-                    hashes.push(B256::from_slice(&bytes));
+                    hashes.push(B256::from_slice(&bytes).into());
                 } else {
                     return Err(StateError::InvalidB256Length(bytes.len()));
                 }

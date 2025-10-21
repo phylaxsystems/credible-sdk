@@ -101,10 +101,10 @@ async fn test_state_worker_hydrates_genesis_state() {
         .get_connection()
         .expect("Failed to get Redis connection");
 
-    let hashed_address = keccak256(hex::decode(genesis_account.trim_start_matches("0x")).unwrap());
+    let address_hash = keccak256(hex::decode(genesis_account.trim_start_matches("0x")).unwrap());
     let namespace = "state_worker_test:0";
-    let account_key = get_account_key(namespace, &hashed_address);
-    let storage_key = get_storage_key(namespace, &hashed_address);
+    let account_key = get_account_key(namespace, &address_hash.into());
+    let storage_key = get_storage_key(namespace, &address_hash.into());
     let code_hash = format!(
         "0x{}",
         hex::encode(keccak256(

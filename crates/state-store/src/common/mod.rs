@@ -3,8 +3,10 @@
 pub mod error;
 
 use alloy::primitives::{
+    Address,
     B256,
     U256,
+    keccak256,
 };
 use error::{
     StateError,
@@ -14,6 +16,37 @@ use std::{
     collections::HashMap,
     sync::Arc,
 };
+
+/// Type for defining the keccak256(address)
+#[derive(
+    Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct AddressHash(B256);
+
+impl AddressHash {
+    pub fn new<T: AsRef<[u8]>>(bytes: T) -> Self {
+        Self(keccak256(bytes))
+    }
+}
+
+impl From<B256> for AddressHash {
+    fn from(hash: B256) -> Self {
+        Self(hash)
+    }
+}
+
+impl From<Address> for AddressHash {
+    fn from(address: Address) -> Self {
+        Self(keccak256(address))
+    }
+}
+
+impl AsRef<[u8]> for AddressHash {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
 
 /// Redis key prefixes and separators
 pub mod keys {
@@ -93,13 +126,13 @@ pub fn get_block_key(namespace: &str) -> String {
 }
 
 /// Get the key for account data in a namespace.
-pub fn get_account_key(namespace: &str, hashed_address: &B256) -> String {
+pub fn get_account_key(namespace: &str, address_hash: &AddressHash) -> String {
     format!(
         "{namespace}{}{}{}{}",
         keys::SEPARATOR,
         keys::ACCOUNT,
         keys::SEPARATOR,
-        hex::encode(hashed_address)
+        hex::encode(address_hash)
     )
 }
 
@@ -113,13 +146,13 @@ pub fn get_all_accounts_patter(namespace: &str) -> String {
     )
 }
 /// Get the key for storage data in a namespace.
-pub fn get_storage_key(namespace: &str, hashed_address: &B256) -> String {
+pub fn get_storage_key(namespace: &str, address_hash: &AddressHash) -> String {
     format!(
         "{namespace}{}{}{}{}",
         keys::SEPARATOR,
         keys::STORAGE,
         keys::SEPARATOR,
-        hex::encode(hashed_address)
+        hex::encode(address_hash)
     )
 }
 
@@ -194,7 +227,7 @@ where
 /// This is the canonical representation used by both reader and writer.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AccountState {
-    pub address: B256,
+    pub address: AddressHash,
     pub balance: U256,
     pub nonce: u64,
     pub code_hash: B256,
@@ -310,7 +343,6 @@ pub fn decode_bytes(s: &str) -> StateResult<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::keccak256;
 
     #[test]
     fn test_circular_buffer_config() {
@@ -362,11 +394,11 @@ mod tests {
         assert_eq!(get_diff_key(base, 42), "test:diff:42");
         assert_eq!(get_block_key(namespace), "test:0:block");
         assert_eq!(
-            get_account_key(namespace, &keccak256(address)),
+            get_account_key(namespace, &AddressHash::new(address)),
             "test:0:account:25e4fcd3b1ecd473d5393d9636435394b77da34df77e9474db337f4e980d16d1"
         );
         assert_eq!(
-            get_storage_key(namespace, &keccak256(address)),
+            get_storage_key(namespace, &AddressHash::new(address)),
             "test:0:storage:25e4fcd3b1ecd473d5393d9636435394b77da34df77e9474db337f4e980d16d1"
         );
         assert_eq!(
