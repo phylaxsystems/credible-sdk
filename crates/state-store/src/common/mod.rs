@@ -227,7 +227,7 @@ where
 /// This is the canonical representation used by both reader and writer.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AccountState {
-    pub address: AddressHash,
+    pub address_hash: AddressHash,
     pub balance: U256,
     pub nonce: u64,
     pub code_hash: B256,

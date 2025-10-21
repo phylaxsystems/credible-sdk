@@ -85,7 +85,7 @@ fn apply_state_diff_to_namespace(
 
 /// Write account data to a specific namespace within an atomic pipeline.
 fn write_account_to_pipe(pipe: &mut redis::Pipeline, namespace: &str, account: &AccountState) {
-    let account_key = get_account_key(namespace, &account.address);
+    let account_key = get_account_key(namespace, &account.address_hash);
 
     let balance = account.balance.to_string();
     let nonce = account.nonce.to_string();
@@ -108,7 +108,7 @@ fn write_account_to_pipe(pipe: &mut redis::Pipeline, namespace: &str, account: &
     }
 
     if !account.storage.is_empty() || account.deleted {
-        let storage_key = get_storage_key(namespace, &account.address);
+        let storage_key = get_storage_key(namespace, &account.address_hash);
         for (slot, value) in &account.storage {
             let slot_hex = encode_u256(*slot);
             let value_hex = encode_u256(*value);
@@ -234,7 +234,7 @@ mod tests {
             block_hash: B256::from([1u8; 32]),
             state_root: B256::from([2u8; 32]),
             accounts: vec![AccountState {
-                address: Address::from([3u8; 20]).into(),
+                address_hash: Address::from([3u8; 20]).into(),
                 balance: U256::from(1000u64),
                 nonce: 5,
                 code_hash: B256::from([4u8; 32]),

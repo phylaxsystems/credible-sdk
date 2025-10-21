@@ -85,7 +85,7 @@ fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
         accounts.push(commit);
     }
 
-    accounts.sort_by(|a, b| a.address.cmp(&b.address));
+    accounts.sort_by(|a, b| a.address_hash.cmp(&b.address_hash));
     Ok(GenesisState { accounts })
 }
 
@@ -98,7 +98,7 @@ fn convert_account(address: &str, account: GenesisAccount) -> Result<AccountStat
     let storage = parse_storage(account.storage)?;
 
     Ok(AccountState {
-        address: address.into(),
+        address_hash: address.into(),
         balance,
         nonce,
         code_hash,
@@ -206,7 +206,7 @@ mod tests {
 
         let account = &state.accounts()[0];
         assert_eq!(
-            account.address,
+            account.address_hash,
             Address::from_str("00000000000000000000000000000000000000f0")
                 .unwrap()
                 .into()
@@ -471,7 +471,7 @@ mod tests {
         // Verify accounts are sorted by address
         for i in 0..state.accounts().len() - 1 {
             assert!(
-                state.accounts()[i].address < state.accounts()[i + 1].address,
+                state.accounts()[i].address_hash < state.accounts()[i + 1].address_hash,
                 "accounts should be sorted by address"
             );
         }

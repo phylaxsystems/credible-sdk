@@ -68,7 +68,7 @@ fn create_test_update(
         state_root,
         block_hash: B256::repeat_byte(u8::try_from(block_number).unwrap_or(0xff)),
         accounts: vec![AccountState {
-            address: address.into(),
+            address_hash: address.into(),
             balance: U256::from(balance),
             nonce,
             code_hash,
@@ -614,7 +614,7 @@ async fn test_roundtrip_basic_account_read() -> Result<()> {
     assert!(account.is_some());
 
     let account = account.unwrap();
-    assert_eq!(account.address, address.into());
+    assert_eq!(account.address_hash, address.into());
     assert_eq!(account.balance, U256::from(1000u64));
     assert_eq!(account.nonce, 5);
     assert_eq!(account.code, None);
@@ -840,7 +840,7 @@ async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
         block_hash: B256::repeat_byte(3),
         state_root: B256::ZERO,
         accounts: vec![AccountState {
-            address: addr_a.into(),
+            address_hash: addr_a.into(),
             balance: U256::from(1500u64),
             nonce: 5,
             code_hash: B256::ZERO,
@@ -904,7 +904,7 @@ async fn test_roundtrip_block_metadata() -> Result<()> {
             block_hash,
             state_root,
             accounts: vec![AccountState {
-                address: address.into(),
+                address_hash: address.into(),
                 balance: U256::from(block_num * 100),
                 nonce: block_num,
                 code_hash: B256::ZERO,
@@ -1044,7 +1044,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
         state_root: B256::ZERO,
         accounts: vec![
             AccountState {
-                address: Address::repeat_byte(0x01).into(),
+                address_hash: Address::repeat_byte(0x01).into(),
                 balance: U256::from(1000u64),
                 nonce: 1,
                 code_hash: B256::ZERO,
@@ -1053,7 +1053,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
                 deleted: false,
             },
             AccountState {
-                address: Address::repeat_byte(0x02).into(),
+                address_hash: Address::repeat_byte(0x02).into(),
                 balance: U256::from(2000u64),
                 nonce: 2,
                 code_hash: B256::ZERO,
@@ -1062,7 +1062,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
                 deleted: false,
             },
             AccountState {
-                address: Address::repeat_byte(0x03).into(),
+                address_hash: Address::repeat_byte(0x03).into(),
                 balance: U256::from(3000u64),
                 nonce: 3,
                 code_hash: B256::ZERO,

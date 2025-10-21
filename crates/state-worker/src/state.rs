@@ -132,7 +132,7 @@ impl AccountSnapshot {
         let storage = self.storage_updates;
 
         Some(AccountState {
-            address,
+            address_hash: address,
             balance,
             nonce,
             code_hash,
@@ -343,7 +343,7 @@ mod tests {
         let accounts: HashMap<_, _> = update
             .accounts
             .into_iter()
-            .map(|a| (a.address.clone(), a))
+            .map(|a| (a.address_hash.clone(), a))
             .collect();
 
         // Check sender
@@ -407,7 +407,7 @@ mod tests {
         let accounts: HashMap<_, _> = update
             .accounts
             .into_iter()
-            .map(|a| (a.address.clone(), a))
+            .map(|a| (a.address_hash.clone(), a))
             .collect();
 
         // Check contract

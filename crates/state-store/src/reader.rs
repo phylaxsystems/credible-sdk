@@ -300,7 +300,7 @@ where
         .map_err(|e| StateError::ParseInt(nonce.clone(), e))?;
 
     Ok(Some(AccountState {
-        address: address_hash.clone(),
+        address_hash: address_hash.clone(),
         balance: balance_parsed,
         nonce: nonce_parsed,
         code_hash: code_hash_decoded,
