@@ -678,7 +678,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     ///
     /// If the sources do not become synced after a set amount of time, the function
     /// errors.
-    async fn verify_state_sources_synced_for_tx(&mut self) -> Result<(), EngineError> {
+    async fn verify_state_sources_synced_for_tx(
+        &mut self,
+        block_number: u64,
+    ) -> Result<(), EngineError> {
         const RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
         if !self.check_sources_available {
@@ -688,7 +691,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         let start = Instant::now();
         loop {
-            if self.sources_monitoring.has_synced_source() {
+            if self
+                .cache
+                .iter_synced_sources()
+                .into_iter()
+                .any(|a| a.is_synced(block_number))
+            {
                 return Ok(());
             }
 
@@ -720,7 +728,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     // so we can easily select on result in main. too bad!
     pub async fn run(&mut self) -> Result<(), EngineError> {
         let mut processed_blocks = 0u64;
-        let mut processed_txs = 0u64;
         let mut block_processing_time = Instant::now();
         let mut idle_start = Instant::now();
 
@@ -757,8 +764,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 }
                 TxQueueContents::Tx(queue_transaction, current_span) => {
                     let _guard = current_span.enter();
-                    self.process_transaction_event(queue_transaction, &mut processed_txs)
-                        .await?;
+                    self.process_transaction_event(queue_transaction).await?;
                 }
                 TxQueueContents::Reorg(hash, current_span) => {
                     let _guard = current_span.enter();
@@ -776,7 +782,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 info!(
                     target = "engine",
                     blocks = processed_blocks,
-                    transactions = processed_txs,
                     cache_entries = self.state.cache_entry_count(),
                     "Engine processing stats"
                 );
@@ -839,32 +844,29 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     async fn process_transaction_event(
         &mut self,
         queue_transaction: QueueTransaction,
-        processed_txs: &mut u64,
     ) -> Result<(), EngineError> {
-        self.verify_state_sources_synced_for_tx().await?;
-
         let tx_hash = queue_transaction.tx_hash;
         let tx_env = queue_transaction.tx_env;
-        *processed_txs += 1;
         self.block_metrics.transactions_considered += 1;
 
-        if self.block_env.is_none() {
+        let Some(ref block) = self.block_env else {
             error!(
                 target = "engine",
                 tx_hash = %tx_hash,
                 caller = %tx_env.caller,
-                processed_txs = *processed_txs,
                 "Received transaction without first receiving a BlockEnv"
             );
             return Err(EngineError::TransactionError);
-        }
+        };
+
+        self.verify_state_sources_synced_for_tx(block.number)
+            .await?;
 
         debug!(
             target = "engine",
             tx_hash = %tx_hash,
             caller = %tx_env.caller,
             gas_limit = tx_env.gas_limit,
-            processed_txs = *processed_txs,
             current_block = self.block_env.as_ref().map(|b| b.number),
             "Processing transaction"
         );
