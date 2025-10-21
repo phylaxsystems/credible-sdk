@@ -9,10 +9,6 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// RPC endpoint URL for the Ethereum node.
-    #[arg(long, env = "STATE_CHECKER_RPC_URL")]
-    pub rpc_url: String,
-
     /// Redis connection string.
     #[arg(long, env = "STATE_CHECKER_REDIS_URL")]
     pub redis_url: String,

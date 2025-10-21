@@ -10,11 +10,13 @@ use anyhow::Result;
 use clap::Parser;
 use log::error;
 use rust_tracing::trace;
-use state_store::CircularBufferConfig;
+use state_store::{
+    CircularBufferConfig,
+    StateReader,
+};
 use tracing::info;
 
 mod cli;
-mod json_rpc_client;
 mod state_root;
 
 #[tokio::main]
@@ -33,10 +35,9 @@ async fn main() -> Result<()> {
         buffer_size: args.state_depth,
     };
 
-    let rpc_json_client =
-        json_rpc_client::Client::try_new_with_rpc_url(args.rpc_url.as_str()).await?;
+    let reader = StateReader::new(&args.redis_url, &args.redis_namespace, config)?;
 
-    let service = StateRootService::new(&args.redis_url, &args.redis_namespace, config)?;
+    let service = StateRootService::new(&reader);
 
     let (block_number, root) = service.calculate_latest_state_root()?;
     info!(
@@ -44,16 +45,24 @@ async fn main() -> Result<()> {
         hex::encode(root)
     );
 
-    let rpc_state_root = rpc_json_client.get_block_state_root(block_number).await?;
-    info!("RPC client state root: 0x{}", hex::encode(rpc_state_root));
+    let block_number = reader.latest_block_number()?.expect("No blocks in Redis");
 
-    if root == rpc_state_root {
+    let block_metadata_state_root = reader
+        .get_block_metadata(block_number)?
+        .expect("No block metadata in Redis")
+        .state_root;
+    info!(
+        "Block metadata state root: 0x{}",
+        hex::encode(block_metadata_state_root)
+    );
+
+    if root == block_metadata_state_root {
         info!("State roots match: 0x{}", hex::encode(root));
     } else {
         error!(
             "State roots do not match: 0x{} != 0x{}",
             hex::encode(root),
-            hex::encode(rpc_state_root)
+            hex::encode(block_metadata_state_root)
         );
     }
 

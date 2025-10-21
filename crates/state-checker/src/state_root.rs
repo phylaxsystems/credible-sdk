@@ -26,10 +26,7 @@ use anyhow::{
     anyhow,
 };
 use revm::primitives::KECCAK_EMPTY;
-use state_store::{
-    CircularBufferConfig,
-    StateReader,
-};
+use state_store::StateReader;
 use std::collections::HashMap;
 use tracing::info;
 
@@ -129,15 +126,10 @@ pub struct StateRootCalculator {
 }
 
 impl StateRootCalculator {
-    pub fn new(
-        redis_url: &str,
-        base_namespace: &str,
-        buffer_config: CircularBufferConfig,
-    ) -> Result<Self> {
-        let reader = StateReader::new(redis_url, base_namespace, buffer_config)
-            .context("Failed to create StateReader")?;
-
-        Ok(Self { reader })
+    pub fn new(reader: &StateReader) -> Self {
+        Self {
+            reader: reader.clone(),
+        }
     }
 
     /// Calculate state root with minimal memory usage by processing accounts one at a time.
@@ -233,14 +225,10 @@ pub struct StateRootService {
 }
 
 impl StateRootService {
-    pub fn new(
-        redis_url: &str,
-        base_namespace: &str,
-        buffer_config: CircularBufferConfig,
-    ) -> Result<Self> {
-        Ok(Self {
-            calculator: StateRootCalculator::new(redis_url, base_namespace, buffer_config)?,
-        })
+    pub fn new(reader: &StateReader) -> Self {
+        Self {
+            calculator: StateRootCalculator::new(reader),
+        }
     }
 
     /// Calculate state root for the latest available block.
