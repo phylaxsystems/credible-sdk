@@ -769,10 +769,6 @@ async fn test_roundtrip_circular_buffer_rotation() -> Result<()> {
     let latest = reader.latest_block_number()?;
     assert_eq!(latest, Some(5));
 
-    // Available range should be [3, 5] (buffer size 3)
-    let range = reader.get_available_block_range()?;
-    assert_eq!(range, Some((3, 5)));
-
     // Block 2 should NOT be available (outside buffer)
     let available = reader.is_block_available(2)?;
     assert!(!available);

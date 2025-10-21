@@ -1,4 +1,4 @@
-//! State reader implementation for querying blockchain state from Redis.
+//! Updated reader.rs to use fast metadata lookups
 
 use crate::{
     CircularBufferConfig,
@@ -50,17 +50,16 @@ impl StateReader {
         Ok(Self { client })
     }
 
-    /// Get the most recent block number across all namespaces.
+    /// Get the most recent block number from metadata (O(1) operation).
+    /// Falls back to scanning all namespaces if metadata is unavailable.
     pub fn latest_block_number(&self) -> StateResult<Option<u64>> {
         let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
 
-        self.client.with_connection(move |conn| {
-            read_latest_block_number(conn, &base_namespace, buffer_size)
-        })
+        self.client
+            .with_connection(move |conn| read_latest_block_number(conn, &base_namespace))
     }
 
-    /// Get complete account state including code and all storage slots.
+    /// Get the complete account state including code and all storage slots.
     /// Optimized to fetch everything in a single Redis roundtrip.
     pub fn get_account(
         &self,
@@ -208,19 +207,6 @@ impl StateReader {
         self.client.with_connection(move |conn| {
             is_block_available(conn, &base_namespace, buffer_size, block_number)
         })
-    }
-
-    /// Get the range of available blocks [oldest, latest].
-    pub fn get_available_block_range(&self) -> StateResult<Option<(u64, u64)>> {
-        let latest = self.latest_block_number()?;
-
-        if let Some(latest_block) = latest {
-            let buffer_size = self.client.buffer_config.buffer_size as u64;
-            let oldest_block = latest_block.saturating_sub(buffer_size - 1);
-            Ok(Some((oldest_block, latest_block)))
-        } else {
-            Ok(None)
-        }
     }
 }
 
