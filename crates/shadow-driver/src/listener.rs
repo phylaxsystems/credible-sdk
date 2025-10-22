@@ -291,8 +291,9 @@ impl Listener {
         let transactions = match &block.transactions {
             alloy::rpc::types::BlockTransactions::Full(txs) => txs.clone(),
             alloy::rpc::types::BlockTransactions::Hashes(_) => {
-                warn!("Got hashes instead of full transactions despite using .full()");
-                Vec::new()
+                Err(anyhow!(
+                    "Got hashes instead of full transactions despite using .full()"
+                ))?
             }
             alloy::rpc::types::BlockTransactions::Uncle => Vec::new(),
         };
