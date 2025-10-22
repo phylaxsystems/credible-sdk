@@ -38,18 +38,114 @@
 //! diff in Redis with key `{base_namespace}:diff:{block_number}`. These diffs are automatically
 //! cleaned up after `buffer_size` blocks to prevent unbounded growth.
 //!
-//! # Data Model
+//! # Redis Schema
 //!
-//! For each namespace, the following keys are stored:
-//! - `{namespace}:block` - Current block number in this namespace
-//! - `{namespace}:account:{address}` - Hash containing balance, nonce, code hash
-//! - `{namespace}:storage:{address}` - Hash of storage slots for the account
-//! - `{namespace}:code:{code_hash}` - Contract bytecode
+//! ## Key Structure Overview
 //!
-//! Shared across namespaces:
-//! - `{base_namespace}:block_hash:{block_number}` - Block hash for each block
-//! - `{base_namespace}:state_root:{block_number}` - State root for each block
-//! - `{base_namespace}:diff:{block_number}` - Serialized state diff (kept for `buffer_size` blocks)
+//! The system uses a hierarchical key structure with three main categories:
+//!
+//! ### 1. Namespace-Scoped Keys (Rotated per Circular Buffer)
+//!
+//! These keys live within individual namespaces and get overwritten when the circular buffer wraps:
+//!
+//! ```text
+//! {base_namespace}:{namespace_idx}:block
+//!   → Current block number stored in this namespace
+//!   → Type: String (u64)
+//!   → Example: "blockchain:0:block" = "1000"
+//!
+//! {base_namespace}:{namespace_idx}:account:{address_hash}
+//!   → Account state (balance, nonce, code_hash)
+//!   → Type: Redis Hash with fields:
+//!       • balance: "0x..." (hex-encoded U256)
+//!       • nonce: "42" (decimal u64)
+//!       • code_hash: "0x..." (hex-encoded B256)
+//!   → Example: "blockchain:0:account:25e4fcd3b1ecd473..."
+//!
+//! {base_namespace}:{namespace_idx}:storage:{address_hash}
+//!   → Contract storage slots for an account
+//!   → Type: Redis Hash with fields:
+//!       • Key: "0x..." (hex-encoded storage slot U256)
+//!       • Value: "0x..." (hex-encoded storage value U256)
+//!   → Example: "blockchain:0:storage:25e4fcd3b1ecd473..."
+//!       Field "0x0000...01" = "0x0000...ff"
+//!
+//! {base_namespace}:{namespace_idx}:code:{code_hash}
+//!   → Contract bytecode indexed by code hash
+//!   → Type: String (hex-encoded bytes)
+//!   → Example: "blockchain:0:code:fedcba0987654321" = "0x6080604052..."
+//! ```
+//!
+//! ### 2. Global Keys (Shared Across All Namespaces)
+//!
+//! These keys provide permanent metadata:
+//!
+//! ```text
+//! {base_namespace}:meta:latest_block
+//!   → The most recent block number written to the system
+//!   → Type: String (u64)
+//!   → Example: "blockchain:meta:latest_block" = "1005"
+//!
+//! {base_namespace}:block_hash:{block_number}
+//!   → Block hash for a specific block number
+//!   → Type: String (hex-encoded B256)
+//!   → Example: "blockchain:block_hash:1000" = "0xabcd..."
+//!   → Retention: Last buffer_size blocks
+//!
+//! {base_namespace}:state_root:{block_number}
+//!   → State root hash for a specific block number
+//!   → Type: String (hex-encoded B256)
+//!   → Example: "blockchain:state_root:1000" = "0x1234..."
+//!   → Retention: Last buffer_size blocks
+//!
+//! {base_namespace}:diff:{block_number}
+//!   → Serialized state diff (changes from previous block)
+//!   → Type: String (JSON-serialized BlockStateUpdate)
+//!   → Example: "blockchain:diff:1001" = "{...}"
+//!   → Retention: Last buffer_size blocks (automatically cleaned up)
+//! ```
+//!
+//! ## Complete Schema Example
+//!
+//! For a system with `base_namespace="chain"` and `buffer_size=3` at block 1005:
+//!
+//! ```text
+//! Namespace Keys (Circular Buffer):
+//!   chain:0:block = "1005"                      # Block 1005 % 3 = 0
+//!   chain:0:account:abc123... = {balance, nonce, code_hash}
+//!   chain:0:storage:abc123... = {slot1: value1, slot2: value2}
+//!   chain:0:code:def456... = "0x6080..."
+//!
+//!   chain:1:block = "1003"                      # Block 1003 % 3 = 1
+//!   chain:1:account:xyz789... = {...}
+//!   ...
+//!
+//!   chain:2:block = "1004"                      # Block 1004 % 3 = 2
+//!   chain:2:account:...
+//!   ...
+//!
+//! Global Metadata:
+//!   chain:meta:latest_block = "1005"
+//!
+//! Recent Block Metadata (last 3 blocks):
+//!   chain:block_hash:1003 = "0xaaa..."
+//!   chain:block_hash:1004 = "0xbbb..."
+//!   chain:block_hash:1005 = "0xccc..."
+//!
+//!   chain:state_root:1003 = "0x111..."
+//!   chain:state_root:1004 = "0x222..."
+//!   chain:state_root:1005 = "0x333..."
+//!
+//! Recent State Diffs (last 3 blocks):
+//!   chain:diff:1003 = "{block_number: 1003, accounts: [...]}"
+//!   chain:diff:1004 = "{block_number: 1004, accounts: [...]}"
+//!   chain:diff:1005 = "{block_number: 1005, accounts: [...]}"
+//! ```
+//!
+//! ## Address Hashing
+//!
+//! Account and storage keys use `keccak256(address)` to create the `{address_hash}` portion.
+//! This provides a consistent 32-byte identifier regardless of the address format.
 //!
 //! ## Features
 //!

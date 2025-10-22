@@ -208,6 +208,19 @@ impl StateReader {
             is_block_available(conn, &base_namespace, buffer_size, block_number)
         })
     }
+
+    /// Get the range of available blocks [oldest, latest].
+    pub fn get_available_block_range(&self) -> StateResult<Option<(u64, u64)>> {
+        let latest = self.latest_block_number()?;
+
+        if let Some(latest_block) = latest {
+            let buffer_size = self.client.buffer_config.buffer_size as u64;
+            let oldest_block = latest_block.saturating_sub(buffer_size - 1);
+            Ok(Some((oldest_block, latest_block)))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 // ============================================================================
