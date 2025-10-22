@@ -106,18 +106,6 @@ impl RedisCache {
         }
     }
 
-    #[allow(dead_code)]
-    fn update_observed_block(&self, observed_block: u64) {
-        publish_sync_state(
-            Some(observed_block),
-            Some(observed_block),
-            &self.current_block,
-            &self.observed_block,
-            &self.oldest_block,
-            &self.sync_status,
-        );
-    }
-
     fn mark_unsynced(&self) {
         publish_sync_state(
             None,
