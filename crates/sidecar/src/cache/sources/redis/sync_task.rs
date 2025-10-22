@@ -23,7 +23,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-pub(crate) fn publish_sync_state(
+pub fn publish_sync_state(
     latest_block: Option<u64>,
     oldest_block: Option<u64>,
     current_block: &AtomicU64,
@@ -51,7 +51,7 @@ pub(crate) fn publish_sync_state(
     }
 }
 
-pub(crate) fn spawn_sync_task(
+pub fn spawn_sync_task(
     reader: StateReader,
     current_block: Arc<AtomicU64>,
     observed_block: Arc<AtomicU64>,
