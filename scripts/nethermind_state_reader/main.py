@@ -7,7 +7,7 @@ import sys
 import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Dict, Iterator, List, Mapping, Optional
+from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 import rlp
 from eth_hash.auto import keccak
@@ -19,6 +19,32 @@ from sqlitedict import SqliteDict
 EMPTY_TRIE_HASH = bytes.fromhex(
     "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
 )
+
+
+def _normalize_debug_targets(raw_targets: Iterable[str]) -> Dict[str, Tuple[str, str]]:
+    targets: Dict[str, Tuple[str, str]] = {}
+    for raw in raw_targets:
+        if raw is None:
+            continue
+        trimmed = raw.strip()
+        if not trimmed:
+            continue
+        value = trimmed.lower()
+        if not value.startswith("0x"):
+            raise ValueError(f"Debug account '{raw}' must start with 0x and contain hex characters.")
+        hex_body = value[2:]
+        if len(hex_body) == 40:
+            hashed = "0x" + keccak(bytes.fromhex(hex_body)).hex()
+            targets[hashed] = (trimmed, "address")
+        elif len(hex_body) == 64:
+            hashed = "0x" + hex_body
+            targets[hashed] = (trimmed, "hash")
+        else:
+            raise ValueError(
+                f"Debug account '{raw}' must be 20-byte (40 hex chars) address or 32-byte (64 hex chars) hash."
+            )
+    return targets
+
 
 _EOA_SUFFIX = bytes(
     [
@@ -507,12 +533,29 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Skip verifying that node hashes match the key suffix (faster but unsafe).",
     )
+    parser.add_argument(
+        "--debug-account",
+        action="append",
+        default=[],
+        help="Address or address hash to trace when verbose logging is enabled (repeatable).",
+    )
     parser.add_argument("--verbose", action="store_true", help="Emit progress information to stderr.")
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
+
+    def debug(message: str) -> None:
+        if args.verbose:
+            print(f"[debug] {message}", file=sys.stderr)
+
+    try:
+        debug_targets = _normalize_debug_targets(args.debug_account)
+    except ValueError as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return
+    pending_debug_hashes = set(debug_targets.keys())
 
     nodes = build_node_index(
         state_path=args.state_db,
@@ -555,6 +598,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                 if args.output:
                     output_handle = stack.enter_context(open(args.output, "w"))
 
+            if args.verbose and debug_targets:
+                watch_desc = ", ".join(
+                    f"{info[0]} -> {hash_value}" for hash_value, info in debug_targets.items()
+                )
+                debug(f"Watching {len(debug_targets)} account hash(es): {watch_desc}")
+
             code_db: Optional[Rdict] = None
             if args.code_db:
                 options = Options(raw_mode=True)
@@ -570,6 +619,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 def namespaced(*segments: object) -> str:
                     return ":".join((namespace, *(str(segment) for segment in segments)))
                 redis_pipeline = redis_client.pipeline(transaction=False)
+                debug(
+                    f"Connected to Redis at {args.redis_url} with namespace '{namespace}' "
+                    f"(pipeline batch size {args.redis_pipeline_size})"
+                )
                 redis_pipeline.set(namespaced("current_block"), str(resolved_root.block_number))
                 redis_pipeline.set(namespaced("block_hash", str(resolved_root.block_number)), block_hash_hex)
 
@@ -580,6 +633,15 @@ def main(argv: Optional[List[str]] = None) -> None:
                 if output_handle is not None:
                     json.dump(account, output_handle)
                     output_handle.write("\n")
+
+                account_hash = account["address_hash"].lower()
+                if account_hash in pending_debug_hashes:
+                    source_value, source_kind = debug_targets[account_hash]
+                    debug(
+                        f"Matched watched {source_kind} {source_value} "
+                        f"(hash {account_hash}) nonce={account['nonce']} balance={account['balance']}"
+                    )
+                    pending_debug_hashes.remove(account_hash)
 
                 if redis_pipeline is not None:
                     address_hex = account["address_hash"]
@@ -615,11 +677,23 @@ def main(argv: Optional[List[str]] = None) -> None:
                                 redis_pipeline.set(namespaced("code", code_hash_hex), "0x" + code_bytes.hex())
 
                     if len(redis_pipeline.command_stack) >= args.redis_pipeline_size:
+                        queued = len(redis_pipeline.command_stack)
+                        debug(f"Flushing Redis pipeline with {queued} queued command(s) at account {account_hash}")
                         redis_pipeline.execute()
 
                 emitted += 1
+                if emitted and args.verbose and emitted % 10000 == 0:
+                    debug(f"Processed {emitted} account(s); last hash {account_hash}")
         if redis_pipeline is not None and redis_pipeline.command_stack:
+            queued = len(redis_pipeline.command_stack)
+            debug(f"Draining final Redis pipeline with {queued} queued command(s)")
             redis_pipeline.execute()
+
+        if args.verbose and pending_debug_hashes:
+            missing = ", ".join(
+                f"{debug_targets[hash_value][0]} (hash {hash_value})" for hash_value in sorted(pending_debug_hashes)
+            )
+            debug(f"Watched account hash(es) not encountered: {missing}")
 
         if args.verbose:
             print(f"[info] emitted {emitted} accounts", file=sys.stderr)
