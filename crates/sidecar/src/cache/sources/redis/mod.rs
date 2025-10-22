@@ -68,9 +68,11 @@ const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 #[derive(Debug)]
 pub struct RedisCache {
     backend: StateReader,
-    /// Current block
+    /// Current block we are processing in the sidecar.
     current_block: Arc<AtomicU64>,
+    /// Records newest block the background poller has seen.
     observed_block: Arc<AtomicU64>,
+    /// Oldest block that exists in redis buffer. Used to prevent asking for a block redis doesnt have.
     oldest_block: Arc<AtomicU64>,
     sync_status: Arc<AtomicBool>,
     cancel_token: CancellationToken,
