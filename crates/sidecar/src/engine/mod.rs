@@ -1415,6 +1415,69 @@ mod tests {
         );
     }
 
+    #[crate::utils::engine_test(all)]
+    async fn test_core_engine_reorg_followed_by_blockenv_with_last_tx_hash(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // Start by sending a block environment so subsequent dry transactions share the same block.
+        instance
+            .new_block()
+            .await
+            .expect("initial blockenv should be accepted");
+
+        // Send two transactions without new blockenvs so they belong to the same block.
+        let tx1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .expect("first tx should be sent successfully");
+        assert!(
+            instance
+                .is_transaction_successful(&tx1)
+                .await
+                .expect("first tx should be processed successfully"),
+            "First transaction should execute successfully"
+        );
+
+        let tx2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .expect("second tx should be sent successfully");
+        assert!(
+            instance
+                .is_transaction_successful(&tx2)
+                .await
+                .expect("second tx should be processed successfully"),
+            "Second transaction should execute successfully"
+        );
+
+        // Reorg the second transaction; this should succeed and remove it from the buffer.
+        instance
+            .send_reorg(tx2)
+            .await
+            .expect("reorg of the last tx should succeed");
+
+        // Sending a new blockenv should reference tx1 as the last transaction hash and succeed.
+        //
+        // last_tx_hash are accounted for inside of the mock transports.
+        instance
+            .new_block()
+            .await
+            .expect("blockenv referencing the remaining tx should be accepted");
+
+        // Engine should still accept new transactions after the blockenv.
+        let tx3 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .expect("engine should accept new tx after blockenv");
+        assert!(
+            instance
+                .is_transaction_successful(&tx3)
+                .await
+                .expect("third tx should be processed successfully"),
+            "Engine should remain healthy after processing the blockenv"
+        );
+    }
+
     #[tokio::test]
     async fn test_database_commit_verification() {
         use revm::primitives::address;
