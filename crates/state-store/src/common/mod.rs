@@ -73,6 +73,9 @@ pub mod keys {
 
     /// Key prefix for state roots (shared across namespaces)
     pub const STATE_ROOT: &str = "state_root";
+
+    /// Key for storing the latest block number globally
+    pub const LATEST_BLOCK: &str = "meta:latest_block";
 }
 
 /// Configuration for the circular buffer of states in Redis.
@@ -187,6 +190,46 @@ pub fn get_state_root_key(base_namespace: &str, block_number: u64) -> String {
     )
 }
 
+/// Get the key for the latest block metadata.
+pub fn get_latest_block_metadata_key(base_namespace: &str) -> String {
+    format!(
+        "{}{}{}",
+        base_namespace,
+        keys::SEPARATOR,
+        keys::LATEST_BLOCK
+    )
+}
+
+/// Read the latest block number from top-level metadata (O(1) operation).
+/// Falls back to scanning all namespaces if metadata is not available.
+pub fn read_latest_block_number<C>(conn: &mut C, base_namespace: &str) -> StateResult<Option<u64>>
+where
+    C: redis::ConnectionLike,
+{
+    let meta_key = get_latest_block_metadata_key(base_namespace);
+    let value: Option<String> = redis::cmd("GET").arg(&meta_key).query(conn)?;
+
+    if let Some(v) = value {
+        // Metadata exists, use it
+        Ok(Some(
+            v.parse::<u64>().map_err(|e| StateError::ParseInt(v, e))?,
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Update metadata atomically within a pipeline.
+pub fn update_metadata_in_pipe(
+    pipe: &mut redis::Pipeline,
+    base_namespace: &str,
+    block_number: u64,
+) {
+    // Update latest block
+    let latest_key = get_latest_block_metadata_key(base_namespace);
+    pipe.set(&latest_key, block_number.to_string());
+}
+
 /// Read the current block number stored in a namespace.
 pub fn read_namespace_block_number<C>(conn: &mut C, namespace: &str) -> StateResult<Option<u64>>
 where
@@ -198,29 +241,6 @@ where
     value
         .map(|v| v.parse::<u64>().map_err(|e| StateError::ParseInt(v, e)))
         .transpose()
-}
-
-/// Read the latest block number by checking all namespaces in the circular buffer.
-pub fn read_latest_block_number<C>(
-    conn: &mut C,
-    base_namespace: &str,
-    buffer_size: usize,
-) -> StateResult<Option<u64>>
-where
-    C: redis::ConnectionLike,
-{
-    let mut max_block: Option<u64> = None;
-
-    for idx in 0..buffer_size {
-        let namespace = format!("{base_namespace}{}{idx}", keys::SEPARATOR);
-        let block_num = read_namespace_block_number(conn, &namespace)?;
-
-        if let Some(block) = block_num {
-            max_block = Some(max_block.map_or(block, |current| current.max(block)));
-        }
-    }
-
-    Ok(max_block)
 }
 
 /// Complete account state with all fields.
@@ -446,5 +466,15 @@ mod tests {
         let result = decode_b256("0xGGGG");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), StateError::HexDecode(_, _)));
+    }
+
+    #[test]
+    fn test_metadata_key_generation() {
+        let base = "chain";
+
+        assert_eq!(
+            get_latest_block_metadata_key(base),
+            "chain:meta:latest_block"
+        );
     }
 }

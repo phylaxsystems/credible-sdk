@@ -23,6 +23,7 @@ use crate::{
         get_storage_key,
         read_latest_block_number,
         read_namespace_block_number,
+        update_metadata_in_pipe,
     },
 };
 use alloy::primitives::B256;
@@ -45,14 +46,12 @@ impl StateWriter {
         Ok(Self { client })
     }
 
-    /// Read the most recently persisted block number from Redis by checking all namespaces.
+    /// Read the most recently persisted block number from Redis metadata.
     pub fn latest_block_number(&self) -> StateResult<Option<u64>> {
         let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
 
-        self.client.with_connection(move |conn| {
-            read_latest_block_number(conn, &base_namespace, buffer_size)
-        })
+        self.client
+            .with_connection(move |conn| read_latest_block_number(conn, &base_namespace))
     }
 
     /// Persist all account mutations for the block using atomic transactions.
@@ -212,6 +211,8 @@ where
         let old_diff_key = get_diff_key(base_namespace, old_block);
         pipe.del(&old_diff_key);
     }
+
+    update_metadata_in_pipe(&mut pipe, base_namespace, block_number);
 
     // Execute the atomic transaction
     pipe.query::<()>(conn)?;

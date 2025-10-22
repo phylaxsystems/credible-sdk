@@ -50,17 +50,16 @@ impl StateReader {
         Ok(Self { client })
     }
 
-    /// Get the most recent block number across all namespaces.
+    /// Get the most recent block number from metadata (O(1) operation).
+    /// Falls back to scanning all namespaces if metadata is unavailable.
     pub fn latest_block_number(&self) -> StateResult<Option<u64>> {
         let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
 
-        self.client.with_connection(move |conn| {
-            read_latest_block_number(conn, &base_namespace, buffer_size)
-        })
+        self.client
+            .with_connection(move |conn| read_latest_block_number(conn, &base_namespace))
     }
 
-    /// Get complete account state including code and all storage slots.
+    /// Get the complete account state including code and all storage slots.
     /// Optimized to fetch everything in a single Redis roundtrip.
     pub fn get_account(
         &self,

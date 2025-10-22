@@ -1,23 +1,6 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 //! # Redis-backed cache source
-//!
-//! Provides a `Source` implementation backed by Redis so that blockchain state
-//! can be cached between runs. `RedisClientBackend` wraps a `redis::Client`,
-//! establishing a single shared connection lazily and reusing it across all
-//! commands. Construct it with `RedisClientBackend::new(client)` or
-//! `RedisClientBackend::from_url("redis://...")`.
-//!
-//! ## Redis schema
-//!
-//! Entries are namespaced to avoid key collisions:
-//! ```ignore
-//! state:account:{address}     → {balance, nonce, code_hash}
-//! state:storage:{address}     → {slot1: value1, slot2: value2, ...}
-//! state:code:{code_hash}      → hex-encoded bytecode
-//! state:current_block         → latest synced block number
-//! state:block_hash:{number}   → block hash
-//! ```
 
 pub(crate) mod error;
 pub(crate) mod utils;
@@ -149,8 +132,8 @@ impl DatabaseRef for RedisCache {
 impl Source for RedisCache {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, required_block_number: u64) -> bool {
-        match self.backend.get_available_block_range() {
-            Ok(Some((_, block))) => {
+        match self.backend.latest_block_number() {
+            Ok(Some(block)) => {
                 block >= required_block_number
                     && block <= self.current_block.load(Ordering::Relaxed)
             }
