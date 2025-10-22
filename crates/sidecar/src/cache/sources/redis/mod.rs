@@ -60,7 +60,7 @@ use thiserror::Error;
 pub struct RedisCache {
     backend: StateReader,
     /// Current block
-    current_block: Arc<AtomicU64>,
+    target_block: Arc<AtomicU64>,
 }
 
 impl RedisCache {
@@ -68,7 +68,7 @@ impl RedisCache {
     pub fn new(backend: StateReader) -> Self {
         Self {
             backend,
-            current_block: Arc::new(AtomicU64::new(0)),
+            target_block: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -80,7 +80,7 @@ impl DatabaseRef for RedisCache {
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let Some(account) = self
             .backend
-            .get_account(address.into(), self.current_block.load(Ordering::Relaxed))
+            .get_account(address.into(), self.target_block.load(Ordering::Relaxed))
             .map_err(Self::Error::RedisAccount)?
         else {
             return Ok(None);
@@ -105,7 +105,7 @@ impl DatabaseRef for RedisCache {
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
         Ok(Bytecode::new_raw(
             self.backend
-                .get_code(code_hash, self.current_block.load(Ordering::Relaxed))
+                .get_code(code_hash, self.target_block.load(Ordering::Relaxed))
                 .map_err(Self::Error::RedisCodeByHash)?
                 .ok_or(Self::Error::CodeByHashNotFound)?
                 .into(),
@@ -122,7 +122,7 @@ impl DatabaseRef for RedisCache {
             .get_storage(
                 address.into(),
                 index,
-                self.current_block.load(Ordering::Relaxed),
+                self.target_block.load(Ordering::Relaxed),
             )
             .map_err(Self::Error::RedisStorage)?
             .ok_or(Self::Error::StorageNotFound)
@@ -134,17 +134,15 @@ impl Source for RedisCache {
     fn is_synced(&self, required_block_number: u64) -> bool {
         match self.backend.latest_block_number() {
             Ok(Some(block)) => {
-                block >= required_block_number
-                    && block <= self.current_block.load(Ordering::Relaxed)
+                block >= required_block_number && block <= self.target_block.load(Ordering::Relaxed)
             }
             _ => false,
         }
     }
 
-    /// No-op; we dont update the target block for redis.
+    /// Updates the block number that queries should target.
     fn update_target_block(&self, block_number: u64) {
-        // NOTE: Temporary patch to avoid reading redis if the redis state is higher than the sidecar state.
-        self.current_block.store(block_number, Ordering::Relaxed);
+        self.target_block.store(block_number, Ordering::Relaxed);
     }
 
     /// Provides an identifier used in logs and metrics.
