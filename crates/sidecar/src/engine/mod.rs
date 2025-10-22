@@ -827,7 +827,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.apply_state_buffer()?;
 
         *processed_blocks += 1;
-        self.block_env_transaction_counter = 0;
 
         info!(
             target = "engine",
@@ -855,6 +854,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         *block_processing_time = Instant::now();
 
         self.block_env = Some(queue_block_env.block_env);
+        self.block_env_transaction_counter = 0;
 
         Ok(())
     }
@@ -1438,6 +1438,8 @@ mod tests {
     async fn test_core_engine_reorg_followed_by_blockenv_with_last_tx_hash(
         mut instance: crate::utils::LocalInstance,
     ) {
+        let initial_cache_resets = instance.cache_reset_count();
+
         // Start by sending a block environment so subsequent dry transactions share the same block.
         instance
             .new_block()
@@ -1494,6 +1496,15 @@ mod tests {
                 .await
                 .expect("third tx should be processed successfully"),
             "Engine should remain healthy after processing the blockenv"
+        );
+
+        instance
+            .wait_for_processing(Duration::from_millis(25))
+            .await;
+        assert_eq!(
+            instance.cache_reset_count(),
+            initial_cache_resets,
+            "Cache should remain valid throughout this scenario"
         );
     }
 
