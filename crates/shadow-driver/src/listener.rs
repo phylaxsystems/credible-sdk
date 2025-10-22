@@ -184,7 +184,12 @@ impl Listener {
 
     /// Fetch a specific block by number and process it
     async fn fetch_and_process_block(&mut self, block_num: u64) -> Result<()> {
-        match self.provider.get_block_by_number(block_num.into()).await {
+        match self
+            .provider
+            .get_block_by_number(block_num.into())
+            .full()
+            .await
+        {
             Ok(Some(block)) => {
                 info!("Processing block {block_num}");
                 self.process_block(&block).await
