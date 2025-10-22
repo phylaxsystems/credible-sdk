@@ -228,18 +228,36 @@ pub enum TransactionResult {
 /// and processes them accordingly.
 #[derive(Debug)]
 pub struct CoreEngine<DB> {
+    /// In-memory `revm::Database` cache. Populated as the sidecar executes blocks.
+    ///
+    /// This is the state the `CoreEngine` is executing transactions against.
     state: OverlayDb<DB>,
+    /// External providers of state we use when we do not have a piece of state cached in our in memory db.
+    /// External state providers implement a trait that we use to query databaseref-like data and populate `state: OverlayDb<DB>`
+    /// for execution with it.
+    ///
+    /// Some state providers may be slow which is why we use them as a fallback for `state: OverlayDb<DB>`.
     cache: Arc<Cache>,
+    /// Channel on which the core engine receives events. Events include new transactions, blocks(block envs), reorgs.
     tx_receiver: TransactionQueueReceiver,
+    /// Core engines instance of the assertion executor, executes transactions and assertions
     assertion_executor: AssertionExecutor,
+    /// Block env we are currently working on
     block_env: Option<BlockEnv>,
+    /// Stores results of executed transactions
     transaction_results: TransactionsResults,
+    /// Core engine related block building metrics
     block_metrics: BlockMetrics,
+    /// Stores last executed transactions for reorging
     last_executed_tx: LastExecutedTx,
+    /// How many transactions we have seen in the blockenv we are currently working on
     block_env_transaction_counter: u64,
+    /// How long to wait to get a response for if the `cache: Arc<Cache>` state sources are synced.
     state_sources_sync_timeout: Duration,
+    /// Used to indicate that we dont have any state sources available to avoid checking if they are synced.
     check_sources_available: bool,
     sources_monitoring: Arc<monitoring::sources::Sources>,
+    /// Option to invalidate the cache on every block
     overlay_cache_invalidation_every_block: bool,
     #[cfg(feature = "cache_validation")]
     processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
@@ -615,6 +633,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             .collect()
     }
 
+    /// Checks if the cache should be cleared and clears it.
     fn check_cache(&mut self, queue_block_env: &QueueBlockEnv) {
         // If the block env is not +1 from the previous block env, invalidate the cache
         if let Some(prev_block_env) = self.block_env.as_ref()
@@ -670,8 +689,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
         }
-
-        self.block_env_transaction_counter = 0;
     }
 
     /// Verifies that all state sources are synced, and if not stall until they are.
@@ -810,6 +827,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.apply_state_buffer()?;
 
         *processed_blocks += 1;
+
         info!(
             target = "engine",
             block_number = block_env.number,
@@ -836,6 +854,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         *block_processing_time = Instant::now();
 
         self.block_env = Some(queue_block_env.block_env);
+        self.block_env_transaction_counter = 0;
 
         Ok(())
     }
@@ -1412,6 +1431,80 @@ mod tests {
         assert!(
             instance.send_reorg(tx1).await.is_err(),
             "Reorg with wrong hash should be rejected and exit engine"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_core_engine_reorg_followed_by_blockenv_with_last_tx_hash(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        let initial_cache_resets = instance.cache_reset_count();
+
+        // Start by sending a block environment so subsequent dry transactions share the same block.
+        instance
+            .new_block()
+            .await
+            .expect("initial blockenv should be accepted");
+
+        // Send two transactions without new blockenvs so they belong to the same block.
+        let tx1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .expect("first tx should be sent successfully");
+        assert!(
+            instance
+                .is_transaction_successful(&tx1)
+                .await
+                .expect("first tx should be processed successfully"),
+            "First transaction should execute successfully"
+        );
+
+        let tx2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .expect("second tx should be sent successfully");
+        assert!(
+            instance
+                .is_transaction_successful(&tx2)
+                .await
+                .expect("second tx should be processed successfully"),
+            "Second transaction should execute successfully"
+        );
+
+        // Reorg the second transaction; this should succeed and remove it from the buffer.
+        instance
+            .send_reorg(tx2)
+            .await
+            .expect("reorg of the last tx should succeed");
+
+        // Sending a new blockenv should reference tx1 as the last transaction hash and succeed.
+        //
+        // last_tx_hash are accounted for inside of the mock transports.
+        instance
+            .new_block()
+            .await
+            .expect("blockenv referencing the remaining tx should be accepted");
+
+        // Engine should still accept new transactions after the blockenv.
+        let tx3 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .expect("engine should accept new tx after blockenv");
+        assert!(
+            instance
+                .is_transaction_successful(&tx3)
+                .await
+                .expect("third tx should be processed successfully"),
+            "Engine should remain healthy after processing the blockenv"
+        );
+
+        instance
+            .wait_for_processing(Duration::from_millis(25))
+            .await;
+        assert_eq!(
+            instance.cache_reset_count(),
+            initial_cache_resets,
+            "Cache should remain valid throughout this scenario"
         );
     }
 
