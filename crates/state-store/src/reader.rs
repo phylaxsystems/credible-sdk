@@ -1,4 +1,4 @@
-//! Updated reader.rs to use fast metadata lookups
+//! State reader implementation for querying blockchain state from Redis.
 
 use crate::{
     CircularBufferConfig,

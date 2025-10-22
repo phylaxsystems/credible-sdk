@@ -48,62 +48,17 @@
 //!
 //! These keys live within individual namespaces and get overwritten when the circular buffer wraps:
 //!
-//! ```text
-//! {base_namespace}:{namespace_idx}:block
-//!   → Current block number stored in this namespace
-//!   → Type: String (u64)
-//!   → Example: "blockchain:0:block" = "1000"
+//! For each namespace, the following keys are stored:
+//! - `{base_namespace}:{namespace_idx}:block` - Current block number in this namespace
+//! - `{base_namespace}:{namespace_idx}:account:{address_hash}` - Hash containing balance, nonce, code hash
+//! - `{base_namespace}:{namespace_idx}:storage:{address_hash}` - Hash of storage slots for the account
+//! - `{base_namespace}:{namespace_idx}:code:{code_hash}` - Contract bytecode indexed by code hash
 //!
-//! {base_namespace}:{namespace_idx}:account:{address_hash}
-//!   → Account state (balance, nonce, code_hash)
-//!   → Type: Redis Hash with fields:
-//!       • balance: "0x..." (hex-encoded U256)
-//!       • nonce: "42" (decimal u64)
-//!       • code_hash: "0x..." (hex-encoded B256)
-//!   → Example: "blockchain:0:account:25e4fcd3b1ecd473..."
-//!
-//! {base_namespace}:{namespace_idx}:storage:{address_hash}
-//!   → Contract storage slots for an account
-//!   → Type: Redis Hash with fields:
-//!       • Key: "0x..." (hex-encoded storage slot U256)
-//!       • Value: "0x..." (hex-encoded storage value U256)
-//!   → Example: "blockchain:0:storage:25e4fcd3b1ecd473..."
-//!       Field "0x0000...01" = "0x0000...ff"
-//!
-//! {base_namespace}:{namespace_idx}:code:{code_hash}
-//!   → Contract bytecode indexed by code hash
-//!   → Type: String (hex-encoded bytes)
-//!   → Example: "blockchain:0:code:fedcba0987654321" = "0x6080604052..."
-//! ```
-//!
-//! ### 2. Global Keys (Shared Across All Namespaces)
-//!
-//! These keys provide permanent metadata:
-//!
-//! ```text
-//! {base_namespace}:meta:latest_block
-//!   → The most recent block number written to the system
-//!   → Type: String (u64)
-//!   → Example: "blockchain:meta:latest_block" = "1005"
-//!
-//! {base_namespace}:block_hash:{block_number}
-//!   → Block hash for a specific block number
-//!   → Type: String (hex-encoded B256)
-//!   → Example: "blockchain:block_hash:1000" = "0xabcd..."
-//!   → Retention: Last buffer_size blocks
-//!
-//! {base_namespace}:state_root:{block_number}
-//!   → State root hash for a specific block number
-//!   → Type: String (hex-encoded B256)
-//!   → Example: "blockchain:state_root:1000" = "0x1234..."
-//!   → Retention: Last buffer_size blocks
-//!
-//! {base_namespace}:diff:{block_number}
-//!   → Serialized state diff (changes from previous block)
-//!   → Type: String (JSON-serialized BlockStateUpdate)
-//!   → Example: "blockchain:diff:1001" = "{...}"
-//!   → Retention: Last buffer_size blocks (automatically cleaned up)
-//! ```
+//! Shared across namespaces:
+//! - `{base_namespace}:meta:latest_block` - The most recent block number written to the system
+//! - `{base_namespace}:block_hash:{block_number}` - Block hash for each block (kept for last `buffer_size` blocks)
+//! - `{base_namespace}:state_root:{block_number}` - State root for each block (kept for last `buffer_size` blocks)
+//! - `{base_namespace}:diff:{block_number}` - Serialized state diff (kept for last `buffer_size` blocks)
 //!
 //! ## Complete Schema Example
 //!

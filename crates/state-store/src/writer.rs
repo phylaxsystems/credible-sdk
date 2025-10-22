@@ -1,4 +1,4 @@
-//! Update the `commit_block_atomic` function in writer.rs to include metadata updates
+//! State writer implementation for persisting blockchain state to Redis.
 
 use crate::{
     CircularBufferConfig,
@@ -21,9 +21,9 @@ use crate::{
         get_namespace_for_block,
         get_state_root_key,
         get_storage_key,
-        read_latest_block_number, // Updated import
+        read_latest_block_number,
         read_namespace_block_number,
-        update_metadata_in_pipe, // New import
+        update_metadata_in_pipe,
     },
 };
 use alloy::primitives::B256;
@@ -46,7 +46,7 @@ impl StateWriter {
         Ok(Self { client })
     }
 
-    /// Read the most recently persisted block number from Redis metadata (O(1) operation).
+    /// Read the most recently persisted block number from Redis metadata.
     pub fn latest_block_number(&self) -> StateResult<Option<u64>> {
         let base_namespace = self.client.base_namespace.clone();
 
