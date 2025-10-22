@@ -59,7 +59,12 @@ const POOL_MAX_IDLE_PER_HOST: usize = 100;
 const CONNECT_TIMEOUT_MS: u64 = 500;
 const TCP_KEEPALIVE_SECS: u64 = 60;
 
-/// Wrapper for serializing `TxEnv` with transaction hash
+// Transaction retry configuration
+const TX_MAX_RETRIES: u32 = 5;
+const TX_INITIAL_RETRY_DELAY_MS: u64 = 100;
+const TX_MAX_RETRY_DELAY_MS: u64 = 5000;
+
+/// Wrapper for serializing `TxEnv` with the transaction hash
 #[derive(Serialize)]
 struct TransactionPayload {
     #[serde(rename = "txEnv")]
@@ -83,8 +88,8 @@ pub struct Listener {
     provider: Arc<RootProvider>,
     sidecar_client: Client,
     sidecar_url: String,
-    skip_txs: bool,
-    last_processed_block: Option<u64>,
+    /// Tracks the last block whose block env was successfully sent and accepted
+    last_block_env_sent: Option<u64>,
     starting_block: Option<u64>,
 }
 
@@ -98,7 +103,7 @@ impl Listener {
     ) -> Self {
         Self {
             provider,
-            sidecar_client: reqwest::Client::builder()
+            sidecar_client: Client::builder()
                 .pool_idle_timeout(Duration::from_secs(POOL_IDLE_TIMEOUT_SECS))
                 .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
                 .timeout(Duration::from_secs(request_timeout_seconds))
@@ -107,9 +112,7 @@ impl Listener {
                 .build()
                 .expect("failed to create sidecar HTTP client"),
             sidecar_url: sidecar_url.to_string(),
-            // If we set `skip_txs` to true, we enforce sending first the BlockEnv to the sidecar
-            skip_txs: true,
-            last_processed_block: None,
+            last_block_env_sent: None,
             starting_block,
         }
     }
@@ -120,7 +123,6 @@ impl Listener {
         let max_delay = Duration::from_secs(MAX_RETRY_DELAY_SECS);
         loop {
             if let Err(err) = self.stream_blocks().await {
-                self.skip_txs = true;
                 warn!(error = %err, "block subscription ended, retrying");
                 time::sleep(retry_delay).await;
                 // Exponential backoff with cap
@@ -138,20 +140,17 @@ impl Listener {
             .await
             .context("failed to get current block number")?;
 
-        if let Some(last_processed) = self.last_processed_block {
-            // If we've processed blocks before and there's a gap, catch up
-            if current_block > last_processed {
-                let missed_count = current_block - last_processed;
+        if let Some(last_block_env) = self.last_block_env_sent {
+            // If we've sent block envs before and there's a gap, catch up
+            if current_block > last_block_env {
+                let missed_count = current_block - last_block_env;
                 info!(
                     "Catching up on {missed_count} missed blocks (from {} to {current_block})",
-                    last_processed + 1,
+                    last_block_env + 1,
                 );
 
-                // Fetch and process each missed block
-                self.process_block_range(last_processed + 1, current_block)
+                self.process_and_handle_failures(last_block_env + 1, current_block, "Catch-up")
                     .await?;
-
-                info!("Catch-up complete, now at block {current_block}");
             } else {
                 debug!("No missed blocks to catch up on");
             }
@@ -161,22 +160,44 @@ impl Listener {
                 warn!(
                     "Starting block {start_block} is ahead of current head {current_block}, will wait for blocks",
                 );
-                self.last_processed_block = Some(start_block - 1);
+                self.last_block_env_sent = Some(start_block - 1);
             } else {
                 info!(
                     "Starting from block {start_block} and catching up to current head {current_block} ({} blocks)",
                     current_block - start_block + 1
                 );
 
-                // Catch up from starting block to current head
-                self.process_block_range(start_block, current_block).await?;
-
-                info!("Initial catch-up complete, now at block {current_block}");
+                self.process_and_handle_failures(start_block, current_block, "Initial catch-up")
+                    .await?;
             }
         } else {
             // First time running, start from the current block
             info!("Starting from current block {current_block}");
-            self.last_processed_block = Some(current_block);
+        }
+
+        Ok(())
+    }
+
+    /// Process a range of blocks and handle the case where all fail (sidecar down)
+    async fn process_and_handle_failures(
+        &mut self,
+        start: u64,
+        end: u64,
+        operation_name: &str,
+    ) -> Result<()> {
+        let initial_last_sent = self.last_block_env_sent;
+
+        self.process_block_range(start, end).await?;
+
+        // If the sidecar was down and no blocks succeeded, skip to the end block
+        if self.last_block_env_sent == initial_last_sent {
+            warn!("{operation_name} failed (sidecar likely down), will skip to block {end}");
+            self.last_block_env_sent = Some(end);
+        } else {
+            info!(
+                "{operation_name} complete, now at block {}",
+                self.last_block_env_sent.unwrap_or(end)
+            );
         }
 
         Ok(())
@@ -219,16 +240,23 @@ impl Listener {
             missing_end - missing_start + 1
         );
 
-        self.process_block_range(missing_start, missing_end).await?;
+        self.process_and_handle_failures(missing_start, missing_end, "Gap fill")
+            .await?;
 
-        info!("Successfully filled all missing blocks up to {missing_end}",);
         Ok(())
     }
 
     async fn process_block_range(&mut self, start: u64, end: u64) -> Result<()> {
         for block_num in start..=end {
-            self.fetch_and_process_block(block_num).await?;
-            self.last_processed_block = Some(block_num);
+            // Don't propagate errors during batch processing
+            // If sidecar is down, we skip failed blocks and continue
+            // This prevents getting stuck in a retry loop
+            if let Err(e) = self.fetch_and_process_block(block_num).await {
+                warn!(
+                    error = ?e,
+                    "Failed to process block {block_num} during catch-up, continuing to next block"
+                );
+            }
         }
         Ok(())
     }
@@ -253,20 +281,20 @@ impl Listener {
             let block_number = inner.number;
 
             // Check for missing blocks in the stream
-            if let Some(last_processed) = self.last_processed_block {
-                if block_number > last_processed + 1 {
+            if let Some(last_block_env) = self.last_block_env_sent {
+                if block_number > last_block_env + 1 {
                     // We've skipped blocks, fill them in
                     warn!(
                         "Block skip detected in stream: expected {}, got {block_number}",
-                        last_processed + 1,
+                        last_block_env + 1,
                     );
 
-                    if let Err(e) = self.fill_missing_blocks(last_processed, block_number).await {
+                    if let Err(e) = self.fill_missing_blocks(last_block_env, block_number).await {
                         error!(error = ?e, "Failed to fill missing blocks");
                         // Return error to trigger reconnection
                         return Err(e);
                     }
-                } else if block_number <= last_processed {
+                } else if block_number <= last_block_env {
                     // Skip duplicate/stale blocks
                     debug!("Skipping already processed block {block_number}");
                     continue;
@@ -280,25 +308,35 @@ impl Listener {
                 // Return error to trigger reconnection and catch-up
                 return Err(e);
             }
-
-            // Update the last processed block number after successful processing
-            self.last_processed_block = Some(block_number);
         }
 
         Err(anyhow!("block subscription completed"))
     }
 
-    /// Process a single block: extract transactions, send them, and send block env
+    /// Process a single block with strict sequencing:
+    /// 1. Only send transactions if the previous block env was accepted
+    /// 2. Send transactions for the current block (with retries)
+    /// 3. Send block env for the current block (which allows the next block's txs)
+    /// 4. Mark block env as sent only after it succeeds
+    /// 5. If the sidecar is down (send fails after retries), continue to the next block without marking as sent
     async fn process_block(&mut self, block: &alloy::rpc::types::Block) -> Result<()> {
         let block_number = block.header.number;
+
+        // Skip already processed blocks (prevent duplicates)
+        if let Some(last_block_env) = self.last_block_env_sent
+            && block_number <= last_block_env
+        {
+            debug!("Skipping already processed block {block_number}");
+            return Ok(());
+        }
 
         // Extract transactions from the block
         let transactions = match &block.transactions {
             alloy::rpc::types::BlockTransactions::Full(txs) => txs.clone(),
             alloy::rpc::types::BlockTransactions::Hashes(_) => {
-                Err(anyhow!(
+                return Err(anyhow!(
                     "Got hashes instead of full transactions despite using .full()"
-                ))?
+                ));
             }
             alloy::rpc::types::BlockTransactions::Uncle => Vec::new(),
         };
@@ -308,32 +346,95 @@ impl Listener {
             transactions.len()
         );
 
-        // We need to skip sending the transactions if the previous BlockEnv failed / was rejected by the sidecar
-        if !self.skip_txs {
-            // Send each transaction to sidecar
+        // STEP 1: Send transactions ONLY if previous block env was accepted
+        // (First block won't send transactions as last_block_env_sent will be None)
+        if self.last_block_env_sent.is_some() {
             for (index, tx) in transactions.iter().enumerate() {
-                if let Err(e) = self.send_transaction(tx, index as u64).await {
-                    self.skip_txs = true;
-                    error!(
-                        "error = ?e, Failed to send transaction {index} in block {block_number}",
+                // Retry transaction sending with exponential backoff
+                if let Err(e) = self
+                    .send_transaction_with_retry(tx, index as u64, block_number)
+                    .await
+                {
+                    warn!(
+                        error = ?e,
+                        "Failed to send transaction {index} in block {block_number} after all retries, will continue to block env",
                     );
-                    // Stop processing this block and return an error
-                    return Err(e);
+                    // Transaction failed after all retries - still try to send block env
+                    // so we can move to the next block
+                    break;
+                }
+            }
+            debug!("Successfully sent transactions for block {block_number}");
+        } else {
+            debug!(
+                "Skipping transactions for block {block_number} (first block or no prior block env)"
+            );
+        }
+
+        // STEP 2: Send block environment
+        // This must succeed for the next block's transactions to be sent
+        if let Err(e) = self.send_block_env(block, transactions.len()).await {
+            warn!(
+                error = ?e,
+                "Failed to send block env for block {block_number} (sidecar may be down), will continue to next block",
+            );
+            // Sidecar is down - don't mark as sent, continue to the next block
+            // When sidecar comes back up, we'll successfully send a later block env
+            return Ok(());
+        }
+
+        // STEP 3: Mark block env as sent ONLY after it succeeds
+        // This ensures strict sequential block env numbering for blocks that succeed
+        // and prevents duplicates on reconnection
+        self.last_block_env_sent = Some(block_number);
+
+        info!("Successfully processed block {block_number} (env sent, ready for next block's txs)");
+
+        Ok(())
+    }
+
+    /// Send a transaction with retry logic and exponential backoff
+    async fn send_transaction_with_retry(
+        &self,
+        tx: &alloy::rpc::types::Transaction,
+        tx_index: u64,
+        block_number: u64,
+    ) -> Result<()> {
+        let mut retry_delay = Duration::from_millis(TX_INITIAL_RETRY_DELAY_MS);
+        let max_delay = Duration::from_millis(TX_MAX_RETRY_DELAY_MS);
+
+        for attempt in 0..=TX_MAX_RETRIES {
+            match self.send_transaction(tx, tx_index).await {
+                Ok(()) => {
+                    if attempt > 0 {
+                        info!(
+                            "Successfully sent transaction {tx_index} in block {block_number} after {attempt} retries"
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempt < TX_MAX_RETRIES {
+                        warn!(
+                            error = ?e,
+                            "Failed to send transaction {tx_index} in block {block_number} (attempt {}/{TX_MAX_RETRIES}), retrying in {}ms",
+                            attempt + 1,
+                            retry_delay.as_millis()
+                        );
+                        time::sleep(retry_delay).await;
+                        // Exponential backoff with cap
+                        retry_delay = std::cmp::min(retry_delay * 2, max_delay);
+                    } else {
+                        // Final attempt failed
+                        error!(
+                            error = ?e,
+                            "Failed to send transaction {tx_index} in block {block_number} after {TX_MAX_RETRIES} retries, giving up"
+                        );
+                        return Err(e);
+                    }
                 }
             }
         }
-
-        // Send block environment to sidecar
-        if let Err(e) = self.send_block_env(block, transactions.len()).await {
-            // If there is an error sending the BlockEnv, we skip sending the transactions in the next batch
-            self.skip_txs = true;
-            error!(
-                error = ?e,
-                "Failed to send block env for block {block_number}",
-            );
-            return Err(e);
-        }
-        self.skip_txs = false;
 
         Ok(())
     }
