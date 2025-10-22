@@ -121,3 +121,72 @@ pub fn spawn_sync_task(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn publish_sync_state_sets_values_within_target() {
+        let current_block = AtomicU64::new(10);
+        let observed_block = AtomicU64::new(0);
+        let oldest_block = AtomicU64::new(0);
+        let sync_status = AtomicBool::new(false);
+
+        publish_sync_state(
+            Some(8),
+            Some(6),
+            &current_block,
+            &observed_block,
+            &oldest_block,
+            &sync_status,
+        );
+
+        assert_eq!(observed_block.load(Ordering::Acquire), 8);
+        assert_eq!(oldest_block.load(Ordering::Acquire), 6);
+        assert!(sync_status.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn publish_sync_state_marks_unsynced_when_latest_exceeds_target() {
+        let current_block = AtomicU64::new(5);
+        let observed_block = AtomicU64::new(0);
+        let oldest_block = AtomicU64::new(0);
+        let sync_status = AtomicBool::new(true);
+
+        publish_sync_state(
+            Some(8),
+            None,
+            &current_block,
+            &observed_block,
+            &oldest_block,
+            &sync_status,
+        );
+
+        assert_eq!(observed_block.load(Ordering::Acquire), 8);
+        assert_eq!(oldest_block.load(Ordering::Acquire), 8);
+        assert!(!sync_status.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn publish_sync_state_resets_when_latest_missing() {
+        let current_block = AtomicU64::new(10);
+        let observed_block = AtomicU64::new(9);
+        let oldest_block = AtomicU64::new(7);
+        let sync_status = AtomicBool::new(true);
+
+        publish_sync_state(
+            None,
+            None,
+            &current_block,
+            &observed_block,
+            &oldest_block,
+            &sync_status,
+        );
+
+        assert_eq!(observed_block.load(Ordering::Acquire), 0);
+        assert_eq!(oldest_block.load(Ordering::Acquire), 0);
+        assert!(!sync_status.load(Ordering::Acquire));
+    }
+}
