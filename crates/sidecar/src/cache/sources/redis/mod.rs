@@ -124,7 +124,7 @@ impl DatabaseRef for RedisCache {
             .get_storage(
                 address.into(),
                 slot,
-                self.current_block.load(Ordering::Relaxed),
+                self.target_block.load(Ordering::Relaxed),
             )
             .map_err(Self::Error::RedisStorage)?
             .ok_or(Self::Error::StorageNotFound)
