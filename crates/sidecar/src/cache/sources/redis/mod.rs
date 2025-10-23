@@ -181,25 +181,23 @@ impl DatabaseRef for RedisCache {
 impl Source for RedisCache {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, required_block_number: u64) -> bool {
-        let target_block = self.current_block.load(Ordering::Relaxed);
-
         if !self.sync_status.load(Ordering::Acquire) {
             return false;
         }
 
+        let target_block = self.current_block.load(Ordering::Relaxed);
         let observed_block = self.observed_block.load(Ordering::Acquire);
         let oldest_block = self.oldest_block.load(Ordering::Acquire);
-        if required_block_number < oldest_block {
+
+        if observed_block < required_block_number {
             return false;
         }
 
-        let within_target = if target_block == 0 {
-            observed_block == 0
-        } else {
-            observed_block <= target_block
-        };
+        if target_block == 0 {
+            return oldest_block == 0 && observed_block == 0;
+        }
 
-        observed_block >= required_block_number && within_target
+        oldest_block <= target_block && target_block <= observed_block
     }
 
     /// Updates the block number that queries should target.
