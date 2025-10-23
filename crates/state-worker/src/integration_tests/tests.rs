@@ -112,6 +112,14 @@ async fn test_state_worker_hydrates_genesis_state() {
         ))
     );
     let code_key = format!("{namespace}:code:{}", code_hash.trim_start_matches("0x"));
+    let slot_zero_key = format!(
+        "0x{}",
+        hex::encode(keccak256(U256::ZERO.to_be_bytes::<32>()))
+    );
+    let slot_one_key = format!(
+        "0x{}",
+        hex::encode(keccak256(U256::from(1).to_be_bytes::<32>()))
+    );
 
     let mut balance: Option<String> = None;
     let mut nonce: Option<String> = None;
@@ -150,14 +158,14 @@ async fn test_state_worker_hydrates_genesis_state() {
 
         storage_slot_zero = redis::cmd("HGET")
             .arg(&storage_key)
-            .arg("0x0000000000000000000000000000000000000000000000000000000000000000")
+            .arg(&slot_zero_key)
             .query::<Option<String>>(&mut conn)
             .ok()
             .flatten();
 
         storage_slot_one = redis::cmd("HGET")
             .arg(&storage_key)
-            .arg("0x0000000000000000000000000000000000000000000000000000000000000001")
+            .arg(&slot_one_key)
             .query::<Option<String>>(&mut conn)
             .ok()
             .flatten();

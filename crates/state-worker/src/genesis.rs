@@ -156,7 +156,9 @@ fn parse_storage(storage: HashMap<String, String>) -> Result<HashMap<U256, U256>
             .with_context(|| format!("failed to parse storage slot key {slot}"))?;
         let value = parse_u256(Some(&value))
             .with_context(|| format!("failed to parse storage slot value {value}"))?;
-        entries.insert(slot, value);
+        let slot_hash = keccak256(slot.to_be_bytes::<32>());
+        let hashed_slot = U256::from_be_bytes(slot_hash.into());
+        entries.insert(hashed_slot, value);
     }
 
     Ok(entries)

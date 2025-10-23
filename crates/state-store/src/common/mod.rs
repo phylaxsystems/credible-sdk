@@ -254,6 +254,7 @@ pub struct AccountState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
+    /// Storage slots keyed by `keccak256(slot)` (hashed slot indices).
     pub storage: HashMap<U256, U256>,
     #[serde(default)]
     pub deleted: bool,

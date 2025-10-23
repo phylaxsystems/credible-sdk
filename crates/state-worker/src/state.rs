@@ -216,6 +216,8 @@ fn process_diff(accounts: &mut HashMap<AddressHash, AccountSnapshot>, state_diff
 
         // Handle storage changes
         for (slot, storage_delta) in &account_diff.storage {
+            let slot_hash = keccak256(slot.0);
+            let slot_key = U256::from_be_bytes(slot_hash.into());
             match storage_delta {
                 Delta::Unchanged => {
                     // No change to this storage slot
@@ -224,22 +226,19 @@ fn process_diff(accounts: &mut HashMap<AddressHash, AccountSnapshot>, state_diff
                     // New storage slot was set
                     snapshot
                         .storage_updates
-                        .insert(U256::from_be_bytes(slot.0), U256::from_be_bytes(value.0));
+                        .insert(slot_key, U256::from_be_bytes(value.0));
                     snapshot.touched = true;
                 }
                 Delta::Removed(_) => {
                     // Storage slot was deleted (set to zero)
-                    snapshot
-                        .storage_updates
-                        .insert(U256::from_be_bytes(slot.0), U256::ZERO);
+                    snapshot.storage_updates.insert(slot_key, U256::ZERO);
                     snapshot.touched = true;
                 }
                 Delta::Changed(change) => {
                     // Storage slot value changed
-                    snapshot.storage_updates.insert(
-                        U256::from_be_bytes(slot.0),
-                        U256::from_be_bytes(change.to.0),
-                    );
+                    snapshot
+                        .storage_updates
+                        .insert(slot_key, U256::from_be_bytes(change.to.0));
                     snapshot.touched = true;
                 }
             }
@@ -275,6 +274,12 @@ mod tests {
         Delta,
     };
     use std::collections::BTreeMap;
+
+    fn hash_slot(slot: B256) -> U256 {
+        let slot_bytes: [u8; 32] = slot.into();
+        let slot_hash = keccak256(slot_bytes);
+        U256::from_be_bytes(slot_hash.into())
+    }
 
     // Helper function to create a StateDiff wrapped in TraceResultsWithTransactionHash
     fn create_trace_with_diff(
@@ -469,9 +474,9 @@ mod tests {
         // Convert storage to HashMap for easier testing
         let storage_map: HashMap<_, _> = account.storage.clone();
 
-        assert_eq!(storage_map.get(&slot1.into()), Some(&U256::from(100)));
-        assert_eq!(storage_map.get(&slot2.into()), Some(&U256::from(300)));
-        assert_eq!(storage_map.get(&slot3.into()), Some(&U256::ZERO));
+        assert_eq!(storage_map.get(&hash_slot(slot1)), Some(&U256::from(100)));
+        assert_eq!(storage_map.get(&hash_slot(slot2)), Some(&U256::from(300)));
+        assert_eq!(storage_map.get(&hash_slot(slot3)), Some(&U256::ZERO));
     }
 
     #[test]
@@ -546,8 +551,8 @@ mod tests {
 
         // All storage should be zeroed
         let storage_map: HashMap<_, _> = account_commit.storage.clone();
-        assert_eq!(storage_map.get(&slot1.into()), Some(&U256::ZERO));
-        assert_eq!(storage_map.get(&slot2.into()), Some(&U256::ZERO));
+        assert_eq!(storage_map.get(&hash_slot(slot1)), Some(&U256::ZERO));
+        assert_eq!(storage_map.get(&hash_slot(slot2)), Some(&U256::ZERO));
     }
 
     #[test]
@@ -720,10 +725,14 @@ mod tests {
         let storage_map: HashMap<_, _> = account.storage.clone();
 
         // Check specific slots
-        assert_eq!(storage_map.get(&U256::from(0)), Some(&U256::from(0)));
-        assert_eq!(storage_map.get(&U256::from(1)), Some(&U256::ZERO));
-        assert_eq!(storage_map.get(&U256::from(2)), Some(&U256::from(400)));
+        let slot0 = B256::from(U256::from(0));
+        let slot1 = B256::from(U256::from(1));
+        let slot2 = B256::from(U256::from(2));
+        let slot3 = B256::from(U256::from(3));
+        assert_eq!(storage_map.get(&hash_slot(slot0)), Some(&U256::from(0)));
+        assert_eq!(storage_map.get(&hash_slot(slot1)), Some(&U256::ZERO));
+        assert_eq!(storage_map.get(&hash_slot(slot2)), Some(&U256::from(400)));
         // Slot 3 was unchanged, so shouldn't be in the map
-        assert_eq!(storage_map.get(&U256::from(3)), None);
+        assert_eq!(storage_map.get(&hash_slot(slot3)), None);
     }
 }

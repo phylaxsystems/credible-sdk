@@ -10,7 +10,7 @@ use crate::{
         decode_b256,
         decode_bytes,
         decode_u256,
-        encode_u256,
+        encode_b256,
         error::{
             StateError,
             StateResult,
@@ -81,6 +81,9 @@ impl StateReader {
     }
 
     /// Get a specific storage slot for an account at a block.
+    ///
+    /// The `slot` parameter should be the `keccak256` hash of the original 32-byte slot index,
+    /// matching the format persisted by the writer (and Nethermind state dumps).
     pub fn get_storage(
         &self,
         address_hash: AddressHash,
@@ -114,6 +117,8 @@ impl StateReader {
     }
 
     /// Get all storage slots for an account at a block.
+    ///
+    /// Returned map keys are `keccak256(slot)` digests corresponding to the original storage slots.
     pub fn get_all_storage(
         &self,
         address_hash: AddressHash,
@@ -275,7 +280,8 @@ where
     // Parse storage slots
     let mut storage = HashMap::new();
     for (slot_hex, value_hex) in storage_fields {
-        let slot = decode_u256(&slot_hex)?;
+        let slot_hash = decode_b256(&slot_hex)?;
+        let slot = U256::from_be_bytes(slot_hash.into());
         let value = decode_u256(&value_hex)?;
         storage.insert(slot, value);
     }
@@ -329,7 +335,8 @@ where
     }
 
     let storage_key = get_storage_key(&namespace, address_hash);
-    let slot_hex = encode_u256(slot);
+    let slot_hash = B256::from(slot.to_be_bytes::<32>());
+    let slot_hex = encode_b256(slot_hash);
 
     let value: Option<String> = redis::cmd("HGET")
         .arg(&storage_key)
@@ -363,7 +370,8 @@ where
 
     let mut result = HashMap::new();
     for (slot_hex, value_hex) in fields {
-        let slot = decode_u256(&slot_hex)?;
+        let slot_hash = decode_b256(&slot_hex)?;
+        let slot = U256::from_be_bytes(slot_hash.into());
         let value = decode_b256(&value_hex)?;
         result.insert(slot, value);
     }
