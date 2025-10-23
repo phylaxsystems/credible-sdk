@@ -93,7 +93,10 @@ use crate::{
 use alloy::primitives::TxHash;
 use assertion_executor::{
     ForkTxExecutionError,
-    db::Database,
+    db::{
+        Database,
+        fork_db::ForkDb,
+    },
 };
 #[cfg(feature = "cache_validation")]
 use monitoring::cache::CacheChecker;
@@ -232,6 +235,8 @@ pub struct CoreEngine<DB> {
     ///
     /// This is the state the `CoreEngine` is executing transactions against.
     state: OverlayDb<DB>,
+    /// Current block's fork. It is created once per block, accumulates all transaction changes
+    current_block_fork: Option<ForkDb<OverlayDb<DB>>>,
     /// External providers of state we use when we do not have a piece of state cached in our in memory db.
     /// External state providers implement a trait that we use to query databaseref-like data and populate `state: OverlayDb<DB>`
     /// for execution with it.
@@ -307,6 +312,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         };
         Self {
             state,
+            current_block_fork: None,
             cache: cache.clone(),
             tx_receiver,
             assertion_executor,
@@ -339,6 +345,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let cache = Arc::new(Cache::new(vec![], 10));
         Self {
             state: OverlayDb::new(None, 64),
+            current_block_fork: None,
             tx_receiver,
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
@@ -531,7 +538,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             "Executing transaction with environment"
         );
 
-        let mut fork_db = self.state.fork();
+        // Get the current block fork (should always exist when processing transactions)
+        let block_fork = self.current_block_fork.as_mut().ok_or_else(|| {
+            error!("No block fork available for transaction execution");
+            EngineError::TransactionError
+        })?;
 
         debug!(
             target = "engine",
@@ -542,16 +553,15 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         #[cfg(feature = "linea")]
         if check_recepient_address(tx_env).is_none() {
-            // if `None`, we can just skip this transaction as it failed
-            // linea execution requirements
             return Ok(());
         }
 
         // Validate transaction and run assertions
+        // Execute directly on the block fork
         let rax = self.assertion_executor.validate_transaction_ext_db(
             block_env.clone(),
             tx_env.clone(),
-            &mut fork_db,
+            block_fork,
             &mut self.state,
         );
 
@@ -823,8 +833,14 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.check_cache(&queue_block_env);
         }
 
-        // Apply the previously executed transaction state changes
-        self.apply_state_buffer()?;
+        // Apply the last transaction's state to the current block fork
+        self.apply_state_buffer_to_fork()?;
+
+        // Finalize the previous block by committing its fork to the underlying state
+        self.finalize_previous_block()?;
+
+        // Create a new fork for this block
+        self.current_block_fork = Some(self.state.fork());
 
         *processed_blocks += 1;
 
@@ -890,12 +906,44 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             "Processing transaction"
         );
 
-        // Apply the previously executed transaction state changes
-        self.apply_state_buffer()?;
+        // Apply the previously executed transaction state changes to the block fork
+        self.apply_state_buffer_to_fork()?;
 
         // Process the transaction with the current block environment
         self.execute_transaction(tx_hash, &tx_env)?;
 
+        Ok(())
+    }
+
+    /// Applies the state inside `self.last_executed_tx` to the current block fork.
+    fn apply_state_buffer_to_fork(&mut self) -> Result<(), EngineError> {
+        if let Some((_tx_hash, state)) = self.last_executed_tx.current() {
+            let changes = state.clone();
+            let changes = changes.ok_or(EngineError::NothingToCommit)?;
+
+            // Commit to the current block fork
+            if let Some(fork) = self.current_block_fork.as_mut() {
+                fork.commit(changes);
+            }
+        }
+        self.last_executed_tx = LastExecutedTx::new();
+        Ok(())
+    }
+
+    /// Finalizes the previous block by committing the block fork to the underlying state
+    fn finalize_previous_block(&mut self) -> Result<(), EngineError> {
+        if let Some(block_fork) = self.current_block_fork.take() {
+            debug!(
+                target = "engine",
+                "Finalizing previous block by committing fork to underlying state"
+            );
+
+            // Convert the fork's accumulated state into EvmState
+            let block_state = block_fork.to_evm_state();
+
+            // Commit the entire block's state to the underlying OverlayDb
+            self.state.commit(block_state);
+        }
         Ok(())
     }
 
