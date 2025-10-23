@@ -74,7 +74,6 @@ use tokio::time::sleep;
 use assertion_executor::{
     AssertionExecutor,
     ExecutorConfig,
-    ExecutorError,
     db::overlay::OverlayDb,
     primitives::ExecutionResult,
     store::{
@@ -92,8 +91,13 @@ use crate::{
 };
 use alloy::primitives::TxHash;
 use assertion_executor::{
+    ExecutorError,
     ForkTxExecutionError,
-    db::Database,
+    TxExecutionError,
+    db::{
+        Database,
+        fork_db::ForkDb,
+    },
 };
 #[cfg(feature = "cache_validation")]
 use monitoring::cache::CacheChecker;
@@ -232,6 +236,8 @@ pub struct CoreEngine<DB> {
     ///
     /// This is the state the `CoreEngine` is executing transactions against.
     state: OverlayDb<DB>,
+    /// Current block's fork. It is created once per block, accumulates all transaction changes
+    current_block_fork: Option<ForkDb<OverlayDb<DB>>>,
     /// External providers of state we use when we do not have a piece of state cached in our in memory db.
     /// External state providers implement a trait that we use to query databaseref-like data and populate `state: OverlayDb<DB>`
     /// for execution with it.
@@ -307,6 +313,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         };
         Self {
             state,
+            current_block_fork: None,
             cache: cache.clone(),
             tx_receiver,
             assertion_executor,
@@ -339,6 +346,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let cache = Arc::new(Cache::new(vec![], 10));
         Self {
             state: OverlayDb::new(None, 64),
+            current_block_fork: None,
             tx_receiver,
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
@@ -376,12 +384,15 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             .map(|_| ())
     }
 
-    fn process_transaction_validation_error(
+    fn process_transaction_validation_error<ErrType>(
         &mut self,
         tx_hash: TxHash,
         tx_env: &TxEnv,
-        e: &ExecutorError<OverlayDb<DB>, OverlayDb<DB>>,
-    ) -> Result<(), EngineError> {
+        e: &ExecutorError<ErrType>,
+    ) -> Result<(), EngineError>
+    where
+        ErrType: Debug,
+    {
         if !ErrorRecoverability::from(e).is_recoverable() {
             critical!(error = ?e, "Failed to execute a transaction");
         }
@@ -424,6 +435,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 );
                 Err(EngineError::AssertionError)
             }
+            _ => Err(EngineError::AssertionError),
         }
     }
 
@@ -531,7 +543,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             "Executing transaction with environment"
         );
 
-        let mut fork_db = self.state.fork();
+        // Get the current block fork (should always exist when processing transactions)
+        let block_fork = self.current_block_fork.as_mut().ok_or_else(|| {
+            error!("No block fork available for transaction execution");
+            EngineError::TransactionError
+        })?;
 
         debug!(
             target = "engine",
@@ -542,17 +558,19 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         #[cfg(feature = "linea")]
         if check_recepient_address(tx_env).is_none() {
-            // if `None`, we can just skip this transaction as it failed
-            // linea execution requirements
             return Ok(());
         }
 
         // Validate transaction and run assertions
-        let rax = self.assertion_executor.validate_transaction_ext_db(
+        // Execute directly on the block fork
+        // Note: block_fork is ForkDb<OverlayDb<DB>>, so the error type will be
+        // ExecutorError<<ForkDb<OverlayDb<DB>> as DatabaseRef>::Error>
+        // which is ExecutorError<NotFoundError>
+        let rax = self.assertion_executor.validate_transaction(
             block_env.clone(),
-            tx_env.clone(),
-            &mut fork_db,
-            &mut self.state,
+            tx_env,
+            block_fork,
+            false,
         );
 
         tx_metrics.transaction_processing_duration = instant.elapsed();
@@ -560,6 +578,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let rax = match rax {
             Ok(rax) => rax,
             Err(e) => {
+                // Now this works because process_transaction_validation_error is generic
                 return self.process_transaction_validation_error(tx_hash, tx_env, &e);
             }
         };
@@ -647,6 +666,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             let instant = Instant::now();
             self.check_sources_available = true;
             self.state.invalidate_all();
+            if let Some(fork_db) = self.current_block_fork.as_mut() {
+                fork_db.invalidate();
+            }
             self.last_executed_tx.clear();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
@@ -665,6 +687,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             let instant = Instant::now();
             self.check_sources_available = true;
             self.state.invalidate_all();
+            if let Some(fork_db) = self.current_block_fork.as_mut() {
+                fork_db.invalidate();
+            }
             self.last_executed_tx.clear();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
@@ -685,6 +710,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             let instant = Instant::now();
             self.check_sources_available = true;
             self.state.invalidate_all();
+            if let Some(fork_db) = self.current_block_fork.as_mut() {
+                fork_db.invalidate();
+            }
             self.last_executed_tx.clear();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
@@ -823,8 +851,14 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.check_cache(&queue_block_env);
         }
 
-        // Apply the previously executed transaction state changes
-        self.apply_state_buffer()?;
+        // Apply the last transaction's state to the current block fork
+        self.apply_state_buffer_to_fork()?;
+
+        // Finalize the previous block by committing its fork to the underlying state
+        self.finalize_previous_block();
+
+        // Create a new fork for this block
+        self.current_block_fork = Some(self.state.fork());
 
         *processed_blocks += 1;
 
@@ -890,13 +924,41 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             "Processing transaction"
         );
 
-        // Apply the previously executed transaction state changes
-        self.apply_state_buffer()?;
+        // Apply the previously executed transaction state changes to the block fork
+        self.apply_state_buffer_to_fork()?;
 
         // Process the transaction with the current block environment
         self.execute_transaction(tx_hash, &tx_env)?;
 
         Ok(())
+    }
+
+    /// Applies the state inside `self.last_executed_tx` to the current block fork.
+    fn apply_state_buffer_to_fork(&mut self) -> Result<(), EngineError> {
+        if let Some((_tx_hash, state)) = self.last_executed_tx.current() {
+            let changes = state.clone();
+            let changes = changes.ok_or(EngineError::NothingToCommit)?;
+
+            // Commit to the current block fork
+            if let Some(fork) = self.current_block_fork.as_mut() {
+                fork.commit(changes);
+            }
+        }
+        self.last_executed_tx = LastExecutedTx::new();
+        Ok(())
+    }
+
+    /// Finalizes the previous block by committing the block fork to the underlying state
+    fn finalize_previous_block(&mut self) {
+        if let Some(block_fork) = self.current_block_fork.take() {
+            debug!(
+                target = "engine",
+                "Finalizing previous block by committing fork to underlying state"
+            );
+
+            // Commit the entire block's state to the underlying OverlayDb
+            self.state.commit_overlay_fork_db(block_fork);
+        }
     }
 
     /// Applies the state inside `self.last_executed_tx` to `self.state`.
@@ -997,24 +1059,26 @@ impl<DBError> From<&EVMError<DBError>> for ErrorRecoverability {
     }
 }
 
-impl<ExtDb: revm::Database> From<&ForkTxExecutionError<ExtDb>> for ErrorRecoverability {
-    fn from(value: &ForkTxExecutionError<ExtDb>) -> Self {
-        match value {
-            ForkTxExecutionError::TxEvmError(e) => e.into(),
-            ForkTxExecutionError::CallTracerError(_) => Self::Recoverable,
+impl<DbErr> From<&TxExecutionError<DbErr>> for ErrorRecoverability
+where
+    DbErr: Debug,
+{
+    fn from(error: &TxExecutionError<DbErr>) -> Self {
+        match error {
+            TxExecutionError::TxEvmError(e) => e.into(),
+            TxExecutionError::CallTracerError(_) => ErrorRecoverability::Recoverable,
         }
     }
 }
 
-impl<Active, ExtDb> From<&ExecutorError<Active, ExtDb>> for ErrorRecoverability
+impl<ActiveDbErr, ExtDbErr> From<&ExecutorError<ActiveDbErr, ExtDbErr>> for ErrorRecoverability
 where
-    Active: DatabaseRef,
-    ExtDb: Database,
-    ExtDb::Error: Debug,
+    ActiveDbErr: Debug,
+    ExtDbErr: Debug,
 {
-    fn from(error: &ExecutorError<Active, ExtDb>) -> Self {
+    fn from(error: &ExecutorError<ActiveDbErr, ExtDbErr>) -> Self {
         match error {
-            ExecutorError::ForkTxExecutionError(e) => e.into(),
+            ExecutorError::ForkTxExecutionError(e) => e.into(), // ← This calls TxExecutionError::into()
             ExecutorError::AssertionExecutionError(..) => ErrorRecoverability::Unrecoverable,
         }
     }
@@ -1535,6 +1599,7 @@ mod tests {
         let initial_cache_count = engine.get_state().cache_entry_count();
 
         engine.block_env = Some(block_env);
+        engine.current_block_fork = Some(engine.get_state().fork());
 
         // Execute the transaction
         let result = engine.execute_transaction(tx_hash, &tx_env);
