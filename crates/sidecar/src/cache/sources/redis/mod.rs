@@ -118,11 +118,13 @@ impl DatabaseRef for RedisCache {
         address: Address,
         index: StorageKey,
     ) -> Result<StorageValue, Self::Error> {
+        let slot_hash = keccak256(index.to_be_bytes::<32>());
+        let slot = U256::from_be_bytes(slot_hash.into());
         self.backend
             .get_storage(
                 address.into(),
-                index,
-                self.target_block.load(Ordering::Relaxed),
+                slot,
+                self.current_block.load(Ordering::Relaxed),
             )
             .map_err(Self::Error::RedisStorage)?
             .ok_or(Self::Error::StorageNotFound)

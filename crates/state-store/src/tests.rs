@@ -22,6 +22,24 @@ use redis::Commands;
 use std::collections::HashMap;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
+use tokio::time::Duration;
+
+async fn wait_for_redis(host: &str, port: u16) -> Result<()> {
+    let url = format!("redis://{host}:{port}");
+    for _ in 0..20 {
+        match redis::Client::open(url.as_str()).and_then(|client| client.get_connection()) {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                // Redis may not be ready yet; retry after brief pause.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if err.kind() == redis::ErrorKind::IoError {
+                    continue;
+                }
+            }
+        }
+    }
+    Err(anyhow::anyhow!("Redis at {url} was not ready in time"))
+}
 
 /// Helper to render U256 in `0x`-prefixed hex for Redis.
 fn encode_u256(value: U256) -> String {
@@ -33,22 +51,28 @@ fn u256_from_u64(value: u64) -> U256 {
 }
 
 // Helper to setup Redis connection for each test (now async!)
-async fn setup_redis() -> (testcontainers::ContainerAsync<Redis>, redis::Connection) {
+async fn setup_redis() -> Result<(testcontainers::ContainerAsync<Redis>, redis::Connection)> {
     let container = Redis::default()
         .start()
         .await
         .expect("Failed to start Redis container");
 
-    let host = container.get_host().await.expect("Failed to get host");
+    let host = container
+        .get_host()
+        .await
+        .expect("Failed to get host")
+        .to_string();
     let port = container
         .get_host_port_ipv4(6379)
         .await
         .expect("Failed to get port");
 
+    wait_for_redis(&host, port).await?;
+
     let client = redis::Client::open(format!("redis://{host}:{port}")).unwrap();
     let connection = client.get_connection().unwrap();
 
-    (container, connection)
+    Ok((container, connection))
 }
 
 // Helper to create a test update with specific account data
@@ -73,10 +97,22 @@ fn create_test_update(
             nonce,
             code_hash,
             code,
-            storage,
+            storage: hash_storage_slots(storage),
             deleted: false,
         }],
     }
+}
+
+fn hash_slot(slot: U256) -> U256 {
+    let slot_hash = keccak256(slot.to_be_bytes::<32>());
+    U256::from_be_bytes(slot_hash.into())
+}
+
+fn hash_storage_slots(storage: HashMap<U256, U256>) -> HashMap<U256, U256> {
+    storage
+        .into_iter()
+        .map(|(slot, value)| (hash_slot(slot), value))
+        .collect()
 }
 
 // Helper to verify account state in Redis
@@ -107,7 +143,7 @@ fn verify_storage(
     expected_value: U256,
 ) -> Result<()> {
     let storage_key = get_storage_key(namespace, &address.into());
-    let slot_hex = encode_u256(slot);
+    let slot_hex = encode_u256(hash_slot(slot));
 
     let value: String = conn.hget(&storage_key, &slot_hex)?;
     assert_eq!(value, encode_u256(expected_value), "Storage value mismatch");
@@ -118,8 +154,10 @@ fn verify_storage(
 #[tokio::test]
 async fn test_cumulative_state_with_different_accounts() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "cumulative_accounts".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -202,8 +240,10 @@ async fn test_cumulative_state_with_different_accounts() -> Result<()> {
 #[tokio::test]
 async fn test_cumulative_state_with_account_updates() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "cumulative_updates".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -271,8 +311,10 @@ async fn test_cumulative_state_with_account_updates() -> Result<()> {
 #[tokio::test]
 async fn test_cumulative_storage_updates() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "cumulative_storage".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -367,8 +409,10 @@ async fn test_cumulative_storage_updates() -> Result<()> {
 #[tokio::test]
 async fn test_single_block_only_one_state_available() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "single_block".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -402,7 +446,7 @@ async fn test_single_block_only_one_state_available() -> Result<()> {
 
 #[tokio::test]
 async fn test_state_diff_storage_and_cleanup() -> Result<()> {
-    let (_container, mut conn) = setup_redis().await;
+    let (_container, mut conn) = setup_redis().await?;
 
     let base_namespace = "diff_cleanup";
     let buffer_size = 3;
@@ -445,8 +489,10 @@ async fn test_state_diff_storage_and_cleanup() -> Result<()> {
 #[tokio::test]
 async fn test_large_scale_rotation() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "large_scale".to_string();
     let config = CircularBufferConfig { buffer_size: 5 };
@@ -499,8 +545,10 @@ async fn test_large_scale_rotation() -> Result<()> {
 #[tokio::test]
 async fn test_storage_slot_zeroing() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "storage_zero".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -582,8 +630,10 @@ async fn test_storage_slot_zeroing() -> Result<()> {
 #[tokio::test]
 async fn test_roundtrip_basic_account_read() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "roundtrip_basic".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -626,8 +676,10 @@ async fn test_roundtrip_basic_account_read() -> Result<()> {
 #[tokio::test]
 async fn test_roundtrip_account_with_storage() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "roundtrip_storage".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -668,20 +720,20 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
     assert_eq!(account.nonce, 10);
     assert_eq!(account.storage.len(), 3);
     assert_eq!(
-        account.storage.get(&u256_from_u64(1)),
+        account.storage.get(&hash_slot(u256_from_u64(1))),
         Some(&u256_from_u64(100))
     );
     assert_eq!(
-        account.storage.get(&u256_from_u64(2)),
+        account.storage.get(&hash_slot(u256_from_u64(2))),
         Some(&u256_from_u64(200))
     );
     assert_eq!(
-        account.storage.get(&u256_from_u64(3)),
+        account.storage.get(&hash_slot(u256_from_u64(3))),
         Some(&u256_from_u64(300))
     );
 
     // Test individual storage slot read
-    let slot_value = reader.get_storage(address.into(), u256_from_u64(2), 0)?;
+    let slot_value = reader.get_storage(address.into(), hash_slot(u256_from_u64(2)), 0)?;
     assert_eq!(slot_value, Some(u256_from_u64(200)));
 
     Ok(())
@@ -690,8 +742,10 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
 #[tokio::test]
 async fn test_roundtrip_account_with_code() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "roundtrip_code".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -736,8 +790,10 @@ async fn test_roundtrip_account_with_code() -> Result<()> {
 #[tokio::test]
 async fn test_roundtrip_circular_buffer_rotation() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "roundtrip_rotation".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -801,8 +857,10 @@ async fn test_roundtrip_circular_buffer_rotation() -> Result<()> {
 #[tokio::test]
 async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "roundtrip_cumulative".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -875,8 +933,10 @@ async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
 #[tokio::test]
 async fn test_roundtrip_block_metadata() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "roundtrip_metadata".to_string();
     let config = CircularBufferConfig { buffer_size: 5 };
@@ -948,8 +1008,10 @@ async fn test_roundtrip_block_metadata() -> Result<()> {
 #[tokio::test]
 async fn test_roundtrip_storage_evolution() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "roundtrip_storage_evo".to_string();
     let config = CircularBufferConfig { buffer_size: 4 };
@@ -997,20 +1059,23 @@ async fn test_roundtrip_storage_evolution() -> Result<()> {
     let all_storage = reader.get_all_storage(address.into(), 3)?;
     assert_eq!(all_storage.len(), 5);
     assert_eq!(
-        all_storage.get(&u256_from_u64(1)),
+        all_storage.get(&hash_slot(u256_from_u64(1))),
         Some(&u256_from_u64(150).into())
     );
-    assert_eq!(all_storage.get(&u256_from_u64(2)), Some(&U256::ZERO.into()));
     assert_eq!(
-        all_storage.get(&u256_from_u64(3)),
+        all_storage.get(&hash_slot(u256_from_u64(2))),
+        Some(&U256::ZERO.into())
+    );
+    assert_eq!(
+        all_storage.get(&hash_slot(u256_from_u64(3))),
         Some(&u256_from_u64(350).into())
     );
     assert_eq!(
-        all_storage.get(&u256_from_u64(4)),
+        all_storage.get(&hash_slot(u256_from_u64(4))),
         Some(&u256_from_u64(400).into())
     );
     assert_eq!(
-        all_storage.get(&u256_from_u64(5)),
+        all_storage.get(&hash_slot(u256_from_u64(5))),
         Some(&u256_from_u64(500).into())
     );
 
@@ -1020,8 +1085,10 @@ async fn test_roundtrip_storage_evolution() -> Result<()> {
 #[tokio::test]
 async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
     let container = Redis::default().start().await?;
-    let host = container.get_host().await?;
+    let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
 
     let namespace = "roundtrip_multi_acct".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };

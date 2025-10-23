@@ -109,7 +109,8 @@ fn write_account_to_pipe(pipe: &mut redis::Pipeline, namespace: &str, account: &
     if !account.storage.is_empty() || account.deleted {
         let storage_key = get_storage_key(namespace, &account.address_hash);
         for (slot, value) in &account.storage {
-            let slot_hex = encode_u256(*slot);
+            let slot_hash = B256::from(slot.to_be_bytes::<32>());
+            let slot_hex = encode_b256(slot_hash);
             let value_hex = encode_u256(*value);
             pipe.hset(&storage_key, slot_hex, value_hex);
         }
