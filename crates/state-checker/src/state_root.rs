@@ -88,14 +88,16 @@ fn calculate_storage_root(storage: &HashMap<U256, U256>) -> B256 {
     // Convert to sorted entries for deterministic trie construction
     let mut entries: Vec<(B256, Vec<u8>)> = storage
         .iter()
-        .filter_map(|(slot_hash, value)| {
+        .filter_map(|(slot, value)| {
             // Skip zero values - they don't exist in the trie
             if value.is_zero() {
                 return None;
             }
 
-            // Keys are stored as keccak256(slot) digests in Redis
-            let key_hash = B256::from(slot_hash.to_be_bytes::<32>());
+            // Key: keccak256(rlp(slot))
+            let mut slot_rlp = Vec::new();
+            slot.encode(&mut slot_rlp);
+            let key_hash = keccak256(&slot_rlp);
 
             // Value: RLP-encoded value (will trim leading zeros automatically)
             let mut value_rlp = Vec::new();
@@ -261,12 +263,6 @@ mod tests {
         address,
     };
 
-    fn hash_slot(slot: u64) -> U256 {
-        let slot_u256 = U256::from(slot);
-        let slot_hash = keccak256(slot_u256.to_be_bytes::<32>());
-        U256::from_be_bytes(slot_hash.into())
-    }
-
     #[test]
     fn test_empty_storage_root() {
         let storage = HashMap::new();
@@ -277,8 +273,8 @@ mod tests {
     #[test]
     fn test_storage_root_with_data() {
         let mut storage = HashMap::new();
-        storage.insert(hash_slot(1), U256::from(100));
-        storage.insert(hash_slot(2), U256::from(200));
+        storage.insert(U256::from(1), U256::from(100));
+        storage.insert(U256::from(2), U256::from(200));
 
         let root = calculate_storage_root(&storage);
         assert_ne!(root, KECCAK_EMPTY);
@@ -288,11 +284,11 @@ mod tests {
     #[test]
     fn test_storage_root_skips_zero_values() {
         let mut storage1 = HashMap::new();
-        storage1.insert(hash_slot(1), U256::from(100));
-        storage1.insert(hash_slot(2), U256::ZERO); // Should be skipped
+        storage1.insert(U256::from(1), U256::from(100));
+        storage1.insert(U256::from(2), U256::ZERO); // Should be skipped
 
         let mut storage2 = HashMap::new();
-        storage2.insert(hash_slot(1), U256::from(100));
+        storage2.insert(U256::from(1), U256::from(100));
 
         let root1 = calculate_storage_root(&storage1);
         let root2 = calculate_storage_root(&storage2);
@@ -304,9 +300,9 @@ mod tests {
     #[test]
     fn test_storage_root_deterministic() {
         let mut storage = HashMap::new();
-        storage.insert(hash_slot(5), U256::from(500));
-        storage.insert(hash_slot(1), U256::from(100));
-        storage.insert(hash_slot(3), U256::from(300));
+        storage.insert(U256::from(5), U256::from(500));
+        storage.insert(U256::from(1), U256::from(100));
+        storage.insert(U256::from(3), U256::from(300));
 
         let root1 = calculate_storage_root(&storage);
         let root2 = calculate_storage_root(&storage);
@@ -376,14 +372,14 @@ mod tests {
     fn test_storage_root_order_independence() {
         // Insert in different orders, should get same root
         let mut storage1 = HashMap::new();
-        storage1.insert(hash_slot(1), U256::from(100));
-        storage1.insert(hash_slot(2), U256::from(200));
-        storage1.insert(hash_slot(3), U256::from(300));
+        storage1.insert(U256::from(1), U256::from(100));
+        storage1.insert(U256::from(2), U256::from(200));
+        storage1.insert(U256::from(3), U256::from(300));
 
         let mut storage2 = HashMap::new();
-        storage2.insert(hash_slot(3), U256::from(300));
-        storage2.insert(hash_slot(1), U256::from(100));
-        storage2.insert(hash_slot(2), U256::from(200));
+        storage2.insert(U256::from(3), U256::from(300));
+        storage2.insert(U256::from(1), U256::from(100));
+        storage2.insert(U256::from(2), U256::from(200));
 
         let root1 = calculate_storage_root(&storage1);
         let root2 = calculate_storage_root(&storage2);
@@ -394,8 +390,8 @@ mod tests {
     #[test]
     fn test_storage_root_with_large_values() {
         let mut storage = HashMap::new();
-        storage.insert(hash_slot(1), U256::MAX);
-        storage.insert(hash_slot(2), U256::from(u128::MAX));
+        storage.insert(U256::from(1), U256::MAX);
+        storage.insert(U256::from(2), U256::from(u128::MAX));
 
         let root = calculate_storage_root(&storage);
         assert_ne!(root, KECCAK_EMPTY);
@@ -404,7 +400,7 @@ mod tests {
     #[test]
     fn test_storage_root_single_value() {
         let mut storage = HashMap::new();
-        storage.insert(hash_slot(42), U256::from(12345));
+        storage.insert(U256::from(42), U256::from(12345));
 
         let root = calculate_storage_root(&storage);
         assert_ne!(root, KECCAK_EMPTY);
@@ -466,7 +462,7 @@ mod tests {
     #[test]
     fn test_account_rlp_with_storage() {
         let mut storage = HashMap::new();
-        storage.insert(hash_slot(1), U256::from(100));
+        storage.insert(U256::from(1), U256::from(100));
         let storage_root = calculate_storage_root(&storage);
 
         let account = AccountState {
@@ -663,12 +659,12 @@ mod tests {
     fn test_complete_state_root_calculation() {
         // Simulate a complete state with multiple accounts and storage
         let mut storage1 = HashMap::new();
-        storage1.insert(hash_slot(1), U256::from(100));
-        storage1.insert(hash_slot(2), U256::from(200));
+        storage1.insert(U256::from(1), U256::from(100));
+        storage1.insert(U256::from(2), U256::from(200));
         let storage_root1 = calculate_storage_root(&storage1);
 
         let mut storage2 = HashMap::new();
-        storage2.insert(hash_slot(5), U256::from(500));
+        storage2.insert(U256::from(5), U256::from(500));
         let storage_root2 = calculate_storage_root(&storage2);
 
         let accounts = [
@@ -757,7 +753,7 @@ mod tests {
     fn test_storage_with_sequential_slots() {
         let mut storage = HashMap::new();
         for i in 0..10 {
-            storage.insert(hash_slot(i), U256::from(i * 100));
+            storage.insert(U256::from(i), U256::from(i * 100));
         }
 
         let root = calculate_storage_root(&storage);
@@ -767,9 +763,9 @@ mod tests {
     #[test]
     fn test_storage_with_sparse_slots() {
         let mut storage = HashMap::new();
-        storage.insert(hash_slot(1), U256::from(100));
-        storage.insert(hash_slot(1_000), U256::from(200));
-        storage.insert(hash_slot(1_000_000), U256::from(300));
+        storage.insert(U256::from(1), U256::from(100));
+        storage.insert(U256::from(1_000), U256::from(200));
+        storage.insert(U256::from(1_000_000), U256::from(300));
 
         let root = calculate_storage_root(&storage);
         assert_ne!(root, KECCAK_EMPTY);
