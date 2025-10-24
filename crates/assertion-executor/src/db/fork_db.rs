@@ -4,14 +4,11 @@ use crate::{
         DatabaseRef,
     },
     primitives::{
-        Account,
         AccountInfo,
-        AccountStatus,
         Address,
         B256,
         Bytecode,
         EvmState,
-        EvmStorageSlot,
         U256,
     },
 };
@@ -172,35 +169,6 @@ impl<ExtDb> ForkDb<ExtDb> {
     /// This will overwrite any existing account info.
     pub fn insert_account_info(&mut self, address: Address, account_info: AccountInfo) {
         self.basic.insert(address, account_info);
-    }
-
-    /// Converts the fork's accumulated changes into an `EvmState`
-    pub fn to_evm_state(&self) -> EvmState {
-        let mut state = EvmState::default();
-
-        for (address, account_info) in &self.basic {
-            let storage = self
-                .storage
-                .get(address)
-                .map(|s| {
-                    s.map
-                        .iter()
-                        .map(|(k, v)| (*k, EvmStorageSlot::new(*v)))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            state.insert(
-                *address,
-                Account {
-                    info: account_info.clone(),
-                    storage,
-                    status: AccountStatus::Touched,
-                },
-            );
-        }
-
-        state
     }
 }
 

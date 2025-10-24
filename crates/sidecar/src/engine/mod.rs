@@ -837,7 +837,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.apply_state_buffer_to_fork()?;
 
         // Finalize the previous block by committing its fork to the underlying state
-        self.finalize_previous_block()?;
+        self.finalize_previous_block();
 
         // Create a new fork for this block
         self.current_block_fork = Some(self.state.fork());
@@ -931,20 +931,16 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     }
 
     /// Finalizes the previous block by committing the block fork to the underlying state
-    fn finalize_previous_block(&mut self) -> Result<(), EngineError> {
+    fn finalize_previous_block(&mut self) {
         if let Some(block_fork) = self.current_block_fork.take() {
             debug!(
                 target = "engine",
                 "Finalizing previous block by committing fork to underlying state"
             );
 
-            // Convert the fork's accumulated state into EvmState
-            let block_state = block_fork.to_evm_state();
-
             // Commit the entire block's state to the underlying OverlayDb
-            self.state.commit(block_state);
+            self.state.commit_overlay_fork_db(block_fork);
         }
-        Ok(())
     }
 
     /// Applies the state inside `self.last_executed_tx` to `self.state`.
