@@ -10,7 +10,9 @@
 mod error;
 pub use error::{
     ExecutorError,
+    ExecutorTestError,
     ForkTxExecutionError,
+    TestError,
 };
 
 mod executor;

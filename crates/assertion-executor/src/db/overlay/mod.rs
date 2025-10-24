@@ -381,6 +381,34 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
     }
 }
 
+impl<Db> OverlayDb<Db> {
+    pub fn commit_overlay_fork_db(&mut self, fork_db: ForkDb<OverlayDb<Db>>) {
+        // Update account info
+        for (address, account_info) in fork_db.basic {
+            let key = TableKey::Basic(address);
+            self.overlay
+                .insert(key, TableValue::Basic(account_info.clone()));
+        }
+
+        // Update code if present
+        for (address, code) in fork_db.code_by_hash {
+            let code_key = TableKey::CodeByHash(address);
+            self.overlay
+                .insert(code_key, TableValue::CodeByHash(code.clone()));
+        }
+
+        // Update storage slots
+        for (address, slot_map) in fork_db.storage {
+            for (slot, storage_slot) in slot_map.map {
+                let storage_key = TableKey::Storage(address, slot);
+                let value_b256: B256 = storage_slot.to_be_bytes().into();
+                self.overlay
+                    .insert(storage_key, TableValue::Storage(value_b256));
+            }
+        }
+    }
+}
+
 impl<Db: DatabaseRef> Database for OverlayDb<Db> {
     type Error = NotFoundError;
 

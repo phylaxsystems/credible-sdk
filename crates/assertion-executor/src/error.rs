@@ -24,6 +24,14 @@ where
     AssertionExecutionError(EvmState, #[source] AssertionExecutionError<Active>),
 }
 
+#[derive(Error)]
+pub enum ExecutorTestError<Active: DatabaseRef> {
+    #[error("Fork tx execution error: {0}")]
+    ForkTxExecutionError(#[source] TestError<Active>),
+    #[error("Assertion execution error")]
+    AssertionExecutionError(EvmState, #[source] AssertionExecutionError<Active>),
+}
+
 impl<Active: DatabaseRef, ExtDb: Database> Debug for ExecutorError<Active, ExtDb>
 where
     ExtDb::Error: Debug,
@@ -35,6 +43,29 @@ where
             Self::AssertionExecutionError(_, e) => write!(f, "AssertionExecutionError({e:?})"),
         }
     }
+}
+
+impl<Active: DatabaseRef> Debug for ExecutorTestError<Active>
+where
+    Active::Error: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ForkTxExecutionError(e) => write!(f, "ForkTxExecutionError({e:?})"),
+            Self::AssertionExecutionError(_, e) => write!(f, "AssertionExecutionError({e:?})"),
+        }
+    }
+}
+
+#[derive(Error)]
+pub enum TestError<ExtDb: DatabaseRef>
+where
+    ExtDb::Error: Debug,
+{
+    #[error("Evm error executing transaction: {0}")]
+    TxEvmError(#[source] EVMError<ExtDb::Error>),
+    #[error("Call tracer error: {0}")]
+    CallTracerError(#[source] CallTracerError),
 }
 
 #[derive(Error)]
@@ -49,6 +80,18 @@ where
 }
 
 impl<ExtDb: Database> Debug for ForkTxExecutionError<ExtDb>
+where
+    ExtDb::Error: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TxEvmError(e) => write!(f, "TxEvmError({e:?})"),
+            Self::CallTracerError(e) => write!(f, "CallTracerError({e:?})"),
+        }
+    }
+}
+
+impl<ExtDb: DatabaseRef> Debug for TestError<ExtDb>
 where
     ExtDb::Error: Debug,
 {
