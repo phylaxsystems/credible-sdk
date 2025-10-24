@@ -74,7 +74,7 @@ use tokio::time::sleep;
 use assertion_executor::{
     AssertionExecutor,
     ExecutorConfig,
-    ExecutorError,
+    ExecutorTestError,
     db::overlay::OverlayDb,
     primitives::ExecutionResult,
     store::{
@@ -93,6 +93,7 @@ use crate::{
 use alloy::primitives::TxHash;
 use assertion_executor::{
     ForkTxExecutionError,
+    TestError,
     db::{
         Database,
         fork_db::ForkDb,
@@ -387,13 +388,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         &mut self,
         tx_hash: TxHash,
         tx_env: &TxEnv,
-        e: &ExecutorError<OverlayDb<DB>, OverlayDb<DB>>,
+        e: &ExecutorTestError<OverlayDb<DB>>,
     ) -> Result<(), EngineError> {
         if !ErrorRecoverability::from(e).is_recoverable() {
             critical!(error = ?e, "Failed to execute a transaction");
         }
         match e {
-            ExecutorError::ForkTxExecutionError(_) => {
+            ExecutorTestError::ForkTxExecutionError(_) => {
                 // Transaction validation errors (nonce, gas, funds, etc.)
                 debug!(
                     target = "engine",
@@ -414,7 +415,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 );
                 Ok(())
             }
-            ExecutorError::AssertionExecutionError(state, _) => {
+            ExecutorTestError::AssertionExecutionError(state, _) => {
                 // Assertion system failures (database corruption, invalid bytecode, etc.)
                 // These should crash the engine as they indicate system-level problems
                 error!(
@@ -431,6 +432,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 );
                 Err(EngineError::AssertionError)
             }
+            _ => Err(EngineError::AssertionError),
         }
     }
 
@@ -558,12 +560,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         // Validate transaction and run assertions
         // Execute directly on the block fork
-        let rax = self.assertion_executor.validate_transaction_ext_db(
-            block_env.clone(),
-            tx_env.clone(),
-            block_fork,
-            &mut self.state,
-        );
+        let rax =
+            self.assertion_executor
+                .validate_transaction(block_env.clone(), tx_env, block_fork);
 
         tx_metrics.transaction_processing_duration = instant.elapsed();
 
@@ -657,6 +656,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             let instant = Instant::now();
             self.check_sources_available = true;
             self.state.invalidate_all();
+            if let Some(fork_db) = self.current_block_fork.as_mut() {
+                fork_db.invalidate();
+            }
             self.last_executed_tx.clear();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
@@ -675,6 +677,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             let instant = Instant::now();
             self.check_sources_available = true;
             self.state.invalidate_all();
+            if let Some(fork_db) = self.current_block_fork.as_mut() {
+                fork_db.invalidate();
+            }
             self.last_executed_tx.clear();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
@@ -695,6 +700,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             let instant = Instant::now();
             self.check_sources_available = true;
             self.state.invalidate_all();
+            if let Some(fork_db) = self.current_block_fork.as_mut() {
+                fork_db.invalidate();
+            }
             self.last_executed_tx.clear();
             self.block_metrics
                 .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
@@ -1041,25 +1049,23 @@ impl<DBError> From<&EVMError<DBError>> for ErrorRecoverability {
     }
 }
 
-impl<ExtDb: revm::Database> From<&ForkTxExecutionError<ExtDb>> for ErrorRecoverability {
-    fn from(value: &ForkTxExecutionError<ExtDb>) -> Self {
+impl<ExtDb: revm::DatabaseRef> From<&TestError<ExtDb>> for ErrorRecoverability {
+    fn from(value: &TestError<ExtDb>) -> Self {
         match value {
-            ForkTxExecutionError::TxEvmError(e) => e.into(),
-            ForkTxExecutionError::CallTracerError(_) => Self::Recoverable,
+            TestError::TxEvmError(e) => e.into(),
+            TestError::CallTracerError(_) => Self::Recoverable,
         }
     }
 }
 
-impl<Active, ExtDb> From<&ExecutorError<Active, ExtDb>> for ErrorRecoverability
+impl<Active> From<&ExecutorTestError<Active>> for ErrorRecoverability
 where
     Active: DatabaseRef,
-    ExtDb: Database,
-    ExtDb::Error: Debug,
 {
-    fn from(error: &ExecutorError<Active, ExtDb>) -> Self {
+    fn from(error: &ExecutorTestError<Active>) -> Self {
         match error {
-            ExecutorError::ForkTxExecutionError(e) => e.into(),
-            ExecutorError::AssertionExecutionError(..) => ErrorRecoverability::Unrecoverable,
+            ExecutorTestError::ForkTxExecutionError(e) => e.into(),
+            ExecutorTestError::AssertionExecutionError(..) => ErrorRecoverability::Unrecoverable,
         }
     }
 }
