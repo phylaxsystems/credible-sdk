@@ -1097,6 +1097,7 @@ mod tests {
             block_env: BlockEnv::default(),
             last_tx_hash: None,
             n_transactions: 0,
+            selected_iteration_id: Some(0),
         };
         let queue_tx = queue::QueueTransaction {
             tx_hash: B256::from([0x11; 32]),

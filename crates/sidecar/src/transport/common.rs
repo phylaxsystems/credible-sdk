@@ -34,6 +34,8 @@ pub enum HttpDecoderError {
     InvalidNTransactions(String),
     #[error("Block env validation error: {0}")]
     BlockEnvValidation(String),
+    #[error("Reorg validation error: {0}")]
+    ReorgValidation(String),
     #[error("Invalid address format: {0}")]
     InvalidAddress(String),
     #[error("Invalid hash format: {0}")]
@@ -46,6 +48,8 @@ pub enum HttpDecoderError {
     NoTransactions,
     #[error("Missing field 'transactions'")]
     MissingTransactionsField,
+    #[error("Missing field 'txExecutionId' in transaction")]
+    MissingTxExecutionId,
     #[error("Missing field 'txEnv' in transaction")]
     MissingTxEnv,
     #[error("Missing field 'hash' in transaction")]

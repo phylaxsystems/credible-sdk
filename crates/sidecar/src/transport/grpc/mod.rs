@@ -173,6 +173,7 @@ mod tests {
         get_transaction_response::Outcome as GetTransactionOutcome,
         sidecar_transport_client::SidecarTransportClient,
     };
+    use crate::transport::grpc::pb::TxExecutionId;
     use alloy::primitives::B256;
     use assertion_executor::primitives::{
         Bytes,
@@ -207,7 +208,11 @@ mod tests {
 
         let response = client
             .get_transaction(GetTransactionRequest {
-                tx_hash: tx_hash.to_string(),
+                tx_execution_id: Some(TxExecutionId {
+                    hash: tx_hash.to_string(),
+                    block_number: 0,
+                    iteration_id: 0,
+                }),
             })
             .await
             .expect("get_transaction RPC failed")
@@ -215,7 +220,12 @@ mod tests {
 
         match response.outcome {
             Some(GetTransactionOutcome::Result(result)) => {
-                let parsed_hash = result.hash.parse::<B256>().expect("invalid hash encoding");
+                let parsed_hash = result
+                    .tx_execution_id
+                    .unwrap()
+                    .hash
+                    .parse::<B256>()
+                    .expect("invalid hash encoding");
                 assert_eq!(parsed_hash, tx_hash, "queried hash should match");
                 assert_eq!(result.status, "success");
                 assert!(result.gas_used > 0, "gas_used expected to be populated");
@@ -249,7 +259,11 @@ mod tests {
 
         let response = client
             .get_transaction(GetTransactionRequest {
-                tx_hash: missing_hash.to_string(),
+                tx_execution_id: Some(TxExecutionId {
+                    block_number: 0,
+                    iteration_id: 0,
+                    hash: missing_hash.to_string(),
+                }),
             })
             .await
             .expect("get_transaction RPC failed")
