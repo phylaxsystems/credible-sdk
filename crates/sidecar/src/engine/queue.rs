@@ -71,6 +71,7 @@ pub struct QueueBlockEnv {
     pub block_env: BlockEnv,
     pub last_tx_hash: Option<TxHash>,
     pub n_transactions: u64,
+    pub selected_iteration_id: Option<u64>,
 }
 
 // Implementing custo (de)serialization for QueueBlockEnv so we can add new fields without breaking
@@ -88,7 +89,9 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
 
         // Check if this looks like the new format (has our additional fields)
         if let Value::Object(ref map) = value
-            && (map.contains_key("last_tx_hash") || map.contains_key("n_transactions"))
+            && (map.contains_key("last_tx_hash")
+                || map.contains_key("n_transactions")
+                || map.contains_key("selected_iteration_id"))
         {
             // New format with additional fields - deserialize them manually
             let last_tx_hash = match map.get("last_tx_hash") {
@@ -107,6 +110,15 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
                     serde_json::from_value(v.clone()).map_err(|e| {
                         serde::de::Error::custom(format!("invalid n_transactions: {e}"))
                     })?
+                }
+            };
+
+            let selected_iteration_id = match map.get("selected_iteration_id") {
+                Some(Value::Null) | None => None, // Treat null and missing fields as None
+                Some(v) => {
+                    Some(serde_json::from_value(v.clone()).map_err(|e| {
+                        serde::de::Error::custom(format!("invalid selected_iteration_id: {e}"))
+                    })?)
                 }
             };
 
@@ -136,6 +148,7 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
             let mut block_env_map = map.clone();
             block_env_map.remove("last_tx_hash");
             block_env_map.remove("n_transactions");
+            block_env_map.remove("selected_iteration_id");
 
             let block_env = serde_json::from_value(Value::Object(block_env_map)).map_err(|e| {
                 let msg = e.to_string();
@@ -193,6 +206,7 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
                 block_env,
                 last_tx_hash,
                 n_transactions,
+                selected_iteration_id,
             });
         }
 
@@ -252,6 +266,7 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
             block_env,
             last_tx_hash: None,
             n_transactions: 0,
+            selected_iteration_id: Some(0),
         })
     }
 }
@@ -280,6 +295,9 @@ impl Serialize for QueueBlockEnv {
         if self.n_transactions != 0 {
             field_count += 1;
         }
+        if self.selected_iteration_id.is_some() {
+            field_count += 1;
+        }
 
         // Create a map serializer
         let mut map = serializer.serialize_map(Some(field_count))?;
@@ -298,6 +316,10 @@ impl Serialize for QueueBlockEnv {
 
         if self.n_transactions != 0 {
             map.serialize_entry("n_transactions", &self.n_transactions)?;
+        }
+
+        if self.selected_iteration_id.is_some() {
+            map.serialize_entry("selected_iteration_id", &self.selected_iteration_id)?;
         }
 
         map.end()

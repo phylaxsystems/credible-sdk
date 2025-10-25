@@ -266,7 +266,7 @@ mod tests {
         let res = send_raw_request(invalid_request, local_address)
             .await
             .unwrap();
-        assert!(res.contains("Failed to decode transactions: Missing transaction parameters"));
+        assert!(res.contains("Failed to decode transactions: Reorg validation error"));
     }
 
     #[crate::utils::engine_test(http)]
@@ -329,7 +329,15 @@ mod tests {
         let request = json!({
             "jsonrpc": "2.0",
             "method": "getTransaction",
-            "params": [tx_hash.to_string()],
+            "params": [
+                {
+                    "txExecutionId": {
+                        "hash": tx_hash.to_string(),
+                        "block_number": 0u64,
+                        "iteration_id": 0u64
+                    }
+                }
+            ],
             "id": 1
         });
 
@@ -352,6 +360,8 @@ mod tests {
             .expect("missing transaction result object");
 
         let hash_str = result
+            .get("tx_execution_id")
+            .unwrap()
             .get("hash")
             .and_then(serde_json::Value::as_str)
             .expect("hash field missing");
@@ -399,7 +409,15 @@ mod tests {
         let request = json!({
             "jsonrpc": "2.0",
             "method": "getTransaction",
-            "params": [missing_hash.to_string()],
+            "params": [
+                {
+                    "txExecutionId": {
+                        "hash": missing_hash.to_string(),
+                        "block_number": 0u64,
+                        "iteration_id": 0u64,
+                    }
+                }
+            ],
             "id": 2
         });
 
@@ -417,8 +435,13 @@ mod tests {
         let payload = response_json
             .get("result")
             .expect("missing result payload in response");
+
         let not_found = payload
             .get("not_found")
+            .unwrap()
+            .get("txExecutionId")
+            .unwrap()
+            .get("hash")
             .and_then(serde_json::Value::as_str)
             .expect("missing not_found field");
         assert_eq!(not_found, missing_hash.to_string());

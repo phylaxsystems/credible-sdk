@@ -11,6 +11,7 @@ message BlockEnvEnvelope {
   // When n_transactions > 0, last_tx_hash must be provided and non-empty.
   string last_tx_hash = 2; // empty string means absent
   uint64 n_transactions = 3;
+  optional uint64 selected_iteration_id = 4;
 }
 
 message BlockEnv {
@@ -69,8 +70,8 @@ message TransactionEnv {
 }
 
 message Transaction {
-  string hash = 1;           // 0x-prefixed hash string
-  TransactionEnv tx_env = 2; // transaction env
+  TxExecutionId tx_execution_id = 1; // TX execution ID
+  TransactionEnv tx_env = 2;         // transaction env
 }
 
 message SendTransactionsRequest {
@@ -84,18 +85,18 @@ message SendTransactionsResponse {
 }
 
 message ReorgRequest {
-  string removed_tx_hash = 1; // 0x-prefixed hash string
+  TxExecutionId tx_execution_id = 1; // TX execution ID
 }
 
 message GetTransactionsRequest {
-  repeated string tx_hashes = 1; // 0x-prefixed hash strings
+  repeated TxExecutionId tx_execution_id = 1; // TX execution ID
 }
 
 message TransactionResult {
-  string hash = 1;
-  string status = 2;    // success | reverted | halted | assertion_failed | failed
-  uint64 gas_used = 3;  // 0 when unknown
-  string error = 4;     // empty when none
+  TxExecutionId tx_execution_id = 1; // TX execution ID
+  string status = 2;                 // success | reverted | halted | assertion_failed | failed
+  uint64 gas_used = 3;               // 0 when unknown
+  string error = 4;                  // empty when none
 }
 
 message GetTransactionsResponse {
@@ -104,7 +105,7 @@ message GetTransactionsResponse {
 }
 
 message GetTransactionRequest {
-  string tx_hash = 1; // single 0x-prefixed hash string
+  TxExecutionId tx_execution_id = 1; // TX execution ID
 }
 
 message GetTransactionResponse {
@@ -112,6 +113,12 @@ message GetTransactionResponse {
     TransactionResult result = 1; // single transaction result
     string not_found = 2;         // original hash when no result available
   }
+}
+
+message TxExecutionId {
+  uint64 block_number = 1; // Block number
+  uint64 iteration_id = 2; // Iteration Id
+  string hash = 3;         // 0x-prefixed hash string
 }
 
 service SidecarTransport {
