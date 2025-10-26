@@ -848,10 +848,7 @@ mod tests {
 
         let request = create_test_request_json("sendTransactions", &[transaction]);
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert!(matches!(
-            result,
-            Err(HttpDecoderError::InvalidTransaction(_))
-        ));
+        assert!(matches!(result, Err(HttpDecoderError::MissingTxEnv)));
     }
 
     #[test]
@@ -912,7 +909,10 @@ mod tests {
 
         let request = create_test_request_json("sendTransactions", &[transaction]);
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert!(matches!(result, Err(HttpDecoderError::MissingHashField)));
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::InvalidTransaction(_))
+        ));
     }
 
     #[test]

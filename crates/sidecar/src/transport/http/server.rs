@@ -119,15 +119,15 @@ impl<'de> Deserialize<'de> for TxExecutionId {
                     match key {
                         Field::BlockNumber => {
                             if block_number.is_some() {
-                                return Err(de::Error::duplicate_field("blockNumber"));
+                                return Err(de::Error::duplicate_field("block_number"));
                             }
                             block_number = Some(map.next_value().map_err(|e| {
-                                de::Error::custom(format!("invalid blockNumber: {e}"))
+                                de::Error::custom(format!("invalid block_number: {e}"))
                             })?);
                         }
                         Field::TxHash => {
                             if tx_hash.is_some() {
-                                return Err(de::Error::duplicate_field("hash"));
+                                return Err(de::Error::duplicate_field("tx_hash"));
                             }
                             // Read hash as string first
                             let hash_str: String = map
@@ -163,8 +163,8 @@ impl<'de> Deserialize<'de> for TxExecutionId {
                 }
 
                 let block_number =
-                    block_number.ok_or_else(|| de::Error::missing_field("blockNumber"))?;
-                let tx_hash = tx_hash.ok_or_else(|| de::Error::missing_field("hash"))?;
+                    block_number.ok_or_else(|| de::Error::missing_field("block_number"))?;
+                let tx_hash = tx_hash.ok_or_else(|| de::Error::missing_field("tx_hash"))?;
                 let iteration_id =
                     iteration_id.ok_or_else(|| de::Error::missing_field("iteration_id"))?;
 
@@ -178,7 +178,7 @@ impl<'de> Deserialize<'de> for TxExecutionId {
 
         deserializer.deserialize_struct(
             "tx_execution_id",
-            &["block_number", "hash", "iteration_id"],
+            &["block_number", "tx_hash", "iteration_id"],
             TxExecutionIdVisitor,
         )
     }
@@ -234,7 +234,7 @@ impl<'de> Deserialize<'de> for Transaction {
                     }
                 }
 
-                let tx_env = tx_env.ok_or_else(|| de::Error::missing_field("txEnv"))?;
+                let tx_env = tx_env.ok_or_else(|| de::Error::missing_field("tx_env"))?;
                 let tx_execution_id =
                     tx_execution_id.ok_or_else(|| de::Error::missing_field("tx_execution_id"))?;
 
@@ -605,7 +605,7 @@ fn ensure_block_environment_available(
 }
 
 #[allow(clippy::result_large_err)]
-fn parse_transaction_hashes(
+fn parse_tx_execution_ids(
     request: &JsonRpcRequest,
     method_name: &str,
 ) -> Result<Vec<TxExecutionId>, JsonRpcResponse> {
@@ -636,7 +636,7 @@ async fn handle_get_transactions(
         return Ok(response);
     }
 
-    let tx_execution_ids = match parse_transaction_hashes(request, "getTransactions") {
+    let tx_execution_ids = match parse_tx_execution_ids(request, "getTransactions") {
         Ok(hashes) => hashes,
         Err(error_response) => return Ok(error_response),
     };
@@ -680,7 +680,7 @@ async fn handle_get_transaction(
         return Ok(response);
     }
 
-    let mut tx_hashes = match parse_transaction_hashes(request, "getTransaction") {
+    let mut tx_hashes = match parse_tx_execution_ids(request, "getTransaction") {
         Ok(hashes) => hashes,
         Err(error_response) => return Ok(error_response),
     };
@@ -758,7 +758,7 @@ async fn resolve_transaction_result(
 
 /// Helper function to determine transaction status and error message
 fn into_transaction_result_response(
-    hash: TxHash,
+    tx_hash: TxHash,
     result: &TransactionResult,
 ) -> TransactionResultResponse {
     match result {
@@ -772,7 +772,7 @@ fn into_transaction_result_response(
                 return TransactionResultResponse {
                     tx_execution_id: TxExecutionId {
                         block_number: 0,
-                        tx_hash: hash,
+                        tx_hash,
                         iteration_id: 0,
                     },
                     status: "assertion_failed".to_string(),
@@ -785,7 +785,7 @@ fn into_transaction_result_response(
                     TransactionResultResponse {
                         tx_execution_id: TxExecutionId {
                             block_number: 0,
-                            tx_hash: hash,
+                            tx_hash,
                             iteration_id: 0,
                         },
                         status: "success".to_string(),
@@ -797,7 +797,7 @@ fn into_transaction_result_response(
                     TransactionResultResponse {
                         tx_execution_id: TxExecutionId {
                             block_number: 0,
-                            tx_hash: hash,
+                            tx_hash,
                             iteration_id: 0,
                         },
                         status: "reverted".to_string(),
@@ -809,7 +809,7 @@ fn into_transaction_result_response(
                     TransactionResultResponse {
                         tx_execution_id: TxExecutionId {
                             block_number: 0,
-                            tx_hash: hash,
+                            tx_hash,
                             iteration_id: 0,
                         },
                         status: "halted".to_string(),
@@ -823,7 +823,7 @@ fn into_transaction_result_response(
             TransactionResultResponse {
                 tx_execution_id: TxExecutionId {
                     block_number: 0,
-                    tx_hash: hash,
+                    tx_hash,
                     iteration_id: 0,
                 },
                 status: "failed".to_string(),

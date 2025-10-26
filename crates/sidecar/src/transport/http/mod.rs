@@ -302,7 +302,7 @@ mod tests {
         let res = send_raw_request(invalid_request, local_address)
             .await
             .unwrap();
-        assert!(res.contains("Failed to decode transactions: Invalid transaction format: invalid transactions array: invalid txEnv: invalid type: string \\\"1000\\\", expected u128\""));
+        assert!(res.contains("Failed to decode transactions: Invalid transaction format: invalid transactions array: invalid tx_env: invalid type: string \\\"1000\\\", expected u128\""));
     }
 
     #[crate::utils::engine_test(http)]
@@ -360,7 +360,7 @@ mod tests {
         let hash_str = result
             .get("tx_execution_id")
             .unwrap()
-            .get("hash")
+            .get("tx_hash")
             .and_then(serde_json::Value::as_str)
             .expect("hash field missing");
         let parsed_hash = hash_str.parse::<B256>().expect("invalid hash encoding");
@@ -435,9 +435,7 @@ mod tests {
         let not_found = payload
             .get("not_found")
             .unwrap()
-            .get("tx_execution_id")
-            .unwrap()
-            .get("hash")
+            .get("tx_hash")
             .and_then(serde_json::Value::as_str)
             .expect("missing not_found field");
         assert_eq!(not_found, missing_hash.to_string());

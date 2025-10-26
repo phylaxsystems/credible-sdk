@@ -333,11 +333,13 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
   "id": 4,
   "jsonrpc": "2.0",
   "result": {
-    "not_found": {
-      "block_number": 1000,
-      "iteration_id": 1,
-      "tx_hash": "0xabcd1234567890abcdef..."
-    }
+    "not_found": [
+      {
+        "block_number": 1000,
+        "iteration_id": 1,
+        "tx_hash": "0xabcd1234567890abcdef..."
+      }
+    ]
   }
 }
 ```
