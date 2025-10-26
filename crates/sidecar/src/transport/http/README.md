@@ -87,16 +87,18 @@ sidecar needs to know which block it's building on top of.
   "jsonrpc": "2.0",
   "method": "sendBlockEnv",
   "params": {
-    "number": 12345,
-    "beneficiary": "0x742d35Cc6634C0532925a3b844B9c7e07e3E23eF4",
-    "timestamp": 1625150400,
-    "gas_limit": 30000000,
-    "basefee": 1000000000,
-    "difficulty": "0x0",
-    "prevrandao": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-    "blob_excess_gas_and_price": {
-      "excess_blob_gas": 0,
-      "blob_gasprice": 1
+    "block_env": {
+      "number": 12345,
+      "beneficiary": "0x742d35Cc6634C0532925a3b844B9c7e07e3E23eF4",
+      "timestamp": 1625150400,
+      "gas_limit": 30000000,
+      "basefee": 1000000000,
+      "difficulty": "0x0",
+      "prevrandao": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      "blob_excess_gas_and_price": {
+        "excess_blob_gas": 0,
+        "blob_gasprice": 1
+      }
     },
     "last_tx_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
     "n_transactions": 100,
@@ -295,13 +297,11 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
   "id": 4,
   "jsonrpc": "2.0",
   "method": "getTransaction",
-  "params": [
-    {
-      "block_number": 1000,
-      "iteration_id": 1,
-      "tx_hash": "0xabcd1234567890abcdef..."
-    }
-  ]
+  "params": {
+    "block_number": 1000,
+    "iteration_id": 1,
+    "tx_hash": "0xabcd1234567890abcdef..."
+  }
 }
 ```
 

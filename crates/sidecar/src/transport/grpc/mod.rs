@@ -210,8 +210,8 @@ mod tests {
             .get_transaction(GetTransactionRequest {
                 tx_execution_id: Some(TxExecutionId {
                     tx_hash: tx_hash.to_string(),
-                    block_number: 0,
                     iteration_id: 0,
+                    block_number: 0,
                 }),
             })
             .await

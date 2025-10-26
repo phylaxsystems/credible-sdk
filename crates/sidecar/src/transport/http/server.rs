@@ -94,8 +94,8 @@ impl<'de> Deserialize<'de> for TxExecutionId {
         #[serde(field_identifier, rename_all = "snake_case")]
         enum Field {
             BlockNumber,
-            TxHash,
             IterationId,
+            TxHash,
         }
 
         struct TxExecutionIdVisitor;
@@ -707,8 +707,8 @@ async fn handle_get_transaction(
             serde_json::json!({
                 "not_found": TxExecutionId {
                     tx_hash: tx_execution_id.tx_hash,
-                    block_number: 0,
                     iteration_id: 0,
+                    block_number: 0,
                 }
             }),
         ));

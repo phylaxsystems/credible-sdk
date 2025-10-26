@@ -565,19 +565,21 @@ impl TestTransport for LocalInstanceHttpDriver {
           "jsonrpc": "2.0",
           "method": "sendBlockEnv",
           "params": {
-            "number": blockenv.number,
-            "beneficiary": blockenv.beneficiary.to_string(),
-            "timestamp": blockenv.timestamp,
-            "gas_limit": blockenv.gas_limit,
-            "basefee": blockenv.basefee,
-            "difficulty": format!("0x{:x}", blockenv.difficulty),
-            "prevrandao": blockenv.prevrandao.map(|h| h.to_string()),
-            "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| json!({
-                "excess_blob_gas": blob.excess_blob_gas,
-                "blob_gasprice": blob.blob_gasprice
-            })),
-            "n_transactions": n_transactions,
-            "last_tx_hash": last_tx_hash
+                "block_env": {
+                    "number": blockenv.number,
+                    "beneficiary": blockenv.beneficiary.to_string(),
+                    "timestamp": blockenv.timestamp,
+                    "gas_limit": blockenv.gas_limit,
+                    "basefee": blockenv.basefee,
+                    "difficulty": format!("0x{:x}", blockenv.difficulty),
+                    "prevrandao": blockenv.prevrandao.map(|h| h.to_string()),
+                    "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| json!({
+                        "excess_blob_gas": blob.excess_blob_gas,
+                        "blob_gasprice": blob.blob_gasprice
+                    })),
+                },
+                "n_transactions": n_transactions,
+                "last_tx_hash": last_tx_hash
           }
         });
 

@@ -77,9 +77,9 @@ define the precise field layout and encoding expectations.
 // Example: Sending a legacy transaction
 let tx = Transaction {
 tx_execution_id: Some(TxExecutionId {
-hash: "0x1234...".to_string(),
 block_number: 1234,
-iteration_id: 2
+iteration_id: 2,
+tx_hash: "0x1234...".to_string()
 }),
 tx_env: Some(TransactionEnv {
 tx_type: 0, // Legacy

@@ -230,12 +230,14 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": "invalid_number",  // String instead of u64
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 0u64,
-                "gas_limit": 0u64,
-                "basefee": 0u64,
-                "difficulty": "0x0"
+                "block_env": {
+                    "number": "invalid_number",  // String instead of u64
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 0u64,
+                    "gas_limit": 0u64,
+                    "basefee": 0u64,
+                    "difficulty": "0x0"
+                }
             },
             "id": 1
         });
@@ -409,9 +411,9 @@ mod tests {
             "method": "getTransaction",
             "params": [
                 {
-                    "tx_hash": missing_hash.to_string(),
+                    "block_number": 0u64,
                     "iteration_id": 0u64,
-                    "block_number": 0u64
+                    "tx_hash": missing_hash.to_string()
                 }
             ],
             "id": 2

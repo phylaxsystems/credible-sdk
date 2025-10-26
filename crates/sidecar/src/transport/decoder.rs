@@ -1126,13 +1126,15 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0",
-                "prevrandao": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0",
+                    "prevrandao": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                },
                 "last_tx_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
                 "n_transactions": 1000u64,
                 "selected_iteration_id": 42u64
@@ -1174,12 +1176,14 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 1u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 0u64,
-                "gas_limit": 0u64,
-                "basefee": 0u64,
-                "difficulty": "0x0"
+                "block_env": {
+                    "number": 1u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 0u64,
+                    "gas_limit": 0u64,
+                    "basefee": 0u64,
+                    "difficulty": "0x0"
+                }
             },
             "id": 1
         });
@@ -1208,15 +1212,17 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x1234567890123456789012345678901234567890",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0",
-                "blob_excess_gas_and_price": {
-                    "excess_blob_gas": 1000u64,
-                    "blob_gasprice": 2000u128
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x1234567890123456789012345678901234567890",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0",
+                    "blob_excess_gas_and_price": {
+                        "excess_blob_gas": 1000u64,
+                        "blob_gasprice": 2000u128
+                    }
                 },
                 "selected_iteration_id": 7u64
             },
@@ -1366,13 +1372,15 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0",
-                "extra_field": "should_be_ignored",
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0",
+                    "extra_field": "should_be_ignored",
+                },
                 "another_extra": 42
             },
             "id": 1
@@ -1398,13 +1406,15 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x1234567890123456789012345678901234567890",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x1e240",
-                "prevrandao": "0x1234567890123456789012345678901234567890123456789012345678901234",
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x1234567890123456789012345678901234567890",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x1e240",
+                    "prevrandao": "0x1234567890123456789012345678901234567890123456789012345678901234",
+                },
                 "selected_iteration_id": 15u64
             },
             "id": 1
@@ -1436,12 +1446,14 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 0u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 0u64,
-                "gas_limit": 0u64,
-                "basefee": 0u64,
-                "difficulty": "0x0"
+                "block_env": {
+                    "number": 0u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 0u64,
+                    "gas_limit": 0u64,
+                    "basefee": 0u64,
+                    "difficulty": "0x0"
+                }
             },
             "id": 1
         });
@@ -1471,12 +1483,14 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": u64::MAX,
-                "beneficiary": "0xffffffffffffffffffffffffffffffffffffffff",
-                "timestamp": u64::MAX,
-                "gas_limit": u64::MAX,
-                "basefee": u64::MAX,
-                "difficulty": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "block_env": {
+                    "number": u64::MAX,
+                    "beneficiary": "0xffffffffffffffffffffffffffffffffffffffff",
+                    "timestamp": u64::MAX,
+                    "gas_limit": u64::MAX,
+                    "basefee": u64::MAX,
+                    "difficulty": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                },
                 "selected_iteration_id": u64::MAX
             },
             "id": 1
@@ -1506,13 +1520,15 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x1234567890123456789012345678901234567890",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0",
-                "prevrandao": "0x1234567890123456789012345678901234567890123456789012345678901234",
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x1234567890123456789012345678901234567890",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0",
+                    "prevrandao": "0x1234567890123456789012345678901234567890123456789012345678901234",
+                 },
                 "selected_iteration_id": 99u64
             },
             "id": 1
@@ -1544,12 +1560,14 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x1234567890123456789012345678901234567890",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0"
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x1234567890123456789012345678901234567890",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0"
+                }
             },
             "id": 1
         });
@@ -1674,18 +1692,33 @@ mod tests {
         };
 
         let serialized = serde_json::to_value(&block_env).unwrap();
-        let deserialized = serde_json::from_value::<BlockEnv>(serialized).unwrap();
+        let deserialized = serde_json::from_value::<QueueBlockEnv>(serialized).unwrap();
 
-        assert_eq!(block_env.block_env.number, deserialized.number);
-        assert_eq!(block_env.block_env.beneficiary, deserialized.beneficiary);
-        assert_eq!(block_env.block_env.timestamp, deserialized.timestamp);
-        assert_eq!(block_env.block_env.gas_limit, deserialized.gas_limit);
-        assert_eq!(block_env.block_env.basefee, deserialized.basefee);
-        assert_eq!(block_env.block_env.difficulty, deserialized.difficulty);
-        assert_eq!(block_env.block_env.prevrandao, deserialized.prevrandao);
+        assert_eq!(block_env.block_env.number, deserialized.block_env.number);
+        assert_eq!(
+            block_env.block_env.beneficiary,
+            deserialized.block_env.beneficiary
+        );
+        assert_eq!(
+            block_env.block_env.timestamp,
+            deserialized.block_env.timestamp
+        );
+        assert_eq!(
+            block_env.block_env.gas_limit,
+            deserialized.block_env.gas_limit
+        );
+        assert_eq!(block_env.block_env.basefee, deserialized.block_env.basefee);
+        assert_eq!(
+            block_env.block_env.difficulty,
+            deserialized.block_env.difficulty
+        );
+        assert_eq!(
+            block_env.block_env.prevrandao,
+            deserialized.block_env.prevrandao
+        );
         assert_eq!(
             block_env.block_env.blob_excess_gas_and_price,
-            deserialized.blob_excess_gas_and_price
+            deserialized.block_env.blob_excess_gas_and_price
         );
     }
 
@@ -1789,13 +1822,15 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0",
-                "prevrandao": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0",
+                    "prevrandao": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                },
                 "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
             },
             "id": 1
@@ -1822,13 +1857,15 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 111111u64,
-                "beneficiary": "0x3333333333333333333333333333333333333333",
-                "timestamp": 2222222222u64,
-                "gas_limit": 35000000u64,
-                "basefee": 1500000000u64,
-                "difficulty": "0x0",
-                "prevrandao": "0x3333333333333333333333333333333333333333333333333333333333333333",
+                "block_env": {
+                    "number": 111111u64,
+                    "beneficiary": "0x3333333333333333333333333333333333333333",
+                    "timestamp": 2222222222u64,
+                    "gas_limit": 35000000u64,
+                    "basefee": 1500000000u64,
+                    "difficulty": "0x0",
+                    "prevrandao": "0x3333333333333333333333333333333333333333333333333333333333333333",
+                },
                 "last_tx_hash": null,
                 "n_transactions": 10u64,
                 "selected_iteration_id": 5u64
@@ -1857,13 +1894,15 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 222222u64,
-                "beneficiary": "0x4444444444444444444444444444444444444444",
-                "timestamp": 3333333333u64,
-                "gas_limit": 40000000u64,
-                "basefee": 3000000000u64,
-                "difficulty": "0x0",
-                "prevrandao": "0x4444444444444444444444444444444444444444444444444444444444444444",
+                "block_env": {
+                    "number": 222222u64,
+                    "beneficiary": "0x4444444444444444444444444444444444444444",
+                    "timestamp": 3333333333u64,
+                    "gas_limit": 40000000u64,
+                    "basefee": 3000000000u64,
+                    "difficulty": "0x0",
+                    "prevrandao": "0x4444444444444444444444444444444444444444444444444444444444444444",
+                },
                 "last_tx_hash": "0x5555555555555555555555555555555555555555555555555555555555555555",
                 "n_transactions": 0u64
             },
@@ -1919,13 +1958,15 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 444444u64,
-                "beneficiary": "0x6666666666666666666666666666666666666666",
-                "timestamp": 5555555555u64,
-                "gas_limit": 55000000u64,
-                "basefee": 5000000000u64,
-                "difficulty": "0x0",
-                "prevrandao": "0x6666666666666666666666666666666666666666666666666666666666666666",
+                "block_env":{
+                    "number": 444444u64,
+                    "beneficiary": "0x6666666666666666666666666666666666666666",
+                    "timestamp": 5555555555u64,
+                    "gas_limit": 55000000u64,
+                    "basefee": 5000000000u64,
+                    "difficulty": "0x0",
+                    "prevrandao": "0x6666666666666666666666666666666666666666666666666666666666666666",
+                },
                 "last_tx_hash": "0x7777777777777777777777777777777777777777777777777777777777777777",
                 "n_transactions": 18446744073709551615u64,
                 "selected_iteration_id": 12345u64
@@ -1956,13 +1997,15 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 555555u64,
-                "beneficiary": "0x7777777777777777777777777777777777777777",
-                "timestamp": 6666666666u64,
-                "gas_limit": 60000000u64,
-                "basefee": 6000000000u64,
-                "difficulty": "0x0",
-                "prevrandao": "0x7777777777777777777777777777777777777777777777777777777777777777",
+                "block_env": {
+                    "number": 555555u64,
+                    "beneficiary": "0x7777777777777777777777777777777777777777",
+                    "timestamp": 6666666666u64,
+                    "gas_limit": 60000000u64,
+                    "basefee": 6000000000u64,
+                    "difficulty": "0x0",
+                    "prevrandao": "0x7777777777777777777777777777777777777777777777777777777777777777",
+                },
                 "last_tx_hash": "0x8888888888888888888888888888888888888888888888888888888888888888",
                 "n_transactions": 123u64,
                 "selected_iteration_id": 777u64
@@ -2000,11 +2043,13 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0"
+                "block_env": {
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0"
+                }
             },
             "id": 1
         });
@@ -2020,11 +2065,13 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0"
+                "block_env": {
+                    "number": 123456u64,
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0"
+                }
             },
             "id": 1
         });
@@ -2064,11 +2111,13 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0"
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0"
+                }
             },
             "id": 1
         });
@@ -2108,11 +2157,13 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 1234567890u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0"
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0"
+                }
             },
             "id": 1
         });
@@ -2155,11 +2206,13 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "difficulty": "0x0"
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "difficulty": "0x0"
+                }
             },
             "id": 1
         });
@@ -2199,11 +2252,13 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64
+                }
             },
             "id": 1
         });
@@ -2293,12 +2348,14 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0",
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0",
+                },
                 "last_tx_hash": "invalid_hash",
                 "n_transactions": 5
             },
@@ -2319,12 +2376,14 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": 123456u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 1234567890u64,
-                "gas_limit": 30000000u64,
-                "basefee": 1000000000u64,
-                "difficulty": "0x0",
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0",
+                },
                 "n_transactions": "invalid"
             },
             "id": 1

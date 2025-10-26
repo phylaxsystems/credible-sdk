@@ -341,7 +341,7 @@ impl SidecarTransport for GrpcService {
     }
 }
 
-fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTransactionResult {
+fn into_pb_transaction_result(tx_hash: String, result: &TransactionResult) -> PbTransactionResult {
     match result {
         TransactionResult::ValidationCompleted {
             execution_result,
@@ -351,7 +351,7 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
             if !*is_valid {
                 return PbTransactionResult {
                     tx_execution_id: Some(TxExecutionId {
-                        tx_hash: hash,
+                        tx_hash,
                         block_number: 0,
                         iteration_id: 0,
                     }),
@@ -364,7 +364,7 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
                 ExecutionResult::Success { .. } => {
                     PbTransactionResult {
                         tx_execution_id: Some(TxExecutionId {
-                            tx_hash: hash,
+                            tx_hash,
                             block_number: 0,
                             iteration_id: 0,
                         }),
@@ -376,7 +376,7 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
                 ExecutionResult::Revert { .. } => {
                     PbTransactionResult {
                         tx_execution_id: Some(TxExecutionId {
-                            tx_hash: hash,
+                            tx_hash,
                             block_number: 0,
                             iteration_id: 0,
                         }),
@@ -388,7 +388,7 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
                 ExecutionResult::Halt { reason, .. } => {
                     PbTransactionResult {
                         tx_execution_id: Some(TxExecutionId {
-                            tx_hash: hash,
+                            tx_hash,
                             block_number: 0,
                             iteration_id: 0,
                         }),
@@ -402,7 +402,7 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
         TransactionResult::ValidationError(error) => {
             PbTransactionResult {
                 tx_execution_id: Some(TxExecutionId {
-                    tx_hash: hash,
+                    tx_hash,
                     block_number: 0,
                     iteration_id: 0,
                 }),
