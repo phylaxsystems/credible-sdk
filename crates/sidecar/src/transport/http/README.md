@@ -1,6 +1,7 @@
 # HTTP Transport
 
-The HTTP transport provides a JSON-RPC 2.0 interface for communication between the driver and sidecar. It runs on port 8080 by default.
+The HTTP transport provides a JSON-RPC 2.0 interface for communication between the driver and sidecar. It runs on port
+8080 by default.
 
 ## Architecture
 
@@ -73,9 +74,27 @@ Error responses include an error object with code and message:
 
 The Core API provides essential methods for transaction execution and block management.
 
+## Transaction Object Structure
+
+Each transaction in the `sendTransactions` request consists of two parts:
+
+### `tx_execution_id`
+
+Identifies the transaction uniquely within the sidecar:
+- `block_number` (u64): Block number
+- `iteration_id` (u64): Arbitrary identifier for the block creation attempt (chosen by sequencer, never 0)
+- `tx_hash` (string): Transaction hash (0x-prefixed hex)
+
+The `iteration_id` field tracks different candidate blocks created by the sequencer for the same block number. When a sequencer produces multiple block candidates, each is assigned a unique iteration_id by the sequencer.
+
+### `tx_env`
+
+Contains the transaction execution environment. See [Transaction Types](../README.md#transaction-types) for detailed field documentation.
+
 ### `sendBlockEnv`
 
-Sends block environment data to the sidecar. This must be called before any transactions can be processed, as the sidecar needs to know which block it's building on top of.
+Sends block environment data to the sidecar. This must be called before any transactions can be processed, as the
+sidecar needs to know which block it's building on top of.
 
 **Request:**
 
@@ -85,19 +104,22 @@ Sends block environment data to the sidecar. This must be called before any tran
   "jsonrpc": "2.0",
   "method": "sendBlockEnv",
   "params": {
-    "number": 12345,
-    "beneficiary": "0x742d35Cc6634C0532925a3b844B9c7e07e3E23eF4",
-    "timestamp": 1625150400,
-    "gas_limit": 30000000,
-    "basefee": 1000000000,
-    "difficulty": "0x0",
-    "prevrandao": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-    "blob_excess_gas_and_price": {
-      "excess_blob_gas": 0,
-      "blob_gasprice": 1
+    "block_env": {
+      "number": 12345,
+      "beneficiary": "0x742d35Cc6634C0532925a3b844B9c7e07e3E23eF4",
+      "timestamp": 1625150400,
+      "gas_limit": 30000000,
+      "basefee": 1000000000,
+      "difficulty": "0x0",
+      "prevrandao": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      "blob_excess_gas_and_price": {
+        "excess_blob_gas": 0,
+        "blob_gasprice": 1
+      }
     },
     "last_tx_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
-    "n_transactions": 100
+    "n_transactions": 100,
+    "selected_iteration_id": 0
   }
 }
 ```
@@ -116,11 +138,13 @@ Sends block environment data to the sidecar. This must be called before any tran
 }
 ```
 
-_Note: A successful response only means that the blockEnv has been received by the sidecar but may not be active yet as it gets queued for the core engine to process the event._
+_Note: A successful response only means that the blockEnv has been received by the sidecar but may not be active yet as
+it gets queued for the core engine to process the event._
 
 ### `sendTransactions`
 
-Sends batch of transactions to sidecar for processing. Must include at least one transaction. Blocked until a BlockEnv call is received, as we need information about what block we are executing txs on top of.
+Sends batch of transactions to sidecar for processing. Must include at least one transaction. Blocked until a BlockEnv
+call is received, as we need information about what block we are executing txs on top of.
 
 **Request:**
 
@@ -132,10 +156,14 @@ Sends batch of transactions to sidecar for processing. Must include at least one
   "params": {
     "transactions": [
       {
-        "txEnv": {
-          /* TxEnv object */
+        "tx_execution_id": {
+          "block_number": 1000,
+          "iteration_id": 1,
+          "tx_hash": "0x1234567890abcdef..."
         },
-        "hash": "0x1234567890abcdef..."
+        "tx_env": {
+          /* TxEnv object */
+        }
       }
       // Additional transactions...
     ]
@@ -145,10 +173,12 @@ Sends batch of transactions to sidecar for processing. Must include at least one
 
 Each transaction in the array contains:
 
-- `txEnv`: The transaction environment object (see [Transport docs](../README.md#transaction-types) for field reference and examples)
-- `hash`: The transaction hash as a hex string
+- `tx_execution_id`: The transaction execution identifier containing block_number, iteration_id, and tx_hash
+- `tx_env`: The transaction environment object (see [Transport docs](../README.md#transaction-types) for field reference
+  and examples)
 
-For detailed examples of all transaction types (Legacy, EIP-2930, EIP-1559, EIP-4844, EIP-7702), see the [Transport Transaction Types Documentation](../README.md#transaction-examples).
+For detailed examples of all transaction types (Legacy, EIP-2930, EIP-1559, EIP-4844, EIP-7702), see
+the [Transport Transaction Types Documentation](../README.md#transaction-examples).
 
 **Response (success):**
 
@@ -176,7 +206,9 @@ Reorg the last sent transaction. Hash of the last sent transaction must be the s
   "jsonrpc": "2.0",
   "method": "reorg",
   "params": {
-    "removedTxHash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+    "block_number": 1000,
+    "iteration_id": 1,
+    "tx_hash": "0x1234567890abcdef..."
   }
 }
 ```
@@ -196,7 +228,9 @@ Reorg the last sent transaction. Hash of the last sent transaction must be the s
 
 ### `getTransactions` & `getTransaction`
 
-Retrieves transaction results by hash. Can retrieve one or many transactions at once. Uses long-polling semantics. Responds when all requested transactions are available. `results` field contains all transactions we have results for, `not_found` contains txhashes the sidecar does not have stored.
+Retrieves transaction results by hash. Can retrieve one or many transactions at once. Uses long-polling semantics.
+Responds when all requested transactions are available. `results` field contains all transactions we have results for,
+`not_found` contains txhashes the sidecar does not have stored.
 
 **Request:**
 
@@ -206,9 +240,21 @@ Retrieves transaction results by hash. Can retrieve one or many transactions at 
   "jsonrpc": "2.0",
   "method": "getTransactions",
   "params": [
-    "0xabcd1234567890abcdef...",
-    "0xefgh5678901234567890...",
-    "0xijkl9012345678901234..."
+    {
+      "block_number": 1000,
+      "iteration_id": 1,
+      "tx_hash": "0xabcd1234567890abcdef..."
+    },
+    {
+      "block_number": 1000,
+      "iteration_id": 1,
+      "tx_hash": "0xefgh5678901234567890..."
+    },
+    {
+      "block_number": 1000,
+      "iteration_id": 1,
+      "tx_hash": "0xijkl9012345678901234..."
+    }
   ]
 }
 ```
@@ -222,19 +268,31 @@ Retrieves transaction results by hash. Can retrieve one or many transactions at 
   "result": {
     "results": [
       {
-        "hash": "0xabcd1234567890abcdef...",
+        "tx_execution_id": {
+          "block_number": 1000,
+          "iteration_id": 1,
+          "tx_hash": "0xabcd1234567890abcdef..."
+        },
         "status": "success",
         "gas_used": 21000,
         "error": null
       },
       {
-        "hash": "0xefgh5678901234567890...",
+        "tx_execution_id": {
+          "block_number": 1000,
+          "iteration_id": 1,
+          "tx_hash": "0xefgh5678901234567890..."
+        },
         "status": "assertion_failed",
         "gas_used": 18500,
         "error": null
       },
       {
-        "hash": "0xijkl9012345678901234...",
+        "tx_execution_id": {
+          "block_number": 1000,
+          "iteration_id": 1,
+          "tx_hash": "0xijkl9012345678901234..."
+        },
         "status": "failed",
         "gas_used": null,
         "error": null
@@ -256,9 +314,11 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
   "id": 4,
   "jsonrpc": "2.0",
   "method": "getTransaction",
-  "params": [
-    "0xabcd1234567890abcdef..."
-  ]
+  "params": {
+    "block_number": 1000,
+    "iteration_id": 1,
+    "tx_hash": "0xabcd1234567890abcdef..."
+  }
 }
 ```
 
@@ -270,7 +330,11 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
   "jsonrpc": "2.0",
   "result": {
     "result": {
-      "hash": "0xabcd1234567890abcdef...",
+      "tx_execution_id": {
+        "block_number": 1000,
+        "iteration_id": 1,
+        "tx_hash": "0xabcd1234567890abcdef..."
+      },
       "status": "success",
       "gas_used": 21000,
       "error": null
@@ -286,7 +350,13 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
   "id": 4,
   "jsonrpc": "2.0",
   "result": {
-    "not_found": "0xabcd1234567890abcdef..."
+    "not_found": [
+      {
+        "block_number": 1000,
+        "iteration_id": 1,
+        "tx_hash": "0xabcd1234567890abcdef..."
+      }
+    ]
   }
 }
 ```
@@ -317,12 +387,13 @@ These are the actual errors returned by the transport decoder:
 When auto-deriving transaction types, these errors may occur:
 
 - `MissingTargetForEip4844`: Type 3 (blob) transaction without a valid `kind` address (contract creation not allowed)
-- `MissingTargetForEip7702`: Type 4 (EIP-7702) transaction without a valid `kind` address (contract creation not allowed)
+- `MissingTargetForEip7702`: Type 4 (EIP-7702) transaction without a valid `kind` address (contract creation not
+  allowed)
 
 ## Error Codes
 
 | Code   | Message                       | Description                            |
-| ------ | ----------------------------- | -------------------------------------- |
+|--------|-------------------------------|----------------------------------------|
 | -32000 | Transaction validation failed | Transaction execution failed           |
 | -32001 | No BlockEnv                   | Received a transaction but no blockenv |
 | -32002 | Invalid block data            | Block data validation failed           |
@@ -331,7 +402,8 @@ When auto-deriving transaction types, these errors may occur:
 
 ## Configuration
 
-The HTTP transport can be configured via command-line arguments or environment variables. See [`src/args/mod.rs`](../../args/mod.rs) for the complete configuration structure.
+The HTTP transport can be configured via command-line arguments or environment variables. See [
+`src/args/mod.rs`](../../args/mod.rs) for the complete configuration structure.
 
 ### Bind Address
 

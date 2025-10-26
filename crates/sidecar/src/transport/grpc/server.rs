@@ -19,6 +19,7 @@ use super::pb::{
     Transaction,
     TransactionEnv,
     TransactionResult as PbTransactionResult,
+    TxExecutionId,
     get_transaction_response::Outcome as GetTransactionOutcome,
     sidecar_transport_server::SidecarTransport,
 };
@@ -204,8 +205,11 @@ impl SidecarTransport for GrpcService {
     async fn reorg(&self, request: Request<ReorgRequest>) -> Result<Response<BasicAck>, Status> {
         trace!("Processing gRPC Reorg request");
         let payload = request.into_inner();
-        let hash: B256 = payload
-            .removed_tx_hash
+        let Some(tx_execution_id) = payload.tx_execution_id else {
+            return Err(Status::invalid_argument("missing tx_execution_id"));
+        };
+        let hash: B256 = tx_execution_id
+            .tx_hash
             .parse()
             .map_err(|_| Status::invalid_argument("invalid removed_tx_hash"))?;
 
@@ -244,16 +248,16 @@ impl SidecarTransport for GrpcService {
         let mut received = Vec::new();
         let mut not_found = Vec::new();
 
-        for h in &payload.tx_hashes {
-            match h.parse::<TxHash>() {
+        for tx_execution_id in &payload.tx_execution_id {
+            match tx_execution_id.tx_hash.parse::<TxHash>() {
                 Ok(hash) => {
                     if self.transactions_results.is_tx_received(&hash) {
-                        received.push((h.clone(), hash));
+                        received.push((tx_execution_id.clone(), hash));
                     } else {
-                        not_found.push(h.clone());
+                        not_found.push(tx_execution_id.tx_hash.clone());
                     }
                 }
-                Err(_) => not_found.push(h.clone()),
+                Err(_) => not_found.push(tx_execution_id.tx_hash.clone()),
             }
         }
 
@@ -268,7 +272,7 @@ impl SidecarTransport for GrpcService {
                     }
                 }
             };
-            results.push(into_pb_transaction_result(h, &result));
+            results.push(into_pb_transaction_result(h.tx_hash, &result));
         }
 
         Ok(Response::new(GetTransactionsResponse {
@@ -297,7 +301,12 @@ impl SidecarTransport for GrpcService {
         }
 
         let payload = request.into_inner();
-        let hash_value = payload.tx_hash;
+
+        let Some(tx_execution_id) = payload.tx_execution_id else {
+            return Err(Status::invalid_argument("missing tx_execution_id"));
+        };
+
+        let hash_value = tx_execution_id.tx_hash;
 
         let Ok(parsed_hash) = hash_value.parse::<TxHash>() else {
             return Ok(Response::new(GetTransactionResponse {
@@ -332,7 +341,7 @@ impl SidecarTransport for GrpcService {
     }
 }
 
-fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTransactionResult {
+fn into_pb_transaction_result(tx_hash: String, result: &TransactionResult) -> PbTransactionResult {
     match result {
         TransactionResult::ValidationCompleted {
             execution_result,
@@ -341,7 +350,11 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
             let gas_used = execution_result.gas_used();
             if !*is_valid {
                 return PbTransactionResult {
-                    hash,
+                    tx_execution_id: Some(TxExecutionId {
+                        block_number: 0,
+                        iteration_id: 0,
+                        tx_hash,
+                    }),
                     status: "assertion_failed".into(),
                     gas_used,
                     error: String::new(),
@@ -350,7 +363,11 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
             match execution_result {
                 ExecutionResult::Success { .. } => {
                     PbTransactionResult {
-                        hash,
+                        tx_execution_id: Some(TxExecutionId {
+                            block_number: 0,
+                            iteration_id: 0,
+                            tx_hash,
+                        }),
                         status: "success".into(),
                         gas_used,
                         error: String::new(),
@@ -358,7 +375,11 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
                 }
                 ExecutionResult::Revert { .. } => {
                     PbTransactionResult {
-                        hash,
+                        tx_execution_id: Some(TxExecutionId {
+                            block_number: 0,
+                            iteration_id: 0,
+                            tx_hash,
+                        }),
                         status: "reverted".into(),
                         gas_used,
                         error: String::new(),
@@ -366,7 +387,11 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
                 }
                 ExecutionResult::Halt { reason, .. } => {
                     PbTransactionResult {
-                        hash,
+                        tx_execution_id: Some(TxExecutionId {
+                            block_number: 0,
+                            iteration_id: 0,
+                            tx_hash,
+                        }),
                         status: "halted".into(),
                         gas_used,
                         error: format!("Transaction halted: {reason:?}"),
@@ -376,7 +401,11 @@ fn into_pb_transaction_result(hash: String, result: &TransactionResult) -> PbTra
         }
         TransactionResult::ValidationError(error) => {
             PbTransactionResult {
-                hash,
+                tx_execution_id: Some(TxExecutionId {
+                    block_number: 0,
+                    iteration_id: 0,
+                    tx_hash,
+                }),
                 status: "failed".into(),
                 gas_used: 0,
                 error: format!("Validation error: {error}"),
@@ -390,8 +419,11 @@ pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError>
     let tx_env =
         convert_pb_tx_env_to_revm(t.tx_env.as_ref().ok_or(HttpDecoderError::MissingTxEnv)?)?;
 
-    let tx_hash =
-        B256::from_str(&t.hash).map_err(|_| HttpDecoderError::InvalidHash(t.hash.clone()))?;
+    let Some(tx_execution_id) = t.tx_execution_id.as_ref() else {
+        return Err(HttpDecoderError::MissingTxExecutionId);
+    };
+    let tx_hash = B256::from_str(&tx_execution_id.tx_hash)
+        .map_err(|_| HttpDecoderError::InvalidHash(tx_execution_id.tx_hash.clone()))?;
 
     Ok(TxQueueContents::Tx(
         QueueTransaction { tx_hash, tx_env },
@@ -627,6 +659,7 @@ fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueBlockEnv
         block_env,
         last_tx_hash,
         n_transactions: payload.n_transactions,
+        selected_iteration_id: payload.selected_iteration_id,
     })
 }
 

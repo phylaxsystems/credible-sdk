@@ -45,12 +45,15 @@ use serde::{
         Visitor,
     },
 };
-use std::sync::{
-    Arc,
-    LazyLock,
-    atomic::{
-        AtomicBool,
-        Ordering,
+use std::{
+    str::FromStr,
+    sync::{
+        Arc,
+        LazyLock,
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
     },
 };
 use tracing::{
@@ -68,10 +71,117 @@ pub(in crate::transport) const METHOD_GET_TRANSACTIONS: &str = "getTransactions"
 pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransaction";
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Transaction {
-    #[serde(rename = "txEnv")]
+    pub tx_execution_id: TxExecutionId,
     pub tx_env: TxEnv,
-    pub hash: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TxExecutionId {
+    pub block_number: u64,
+    pub iteration_id: u64,
+    pub tx_hash: TxHash,
+}
+
+impl<'de> Deserialize<'de> for TxExecutionId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")]
+        enum Field {
+            BlockNumber,
+            IterationId,
+            TxHash,
+        }
+
+        struct TxExecutionIdVisitor;
+
+        impl<'de> Visitor<'de> for TxExecutionIdVisitor {
+            type Value = TxExecutionId;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("struct tx_execution_id")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<TxExecutionId, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut block_number = None;
+                let mut iteration_id = None;
+                let mut tx_hash = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::BlockNumber => {
+                            if block_number.is_some() {
+                                return Err(de::Error::duplicate_field("block_number"));
+                            }
+                            block_number = Some(map.next_value().map_err(|e| {
+                                de::Error::custom(format!("invalid block_number: {e}"))
+                            })?);
+                        }
+                        Field::IterationId => {
+                            if iteration_id.is_some() {
+                                return Err(de::Error::duplicate_field("iteration_id"));
+                            }
+                            iteration_id = Some(map.next_value().map_err(|e| {
+                                de::Error::custom(format!("invalid iteration_id: {e}"))
+                            })?);
+                        }
+                        Field::TxHash => {
+                            if tx_hash.is_some() {
+                                return Err(de::Error::duplicate_field("tx_hash"));
+                            }
+                            // Read hash as string first
+                            let hash_str: String = map
+                                .next_value()
+                                .map_err(|e| de::Error::custom(format!("invalid hash: {e}")))?;
+
+                            // Trim whitespace
+                            let hash_str = hash_str.trim();
+
+                            // Ensure hash has "0x" prefix
+                            let normalized_hash =
+                                if hash_str.starts_with("0x") || hash_str.starts_with("0X") {
+                                    hash_str.to_string()
+                                } else {
+                                    format!("0x{hash_str}")
+                                };
+
+                            // Parse the normalized hash using from_str
+                            let parsed_hash = TxHash::from_str(&normalized_hash)
+                                .map_err(|e| de::Error::custom(format!("invalid hash: {e}")))?;
+
+                            tx_hash = Some(parsed_hash);
+                        }
+                    }
+                }
+
+                let block_number =
+                    block_number.ok_or_else(|| de::Error::missing_field("block_number"))?;
+                let iteration_id =
+                    iteration_id.ok_or_else(|| de::Error::missing_field("iteration_id"))?;
+                let tx_hash = tx_hash.ok_or_else(|| de::Error::missing_field("tx_hash"))?;
+
+                Ok(TxExecutionId {
+                    block_number,
+                    iteration_id,
+                    tx_hash,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "tx_execution_id",
+            &["block_number", "iteration_id", "tx_hash"],
+            TxExecutionIdVisitor,
+        )
+    }
 }
 
 impl<'de> Deserialize<'de> for Transaction {
@@ -80,10 +190,10 @@ impl<'de> Deserialize<'de> for Transaction {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(field_identifier, rename_all = "camelCase")]
+        #[serde(field_identifier, rename_all = "snake_case")]
         enum Field {
+            TxExecutionId,
             TxEnv,
-            Hash,
         }
 
         struct TransactionVisitor;
@@ -99,40 +209,47 @@ impl<'de> Deserialize<'de> for Transaction {
             where
                 V: MapAccess<'de>,
             {
+                let mut tx_execution_id = None;
                 let mut tx_env = None;
-                let mut hash = None;
 
                 while let Some(key) = map.next_key()? {
                     match key {
+                        Field::TxExecutionId => {
+                            if tx_execution_id.is_some() {
+                                return Err(de::Error::duplicate_field("tx_execution_id"));
+                            }
+                            tx_execution_id = Some(map.next_value().map_err(|e| {
+                                de::Error::custom(format!("invalid tx_execution_id: {e}"))
+                            })?);
+                        }
                         Field::TxEnv => {
                             if tx_env.is_some() {
-                                return Err(de::Error::duplicate_field("txEnv"));
+                                return Err(de::Error::duplicate_field("tx_env"));
                             }
                             tx_env =
                                 Some(map.next_value().map_err(|e| {
-                                    de::Error::custom(format!("invalid txEnv: {e}"))
+                                    de::Error::custom(format!("invalid tx_env: {e}"))
                                 })?);
-                        }
-                        Field::Hash => {
-                            if hash.is_some() {
-                                return Err(de::Error::duplicate_field("hash"));
-                            }
-                            hash = Some(
-                                map.next_value()
-                                    .map_err(|_| de::Error::custom("invalid hash field"))?,
-                            );
                         }
                     }
                 }
 
-                let tx_env = tx_env.ok_or_else(|| de::Error::missing_field("txEnv"))?;
-                let hash = hash.ok_or_else(|| de::Error::missing_field("hash"))?;
+                let tx_execution_id =
+                    tx_execution_id.ok_or_else(|| de::Error::missing_field("tx_execution_id"))?;
+                let tx_env = tx_env.ok_or_else(|| de::Error::missing_field("tx_env"))?;
 
-                Ok(Transaction { tx_env, hash })
+                Ok(Transaction {
+                    tx_execution_id,
+                    tx_env,
+                })
             }
         }
 
-        deserializer.deserialize_struct("Transaction", &["txEnv", "hash"], TransactionVisitor)
+        deserializer.deserialize_struct(
+            "Transaction",
+            &["tx_execution_id", "tx_env"],
+            TransactionVisitor,
+        )
     }
 }
 
@@ -488,23 +605,23 @@ fn ensure_block_environment_available(
 }
 
 #[allow(clippy::result_large_err)]
-fn parse_transaction_hashes(
+fn parse_tx_execution_ids(
     request: &JsonRpcRequest,
     method_name: &str,
-) -> Result<Vec<TxHash>, JsonRpcResponse> {
+) -> Result<Vec<TxExecutionId>, JsonRpcResponse> {
     let Some(params) = &request.params else {
         debug!("{method_name} request missing required parameters");
         let message = format!("Missing params for {method_name}");
         return Err(JsonRpcResponse::invalid_params(request, &message));
     };
 
-    let Ok(tx_hashes) = serde_json::from_value::<Vec<TxHash>>(params.clone()) else {
+    let Ok(tx_execution_ids) = serde_json::from_value::<Vec<TxExecutionId>>(params.clone()) else {
         debug!("{method_name} request invalid tx hash format");
         let message = format!("Invalid params for {method_name}");
         return Err(JsonRpcResponse::invalid_request(request, &message));
     };
 
-    Ok(tx_hashes)
+    Ok(tx_execution_ids)
 }
 
 async fn handle_get_transactions(
@@ -519,18 +636,21 @@ async fn handle_get_transactions(
         return Ok(response);
     }
 
-    let tx_hashes = match parse_transaction_hashes(request, "getTransactions") {
-        Ok(hashes) => hashes,
+    let tx_execution_ids = match parse_tx_execution_ids(request, "getTransactions") {
+        Ok(tx_execution_ids) => tx_execution_ids,
         Err(error_response) => return Ok(error_response),
     };
 
-    let (received_tx_hashes, not_found_hashes): (Vec<_>, Vec<_>) = tx_hashes
-        .into_iter()
-        .partition(|tx_hash| state.transactions_results.is_tx_received(tx_hash));
+    let (received_tx_execution_ids, not_found_tx_execution_ids): (Vec<_>, Vec<_>) =
+        tx_execution_ids.into_iter().partition(|tx_execution_id| {
+            state
+                .transactions_results
+                .is_tx_received(&tx_execution_id.tx_hash)
+        });
 
-    let mut results = Vec::with_capacity(received_tx_hashes.len());
-    for tx_hash in received_tx_hashes {
-        match resolve_transaction_result(state, request, tx_hash).await {
+    let mut results = Vec::with_capacity(received_tx_execution_ids.len());
+    for tx_execution_id in received_tx_execution_ids {
+        match resolve_transaction_result(state, request, tx_execution_id.tx_hash).await {
             Ok(result) => results.push(result),
             Err(error_response) => return Ok(error_response),
         }
@@ -545,7 +665,7 @@ async fn handle_get_transactions(
         request,
         serde_json::json!({
             "results": results,
-            "not_found": not_found_hashes.into_iter().map(|hash| hash.to_string()).collect::<Vec<_>>(),
+            "not_found": not_found_tx_execution_ids,
         }),
     ))
 }
@@ -560,14 +680,14 @@ async fn handle_get_transaction(
         return Ok(response);
     }
 
-    let mut tx_hashes = match parse_transaction_hashes(request, "getTransaction") {
-        Ok(hashes) => hashes,
+    let mut tx_execution_ids = match parse_tx_execution_ids(request, "getTransaction") {
+        Ok(tx_execution_ids) => tx_execution_ids,
         Err(error_response) => return Ok(error_response),
     };
 
-    if tx_hashes.len() != 1 {
+    if tx_execution_ids.len() != 1 {
         debug!(
-            hash_count = tx_hashes.len(),
+            hash_count = tx_execution_ids.len(),
             "getTransaction requires exactly one transaction hash"
         );
         return Ok(JsonRpcResponse::invalid_params(
@@ -576,18 +696,21 @@ async fn handle_get_transaction(
         ));
     }
 
-    let tx_hash = tx_hashes.remove(0);
+    let tx_execution_id = tx_execution_ids.remove(0);
 
-    if !state.transactions_results.is_tx_received(&tx_hash) {
+    if !state
+        .transactions_results
+        .is_tx_received(&tx_execution_id.tx_hash)
+    {
         return Ok(JsonRpcResponse::success(
             request,
             serde_json::json!({
-                "not_found": tx_hash.to_string(),
+                "not_found": tx_execution_id
             }),
         ));
     }
 
-    let result = match resolve_transaction_result(state, request, tx_hash).await {
+    let result = match resolve_transaction_result(state, request, tx_execution_id.tx_hash).await {
         Ok(result) => result,
         Err(error_response) => return Ok(error_response),
     };
@@ -605,8 +728,6 @@ async fn resolve_transaction_result(
     request: &JsonRpcRequest,
     tx_hash: TxHash,
 ) -> Result<TransactionResultResponse, JsonRpcResponse> {
-    let hash_string = tx_hash.to_string();
-
     let result = match state
         .transactions_results
         .request_transaction_result(&tx_hash)
@@ -617,7 +738,7 @@ async fn resolve_transaction_result(
                 result
             } else {
                 error!(
-                    tx_hash = %hash_string,
+                    tx_hash = %tx_hash,
                     "Engine dropped response channel for transaction query"
                 );
                 return Err(JsonRpcResponse::internal_error(
@@ -628,12 +749,12 @@ async fn resolve_transaction_result(
         }
     };
 
-    Ok(into_transaction_result_response(hash_string, &result))
+    Ok(into_transaction_result_response(tx_hash, &result))
 }
 
 /// Helper function to determine transaction status and error message
 fn into_transaction_result_response(
-    hash: String,
+    tx_hash: TxHash,
     result: &TransactionResult,
 ) -> TransactionResultResponse {
     match result {
@@ -645,7 +766,11 @@ fn into_transaction_result_response(
             if !*is_valid {
                 // Transaction failed assertion validation
                 return TransactionResultResponse {
-                    hash,
+                    tx_execution_id: TxExecutionId {
+                        block_number: 0,
+                        iteration_id: 0,
+                        tx_hash,
+                    },
                     status: "assertion_failed".to_string(),
                     gas_used,
                     error: None,
@@ -654,7 +779,11 @@ fn into_transaction_result_response(
             match execution_result {
                 ExecutionResult::Success { .. } => {
                     TransactionResultResponse {
-                        hash,
+                        tx_execution_id: TxExecutionId {
+                            block_number: 0,
+                            iteration_id: 0,
+                            tx_hash,
+                        },
                         status: "success".to_string(),
                         gas_used,
                         error: None,
@@ -662,7 +791,11 @@ fn into_transaction_result_response(
                 }
                 ExecutionResult::Revert { .. } => {
                     TransactionResultResponse {
-                        hash,
+                        tx_execution_id: TxExecutionId {
+                            block_number: 0,
+                            iteration_id: 0,
+                            tx_hash,
+                        },
                         status: "reverted".to_string(),
                         gas_used,
                         error: None,
@@ -670,7 +803,11 @@ fn into_transaction_result_response(
                 }
                 ExecutionResult::Halt { reason, .. } => {
                     TransactionResultResponse {
-                        hash,
+                        tx_execution_id: TxExecutionId {
+                            block_number: 0,
+                            iteration_id: 0,
+                            tx_hash,
+                        },
                         status: "halted".to_string(),
                         gas_used,
                         error: Some(format!("Transaction halted: {reason:?}")),
@@ -680,7 +817,11 @@ fn into_transaction_result_response(
         }
         TransactionResult::ValidationError(error) => {
             TransactionResultResponse {
-                hash,
+                tx_execution_id: TxExecutionId {
+                    block_number: 0,
+                    iteration_id: 0,
+                    tx_hash,
+                },
                 status: "failed".to_string(),
                 gas_used: None,
                 error: Some(format!("Validation error: {error}")),
@@ -691,7 +832,7 @@ fn into_transaction_result_response(
 
 #[derive(Debug, Serialize)]
 struct TransactionResultResponse {
-    pub hash: String,
+    pub tx_execution_id: TxExecutionId,
     pub status: String,
     pub gas_used: Option<u64>,
     pub error: Option<String>,

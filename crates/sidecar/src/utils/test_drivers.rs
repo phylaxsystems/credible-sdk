@@ -28,13 +28,17 @@ use crate::{
                 SendTransactionsRequest,
                 Transaction as GrpcTransaction,
                 TransactionEnv as GrpcTransactionEnv,
+                TxExecutionId as GrpcTxExecutionId,
                 sidecar_transport_client::SidecarTransportClient,
             },
         },
         http::{
             HttpTransport,
             config::HttpTransportConfig,
-            server::Transaction,
+            server::{
+                Transaction,
+                TxExecutionId,
+            },
         },
         mock::MockTransport,
     },
@@ -384,6 +388,7 @@ impl TestTransport for LocalInstanceMockDriver {
             },
             last_tx_hash,
             n_transactions,
+            selected_iteration_id: Some(0),
         };
 
         self.block_tx_hashes.clear();
@@ -560,19 +565,22 @@ impl TestTransport for LocalInstanceHttpDriver {
           "jsonrpc": "2.0",
           "method": "sendBlockEnv",
           "params": {
-            "number": blockenv.number,
-            "beneficiary": blockenv.beneficiary.to_string(),
-            "timestamp": blockenv.timestamp,
-            "gas_limit": blockenv.gas_limit,
-            "basefee": blockenv.basefee,
-            "difficulty": format!("0x{:x}", blockenv.difficulty),
-            "prevrandao": blockenv.prevrandao.map(|h| h.to_string()),
-            "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| json!({
-                "excess_blob_gas": blob.excess_blob_gas,
-                "blob_gasprice": blob.blob_gasprice
-            })),
-            "n_transactions": n_transactions,
-            "last_tx_hash": last_tx_hash
+                "block_env": {
+                    "number": blockenv.number,
+                    "beneficiary": blockenv.beneficiary.to_string(),
+                    "timestamp": blockenv.timestamp,
+                    "gas_limit": blockenv.gas_limit,
+                    "basefee": blockenv.basefee,
+                    "difficulty": format!("0x{:x}", blockenv.difficulty),
+                    "prevrandao": blockenv.prevrandao.map(|h| h.to_string()),
+                    "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| json!({
+                        "excess_blob_gas": blob.excess_blob_gas,
+                        "blob_gasprice": blob.blob_gasprice
+                    })),
+                },
+                "n_transactions": n_transactions,
+                "last_tx_hash": last_tx_hash,
+                "selected_iteration_id": Some(0)
           }
         });
 
@@ -633,7 +641,11 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         // Create the transaction structure
         let transaction = Transaction {
-            hash: tx_hash.to_string(),
+            tx_execution_id: TxExecutionId {
+                block_number: 0,
+                iteration_id: 0,
+                tx_hash,
+            },
             tx_env,
         };
 
@@ -714,12 +726,14 @@ impl TestTransport for LocalInstanceHttpDriver {
         }
 
         let request = json!({
-          "id": 1,
-          "jsonrpc": "2.0",
-          "method": "reorg",
-          "params": {
-            "removedTxHash": tx_hash,
-          }
+            "id": 1,
+            "jsonrpc": "2.0",
+            "method": "reorg",
+            "params": {
+                "block_number": 0,
+                "iteration_id": 0,
+                "tx_hash": tx_hash
+            }
         });
 
         debug!(target: "LocalInstanceHttpDriver", "Sending HTTP request: {}", serde_json::to_string_pretty(&request).unwrap_or_default());
@@ -932,6 +946,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             }),
             last_tx_hash: last_tx_hash.map(|h| h.to_string()).unwrap_or_default(),
             n_transactions,
+            selected_iteration_id: Some(0),
         };
 
         self.block_tx_hashes.clear();
@@ -982,7 +997,11 @@ impl TestTransport for LocalInstanceGrpcDriver {
         // Create the gRPC transaction structure
 
         let transaction = GrpcTransaction {
-            hash: tx_hash.to_string(),
+            tx_execution_id: Some(GrpcTxExecutionId {
+                block_number: 0,
+                iteration_id: 0,
+                tx_hash: tx_hash.to_string(),
+            }),
             tx_env: Some(GrpcTransactionEnv {
                 tx_type: 0, // Default to legacy transaction type
                 caller: tx_env.caller.to_string(),
@@ -1105,7 +1124,11 @@ impl TestTransport for LocalInstanceGrpcDriver {
         }
 
         let request = ReorgRequest {
-            removed_tx_hash: tx_hash.to_string(),
+            tx_execution_id: Some(GrpcTxExecutionId {
+                block_number: 0,
+                iteration_id: 0,
+                tx_hash: tx_hash.to_string(),
+            }),
         };
 
         debug!(target: "LocalInstanceGrpcDriver", "Sending gRPC reorg request");

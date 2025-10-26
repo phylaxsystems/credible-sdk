@@ -12,6 +12,7 @@ use alloy::{
     primitives::{
         B256,
         Bytes,
+        TxHash,
     },
     rpc::types::Header,
     signers::Either,
@@ -66,10 +67,18 @@ const TX_MAX_RETRY_DELAY_MS: u64 = 5000;
 
 /// Wrapper for serializing `TxEnv` with the transaction hash
 #[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
 struct TransactionPayload {
-    #[serde(rename = "txEnv")]
     tx_env: TxEnv,
-    hash: String,
+    tx_execution_id: TxExecutionId,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TxExecutionId {
+    pub block_number: u64,
+    pub iteration_id: u64,
+    pub tx_hash: TxHash,
 }
 
 #[derive(Deserialize)]
@@ -460,18 +469,21 @@ impl Listener {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": block.header.number,
-                "beneficiary": format!("{:#x}", block.header.beneficiary),
-                "timestamp": block.header.timestamp,
-                "gas_limit": block.header.gas_limit,
-                "basefee": block.header.base_fee_per_gas,
-                "difficulty": block.header.difficulty,
-                "prevrandao": format!("{:#x}", block.header.mix_hash),
-                "blob_excess_gas_and_price": json!({
-                    "excess_blob_gas": 0,
-                    "blob_gasprice": 1
-                }),
+                "block_env": {
+                    "number": block.header.number,
+                    "beneficiary": format!("{:#x}", block.header.beneficiary),
+                    "timestamp": block.header.timestamp,
+                    "gas_limit": block.header.gas_limit,
+                    "basefee": block.header.base_fee_per_gas,
+                    "difficulty": block.header.difficulty,
+                    "prevrandao": format!("{:#x}", block.header.mix_hash),
+                    "blob_excess_gas_and_price": json!({
+                        "excess_blob_gas": 0,
+                        "blob_gasprice": 1
+                    }),
+                },
                 "n_transactions": n_transactions,
+                "selected_iteration_id": 0,
                 "last_tx_hash": last_tx_hash,
             },
             "id": 1
@@ -636,7 +648,11 @@ impl Listener {
         // Create the transaction payload with REVM TxEnv
         let transaction_payload = TransactionPayload {
             tx_env,
-            hash: format!("{:#x}", tx.inner.hash()),
+            tx_execution_id: TxExecutionId {
+                block_number: 0,
+                iteration_id: 0,
+                tx_hash: *tx.inner.hash(),
+            },
         };
 
         let tx_payload = json!({

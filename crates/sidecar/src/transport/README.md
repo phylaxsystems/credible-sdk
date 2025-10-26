@@ -26,6 +26,14 @@ The gRPC transport provides a high-performance binary protocol for communication
 
 **[See gRPC Transport Documentation](grpc/README.md)** (currently under active development) for detailed API reference and implementation details.
 
+## Choosing a Transport
+
+- **HTTP/JSON-RPC**: Best for debugging, human readability, and simple integrations
+- **gRPC**: Best for high-performance, production deployments with tight latency requirements
+- **Mock**: For testing purposes only
+
+Both transports provide identical functionality and semantics.
+
 ## Core API Overview
 
 Both transports implement the same core API methods:
@@ -46,6 +54,36 @@ Both transports implement the same core API methods:
 - **`getCodeByHash`**: Retrieve contract code by hash
 
 For detailed API specifications and examples, refer to the transport-specific documentation linked above.
+
+## Transaction Identification
+
+### TxExecutionId
+
+Every transaction in the sidecar is uniquely identified by a `TxExecutionId`:
+
+- `block_number`: The block number this transaction belongs to
+- `iteration_id`: An arbitrary identifier for this block creation attempt (chosen by the sequencer, never 0)
+- `tx_hash`: The transaction hash (32-byte hex string)
+
+**Purpose**: TxExecutionId allows tracking transactions across multiple block creation attempts by the sequencer. When a sequencer creates multiple candidate blocks (iterations), only one will ultimately be selected. The `iteration_id` differentiates between transactions in different candidate blocks for the same block number.
+
+**Note**: The `iteration_id` is arbitrarily chosen by the sequencer and should not be assumed to be sequential. The sequencer will never use 0 as an iteration_id.
+
+**Example**: If a sequencer creates three candidate blocks for block 100, they might use `iteration_id` values like 42, 1001, and 2050. The sidecar can validate transactions from all three attempts, even though only one block will be finalized.
+
+### Transaction Structure
+
+When sending transactions via `sendTransactions`, each transaction consists of:
+
+- `tx_execution_id`: The execution identifier (TxExecutionId)
+- `tx_env`: The transaction environment data (TxEnv)
+
+## Long-Polling Semantics
+
+The `getTransactions` and `getTransaction` methods use long-polling:
+- Requests will block until results are available
+- Configure appropriate timeouts on your client
+- For transactions not yet received, the response includes them in the `not_found` array
 
 ## Common Components
 

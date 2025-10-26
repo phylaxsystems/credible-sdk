@@ -230,12 +230,14 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "sendBlockEnv",
             "params": {
-                "number": "invalid_number",  // String instead of u64
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 0u64,
-                "gas_limit": 0u64,
-                "basefee": 0u64,
-                "difficulty": "0x0"
+                "block_env": {
+                    "number": "invalid_number",  // String instead of u64
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 0u64,
+                    "gas_limit": 0u64,
+                    "basefee": 0u64,
+                    "difficulty": "0x0"
+                }
             },
             "id": 1
         });
@@ -266,7 +268,7 @@ mod tests {
         let res = send_raw_request(invalid_request, local_address)
             .await
             .unwrap();
-        assert!(res.contains("Failed to decode transactions: Missing transaction parameters"));
+        assert!(res.contains("Failed to decode transactions: Reorg validation error"));
     }
 
     #[crate::utils::engine_test(http)]
@@ -283,7 +285,7 @@ mod tests {
             "params": {
                 "transactions": [
                     {
-                        "txEnv": {
+                        "tx_env": {
                             "caller": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
                             "gas_limit": 21000,
                             "gas_price": "1000",
@@ -302,7 +304,7 @@ mod tests {
         let res = send_raw_request(invalid_request, local_address)
             .await
             .unwrap();
-        assert!(res.contains("Failed to decode transactions: Invalid transaction format: invalid transactions array: invalid txEnv: invalid type: string \\\"1000\\\", expected u128\""));
+        assert!(res.contains("Failed to decode transactions: Invalid transaction format: invalid transactions array: invalid tx_env: invalid type: string \\\"1000\\\", expected u128\""));
     }
 
     #[crate::utils::engine_test(http)]
@@ -329,7 +331,13 @@ mod tests {
         let request = json!({
             "jsonrpc": "2.0",
             "method": "getTransaction",
-            "params": [tx_hash.to_string()],
+            "params": [
+                {
+                    "block_number": 0u64,
+                    "iteration_id": 0u64,
+                    "tx_hash": tx_hash.to_string()
+                }
+            ],
             "id": 1
         });
 
@@ -352,7 +360,9 @@ mod tests {
             .expect("missing transaction result object");
 
         let hash_str = result
-            .get("hash")
+            .get("tx_execution_id")
+            .unwrap()
+            .get("tx_hash")
             .and_then(serde_json::Value::as_str)
             .expect("hash field missing");
         let parsed_hash = hash_str.parse::<B256>().expect("invalid hash encoding");
@@ -399,7 +409,13 @@ mod tests {
         let request = json!({
             "jsonrpc": "2.0",
             "method": "getTransaction",
-            "params": [missing_hash.to_string()],
+            "params": [
+                {
+                    "block_number": 0u64,
+                    "iteration_id": 0u64,
+                    "tx_hash": missing_hash.to_string()
+                }
+            ],
             "id": 2
         });
 
@@ -417,8 +433,11 @@ mod tests {
         let payload = response_json
             .get("result")
             .expect("missing result payload in response");
+
         let not_found = payload
             .get("not_found")
+            .unwrap()
+            .get("tx_hash")
             .and_then(serde_json::Value::as_str)
             .expect("missing not_found field");
         assert_eq!(not_found, missing_hash.to_string());
