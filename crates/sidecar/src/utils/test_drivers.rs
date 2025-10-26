@@ -579,7 +579,8 @@ impl TestTransport for LocalInstanceHttpDriver {
                     })),
                 },
                 "n_transactions": n_transactions,
-                "last_tx_hash": last_tx_hash
+                "last_tx_hash": last_tx_hash,
+                "selected_iteration_id": Some(0)
           }
         });
 
