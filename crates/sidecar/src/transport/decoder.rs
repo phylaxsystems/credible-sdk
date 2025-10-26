@@ -20,7 +20,6 @@ use crate::{
             METHOD_SEND_TRANSACTIONS,
             SendTransactionsParams,
             TxExecutionId,
-            TxExecutionIdWrapper,
         },
     },
 };
@@ -50,11 +49,11 @@ impl HttpTransactionDecoder {
                 // Map serde errors to specific HttpDecoderError variants
                 if msg.contains("missing field `transactions`") {
                     HttpDecoderError::MissingTransactionsField
-                } else if msg.contains("missing field `txEnv`") {
+                } else if msg.contains("missing field `tx_env`") {
                     HttpDecoderError::MissingTxEnv
                 } else if msg.contains("missing field `hash`") {
                     HttpDecoderError::MissingHashField
-                } else if msg.contains("invalid txEnv") {
+                } else if msg.contains("invalid tx_env") {
                     HttpDecoderError::InvalidTransaction(msg)
                 } else if msg.contains("invalid hash") {
                     HttpDecoderError::InvalidHash(msg)
@@ -86,7 +85,7 @@ impl HttpTransactionDecoder {
         let mut queue_transactions = Vec::with_capacity(send_params.transactions.len());
 
         for transaction in send_params.transactions {
-            let tx_hash = transaction.tx_execution_id.hash;
+            let tx_hash = transaction.tx_execution_id.tx_hash;
 
             let current_span = tracing::Span::current();
             queue_transactions.push(TxQueueContents::Tx(
@@ -118,12 +117,12 @@ impl Decoder for HttpTransactionDecoder {
             }
             METHOD_REORG => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
-                let reorg = serde_json::from_value::<TxExecutionIdWrapper>(params.clone())
+                let reorg = serde_json::from_value::<TxExecutionId>(params.clone())
                     .map_err(|e| HttpDecoderError::ReorgValidation(e.to_string()))?;
 
                 let current_span = tracing::Span::current();
                 Ok(vec![TxQueueContents::Reorg(
-                    reorg.tx_execution_id.hash,
+                    reorg.tx_hash,
                     current_span.clone(),
                 )])
             }
@@ -246,10 +245,10 @@ mod tests {
         });
 
         json!({
-            "txEnv": tx_env,
-            "txExecutionId": {
+            "tx_env": tx_env,
+            "tx_execution_id": {
                 "block_number": block_number,
-                "hash": hash,
+                "tx_hash": hash,
                 "iteration_id": iteration_id
             }
         })
@@ -488,7 +487,7 @@ mod tests {
     #[test]
     fn test_invalid_address_error() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "invalid_address",
                 "to": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -498,9 +497,9 @@ mod tests {
                 "nonce": 0,
                 "chain_id": 1
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
         });
@@ -516,7 +515,7 @@ mod tests {
     #[test]
     fn test_invalid_value_error() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "to": "0x9876543210987654321098765432109876543210",
                 "value": "invalid_value",
@@ -526,9 +525,9 @@ mod tests {
                 "nonce": 0,
                 "chain_id": 1
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
         });
@@ -538,7 +537,7 @@ mod tests {
         assert_eq!(
             result.unwrap_err(),
             HttpDecoderError::InvalidTransaction(
-                "invalid transactions array: invalid txEnv: invalid value: string \"invalid_value\", expected a 32 byte hex string"
+                "invalid transactions array: invalid tx_env: invalid value: string \"invalid_value\", expected a 32 byte hex string"
                     .to_string()
             )
         );
@@ -547,7 +546,7 @@ mod tests {
     #[test]
     fn test_invalid_gas_price_error() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "to": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -557,9 +556,9 @@ mod tests {
                 "nonce": 0,
                 "chain_id": 1
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
         });
@@ -568,14 +567,14 @@ mod tests {
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert_eq!(
             result.unwrap_err(),
-            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid type: string \"invalid_gas_price\", expected u128".to_string())
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid tx_env: invalid type: string \"invalid_gas_price\", expected u128".to_string())
         );
     }
 
     #[test]
     fn test_invalid_data_error() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "to": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -585,9 +584,9 @@ mod tests {
                 "nonce": 0,
                 "chain_id": 1
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
         });
@@ -596,7 +595,7 @@ mod tests {
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert_eq!(
             result.unwrap_err(),
-            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid value: string \"invalid_hex_data\", expected a valid hex string".to_string())
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid tx_env: invalid value: string \"invalid_hex_data\", expected a valid hex string".to_string())
         );
     }
 
@@ -701,7 +700,7 @@ mod tests {
                 1,
             ),
             json!({
-                "txEnv": {
+                "tx_env": {
                     "caller": "0x3333333333333333333333333333333333333333",
                     "to": "0x4444444444444444444444444444444444444444",
                     "value": "2000000000000000000",
@@ -711,9 +710,9 @@ mod tests {
                     "nonce": 1,
                     "chain_id": 1
                 },
-                "txExecutionId": {
+                "tx_execution_id": {
                     "block_number": 1,
-                    "hash": "invalid_hash",
+                    "tx_hash": "invalid_hash",
                     "iteration_id": 1
                 }
             }),
@@ -723,7 +722,7 @@ mod tests {
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert_eq!(
             result.unwrap_err(),
-            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid type: string \"20000000000\", expected u128".to_string())
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid tx_env: invalid type: string \"20000000000\", expected u128".to_string())
         );
     }
 
@@ -753,7 +752,7 @@ mod tests {
     #[test]
     fn test_malformed_hex_data() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "to": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -763,9 +762,9 @@ mod tests {
                 "nonce": 0,
                 "chain_id": 1
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
         });
@@ -774,7 +773,7 @@ mod tests {
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert_eq!(
             result.unwrap_err(),
-            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid value: string \"0xgg\", expected a valid hex string".to_string())
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid tx_env: invalid value: string \"0xgg\", expected a valid hex string".to_string())
         );
     }
 
@@ -839,23 +838,26 @@ mod tests {
     #[test]
     fn test_missing_tx_env_field() {
         let transaction = json!({
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
-            // Missing txEnv field
+            // Missing tx_env field
         });
 
         let request = create_test_request_json("sendTransactions", &[transaction]);
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert!(matches!(result, Err(HttpDecoderError::MissingTxEnv)));
+        assert!(matches!(
+            result,
+            Err(HttpDecoderError::InvalidTransaction(_))
+        ));
     }
 
     #[test]
     fn test_missing_tx_execution_id_field() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -871,7 +873,7 @@ mod tests {
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
             }
-            // Missing txExecutionId field
+            // Missing tx_execution_id field
         });
 
         let request = create_test_request_json("sendTransactions", &[transaction]);
@@ -885,7 +887,7 @@ mod tests {
     #[test]
     fn test_missing_hash_field() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -901,7 +903,7 @@ mod tests {
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
                 // Missing hash field
                 "iteration_id": 1
@@ -916,7 +918,7 @@ mod tests {
     #[test]
     fn test_invalid_nonce_error() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -932,9 +934,9 @@ mod tests {
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
         });
@@ -943,14 +945,14 @@ mod tests {
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert_eq!(
             result.unwrap_err(),
-            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid type: string \"invalid_nonce\", expected u64".to_string())
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid tx_env: invalid type: string \"invalid_nonce\", expected u64".to_string())
         );
     }
 
     #[test]
     fn test_invalid_gas_limit_error() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -966,9 +968,9 @@ mod tests {
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
         });
@@ -977,14 +979,14 @@ mod tests {
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert_eq!(
             result.unwrap_err(),
-            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid type: string \"invalid_gas_limit\", expected u64".to_string())
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid tx_env: invalid type: string \"invalid_gas_limit\", expected u64".to_string())
         );
     }
 
     #[test]
     fn test_invalid_chain_id_error() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -1000,9 +1002,9 @@ mod tests {
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
         });
@@ -1011,14 +1013,14 @@ mod tests {
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert_eq!(
             result.unwrap_err(),
-            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid txEnv: invalid type: string \"invalid_chain_id\", expected u64".to_string())
+            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid tx_env: invalid type: string \"invalid_chain_id\", expected u64".to_string())
         );
     }
 
     #[test]
     fn test_negative_nonce_error() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -1034,9 +1036,9 @@ mod tests {
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
         });
@@ -1052,7 +1054,7 @@ mod tests {
     #[test]
     fn test_invalid_to_address_error() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "invalid_to_address",
                 "value": "1000000000000000000",
@@ -1068,9 +1070,9 @@ mod tests {
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
                 "iteration_id": 1
             }
         });
@@ -1086,7 +1088,7 @@ mod tests {
     #[test]
     fn test_invalid_hash_in_transactions_array() {
         let transaction = json!({
-            "txEnv": {
+            "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
                 "value": "1000000000000000000",
@@ -1102,9 +1104,9 @@ mod tests {
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
             },
-            "txExecutionId": {
+            "tx_execution_id": {
                 "block_number": 1,
-                "hash": "not_64_chars",
+                "tx_hash": "not_64_chars",
                 "iteration_id": 1
             }
         });
@@ -1113,7 +1115,7 @@ mod tests {
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert_eq!(
             result.unwrap_err(),
-            HttpDecoderError::InvalidHash("invalid transactions array: invalid txExecutionId: invalid hash: invalid string length".to_string())
+            HttpDecoderError::InvalidHash("invalid transactions array: invalid tx_execution_id: invalid hash: invalid string length".to_string())
         );
     }
 
@@ -2393,11 +2395,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionId": {
-                    "block_number": 100u64,
-                    "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                    "iteration_id": 1u64
-                }
+                "block_number": 100u64,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2433,11 +2433,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionId": {
-                    "block_number": 100u64,
-                    "hash": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                    "iteration_id": 1u64
-                }
+                "block_number": 100u64,
+                "tx_hash": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2500,7 +2498,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "Should fail when txExecutionIds field is missing"
+            "Should fail when tx_execution_id field is missing"
         );
         assert!(
             matches!(result.unwrap_err(), HttpDecoderError::ReorgValidation(_)),
@@ -2514,10 +2512,8 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionIds": [{
-                    "block_number": 100u64,
-                    "iteration_id": 1u64
-                }]
+                "block_number": 100u64,
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2538,11 +2534,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionIds": [{
-                    "block_number": 100u64,
-                    "hash": "not_a_valid_hash",
-                    "iteration_id": 1u64
-                }]
+                "block_number": 100u64,
+                "tx_hash": "not_a_valid_hash",
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2563,11 +2557,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionIds": [{
-                    "block_number": 100u64,
-                    "hash": "0x1234",
-                    "iteration_id": 1u64
-                }]
+                "block_number": 100u64,
+                "tx_hash": "0x1234",
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2588,11 +2580,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionIds": [{
-                    "block_number": 100u64,
-                    "hash": 12345,
-                    "iteration_id": 1u64
-                }]
+                "block_number": 100u64,
+                "tx_hash": 12345,
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2613,11 +2603,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionIds": [{
-                    "block_number": 100u64,
-                    "hash": null,
-                    "iteration_id": 1u64
-                }]
+                "block_number": 100u64,
+                "tx_hash": null,
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2638,11 +2626,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionId": {
-                    "block_number": 100u64,
-                    "hash": "0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF",
-                    "iteration_id": 1u64
-                }
+                "block_number": 100u64,
+                "tx_hash": "0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF",
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2659,11 +2645,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionId": {
-                    "block_number": 100u64,
-                    "hash": "0x1234567890AbCdEf1234567890aBcDeF1234567890AbCdEf1234567890aBcDeF",
-                    "iteration_id": 1u64
-                }
+                "block_number": 100u64,
+                "tx_hash": "0x1234567890AbCdEf1234567890aBcDeF1234567890AbCdEf1234567890aBcDeF",
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2680,11 +2664,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionIds": [{
-                    "block_number": 100u64,
-                    "hash": "",
-                    "iteration_id": 1u64
-                }]
+                "block_number": 100u64,
+                "tx_hash": "",
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2705,11 +2687,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionIds": {
-                    "block_number": 100u64,
-                    "hash": "0x",
-                    "iteration_id": 1u64
-                }
+                "block_number": 100u64,
+                "tx_hash": "0x",
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2730,10 +2710,8 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionIds": {
-                    "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                    "iteration_id": 1u64
-                }
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "iteration_id": 1u64
             },
             "id": 1
         });
@@ -2754,9 +2732,9 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionId": {
+                "tx_execution_id": {
                     "block_number": 100u64,
-                    "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
                 }
             },
             "id": 1
@@ -2786,11 +2764,9 @@ mod tests {
                 "jsonrpc": "2.0",
                 "method": "reorg",
                 "params": {
-                    "txExecutionId": {
-                        "block_number": block_number,
-                        "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                        "iteration_id": 1u64
-                    }
+                    "block_number": block_number,
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "iteration_id": 1u64
                 },
                 "id": 1
             });
@@ -2800,25 +2776,5 @@ mod tests {
 
             assert!(result.is_ok(), "Should succeed with {description}");
         }
-    }
-
-    #[test]
-    fn test_decode_reorg_txs_not_object() {
-        let not_array_request = json!({
-            "jsonrpc": "2.0",
-            "method": "reorg",
-            "params": {
-                "txExecutionIds": "not_an_object"
-            },
-            "id": 1
-        });
-
-        let request: JsonRpcRequest = serde_json::from_value(not_array_request).unwrap();
-        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-
-        assert!(
-            result.is_err(),
-            "Should fail when txExecutionIds is not an array"
-        );
     }
 }

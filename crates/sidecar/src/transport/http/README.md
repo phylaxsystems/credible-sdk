@@ -137,10 +137,10 @@ call is received, as we need information about what block we are executing txs o
   "params": {
     "transactions": [
       {
-        "txEnv": {
+        "tx_env": {
           /* TxEnv object */
         },
-        "txExecutionId": {
+        "tx_execution_id": {
           "block_number": 1000,
           "iteration_id": 1,
           "tx_hash": "0x1234567890abcdef..."
@@ -187,11 +187,9 @@ Reorg the last sent transaction. Hash of the last sent transaction must be the s
   "jsonrpc": "2.0",
   "method": "reorg",
   "params": {
-    "txExecutionId": {
-      "block_number": 1000,
-      "iteration_id": 1,
-      "tx_hash": "0x1234567890abcdef..."
-    }
+    "block_number": 1000,
+    "iteration_id": 1,
+    "tx_hash": "0x1234567890abcdef..."
   }
 }
 ```
@@ -224,25 +222,19 @@ Responds when all requested transactions are available. `results` field contains
   "method": "getTransactions",
   "params": [
     {
-      "txExecutionId": {
-        "block_number": 1000,
-        "iteration_id": 1,
-        "tx_hash": "0xabcd1234567890abcdef..."
-      }
+      "block_number": 1000,
+      "iteration_id": 1,
+      "tx_hash": "0xabcd1234567890abcdef..."
     },
     {
-      "txExecutionId": {
-        "block_number": 1000,
-        "iteration_id": 1,
-        "tx_hash": "0xefgh5678901234567890..."
-      }
+      "block_number": 1000,
+      "iteration_id": 1,
+      "tx_hash": "0xefgh5678901234567890..."
     },
     {
-      "txExecutionId": {
-        "block_number": 1000,
-        "iteration_id": 1,
-        "tx_hash": "0xijkl9012345678901234..."
-      }
+      "block_number": 1000,
+      "iteration_id": 1,
+      "tx_hash": "0xijkl9012345678901234..."
     }
   ]
 }
@@ -257,7 +249,7 @@ Responds when all requested transactions are available. `results` field contains
   "result": {
     "results": [
       {
-        "txExecutionId": {
+        "tx_execution_id": {
           "block_number": 1000,
           "iteration_id": 1,
           "tx_hash": "0xabcd1234567890abcdef..."
@@ -267,7 +259,7 @@ Responds when all requested transactions are available. `results` field contains
         "error": null
       },
       {
-        "txExecutionId": {
+        "tx_execution_id": {
           "block_number": 1000,
           "iteration_id": 1,
           "tx_hash": "0xefgh5678901234567890..."
@@ -277,7 +269,7 @@ Responds when all requested transactions are available. `results` field contains
         "error": null
       },
       {
-        "txExecutionId": {
+        "tx_execution_id": {
           "block_number": 1000,
           "iteration_id": 1,
           "tx_hash": "0xijkl9012345678901234..."
@@ -305,11 +297,9 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
   "method": "getTransaction",
   "params": [
     {
-      "txExecutionId": {
-        "block_number": 1000,
-        "iteration_id": 1,
-        "tx_hash": "0xabcd1234567890abcdef..."
-      }
+      "block_number": 1000,
+      "iteration_id": 1,
+      "tx_hash": "0xabcd1234567890abcdef..."
     }
   ]
 }
@@ -323,7 +313,7 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
   "jsonrpc": "2.0",
   "result": {
     "result": {
-      "txExecutionId": {
+      "tx_execution_id": {
         "block_number": 1000,
         "iteration_id": 1,
         "tx_hash": "0xabcd1234567890abcdef..."
@@ -344,11 +334,9 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
   "jsonrpc": "2.0",
   "result": {
     "not_found": {
-      "txExecutionId": {
-        "block_number": 1000,
-        "iteration_id": 1,
-        "tx_hash": "0xabcd1234567890abcdef..."
-      }
+      "block_number": 1000,
+      "iteration_id": 1,
+      "tx_hash": "0xabcd1234567890abcdef..."
     }
   }
 }

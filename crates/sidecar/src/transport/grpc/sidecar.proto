@@ -118,7 +118,7 @@ message GetTransactionResponse {
 message TxExecutionId {
   uint64 block_number = 1; // Block number
   uint64 iteration_id = 2; // Iteration Id
-  string hash = 3;         // 0x-prefixed hash string
+  string tx_hash = 3;      // 0x-prefixed hash string
 }
 
 service SidecarTransport {

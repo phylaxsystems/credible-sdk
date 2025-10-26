@@ -641,7 +641,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             tx_env,
             tx_execution_id: TxExecutionId {
                 block_number: 0,
-                hash: tx_hash,
+                tx_hash,
                 iteration_id: 0,
             },
         };
@@ -727,11 +727,9 @@ impl TestTransport for LocalInstanceHttpDriver {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "txExecutionId": {
-                    "block_number": 0,
-                    "iteration_id": 0,
-                    "hash": tx_hash
-                }
+                "block_number": 0,
+                "iteration_id": 0,
+                "tx_hash": tx_hash
             }
         });
 
@@ -999,7 +997,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             tx_execution_id: Some(GrpcTxExecutionId {
                 block_number: 0,
                 iteration_id: 0,
-                hash: tx_hash.to_string(),
+                tx_hash: tx_hash.to_string(),
             }),
             tx_env: Some(GrpcTransactionEnv {
                 tx_type: 0, // Default to legacy transaction type
@@ -1126,7 +1124,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             tx_execution_id: Some(GrpcTxExecutionId {
                 block_number: 0,
                 iteration_id: 0,
-                hash: tx_hash.to_string(),
+                tx_hash: tx_hash.to_string(),
             }),
         };
 

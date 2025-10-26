@@ -283,7 +283,7 @@ mod tests {
             "params": {
                 "transactions": [
                     {
-                        "txEnv": {
+                        "tx_env": {
                             "caller": "0x742d35Cc6634C0532925a3b8D23b7E07e3E23eF4",
                             "gas_limit": 21000,
                             "gas_price": "1000",
@@ -331,11 +331,9 @@ mod tests {
             "method": "getTransaction",
             "params": [
                 {
-                    "txExecutionId": {
-                        "hash": tx_hash.to_string(),
-                        "block_number": 0u64,
-                        "iteration_id": 0u64
-                    }
+                    "tx_hash": tx_hash.to_string(),
+                    "iteration_id": 0u64,
+                    "block_number": 0u64
                 }
             ],
             "id": 1
@@ -411,11 +409,9 @@ mod tests {
             "method": "getTransaction",
             "params": [
                 {
-                    "txExecutionId": {
-                        "hash": missing_hash.to_string(),
-                        "block_number": 0u64,
-                        "iteration_id": 0u64,
-                    }
+                    "tx_hash": missing_hash.to_string(),
+                    "iteration_id": 0u64,
+                    "block_number": 0u64
                 }
             ],
             "id": 2
@@ -439,7 +435,7 @@ mod tests {
         let not_found = payload
             .get("not_found")
             .unwrap()
-            .get("txExecutionId")
+            .get("tx_execution_id")
             .unwrap()
             .get("hash")
             .and_then(serde_json::Value::as_str)

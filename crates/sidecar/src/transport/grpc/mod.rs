@@ -209,7 +209,7 @@ mod tests {
         let response = client
             .get_transaction(GetTransactionRequest {
                 tx_execution_id: Some(TxExecutionId {
-                    hash: tx_hash.to_string(),
+                    tx_hash: tx_hash.to_string(),
                     block_number: 0,
                     iteration_id: 0,
                 }),
@@ -223,7 +223,7 @@ mod tests {
                 let parsed_hash = result
                     .tx_execution_id
                     .unwrap()
-                    .hash
+                    .tx_hash
                     .parse::<B256>()
                     .expect("invalid hash encoding");
                 assert_eq!(parsed_hash, tx_hash, "queried hash should match");
@@ -262,7 +262,7 @@ mod tests {
                 tx_execution_id: Some(TxExecutionId {
                     block_number: 0,
                     iteration_id: 0,
-                    hash: missing_hash.to_string(),
+                    tx_hash: missing_hash.to_string(),
                 }),
             })
             .await
