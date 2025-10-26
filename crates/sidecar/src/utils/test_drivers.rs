@@ -946,7 +946,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             }),
             last_tx_hash: last_tx_hash.map(|h| h.to_string()).unwrap_or_default(),
             n_transactions,
-            selected_iteration_id: None,
+            selected_iteration_id: Some(0),
         };
 
         self.block_tx_hashes.clear();
