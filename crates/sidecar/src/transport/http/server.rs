@@ -112,8 +112,8 @@ impl<'de> Deserialize<'de> for TxExecutionId {
                 V: MapAccess<'de>,
             {
                 let mut block_number = None;
-                let mut tx_hash = None;
                 let mut iteration_id = None;
+                let mut tx_hash = None;
 
                 while let Some(key) = map.next_key()? {
                     match key {
@@ -123,6 +123,14 @@ impl<'de> Deserialize<'de> for TxExecutionId {
                             }
                             block_number = Some(map.next_value().map_err(|e| {
                                 de::Error::custom(format!("invalid block_number: {e}"))
+                            })?);
+                        }
+                        Field::IterationId => {
+                            if iteration_id.is_some() {
+                                return Err(de::Error::duplicate_field("iteration_id"));
+                            }
+                            iteration_id = Some(map.next_value().map_err(|e| {
+                                de::Error::custom(format!("invalid iteration_id: {e}"))
                             })?);
                         }
                         Field::TxHash => {
@@ -151,22 +159,14 @@ impl<'de> Deserialize<'de> for TxExecutionId {
 
                             tx_hash = Some(parsed_hash);
                         }
-                        Field::IterationId => {
-                            if iteration_id.is_some() {
-                                return Err(de::Error::duplicate_field("iteration_id"));
-                            }
-                            iteration_id = Some(map.next_value().map_err(|e| {
-                                de::Error::custom(format!("invalid iteration_id: {e}"))
-                            })?);
-                        }
                     }
                 }
 
                 let block_number =
                     block_number.ok_or_else(|| de::Error::missing_field("block_number"))?;
-                let tx_hash = tx_hash.ok_or_else(|| de::Error::missing_field("tx_hash"))?;
                 let iteration_id =
                     iteration_id.ok_or_else(|| de::Error::missing_field("iteration_id"))?;
+                let tx_hash = tx_hash.ok_or_else(|| de::Error::missing_field("tx_hash"))?;
 
                 Ok(TxExecutionId {
                     block_number,
@@ -192,8 +192,8 @@ impl<'de> Deserialize<'de> for Transaction {
         #[derive(Deserialize)]
         #[serde(field_identifier, rename_all = "snake_case")]
         enum Field {
-            TxEnv,
             TxExecutionId,
+            TxEnv,
         }
 
         struct TransactionVisitor;
@@ -209,11 +209,19 @@ impl<'de> Deserialize<'de> for Transaction {
             where
                 V: MapAccess<'de>,
             {
-                let mut tx_env = None;
                 let mut tx_execution_id = None;
+                let mut tx_env = None;
 
                 while let Some(key) = map.next_key()? {
                     match key {
+                        Field::TxExecutionId => {
+                            if tx_execution_id.is_some() {
+                                return Err(de::Error::duplicate_field("tx_execution_id"));
+                            }
+                            tx_execution_id = Some(map.next_value().map_err(|e| {
+                                de::Error::custom(format!("invalid tx_execution_id: {e}"))
+                            })?);
+                        }
                         Field::TxEnv => {
                             if tx_env.is_some() {
                                 return Err(de::Error::duplicate_field("tx_env"));
@@ -223,20 +231,12 @@ impl<'de> Deserialize<'de> for Transaction {
                                     de::Error::custom(format!("invalid tx_env: {e}"))
                                 })?);
                         }
-                        Field::TxExecutionId => {
-                            if tx_execution_id.is_some() {
-                                return Err(de::Error::duplicate_field("tx_execution_id"));
-                            }
-                            tx_execution_id = Some(map.next_value().map_err(|e| {
-                                de::Error::custom(format!("invalid tx_execution_id: {e}"))
-                            })?);
-                        }
                     }
                 }
 
-                let tx_env = tx_env.ok_or_else(|| de::Error::missing_field("tx_env"))?;
                 let tx_execution_id =
                     tx_execution_id.ok_or_else(|| de::Error::missing_field("tx_execution_id"))?;
+                let tx_env = tx_env.ok_or_else(|| de::Error::missing_field("tx_env"))?;
 
                 Ok(Transaction {
                     tx_execution_id,
@@ -615,13 +615,13 @@ fn parse_tx_execution_ids(
         return Err(JsonRpcResponse::invalid_params(request, &message));
     };
 
-    let Ok(tx_hashes) = serde_json::from_value::<Vec<TxExecutionId>>(params.clone()) else {
+    let Ok(tx_execution_ids) = serde_json::from_value::<Vec<TxExecutionId>>(params.clone()) else {
         debug!("{method_name} request invalid tx hash format");
         let message = format!("Invalid params for {method_name}");
         return Err(JsonRpcResponse::invalid_request(request, &message));
     };
 
-    Ok(tx_hashes)
+    Ok(tx_execution_ids)
 }
 
 async fn handle_get_transactions(
@@ -637,19 +637,19 @@ async fn handle_get_transactions(
     }
 
     let tx_execution_ids = match parse_tx_execution_ids(request, "getTransactions") {
-        Ok(hashes) => hashes,
+        Ok(tx_execution_ids) => tx_execution_ids,
         Err(error_response) => return Ok(error_response),
     };
 
-    let (received_tx_hashes, not_found_hashes): (Vec<_>, Vec<_>) =
+    let (received_tx_execution_ids, not_found_tx_execution_ids): (Vec<_>, Vec<_>) =
         tx_execution_ids.into_iter().partition(|tx_execution_id| {
             state
                 .transactions_results
                 .is_tx_received(&tx_execution_id.tx_hash)
         });
 
-    let mut results = Vec::with_capacity(received_tx_hashes.len());
-    for tx_execution_id in received_tx_hashes {
+    let mut results = Vec::with_capacity(received_tx_execution_ids.len());
+    for tx_execution_id in received_tx_execution_ids {
         match resolve_transaction_result(state, request, tx_execution_id.tx_hash).await {
             Ok(result) => results.push(result),
             Err(error_response) => return Ok(error_response),
@@ -665,7 +665,7 @@ async fn handle_get_transactions(
         request,
         serde_json::json!({
             "results": results,
-            "not_found": not_found_hashes.into_iter().map(|tx_execution_id| TxExecutionId { block_number: 0, iteration_id: 0, tx_hash: tx_execution_id.tx_hash }).collect::<Vec<_>>(),
+            "not_found": not_found_tx_execution_ids,
         }),
     ))
 }
@@ -680,14 +680,14 @@ async fn handle_get_transaction(
         return Ok(response);
     }
 
-    let mut tx_hashes = match parse_tx_execution_ids(request, "getTransaction") {
-        Ok(hashes) => hashes,
+    let mut tx_execution_ids = match parse_tx_execution_ids(request, "getTransaction") {
+        Ok(tx_execution_ids) => tx_execution_ids,
         Err(error_response) => return Ok(error_response),
     };
 
-    if tx_hashes.len() != 1 {
+    if tx_execution_ids.len() != 1 {
         debug!(
-            hash_count = tx_hashes.len(),
+            hash_count = tx_execution_ids.len(),
             "getTransaction requires exactly one transaction hash"
         );
         return Ok(JsonRpcResponse::invalid_params(
@@ -696,7 +696,7 @@ async fn handle_get_transaction(
         ));
     }
 
-    let tx_execution_id = tx_hashes.remove(0);
+    let tx_execution_id = tx_execution_ids.remove(0);
 
     if !state
         .transactions_results
@@ -705,11 +705,7 @@ async fn handle_get_transaction(
         return Ok(JsonRpcResponse::success(
             request,
             serde_json::json!({
-                "not_found": TxExecutionId {
-                    block_number: 0,
-                    iteration_id: 0,
-                    tx_hash: tx_execution_id.tx_hash,
-                }
+                "not_found": tx_execution_id
             }),
         ));
     }
