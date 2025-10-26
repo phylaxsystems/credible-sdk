@@ -722,7 +722,7 @@ mod tests {
         let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
         assert_eq!(
             result.unwrap_err(),
-            HttpDecoderError::InvalidTransaction("invalid transactions array: invalid tx_env: invalid type: string \"20000000000\", expected u128".to_string())
+            HttpDecoderError::InvalidHash("invalid transactions array: invalid tx_execution_id: invalid hash: invalid string length".to_string())
         );
     }
 
