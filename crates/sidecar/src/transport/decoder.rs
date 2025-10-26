@@ -1197,7 +1197,7 @@ mod tests {
         assert_eq!(block_env.basefee, 0u64);
         assert_eq!(block_env.gas_limit, 0u64);
         assert_eq!(block_env.timestamp, 0u64);
-        assert_eq!(queue_block_env.selected_iteration_id, Some(0));
+        assert_eq!(queue_block_env.selected_iteration_id, None);
     }
 
     #[test]
@@ -1460,7 +1460,7 @@ mod tests {
         assert_eq!(block_env.timestamp, 0u64);
         assert_eq!(block_env.difficulty, U256::ZERO);
         assert_eq!(block_env.beneficiary, Address::ZERO);
-        assert_eq!(queue_block_env.selected_iteration_id, Some(0));
+        assert_eq!(queue_block_env.selected_iteration_id, None);
     }
 
     #[test]
@@ -1812,36 +1812,6 @@ mod tests {
                 .to_string()
                 .contains("last_tx_hash must be null, empty, or missing")
         );
-    }
-
-    #[test]
-    fn test_decode_block_env_backward_compatibility() {
-        let old_format_request = json!({
-            "jsonrpc": "2.0",
-            "method": "sendBlockEnv",
-            "params": {
-                "number": 987654u64,
-                "beneficiary": "0x2222222222222222222222222222222222222222",
-                "timestamp": 1111111111u64,
-                "gas_limit": 25000000u64,
-                "basefee": 500000000u64,
-                "difficulty": "0x0",
-                "prevrandao": "0x2222222222222222222222222222222222222222222222222222222222222222"
-            },
-            "id": 3
-        });
-
-        let request: JsonRpcRequest = serde_json::from_value(old_format_request).unwrap();
-        let queue_block_env: QueueBlockEnv =
-            serde_json::from_value(request.params.unwrap()).unwrap();
-
-        assert_eq!(queue_block_env.block_env.number, 987654u64);
-        assert_eq!(queue_block_env.block_env.gas_limit, 25000000u64);
-        assert_eq!(queue_block_env.block_env.basefee, 500000000u64);
-
-        assert_eq!(queue_block_env.last_tx_hash, None);
-        assert_eq!(queue_block_env.n_transactions, 0);
-        assert_eq!(queue_block_env.selected_iteration_id, Some(0));
     }
 
     #[test]

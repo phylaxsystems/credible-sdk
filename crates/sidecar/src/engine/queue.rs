@@ -74,8 +74,7 @@ pub struct QueueBlockEnv {
     pub selected_iteration_id: Option<u64>,
 }
 
-// Implementing custo (de)serialization for QueueBlockEnv so we can add new fields without breaking
-// backwards compatibility. We cannot use `#[serde(flatten)]` because it does not support custom
+// We cannot use `#[serde(flatten)]` because it does not support custom
 // fields (https://github.com/serde-rs/serde/issues/1183) and it breaks the custom deserialization
 // for `u128`.
 
@@ -87,14 +86,12 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
     {
         let value = Value::deserialize(deserializer)?;
 
-        // Check if this looks like the new format (has our additional fields)
-        if let Value::Object(ref map) = value
-            && (map.contains_key("last_tx_hash")
-                || map.contains_key("n_transactions")
-                || map.contains_key("selected_iteration_id"))
-        {
-            // New format with additional fields - deserialize them manually
-            let last_tx_hash = match map.get("last_tx_hash") {
+        let Value::Object(ref map) = value else {
+            return Err(serde::de::Error::custom("expected object"));
+        };
+
+        let last_tx_hash =
+            match map.get("last_tx_hash") {
                 Some(Value::Null) | None => None, // Handle explicit null and missing fields
                 Some(Value::String(s)) if s.is_empty() => None, // Handle empty string
                 Some(v) => {
@@ -104,117 +101,56 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
                 }
             };
 
-            let n_transactions = match map.get("n_transactions") {
-                Some(Value::Null) | None => 0, // Treat null as default value and missing fields as 0
-                Some(v) => {
-                    serde_json::from_value(v.clone()).map_err(|e| {
-                        serde::de::Error::custom(format!("invalid n_transactions: {e}"))
-                    })?
-                }
-            };
+        let n_transactions = match map.get("n_transactions") {
+            Some(Value::Null) | None => 0, // Treat null as default value and missing fields as 0
+            Some(v) => {
+                serde_json::from_value(v.clone())
+                    .map_err(|e| serde::de::Error::custom(format!("invalid n_transactions: {e}")))?
+            }
+        };
 
-            let selected_iteration_id = match map.get("selected_iteration_id") {
-                Some(Value::Null) | None => None, // Treat null and missing fields as None
-                Some(v) => {
-                    Some(serde_json::from_value(v.clone()).map_err(|e| {
-                        serde::de::Error::custom(format!("invalid selected_iteration_id: {e}"))
-                    })?)
-                }
-            };
+        let selected_iteration_id = match map.get("selected_iteration_id") {
+            Some(Value::Null) | None => None, // Treat null and missing fields as None
+            Some(v) => {
+                Some(serde_json::from_value(v.clone()).map_err(|e| {
+                    serde::de::Error::custom(format!("invalid selected_iteration_id: {e}"))
+                })?)
+            }
+        };
 
-            // Validate sequencer requirements:
-            // N > 0 + must contain last tx hash
-            // N = 0, must contain txhash = [empty, "", null] or missing
-            match n_transactions {
-                0 => {
-                    // When n_transactions is 0, last_tx_hash must be None, empty string, null, or missing
-                    if last_tx_hash.is_some() {
-                        return Err(serde::de::Error::custom(
-                            "validation error: last_tx_hash must be null, empty, or missing when n_transactions is 0",
-                        ));
-                    }
-                }
-                _ => {
-                    // When n_transactions > 0, last_tx_hash must be present and valid
-                    if last_tx_hash.is_none() {
-                        return Err(serde::de::Error::custom(
-                            "validation error: last_tx_hash must be provided and non-empty when n_transactions > 0",
-                        ));
-                    }
+        // Validate sequencer requirements:
+        // N > 0 + must contain last tx hash
+        // N = 0, must contain txhash = [empty, "", null] or missing
+        match n_transactions {
+            0 => {
+                // When n_transactions is 0, last_tx_hash must be None, empty string, null, or missing
+                if last_tx_hash.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "validation error: last_tx_hash must be null, empty, or missing when n_transactions is 0",
+                    ));
                 }
             }
-
-            // Create a value without our custom fields for BlockEnv deserialization
-            let mut block_env_map = map.clone();
-            block_env_map.remove("last_tx_hash");
-            block_env_map.remove("n_transactions");
-            block_env_map.remove("selected_iteration_id");
-
-            let block_env = serde_json::from_value(Value::Object(block_env_map)).map_err(|e| {
-                let msg = e.to_string();
-
-                // Be very specific with field name matching - check for backticks or exact field references
-                // Serde typically formats errors as: missing field `fieldname` or invalid value for `fieldname`
-                let custom_msg = if msg.contains("missing field `number`")
-                    || msg.contains("missing field \"number\"")
-                {
-                    "missing field: number"
-                } else if msg.contains("missing field `beneficiary`")
-                    || msg.contains("missing field \"beneficiary\"")
-                {
-                    "missing field: beneficiary"
-                } else if msg.contains("missing field `timestamp`")
-                    || msg.contains("missing field \"timestamp\"")
-                {
-                    "missing field: timestamp"
-                } else if msg.contains("missing field `gas_limit`")
-                    || msg.contains("missing field \"gas_limit\"")
-                {
-                    "missing field: gas_limit"
-                } else if msg.contains("missing field `basefee`")
-                    || msg.contains("missing field \"basefee\"")
-                {
-                    "missing field: basefee"
-                } else if msg.contains("missing field `difficulty`")
-                    || msg.contains("missing field \"difficulty\"")
-                {
-                    "missing field: difficulty"
-                } else if msg.contains("`number`") && !msg.contains("missing field") {
-                    "invalid block number"
-                } else if msg.contains("`beneficiary`") && !msg.contains("missing field") {
-                    "invalid beneficiary address"
-                } else if msg.contains("`timestamp`") && !msg.contains("missing field") {
-                    "invalid timestamp"
-                } else if msg.contains("`gas_limit`") && !msg.contains("missing field") {
-                    "invalid gas_limit"
-                } else if msg.contains("`basefee`") && !msg.contains("missing field") {
-                    "invalid basefee"
-                } else if msg.contains("`difficulty`") && !msg.contains("missing field") {
-                    "invalid difficulty"
-                } else if msg.contains("`prevrandao`") {
-                    "invalid prevrandao"
-                } else if msg.contains("blob_excess_gas_and_price") {
-                    "invalid blob_excess_gas_and_price"
-                } else {
-                    &msg
-                };
-
-                serde::de::Error::custom(custom_msg)
-            })?;
-
-            return Ok(QueueBlockEnv {
-                block_env,
-                last_tx_hash,
-                n_transactions,
-                selected_iteration_id,
-            });
+            _ => {
+                // When n_transactions > 0, last_tx_hash must be present and valid
+                if last_tx_hash.is_none() {
+                    return Err(serde::de::Error::custom(
+                        "validation error: last_tx_hash must be provided and non-empty when n_transactions > 0",
+                    ));
+                }
+            }
         }
 
-        // Old format - just deserialize as BlockEnv
-        let block_env = serde_json::from_value(value).map_err(|e| {
+        // Create a value without our custom fields for BlockEnv deserialization
+        let mut block_env_map = map.clone();
+        block_env_map.remove("last_tx_hash");
+        block_env_map.remove("n_transactions");
+        block_env_map.remove("selected_iteration_id");
+
+        let block_env = serde_json::from_value(Value::Object(block_env_map)).map_err(|e| {
             let msg = e.to_string();
 
-            // Same specific matching for old format
+            // Be very specific with field name matching - check for backticks or exact field references
+            // Serde typically formats errors as: missing field `fieldname` or invalid value for `fieldname`
             let custom_msg = if msg.contains("missing field `number`")
                 || msg.contains("missing field \"number\"")
             {
@@ -264,9 +200,9 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
 
         Ok(QueueBlockEnv {
             block_env,
-            last_tx_hash: None,
-            n_transactions: 0,
-            selected_iteration_id: Some(0),
+            last_tx_hash,
+            n_transactions,
+            selected_iteration_id,
         })
     }
 }
