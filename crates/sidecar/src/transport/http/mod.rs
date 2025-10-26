@@ -333,9 +333,9 @@ mod tests {
             "method": "getTransaction",
             "params": [
                 {
-                    "tx_hash": tx_hash.to_string(),
+                    "block_number": 0u64,
                     "iteration_id": 0u64,
-                    "block_number": 0u64
+                    "tx_hash": tx_hash.to_string()
                 }
             ],
             "id": 1

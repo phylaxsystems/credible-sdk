@@ -74,6 +74,23 @@ Error responses include an error object with code and message:
 
 The Core API provides essential methods for transaction execution and block management.
 
+## Transaction Object Structure
+
+Each transaction in the `sendTransactions` request consists of two parts:
+
+### `tx_execution_id`
+
+Identifies the transaction uniquely within the sidecar:
+- `block_number` (u64): Block number
+- `iteration_id` (u64): Arbitrary identifier for the block creation attempt (chosen by sequencer, never 0)
+- `tx_hash` (string): Transaction hash (0x-prefixed hex)
+
+The `iteration_id` field tracks different candidate blocks created by the sequencer for the same block number. When a sequencer produces multiple block candidates, each is assigned a unique iteration_id by the sequencer.
+
+### `tx_env`
+
+Contains the transaction execution environment. See [Transaction Types](../README.md#transaction-types) for detailed field documentation.
+
 ### `sendBlockEnv`
 
 Sends block environment data to the sidecar. This must be called before any transactions can be processed, as the
@@ -139,13 +156,13 @@ call is received, as we need information about what block we are executing txs o
   "params": {
     "transactions": [
       {
-        "tx_env": {
-          /* TxEnv object */
-        },
         "tx_execution_id": {
           "block_number": 1000,
           "iteration_id": 1,
           "tx_hash": "0x1234567890abcdef..."
+        },
+        "tx_env": {
+          /* TxEnv object */
         }
       }
       // Additional transactions...
@@ -156,9 +173,9 @@ call is received, as we need information about what block we are executing txs o
 
 Each transaction in the array contains:
 
-- `txEnv`: The transaction environment object (see [Transport docs](../README.md#transaction-types) for field reference
+- `tx_execution_id`: The transaction execution identifier containing block_number, iteration_id, and tx_hash
+- `tx_env`: The transaction environment object (see [Transport docs](../README.md#transaction-types) for field reference
   and examples)
-- `hash`: The transaction hash as a hex string
 
 For detailed examples of all transaction types (Legacy, EIP-2930, EIP-1559, EIP-4844, EIP-7702), see
 the [Transport Transaction Types Documentation](../README.md#transaction-examples).

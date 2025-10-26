@@ -640,12 +640,12 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         // Create the transaction structure
         let transaction = Transaction {
-            tx_env,
             tx_execution_id: TxExecutionId {
                 block_number: 0,
-                tx_hash,
                 iteration_id: 0,
+                tx_hash,
             },
+            tx_env,
         };
 
         let request = json!({

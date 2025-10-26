@@ -245,12 +245,12 @@ mod tests {
         });
 
         json!({
-            "tx_env": tx_env,
             "tx_execution_id": {
                 "block_number": block_number,
-                "tx_hash": hash,
-                "iteration_id": iteration_id
-            }
+                "iteration_id": iteration_id,
+                "tx_hash": hash
+            },
+            "tx_env": tx_env
         })
     }
 
@@ -487,6 +487,11 @@ mod tests {
     #[test]
     fn test_invalid_address_error() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
             "tx_env": {
                 "caller": "invalid_address",
                 "to": "0x9876543210987654321098765432109876543210",
@@ -496,11 +501,6 @@ mod tests {
                 "gas_price": "20000000000",
                 "nonce": 0,
                 "chain_id": 1
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
             }
         });
 
@@ -515,6 +515,11 @@ mod tests {
     #[test]
     fn test_invalid_value_error() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "to": "0x9876543210987654321098765432109876543210",
@@ -524,11 +529,6 @@ mod tests {
                 "gas_price": "20000000000",
                 "nonce": 0,
                 "chain_id": 1
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
             }
         });
 
@@ -546,6 +546,11 @@ mod tests {
     #[test]
     fn test_invalid_gas_price_error() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "to": "0x9876543210987654321098765432109876543210",
@@ -555,11 +560,6 @@ mod tests {
                 "gas_price": "invalid_gas_price",
                 "nonce": 0,
                 "chain_id": 1
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
             }
         });
 
@@ -574,6 +574,11 @@ mod tests {
     #[test]
     fn test_invalid_data_error() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "to": "0x9876543210987654321098765432109876543210",
@@ -583,11 +588,6 @@ mod tests {
                 "gas_price": "20000000000",
                 "nonce": 0,
                 "chain_id": 1
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
             }
         });
 
@@ -700,6 +700,11 @@ mod tests {
                 1,
             ),
             json!({
+                "tx_execution_id": {
+                    "block_number": 1,
+                    "iteration_id": 1,
+                    "tx_hash": "invalid_hash"
+                },
                 "tx_env": {
                     "caller": "0x3333333333333333333333333333333333333333",
                     "to": "0x4444444444444444444444444444444444444444",
@@ -709,11 +714,6 @@ mod tests {
                     "gas_price": "20000000000",
                     "nonce": 1,
                     "chain_id": 1
-                },
-                "tx_execution_id": {
-                    "block_number": 1,
-                    "tx_hash": "invalid_hash",
-                    "iteration_id": 1
                 }
             }),
         ];
@@ -752,6 +752,11 @@ mod tests {
     #[test]
     fn test_malformed_hex_data() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "to": "0x9876543210987654321098765432109876543210",
@@ -761,11 +766,6 @@ mod tests {
                 "gas_price": "20000000000",
                 "nonce": 0,
                 "chain_id": 1
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
             }
         });
 
@@ -840,8 +840,8 @@ mod tests {
         let transaction = json!({
             "tx_execution_id": {
                 "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
             }
             // Missing tx_env field
         });
@@ -884,6 +884,11 @@ mod tests {
     #[test]
     fn test_missing_hash_field() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                // Missing hash field
+                "iteration_id": 1
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
@@ -899,11 +904,6 @@ mod tests {
                 "blob_hashes": [],
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                // Missing hash field
-                "iteration_id": 1
             }
         });
 
@@ -918,6 +918,11 @@ mod tests {
     #[test]
     fn test_invalid_nonce_error() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
@@ -933,11 +938,6 @@ mod tests {
                 "blob_hashes": [],
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
             }
         });
 
@@ -952,6 +952,11 @@ mod tests {
     #[test]
     fn test_invalid_gas_limit_error() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
@@ -967,11 +972,6 @@ mod tests {
                 "blob_hashes": [],
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
             }
         });
 
@@ -986,6 +986,11 @@ mod tests {
     #[test]
     fn test_invalid_chain_id_error() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
@@ -1001,11 +1006,6 @@ mod tests {
                 "blob_hashes": [],
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
             }
         });
 
@@ -1020,6 +1020,11 @@ mod tests {
     #[test]
     fn test_negative_nonce_error() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
@@ -1035,11 +1040,6 @@ mod tests {
                 "blob_hashes": [],
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
             }
         });
 
@@ -1054,6 +1054,11 @@ mod tests {
     #[test]
     fn test_invalid_to_address_error() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "invalid_to_address",
@@ -1069,11 +1074,6 @@ mod tests {
                 "blob_hashes": [],
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1
             }
         });
 
@@ -1088,6 +1088,11 @@ mod tests {
     #[test]
     fn test_invalid_hash_in_transactions_array() {
         let transaction = json!({
+            "tx_execution_id": {
+                "block_number": 1,
+                "iteration_id": 1,
+                "tx_hash": "not_64_chars"
+            },
             "tx_env": {
                 "caller": "0x1234567890123456789012345678901234567890",
                 "kind": "0x9876543210987654321098765432109876543210",
@@ -1103,11 +1108,6 @@ mod tests {
                 "blob_hashes": [],
                 "max_fee_per_blob_gas": 0,
                 "authorization_list": []
-            },
-            "tx_execution_id": {
-                "block_number": 1,
-                "tx_hash": "not_64_chars",
-                "iteration_id": 1
             }
         });
 
@@ -2455,8 +2455,8 @@ mod tests {
             "method": "reorg",
             "params": {
                 "block_number": 100u64,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
             },
             "id": 1
         });
@@ -2493,8 +2493,8 @@ mod tests {
             "method": "reorg",
             "params": {
                 "block_number": 100u64,
-                "tx_hash": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
             },
             "id": 1
         });
@@ -2594,8 +2594,8 @@ mod tests {
             "method": "reorg",
             "params": {
                 "block_number": 100u64,
-                "tx_hash": "not_a_valid_hash",
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": "not_a_valid_hash"
             },
             "id": 1
         });
@@ -2617,8 +2617,8 @@ mod tests {
             "method": "reorg",
             "params": {
                 "block_number": 100u64,
-                "tx_hash": "0x1234",
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": "0x1234"
             },
             "id": 1
         });
@@ -2640,8 +2640,8 @@ mod tests {
             "method": "reorg",
             "params": {
                 "block_number": 100u64,
-                "tx_hash": 12345,
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": 12345
             },
             "id": 1
         });
@@ -2663,8 +2663,8 @@ mod tests {
             "method": "reorg",
             "params": {
                 "block_number": 100u64,
-                "tx_hash": null,
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": null
             },
             "id": 1
         });
@@ -2686,8 +2686,8 @@ mod tests {
             "method": "reorg",
             "params": {
                 "block_number": 100u64,
-                "tx_hash": "0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF",
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": "0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF"
             },
             "id": 1
         });
@@ -2705,8 +2705,8 @@ mod tests {
             "method": "reorg",
             "params": {
                 "block_number": 100u64,
-                "tx_hash": "0x1234567890AbCdEf1234567890aBcDeF1234567890AbCdEf1234567890aBcDeF",
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": "0x1234567890AbCdEf1234567890aBcDeF1234567890AbCdEf1234567890aBcDeF"
             },
             "id": 1
         });
@@ -2724,8 +2724,8 @@ mod tests {
             "method": "reorg",
             "params": {
                 "block_number": 100u64,
-                "tx_hash": "",
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": ""
             },
             "id": 1
         });
@@ -2747,8 +2747,8 @@ mod tests {
             "method": "reorg",
             "params": {
                 "block_number": 100u64,
-                "tx_hash": "0x",
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": "0x"
             },
             "id": 1
         });
@@ -2769,8 +2769,8 @@ mod tests {
             "jsonrpc": "2.0",
             "method": "reorg",
             "params": {
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
             },
             "id": 1
         });
@@ -2824,8 +2824,8 @@ mod tests {
                 "method": "reorg",
                 "params": {
                     "block_number": block_number,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                    "iteration_id": 1u64
+                    "iteration_id": 1u64,
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
                 },
                 "id": 1
             });

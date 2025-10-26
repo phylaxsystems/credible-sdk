@@ -73,8 +73,8 @@ pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransaction";
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Transaction {
-    pub tx_env: TxEnv,
     pub tx_execution_id: TxExecutionId,
+    pub tx_env: TxEnv,
 }
 
 #[derive(Debug, Serialize)]
@@ -178,7 +178,7 @@ impl<'de> Deserialize<'de> for TxExecutionId {
 
         deserializer.deserialize_struct(
             "tx_execution_id",
-            &["block_number", "tx_hash", "iteration_id"],
+            &["block_number", "iteration_id", "tx_hash"],
             TxExecutionIdVisitor,
         )
     }
@@ -239,15 +239,15 @@ impl<'de> Deserialize<'de> for Transaction {
                     tx_execution_id.ok_or_else(|| de::Error::missing_field("tx_execution_id"))?;
 
                 Ok(Transaction {
-                    tx_env,
                     tx_execution_id,
+                    tx_env,
                 })
             }
         }
 
         deserializer.deserialize_struct(
             "Transaction",
-            &["tx_env", "tx_execution_id"],
+            &["tx_execution_id", "tx_env"],
             TransactionVisitor,
         )
     }
@@ -665,7 +665,7 @@ async fn handle_get_transactions(
         request,
         serde_json::json!({
             "results": results,
-            "not_found": not_found_hashes.into_iter().map(|tx_execution_id| TxExecutionId { tx_hash: tx_execution_id.tx_hash, block_number: 0, iteration_id: 0 }).collect::<Vec<_>>(),
+            "not_found": not_found_hashes.into_iter().map(|tx_execution_id| TxExecutionId { block_number: 0, iteration_id: 0, tx_hash: tx_execution_id.tx_hash }).collect::<Vec<_>>(),
         }),
     ))
 }
@@ -706,9 +706,9 @@ async fn handle_get_transaction(
             request,
             serde_json::json!({
                 "not_found": TxExecutionId {
-                    tx_hash: tx_execution_id.tx_hash,
-                    iteration_id: 0,
                     block_number: 0,
+                    iteration_id: 0,
+                    tx_hash: tx_execution_id.tx_hash,
                 }
             }),
         ));
@@ -772,8 +772,8 @@ fn into_transaction_result_response(
                 return TransactionResultResponse {
                     tx_execution_id: TxExecutionId {
                         block_number: 0,
-                        tx_hash,
                         iteration_id: 0,
+                        tx_hash,
                     },
                     status: "assertion_failed".to_string(),
                     gas_used,
@@ -785,8 +785,8 @@ fn into_transaction_result_response(
                     TransactionResultResponse {
                         tx_execution_id: TxExecutionId {
                             block_number: 0,
-                            tx_hash,
                             iteration_id: 0,
+                            tx_hash,
                         },
                         status: "success".to_string(),
                         gas_used,
@@ -797,8 +797,8 @@ fn into_transaction_result_response(
                     TransactionResultResponse {
                         tx_execution_id: TxExecutionId {
                             block_number: 0,
-                            tx_hash,
                             iteration_id: 0,
+                            tx_hash,
                         },
                         status: "reverted".to_string(),
                         gas_used,
@@ -809,8 +809,8 @@ fn into_transaction_result_response(
                     TransactionResultResponse {
                         tx_execution_id: TxExecutionId {
                             block_number: 0,
-                            tx_hash,
                             iteration_id: 0,
+                            tx_hash,
                         },
                         status: "halted".to_string(),
                         gas_used,
@@ -823,8 +823,8 @@ fn into_transaction_result_response(
             TransactionResultResponse {
                 tx_execution_id: TxExecutionId {
                     block_number: 0,
-                    tx_hash,
                     iteration_id: 0,
+                    tx_hash,
                 },
                 status: "failed".to_string(),
                 gas_used: None,

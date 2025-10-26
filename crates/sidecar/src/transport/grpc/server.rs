@@ -351,9 +351,9 @@ fn into_pb_transaction_result(tx_hash: String, result: &TransactionResult) -> Pb
             if !*is_valid {
                 return PbTransactionResult {
                     tx_execution_id: Some(TxExecutionId {
-                        tx_hash,
                         block_number: 0,
                         iteration_id: 0,
+                        tx_hash,
                     }),
                     status: "assertion_failed".into(),
                     gas_used,
@@ -364,9 +364,9 @@ fn into_pb_transaction_result(tx_hash: String, result: &TransactionResult) -> Pb
                 ExecutionResult::Success { .. } => {
                     PbTransactionResult {
                         tx_execution_id: Some(TxExecutionId {
-                            tx_hash,
                             block_number: 0,
                             iteration_id: 0,
+                            tx_hash,
                         }),
                         status: "success".into(),
                         gas_used,
@@ -376,9 +376,9 @@ fn into_pb_transaction_result(tx_hash: String, result: &TransactionResult) -> Pb
                 ExecutionResult::Revert { .. } => {
                     PbTransactionResult {
                         tx_execution_id: Some(TxExecutionId {
-                            tx_hash,
                             block_number: 0,
                             iteration_id: 0,
+                            tx_hash,
                         }),
                         status: "reverted".into(),
                         gas_used,
@@ -388,9 +388,9 @@ fn into_pb_transaction_result(tx_hash: String, result: &TransactionResult) -> Pb
                 ExecutionResult::Halt { reason, .. } => {
                     PbTransactionResult {
                         tx_execution_id: Some(TxExecutionId {
-                            tx_hash,
                             block_number: 0,
                             iteration_id: 0,
+                            tx_hash,
                         }),
                         status: "halted".into(),
                         gas_used,
@@ -402,9 +402,9 @@ fn into_pb_transaction_result(tx_hash: String, result: &TransactionResult) -> Pb
         TransactionResult::ValidationError(error) => {
             PbTransactionResult {
                 tx_execution_id: Some(TxExecutionId {
-                    tx_hash,
                     block_number: 0,
                     iteration_id: 0,
+                    tx_hash,
                 }),
                 status: "failed".into(),
                 gas_used: 0,
