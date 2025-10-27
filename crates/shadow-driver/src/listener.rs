@@ -103,17 +103,18 @@ struct TransactionResultResponse {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-struct GetTransactionResponse {
+struct GetTransactionsResponse {
     jsonrpc: String,
-    result: Option<GetTransactionResult>,
+    result: Option<GetTransactionsResult>,
     error: Option<JsonRpcErrorResponse>,
     id: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct GetTransactionResult {
-    result: Option<TransactionResultResponse>,
-    not_found: Option<TxExecutionId>,
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Default)]
+struct GetTransactionsResult {
+    results: Vec<TransactionResultResponse>,
+    not_found: Vec<TxExecutionId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -750,26 +751,30 @@ impl Listener {
         Ok(())
     }
 
-    /// Query a transaction once (no retry)
-    async fn query_transaction_once(
+    async fn query_transactions_batch(
         &self,
-        tx_hash: TxHash,
+        tx_hashes: &[TxHash],
         block_number: u64,
-    ) -> Result<TransactionResultResponse> {
-        let query_payload = json!({
-            "jsonrpc": "2.0",
-            "method": "getTransaction",
-            "params": [
-                {
+    ) -> Result<GetTransactionsResponse> {
+        let tx_execution_ids: Vec<_> = tx_hashes
+            .iter()
+            .map(|tx_hash| {
+                json!({
                     "block_number": block_number,
                     "iteration_id": 0,
                     "tx_hash": format!("{tx_hash:#x}")
-                }
-            ],
+                })
+            })
+            .collect();
+
+        let query_payload = json!({
+            "jsonrpc": "2.0",
+            "method": "getTransactions",
+            "params": tx_execution_ids,
             "id": 1
         });
 
-        debug!("Querying transaction result for {tx_hash:#x}");
+        debug!("Querying batch of {} transaction results", tx_hashes.len());
 
         let response = self
             .sidecar_client
@@ -777,7 +782,7 @@ impl Listener {
             .json(&query_payload)
             .send()
             .await
-            .context("failed to send query request to sidecar")?;
+            .context("failed to send batch query request to sidecar")?;
 
         let response_status = response.status();
         if !response_status.is_success() {
@@ -793,8 +798,8 @@ impl Listener {
             .await
             .context("failed to read response body")?;
 
-        let query_response: GetTransactionResponse =
-            serde_json::from_str(&body).context("failed to parse query response")?;
+        let query_response: GetTransactionsResponse =
+            serde_json::from_str(&body).context("failed to parse batch query response")?;
 
         if let Some(error) = query_response.error {
             return Err(anyhow!(
@@ -804,17 +809,7 @@ impl Listener {
             ));
         }
 
-        let result = query_response
-            .result
-            .ok_or_else(|| anyhow!("missing result in response"))?;
-
-        if let Some(not_found) = result.not_found {
-            return Err(anyhow!("transaction {:#x} not found", not_found.tx_hash));
-        }
-
-        result
-            .result
-            .ok_or_else(|| anyhow!("transaction result not available yet"))
+        Ok(query_response)
     }
 
     /// Simple comparison of transaction results between blockchain and sidecar
@@ -823,8 +818,33 @@ impl Listener {
         block_number: u64,
         tx_hashes: Vec<TxHash>,
     ) -> Result<()> {
+        if tx_hashes.is_empty() {
+            return Ok(());
+        }
+
+        // Query all transactions in a single batch
+        let batch_response = match self
+            .query_transactions_batch(&tx_hashes, block_number)
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                warn!("Failed to query sidecar for transaction batch: {e:?}");
+                return Ok(());
+            }
+        };
+
+        // Extract results and create a lookup map
+        let result = batch_response.result.unwrap_or_default();
+        let sidecar_results: std::collections::HashMap<TxHash, TransactionResultResponse> = result
+            .results
+            .into_iter()
+            .map(|r| (r.tx_execution_id.tx_hash, r))
+            .collect();
+
+        // Compare each transaction
         for tx_hash in tx_hashes {
-            // Get blockchain status from receipt
+            // Get blockchain status from the receipt
             let blockchain_success = match self.provider.get_transaction_receipt(tx_hash).await {
                 Ok(Some(receipt)) => receipt.status(),
                 Ok(None) => {
@@ -837,13 +857,10 @@ impl Listener {
                 }
             };
 
-            // Get sidecar status
-            let sidecar_result = match self.query_transaction_once(tx_hash, block_number).await {
-                Ok(result) => result,
-                Err(e) => {
-                    warn!("Failed to query sidecar for tx {tx_hash:#x}: {e:?}");
-                    continue;
-                }
+            // Get sidecar status from batch results
+            let Some(sidecar_result) = sidecar_results.get(&tx_hash) else {
+                warn!("Transaction {tx_hash:#x} not found in sidecar batch response");
+                continue;
             };
 
             let sidecar_success = sidecar_result.status == "success";
@@ -851,8 +868,7 @@ impl Listener {
             // Compare and log error if mismatch
             if blockchain_success != sidecar_success {
                 error!(
-                    "❌ TX STATUS MISMATCH {:#x}: blockchain={} sidecar={}{}",
-                    tx_hash,
+                    "TX STATUS MISMATCH {tx_hash:#x}: blockchain={} sidecar={}{}",
                     if blockchain_success {
                         "SUCCESS"
                     } else {
