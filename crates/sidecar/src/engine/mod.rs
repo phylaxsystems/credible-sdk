@@ -1488,7 +1488,7 @@ mod tests {
         // Send reorg and unwrap on the result, verifying if the core engine
         // processed tx or exited with error
         assert!(
-            instance.send_reorg(B256::random()).await.is_err(),
+            instance.send_reorg(TxExecutionId::from_hash(B256::random())).await.is_err(),
             "not an error, core engine should have exited!"
         );
     }
@@ -1499,7 +1499,7 @@ mod tests {
     ) {
         // Send reorg without any prior blockenv or transaction
         assert!(
-            instance.send_reorg(B256::random()).await.is_err(),
+            instance.send_reorg(TxExecutionId::from_hash(B256::random())).await.is_err(),
             "Reorg before any blockenv should be rejected and exit engine"
         );
     }
@@ -1516,7 +1516,7 @@ mod tests {
 
         // Now send a reorg before any transaction in this block
         assert!(
-            instance.send_reorg(B256::random()).await.is_err(),
+            instance.send_reorg(TxExecutionId::from_hash(B256::random())).await.is_err(),
             "Reorg after blockenv but before any tx should be rejected"
         );
     }
@@ -1820,35 +1820,35 @@ mod tests {
     async fn test_block_env_wrong_last_tx_hash(mut instance: crate::utils::LocalInstance) {
         tracing::info!("test_block_env_wrong_last_tx_hash: sending first tx");
         // Send and verify a reverting CREATE transaction
-        let tx_hash_1 = instance
+        let tx_execution_id_1 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         tracing::info!("test_block_env_wrong_last_tx_hash: sending second tx (dry)");
         // Send and verify a reverting CREATE transaction
-        let tx_hash_2 = instance
+        let tx_execution_id_2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         assert!(
             instance
-                .is_transaction_successful(&tx_hash_1)
+                .is_transaction_successful(&tx_execution_id_1)
                 .await
                 .unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
         assert!(
             instance
-                .is_transaction_successful(&tx_hash_2)
+                .is_transaction_successful(&tx_execution_id_2)
                 .await
                 .unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
         tracing::info!("test_block_env_wrong_last_tx_hash: overriding last tx hash");
-        instance.transport.set_last_tx_hash(Some(tx_hash_1));
+        instance.transport.set_last_tx_hash(Some(tx_execution_id_1.tx_hash));
 
         assert!(
             instance
@@ -1881,13 +1881,13 @@ mod tests {
 
         // Send and verify a successful CREATE transaction
         tracing::info!("test_block_env_wrong_last_tx_hash: sending post-flush tx");
-        let tx_hash = instance
+        let tx_execution_id = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_hash).await.unwrap(),
+            instance.is_transaction_successful(&tx_execution_id).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
         tracing::info!("test_block_env_wrong_last_tx_hash: test completed");
@@ -1905,13 +1905,13 @@ mod tests {
         mut instance: crate::utils::LocalInstance,
     ) {
         // Send and verify a reverting CREATE transaction
-        let tx_hash = instance
+        let tx_execution_id = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_hash).await.unwrap(),
+            instance.is_transaction_successful(&tx_execution_id).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -1929,17 +1929,17 @@ mod tests {
         mut instance: crate::utils::LocalInstance,
     ) {
         // Send and verify a reverting CREATE transaction
-        let tx_hash = instance
+        let tx_execution_id = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_hash).await.unwrap(),
+            instance.is_transaction_successful(&tx_execution_id).await.unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
-        instance.transport.set_last_tx_hash(Some(tx_hash));
+        instance.transport.set_last_tx_hash(Some(tx_execution_id.tx_hash));
         instance.transport.set_n_transactions(0);
 
         // Send a blockEnv with the wrong number of transactions

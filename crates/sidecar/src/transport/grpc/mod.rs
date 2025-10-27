@@ -185,14 +185,14 @@ mod tests {
     async fn test_get_transaction_returns_successful_result(
         mut instance: crate::utils::LocalInstance,
     ) {
-        let tx_hash = instance
+        let tx_execution_id = instance
             .send_successful_create_tx(U256::from(0u64), Bytes::new())
             .await
             .expect("failed to send transaction");
 
         assert!(
             instance
-                .is_transaction_successful(&tx_hash)
+                .is_transaction_successful(&tx_execution_id)
                 .await
                 .expect("transaction query failed"),
             "transaction expected to succeed"
@@ -211,7 +211,7 @@ mod tests {
                 tx_execution_id: Some(TxExecutionId {
                     block_number: 0,
                     iteration_id: 0,
-                    tx_hash: tx_hash.to_string(),
+                    tx_hash: tx_execution_id.tx_hash.to_string(),
                 }),
             })
             .await
@@ -226,7 +226,7 @@ mod tests {
                     .tx_hash
                     .parse::<B256>()
                     .expect("invalid hash encoding");
-                assert_eq!(parsed_hash, tx_hash, "queried hash should match");
+                assert_eq!(parsed_hash, tx_execution_id.tx_hash, "queried hash should match");
                 assert_eq!(result.status, "success");
                 assert!(result.gas_used > 0, "gas_used expected to be populated");
                 assert!(
