@@ -442,7 +442,7 @@ impl ServerState {
 /// Handle JSON-RPC requests for transactions
 #[instrument(
     name = "http_server::handle_transaction_rpc",
-    skip(state),
+    skip(state, request),
     fields(
         method = %request.method,
     ),
@@ -452,7 +452,7 @@ pub async fn handle_transaction_rpc(
     State(state): State<ServerState>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Result<ResponseJson<JsonRpcResponse>, StatusCode> {
-    debug!("Processing JSON-RPC request");
+    debug!(request = ?request, "Processing JSON-RPC request");
 
     let response = match request.method.as_str() {
         METHOD_SEND_TRANSACTIONS => handle_send_transactions(&state, &request).await?,
