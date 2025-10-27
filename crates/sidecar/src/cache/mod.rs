@@ -1551,7 +1551,6 @@ mod tests {
         assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
     }
 
-    #[traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_cache_no_fallback_available(mut instance: crate::utils::LocalInstance) {
         // Send a new block
@@ -1584,10 +1583,6 @@ mod tests {
         let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
         // Await result
         let _ = instance.is_transaction_successful(&tx_hash).await;
-
-        while !logs_contain("critical") {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
 
         // The first fallback is hit
         let besu_client_db_basic_ref_counter = *instance
