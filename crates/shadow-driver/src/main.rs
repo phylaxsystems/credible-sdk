@@ -37,7 +37,8 @@ async fn main() -> Result<()> {
         &args.sidecar_url,
         args.request_timeout_seconds,
         args.starting_block,
-    );
+    )
+    .with_result_querying(true);
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
