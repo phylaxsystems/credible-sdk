@@ -732,7 +732,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             "id": 1,
             "jsonrpc": "2.0",
             "method": "reorg",
-            "params": serde_json::to_value(&tx_execution_id).unwrap(),
+            "params": serde_json::to_value(tx_execution_id).unwrap(),
         });
 
         debug!(target: "LocalInstanceHttpDriver", "Sending HTTP request: {}", serde_json::to_string_pretty(&request).unwrap_or_default());
@@ -999,7 +999,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             tx_execution_id: Some(GrpcTxExecutionId {
                 block_number: 0,
                 iteration_id: 0,
-                tx_hash: format!("{:#x}", tx_hash),
+                tx_hash: format!("{tx_hash:#x}"),
             }),
             tx_env: Some(GrpcTransactionEnv {
                 tx_type: 0, // Default to legacy transaction type
@@ -1126,7 +1126,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             tx_execution_id: Some(GrpcTxExecutionId {
                 block_number: 0,
                 iteration_id: 0,
-                tx_hash: format!("{:#x}", tx_hash),
+                tx_hash: format!("{tx_hash:#x}"),
             }),
         };
 

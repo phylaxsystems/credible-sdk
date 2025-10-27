@@ -344,13 +344,10 @@ impl SidecarTransport for GrpcService {
 
         let hash_value = pb_tx_execution_id.tx_hash.clone();
 
-        let tx_execution_id = match parse_pb_tx_execution_id(&pb_tx_execution_id) {
-            Ok(id) => id,
-            Err(_) => {
-                return Ok(Response::new(GetTransactionResponse {
-                    outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
-                }));
-            }
+        let Ok(tx_execution_id) = parse_pb_tx_execution_id(&pb_tx_execution_id) else {
+            return Ok(Response::new(GetTransactionResponse {
+                outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
+            }));
         };
 
         if !self.transactions_results.is_tx_received(&tx_execution_id) {

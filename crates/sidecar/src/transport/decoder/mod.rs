@@ -54,7 +54,8 @@ impl HttpTransactionDecoder {
                     HttpDecoderError::MissingTxEnv
                 } else if msg.contains("missing field `hash`") {
                     HttpDecoderError::MissingHashField
-                } else if msg.contains("invalid tx_execution_id") && msg.contains("invalid tx_hash") {
+                } else if msg.contains("invalid tx_execution_id") && msg.contains("invalid tx_hash")
+                {
                     HttpDecoderError::InvalidHash(msg)
                 } else if msg.contains("invalid tx_env") {
                     HttpDecoderError::InvalidTransaction(msg)
