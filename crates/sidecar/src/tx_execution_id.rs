@@ -109,8 +109,7 @@ impl<'de> Deserialize<'de> for TxExecutionId {
                                 return Err(de::Error::duplicate_field("tx_hash"));
                             }
                             let value: String = map.next_value()?;
-                            let normalized_hash = value.trim();
-                            let parsed_hash = TxHash::from_str(normalized_hash)
+                            let parsed_hash = normalize_hash(&value)
                                 .map_err(|e| de::Error::custom(format!("invalid tx_hash: {e}")))?;
                             tx_hash = Some(parsed_hash);
                         }
@@ -136,5 +135,56 @@ impl<'de> Deserialize<'de> for TxExecutionId {
             &["block_number", "iteration_id", "tx_hash"],
             TxExecutionIdVisitor,
         )
+    }
+}
+
+fn normalize_hash(value: &str) -> Result<TxHash, alloy::primitives::hex::FromHexError> {
+    let trimmed = value.trim();
+    let normalized = if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+        trimmed.to_owned()
+    } else {
+        format!("0x{trimmed}")
+    };
+    TxHash::from_str(&normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_prefixed_hash() {
+        let json = r#"{
+            "block_number": 1,
+            "iteration_id": 2,
+            "tx_hash": "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+        }"#;
+
+        let parsed: TxExecutionId = serde_json::from_str(json).expect("should parse");
+        assert_eq!(parsed.block_number, 1);
+        assert_eq!(parsed.iteration_id, 2);
+        assert_eq!(
+            parsed.tx_hash,
+            TxHash::from_str("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn deserializes_unprefixed_hash() {
+        let json = r#"{
+            "block_number": 3,
+            "iteration_id": 4,
+            "tx_hash": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+        }"#;
+
+        let parsed: TxExecutionId = serde_json::from_str(json).expect("should parse");
+        assert_eq!(parsed.block_number, 3);
+        assert_eq!(parsed.iteration_id, 4);
+        assert_eq!(
+            parsed.tx_hash,
+            TxHash::from_str("0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+                .unwrap()
+        );
     }
 }
