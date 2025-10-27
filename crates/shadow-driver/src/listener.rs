@@ -73,7 +73,7 @@ struct TransactionPayload {
     tx_execution_id: TxExecutionId,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct TxExecutionId {
     pub block_number: u64,
@@ -92,6 +92,36 @@ struct ResponseError {
     message: String,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Clone)]
+struct TransactionResultResponse {
+    tx_execution_id: TxExecutionId,
+    status: String,
+    gas_used: Option<u64>,
+    error: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct GetTransactionResponse {
+    jsonrpc: String,
+    result: Option<GetTransactionResult>,
+    error: Option<JsonRpcErrorResponse>,
+    id: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetTransactionResult {
+    result: Option<TransactionResultResponse>,
+    not_found: Option<TxExecutionId>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonRpcErrorResponse {
+    code: i32,
+    message: String,
+}
+
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct Listener {
     provider: Arc<RootProvider>,
@@ -100,6 +130,8 @@ pub struct Listener {
     /// Tracks the last block whose block env was successfully sent and accepted
     last_block_env_sent: Option<u64>,
     starting_block: Option<u64>,
+    /// Flag to enable/disable transaction result querying
+    query_results: bool,
 }
 
 impl Listener {
@@ -123,7 +155,14 @@ impl Listener {
             sidecar_url: sidecar_url.to_string(),
             last_block_env_sent: None,
             starting_block,
+            query_results: false, // Disabled by default
         }
+    }
+
+    /// Enable transaction result querying and comparison
+    pub fn with_result_querying(mut self, enabled: bool) -> Self {
+        self.query_results = enabled;
+        self
     }
 
     /// We keep retrying the subscription because websocket connections can drop in practice.
@@ -328,6 +367,7 @@ impl Listener {
     /// 3. Send block env for the current block (which allows the next block's txs)
     /// 4. Mark block env as sent only after it succeeds
     /// 5. If the sidecar is down (send fails after retries), continue to the next block without marking as sent
+    /// 6. Optionally query and compare transaction results if enabled
     async fn process_block(&mut self, block: &alloy::rpc::types::Block) -> Result<()> {
         let block_number = block.header.number;
 
@@ -355,10 +395,16 @@ impl Listener {
             transactions.len()
         );
 
+        // Collect transaction hashes for later querying
+        let mut tx_hashes: Vec<TxHash> = Vec::new();
+
         // STEP 1: Send transactions ONLY if previous block env was accepted
         // (First block won't send transactions as last_block_env_sent will be None)
         if self.last_block_env_sent.is_some() {
             for (index, tx) in transactions.iter().enumerate() {
+                let tx_hash = *tx.inner.hash();
+                tx_hashes.push(tx_hash);
+
                 // Retry transaction sending with exponential backoff
                 if let Err(e) = self
                     .send_transaction_with_retry(tx, index as u64, block_number)
@@ -398,6 +444,15 @@ impl Listener {
         self.last_block_env_sent = Some(block_number);
 
         info!("Successfully processed block {block_number} (env sent, ready for next block's txs)");
+
+        if self.query_results
+            && !tx_hashes.is_empty()
+            && let Err(e) = self
+                .compare_transaction_results(block_number, tx_hashes)
+                .await
+        {
+            warn!(error = ?e, "Failed to compare transaction results for block {block_number}");
+        }
 
         Ok(())
     }
@@ -691,6 +746,127 @@ impl Listener {
             "Successfully sent transaction {tx_index} with hash {:#x}",
             tx.inner.hash()
         );
+        Ok(())
+    }
+
+    /// Query a transaction once (no retry)
+    async fn query_transaction_once(
+        &self,
+        tx_hash: TxHash,
+        block_number: u64,
+    ) -> Result<TransactionResultResponse> {
+        let query_payload = json!({
+            "jsonrpc": "2.0",
+            "method": "getTransaction",
+            "params": [
+                {
+                    "block_number": block_number,
+                    "iteration_id": 0,
+                    "tx_hash": format!("{tx_hash:#x}")
+                }
+            ],
+            "id": 1
+        });
+
+        debug!("Querying transaction result for {tx_hash:#x}");
+
+        let response = self
+            .sidecar_client
+            .post(format!("{}/tx", self.sidecar_url))
+            .json(&query_payload)
+            .send()
+            .await
+            .context("failed to send query request to sidecar")?;
+
+        let response_status = response.status();
+        if !response_status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown error".to_string());
+            return Err(anyhow!("sidecar returned error {response_status}: {body}"));
+        }
+
+        let body = response
+            .text()
+            .await
+            .context("failed to read response body")?;
+
+        let query_response: GetTransactionResponse =
+            serde_json::from_str(&body).context("failed to parse query response")?;
+
+        if let Some(error) = query_response.error {
+            return Err(anyhow!(
+                "sidecar returned JSON-RPC error (code: {}): {}",
+                error.code,
+                error.message
+            ));
+        }
+
+        let result = query_response
+            .result
+            .ok_or_else(|| anyhow!("missing result in response"))?;
+
+        if let Some(not_found) = result.not_found {
+            return Err(anyhow!("transaction {:#x} not found", not_found.tx_hash));
+        }
+
+        result
+            .result
+            .ok_or_else(|| anyhow!("transaction result not available yet"))
+    }
+
+    /// Simple comparison of transaction results between blockchain and sidecar
+    async fn compare_transaction_results(
+        &self,
+        block_number: u64,
+        tx_hashes: Vec<TxHash>,
+    ) -> Result<()> {
+        for tx_hash in tx_hashes {
+            // Get blockchain status from receipt
+            let blockchain_success = match self.provider.get_transaction_receipt(tx_hash).await {
+                Ok(Some(receipt)) => receipt.status(),
+                Ok(None) => {
+                    warn!("No receipt found for tx {tx_hash:#x}");
+                    continue;
+                }
+                Err(e) => {
+                    warn!("Failed to get receipt for tx {tx_hash:#x}: {e:?}");
+                    continue;
+                }
+            };
+
+            // Get sidecar status
+            let sidecar_result = match self.query_transaction_once(tx_hash, block_number).await {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!("Failed to query sidecar for tx {tx_hash:#x}: {e:?}");
+                    continue;
+                }
+            };
+
+            let sidecar_success = sidecar_result.status == "success";
+
+            // Compare and log error if mismatch
+            if blockchain_success != sidecar_success {
+                error!(
+                    "❌ TX STATUS MISMATCH {:#x}: blockchain={} sidecar={}{}",
+                    tx_hash,
+                    if blockchain_success {
+                        "SUCCESS"
+                    } else {
+                        "FAILED"
+                    },
+                    sidecar_result.status,
+                    sidecar_result
+                        .error
+                        .as_ref()
+                        .map(|e| format!(" (error: {e})"))
+                        .unwrap_or_default()
+                );
+            }
+        }
+
         Ok(())
     }
 }
