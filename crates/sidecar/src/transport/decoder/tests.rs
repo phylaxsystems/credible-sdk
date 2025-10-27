@@ -792,7 +792,7 @@ fn test_invalid_hash_in_transactions_array() {
     assert_eq!(
         result.unwrap_err(),
         HttpDecoderError::InvalidHash(
-            "invalid transactions array: invalid tx_execution_id: invalid hash: invalid string length"
+            "invalid transactions array: invalid tx_execution_id: invalid tx_hash: invalid string length"
                 .to_string()
         )
     );
@@ -1420,14 +1420,16 @@ fn test_reorg_valid() {
     assert_eq!(contents.len(), 1);
 
     match &contents[0] {
-        TxQueueContents::Reorg(hash, _) => {
+        TxQueueContents::Reorg(tx_execution_id, _) => {
             assert_eq!(
-                *hash,
+                tx_execution_id.tx_hash,
                 B256::from_str(
                     "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
                 )
                 .unwrap()
             );
+            assert_eq!(tx_execution_id.block_number, 100);
+            assert_eq!(tx_execution_id.iteration_id, 1);
         }
         _ => panic!("Expected Reorg variant"),
     }

@@ -87,6 +87,7 @@ use revm::state::EvmState;
 use crate::{
     cache::Cache,
     engine::transactions_results::TransactionsResults,
+    tx_execution_id::TxExecutionId,
     utils::ErrorRecoverability,
 };
 use alloy::primitives::TxHash;
@@ -127,11 +128,11 @@ use tracing::{
     warn,
 };
 
-/// Contains the last two executed transaction hashes and resulting states.
+/// Contains the last two executed transaction identifiers and resulting states.
 /// Stores up to 2 transactions in a stack-allocated array.
 #[derive(Debug)]
 struct LastExecutedTx {
-    hashes: [Option<(B256, Option<EvmState>)>; 2],
+    hashes: [Option<(TxExecutionId, Option<EvmState>)>; 2],
     len: usize,
 }
 
@@ -143,18 +144,18 @@ impl LastExecutedTx {
         }
     }
 
-    fn push(&mut self, hash: B256, state: Option<EvmState>) {
+    fn push(&mut self, tx_execution_id: TxExecutionId, state: Option<EvmState>) {
         if self.len == 2 {
             // Shift elements to make room for new one
             self.hashes[0] = self.hashes[1].take();
-            self.hashes[1] = Some((hash, state));
+            self.hashes[1] = Some((tx_execution_id, state));
         } else {
-            self.hashes[self.len] = Some((hash, state));
+            self.hashes[self.len] = Some((tx_execution_id, state));
             self.len += 1;
         }
     }
 
-    fn remove_last(&mut self) -> Option<(B256, Option<EvmState>)> {
+    fn remove_last(&mut self) -> Option<(TxExecutionId, Option<EvmState>)> {
         if self.len == 0 {
             return None;
         }
@@ -164,7 +165,7 @@ impl LastExecutedTx {
         result
     }
 
-    fn current(&self) -> Option<&(B256, Option<EvmState>)> {
+    fn current(&self) -> Option<&(TxExecutionId, Option<EvmState>)> {
         if self.len == 0 {
             None
         } else {
@@ -386,13 +387,15 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
     fn process_transaction_validation_error<ErrType>(
         &mut self,
-        tx_hash: TxHash,
+        tx_execution_id: TxExecutionId,
         tx_env: &TxEnv,
         e: &ExecutorError<ErrType>,
     ) -> Result<(), EngineError>
     where
         ErrType: Debug,
     {
+        let tx_hash = tx_execution_id.tx_hash;
+
         if !ErrorRecoverability::from(e).is_recoverable() {
             critical!(error = ?e, "Failed to execute a transaction");
         }
@@ -412,7 +415,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     "Transaction validation environment"
                 );
                 self.add_transaction_result(
-                    tx_hash,
+                    tx_execution_id,
                     &TransactionResult::ValidationError(format!("{e:?}")),
                     None,
                 );
@@ -429,7 +432,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     "Fatal assertion execution error occurred"
                 );
                 self.add_transaction_result(
-                    tx_hash,
+                    tx_execution_id,
                     &TransactionResult::ValidationError(format!("{e:?}")),
                     Some(state.clone()),
                 );
@@ -443,29 +446,33 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// the last executed transaction accordingly.
     fn add_transaction_result(
         &mut self,
-        tx_hash: TxHash,
+        tx_execution_id: TxExecutionId,
         result: &TransactionResult,
         state: Option<EvmState>,
     ) {
         #[cfg(feature = "cache_validation")]
-        self.processed_transactions.insert(tx_hash, state.clone());
-        self.last_executed_tx.push(tx_hash, state);
+        self.processed_transactions
+            .insert(tx_execution_id.tx_hash, state.clone());
+        self.last_executed_tx.push(tx_execution_id, state);
         self.transaction_results
-            .add_transaction_result(tx_hash, result);
+            .add_transaction_result(tx_execution_id, result);
     }
 
     fn trace_execute_transaction_result(
         &mut self,
-        tx_hash: TxHash,
+        tx_execution_id: TxExecutionId,
         tx_env: &TxEnv,
         rax: &TxValidationResult,
     ) {
+        let tx_hash = tx_execution_id.tx_hash;
         let is_valid = rax.is_valid();
         let execution_result = rax.result_and_state.result.clone();
 
         info!(
             target = "engine",
             tx_hash = %tx_hash,
+            block_number = tx_execution_id.block_number,
+            iteration_id = tx_execution_id.iteration_id,
             is_valid,
             execution_result = ?execution_result,
             "Transaction processed"
@@ -524,10 +531,21 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[instrument(
         name = "engine::execute_transaction",
         skip(self, tx_env),
-        fields(tx_hash = %tx_hash, caller = %tx_env.caller, gas_limit = tx_env.gas_limit),
+        fields(
+            tx_hash = %tx_execution_id.tx_hash,
+            block_number = tx_execution_id.block_number,
+            iteration_id = tx_execution_id.iteration_id,
+            caller = %tx_env.caller,
+            gas_limit = tx_env.gas_limit
+        ),
         level = "debug"
     )]
-    fn execute_transaction(&mut self, tx_hash: B256, tx_env: &TxEnv) -> Result<(), EngineError> {
+    fn execute_transaction(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_env: &TxEnv,
+    ) -> Result<(), EngineError> {
+        let tx_hash = tx_execution_id.tx_hash;
         self.block_env_transaction_counter += 1;
         let block_env = self.block_env.as_ref().ok_or_else(|| {
             error!("No block environment set for transaction execution");
@@ -578,8 +596,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let rax = match rax {
             Ok(rax) => rax,
             Err(e) => {
-                // Now this works because process_transaction_validation_error is generic
-                return self.process_transaction_validation_error(tx_hash, tx_env, &e);
+                return self.process_transaction_validation_error(tx_execution_id, tx_env, &e);
             }
         };
 
@@ -592,10 +609,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         tx_metrics.commit();
 
         // Log the result of the transaction execution
-        self.trace_execute_transaction_result(tx_hash, tx_env, &rax);
+        self.trace_execute_transaction_result(tx_execution_id, tx_env, &rax);
 
         self.add_transaction_result(
-            tx_hash,
+            tx_execution_id,
             &TransactionResult::ValidationCompleted {
                 is_valid: rax.is_valid(),
                 execution_result: rax.result_and_state.result,
@@ -623,28 +640,34 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[cfg(test)]
     pub fn get_transaction_result(
         &self,
-        tx_hash: &B256,
-    ) -> Option<dashmap::mapref::one::Ref<'_, B256, TransactionResult>> {
-        self.transaction_results.get_transaction_result(tx_hash)
+        tx_execution_id: &TxExecutionId,
+    ) -> Option<dashmap::mapref::one::Ref<'_, TxExecutionId, TransactionResult>> {
+        self.transaction_results
+            .get_transaction_result(tx_execution_id)
     }
 
     /// Get transaction result by hash, returning a cloned value for test compatibility.
     #[cfg(test)]
-    pub fn get_transaction_result_cloned(&self, tx_hash: &B256) -> Option<TransactionResult> {
+    pub fn get_transaction_result_cloned(
+        &self,
+        tx_execution_id: &TxExecutionId,
+    ) -> Option<TransactionResult> {
         self.transaction_results
-            .get_transaction_result(tx_hash)
+            .get_transaction_result(tx_execution_id)
             .map(|r| r.clone())
     }
 
     /// Get all transaction results for testing purposes.
     #[cfg(test)]
-    pub fn get_all_transaction_results(&self) -> &dashmap::DashMap<B256, TransactionResult> {
+    pub fn get_all_transaction_results(
+        &self,
+    ) -> &dashmap::DashMap<TxExecutionId, TransactionResult> {
         self.transaction_results.get_all_transaction_result()
     }
 
     /// Clone all transaction results for testing purposes.
     #[cfg(test)]
-    pub fn clone_transaction_results(&self) -> HashMap<B256, TransactionResult> {
+    pub fn clone_transaction_results(&self) -> HashMap<TxExecutionId, TransactionResult> {
         self.transaction_results
             .get_all_transaction_result()
             .iter()
@@ -676,10 +699,16 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         // If the last tx hash from the block env is different from the last tx hash from the
         // queue, invalidate the cache
-        if let Some((prev_tx_hash, _)) = self.last_executed_tx.current()
-            && Some(prev_tx_hash) != queue_block_env.last_tx_hash.as_ref()
+        if let Some((prev_tx_execution_id, _)) = self.last_executed_tx.current()
+            && Some(prev_tx_execution_id.tx_hash) != queue_block_env.last_tx_hash
         {
-            warn!(prev_tx_hash = ?prev_tx_hash, current_tx_hash = ?queue_block_env.last_tx_hash, "The last transaction hash in the BlockEnv does not match the last transaction processed, invalidating cache");
+            warn!(
+                prev_tx_hash = %prev_tx_execution_id.tx_hash,
+                prev_block_number = prev_tx_execution_id.block_number,
+                prev_iteration_id = prev_tx_execution_id.iteration_id,
+                current_tx_hash = ?queue_block_env.last_tx_hash,
+                "The last transaction hash in the BlockEnv does not match the last transaction processed, invalidating cache"
+            );
             self.cache
                 .reset_required_block_number(queue_block_env.block_env.number);
 
@@ -811,9 +840,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     let _guard = current_span.enter();
                     self.process_transaction_event(queue_transaction).await?;
                 }
-                TxQueueContents::Reorg(hash, current_span) => {
+                TxQueueContents::Reorg(tx_execution_id, current_span) => {
                     let _guard = current_span.enter();
-                    self.execute_reorg(hash)?;
+                    self.execute_reorg(tx_execution_id)?;
                 }
             }
 
@@ -898,7 +927,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         &mut self,
         queue_transaction: QueueTransaction,
     ) -> Result<(), EngineError> {
-        let tx_hash = queue_transaction.tx_hash;
+        let tx_execution_id = queue_transaction.tx_execution_id;
+        let tx_hash = tx_execution_id.tx_hash;
         let tx_env = queue_transaction.tx_env;
         self.block_metrics.transactions_considered += 1;
 
@@ -906,6 +936,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             error!(
                 target = "engine",
                 tx_hash = %tx_hash,
+                block_number = tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
                 caller = %tx_env.caller,
                 "Received transaction without first receiving a BlockEnv"
             );
@@ -918,6 +950,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         debug!(
             target = "engine",
             tx_hash = %tx_hash,
+            block_number = tx_execution_id.block_number,
+            iteration_id = tx_execution_id.iteration_id,
             caller = %tx_env.caller,
             gas_limit = tx_env.gas_limit,
             current_block = self.block_env.as_ref().map(|b| b.number),
@@ -928,7 +962,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.apply_state_buffer_to_fork()?;
 
         // Process the transaction with the current block environment
-        self.execute_transaction(tx_hash, &tx_env)?;
+        self.execute_transaction(tx_execution_id, &tx_env)?;
 
         Ok(())
     }
@@ -966,7 +1000,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// If `self.last_executed_tx` is empty, we dont do anything.
     fn apply_state_buffer(&mut self) -> Result<(), EngineError> {
         #[allow(clippy::used_underscore_binding)]
-        if let Some((_tx_hash, state)) = self.last_executed_tx.current() {
+        if let Some((_tx_execution_id, state)) = self.last_executed_tx.current() {
             let changes = state.clone();
             let changes = changes.ok_or(EngineError::NothingToCommit)?;
             self.state.commit(changes);
@@ -975,8 +1009,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         Ok(())
     }
 
-    /// Processes a reorg event. Checks if the hash of the last executed tx
-    /// matches the hash supplied by the reorg event.
+    /// Processes a reorg event. Checks if the execution id of the last executed tx
+    /// matches the identifier supplied by the reorg event.
     /// If yes, we throw out the last executed tx buffer. If not, we throw
     /// an error.
     ///
@@ -986,21 +1020,30 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// an acceptable solution.
     // TODO: when we star receiving tx bundles this should be expanded such
     // that we can go `n` transactions deep inside of a block.
-    #[instrument(name = "engine::execute_reorg", skip_all, level = "info")]
-    fn execute_reorg(&mut self, tx_hash: B256) -> Result<(), EngineError> {
+    #[instrument(
+        name = "engine::execute_reorg",
+        skip_all,
+        fields(
+            tx_hash = %tx_execution_id.tx_hash,
+            block_number = tx_execution_id.block_number,
+            iteration_id = tx_execution_id.iteration_id
+        ),
+        level = "info"
+    )]
+    fn execute_reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), EngineError> {
         trace!(
             target = "engine",
-            tx_hash = %tx_hash,
+            tx_hash = %tx_execution_id.tx_hash,
             "Checking reorg validity for hash"
         );
 
         // Check if we have received a transaction at all
-        if let Some((last_hash, _)) = self.last_executed_tx.current()
-            && tx_hash == *last_hash
+        if let Some((last_execution_id, _)) = self.last_executed_tx.current()
+            && tx_execution_id == *last_execution_id
         {
             info!(
                 target = "engine",
-                tx_hash = %tx_hash,
+                tx_hash = %tx_execution_id.tx_hash,
                 "Executing reorg for hash"
             );
 
@@ -1008,7 +1051,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.last_executed_tx.remove_last();
 
             // Remove transaction from results
-            self.transaction_results.remove_transaction_result(tx_hash);
+            self.transaction_results
+                .remove_transaction_result(tx_execution_id);
 
             // Only decrement the counter if we haven't processed a new block yet
             if self.block_env_transaction_counter > 0 {
@@ -1164,7 +1208,7 @@ mod tests {
             selected_iteration_id: Some(0),
         };
         let queue_tx = queue::QueueTransaction {
-            tx_hash: B256::from([0x11; 32]),
+            tx_execution_id: TxExecutionId::from_hash(B256::from([0x11; 32])),
             tx_env: TxEnv::default(),
         };
 
@@ -1189,15 +1233,16 @@ mod tests {
     fn test_last_executed_tx_single_push_and_pop() {
         let mut txs = LastExecutedTx::new();
         let h1 = B256::from([0x11; 32]);
+        let id1 = TxExecutionId::from_hash(h1);
         let s1: EvmState = EvmState::default();
 
-        txs.push(h1, Some(s1));
+        txs.push(id1, Some(s1));
 
         let cur = txs.current().expect("should contain the pushed tx");
-        assert_eq!(cur.0, h1, "current should be the last pushed hash");
+        assert_eq!(cur.0, id1, "current should be the last pushed hash");
 
         let popped = txs.remove_last().expect("should pop the only element");
-        assert_eq!(popped.0, h1, "popped should be the same hash");
+        assert_eq!(popped.0, id1, "popped should be the same hash");
         assert!(txs.current().is_none(), "should be empty after pop");
     }
 
@@ -1206,16 +1251,18 @@ mod tests {
         let mut txs = LastExecutedTx::new();
         let h1 = B256::from([0x21; 32]);
         let h2 = B256::from([0x22; 32]);
-        txs.push(h1, Some(EvmState::default()));
-        txs.push(h2, Some(EvmState::default()));
+        let id1 = TxExecutionId::from_hash(h1);
+        let id2 = TxExecutionId::from_hash(h2);
+        txs.push(id1, Some(EvmState::default()));
+        txs.push(id2, Some(EvmState::default()));
 
         // LIFO: current is h2
-        assert_eq!(txs.current().unwrap().0, h2);
+        assert_eq!(txs.current().unwrap().0, id2);
         // Pop h2, current becomes h1
-        assert_eq!(txs.remove_last().unwrap().0, h2);
-        assert_eq!(txs.current().unwrap().0, h1);
+        assert_eq!(txs.remove_last().unwrap().0, id2);
+        assert_eq!(txs.current().unwrap().0, id1);
         // Pop h1, now empty
-        assert_eq!(txs.remove_last().unwrap().0, h1);
+        assert_eq!(txs.remove_last().unwrap().0, id1);
         assert!(txs.current().is_none());
     }
 
@@ -1225,30 +1272,33 @@ mod tests {
         let h1 = B256::from([0x31; 32]);
         let h2 = B256::from([0x32; 32]);
         let h3 = B256::from([0x33; 32]);
+        let id1 = TxExecutionId::from_hash(h1);
+        let id2 = TxExecutionId::from_hash(h2);
+        let id3 = TxExecutionId::from_hash(h3);
 
         // Fill to capacity
-        txs.push(h1, Some(EvmState::default()));
-        txs.push(h2, Some(EvmState::default()));
-        assert_eq!(txs.current().unwrap().0, h2);
+        txs.push(id1, Some(EvmState::default()));
+        txs.push(id2, Some(EvmState::default()));
+        assert_eq!(txs.current().unwrap().0, id2);
 
         // Push over capacity; should drop h1 and keep [h2, h3]
-        txs.push(h3, Some(EvmState::default()));
+        txs.push(id3, Some(EvmState::default()));
         assert_eq!(
             txs.current().unwrap().0,
-            h3,
+            id3,
             "current should be newest after overflow"
         );
 
         // Removing last returns h3, and now current should be h2 (h1 was discarded)
-        assert_eq!(txs.remove_last().unwrap().0, h3);
+        assert_eq!(txs.remove_last().unwrap().0, id3);
         assert_eq!(
             txs.current().unwrap().0,
-            h2,
+            id2,
             "previous should be preserved after pop"
         );
 
         // Removing last again returns h2 and leaves empty
-        assert_eq!(txs.remove_last().unwrap().0, h2);
+        assert_eq!(txs.remove_last().unwrap().0, id2);
         assert!(txs.current().is_none());
     }
 
@@ -1594,6 +1644,7 @@ mod tests {
 
         // Generate a random transaction hash for testing
         let tx_hash = B256::from([0x33; 32]);
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
 
         // Get initial cache state
         let initial_cache_count = engine.get_state().cache_entry_count();
@@ -1602,7 +1653,8 @@ mod tests {
         engine.current_block_fork = Some(engine.get_state().fork());
 
         // Execute the transaction
-        let result = engine.execute_transaction(tx_hash, &tx_env);
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        let result = engine.execute_transaction(tx_execution_id, &tx_env);
         assert!(result.is_ok(), "Transaction should execute successfully");
         // We now need to advance the state by one block so we commit the transaction state
         engine.apply_state_buffer().unwrap();
@@ -1673,7 +1725,7 @@ mod tests {
         );
 
         // Verify transaction result is stored and succeeded
-        let tx_result = engine.get_transaction_result_cloned(&tx_hash);
+        let tx_result = engine.get_transaction_result_cloned(&tx_execution_id);
         assert!(tx_result.is_some(), "Transaction result should be stored");
         match tx_result.unwrap() {
             TransactionResult::ValidationCompleted {
@@ -1710,9 +1762,10 @@ mod tests {
 
         // Generate a random transaction hash for testing
         let tx_hash = B256::from([0x44; 32]);
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
 
         // Execute transaction without block environment
-        let result = engine.execute_transaction(tx_hash, &tx_env);
+        let result = engine.execute_transaction(tx_execution_id, &tx_env);
 
         assert!(
             result.is_err(),
@@ -1900,7 +1953,9 @@ mod tests {
         let (mut engine, _) = create_test_engine().await;
         let tx_hash = B256::from([0x44; 32]);
 
-        engine.last_executed_tx.push(tx_hash, None);
+        engine
+            .last_executed_tx
+            .push(TxExecutionId::from_hash(tx_hash), None);
 
         let result = engine.apply_state_buffer();
         assert!(matches!(result, Err(EngineError::NothingToCommit)));

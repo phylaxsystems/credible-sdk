@@ -25,17 +25,15 @@
 //! Reorg events are signals from the driver to the engine that it should discard the last
 //! executed transaction.
 
+use crate::tx_execution_id::TxExecutionId;
 use alloy::primitives::TxHash;
 use crossbeam::channel::{
     Receiver,
     Sender,
 };
-use revm::{
-    context::{
-        BlockEnv,
-        TxEnv,
-    },
-    primitives::B256,
+use revm::context::{
+    BlockEnv,
+    TxEnv,
 };
 use serde::{
     Deserialize,
@@ -47,14 +45,14 @@ use serde_json::Value;
 
 /// Represents a transaction to be processed by the sidecar engine.
 ///
-/// This struct encapsulates both the transaction hash for identification/tracing
+/// This struct encapsulates both the transaction execution identifier for identification/tracing
 /// and the transaction environment containing the actual transaction data needed
 /// for EVM execution. The hash enables transaction tracking throughout the
 /// execution pipeline, while the `TxEnv` provides the EVM with all necessary
 /// transaction context (sender, recipient, value, data, gas, etc.).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueTransaction {
-    pub tx_hash: B256,
+    pub tx_execution_id: TxExecutionId,
     pub tx_env: TxEnv,
 }
 
@@ -234,16 +232,16 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
 /// of a new one.
 ///
 /// `Tx` should be used to append a new transaction to the current block,
-/// along with its transaction hash for identification and tracing.
+/// along with its transaction execution id for identification and tracing.
 ///
 /// `Reorg` should be used to signal to remove the last executed transaction.
-/// To verify the transaction is indeed the correct one, we include a tx hash
-/// and should only process it as a valid event if the hashes match.
+/// To verify the transaction is indeed the correct one, we include the
+/// transaction execution id and should only process it as a valid event if it matches.
 #[derive(Debug)]
 pub enum TxQueueContents {
     Block(QueueBlockEnv, tracing::Span),
     Tx(QueueTransaction, tracing::Span),
-    Reorg(B256, tracing::Span),
+    Reorg(TxExecutionId, tracing::Span),
 }
 
 /// `crossbeam` sender for the transaction queue. Sends data to tx queue.

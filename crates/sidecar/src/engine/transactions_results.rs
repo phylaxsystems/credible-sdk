@@ -1,8 +1,8 @@
 use crate::{
     engine::TransactionResult,
     transactions_state::TransactionsState,
+    tx_execution_id::TxExecutionId,
 };
-use revm::primitives::alloy_primitives::TxHash;
 use std::{
     collections::VecDeque,
     sync::Arc,
@@ -16,7 +16,7 @@ use std::{
 #[derive(Debug)]
 pub struct TransactionsResults {
     transactions_state: Arc<TransactionsState>,
-    transactions: VecDeque<TxHash>,
+    transactions: VecDeque<TxExecutionId>,
     max_capacity: usize,
 }
 
@@ -33,39 +33,43 @@ impl TransactionsResults {
         }
     }
 
-    pub fn add_transaction_result(&mut self, tx_hash: TxHash, result: &TransactionResult) {
+    pub fn add_transaction_result(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        result: &TransactionResult,
+    ) {
         self.transactions_state
-            .add_transaction_result(tx_hash, result);
+            .add_transaction_result(tx_execution_id, result);
 
         // If at capacity, remove the oldest before adding the new one
         if self.transactions.len() == self.max_capacity
-            && let Some(old_tx_hash) = self.transactions.pop_front()
+            && let Some(old_tx_execution_id) = self.transactions.pop_front()
         {
             self.transactions_state
-                .remove_transaction_result(&old_tx_hash);
+                .remove_transaction_result(&old_tx_execution_id);
         }
 
-        self.transactions.push_back(tx_hash);
+        self.transactions.push_back(tx_execution_id);
     }
 
-    pub fn remove_transaction_result(&mut self, tx_hash: TxHash) {
-        self.transactions_state.remove_transaction_result(&tx_hash);
+    pub fn remove_transaction_result(&mut self, tx_execution_id: TxExecutionId) {
+        self.transactions_state
+            .remove_transaction_result(&tx_execution_id);
     }
 
     #[cfg(test)]
     pub fn get_transaction_result(
         &self,
-        tx_hash: &assertion_executor::primitives::B256,
-    ) -> Option<
-        dashmap::mapref::one::Ref<'_, assertion_executor::primitives::B256, TransactionResult>,
-    > {
-        self.transactions_state.get_transaction_result(tx_hash)
+        tx_execution_id: &TxExecutionId,
+    ) -> Option<dashmap::mapref::one::Ref<'_, TxExecutionId, TransactionResult>> {
+        self.transactions_state
+            .get_transaction_result(tx_execution_id)
     }
 
     #[cfg(test)]
     pub fn get_all_transaction_result(
         &self,
-    ) -> &dashmap::DashMap<assertion_executor::primitives::B256, TransactionResult> {
+    ) -> &dashmap::DashMap<TxExecutionId, TransactionResult> {
         self.transactions_state.get_all_transaction_result()
     }
 }
@@ -115,9 +119,10 @@ mod tests {
         }
     }
 
-    // Helper to create a test TxHash
-    fn create_test_tx_hash(byte: u8) -> TxHash {
-        TxHash::from([byte; 32])
+    // Helper to create a test TxExecutionId
+    fn create_test_tx_execution_id(byte: u8) -> TxExecutionId {
+        let tx_hash = revm::primitives::alloy_primitives::TxHash::from([byte; 32]);
+        TxExecutionId::new(u64::from(byte), 0, tx_hash)
     }
 
     #[test]
@@ -137,17 +142,17 @@ mod tests {
         let transactions_state = TransactionsState::new();
         let mut results = TransactionsResults::new(transactions_state.clone(), 5);
 
-        let tx_hash = create_test_tx_hash(1);
+        let tx_execution_id = create_test_tx_execution_id(1);
         let result = create_test_result_success();
 
-        results.add_transaction_result(tx_hash, &result.clone());
+        results.add_transaction_result(tx_execution_id, &result.clone());
 
         // Check that transaction is in queue
         assert_eq!(results.transactions.len(), 1);
-        assert_eq!(results.transactions[0], tx_hash);
+        assert_eq!(results.transactions[0], tx_execution_id);
 
         // Check that transaction result is stored in state
-        let stored_result = results.get_transaction_result(&tx_hash);
+        let stored_result = results.get_transaction_result(&tx_execution_id);
         assert!(stored_result.is_some());
         assert_eq!(*stored_result.unwrap(), result);
     }
@@ -157,30 +162,30 @@ mod tests {
         let transactions_state = TransactionsState::new();
         let mut results = TransactionsResults::new(transactions_state.clone(), 5);
 
-        let tx_hashes = vec![
-            create_test_tx_hash(1),
-            create_test_tx_hash(2),
-            create_test_tx_hash(3),
+        let tx_execution_ids = vec![
+            create_test_tx_execution_id(1),
+            create_test_tx_execution_id(2),
+            create_test_tx_execution_id(3),
         ];
 
-        for (i, &tx_hash) in tx_hashes.iter().enumerate() {
+        for (i, &tx_execution_id) in tx_execution_ids.iter().enumerate() {
             let result = if i % 2 == 0 {
                 create_test_result_success()
             } else {
                 create_test_result_error(&format!("error {i}"))
             };
-            results.add_transaction_result(tx_hash, &result);
+            results.add_transaction_result(tx_execution_id, &result);
         }
 
         // All transactions should be present
         assert_eq!(results.transactions.len(), 3);
-        for &tx_hash in &tx_hashes {
-            assert!(results.get_transaction_result(&tx_hash).is_some());
+        for &tx_execution_id in &tx_execution_ids {
+            assert!(results.get_transaction_result(&tx_execution_id).is_some());
         }
 
         // Check queue order (FIFO)
-        for (i, &expected_hash) in tx_hashes.iter().enumerate() {
-            assert_eq!(results.transactions[i], expected_hash);
+        for (i, &expected_id) in tx_execution_ids.iter().enumerate() {
+            assert_eq!(results.transactions[i], expected_id);
         }
     }
 
@@ -192,9 +197,9 @@ mod tests {
 
         // Add exactly max_capacity transactions
         for i in 0..capacity {
-            let tx_hash = create_test_tx_hash(i as u8 + 1);
+            let tx_execution_id = create_test_tx_execution_id(i as u8 + 1);
             let result = create_test_result_success();
-            results.add_transaction_result(tx_hash, &result);
+            results.add_transaction_result(tx_execution_id, &result);
         }
 
         // Should have exactly capacity transactions
@@ -202,8 +207,8 @@ mod tests {
 
         // All should be retrievable
         for i in 0..capacity {
-            let tx_hash = create_test_tx_hash(i as u8 + 1);
-            assert!(results.get_transaction_result(&tx_hash).is_some());
+            let tx_execution_id = create_test_tx_execution_id(i as u8 + 1);
+            assert!(results.get_transaction_result(&tx_execution_id).is_some());
         }
     }
 
@@ -214,35 +219,55 @@ mod tests {
         let mut results = TransactionsResults::new(transactions_state.clone(), capacity);
 
         // Add more than capacity
-        let tx_hashes = vec![
-            create_test_tx_hash(1), // This will be pruned first
-            create_test_tx_hash(2), // This will be pruned second
-            create_test_tx_hash(3), // This will remain
-            create_test_tx_hash(4), // This will remain
-            create_test_tx_hash(5), // This will remain
+        let tx_execution_ids = vec![
+            create_test_tx_execution_id(1), // This will be pruned first
+            create_test_tx_execution_id(2), // This will be pruned second
+            create_test_tx_execution_id(3), // This will remain
+            create_test_tx_execution_id(4), // This will remain
+            create_test_tx_execution_id(5), // This will remain
         ];
 
-        for &tx_hash in &tx_hashes {
+        for &tx_execution_id in &tx_execution_ids {
             let result = create_test_result_success();
-            results.add_transaction_result(tx_hash, &result);
+            results.add_transaction_result(tx_execution_id, &result);
         }
 
         // Should still have only capacity transactions
         assert_eq!(results.transactions.len(), capacity);
 
         // First two should be pruned (FIFO)
-        assert!(results.get_transaction_result(&tx_hashes[0]).is_none());
-        assert!(results.get_transaction_result(&tx_hashes[1]).is_none());
+        assert!(
+            results
+                .get_transaction_result(&tx_execution_ids[0])
+                .is_none()
+        );
+        assert!(
+            results
+                .get_transaction_result(&tx_execution_ids[1])
+                .is_none()
+        );
 
         // Last three should remain
-        assert!(results.get_transaction_result(&tx_hashes[2]).is_some());
-        assert!(results.get_transaction_result(&tx_hashes[3]).is_some());
-        assert!(results.get_transaction_result(&tx_hashes[4]).is_some());
+        assert!(
+            results
+                .get_transaction_result(&tx_execution_ids[2])
+                .is_some()
+        );
+        assert!(
+            results
+                .get_transaction_result(&tx_execution_ids[3])
+                .is_some()
+        );
+        assert!(
+            results
+                .get_transaction_result(&tx_execution_ids[4])
+                .is_some()
+        );
 
         // Check queue contains the right transactions in FIFO order
-        assert_eq!(results.transactions[0], tx_hashes[2]);
-        assert_eq!(results.transactions[1], tx_hashes[3]);
-        assert_eq!(results.transactions[2], tx_hashes[4]);
+        assert_eq!(results.transactions[0], tx_execution_ids[2]);
+        assert_eq!(results.transactions[1], tx_execution_ids[3]);
+        assert_eq!(results.transactions[2], tx_execution_ids[4]);
     }
 
     #[test]
@@ -250,29 +275,29 @@ mod tests {
         let transactions_state = TransactionsState::new();
         let mut results = TransactionsResults::new(transactions_state.clone(), 5);
 
-        let tx_hash_success = create_test_tx_hash(1);
-        let tx_hash_error = create_test_tx_hash(2);
-        let tx_hash_revert = create_test_tx_hash(3);
+        let tx_id_success = create_test_tx_execution_id(1);
+        let tx_id_error = create_test_tx_execution_id(2);
+        let tx_id_revert = create_test_tx_execution_id(3);
 
         let success_result = create_test_result_success();
         let error_result = create_test_result_error("validation failed");
         let revert_result = create_test_result_revert();
 
-        results.add_transaction_result(tx_hash_success, &success_result.clone());
-        results.add_transaction_result(tx_hash_error, &error_result.clone());
-        results.add_transaction_result(tx_hash_revert, &revert_result.clone());
+        results.add_transaction_result(tx_id_success, &success_result.clone());
+        results.add_transaction_result(tx_id_error, &error_result.clone());
+        results.add_transaction_result(tx_id_revert, &revert_result.clone());
 
         // All should be stored correctly
         assert_eq!(
-            *results.get_transaction_result(&tx_hash_success).unwrap(),
+            *results.get_transaction_result(&tx_id_success).unwrap(),
             success_result
         );
         assert_eq!(
-            *results.get_transaction_result(&tx_hash_error).unwrap(),
+            *results.get_transaction_result(&tx_id_error).unwrap(),
             error_result
         );
         assert_eq!(
-            *results.get_transaction_result(&tx_hash_revert).unwrap(),
+            *results.get_transaction_result(&tx_id_revert).unwrap(),
             revert_result
         );
     }
@@ -284,27 +309,35 @@ mod tests {
         let mut results = TransactionsResults::new(transactions_state.clone(), capacity);
 
         // Add many transactions to test continuous pruning
-        let mut tx_hashes = Vec::new();
+        let mut tx_execution_ids = Vec::new();
         for i in 1..=10 {
-            let tx_hash = create_test_tx_hash(i);
-            tx_hashes.push(tx_hash);
+            let tx_execution_id = create_test_tx_execution_id(i);
+            tx_execution_ids.push(tx_execution_id);
             let result = create_test_result_error(&format!("error {i}"));
-            results.add_transaction_result(tx_hash, &result);
+            results.add_transaction_result(tx_execution_id, &result);
         }
 
         // Should only have the last 2 transactions
         assert_eq!(results.transactions.len(), capacity);
 
         // Only the last 2 should be retrievable
-        for tx_hash in tx_hashes.iter().take(8) {
-            assert!(results.get_transaction_result(tx_hash).is_none());
+        for tx_execution_id in tx_execution_ids.iter().take(8) {
+            assert!(results.get_transaction_result(tx_execution_id).is_none());
         }
-        assert!(results.get_transaction_result(&tx_hashes[8]).is_some());
-        assert!(results.get_transaction_result(&tx_hashes[9]).is_some());
+        assert!(
+            results
+                .get_transaction_result(&tx_execution_ids[8])
+                .is_some()
+        );
+        assert!(
+            results
+                .get_transaction_result(&tx_execution_ids[9])
+                .is_some()
+        );
 
         // Check queue order
-        assert_eq!(results.transactions[0], tx_hashes[8]);
-        assert_eq!(results.transactions[1], tx_hashes[9]);
+        assert_eq!(results.transactions[0], tx_execution_ids[8]);
+        assert_eq!(results.transactions[1], tx_execution_ids[9]);
     }
 
     #[test]
@@ -312,34 +345,34 @@ mod tests {
         let transactions_state = TransactionsState::new();
         let mut results = TransactionsResults::new(transactions_state.clone(), 1);
 
-        let tx_hash1 = create_test_tx_hash(1);
-        let tx_hash2 = create_test_tx_hash(2);
-        let tx_hash3 = create_test_tx_hash(3);
+        let tx_id1 = create_test_tx_execution_id(1);
+        let tx_id2 = create_test_tx_execution_id(2);
+        let tx_id3 = create_test_tx_execution_id(3);
 
         let result1 = create_test_result_success();
         let result2 = create_test_result_error("error");
         let result3 = create_test_result_revert();
 
         // Add first transaction
-        results.add_transaction_result(tx_hash1, &result1);
+        results.add_transaction_result(tx_id1, &result1);
         assert_eq!(results.transactions.len(), 1);
-        assert!(results.get_transaction_result(&tx_hash1).is_some());
+        assert!(results.get_transaction_result(&tx_id1).is_some());
 
         // Add second transaction - should replace first
-        results.add_transaction_result(tx_hash2, &result2);
+        results.add_transaction_result(tx_id2, &result2);
         assert_eq!(results.transactions.len(), 1);
-        assert!(results.get_transaction_result(&tx_hash1).is_none());
-        assert!(results.get_transaction_result(&tx_hash2).is_some());
+        assert!(results.get_transaction_result(&tx_id1).is_none());
+        assert!(results.get_transaction_result(&tx_id2).is_some());
 
         // Add third transaction - should replace second
-        results.add_transaction_result(tx_hash3, &result3);
+        results.add_transaction_result(tx_id3, &result3);
         assert_eq!(results.transactions.len(), 1);
-        assert!(results.get_transaction_result(&tx_hash1).is_none());
-        assert!(results.get_transaction_result(&tx_hash2).is_none());
-        assert!(results.get_transaction_result(&tx_hash3).is_some());
+        assert!(results.get_transaction_result(&tx_id1).is_none());
+        assert!(results.get_transaction_result(&tx_id2).is_none());
+        assert!(results.get_transaction_result(&tx_id3).is_some());
 
         // Queue should contain only the latest transaction
-        assert_eq!(results.transactions[0], tx_hash3);
+        assert_eq!(results.transactions[0], tx_id3);
     }
 
     #[test]
@@ -351,22 +384,22 @@ mod tests {
         assert_eq!(results.get_all_transaction_result().len(), 0);
 
         // Add some transactions
-        let tx_hashes = [
-            create_test_tx_hash(1),
-            create_test_tx_hash(2),
-            create_test_tx_hash(3),
-            create_test_tx_hash(4), // This will cause pruning
+        let tx_execution_ids = [
+            create_test_tx_execution_id(1),
+            create_test_tx_execution_id(2),
+            create_test_tx_execution_id(3),
+            create_test_tx_execution_id(4), // This will cause pruning
         ];
 
-        for &tx_hash in &tx_hashes[..3] {
+        for &tx_execution_id in &tx_execution_ids[..3] {
             let result = create_test_result_success();
-            results.add_transaction_result(tx_hash, &result);
+            results.add_transaction_result(tx_execution_id, &result);
         }
 
         assert_eq!(results.get_all_transaction_result().len(), 3);
 
         // Add one more to trigger pruning
-        results.add_transaction_result(tx_hashes[3], &create_test_result_success());
+        results.add_transaction_result(tx_execution_ids[3], &create_test_result_success());
 
         // Should still have 3, but different ones
         assert_eq!(results.get_all_transaction_result().len(), 3);
@@ -375,12 +408,12 @@ mod tests {
         assert!(
             !results
                 .get_all_transaction_result()
-                .contains_key(&tx_hashes[0])
+                .contains_key(&tx_execution_ids[0])
         );
         assert!(
             results
                 .get_all_transaction_result()
-                .contains_key(&tx_hashes[3])
+                .contains_key(&tx_execution_ids[3])
         );
     }
 
@@ -389,24 +422,27 @@ mod tests {
         let transactions_state = TransactionsState::new();
         let mut results = TransactionsResults::new(transactions_state.clone(), 5);
 
-        let tx_hash = create_test_tx_hash(1);
+        let tx_execution_id = create_test_tx_execution_id(1);
         let result1 = create_test_result_success();
         let result2 = create_test_result_error("different error");
 
         // Add first result
-        results.add_transaction_result(tx_hash, &result1);
+        results.add_transaction_result(tx_execution_id, &result1);
         assert_eq!(results.transactions.len(), 1);
 
         // Add second result with same hash
-        results.add_transaction_result(tx_hash, &result2.clone());
+        results.add_transaction_result(tx_execution_id, &result2.clone());
 
         // Should have 2 entries in queue (duplicate hash)
         assert_eq!(results.transactions.len(), 2);
-        assert_eq!(results.transactions[0], tx_hash);
-        assert_eq!(results.transactions[1], tx_hash);
+        assert_eq!(results.transactions[0], tx_execution_id);
+        assert_eq!(results.transactions[1], tx_execution_id);
 
         // But the result should be the latest one
-        assert_eq!(*results.get_transaction_result(&tx_hash).unwrap(), result2);
+        assert_eq!(
+            *results.get_transaction_result(&tx_execution_id).unwrap(),
+            result2
+        );
     }
 
     #[test]
@@ -417,9 +453,9 @@ mod tests {
 
         // Fill to capacity
         for i in 0..capacity {
-            let tx_hash = create_test_tx_hash(i as u8 + 1);
+            let tx_execution_id = create_test_tx_execution_id(i as u8 + 1);
             let result = create_test_result_success();
-            results.add_transaction_result(tx_hash, &result);
+            results.add_transaction_result(tx_execution_id, &result);
         }
 
         // Get the initial capacity of the VecDeque
@@ -427,9 +463,9 @@ mod tests {
 
         // Add many more transactions beyond capacity
         for i in capacity..(capacity + 10) {
-            let tx_hash = create_test_tx_hash(i as u8 + 1);
+            let tx_execution_id = create_test_tx_execution_id(i as u8 + 1);
             let result = create_test_result_success();
-            results.add_transaction_result(tx_hash, &result);
+            results.add_transaction_result(tx_execution_id, &result);
 
             // Verify no reallocation occurred
             assert_eq!(

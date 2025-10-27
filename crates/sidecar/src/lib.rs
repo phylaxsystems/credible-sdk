@@ -12,6 +12,7 @@ pub mod indexer;
 pub mod metrics;
 pub mod transactions_state;
 pub mod transport;
+pub mod tx_execution_id;
 pub mod utils;
 
 pub use cache::{

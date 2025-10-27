@@ -35,13 +35,11 @@ use crate::{
         http::{
             HttpTransport,
             config::HttpTransportConfig,
-            server::{
-                Transaction,
-                TxExecutionId,
-            },
+            server::Transaction,
         },
         mock::MockTransport,
     },
+    tx_execution_id::TxExecutionId,
 };
 use alloy::primitives::TxHash;
 use assertion_executor::{
@@ -411,7 +409,10 @@ impl TestTransport for LocalInstanceMockDriver {
     async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
         self.block_tx_hashes.push(tx_hash);
         info!(target: "test_transport", "LocalInstance sending transaction: {:?}", tx_hash);
-        let queue_tx = QueueTransaction { tx_hash, tx_env };
+        let queue_tx = QueueTransaction {
+            tx_execution_id: TxExecutionId::from_hash(tx_hash),
+            tx_env,
+        };
         self.mock_sender
             .send(TxQueueContents::Tx(queue_tx, Span::current()))
             .map_err(|e| format!("Failed to send transaction: {e}"))
@@ -433,7 +434,10 @@ impl TestTransport for LocalInstanceMockDriver {
             }
         }
         self.mock_sender
-            .send(TxQueueContents::Reorg(tx_hash, Span::current()))
+            .send(TxQueueContents::Reorg(
+                TxExecutionId::from_hash(tx_hash),
+                Span::current(),
+            ))
             .map_err(|e| format!("Failed to send transaction: {e}"))
     }
 
@@ -640,12 +644,9 @@ impl TestTransport for LocalInstanceHttpDriver {
         self.block_tx_hashes.push(tx_hash);
 
         // Create the transaction structure
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
         let transaction = Transaction {
-            tx_execution_id: TxExecutionId {
-                block_number: 0,
-                iteration_id: 0,
-                tx_hash,
-            },
+            tx_execution_id,
             tx_env,
         };
 
@@ -725,15 +726,13 @@ impl TestTransport for LocalInstanceHttpDriver {
             }
         }
 
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+
         let request = json!({
             "id": 1,
             "jsonrpc": "2.0",
             "method": "reorg",
-            "params": {
-                "block_number": 0,
-                "iteration_id": 0,
-                "tx_hash": tx_hash
-            }
+            "params": serde_json::to_value(&tx_execution_id).unwrap(),
         });
 
         debug!(target: "LocalInstanceHttpDriver", "Sending HTTP request: {}", serde_json::to_string_pretty(&request).unwrap_or_default());
@@ -1000,7 +999,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             tx_execution_id: Some(GrpcTxExecutionId {
                 block_number: 0,
                 iteration_id: 0,
-                tx_hash: tx_hash.to_string(),
+                tx_hash: format!("{:#x}", tx_hash),
             }),
             tx_env: Some(GrpcTransactionEnv {
                 tx_type: 0, // Default to legacy transaction type
@@ -1127,7 +1126,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             tx_execution_id: Some(GrpcTxExecutionId {
                 block_number: 0,
                 iteration_id: 0,
-                tx_hash: tx_hash.to_string(),
+                tx_hash: format!("{:#x}", tx_hash),
             }),
         };
 

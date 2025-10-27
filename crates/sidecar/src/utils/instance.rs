@@ -4,6 +4,7 @@ use crate::{
         sources::Source,
     },
     engine::TransactionResult,
+    tx_execution_id::TxExecutionId,
     transactions_state::RequestTransactionResult,
 };
 use alloy::{
@@ -242,11 +243,11 @@ impl<T: TestTransport> LocalInstance<T> {
         &self,
         tx_hash: &B256,
     ) -> Result<TransactionResult, WaitError> {
-        let request_hash: FixedBytes<32> = *tx_hash;
+        let request_id = TxExecutionId::from_hash(*tx_hash);
 
         match self
             .transaction_results
-            .request_transaction_result(&request_hash)
+            .request_transaction_result(&request_id)
         {
             RequestTransactionResult::Result(result) => Ok(result),
             RequestTransactionResult::Channel(receiver) => {
@@ -655,8 +656,9 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Get transaction result by hash
     pub fn get_transaction_result(&self, tx_hash: &B256) -> Option<TransactionResult> {
+        let tx_execution_id = TxExecutionId::from_hash(*tx_hash);
         self.transaction_results
-            .get_transaction_result(tx_hash)
+            .get_transaction_result(&tx_execution_id)
             .map(|r| r.clone())
     }
 

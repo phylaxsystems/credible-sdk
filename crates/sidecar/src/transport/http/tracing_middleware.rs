@@ -46,11 +46,11 @@ pub fn trace_tx_queue_contents(block_context: &BlockContext, tx_queue_contents: 
         TxQueueContents::Block(block, _) => block_context.update(&block.block_env),
         // If we receive a tx, add the tx hash to the current span
         TxQueueContents::Tx(tx, span) => {
-            span.record("tx.hash", tx.tx_hash.to_string());
+            span.record("tx.hash", tx.tx_execution_id.tx_hash_hex());
         }
         // Record the tx hash of the reorg
-        TxQueueContents::Reorg(tx_hash, span) => {
-            span.record("tx.hash", tx_hash.to_string());
+        TxQueueContents::Reorg(tx_execution_id, span) => {
+            span.record("tx.hash", tx_execution_id.tx_hash_hex());
         }
     }
 }
