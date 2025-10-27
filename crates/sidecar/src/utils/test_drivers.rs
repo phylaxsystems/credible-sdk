@@ -1130,9 +1130,9 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         let request = ReorgRequest {
             tx_execution_id: Some(GrpcTxExecutionId {
-                block_number: 0,
-                iteration_id: 0,
-                tx_hash: format!("{0:#x}", tx_execution_id.tx_hash),
+                block_number: tx_execution_id.block_number,
+                iteration_id: tx_execution_id.iteration_id,
+                tx_hash: format!("{:#x}", tx_execution_id.tx_hash),
             }),
         };
 
