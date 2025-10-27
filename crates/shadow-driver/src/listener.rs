@@ -448,7 +448,7 @@ impl Listener {
         if self.query_results
             && !tx_hashes.is_empty()
             && let Err(e) = self
-                .compare_transaction_results(block_number, tx_hashes)
+                .compare_transaction_status(block_number, tx_hashes)
                 .await
         {
             warn!(error = ?e, "Failed to compare transaction results for block {block_number}");
@@ -468,7 +468,7 @@ impl Listener {
         let max_delay = Duration::from_millis(TX_MAX_RETRY_DELAY_MS);
 
         for attempt in 0..=TX_MAX_RETRIES {
-            match self.send_transaction(tx, tx_index).await {
+            match self.send_transaction(tx, tx_index, block_number).await {
                 Ok(()) => {
                     if attempt > 0 {
                         info!(
@@ -696,6 +696,7 @@ impl Listener {
         &self,
         tx: &alloy::rpc::types::Transaction,
         tx_index: u64,
+        block_number: u64,
     ) -> Result<()> {
         // Convert Alloy transaction to REVM TxEnv
         let tx_env = Self::to_revm_tx_env(tx).map_err(|e| anyhow!("{e:?}"))?;
@@ -704,7 +705,7 @@ impl Listener {
         let transaction_payload = TransactionPayload {
             tx_env,
             tx_execution_id: TxExecutionId {
-                block_number: 0,
+                block_number,
                 iteration_id: 0,
                 tx_hash: *tx.inner.hash(),
             },
@@ -817,7 +818,7 @@ impl Listener {
     }
 
     /// Simple comparison of transaction results between blockchain and sidecar
-    async fn compare_transaction_results(
+    async fn compare_transaction_status(
         &self,
         block_number: u64,
         tx_hashes: Vec<TxHash>,
