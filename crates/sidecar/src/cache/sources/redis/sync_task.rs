@@ -38,9 +38,9 @@ pub fn publish_sync_state(
 
         let target_block = current_block.load(Ordering::Acquire);
         let within_target = if target_block == 0 {
-            block_number == 0
+            oldest == 0
         } else {
-            block_number <= target_block
+            oldest <= target_block && target_block <= block_number
         };
 
         sync_status.store(within_target, Ordering::Release);
@@ -128,8 +128,8 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     #[test]
-    fn publish_sync_state_sets_values_within_target() {
-        let current_block = AtomicU64::new(10);
+    fn publish_sync_state_sets_values_within_target_range() {
+        let current_block = AtomicU64::new(7);
         let observed_block = AtomicU64::new(0);
         let oldest_block = AtomicU64::new(0);
         let sync_status = AtomicBool::new(false);
@@ -149,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_sync_state_marks_unsynced_when_latest_exceeds_target() {
+    fn publish_sync_state_marks_unsynced_when_target_below_oldest() {
         let current_block = AtomicU64::new(5);
         let observed_block = AtomicU64::new(0);
         let oldest_block = AtomicU64::new(0);
@@ -157,7 +157,7 @@ mod tests {
 
         publish_sync_state(
             Some(8),
-            None,
+            Some(6),
             &current_block,
             &observed_block,
             &oldest_block,
@@ -165,7 +165,7 @@ mod tests {
         );
 
         assert_eq!(observed_block.load(Ordering::Acquire), 8);
-        assert_eq!(oldest_block.load(Ordering::Acquire), 8);
+        assert_eq!(oldest_block.load(Ordering::Acquire), 6);
         assert!(!sync_status.load(Ordering::Acquire));
     }
 
@@ -187,6 +187,27 @@ mod tests {
 
         assert_eq!(observed_block.load(Ordering::Acquire), 0);
         assert_eq!(oldest_block.load(Ordering::Acquire), 0);
+        assert!(!sync_status.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn publish_sync_state_requires_genesis_for_zero_target() {
+        let current_block = AtomicU64::new(0);
+        let observed_block = AtomicU64::new(0);
+        let oldest_block = AtomicU64::new(0);
+        let sync_status = AtomicBool::new(true);
+
+        publish_sync_state(
+            Some(5),
+            Some(1),
+            &current_block,
+            &observed_block,
+            &oldest_block,
+            &sync_status,
+        );
+
+        assert_eq!(observed_block.load(Ordering::Acquire), 5);
+        assert_eq!(oldest_block.load(Ordering::Acquire), 1);
         assert!(!sync_status.load(Ordering::Acquire));
     }
 }
