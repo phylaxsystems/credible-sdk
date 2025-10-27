@@ -12,6 +12,7 @@ use crate::{
         U256,
     },
 };
+use revm::Database;
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -47,6 +48,28 @@ impl<ExtDb> Clone for ForkDb<ExtDb> {
             code_by_hash: self.code_by_hash.clone(),
             inner_db: self.inner_db.clone(),
         }
+    }
+}
+
+/// This implementation of `Database` is used to read from the fork db, it does not modify the internal
+/// cache
+impl<ExtDb: DatabaseRef> Database for ForkDb<ExtDb> {
+    type Error = <ExtDb as DatabaseRef>::Error;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        self.basic_ref(address)
+    }
+
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        self.code_by_hash_ref(code_hash)
+    }
+
+    fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        self.storage_ref(address, index)
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        self.block_hash_ref(number)
     }
 }
 
@@ -169,6 +192,12 @@ impl<ExtDb> ForkDb<ExtDb> {
     /// This will overwrite any existing account info.
     pub fn insert_account_info(&mut self, address: Address, account_info: AccountInfo) {
         self.basic.insert(address, account_info);
+    }
+
+    pub fn invalidate(&mut self) {
+        self.storage = HashMap::default();
+        self.basic = HashMap::default();
+        self.code_by_hash = HashMap::default();
     }
 }
 

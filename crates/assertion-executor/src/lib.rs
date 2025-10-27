@@ -11,6 +11,7 @@ mod error;
 pub use error::{
     ExecutorError,
     ForkTxExecutionError,
+    TxExecutionError,
 };
 
 mod executor;
