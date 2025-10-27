@@ -276,7 +276,7 @@ impl<T: TestTransport> LocalInstance<T> {
             block_number,
             // TODO: Needs to be configurable when we add per instance
             // execution!!!
-            iteration_id: 0,
+            iteration_id: 1,
             tx_hash,
         }
     }

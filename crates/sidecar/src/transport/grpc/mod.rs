@@ -210,7 +210,7 @@ mod tests {
             .get_transaction(GetTransactionRequest {
                 tx_execution_id: Some(TxExecutionId {
                     block_number: 0,
-                    iteration_id: 0,
+                    iteration_id: 1,
                     tx_hash: tx_execution_id.tx_hash.to_string(),
                 }),
             })
@@ -264,7 +264,7 @@ mod tests {
             .get_transaction(GetTransactionRequest {
                 tx_execution_id: Some(TxExecutionId {
                     block_number: 0,
-                    iteration_id: 0,
+                    iteration_id: 1,
                     tx_hash: missing_hash.to_string(),
                 }),
             })

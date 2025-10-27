@@ -386,7 +386,7 @@ impl TestTransport for LocalInstanceMockDriver {
             },
             last_tx_hash,
             n_transactions,
-            selected_iteration_id: Some(0),
+            selected_iteration_id: Some(1),
         };
 
         self.block_tx_hashes.clear();
@@ -585,7 +585,7 @@ impl TestTransport for LocalInstanceHttpDriver {
                 },
                 "n_transactions": n_transactions,
                 "last_tx_hash": last_tx_hash,
-                "selected_iteration_id": Some(0)
+                "selected_iteration_id": Some(1)
           }
         });
 
@@ -947,7 +947,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             }),
             last_tx_hash: last_tx_hash.map(|h| h.to_string()).unwrap_or_default(),
             n_transactions,
-            selected_iteration_id: Some(0),
+            selected_iteration_id: Some(1),
         };
 
         self.block_tx_hashes.clear();
