@@ -194,7 +194,7 @@ impl Source for RedisCache {
         }
 
         if target_block == 0 {
-            return oldest_block == 0 && observed_block == 0;
+            return oldest_block == 0;
         }
 
         oldest_block <= target_block && target_block <= observed_block
