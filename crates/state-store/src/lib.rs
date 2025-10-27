@@ -100,7 +100,9 @@
 //! ## Address Hashing
 //!
 //! Account and storage keys use `keccak256(address)` to create the `{address_hash}` portion.
-//! This provides a consistent 32-byte identifier regardless of the address format.
+//! Individual storage entries within the Redis hashes are keyed by `keccak256(slot)`, matching
+//! Nethermind's dumped state format. This provides a consistent 32-byte identifier regardless of
+//! the address format or slot value.
 //!
 //! ## Features
 //!
