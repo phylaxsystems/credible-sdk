@@ -62,8 +62,8 @@ const TCP_KEEPALIVE_SECS: u64 = 60;
 
 // Transaction retry configuration
 const TX_MAX_RETRIES: u32 = 5;
-const TX_INITIAL_RETRY_DELAY_MS: u64 = 100;
-const TX_MAX_RETRY_DELAY_MS: u64 = 5000;
+const TX_INITIAL_RETRY_DELAY_MS: u64 = 10;
+const TX_MAX_RETRY_DELAY_MS: u64 = 250;
 
 /// Wrapper for serializing `TxEnv` with the transaction hash
 #[derive(Serialize)]
@@ -780,6 +780,7 @@ impl Listener {
             .sidecar_client
             .post(format!("{}/tx", self.sidecar_url))
             .json(&query_payload)
+            .timeout(Duration::from_secs(25))
             .send()
             .await
             .context("failed to send batch query request to sidecar")?;
@@ -829,7 +830,9 @@ impl Listener {
         {
             Ok(response) => response,
             Err(e) => {
-                warn!("Failed to query sidecar for transaction batch: {e:?}");
+                warn!(
+                    "Failed to query sidecar for transaction batch for block {block_number}: {e:?}"
+                );
                 return Ok(());
             }
         };
