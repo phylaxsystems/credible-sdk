@@ -402,8 +402,12 @@ impl<Db> OverlayDb<Db> {
             for (slot, storage_slot) in slot_map.map {
                 let storage_key = TableKey::Storage(address, slot);
                 let value_b256: B256 = storage_slot.to_be_bytes().into();
-                self.overlay
-                    .insert(storage_key, TableValue::Storage(value_b256));
+                if slot_map.dont_read_from_inner_db {
+                    self.overlay.remove(&storage_key);
+                } else {
+                    self.overlay
+                        .insert(storage_key, TableValue::Storage(value_b256));
+                }
             }
         }
     }
