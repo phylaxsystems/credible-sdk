@@ -24,7 +24,6 @@ use assertion_executor::{
         AccountInfo,
         Address,
         B256,
-        FixedBytes,
         TxEnv,
         TxKind,
         U256,
@@ -77,11 +76,15 @@ pub trait TestTransport: Sized {
     /// Advance the core engine block by sending a new blockenv to it
     async fn new_block(&mut self, block_number: u64) -> Result<(), String>;
     /// Send a transaction to the core engine via the transport
-    async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String>;
+    async fn send_transaction(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_env: TxEnv,
+    ) -> Result<(), String>;
     /// Send a new transaction reorg event. Removes the last executed transaction.
     /// Transaction hash provided as an argument must match the last executed tx.
     /// If not the call should succeed but the core engine should produce an error.
-    async fn reorg(&mut self, tx_hash: B256) -> Result<(), String>;
+    async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String>;
     /// Set the number of transactions to be sent in the next blockEnv
     fn set_n_transactions(&mut self, n_transactions: u64);
     /// Set the last tx hash to be sent in the next blockEnv
@@ -189,7 +192,10 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // Then send all transactions
         for (tx_hash, tx_env) in transactions {
-            self.transport.send_transaction(tx_hash, tx_env).await?;
+            let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+            self.transport
+                .send_transaction(tx_execution_id, tx_env)
+                .await?;
         }
 
         Ok(())
@@ -359,7 +365,10 @@ impl<T: TestTransport> LocalInstance<T> {
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
 
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         Ok(tx_hash)
     }
@@ -389,7 +398,10 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         // Wait for processing
         self.wait_for_processing(Duration::from_millis(5)).await;
@@ -435,7 +447,10 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         Ok((caller, tx_hash))
     }
@@ -465,7 +480,10 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         Ok(tx_hash)
     }
@@ -500,7 +518,10 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         Ok(tx_hash)
     }
@@ -550,7 +571,10 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         // type2, eip-1559
         // verify we correctly decrement gas for the account sending the tx
@@ -581,7 +605,10 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         // type3, eip-4844
         self.transport.new_block(self.block_number).await?;
@@ -607,7 +634,10 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .unwrap();
         let tx_hash = Self::generate_random_tx_hash();
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         // type4, eip-7702
         // Authorization list present, should derive EIP-7702
@@ -632,7 +662,10 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .unwrap();
         let tx_hash = Self::generate_random_tx_hash();
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         Ok(())
     }
@@ -782,14 +815,20 @@ impl<T: TestTransport> LocalInstance<T> {
         tx_fail.gas_price = basefee.into();
 
         // Generate unique transaction hashes
-        let hash_pass = FixedBytes::<32>::random();
-        let hash_fail = FixedBytes::<32>::random();
+        let hash_pass = Self::generate_random_tx_hash();
+        let hash_fail = Self::generate_random_tx_hash();
 
         // Send the passing transaction first
-        self.transport.send_transaction(hash_pass, tx_pass).await?;
+        let tx_execution_id_pass = TxExecutionId::from_hash(hash_pass);
+        self.transport
+            .send_transaction(tx_execution_id_pass, tx_pass)
+            .await?;
 
         // Send the failing transaction second
-        self.transport.send_transaction(hash_fail, tx_fail).await?;
+        let tx_execution_id_fail = TxExecutionId::from_hash(hash_fail);
+        self.transport
+            .send_transaction(tx_execution_id_fail, tx_fail)
+            .await?;
 
         // Verify the second transaction failed assertions and was NOT committed
         if !self.is_transaction_invalid(&hash_fail).await? {
@@ -799,7 +838,8 @@ impl<T: TestTransport> LocalInstance<T> {
             );
         }
 
-        self.transport.reorg(hash_fail).await?;
+        let tx_execution_id_fail = TxExecutionId::from_hash(hash_fail);
+        self.transport.reorg(tx_execution_id_fail).await?;
 
         Ok(())
     }
@@ -815,7 +855,8 @@ impl<T: TestTransport> LocalInstance<T> {
         let _ = self.is_transaction_invalid(&tx_hash).await?;
 
         // Send reorg event
-        self.transport.reorg(tx_hash).await?;
+        let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        self.transport.reorg(tx_execution_id).await?;
 
         // Reorg was accepted by the engine and the last executed transaction
         // was removed from the buffer. Mirror this in our local nonce tracking
