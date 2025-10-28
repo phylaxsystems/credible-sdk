@@ -59,9 +59,9 @@ use std::{
     },
     time::Duration,
 };
+use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use thiserror::Error;
 
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 
