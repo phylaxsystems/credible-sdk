@@ -8,6 +8,7 @@ use crate::{
             TxQueueContents,
         },
     },
+    execution_ids::TxExecutionId,
     transactions_state::RequestTransactionResult,
     transport::{
         decoder::{
@@ -20,7 +21,6 @@ use crate::{
             transactions_results::QueryTransactionsResults,
         },
     },
-    tx_execution_id::TxExecutionId,
 };
 use alloy::rpc::types::error::EthRpcErrorCode;
 use assertion_executor::primitives::ExecutionResult;

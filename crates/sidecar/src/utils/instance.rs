@@ -4,8 +4,8 @@ use crate::{
         sources::Source,
     },
     engine::TransactionResult,
+    execution_ids::TxExecutionId,
     transactions_state::RequestTransactionResult,
-    tx_execution_id::TxExecutionId,
 };
 use alloy::{
     eips::eip7702::{
@@ -267,16 +267,11 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Builds a `TxExecutionId` with the block hash and instance
     /// currently in use by the `LocalInstance`.
     fn build_tx_id(&self, tx_hash: B256) -> TxExecutionId {
-        // `self.block_number` always points to the *next* block env we will send.
-        // Transactions we dispatch now belong to the current block env, which is
-        // therefore `block_number - 1`. We saturate to handle the case where no
-        // block env has been sent yet (e.g. in tests that manually craft IDs).
-        let block_number = self.block_number.saturating_sub(1);
         TxExecutionId {
-            block_number,
+            block_number: self.block_number,
             // TODO: Needs to be configurable when we add per instance
             // execution!!!
-            iteration_id: 0,
+            iteration_id: 1,
             tx_hash,
         }
     }

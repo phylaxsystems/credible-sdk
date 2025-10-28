@@ -14,6 +14,7 @@ use crate::{
         QueueTransaction,
         TxQueueContents,
     },
+    execution_ids::TxExecutionId,
     transport::{
         common::HttpDecoderError,
         http::server::{
@@ -24,7 +25,6 @@ use crate::{
             SendTransactionsParams,
         },
     },
-    tx_execution_id::TxExecutionId,
 };
 
 pub trait Decoder {

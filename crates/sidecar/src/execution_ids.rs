@@ -33,12 +33,30 @@ pub struct TxExecutionId {
     pub tx_hash: TxHash,
 }
 
+/// Unique identifier for a block execution within the sidecar.
+///
+/// Represents the block (blockEnv) status for each iteration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockExecutionId {
+    /// What block number the transaction was meant for.
+    pub block_number: u64,
+    /// What iteration the transaction should be executed at.
+    pub iteration_id: u64,
+}
+
 impl TxExecutionId {
     pub const fn new(block_number: u64, iteration_id: u64, tx_hash: TxHash) -> Self {
         Self {
             block_number,
             iteration_id,
             tx_hash,
+        }
+    }
+
+    pub fn as_block_execution_id(&self) -> BlockExecutionId {
+        BlockExecutionId {
+            block_number: self.block_number,
+            iteration_id: self.iteration_id,
         }
     }
 

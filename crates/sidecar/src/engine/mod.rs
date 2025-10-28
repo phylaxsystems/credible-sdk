@@ -87,7 +87,10 @@ use revm::state::EvmState;
 use crate::{
     cache::Cache,
     engine::transactions_results::TransactionsResults,
-    tx_execution_id::TxExecutionId,
+    execution_ids::{
+        BlockExecutionId,
+        TxExecutionId,
+    },
     utils::ErrorRecoverability,
 };
 use alloy::primitives::TxHash;
@@ -115,7 +118,6 @@ use revm::{
         B256,
     },
 };
-#[cfg(test)]
 use std::collections::HashMap;
 #[cfg(feature = "cache_validation")]
 use tokio::task::AbortHandle;
@@ -199,6 +201,8 @@ pub enum EngineError {
     NothingToCommit,
     #[error("No sources are synced!")]
     NoSyncedSources,
+    #[error("Infallible: Missing current block data")]
+    MissingCurrentBlockData,
 }
 
 impl From<&EngineError> for ErrorRecoverability {
@@ -207,6 +211,7 @@ impl From<&EngineError> for ErrorRecoverability {
             EngineError::DatabaseError
             | EngineError::AssertionError
             | EngineError::NothingToCommit
+            | EngineError::MissingCurrentBlockData
             | EngineError::BadReorgHash => ErrorRecoverability::Unrecoverable,
             EngineError::TransactionError
             | EngineError::ChannelClosed
@@ -228,6 +233,19 @@ pub enum TransactionResult {
     ValidationError(String),
 }
 
+/// The `BlockIterationData` is a unique identifier for a block iteration state. It contains
+/// the state of the current block for a given iteration (e.i., `fork_db`, `n_transactions`,
+/// `last_executed_tx`)
+#[derive(Debug)]
+struct BlockIterationData<DB> {
+    /// Current block's fork. It is created once per block, accumulates all transaction changes
+    fork_db: ForkDb<OverlayDb<DB>>,
+    /// How many transactions we have seen for each iteration in the `blockEnv` we are currently working on
+    n_transactions: u64,
+    /// Stores last executed transactions for reorging
+    last_executed_tx: LastExecutedTx,
+}
+
 /// The engine processes blocks and appends transactions to them.
 /// It accepts transaction events sent from a transport via the `TransactionQueueReceiver`
 /// and processes them accordingly.
@@ -237,8 +255,8 @@ pub struct CoreEngine<DB> {
     ///
     /// This is the state the `CoreEngine` is executing transactions against.
     state: OverlayDb<DB>,
-    /// Current block's fork. It is created once per block, accumulates all transaction changes
-    current_block_fork: Option<ForkDb<OverlayDb<DB>>>,
+    /// Current block iteration data per block execution id.
+    current_block_iterations: HashMap<BlockExecutionId, BlockIterationData<DB>>,
     /// External providers of state we use when we do not have a piece of state cached in our in memory db.
     /// External state providers implement a trait that we use to query databaseref-like data and populate `state: OverlayDb<DB>`
     /// for execution with it.
@@ -255,10 +273,6 @@ pub struct CoreEngine<DB> {
     transaction_results: TransactionsResults,
     /// Core engine related block building metrics
     block_metrics: BlockMetrics,
-    /// Stores last executed transactions for reorging
-    last_executed_tx: LastExecutedTx,
-    /// How many transactions we have seen in the blockenv we are currently working on
-    block_env_transaction_counter: u64,
     /// How long to wait to get a response for if the `cache: Arc<Cache>` state sources are synced.
     state_sources_sync_timeout: Duration,
     /// Used to indicate that we dont have any state sources available to avoid checking if they are synced.
@@ -314,7 +328,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         };
         Self {
             state,
-            current_block_fork: None,
+            current_block_iterations: HashMap::new(),
             cache: cache.clone(),
             tx_receiver,
             assertion_executor,
@@ -324,8 +338,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 transaction_results_max_capacity,
             ),
             block_metrics: BlockMetrics::new(),
-            last_executed_tx: LastExecutedTx::new(),
-            block_env_transaction_counter: 0,
             state_sources_sync_timeout,
             check_sources_available: true,
             sources_monitoring: monitoring::sources::Sources::new(cache, source_monitoring_period),
@@ -347,7 +359,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let cache = Arc::new(Cache::new(vec![], 10));
         Self {
             state: OverlayDb::new(None, 64),
-            current_block_fork: None,
+            current_block_iterations: HashMap::new(),
             tx_receiver,
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
@@ -357,8 +369,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             cache: cache.clone(),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
             block_metrics: BlockMetrics::new(),
-            last_executed_tx: LastExecutedTx::new(),
-            block_env_transaction_counter: 0,
             state_sources_sync_timeout: Duration::from_millis(100),
             check_sources_available: true,
             overlay_cache_invalidation_every_block: false,
@@ -418,7 +428,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     tx_execution_id,
                     &TransactionResult::ValidationError(format!("{e:?}")),
                     None,
-                );
+                )?;
                 Ok(())
             }
             ExecutorError::AssertionExecutionError(state, _) => {
@@ -449,13 +459,21 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         tx_execution_id: TxExecutionId,
         result: &TransactionResult,
         state: Option<EvmState>,
-    ) {
+    ) -> Result<(), EngineError> {
+        let current_block_iteration = self
+            .current_block_iterations
+            .get_mut(&tx_execution_id.as_block_execution_id())
+            .ok_or(EngineError::MissingCurrentBlockData)?;
         #[cfg(feature = "cache_validation")]
         self.processed_transactions
             .insert(tx_execution_id.tx_hash, state.clone());
-        self.last_executed_tx.push(tx_execution_id, state);
+
+        current_block_iteration
+            .last_executed_tx
+            .push(tx_execution_id, state);
         self.transaction_results
             .add_transaction_result(tx_execution_id, result);
+        Ok(())
     }
 
     fn trace_execute_transaction_result(
@@ -544,11 +562,17 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         tx_env: &TxEnv,
     ) -> Result<(), EngineError> {
         let tx_hash = tx_execution_id.tx_hash;
-        self.block_env_transaction_counter += 1;
-        let block_env = self.block_env.as_ref().ok_or_else(|| {
+        let block_env = self.block_env.clone().ok_or_else(|| {
             error!("No block environment set for transaction execution");
             EngineError::TransactionError
         })?;
+
+        let current_block_iteration = self
+            .current_block_iterations
+            .get_mut(&tx_execution_id.as_block_execution_id())
+            .ok_or(EngineError::MissingCurrentBlockData)?;
+        current_block_iteration.n_transactions += 1;
+
         let mut tx_metrics = TransactionMetrics::new();
         let instant = std::time::Instant::now();
 
@@ -558,12 +582,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             tx_env = ?tx_env,
             "Executing transaction with environment"
         );
-
-        // Get the current block fork (should always exist when processing transactions)
-        let block_fork = self.current_block_fork.as_mut().ok_or_else(|| {
-            error!("No block fork available for transaction execution");
-            EngineError::TransactionError
-        })?;
 
         debug!(
             target = "engine",
@@ -585,7 +603,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let rax = self.assertion_executor.validate_transaction(
             block_env.clone(),
             tx_env,
-            block_fork,
+            &mut current_block_iteration.fork_db,
             false,
         );
 
@@ -616,7 +634,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 execution_result: rax.result_and_state.result,
             },
             Some(rax.result_and_state.state),
-        );
+        )?;
 
         trace!("Transaction execution completed");
         Ok(())
@@ -682,16 +700,32 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let instant = Instant::now();
         self.check_sources_available = true;
         self.state.invalidate_all();
-        if let Some(fork_db) = self.current_block_fork.as_mut() {
-            fork_db.invalidate();
-        }
-        self.last_executed_tx.clear();
+        self.current_block_iterations.clear();
         self.block_metrics
             .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
     }
 
     /// Checks if the cache should be cleared and clears it.
-    fn check_cache(&mut self, queue_block_env: &QueueBlockEnv) {
+    fn check_cache(
+        &mut self,
+        queue_block_env: &QueueBlockEnv,
+        block_execution_id: Option<BlockExecutionId>,
+    ) {
+        // If block execution ID is not present, it means that the block may be empty
+        // (no transactions), therefore, set the last executed tx to None and the n_transactions to 0
+        let (current_last_executed_tx, n_transactions) = if let Some(block_execution_id) =
+            block_execution_id
+            && let Some(current_block_iteration) =
+                self.current_block_iterations.get(&block_execution_id)
+        {
+            (
+                current_block_iteration.last_executed_tx.current().cloned(),
+                current_block_iteration.n_transactions,
+            )
+        } else {
+            (None, 0)
+        };
+
         // If the block env is not +1 from the previous block env, invalidate the cache
         if let Some(prev_block_env) = self.block_env.as_ref()
             && prev_block_env.number != queue_block_env.block_env.number - 1
@@ -702,7 +736,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         // If the last tx hash from the block env is different from the last tx hash from the
         // queue, invalidate the cache
-        if let Some((prev_tx_execution_id, _)) = self.last_executed_tx.current()
+        if let Some((prev_tx_execution_id, _)) = current_last_executed_tx
             && Some(prev_tx_execution_id.tx_hash) != queue_block_env.last_tx_hash
         {
             warn!(
@@ -717,9 +751,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         // If the number of transactions in the block env is different from the number of
         // transactions received, invalidate the cache
-        if self.block_env_transaction_counter != queue_block_env.n_transactions {
+        if n_transactions != queue_block_env.n_transactions {
             warn!(
-                sidecar_n_transactions = self.block_env_transaction_counter,
+                sidecar_n_transactions = n_transactions,
                 block_env_n_transactions = queue_block_env.n_transactions,
                 "The number of transactions in the BlockEnv does not match the transactions processed, invalidating cache"
             );
@@ -813,7 +847,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         queue_block_env,
                         &mut processed_blocks,
                         &mut block_processing_time,
-                    )?;
+                    );
                 }
                 TxQueueContents::Tx(queue_transaction, current_span) => {
                     let _guard = current_span.enter();
@@ -851,22 +885,38 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     ) -> Result<(), EngineError> {
         let block_env = &queue_block_env.block_env;
 
-        // If it is configured to invalidated the cache every block, do so
+        let block_execution_id =
+            queue_block_env
+                .selected_iteration_id
+                .and_then(|selected_iteration_id| {
+                    (block_env.number > 0).then_some({
+                        BlockExecutionId {
+                            block_number: block_env.number,
+                            iteration_id: selected_iteration_id,
+                        }
+                    })
+                });
+
+        // If it is configured to invalidate the cache every block, do so
         if self.overlay_cache_invalidation_every_block {
             self.invalidate_all(&queue_block_env);
         } else {
             // If not, check if the cache should be invalidated.
-            self.check_cache(&queue_block_env);
+            self.check_cache(&queue_block_env, block_execution_id);
         }
 
-        // Apply the last transaction's state to the current block fork
-        self.apply_state_buffer_to_fork()?;
-
         // Finalize the previous block by committing its fork to the underlying state
-        self.finalize_previous_block();
-
-        // Create a new fork for this block
-        self.current_block_fork = Some(self.state.fork());
+        if let Some(block_execution_id) = block_execution_id {
+            // Apply the last transaction's state to the current block fork
+            self.apply_state_buffer_to_fork(block_execution_id)?;
+            self.finalize_previous_block(block_execution_id);
+        } else {
+            warn!(
+                target = "engine",
+                block_number = %block_env.number,
+                "blockEnv missing selected iteration id"
+            );
+        }
 
         *processed_blocks += 1;
 
@@ -896,7 +946,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         *block_processing_time = Instant::now();
 
         self.block_env = Some(queue_block_env.block_env);
-        self.block_env_transaction_counter = 0;
+        self.current_block_iterations = HashMap::new();
 
         Ok(())
     }
@@ -923,6 +973,15 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             return Err(EngineError::TransactionError);
         };
 
+        // Initialize the current block iteration id if it does not exist
+        self.current_block_iterations
+            .entry(tx_execution_id.as_block_execution_id())
+            .or_insert(BlockIterationData {
+                fork_db: self.state.fork(),
+                n_transactions: 0,
+                last_executed_tx: LastExecutedTx::new(),
+            });
+
         self.verify_state_sources_synced_for_tx(block.number)
             .await?;
 
@@ -938,7 +997,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         // Apply the previously executed transaction state changes to the block fork
-        self.apply_state_buffer_to_fork()?;
+        self.apply_state_buffer_to_fork(tx_execution_id.as_block_execution_id())?;
 
         // Process the transaction with the current block environment
         self.execute_transaction(tx_execution_id, &tx_env)?;
@@ -947,44 +1006,67 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     }
 
     /// Applies the state inside `self.last_executed_tx` to the current block fork.
-    fn apply_state_buffer_to_fork(&mut self) -> Result<(), EngineError> {
-        if let Some((_tx_hash, state)) = self.last_executed_tx.current() {
+    fn apply_state_buffer_to_fork(
+        &mut self,
+        block_execution_id: BlockExecutionId,
+    ) -> Result<(), EngineError> {
+        let Some(current_block_iteration) =
+            self.current_block_iterations.get_mut(&block_execution_id)
+        else {
+            return Ok(());
+        };
+
+        if let Some((tx_execution_id, state)) = current_block_iteration.last_executed_tx.current() {
             let changes = state.clone();
             let changes = changes.ok_or(EngineError::NothingToCommit)?;
 
             // Commit to the current block fork
-            if let Some(fork) = self.current_block_fork.as_mut() {
-                fork.commit(changes);
-            }
+            current_block_iteration.fork_db.commit(changes);
         }
-        self.last_executed_tx = LastExecutedTx::new();
+        current_block_iteration.last_executed_tx = LastExecutedTx::new();
         Ok(())
     }
 
     /// Finalizes the previous block by committing the block fork to the underlying state
-    fn finalize_previous_block(&mut self) {
-        if let Some(block_fork) = self.current_block_fork.take() {
-            debug!(
-                target = "engine",
-                "Finalizing previous block by committing fork to underlying state"
-            );
+    fn finalize_previous_block(&mut self, block_execution_id: BlockExecutionId) {
+        let Some(current_block_iteration) =
+            self.current_block_iterations.get_mut(&block_execution_id)
+        else {
+            return;
+        };
 
-            // Commit the entire block's state to the underlying OverlayDb
-            self.state.commit_overlay_fork_db(block_fork);
-        }
+        debug!(
+            target = "engine",
+            "Finalizing previous block by committing fork to underlying state"
+        );
+
+        // Commit the entire block's state to the underlying OverlayDb
+        self.state
+            .commit_overlay_fork_db(current_block_iteration.fork_db.clone());
     }
 
     /// Applies the state inside `self.last_executed_tx` to `self.state`.
     ///
     /// If `self.last_executed_tx` is empty, we dont do anything.
-    fn apply_state_buffer(&mut self) -> Result<(), EngineError> {
+    #[cfg(test)]
+    fn apply_state_buffer(
+        &mut self,
+        block_execution_id: BlockExecutionId,
+    ) -> Result<(), EngineError> {
+        let Some(current_block_iteration) =
+            self.current_block_iterations.get_mut(&block_execution_id)
+        else {
+            return Ok(());
+        };
+
         #[allow(clippy::used_underscore_binding)]
-        if let Some((_tx_execution_id, state)) = self.last_executed_tx.current() {
+        if let Some((_tx_execution_id, state)) = current_block_iteration.last_executed_tx.current()
+        {
             let changes = state.clone();
             let changes = changes.ok_or(EngineError::NothingToCommit)?;
             self.state.commit(changes);
         }
-        self.last_executed_tx = LastExecutedTx::new();
+        current_block_iteration.last_executed_tx = LastExecutedTx::new();
         Ok(())
     }
 
@@ -1016,8 +1098,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             "Checking reorg validity for hash"
         );
 
+        let current_block_iteration = self
+            .current_block_iterations
+            .get_mut(&tx_execution_id.as_block_execution_id())
+            .ok_or(EngineError::MissingCurrentBlockData)?;
+
         // Check if we have received a transaction at all
-        if let Some((last_execution_id, _)) = self.last_executed_tx.current()
+        if let Some((last_execution_id, _)) = current_block_iteration.last_executed_tx.current()
             && tx_execution_id == *last_execution_id
         {
             info!(
@@ -1027,15 +1114,15 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             );
 
             // Remove the last transaction from buffer, preserving the previous one if it exists
-            self.last_executed_tx.remove_last();
+            current_block_iteration.last_executed_tx.remove_last();
 
             // Remove transaction from results
             self.transaction_results
                 .remove_transaction_result(tx_execution_id);
 
             // Only decrement the counter if we haven't processed a new block yet
-            if self.block_env_transaction_counter > 0 {
-                self.block_env_transaction_counter -= 1;
+            if current_block_iteration.n_transactions > 0 {
+                current_block_iteration.n_transactions -= 1;
             }
 
             return Ok(());
@@ -1611,6 +1698,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn test_database_commit_verification() {
         use revm::primitives::address;
@@ -1638,14 +1726,26 @@ mod tests {
         let initial_cache_count = engine.get_state().cache_entry_count();
 
         engine.block_env = Some(block_env);
-        engine.current_block_fork = Some(engine.get_state().fork());
+
+        let current_block_iteration_id = BlockIterationData {
+            fork_db: engine.state.fork(),
+            n_transactions: 0,
+            last_executed_tx: LastExecutedTx::new(),
+        };
 
         // Execute the transaction
         let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        engine
+            .current_block_iterations
+            .entry(tx_execution_id.as_block_execution_id())
+            .or_insert(current_block_iteration_id);
+
         let result = engine.execute_transaction(tx_execution_id, &tx_env);
         assert!(result.is_ok(), "Transaction should execute successfully");
         // We now need to advance the state by one block so we commit the transaction state
-        engine.apply_state_buffer().unwrap();
+        engine
+            .apply_state_buffer(tx_execution_id.as_block_execution_id())
+            .unwrap();
 
         // Verify the caller's account state was updated
         let caller_account = engine
@@ -1953,11 +2053,31 @@ mod tests {
         let (mut engine, _) = create_test_engine().await;
         let tx_hash = B256::from([0x44; 32]);
 
-        engine
-            .last_executed_tx
-            .push(TxExecutionId::from_hash(tx_hash), None);
+        let block_execution_id = BlockExecutionId {
+            block_number: 1,
+            iteration_id: 1,
+        };
 
-        let result = engine.apply_state_buffer();
+        let tx_execution_id = TxExecutionId {
+            block_number: 1,
+            iteration_id: 1,
+            tx_hash,
+        };
+        let mut last_executed_tx = LastExecutedTx::new();
+        last_executed_tx.push(tx_execution_id, None);
+
+        let current_block_iteration_id = BlockIterationData {
+            fork_db: engine.state.fork(),
+            n_transactions: 0,
+            last_executed_tx,
+        };
+
+        engine
+            .current_block_iterations
+            .entry(block_execution_id)
+            .or_insert(current_block_iteration_id);
+
+        let result = engine.apply_state_buffer(block_execution_id);
         assert!(matches!(result, Err(EngineError::NothingToCommit)));
     }
 }
