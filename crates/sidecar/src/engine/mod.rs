@@ -1294,7 +1294,7 @@ mod tests {
             selected_iteration_id: Some(0),
         };
         let queue_tx = queue::QueueTransaction {
-            tx_execution_id: TxExecutionId::from_hash(B256::from([0x11; 32])),
+            tx_execution_id: TxExecutionId::new(1, 0, B256::from([0x11; 32])),
             tx_env: TxEnv::default(),
         };
 

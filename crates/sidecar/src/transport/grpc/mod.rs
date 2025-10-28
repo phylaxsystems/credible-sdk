@@ -209,8 +209,8 @@ mod tests {
         let response = client
             .get_transaction(GetTransactionRequest {
                 tx_execution_id: Some(TxExecutionId {
-                    block_number: 1,
-                    iteration_id: 1,
+                    block_number: tx_execution_id.block_number,
+                    iteration_id: tx_execution_id.iteration_id,
                     tx_hash: tx_execution_id.tx_hash.to_string(),
                 }),
             })
