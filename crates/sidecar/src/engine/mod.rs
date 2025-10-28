@@ -673,6 +673,23 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             .collect()
     }
 
+    /// Invalidates the state, cache and last executed tx
+    fn invalidate_all(&mut self, queue_block_env: &QueueBlockEnv) {
+        self.cache
+            .reset_required_block_number(queue_block_env.block_env.number);
+
+        // Measure cache invalidation time and set its new min required driver height
+        let instant = Instant::now();
+        self.check_sources_available = true;
+        self.state.invalidate_all();
+        if let Some(fork_db) = self.current_block_fork.as_mut() {
+            fork_db.invalidate();
+        }
+        self.last_executed_tx.clear();
+        self.block_metrics
+            .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
+    }
+
     /// Checks if the cache should be cleared and clears it.
     fn check_cache(&mut self, queue_block_env: &QueueBlockEnv) {
         // If the block env is not +1 from the previous block env, invalidate the cache
@@ -680,19 +697,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             && prev_block_env.number != queue_block_env.block_env.number - 1
         {
             warn!(prev_block_env = %prev_block_env.number, current_block_env = %queue_block_env.block_env.number, "BlockEnv received is not +1 from the previous block env, invalidating cache");
-            self.cache
-                .reset_required_block_number(queue_block_env.block_env.number);
-
-            // Measure cache invalidation time and set its new min required driver height
-            let instant = Instant::now();
-            self.check_sources_available = true;
-            self.state.invalidate_all();
-            if let Some(fork_db) = self.current_block_fork.as_mut() {
-                fork_db.invalidate();
-            }
-            self.last_executed_tx.clear();
-            self.block_metrics
-                .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
+            self.invalidate_all(queue_block_env);
         }
 
         // If the last tx hash from the block env is different from the last tx hash from the
@@ -707,19 +712,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 current_tx_hash = ?queue_block_env.last_tx_hash,
                 "The last transaction hash in the BlockEnv does not match the last transaction processed, invalidating cache"
             );
-            self.cache
-                .reset_required_block_number(queue_block_env.block_env.number);
-
-            // Measure cache invalidation time and set its new min required driver height
-            let instant = Instant::now();
-            self.check_sources_available = true;
-            self.state.invalidate_all();
-            if let Some(fork_db) = self.current_block_fork.as_mut() {
-                fork_db.invalidate();
-            }
-            self.last_executed_tx.clear();
-            self.block_metrics
-                .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
+            self.invalidate_all(queue_block_env);
         }
 
         // If the number of transactions in the block env is different from the number of
@@ -730,19 +723,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 block_env_n_transactions = queue_block_env.n_transactions,
                 "The number of transactions in the BlockEnv does not match the transactions processed, invalidating cache"
             );
-            self.cache
-                .reset_required_block_number(queue_block_env.block_env.number);
-
-            // Measure cache invalidation time and set its new min required driver height
-            let instant = Instant::now();
-            self.check_sources_available = true;
-            self.state.invalidate_all();
-            if let Some(fork_db) = self.current_block_fork.as_mut() {
-                fork_db.invalidate();
-            }
-            self.last_executed_tx.clear();
-            self.block_metrics
-                .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
+            self.invalidate_all(queue_block_env);
         }
     }
 
@@ -872,7 +853,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         // If it is configured to invalidated the cache every block, do so
         if self.overlay_cache_invalidation_every_block {
-            self.state.invalidate_all();
+            self.invalidate_all(&queue_block_env);
         } else {
             // If not, check if the cache should be invalidated.
             self.check_cache(&queue_block_env);
