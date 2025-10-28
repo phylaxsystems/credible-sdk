@@ -1886,7 +1886,6 @@ mod tests {
         tracing::info!("test_block_env_wrong_last_tx_hash: test completed");
     }
 
-    #[tracing_test::traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_all_tx_types(mut instance: crate::utils::LocalInstance) {
         instance.send_all_tx_types().await.unwrap();

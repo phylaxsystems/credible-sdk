@@ -3,25 +3,28 @@
 //! # Redis-backed cache source
 
 pub(crate) mod error;
+mod sync_task;
 pub(crate) mod utils;
 
 pub use error::RedisCacheError;
 use state_store::StateReader;
 
-use self::utils::{
-    decode_hex,
-    encode_hex,
-    encode_storage_key,
-    encode_u256_hex,
-    parse_b256,
-    parse_u64,
-    parse_u256,
-    to_hex_lower,
+use self::{
+    sync_task::publish_sync_state,
+    utils::{
+        decode_hex,
+        encode_hex,
+        encode_storage_key,
+        encode_u256_hex,
+        parse_b256,
+        parse_u64,
+        parse_u256,
+        to_hex_lower,
+    },
 };
 use crate::{
     Source,
     cache::sources::SourceName,
-    critical,
 };
 use alloy::primitives::keccak256;
 use assertion_executor::primitives::{
@@ -49,27 +52,71 @@ use std::{
     sync::{
         Arc,
         atomic::{
+            AtomicBool,
             AtomicU64,
             Ordering,
         },
     },
+    time::Duration,
 };
 use thiserror::Error;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
 pub struct RedisCache {
     backend: StateReader,
-    /// Current block
-    target_block: Arc<AtomicU64>,
+    /// Current block we are processing in the sidecar.
+    current_block: Arc<AtomicU64>,
+    /// Records newest block the background poller has seen.
+    observed_block: Arc<AtomicU64>,
+    /// Oldest block that exists in redis buffer. Used to prevent asking for a block redis doesnt have.
+    oldest_block: Arc<AtomicU64>,
+    sync_status: Arc<AtomicBool>,
+    cancel_token: CancellationToken,
+    sync_task: JoinHandle<()>,
 }
 
 impl RedisCache {
     /// Creates a cache that stores entries under the default `state` namespace.
     pub fn new(backend: StateReader) -> Self {
+        let current_block = Arc::new(AtomicU64::new(0));
+        let observed_block = Arc::new(AtomicU64::new(0));
+        let oldest_block = Arc::new(AtomicU64::new(0));
+        let sync_status = Arc::new(AtomicBool::new(false));
+        let cancel_token = CancellationToken::new();
+        let sync_task = sync_task::spawn_sync_task(
+            backend.clone(),
+            current_block.clone(),
+            observed_block.clone(),
+            oldest_block.clone(),
+            sync_status.clone(),
+            cancel_token.clone(),
+            DEFAULT_SYNC_INTERVAL,
+        );
+
         Self {
             backend,
-            target_block: Arc::new(AtomicU64::new(0)),
+            current_block,
+            observed_block,
+            oldest_block,
+            sync_status,
+            cancel_token,
+            sync_task,
         }
+    }
+
+    fn mark_unsynced(&self) {
+        publish_sync_state(
+            None,
+            None,
+            &self.current_block,
+            &self.observed_block,
+            &self.oldest_block,
+            &self.sync_status,
+        );
     }
 }
 
@@ -80,7 +127,7 @@ impl DatabaseRef for RedisCache {
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let Some(account) = self
             .backend
-            .get_account(address.into(), self.target_block.load(Ordering::Relaxed))
+            .get_account(address.into(), self.current_block.load(Ordering::Relaxed))
             .map_err(Self::Error::RedisAccount)?
         else {
             return Ok(None);
@@ -105,7 +152,7 @@ impl DatabaseRef for RedisCache {
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
         Ok(Bytecode::new_raw(
             self.backend
-                .get_code(code_hash, self.target_block.load(Ordering::Relaxed))
+                .get_code(code_hash, self.current_block.load(Ordering::Relaxed))
                 .map_err(Self::Error::RedisCodeByHash)?
                 .ok_or(Self::Error::CodeByHashNotFound)?
                 .into(),
@@ -124,7 +171,7 @@ impl DatabaseRef for RedisCache {
             .get_storage(
                 address.into(),
                 slot,
-                self.target_block.load(Ordering::Relaxed),
+                self.current_block.load(Ordering::Relaxed),
             )
             .map_err(Self::Error::RedisStorage)?
             .ok_or(Self::Error::StorageNotFound)
@@ -134,21 +181,39 @@ impl DatabaseRef for RedisCache {
 impl Source for RedisCache {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, required_block_number: u64) -> bool {
-        match self.backend.latest_block_number() {
-            Ok(Some(block)) => {
-                block >= required_block_number && block <= self.target_block.load(Ordering::Relaxed)
-            }
-            _ => false,
+        if !self.sync_status.load(Ordering::Acquire) {
+            return false;
         }
+
+        let target_block = self.current_block.load(Ordering::Relaxed);
+        let observed_block = self.observed_block.load(Ordering::Acquire);
+        let oldest_block = self.oldest_block.load(Ordering::Acquire);
+
+        if observed_block < required_block_number {
+            return false;
+        }
+
+        if target_block == 0 {
+            return oldest_block == 0;
+        }
+
+        oldest_block <= target_block && target_block <= observed_block
     }
 
     /// Updates the block number that queries should target.
     fn update_target_block(&self, block_number: u64) {
-        self.target_block.store(block_number, Ordering::Relaxed);
+        self.current_block.store(block_number, Ordering::Relaxed);
     }
 
     /// Provides an identifier used in logs and metrics.
     fn name(&self) -> SourceName {
         SourceName::Redis
+    }
+}
+
+impl Drop for RedisCache {
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
+        self.sync_task.abort();
     }
 }
