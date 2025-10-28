@@ -533,8 +533,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         skip(self, tx_env),
         fields(
             tx_execution_id = %tx_execution_id,
-            block_number = tx_execution_id.block_number,
-            iteration_id = tx_execution_id.iteration_id,
             caller = %tx_env.caller,
             gas_limit = tx_env.gas_limit
         ),
