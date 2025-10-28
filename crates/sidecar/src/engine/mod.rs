@@ -405,12 +405,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 debug!(
                     target = "engine",
                     error = ?e,
-                    tx_execution_id = ?tx_execution_id,
+                    tx_execution_id = %tx_execution_id,
                     "Transaction validation failed"
                 );
                 trace!(
                     target = "engine",
-                    tx_execution_id = ?tx_execution_id,
+                    tx_execution_id = %tx_execution_id,
                     tx_env = ?tx_env,
                     "Transaction validation environment"
                 );
@@ -532,7 +532,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         name = "engine::execute_transaction",
         skip(self, tx_env),
         fields(
-            tx_execution_id = ?tx_execution_id,
+            tx_execution_id = %tx_execution_id,
             block_number = tx_execution_id.block_number,
             iteration_id = tx_execution_id.iteration_id,
             caller = %tx_env.caller,

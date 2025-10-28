@@ -52,6 +52,12 @@ impl TxExecutionId {
     }
 }
 
+impl fmt::Display for TxExecutionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#x}", self.tx_hash)
+    }
+}
+
 impl Serialize for TxExecutionId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
