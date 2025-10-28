@@ -19,10 +19,10 @@ use std::{
 /// Unique identifier for a transaction execution within the sidecar.
 ///
 /// Each block the sidecar builds has multiple attached *iterations* to it.
-/// Iterations can be thought of as sub-blocks that maru/besu might pick
+/// Iterations can be thought of as sub-blocks that sequencer/driver might pick
 /// for a variety of reasons. This struct is used to identify specific
-/// txs for specific blocks and instances, since multiple hashes can
-/// belong to multiple instances.
+/// txs for specific blocks and iterations, since multiple hashes can
+/// belong to multiple iterations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TxExecutionId {
     /// What block number the transaction was meant for.

@@ -132,14 +132,14 @@ use tracing::{
 /// Stores up to 2 transactions in a stack-allocated array.
 #[derive(Debug)]
 struct LastExecutedTx {
-    hashes: [Option<(TxExecutionId, Option<EvmState>)>; 2],
+    execution_results: [Option<(TxExecutionId, Option<EvmState>)>; 2],
     len: usize,
 }
 
 impl LastExecutedTx {
     fn new() -> Self {
         Self {
-            hashes: [None, None],
+            execution_results: [None, None],
             len: 0,
         }
     }
@@ -147,10 +147,10 @@ impl LastExecutedTx {
     fn push(&mut self, tx_execution_id: TxExecutionId, state: Option<EvmState>) {
         if self.len == 2 {
             // Shift elements to make room for new one
-            self.hashes[0] = self.hashes[1].take();
-            self.hashes[1] = Some((tx_execution_id, state));
+            self.execution_results[0] = self.execution_results[1].take();
+            self.execution_results[1] = Some((tx_execution_id, state));
         } else {
-            self.hashes[self.len] = Some((tx_execution_id, state));
+            self.execution_results[self.len] = Some((tx_execution_id, state));
             self.len += 1;
         }
     }
@@ -160,7 +160,7 @@ impl LastExecutedTx {
             return None;
         }
 
-        let result = self.hashes[self.len - 1].take();
+        let result = self.execution_results[self.len - 1].take();
         self.len -= 1;
         result
     }
@@ -169,12 +169,12 @@ impl LastExecutedTx {
         if self.len == 0 {
             None
         } else {
-            self.hashes[self.len - 1].as_ref()
+            self.execution_results[self.len - 1].as_ref()
         }
     }
 
     fn clear(&mut self) {
-        self.hashes = [None, None];
+        self.execution_results = [None, None];
         self.len = 0;
     }
 }
@@ -405,12 +405,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 debug!(
                     target = "engine",
                     error = ?e,
-                    tx_hash = %tx_hash,
+                    tx_execution_id = ?tx_execution_id,
                     "Transaction validation failed"
                 );
                 trace!(
                     target = "engine",
-                    tx_hash = %tx_hash,
+                    tx_execution_id = ?tx_execution_id,
                     tx_env = ?tx_env,
                     "Transaction validation environment"
                 );
@@ -532,7 +532,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         name = "engine::execute_transaction",
         skip(self, tx_env),
         fields(
-            tx_hash = %tx_execution_id.tx_hash,
+            tx_execution_id = ?tx_execution_id,
             block_number = tx_execution_id.block_number,
             iteration_id = tx_execution_id.iteration_id,
             caller = %tx_env.caller,
@@ -636,7 +636,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.block_env.as_ref()
     }
 
-    /// Get transaction result by hash.
+    /// Get transaction result by `TxExecutionId`.
     #[cfg(test)]
     pub fn get_transaction_result(
         &self,
@@ -646,7 +646,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             .get_transaction_result(tx_execution_id)
     }
 
-    /// Get transaction result by hash, returning a cloned value for test compatibility.
+    /// Get transaction result by `TxExecutionId`, returning a cloned value for test compatibility.
     #[cfg(test)]
     pub fn get_transaction_result_cloned(
         &self,
