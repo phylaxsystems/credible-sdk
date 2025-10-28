@@ -35,13 +35,11 @@ use crate::{
         http::{
             HttpTransport,
             config::HttpTransportConfig,
-            server::{
-                Transaction,
-                TxExecutionId,
-            },
+            server::Transaction,
         },
         mock::MockTransport,
     },
+    tx_execution_id::TxExecutionId,
 };
 use alloy::primitives::TxHash;
 use assertion_executor::{
@@ -408,18 +406,25 @@ impl TestTransport for LocalInstanceMockDriver {
         result
     }
 
-    async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
-        self.block_tx_hashes.push(tx_hash);
-        info!(target: "test_transport", "LocalInstance sending transaction: {:?}", tx_hash);
-        let queue_tx = QueueTransaction { tx_hash, tx_env };
+    async fn send_transaction(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_env: TxEnv,
+    ) -> Result<(), String> {
+        self.block_tx_hashes.push(tx_execution_id.tx_hash);
+        info!(target: "test_transport", "LocalInstance sending transaction: {:?}", tx_execution_id);
+        let queue_tx = QueueTransaction {
+            tx_execution_id,
+            tx_env,
+        };
         self.mock_sender
             .send(TxQueueContents::Tx(queue_tx, Span::current()))
             .map_err(|e| format!("Failed to send transaction: {e}"))
     }
 
-    async fn reorg(&mut self, tx_hash: B256) -> Result<(), String> {
-        info!(target: "test_transport", "LocalInstance sending reorg for: {:?}", tx_hash);
-        let tracked_hash: TxHash = tx_hash;
+    async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
+        info!(target: "test_transport", "LocalInstance sending reorg for: {:?}", tx_execution_id);
+        let tracked_hash: TxHash = tx_execution_id.tx_hash;
         if let Some(last_hash) = self.block_tx_hashes.last() {
             if last_hash == &tracked_hash {
                 self.block_tx_hashes.pop();
@@ -433,7 +438,7 @@ impl TestTransport for LocalInstanceMockDriver {
             }
         }
         self.mock_sender
-            .send(TxQueueContents::Reorg(tx_hash, Span::current()))
+            .send(TxQueueContents::Reorg(tx_execution_id, Span::current()))
             .map_err(|e| format!("Failed to send transaction: {e}"))
     }
 
@@ -635,17 +640,17 @@ impl TestTransport for LocalInstanceHttpDriver {
         ))
     }
 
-    async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
-        debug!(target: "LocalInstanceHttpDriver", "Sending transaction: {}", tx_hash);
-        self.block_tx_hashes.push(tx_hash);
+    async fn send_transaction(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_env: TxEnv,
+    ) -> Result<(), String> {
+        debug!(target: "LocalInstanceHttpDriver", "Sending transaction: {:?}", tx_execution_id);
+        self.block_tx_hashes.push(tx_execution_id.tx_hash);
 
         // Create the transaction structure
         let transaction = Transaction {
-            tx_execution_id: TxExecutionId {
-                block_number: 0,
-                iteration_id: 0,
-                tx_hash,
-            },
+            tx_execution_id,
             tx_env,
         };
 
@@ -708,10 +713,10 @@ impl TestTransport for LocalInstanceHttpDriver {
         ))
     }
 
-    async fn reorg(&mut self, tx_hash: B256) -> Result<(), String> {
-        info!(target: "LocalInstanceHttpDriver", "LocalInstance sending reorg for: {:?}", tx_hash);
+    async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
+        info!(target: "LocalInstanceHttpDriver", "LocalInstance sending reorg for: {:?}", tx_execution_id);
 
-        let tracked_hash: TxHash = tx_hash;
+        let tracked_hash: TxHash = tx_execution_id.tx_hash;
         if let Some(last_hash) = self.block_tx_hashes.last() {
             if last_hash == &tracked_hash {
                 self.block_tx_hashes.pop();
@@ -729,11 +734,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             "id": 1,
             "jsonrpc": "2.0",
             "method": "reorg",
-            "params": {
-                "block_number": 0,
-                "iteration_id": 0,
-                "tx_hash": tx_hash
-            }
+            "params": serde_json::to_value(tx_execution_id).unwrap(),
         });
 
         debug!(target: "LocalInstanceHttpDriver", "Sending HTTP request: {}", serde_json::to_string_pretty(&request).unwrap_or_default());
@@ -984,23 +985,27 @@ impl TestTransport for LocalInstanceGrpcDriver {
         ))
     }
 
-    async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String> {
-        debug!(target: "LocalInstanceGrpcDriver", "Sending transaction: {}", tx_hash);
+    async fn send_transaction(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_env: TxEnv,
+    ) -> Result<(), String> {
+        debug!(target: "LocalInstanceGrpcDriver", "Sending transaction: {:?}", tx_execution_id);
 
         // Validate inputs
         if tx_env.gas_limit == 0 {
             return Err("Gas limit cannot be zero".to_string());
         }
 
-        self.block_tx_hashes.push(tx_hash);
+        self.block_tx_hashes.push(tx_execution_id.tx_hash);
 
         // Create the gRPC transaction structure
 
         let transaction = GrpcTransaction {
             tx_execution_id: Some(GrpcTxExecutionId {
-                block_number: 0,
-                iteration_id: 0,
-                tx_hash: tx_hash.to_string(),
+                block_number: tx_execution_id.block_number,
+                iteration_id: tx_execution_id.iteration_id,
+                tx_hash: format!("{:#x}", tx_execution_id.tx_hash),
             }),
             tx_env: Some(GrpcTransactionEnv {
                 tx_type: 0, // Default to legacy transaction type
@@ -1064,7 +1069,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             transactions: vec![transaction],
         };
 
-        debug!(target: "LocalInstanceGrpcDriver", "Sending gRPC transaction request for hash: {}", tx_hash);
+        debug!(target: "LocalInstanceGrpcDriver", "Sending gRPC transaction request for hash: {}", tx_execution_id.tx_hash);
 
         let mut last_error = String::new();
         let mut attempts = 0;
@@ -1106,10 +1111,10 @@ impl TestTransport for LocalInstanceGrpcDriver {
         ))
     }
 
-    async fn reorg(&mut self, tx_hash: B256) -> Result<(), String> {
-        info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending reorg for: {:?}", tx_hash);
+    async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
+        info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending reorg for: {:?}", tx_execution_id.tx_hash);
 
-        let tracked_hash: TxHash = tx_hash;
+        let tracked_hash: TxHash = tx_execution_id.tx_hash;
         if let Some(last_hash) = self.block_tx_hashes.last() {
             if last_hash == &tracked_hash {
                 self.block_tx_hashes.pop();
@@ -1125,9 +1130,9 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         let request = ReorgRequest {
             tx_execution_id: Some(GrpcTxExecutionId {
-                block_number: 0,
-                iteration_id: 0,
-                tx_hash: tx_hash.to_string(),
+                block_number: tx_execution_id.block_number,
+                iteration_id: tx_execution_id.iteration_id,
+                tx_hash: format!("{:#x}", tx_execution_id.tx_hash),
             }),
         };
 

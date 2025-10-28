@@ -22,12 +22,10 @@ use crate::{
             METHOD_REORG,
             METHOD_SEND_TRANSACTIONS,
             SendTransactionsParams,
-            TxExecutionId,
         },
     },
+    tx_execution_id::TxExecutionId,
 };
-use revm::primitives::B256;
-use std::str::FromStr;
 
 pub trait Decoder {
     type RawEvent: Send + Clone + Sized;
@@ -56,6 +54,9 @@ impl HttpTransactionDecoder {
                     HttpDecoderError::MissingTxEnv
                 } else if msg.contains("missing field `hash`") {
                     HttpDecoderError::MissingHashField
+                } else if msg.contains("invalid tx_execution_id") && msg.contains("invalid tx_hash")
+                {
+                    HttpDecoderError::InvalidHash(msg)
                 } else if msg.contains("invalid tx_env") {
                     HttpDecoderError::InvalidTransaction(msg)
                 } else if msg.contains("invalid hash") {
@@ -88,12 +89,11 @@ impl HttpTransactionDecoder {
         let mut queue_transactions = Vec::with_capacity(send_params.transactions.len());
 
         for transaction in send_params.transactions {
-            let tx_hash = transaction.tx_execution_id.tx_hash;
-
+            let tx_execution_id = transaction.tx_execution_id;
             let current_span = tracing::Span::current();
             queue_transactions.push(TxQueueContents::Tx(
                 QueueTransaction {
-                    tx_hash,
+                    tx_execution_id,
                     tx_env: transaction.tx_env,
                 },
                 current_span,
@@ -124,10 +124,7 @@ impl Decoder for HttpTransactionDecoder {
                     .map_err(|e| HttpDecoderError::ReorgValidation(e.to_string()))?;
 
                 let current_span = tracing::Span::current();
-                Ok(vec![TxQueueContents::Reorg(
-                    reorg.tx_hash,
-                    current_span.clone(),
-                )])
+                Ok(vec![TxQueueContents::Reorg(reorg, current_span.clone())])
             }
             _ => {
                 Err(HttpDecoderError::InvalidTransaction(

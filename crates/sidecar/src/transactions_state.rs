@@ -1,6 +1,9 @@
-use crate::engine::{
-    TransactionResult,
-    queue::TxQueueContents,
+use crate::{
+    engine::{
+        TransactionResult,
+        queue::TxQueueContents,
+    },
+    tx_execution_id::TxExecutionId,
 };
 use assertion_executor::primitives::B256;
 use dashmap::{
@@ -8,20 +11,20 @@ use dashmap::{
     DashSet,
     mapref::one::Ref,
 };
-use revm::primitives::alloy_primitives::TxHash;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tracing::error;
 
 #[derive(Debug)]
 pub struct TransactionsState {
-    transaction_results: DashMap<B256, TransactionResult>,
+    transaction_results: DashMap<TxExecutionId, TransactionResult>,
     /// `DashMap` containing the pending queries from the reading the transaction result.
-    /// It contains the transaction hash as key and the oneshot sender as value. The result shall be
+    /// It contains the transaction execution id as key and the oneshot sender as value. The result shall be
     /// sent via oneshot channel once it is ready.
-    transaction_results_pending_requests: DashMap<TxHash, oneshot::Sender<TransactionResult>>,
+    transaction_results_pending_requests:
+        DashMap<TxExecutionId, oneshot::Sender<TransactionResult>>,
     /// `HashSet` containing the accepted transactions which haven't been processed yet.
-    accepted_txs: DashSet<TxHash>,
+    accepted_txs: DashSet<TxExecutionId>,
 }
 
 impl TransactionsState {
@@ -33,31 +36,40 @@ impl TransactionsState {
         })
     }
 
-    pub fn add_transaction_result(&self, tx_hash: B256, result: &TransactionResult) {
-        self.transaction_results.insert(tx_hash, result.clone());
-        self.accepted_txs.remove(&tx_hash);
-        self.process_pending_queries(tx_hash, result);
+    pub fn add_transaction_result(
+        &self,
+        tx_execution_id: TxExecutionId,
+        result: &TransactionResult,
+    ) {
+        self.transaction_results
+            .insert(tx_execution_id, result.clone());
+        self.accepted_txs.remove(&tx_execution_id);
+        self.process_pending_queries(tx_execution_id, result);
     }
 
-    pub fn remove_transaction_result(&self, tx_hash: &B256) {
-        self.transaction_results.remove(tx_hash);
+    pub fn remove_transaction_result(&self, tx_execution_id: &TxExecutionId) {
+        self.transaction_results.remove(tx_execution_id);
     }
 
     pub fn add_accepted_tx(&self, tx_queue_contents: &TxQueueContents) {
         if let TxQueueContents::Tx(tx, _) = tx_queue_contents {
-            self.accepted_txs.insert(tx.tx_hash);
+            self.accepted_txs.insert(tx.tx_execution_id);
         }
     }
 
     /// The transaction is processed if it is either accepted or it was already processed by the engine.
-    pub fn is_tx_received(&self, tx_hash: &TxHash) -> bool {
-        self.accepted_txs.contains(tx_hash) || self.transaction_results.contains_key(tx_hash)
+    pub fn is_tx_received(&self, tx_execution_id: &TxExecutionId) -> bool {
+        self.accepted_txs.contains(tx_execution_id)
+            || self.transaction_results.contains_key(tx_execution_id)
     }
 
     /// Check if there is a pending query for the processed result
-    fn process_pending_queries(&self, tx_hash: TxHash, result: &TransactionResult) {
+    fn process_pending_queries(&self, tx_execution_id: TxExecutionId, result: &TransactionResult) {
         // O(1)
-        let Some((_, sender)) = self.transaction_results_pending_requests.remove(&tx_hash) else {
+        let Some((_, sender)) = self
+            .transaction_results_pending_requests
+            .remove(&tx_execution_id)
+        else {
             return;
         };
         // Purposedly ignore this error in case there is a race condition and the result is sent twice
@@ -66,7 +78,9 @@ impl TransactionsState {
             error!(
                 target = "transactions_state",
                 error = ?e,
-                tx_hash = %tx_hash,
+                tx_execution_id.block_number = tx_execution_id.block_number,
+                tx_execution_id.iteration_id = tx_execution_id.iteration_id,
+                tx_hash = %tx_execution_id.tx_hash_hex(),
                 "Failed to send transaction result to query sender"
             );
         });
@@ -74,24 +88,27 @@ impl TransactionsState {
 
     pub fn get_transaction_result(
         &self,
-        tx_hash: &B256,
-    ) -> Option<Ref<'_, B256, TransactionResult>> {
-        self.transaction_results.get(tx_hash)
+        tx_execution_id: &TxExecutionId,
+    ) -> Option<Ref<'_, TxExecutionId, TransactionResult>> {
+        self.transaction_results.get(tx_execution_id)
     }
 
-    pub fn get_all_transaction_result(&self) -> &DashMap<B256, TransactionResult> {
+    pub fn get_all_transaction_result(&self) -> &DashMap<TxExecutionId, TransactionResult> {
         &self.transaction_results
     }
 
     /// Requests a transaction result, if the result is available, it is returned immediately, if the result is not available, it is return an oneshot channel for receiving the result as soon as it is available
-    pub fn request_transaction_result(&self, tx_hash: &TxHash) -> RequestTransactionResult {
-        let result = self.get_transaction_result(tx_hash);
+    pub fn request_transaction_result(
+        &self,
+        tx_execution_id: &TxExecutionId,
+    ) -> RequestTransactionResult {
+        let result = self.get_transaction_result(tx_execution_id);
         if let Some(result) = result {
             RequestTransactionResult::Result(result.clone())
         } else {
             let (response_tx, response_rx) = oneshot::channel();
             self.transaction_results_pending_requests
-                .insert(*tx_hash, response_tx);
+                .insert(*tx_execution_id, response_tx);
 
             // Check the race condition in which the engine is faster than the transport layer process:
             // Then it could happen:
@@ -100,8 +117,9 @@ impl TransactionsState {
             // 3. The engine adds the result to the state
             // 4. This process adds the query to pending_queries
             // 5. The engine already checked pending_queries just before it was written
-            if let Some(result) = self.get_transaction_result(tx_hash) {
-                self.transaction_results_pending_requests.remove(tx_hash);
+            if let Some(result) = self.get_transaction_result(tx_execution_id) {
+                self.transaction_results_pending_requests
+                    .remove(tx_execution_id);
                 return RequestTransactionResult::Result(result.clone());
             }
             RequestTransactionResult::Channel(response_rx)
@@ -143,14 +161,16 @@ mod tests {
     };
     use tracing::Span;
 
-    /// Helper function to create a test transaction hash
-    fn create_test_tx_hash() -> B256 {
-        B256::from([1u8; 32])
+    /// Helper function to create a test transaction execution id
+    fn create_test_tx_execution_id() -> TxExecutionId {
+        let tx_hash = B256::from([1u8; 32]);
+        TxExecutionId::new(1, 0, tx_hash)
     }
 
-    /// Helper function to create another test transaction hash
-    fn create_test_tx_hash_2() -> B256 {
-        B256::from([2u8; 32])
+    /// Helper function to create another test transaction execution id
+    fn create_test_tx_execution_id_2() -> TxExecutionId {
+        let tx_hash = B256::from([2u8; 32]);
+        TxExecutionId::new(2, 1, tx_hash)
     }
 
     /// Helper function to create a test transaction result
@@ -173,10 +193,10 @@ mod tests {
     }
 
     /// Helper function to create a test `TxQueueContents` with transaction
-    fn create_test_tx_queue_contents(tx_hash: B256) -> TxQueueContents {
+    fn create_test_tx_queue_contents(tx_execution_id: TxExecutionId) -> TxQueueContents {
         TxQueueContents::Tx(
             QueueTransaction {
-                tx_hash,
+                tx_execution_id,
                 tx_env: TxEnv::default(),
             },
             Span::current(),
@@ -200,43 +220,43 @@ mod tests {
     #[test]
     fn test_add_transaction_result_stores_result() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
         let result = create_test_transaction_result();
 
-        state.add_transaction_result(tx_hash, &result.clone());
+        state.add_transaction_result(tx_execution_id, &result.clone());
 
         assert_eq!(state.transaction_results.len(), 1);
-        let stored_result = state.get_transaction_result(&tx_hash).unwrap();
+        let stored_result = state.get_transaction_result(&tx_execution_id).unwrap();
         assert_eq!(*stored_result, result);
     }
 
     #[test]
     fn test_add_transaction_result_removes_from_accepted_txs() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
-        let tx_queue_contents = create_test_tx_queue_contents(tx_hash);
+        let tx_execution_id = create_test_tx_execution_id();
+        let tx_queue_contents = create_test_tx_queue_contents(tx_execution_id);
 
         // First add to accepted transactions
         state.add_accepted_tx(&tx_queue_contents);
-        assert!(state.accepted_txs.contains(&tx_hash));
+        assert!(state.accepted_txs.contains(&tx_execution_id));
 
         // Then add the result, should remove from accepted_txs
         let result = create_test_transaction_result();
-        state.add_transaction_result(tx_hash, &result);
+        state.add_transaction_result(tx_execution_id, &result);
 
-        assert!(!state.accepted_txs.contains(&tx_hash));
+        assert!(!state.accepted_txs.contains(&tx_execution_id));
         assert_eq!(state.transaction_results.len(), 1);
     }
 
     #[test]
     fn test_add_accepted_tx_with_transaction() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
-        let tx_queue_contents = create_test_tx_queue_contents(tx_hash);
+        let tx_execution_id = create_test_tx_execution_id();
+        let tx_queue_contents = create_test_tx_queue_contents(tx_execution_id);
 
         state.add_accepted_tx(&tx_queue_contents);
 
-        assert!(state.accepted_txs.contains(&tx_hash));
+        assert!(state.accepted_txs.contains(&tx_execution_id));
         assert_eq!(state.accepted_txs.len(), 1);
     }
 
@@ -253,80 +273,80 @@ mod tests {
     #[test]
     fn test_is_tx_received_with_accepted_tx() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
-        let tx_queue_contents = create_test_tx_queue_contents(tx_hash);
+        let tx_execution_id = create_test_tx_execution_id();
+        let tx_queue_contents = create_test_tx_queue_contents(tx_execution_id);
 
         state.add_accepted_tx(&tx_queue_contents);
 
-        assert!(state.is_tx_received(&tx_hash));
+        assert!(state.is_tx_received(&tx_execution_id));
     }
 
     #[test]
     fn test_is_tx_received_with_processed_result() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
         let result = create_test_transaction_result();
 
-        state.add_transaction_result(tx_hash, &result);
+        state.add_transaction_result(tx_execution_id, &result);
 
-        assert!(state.is_tx_received(&tx_hash));
+        assert!(state.is_tx_received(&tx_execution_id));
     }
 
     #[test]
     fn test_is_tx_received_returns_false_for_unknown_tx() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
 
-        assert!(!state.is_tx_received(&tx_hash));
+        assert!(!state.is_tx_received(&tx_execution_id));
     }
 
     #[test]
     fn test_get_transaction_result_returns_none_for_nonexistent() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
 
-        let result = state.get_transaction_result(&tx_hash);
+        let result = state.get_transaction_result(&tx_execution_id);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_get_transaction_result_returns_stored_result() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
         let result = create_test_transaction_result();
 
-        state.add_transaction_result(tx_hash, &result.clone());
+        state.add_transaction_result(tx_execution_id, &result.clone());
 
-        let stored_result = state.get_transaction_result(&tx_hash).unwrap();
+        let stored_result = state.get_transaction_result(&tx_execution_id).unwrap();
         assert_eq!(*stored_result, result);
     }
 
     #[test]
     fn test_get_all_transaction_result_returns_reference() {
         let state = TransactionsState::new();
-        let tx_hash1 = create_test_tx_hash();
-        let tx_hash2 = create_test_tx_hash_2();
+        let tx_id1 = create_test_tx_execution_id();
+        let tx_id2 = create_test_tx_execution_id_2();
         let result1 = create_test_transaction_result();
         let result2 = create_validation_error_result();
 
-        state.add_transaction_result(tx_hash1, &result1);
-        state.add_transaction_result(tx_hash2, &result2);
+        state.add_transaction_result(tx_id1, &result1);
+        state.add_transaction_result(tx_id2, &result2);
 
         let all_results = state.get_all_transaction_result();
         assert_eq!(all_results.len(), 2);
-        assert!(all_results.contains_key(&tx_hash1));
-        assert!(all_results.contains_key(&tx_hash2));
+        assert!(all_results.contains_key(&tx_id1));
+        assert!(all_results.contains_key(&tx_id2));
     }
 
     #[tokio::test]
     async fn test_request_transaction_result_returns_immediately_if_available() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
         let result = create_test_transaction_result();
 
-        state.add_transaction_result(tx_hash, &result.clone());
+        state.add_transaction_result(tx_execution_id, &result.clone());
 
-        match state.request_transaction_result(&tx_hash) {
+        match state.request_transaction_result(&tx_execution_id) {
             RequestTransactionResult::Result(returned_result) => {
                 assert_eq!(returned_result, result);
             }
@@ -339,9 +359,9 @@ mod tests {
     #[tokio::test]
     async fn test_request_transaction_result_returns_channel_if_not_available() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
 
-        match state.request_transaction_result(&tx_hash) {
+        match state.request_transaction_result(&tx_execution_id) {
             RequestTransactionResult::Result(_) => {
                 panic!("Expected channel, got immediate result");
             }
@@ -350,7 +370,7 @@ mod tests {
                 assert!(
                     state
                         .transaction_results_pending_requests
-                        .contains_key(&tx_hash)
+                        .contains_key(&tx_execution_id)
                 );
 
                 // Clean up by dropping receiver to avoid hanging test
@@ -362,11 +382,11 @@ mod tests {
     #[tokio::test]
     async fn test_process_pending_queries_sends_result_to_waiting_receiver() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
         let result = create_test_transaction_result();
 
         // First request the transaction result (this will create a pending query)
-        let receiver = match state.request_transaction_result(&tx_hash) {
+        let receiver = match state.request_transaction_result(&tx_execution_id) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel"),
         };
@@ -375,17 +395,17 @@ mod tests {
         assert!(
             state
                 .transaction_results_pending_requests
-                .contains_key(&tx_hash)
+                .contains_key(&tx_execution_id)
         );
 
         // Add the transaction result (this should trigger the pending query processing)
-        state.add_transaction_result(tx_hash, &result.clone());
+        state.add_transaction_result(tx_execution_id, &result.clone());
 
         // Verify the pending request was removed
         assert!(
             !state
                 .transaction_results_pending_requests
-                .contains_key(&tx_hash)
+                .contains_key(&tx_execution_id)
         );
 
         // Verify we can receive the result through the channel
@@ -400,27 +420,27 @@ mod tests {
     #[tokio::test]
     async fn test_race_condition_handling_in_request_transaction_result() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
         let result = create_test_transaction_result();
 
         // Simulate race condition: add result after request is made but before channel is returned
         let (tx, _rx) = oneshot::channel();
         state
             .transaction_results_pending_requests
-            .insert(tx_hash, tx);
+            .insert(tx_execution_id, tx);
 
         // Add the transaction result
-        state.add_transaction_result(tx_hash, &result.clone());
+        state.add_transaction_result(tx_execution_id, &result.clone());
 
         // Now request should return immediate result due to race condition handling
-        match state.request_transaction_result(&tx_hash) {
+        match state.request_transaction_result(&tx_execution_id) {
             RequestTransactionResult::Result(returned_result) => {
                 assert_eq!(returned_result, result);
                 // Verify pending request was cleaned up
                 assert!(
                     !state
                         .transaction_results_pending_requests
-                        .contains_key(&tx_hash)
+                        .contains_key(&tx_execution_id)
                 );
             }
             RequestTransactionResult::Channel(_) => {
@@ -432,18 +452,18 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_pending_queries_for_different_transactions() {
         let state = TransactionsState::new();
-        let tx_hash1 = create_test_tx_hash();
-        let tx_hash2 = create_test_tx_hash_2();
+        let tx_id1 = create_test_tx_execution_id();
+        let tx_id2 = create_test_tx_execution_id_2();
         let result1 = create_test_transaction_result();
         let result2 = create_validation_error_result();
 
         // Create pending queries for both transactions
-        let receiver1 = match state.request_transaction_result(&tx_hash1) {
+        let receiver1 = match state.request_transaction_result(&tx_id1) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel for tx1"),
         };
 
-        let receiver2 = match state.request_transaction_result(&tx_hash2) {
+        let receiver2 = match state.request_transaction_result(&tx_id2) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel for tx2"),
         };
@@ -452,27 +472,27 @@ mod tests {
         assert!(
             state
                 .transaction_results_pending_requests
-                .contains_key(&tx_hash1)
+                .contains_key(&tx_id1)
         );
         assert!(
             state
                 .transaction_results_pending_requests
-                .contains_key(&tx_hash2)
+                .contains_key(&tx_id2)
         );
 
         // Add result for first transaction
-        state.add_transaction_result(tx_hash1, &result1.clone());
+        state.add_transaction_result(tx_id1, &result1.clone());
 
         // Verify first pending request was removed, second still exists
         assert!(
             !state
                 .transaction_results_pending_requests
-                .contains_key(&tx_hash1)
+                .contains_key(&tx_id1)
         );
         assert!(
             state
                 .transaction_results_pending_requests
-                .contains_key(&tx_hash2)
+                .contains_key(&tx_id2)
         );
 
         // Verify first receiver gets the result
@@ -483,13 +503,13 @@ mod tests {
         assert_eq!(received_result1, result1);
 
         // Add result for second transaction
-        state.add_transaction_result(tx_hash2, &result2.clone());
+        state.add_transaction_result(tx_id2, &result2.clone());
 
         // Verify second pending request was removed
         assert!(
             !state
                 .transaction_results_pending_requests
-                .contains_key(&tx_hash2)
+                .contains_key(&tx_id2)
         );
 
         // Verify second receiver gets the result
@@ -503,37 +523,37 @@ mod tests {
     #[test]
     fn test_process_pending_queries_handles_no_pending_query() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
         let result = create_test_transaction_result();
 
         // This should not panic even when there's no pending query
-        state.add_transaction_result(tx_hash, &result);
+        state.add_transaction_result(tx_execution_id, &result);
 
         // Verify the result was still stored
-        assert!(state.transaction_results.contains_key(&tx_hash));
+        assert!(state.transaction_results.contains_key(&tx_execution_id));
     }
 
     #[tokio::test]
     async fn test_dropped_receiver_does_not_cause_issues() {
         let state = TransactionsState::new();
-        let tx_hash = create_test_tx_hash();
+        let tx_execution_id = create_test_tx_execution_id();
         let result = create_test_transaction_result();
 
         // Create and immediately drop the receiver
-        match state.request_transaction_result(&tx_hash) {
+        match state.request_transaction_result(&tx_execution_id) {
             RequestTransactionResult::Channel(rx) => drop(rx),
             RequestTransactionResult::Result(_) => panic!("Expected channel"),
         }
 
         // Adding the result should not panic even though receiver was dropped
-        state.add_transaction_result(tx_hash, &result);
+        state.add_transaction_result(tx_execution_id, &result);
 
         // Verify the result was stored and pending request was cleaned up
-        assert!(state.transaction_results.contains_key(&tx_hash));
+        assert!(state.transaction_results.contains_key(&tx_execution_id));
         assert!(
             !state
                 .transaction_results_pending_requests
-                .contains_key(&tx_hash)
+                .contains_key(&tx_execution_id)
         );
     }
 
@@ -548,21 +568,24 @@ mod tests {
         for i in 0..10 {
             let state_clone = Arc::clone(&state);
             let handle = thread::spawn(move || {
-                let tx_hash = B256::from([i as u8; 32]);
+                let tx_execution_id =
+                    TxExecutionId::new((i + 1) as u64, (i % 3) as u64, B256::from([i as u8; 32]));
                 let result = create_test_transaction_result();
 
                 // Add accepted tx
-                let tx_queue_contents = create_test_tx_queue_contents(tx_hash);
+                let tx_queue_contents = create_test_tx_queue_contents(tx_execution_id);
                 state_clone.add_accepted_tx(&tx_queue_contents);
 
                 // Check if received
-                assert!(state_clone.is_tx_received(&tx_hash));
+                assert!(state_clone.is_tx_received(&tx_execution_id));
 
                 // Add result
-                state_clone.add_transaction_result(tx_hash, &result.clone());
+                state_clone.add_transaction_result(tx_execution_id, &result.clone());
 
                 // Verify result exists
-                let stored_result = state_clone.get_transaction_result(&tx_hash).unwrap();
+                let stored_result = state_clone
+                    .get_transaction_result(&tx_execution_id)
+                    .unwrap();
                 assert_eq!(*stored_result, result);
             });
             handles.push(handle);

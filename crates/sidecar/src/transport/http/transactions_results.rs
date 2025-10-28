@@ -4,8 +4,8 @@ use crate::{
         RequestTransactionResult,
         TransactionsState,
     },
+    tx_execution_id::TxExecutionId,
 };
-use revm::primitives::alloy_primitives::TxHash;
 use std::sync::Arc;
 
 /// Wrapper for `TransactionsState` for read-only transactions results.
@@ -25,11 +25,15 @@ impl QueryTransactionsResults {
         self.transactions_state.add_accepted_tx(tx_queue_contents);
     }
 
-    pub fn is_tx_received(&self, tx_hash: &TxHash) -> bool {
-        self.transactions_state.is_tx_received(tx_hash)
+    pub fn is_tx_received(&self, tx_execution_id: &TxExecutionId) -> bool {
+        self.transactions_state.is_tx_received(tx_execution_id)
     }
 
-    pub fn request_transaction_result(&self, tx_hash: &TxHash) -> RequestTransactionResult {
-        self.transactions_state.request_transaction_result(tx_hash)
+    pub fn request_transaction_result(
+        &self,
+        tx_execution_id: &TxExecutionId,
+    ) -> RequestTransactionResult {
+        self.transactions_state
+            .request_transaction_result(tx_execution_id)
     }
 }

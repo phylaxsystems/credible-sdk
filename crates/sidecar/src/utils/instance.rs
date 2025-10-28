@@ -5,6 +5,7 @@ use crate::{
     },
     engine::TransactionResult,
     transactions_state::RequestTransactionResult,
+    tx_execution_id::TxExecutionId,
 };
 use alloy::{
     eips::eip7702::{
@@ -23,7 +24,6 @@ use assertion_executor::{
         AccountInfo,
         Address,
         B256,
-        FixedBytes,
         TxEnv,
         TxKind,
         U256,
@@ -76,11 +76,15 @@ pub trait TestTransport: Sized {
     /// Advance the core engine block by sending a new blockenv to it
     async fn new_block(&mut self, block_number: u64) -> Result<(), String>;
     /// Send a transaction to the core engine via the transport
-    async fn send_transaction(&mut self, tx_hash: B256, tx_env: TxEnv) -> Result<(), String>;
+    async fn send_transaction(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_env: TxEnv,
+    ) -> Result<(), String>;
     /// Send a new transaction reorg event. Removes the last executed transaction.
     /// Transaction hash provided as an argument must match the last executed tx.
     /// If not the call should succeed but the core engine should produce an error.
-    async fn reorg(&mut self, tx_hash: B256) -> Result<(), String>;
+    async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String>;
     /// Set the number of transactions to be sent in the next blockEnv
     fn set_n_transactions(&mut self, n_transactions: u64);
     /// Set the last tx hash to be sent in the next blockEnv
@@ -188,7 +192,10 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // Then send all transactions
         for (tx_hash, tx_env) in transactions {
-            self.transport.send_transaction(tx_hash, tx_env).await?;
+            let tx_execution_id = self.build_tx_id(tx_hash);
+            self.transport
+                .send_transaction(tx_execution_id, tx_env)
+                .await?;
         }
 
         Ok(())
@@ -240,13 +247,11 @@ impl<T: TestTransport> LocalInstance<T> {
 
     async fn wait_for_transaction_result(
         &self,
-        tx_hash: &B256,
+        tx_execution_id: &TxExecutionId,
     ) -> Result<TransactionResult, WaitError> {
-        let request_hash: FixedBytes<32> = *tx_hash;
-
         match self
             .transaction_results
-            .request_transaction_result(&request_hash)
+            .request_transaction_result(tx_execution_id)
         {
             RequestTransactionResult::Result(result) => Ok(result),
             RequestTransactionResult::Channel(receiver) => {
@@ -256,6 +261,23 @@ impl<T: TestTransport> LocalInstance<T> {
                     Err(_) => Err(WaitError::Timeout),
                 }
             }
+        }
+    }
+
+    /// Builds a `TxExecutionId` with the block hash and instance
+    /// currently in use by the `LocalInstance`.
+    fn build_tx_id(&self, tx_hash: B256) -> TxExecutionId {
+        // `self.block_number` always points to the *next* block env we will send.
+        // Transactions we dispatch now belong to the current block env, which is
+        // therefore `block_number - 1`. We saturate to handle the case where no
+        // block env has been sent yet (e.g. in tests that manually craft IDs).
+        let block_number = self.block_number.saturating_sub(1);
+        TxExecutionId {
+            block_number,
+            // TODO: Needs to be configurable when we add per instance
+            // execution!!!
+            iteration_id: 0,
+            tx_hash,
         }
     }
 
@@ -347,7 +369,7 @@ impl<T: TestTransport> LocalInstance<T> {
         &mut self,
         value: U256,
         data: Bytes,
-    ) -> Result<B256, String> {
+    ) -> Result<TxExecutionId, String> {
         // Ensure we have a block
         self.transport.new_block(self.block_number).await?;
         self.block_number += 1;
@@ -358,9 +380,12 @@ impl<T: TestTransport> LocalInstance<T> {
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
 
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
-        Ok(tx_hash)
+        Ok(tx_execution_id)
     }
 
     /// Send a successful CREATE transaction using the default account, without a new blockenv
@@ -368,7 +393,7 @@ impl<T: TestTransport> LocalInstance<T> {
         &mut self,
         value: U256,
         data: Bytes,
-    ) -> Result<B256, String> {
+    ) -> Result<TxExecutionId, String> {
         let nonce = self.next_nonce();
         let caller = self.default_account;
 
@@ -388,7 +413,10 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         // Wait for processing
         self.wait_for_processing(Duration::from_millis(5)).await;
@@ -405,12 +433,14 @@ impl<T: TestTransport> LocalInstance<T> {
             return Err("Engine handle does not exist! Make sure the engine was initialized before calling fn!".to_string());
         }
 
-        Ok(tx_hash)
+        Ok(tx_execution_id)
     }
 
     /// Send a successful CREATE transaction using a random account to enforce a cache miss (in the
     /// in-memory cache) and therefore, enforcing a cache fetch from the providers (e.g., Besu client)
-    pub async fn send_create_tx_with_cache_miss(&mut self) -> Result<(Address, B256), String> {
+    pub async fn send_create_tx_with_cache_miss(
+        &mut self,
+    ) -> Result<(Address, TxExecutionId), String> {
         // Ensure we have a block
         self.transport.new_block(self.block_number).await?;
         self.block_number += 1;
@@ -434,13 +464,16 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
-        Ok((caller, tx_hash))
+        Ok((caller, tx_execution_id))
     }
 
     /// Send a reverting CREATE transaction using the default account
-    pub async fn send_reverting_create_tx(&mut self) -> Result<B256, String> {
+    pub async fn send_reverting_create_tx(&mut self) -> Result<TxExecutionId, String> {
         // Ensure we have a block
         self.transport.new_block(self.block_number).await?;
         self.block_number += 1;
@@ -464,9 +497,12 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
-        Ok(tx_hash)
+        Ok(tx_execution_id)
     }
 
     /// Send a CALL transaction to an existing contract using the default account
@@ -475,7 +511,7 @@ impl<T: TestTransport> LocalInstance<T> {
         to: Address,
         value: U256,
         data: Bytes,
-    ) -> Result<B256, String> {
+    ) -> Result<TxExecutionId, String> {
         // Ensure we have a block
         self.transport.new_block(self.block_number).await?;
         self.block_number += 1;
@@ -499,9 +535,12 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
-        Ok(tx_hash)
+        Ok(tx_execution_id)
     }
 
     /// Sends transactions of all tx types and verifies they pass
@@ -549,7 +588,10 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         // type2, eip-1559
         // verify we correctly decrement gas for the account sending the tx
@@ -580,7 +622,10 @@ impl<T: TestTransport> LocalInstance<T> {
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         // type3, eip-4844
         self.transport.new_block(self.block_number).await?;
@@ -606,7 +651,10 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .unwrap();
         let tx_hash = Self::generate_random_tx_hash();
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         // type4, eip-7702
         // Authorization list present, should derive EIP-7702
@@ -631,7 +679,10 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .unwrap();
         let tx_hash = Self::generate_random_tx_hash();
-        self.transport.send_transaction(tx_hash, tx_env).await?;
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
 
         Ok(())
     }
@@ -654,14 +705,17 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Get transaction result by hash
-    pub fn get_transaction_result(&self, tx_hash: &B256) -> Option<TransactionResult> {
+    pub fn get_transaction_result(
+        &self,
+        tx_execution_id: &TxExecutionId,
+    ) -> Option<TransactionResult> {
         self.transaction_results
-            .get_transaction_result(tx_hash)
+            .get_transaction_result(tx_execution_id)
             .map(|r| r.clone())
     }
 
     /// Check if transaction was successful and valid
-    pub async fn is_transaction_successful(&self, tx_hash: &B256) -> Result<bool, String> {
+    pub async fn is_transaction_successful(&self, tx_hash: &TxExecutionId) -> Result<bool, String> {
         match self.wait_for_transaction_result(tx_hash).await {
             Ok(TransactionResult::ValidationCompleted {
                 execution_result,
@@ -673,8 +727,11 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Check if transaction reverted but passed validation
-    pub async fn is_transaction_reverted_but_valid(&self, tx_hash: &B256) -> Result<bool, String> {
-        match self.wait_for_transaction_result(tx_hash).await {
+    pub async fn is_transaction_reverted_but_valid(
+        &self,
+        tx_execution_id: &TxExecutionId,
+    ) -> Result<bool, String> {
+        match self.wait_for_transaction_result(tx_execution_id).await {
             Ok(TransactionResult::ValidationCompleted {
                 execution_result,
                 is_valid,
@@ -685,8 +742,11 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Check if transaction failed validation
-    pub async fn is_transaction_invalid(&self, tx_hash: &B256) -> Result<bool, String> {
-        match self.wait_for_transaction_result(tx_hash).await {
+    pub async fn is_transaction_invalid(
+        &self,
+        tx_execution_id: &TxExecutionId,
+    ) -> Result<bool, String> {
+        match self.wait_for_transaction_result(tx_execution_id).await {
             Ok(TransactionResult::ValidationCompleted { is_valid, .. }) => Ok(!is_valid),
             Ok(TransactionResult::ValidationError(e)) => Err(e),
             Err(e) => Err(format!("{e:?}")),
@@ -695,7 +755,10 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Check if transaction failed validation.
     /// This function will only return false if the engine exited.
-    pub async fn is_transaction_removed(&self, tx_hash: &B256) -> Result<bool, String> {
+    pub async fn is_transaction_removed(
+        &self,
+        tx_execution_id: &TxExecutionId,
+    ) -> Result<bool, String> {
         loop {
             self.wait_for_processing(Duration::from_millis(5)).await;
 
@@ -704,7 +767,7 @@ impl<T: TestTransport> LocalInstance<T> {
             // reorg request is rejected and the engine exits early.
             if let Some(handle) = &self.engine_handle {
                 if handle.is_finished() {
-                    if self.get_transaction_result(tx_hash).is_some() {
+                    if self.get_transaction_result(tx_execution_id).is_some() {
                         return Ok(false);
                     }
                     return Ok(true);
@@ -714,7 +777,7 @@ impl<T: TestTransport> LocalInstance<T> {
             }
 
             #[allow(clippy::unnested_or_patterns)]
-            let rax = match self.wait_for_transaction_result(tx_hash).await {
+            let rax = match self.wait_for_transaction_result(tx_execution_id).await {
                 Ok(TransactionResult::ValidationCompleted { .. })
                 | Ok(TransactionResult::ValidationError(_)) => continue,
                 Err(e) => Err(e),
@@ -780,24 +843,31 @@ impl<T: TestTransport> LocalInstance<T> {
         tx_fail.gas_price = basefee.into();
 
         // Generate unique transaction hashes
-        let hash_pass = FixedBytes::<32>::random();
-        let hash_fail = FixedBytes::<32>::random();
+        let hash_pass = Self::generate_random_tx_hash();
+        let hash_fail = Self::generate_random_tx_hash();
 
         // Send the passing transaction first
-        self.transport.send_transaction(hash_pass, tx_pass).await?;
+        let tx_execution_id_pass = self.build_tx_id(hash_pass);
+        self.transport
+            .send_transaction(tx_execution_id_pass, tx_pass)
+            .await?;
 
         // Send the failing transaction second
-        self.transport.send_transaction(hash_fail, tx_fail).await?;
+        let tx_execution_id_fail = self.build_tx_id(hash_fail);
+        self.transport
+            .send_transaction(tx_execution_id_fail, tx_fail)
+            .await?;
 
         // Verify the second transaction failed assertions and was NOT committed
-        if !self.is_transaction_invalid(&hash_fail).await? {
+        if !self.is_transaction_invalid(&tx_execution_id_fail).await? {
             return Err(
                 "Second transaction should have failed assertions and not been committed"
                     .to_string(),
             );
         }
 
-        self.transport.reorg(hash_fail).await?;
+        let tx_execution_id_fail = self.build_tx_id(hash_fail);
+        self.transport.reorg(tx_execution_id_fail).await?;
 
         Ok(())
     }
@@ -808,12 +878,12 @@ impl<T: TestTransport> LocalInstance<T> {
     /// matches said transactions hash.
     /// If not, the core engine should error out and this function will
     /// return an error.
-    pub async fn send_reorg(&mut self, tx_hash: B256) -> Result<(), String> {
+    pub async fn send_reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
         // Make sure the tx exists
-        let _ = self.is_transaction_invalid(&tx_hash).await?;
+        let _ = self.is_transaction_invalid(&tx_execution_id).await?;
 
         // Send reorg event
-        self.transport.reorg(tx_hash).await?;
+        self.transport.reorg(tx_execution_id).await?;
 
         // Reorg was accepted by the engine and the last executed transaction
         // was removed from the buffer. Mirror this in our local nonce tracking
@@ -824,7 +894,7 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // Make sure the transacton is gone
         // Note: will only return false if the core engine exited
-        if !self.is_transaction_removed(&tx_hash).await? {
+        if !self.is_transaction_removed(&tx_execution_id).await? {
             return Err("Transaction not removed!".to_string());
         }
 

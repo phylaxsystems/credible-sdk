@@ -311,14 +311,14 @@ mod tests {
     async fn test_get_transaction_returns_successful_result(
         mut instance: crate::utils::LocalInstance,
     ) {
-        let tx_hash = instance
+        let tx_execution_id = instance
             .send_successful_create_tx(U256::from(0u64), Bytes::new())
             .await
             .expect("failed to send transaction");
 
         assert!(
             instance
-                .is_transaction_successful(&tx_hash)
+                .is_transaction_successful(&tx_execution_id)
                 .await
                 .expect("transaction query failed"),
             "transaction expected to succeed"
@@ -333,9 +333,9 @@ mod tests {
             "method": "getTransaction",
             "params": [
                 {
-                    "block_number": 0u64,
-                    "iteration_id": 0u64,
-                    "tx_hash": tx_hash.to_string()
+                    "block_number": tx_execution_id.block_number,
+                    "iteration_id": tx_execution_id.iteration_id,
+                    "tx_hash": tx_execution_id.tx_hash.to_string()
                 }
             ],
             "id": 1
@@ -366,7 +366,10 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .expect("hash field missing");
         let parsed_hash = hash_str.parse::<B256>().expect("invalid hash encoding");
-        assert_eq!(parsed_hash, tx_hash, "queried hash should match");
+        assert_eq!(
+            parsed_hash, tx_execution_id.tx_hash,
+            "queried hash should match"
+        );
 
         let status = result
             .get("status")
