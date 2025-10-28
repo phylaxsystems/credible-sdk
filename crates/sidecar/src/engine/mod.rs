@@ -203,6 +203,8 @@ pub enum EngineError {
     NoSyncedSources,
     #[error("Infallible: Missing current block data")]
     MissingCurrentBlockData,
+    #[error("Block number specified by transaction and block number currently built do not match!")]
+    TxBlockMismatch,
 }
 
 impl From<&EngineError> for ErrorRecoverability {
@@ -216,6 +218,7 @@ impl From<&EngineError> for ErrorRecoverability {
             EngineError::TransactionError
             | EngineError::ChannelClosed
             | EngineError::GetTxResultChannelClosed
+            | EngineError::TxBlockMismatch
             | EngineError::NoSyncedSources => ErrorRecoverability::Recoverable,
         }
     }
@@ -973,6 +976,23 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             return Err(EngineError::TransactionError);
         };
 
+        // Checks if the received `TxExecutionId` matches blockenv requirements.
+        // `tx_execution_id` must be `self.block_env.number + 1`, otherwise we should
+        // drop the event.
+        if block.number + 1 != tx_execution_id.block_number {
+            warn!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                blockenv_block_number = block.number,
+                tx_block_number = tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                caller = %tx_env.caller,
+                "Requested transaction block number does not match block number currently built on in engine!"
+            );
+
+            return Err(EngineError::TxBlockMismatch);
+        }
+        
         // Initialize the current block iteration id if it does not exist
         self.current_block_iterations
             .entry(tx_execution_id.as_block_execution_id())
