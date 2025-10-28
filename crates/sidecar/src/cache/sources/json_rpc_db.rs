@@ -30,6 +30,7 @@ use std::sync::{
         Ordering,
     },
 };
+use tracing::trace;
 
 impl DBErrorMarker for JsonRpcDbError {}
 
@@ -94,7 +95,7 @@ impl DatabaseRef for JsonRpcDb {
                 revm::primitives::keccak256(&code)
             };
 
-            Ok(Some(AccountInfo {
+            let account_info = AccountInfo {
                 balance,
                 nonce,
                 code_hash,
@@ -104,7 +105,18 @@ impl DatabaseRef for JsonRpcDb {
                     let bytecode = Bytecode::new_raw(code);
                     Some(bytecode)
                 },
-            }))
+            };
+
+            trace!(
+                target = "engine::overlay",
+                overlay_kind = "json_rpc",
+                access = "basic_ref",
+                block = target_block,
+                address = ?address,
+                value = ?account_info
+            );
+
+            Ok(Some(account_info))
         };
         let handle = tokio::runtime::Handle::current();
         std::thread::scope(|s| {
@@ -118,6 +130,12 @@ impl DatabaseRef for JsonRpcDb {
         // If not in cache, we can't retrieve it via standard JSON-RPC
         // This should not happen if basic_ref is always called before code_by_hash_ref
         // NOTE: Since this will be part of the OverlayDB, it is guaranteed to be in the cache of the OverlayDB
+        trace!(
+            target = "engine::overlay",
+            overlay_kind = "json_rpc",
+            access = "code_by_hash_ref",
+            status = "not_supported"
+        );
         Err(JsonRpcDbError::CodeByHashNotFound)
     }
 
@@ -131,6 +149,16 @@ impl DatabaseRef for JsonRpcDb {
                 .block_id(BlockId::number(target_block))
                 .await
                 .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
+
+            trace!(
+                target = "engine::overlay",
+                overlay_kind = "json_rpc",
+                access = "storage_ref",
+                block = target_block,
+                address = ?address,
+                index = ?index,
+                value = ?value
+            );
 
             Ok(value)
         };
@@ -151,6 +179,14 @@ impl DatabaseRef for JsonRpcDb {
                 .await
                 .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?
                 .ok_or(JsonRpcDbError::BlockNotFound)?;
+
+            trace!(
+                target = "engine::overlay",
+                overlay_kind = "json_rpc",
+                access = "block_hash_ref",
+                block_number = block_number,
+                block_hash = ?block.header.hash
+            );
 
             Ok(block.header.hash)
         };
