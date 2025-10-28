@@ -89,20 +89,39 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
         address: Address,
         slot: U256,
     ) -> Result<U256, <Self as DatabaseRef>::Error> {
-        match self.storage.get(&address) {
+        let mut source: &'static str = "inner_db";
+        let mut dont_read_from_inner_db = false;
+
+        let value = match self.storage.get(&address) {
             Some(s) => {
+                dont_read_from_inner_db = s.dont_read_from_inner_db;
                 // If the account is self destructed, do not read from inner db.
                 if s.dont_read_from_inner_db {
-                    return Ok(*s.map.get(&slot).unwrap_or(&U256::ZERO));
-                }
-
-                match s.map.get(&slot) {
-                    Some(v) => Ok(*v),
-                    None => Ok(self.inner_db.storage_ref(address, slot)?),
+                    source = "fork_selfdestruct_override";
+                    *s.map.get(&slot).unwrap_or(&U256::ZERO)
+                } else if let Some(v) = s.map.get(&slot) {
+                    source = "fork_pending_write";
+                    *v
+                } else {
+                    self.inner_db.storage_ref(address, slot)?
                 }
             }
-            None => Ok(self.inner_db.storage_ref(address, slot)?),
-        }
+            None => self.inner_db.storage_ref(address, slot)?,
+        };
+
+        tracing::trace!(
+            target = "engine::overlay",
+            overlay_kind = "fork",
+            underlying_present = true,
+            address = ?address,
+            slot = ?slot,
+            value = ?value,
+            source,
+            dont_read_from_inner_db,
+            "Returning storage slot value"
+        );
+
+        Ok(value)
     }
     fn code_by_hash_ref(&self, hash: B256) -> Result<Bytecode, <Self as DatabaseRef>::Error> {
         match self.code_by_hash.get(&hash) {
