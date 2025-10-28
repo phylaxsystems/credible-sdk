@@ -226,7 +226,10 @@ mod tests {
                     .tx_hash
                     .parse::<B256>()
                     .expect("invalid hash encoding");
-                assert_eq!(parsed_hash, tx_execution_id.tx_hash, "queried hash should match");
+                assert_eq!(
+                    parsed_hash, tx_execution_id.tx_hash,
+                    "queried hash should match"
+                );
                 assert_eq!(result.status, "success");
                 assert!(result.gas_used > 0, "gas_used expected to be populated");
                 assert!(

@@ -382,7 +382,7 @@ impl<T: TestTransport> LocalInstance<T> {
 
         let tx_execution_id = self.build_tx_id(tx_hash);
         self.transport
-            .send_transaction(tx_execution_id.clone(), tx_env)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         Ok(tx_execution_id)
@@ -415,7 +415,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
         self.transport
-            .send_transaction(tx_execution_id.clone(), tx_env)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         // Wait for processing
@@ -466,7 +466,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
         self.transport
-            .send_transaction(tx_execution_id.clone(), tx_env)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         Ok((caller, tx_execution_id))
@@ -499,7 +499,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
         self.transport
-            .send_transaction(tx_execution_id.clone(), tx_env)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         Ok(tx_execution_id)
@@ -537,7 +537,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
         self.transport
-            .send_transaction(tx_execution_id.clone(), tx_env)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         Ok(tx_execution_id)
@@ -710,7 +710,7 @@ impl<T: TestTransport> LocalInstance<T> {
         tx_execution_id: &TxExecutionId,
     ) -> Option<TransactionResult> {
         self.transaction_results
-            .get_transaction_result(&tx_execution_id)
+            .get_transaction_result(tx_execution_id)
             .map(|r| r.clone())
     }
 
@@ -855,7 +855,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send the failing transaction second
         let tx_execution_id_fail = self.build_tx_id(hash_fail);
         self.transport
-            .send_transaction(tx_execution_id_fail.clone(), tx_fail)
+            .send_transaction(tx_execution_id_fail, tx_fail)
             .await?;
 
         // Verify the second transaction failed assertions and was NOT committed
@@ -883,7 +883,7 @@ impl<T: TestTransport> LocalInstance<T> {
         let _ = self.is_transaction_invalid(&tx_execution_id).await?;
 
         // Send reorg event
-        self.transport.reorg(tx_execution_id.clone()).await?;
+        self.transport.reorg(tx_execution_id).await?;
 
         // Reorg was accepted by the engine and the last executed transaction
         // was removed from the buffer. Mirror this in our local nonce tracking

@@ -1488,7 +1488,10 @@ mod tests {
         // Send reorg and unwrap on the result, verifying if the core engine
         // processed tx or exited with error
         assert!(
-            instance.send_reorg(TxExecutionId::from_hash(B256::random())).await.is_err(),
+            instance
+                .send_reorg(TxExecutionId::from_hash(B256::random()))
+                .await
+                .is_err(),
             "not an error, core engine should have exited!"
         );
     }
@@ -1499,7 +1502,10 @@ mod tests {
     ) {
         // Send reorg without any prior blockenv or transaction
         assert!(
-            instance.send_reorg(TxExecutionId::from_hash(B256::random())).await.is_err(),
+            instance
+                .send_reorg(TxExecutionId::from_hash(B256::random()))
+                .await
+                .is_err(),
             "Reorg before any blockenv should be rejected and exit engine"
         );
     }
@@ -1516,7 +1522,10 @@ mod tests {
 
         // Now send a reorg before any transaction in this block
         assert!(
-            instance.send_reorg(TxExecutionId::from_hash(B256::random())).await.is_err(),
+            instance
+                .send_reorg(TxExecutionId::from_hash(B256::random()))
+                .await
+                .is_err(),
             "Reorg after blockenv but before any tx should be rejected"
         );
     }
@@ -1848,7 +1857,9 @@ mod tests {
         );
 
         tracing::info!("test_block_env_wrong_last_tx_hash: overriding last tx hash");
-        instance.transport.set_last_tx_hash(Some(tx_execution_id_1.tx_hash));
+        instance
+            .transport
+            .set_last_tx_hash(Some(tx_execution_id_1.tx_hash));
 
         assert!(
             instance
@@ -1887,7 +1898,10 @@ mod tests {
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_execution_id).await.unwrap(),
+            instance
+                .is_transaction_successful(&tx_execution_id)
+                .await
+                .unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
         tracing::info!("test_block_env_wrong_last_tx_hash: test completed");
@@ -1911,7 +1925,10 @@ mod tests {
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_execution_id).await.unwrap(),
+            instance
+                .is_transaction_successful(&tx_execution_id)
+                .await
+                .unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
@@ -1935,11 +1952,16 @@ mod tests {
             .unwrap();
 
         assert!(
-            instance.is_transaction_successful(&tx_execution_id).await.unwrap(),
+            instance
+                .is_transaction_successful(&tx_execution_id)
+                .await
+                .unwrap(),
             "Transaction should execute successfully and pass assertions"
         );
 
-        instance.transport.set_last_tx_hash(Some(tx_execution_id.tx_hash));
+        instance
+            .transport
+            .set_last_tx_hash(Some(tx_execution_id.tx_hash));
         instance.transport.set_n_transactions(0);
 
         // Send a blockEnv with the wrong number of transactions

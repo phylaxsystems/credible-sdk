@@ -366,7 +366,10 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .expect("hash field missing");
         let parsed_hash = hash_str.parse::<B256>().expect("invalid hash encoding");
-        assert_eq!(parsed_hash, tx_execution_id.tx_hash, "queried hash should match");
+        assert_eq!(
+            parsed_hash, tx_execution_id.tx_hash,
+            "queried hash should match"
+        );
 
         let status = result
             .get("status")
