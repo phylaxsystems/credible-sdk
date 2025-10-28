@@ -33,11 +33,11 @@ use crate::{
             TxQueueContents,
         },
     },
+    execution_ids::TxExecutionId,
     transport::{
         common::HttpDecoderError,
         http::transactions_results::QueryTransactionsResults,
     },
-    tx_execution_id::TxExecutionId,
 };
 use alloy::{
     eips::eip7702::{

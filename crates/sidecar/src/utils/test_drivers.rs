@@ -17,6 +17,7 @@ use crate::{
         TransactionQueueSender,
         TxQueueContents,
     },
+    execution_ids::TxExecutionId,
     transport::{
         Transport,
         grpc::{
@@ -39,7 +40,6 @@ use crate::{
         },
         mock::MockTransport,
     },
-    tx_execution_id::TxExecutionId,
 };
 use alloy::primitives::TxHash;
 use assertion_executor::{

@@ -25,7 +25,7 @@
 //! Reorg events are signals from the driver to the engine that it should discard the last
 //! executed transaction.
 
-use crate::tx_execution_id::TxExecutionId;
+use crate::execution_ids::TxExecutionId;
 use alloy::primitives::TxHash;
 use crossbeam::channel::{
     Receiver,

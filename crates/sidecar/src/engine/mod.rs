@@ -87,7 +87,7 @@ use revm::state::EvmState;
 use crate::{
     cache::Cache,
     engine::transactions_results::TransactionsResults,
-    tx_execution_id::{
+    execution_ids::{
         BlockExecutionId,
         TxExecutionId,
     },
@@ -230,8 +230,11 @@ pub enum TransactionResult {
     ValidationError(String),
 }
 
+/// The `BlockIterationData` is a unique identifier for a block iteration state. It contains
+/// the state of the current block for a given iteration (e.i., `fork_db`, `n_transactions`,
+/// `last_executed_tx`)
 #[derive(Debug)]
-struct CurrentBlockIterationId<DB> {
+struct BlockIterationData<DB> {
     /// Current block's fork. It is created once per block, accumulates all transaction changes
     fork_db: ForkDb<OverlayDb<DB>>,
     /// How many transactions we have seen for each iteration in the `blockEnv` we are currently working on
@@ -249,8 +252,8 @@ pub struct CoreEngine<DB> {
     ///
     /// This is the state the `CoreEngine` is executing transactions against.
     state: OverlayDb<DB>,
-    /// Current block iteration id
-    current_block_iteration_id: HashMap<BlockExecutionId, CurrentBlockIterationId<DB>>,
+    /// Current block iteration data per block execution id.
+    current_block_iterations: HashMap<BlockExecutionId, BlockIterationData<DB>>,
     /// External providers of state we use when we do not have a piece of state cached in our in memory db.
     /// External state providers implement a trait that we use to query databaseref-like data and populate `state: OverlayDb<DB>`
     /// for execution with it.
@@ -322,7 +325,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         };
         Self {
             state,
-            current_block_iteration_id: HashMap::new(),
+            current_block_iterations: HashMap::new(),
             cache: cache.clone(),
             tx_receiver,
             assertion_executor,
@@ -353,7 +356,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let cache = Arc::new(Cache::new(vec![], 10));
         Self {
             state: OverlayDb::new(None, 64),
-            current_block_iteration_id: HashMap::new(),
+            current_block_iterations: HashMap::new(),
             tx_receiver,
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
@@ -455,9 +458,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         state: Option<EvmState>,
     ) {
         let current_block_iteration_id = self
-            .current_block_iteration_id
+            .current_block_iterations
             .entry(tx_execution_id.as_block_execution_id())
-            .or_insert(CurrentBlockIterationId {
+            .or_insert(BlockIterationData {
                 fork_db: self.state.fork(),
                 n_transactions: 0,
                 last_executed_tx: LastExecutedTx::new(),
@@ -565,9 +568,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         })?;
 
         let current_block_iteration_id = self
-            .current_block_iteration_id
+            .current_block_iterations
             .entry(tx_execution_id.as_block_execution_id())
-            .or_insert(CurrentBlockIterationId {
+            .or_insert(BlockIterationData {
                 fork_db: self.state.fork(),
                 n_transactions: 0,
                 last_executed_tx: LastExecutedTx::new(),
@@ -701,7 +704,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let instant = Instant::now();
         self.check_sources_available = true;
         self.state.invalidate_all();
-        self.current_block_iteration_id.clear();
+        self.current_block_iterations.clear();
         self.block_metrics
             .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
     }
@@ -729,9 +732,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         let (current_last_executed_tx, n_transactions) = {
             let current_block_iteration_id = self
-                .current_block_iteration_id
+                .current_block_iterations
                 .entry(block_execution_id)
-                .or_insert(CurrentBlockIterationId {
+                .or_insert(BlockIterationData {
                     fork_db: self.state.fork(),
                     n_transactions: 0,
                     last_executed_tx: LastExecutedTx::new(),
@@ -897,7 +900,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     ) -> Result<(), EngineError> {
         let block_env = &queue_block_env.block_env;
 
-        let tx_execution_id =
+        let block_execution_id =
             queue_block_env
                 .selected_iteration_id
                 .and_then(|selected_iteration_id| {
@@ -914,11 +917,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             self.invalidate_all(&queue_block_env);
         } else if block_env.number > 0 {
             // If not, check if the cache should be invalidated.
-            self.check_cache(&queue_block_env, tx_execution_id);
+            self.check_cache(&queue_block_env, block_execution_id);
         }
 
         // Finalize the previous block by committing its fork to the underlying state
-        if let Some(block_execution_id) = tx_execution_id {
+        if let Some(block_execution_id) = block_execution_id {
             // Apply the last transaction's state to the current block fork
             self.apply_state_buffer_to_fork(block_execution_id)?;
             self.finalize_previous_block(block_execution_id);
@@ -959,7 +962,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         *block_processing_time = Instant::now();
 
         self.block_env = Some(queue_block_env.block_env);
-        self.current_block_iteration_id = HashMap::new();
+        self.current_block_iterations = HashMap::new();
 
         Ok(())
     }
@@ -987,9 +990,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         };
 
         // Initialize the current block iteration id if it does not exist
-        self.current_block_iteration_id
+        self.current_block_iterations
             .entry(tx_execution_id.as_block_execution_id())
-            .or_insert(CurrentBlockIterationId {
+            .or_insert(BlockIterationData {
                 fork_db: self.state.fork(),
                 n_transactions: 0,
                 last_executed_tx: LastExecutedTx::new(),
@@ -1024,9 +1027,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         block_execution_id: BlockExecutionId,
     ) -> Result<(), EngineError> {
         let current_block_iteration_id = self
-            .current_block_iteration_id
+            .current_block_iterations
             .entry(block_execution_id)
-            .or_insert(CurrentBlockIterationId {
+            .or_insert(BlockIterationData {
                 fork_db: self.state.fork(),
                 n_transactions: 0,
                 last_executed_tx: LastExecutedTx::new(),
@@ -1048,9 +1051,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// Finalizes the previous block by committing the block fork to the underlying state
     fn finalize_previous_block(&mut self, block_execution_id: BlockExecutionId) {
         let current_block_iteration_id = self
-            .current_block_iteration_id
+            .current_block_iterations
             .entry(block_execution_id)
-            .or_insert(CurrentBlockIterationId {
+            .or_insert(BlockIterationData {
                 fork_db: self.state.fork(),
                 n_transactions: 0,
                 last_executed_tx: LastExecutedTx::new(),
@@ -1074,9 +1077,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         block_execution_id: BlockExecutionId,
     ) -> Result<(), EngineError> {
         let current_block_iteration_id = self
-            .current_block_iteration_id
+            .current_block_iterations
             .entry(block_execution_id)
-            .or_insert(CurrentBlockIterationId {
+            .or_insert(BlockIterationData {
                 fork_db: self.state.fork(),
                 n_transactions: 0,
                 last_executed_tx: LastExecutedTx::new(),
@@ -1123,9 +1126,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         let current_block_iteration_id = self
-            .current_block_iteration_id
+            .current_block_iterations
             .entry(tx_execution_id.as_block_execution_id())
-            .or_insert(CurrentBlockIterationId {
+            .or_insert(BlockIterationData {
                 fork_db: self.state.fork(),
                 n_transactions: 0,
                 last_executed_tx: LastExecutedTx::new(),
@@ -2082,14 +2085,14 @@ mod tests {
         let mut last_executed_tx = LastExecutedTx::new();
         last_executed_tx.push(tx_execution_id, None);
 
-        let current_block_iteration_id = CurrentBlockIterationId {
+        let current_block_iteration_id = BlockIterationData {
             fork_db: engine.state.fork(),
             n_transactions: 0,
             last_executed_tx,
         };
 
         engine
-            .current_block_iteration_id
+            .current_block_iterations
             .entry(block_execution_id)
             .or_insert(current_block_iteration_id);
 
