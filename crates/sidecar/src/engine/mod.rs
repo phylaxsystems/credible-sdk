@@ -882,7 +882,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         queue_block_env: QueueBlockEnv,
         processed_blocks: &mut u64,
         block_processing_time: &mut Instant,
-    ) {
+    ) -> Result<(), EngineError> {
         let block_env = &queue_block_env.block_env;
 
         let block_execution_id =
@@ -908,7 +908,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         // Finalize the previous block by committing its fork to the underlying state
         if let Some(block_execution_id) = block_execution_id {
             // Apply the last transaction's state to the current block fork
-            self.apply_state_buffer_to_fork(block_execution_id);
+            self.apply_state_buffer_to_fork(block_execution_id)?;
             self.finalize_previous_block(block_execution_id);
         } else {
             warn!(
@@ -997,7 +997,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         // Apply the previously executed transaction state changes to the block fork
-        self.apply_state_buffer_to_fork(tx_execution_id.as_block_execution_id());
+        self.apply_state_buffer_to_fork(tx_execution_id.as_block_execution_id())?;
 
         // Process the transaction with the current block environment
         self.execute_transaction(tx_execution_id, &tx_env)?;
@@ -1006,11 +1006,14 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     }
 
     /// Applies the state inside `self.last_executed_tx` to the current block fork.
-    fn apply_state_buffer_to_fork(&mut self, block_execution_id: BlockExecutionId) {
+    fn apply_state_buffer_to_fork(
+        &mut self,
+        block_execution_id: BlockExecutionId,
+    ) -> Result<(), EngineError> {
         let Some(current_block_iteration) =
             self.current_block_iterations.get_mut(&block_execution_id)
         else {
-            return;
+            return Ok(());
         };
 
         if let Some((tx_execution_id, state)) = current_block_iteration.last_executed_tx.current() {
@@ -1021,6 +1024,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             current_block_iteration.fork_db.commit(changes);
         }
         current_block_iteration.last_executed_tx = LastExecutedTx::new();
+        Ok(())
     }
 
     /// Finalizes the previous block by committing the block fork to the underlying state
@@ -1044,14 +1048,16 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// Applies the state inside `self.last_executed_tx` to `self.state`.
     ///
     /// If `self.last_executed_tx` is empty, we dont do anything.
+    #[cfg(test)]
     fn apply_state_buffer(
         &mut self,
         block_execution_id: BlockExecutionId,
     ) -> Result<(), EngineError> {
-        let current_block_iteration = self
-            .current_block_iterations
-            .get_mut(&block_execution_id)
-            .ok_or(EngineError::MissingCurrentBlockData)?;
+        let Some(current_block_iteration) =
+            self.current_block_iterations.get_mut(&block_execution_id)
+        else {
+            return Ok(());
+        };
 
         #[allow(clippy::used_underscore_binding)]
         if let Some((_tx_execution_id, state)) = current_block_iteration.last_executed_tx.current()
@@ -1692,6 +1698,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn test_database_commit_verification() {
         use revm::primitives::address;
@@ -1720,8 +1727,19 @@ mod tests {
 
         engine.block_env = Some(block_env);
 
+        let current_block_iteration_id = BlockIterationData {
+            fork_db: engine.state.fork(),
+            n_transactions: 0,
+            last_executed_tx: LastExecutedTx::new(),
+        };
+
         // Execute the transaction
         let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+        engine
+            .current_block_iterations
+            .entry(tx_execution_id.as_block_execution_id())
+            .or_insert(current_block_iteration_id);
+
         let result = engine.execute_transaction(tx_execution_id, &tx_env);
         assert!(result.is_ok(), "Transaction should execute successfully");
         // We now need to advance the state by one block so we commit the transaction state
