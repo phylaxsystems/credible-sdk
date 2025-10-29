@@ -891,13 +891,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let block_execution_id =
             queue_block_env
                 .selected_iteration_id
-                .and_then(|selected_iteration_id| {
-                    (block_env.number > 0).then_some({
-                        BlockExecutionId {
-                            block_number: block_env.number,
-                            iteration_id: selected_iteration_id,
-                        }
-                    })
+                .map(|selected_iteration_id| {
+                    BlockExecutionId {
+                        block_number: block_env.number,
+                        iteration_id: selected_iteration_id,
+                    }
                 });
 
         // If it is configured to invalidate the cache every block, do so
@@ -2124,5 +2122,710 @@ mod tests {
 
         let result = engine.apply_state_buffer(block_execution_id);
         assert!(matches!(result, Err(EngineError::NothingToCommit)));
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_multiple_iterations_winner_selected(mut instance: crate::utils::LocalInstance) {
+        info!("Testing multiple iterations with winner selection");
+        instance.new_block().await.unwrap();
+
+        // Send transactions with different iteration IDs in Block 1
+        instance.set_current_iteration_id(1);
+        let tx_block1_iter1 = instance
+            .send_successful_create_tx_dry(uint!(100_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.set_current_iteration_id(2);
+        let tx_block1_iter2 = instance
+            .send_successful_create_tx_dry(uint!(200_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.set_current_iteration_id(3);
+        let tx_block1_iter3 = instance
+            .send_successful_create_tx_dry(uint!(300_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // All transactions should be processed
+        assert!(
+            instance
+                .is_transaction_successful(&tx_block1_iter1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx_block1_iter2)
+                .await
+                .unwrap()
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx_block1_iter3)
+                .await
+                .unwrap()
+        );
+
+        // Block 2: Select iteration 2 as the winner from Block 1
+        instance.set_current_iteration_id(2);
+        instance.new_block().await.unwrap();
+
+        // Send a transaction to verify state was committed correctly
+        let tx_block2 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_block2)
+                .await
+                .unwrap(),
+            "Transaction in Block 2 should succeed after iteration 2 was selected"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_iteration_selection_commits_only_winner(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        info!("Testing that only winning iteration is committed to state");
+
+        let initial_cache_count = instance.cache_reset_count();
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        // Iteration 1: Create a contract at value 100
+        instance.set_current_iteration_id(1);
+        let tx_iter1 = instance
+            .send_successful_create_tx_dry(uint!(100_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Iteration 2: Create a contract at value 200
+        instance.set_current_iteration_id(2);
+        let tx_iter2 = instance
+            .send_successful_create_tx_dry(uint!(200_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(instance.is_transaction_successful(&tx_iter1).await.unwrap());
+        assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
+
+        // Block 2: Select iteration 1 as the winner
+        instance.set_current_iteration_id(1);
+        instance.new_block().await.unwrap();
+
+        // The state should reflect iteration 1's changes, not iteration 2's
+        let tx_verify = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_verify)
+                .await
+                .unwrap()
+        );
+
+        // No cache flush should occur
+        instance
+            .wait_for_processing(Duration::from_millis(25))
+            .await;
+        assert_eq!(
+            instance.cache_reset_count(),
+            initial_cache_count,
+            "Cache should not flush when correct iteration is selected"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_wrong_iteration_selected_triggers_flush(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        info!("Testing that selecting wrong iteration triggers cache flush");
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        // Send transaction in iteration 1
+        instance.set_current_iteration_id(1);
+        let tx_iter1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Send transaction in iteration 2
+        instance.set_current_iteration_id(2);
+        let tx_iter2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(instance.is_transaction_successful(&tx_iter1).await.unwrap());
+        assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
+
+        // Block 2: Select iteration 3 (which doesn't exist)
+        instance.set_current_iteration_id(3);
+        instance.transport.set_last_tx_hash(Some(B256::random())); // Wrong hash
+        instance.transport.set_n_transactions(1);
+
+        instance
+            .expect_cache_flush(|instance| {
+                Box::pin(async move {
+                    instance.new_block().await?;
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+
+        // Engine should continue working
+        let tx_after_flush = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_after_flush)
+                .await
+                .unwrap(),
+            "Engine should work after cache flush"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_multiple_transactions_same_iteration(mut instance: crate::utils::LocalInstance) {
+        info!("Testing multiple transactions in the same iteration");
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        // Send multiple transactions all in iteration 2
+        instance.set_current_iteration_id(2);
+        let tx1_iter2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        let tx2_iter2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        let tx3_iter2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // All should succeed
+        assert!(
+            instance
+                .is_transaction_successful(&tx1_iter2)
+                .await
+                .unwrap()
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx2_iter2)
+                .await
+                .unwrap()
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx3_iter2)
+                .await
+                .unwrap()
+        );
+
+        // Block 2: Select iteration 2 with all 3 transactions
+        instance.set_current_iteration_id(2);
+        instance.new_block().await.unwrap();
+
+        let tx_block2 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_block2)
+                .await
+                .unwrap(),
+            "Should commit all 3 transactions from iteration 2"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_iteration_selection_with_transaction_count_mismatch(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        info!("Testing iteration selection with wrong transaction count");
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        // Iteration 1: 2 transactions
+        instance.set_current_iteration_id(1);
+        let tx1_iter1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        let tx2_iter1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx1_iter1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx2_iter1)
+                .await
+                .unwrap()
+        );
+
+        // Block 2: Select iteration 1 but set the wrong count (3 instead of 2)
+        instance.set_current_iteration_id(1);
+        instance.transport.set_n_transactions(3);
+
+        instance
+            .expect_cache_flush(|instance| {
+                Box::pin(async move {
+                    instance.new_block().await?;
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_reorg_in_specific_iteration_before_selection(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        info!("Testing reorg within iteration before block selection");
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        // Iteration 1: Send 2 transactions
+        instance.set_current_iteration_id(1);
+        let tx1_iter1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        let tx2_iter1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Iteration 2: Send 1 transaction
+        instance.set_current_iteration_id(2);
+        let tx1_iter2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx1_iter1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx2_iter1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx1_iter2)
+                .await
+                .unwrap()
+        );
+
+        // Reorg last transaction in iteration 1
+        instance.set_current_iteration_id(1);
+        instance.send_reorg(tx2_iter1).await.unwrap();
+
+        // Block 2: Select iteration 1 with only 1 transaction (after reorg)
+        instance.set_current_iteration_id(1);
+        instance.new_block().await.unwrap();
+
+        let tx_block2 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_block2)
+                .await
+                .unwrap(),
+            "Should work after reorg and correct iteration selection"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_empty_iteration_selected(mut instance: crate::utils::LocalInstance) {
+        info!("Testing selection of empty iteration (no transactions)");
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        // Only send transactions in iteration 2
+        instance.set_current_iteration_id(2);
+        let tx_iter2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
+
+        // Block 2: Select iteration 1 which has no transactions
+        instance.set_current_iteration_id(1);
+        instance.new_block().await.unwrap();
+
+        // Should still work
+        let tx_block2 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_block2)
+                .await
+                .unwrap(),
+            "Should work when empty iteration is selected"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_interleaved_iterations(mut instance: crate::utils::LocalInstance) {
+        info!("Testing interleaved iteration IDs");
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        // Send transactions with alternating iteration IDs
+        instance.set_current_iteration_id(1);
+        let tx1_iter1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.set_current_iteration_id(2);
+        let tx1_iter2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.set_current_iteration_id(1);
+        let tx2_iter1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.set_current_iteration_id(2);
+        let tx2_iter2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // All should succeed
+        assert!(
+            instance
+                .is_transaction_successful(&tx1_iter1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx1_iter2)
+                .await
+                .unwrap()
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx2_iter1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            instance
+                .is_transaction_successful(&tx2_iter2)
+                .await
+                .unwrap()
+        );
+
+        // Block 2: Select iteration 1 (should have 2 transactions)
+        instance.set_current_iteration_id(1);
+        instance.new_block().await.unwrap();
+
+        let tx_block2 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_block2)
+                .await
+                .unwrap(),
+            "Should correctly handle interleaved iterations"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_multiple_blocks_multiple_iterations(mut instance: crate::utils::LocalInstance) {
+        info!("Testing multiple blocks each with multiple iterations");
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        instance.set_current_iteration_id(1);
+        let b1_tx_iter1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.set_current_iteration_id(2);
+        let b1_tx_iter2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Block 2: Select iteration 2 from Block 1
+        instance.set_current_iteration_id(2);
+        instance.new_block().await.unwrap();
+
+        instance.set_current_iteration_id(1);
+        let b2_tx_iter1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.set_current_iteration_id(2);
+        let b2_tx_iter2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Block 3: Select iteration 1 from Block 2
+        instance.set_current_iteration_id(1);
+        instance.new_block().await.unwrap();
+
+        let tx_block3 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_block3)
+                .await
+                .unwrap(),
+            "Should handle multiple blocks with different iteration selections"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_cache_miss_with_iteration_selection(mut instance: crate::utils::LocalInstance) {
+        info!("Testing cache miss behavior with iteration selection");
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        // Iteration 1: Trigger cache miss
+        instance.set_current_iteration_id(1);
+        let (caller1, tx1_iter1) = instance.send_create_tx_with_cache_miss().await.unwrap();
+
+        // Iteration 2: Trigger another cache miss
+        instance.set_current_iteration_id(2);
+        let (caller2, tx1_iter2) = instance.send_create_tx_with_cache_miss().await.unwrap();
+
+        instance
+            .wait_for_processing(Duration::from_millis(50))
+            .await;
+
+        assert!(instance.get_transaction_result(&tx1_iter1).is_some());
+        assert!(instance.get_transaction_result(&tx1_iter2).is_some());
+
+        // Block 2: Select iteration 1
+        instance.set_current_iteration_id(1);
+        instance.new_block().await.unwrap();
+
+        let tx_block2 = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_block2)
+                .await
+                .unwrap(),
+            "Should handle cache misses with iteration selection"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_switching_winning_iterations_across_blocks(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        info!("Testing switching winning iterations across multiple blocks");
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        instance.set_current_iteration_id(1);
+        let b1_i1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.set_current_iteration_id(2);
+        let b1_i2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Block 2: Select iteration 1
+        instance.set_current_iteration_id(1);
+        instance.new_block().await.unwrap();
+
+        instance.set_current_iteration_id(1);
+        let b2_i1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.set_current_iteration_id(2);
+        let b2_i2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Block 3: Switch to iteration 2
+        instance.set_current_iteration_id(2);
+        instance.new_block().await.unwrap();
+
+        instance.set_current_iteration_id(1);
+        let b3_i1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        instance.set_current_iteration_id(2);
+        let b3_i2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Block 4: Switch back to iteration 1
+        instance.set_current_iteration_id(1);
+        instance.new_block().await.unwrap();
+
+        let final_tx = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&final_tx).await.unwrap(),
+            "Should handle switching winning iterations across blocks"
+        );
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_reorg_affects_only_target_iteration(mut instance: crate::utils::LocalInstance) {
+        info!("Testing that reorg only affects the target iteration");
+
+        // Block 1
+        instance.new_block().await.unwrap();
+
+        // Iteration 1: 3 transactions
+        instance.set_current_iteration_id(1);
+        let tx1_i1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+        let tx2_i1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+        let tx3_i1 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // Iteration 2: 2 transactions
+        instance.set_current_iteration_id(2);
+        let tx1_i2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+        let tx2_i2 = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        // All should be successful
+        assert!(instance.is_transaction_successful(&tx1_i1).await.unwrap());
+        assert!(instance.is_transaction_successful(&tx2_i1).await.unwrap());
+        assert!(instance.is_transaction_successful(&tx3_i1).await.unwrap());
+        assert!(instance.is_transaction_successful(&tx1_i2).await.unwrap());
+        assert!(instance.is_transaction_successful(&tx2_i2).await.unwrap());
+
+        // Reorg last transaction in iteration 1
+        instance.set_current_iteration_id(1);
+        instance.send_reorg(tx3_i1).await.unwrap();
+
+        // Verify reorg only affected iteration 1
+        assert!(
+            instance.is_transaction_removed(&tx3_i1).await.unwrap(),
+            "Reorged transaction should be removed"
+        );
+        assert!(
+            instance.get_transaction_result(&tx1_i1).is_some(),
+            "Other transactions in iteration 1 should remain"
+        );
+        assert!(
+            instance.get_transaction_result(&tx2_i1).is_some(),
+            "Other transactions in iteration 1 should remain"
+        );
+        assert!(
+            instance.get_transaction_result(&tx1_i2).is_some(),
+            "Iteration 2 should be unaffected"
+        );
+        assert!(
+            instance.get_transaction_result(&tx2_i2).is_some(),
+            "Iteration 2 should be unaffected"
+        );
+
+        // Block 2: Select iteration 1 (now with 2 transactions)
+        instance.set_current_iteration_id(1);
+        instance.new_block().await.unwrap();
+
+        let final_tx = instance
+            .send_successful_create_tx(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+
+        assert!(instance.is_transaction_successful(&final_tx).await.unwrap());
     }
 }
