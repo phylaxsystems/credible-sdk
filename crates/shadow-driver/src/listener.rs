@@ -848,17 +848,18 @@ impl Listener {
         // Compare each transaction
         for tx_hash in tx_hashes {
             // Get blockchain status from the receipt
-            let blockchain_success = match self.provider.get_transaction_receipt(tx_hash).await {
-                Ok(Some(receipt)) => receipt.status(),
-                Ok(None) => {
-                    warn!("No receipt found for tx {tx_hash:#x}");
-                    continue;
-                }
-                Err(e) => {
-                    warn!("Failed to get receipt for tx {tx_hash:#x}: {e:?}");
-                    continue;
-                }
-            };
+            let (gas_used, blockchain_success) =
+                match self.provider.get_transaction_receipt(tx_hash).await {
+                    Ok(Some(receipt)) => (receipt.gas_used, receipt.status()),
+                    Ok(None) => {
+                        warn!("No receipt found for tx {tx_hash:#x}");
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!("Failed to get receipt for tx {tx_hash:#x}: {e:?}");
+                        continue;
+                    }
+                };
 
             // Get sidecar status from batch results
             let Some(sidecar_result) = sidecar_results.get(&tx_hash) else {
@@ -883,6 +884,14 @@ impl Listener {
                         .as_ref()
                         .map(|e| format!(" (error: {e})"))
                         .unwrap_or_default()
+                );
+            }
+
+            // Compare and log gas if mismatch
+            if Some(gas_used) != sidecar_result.gas_used {
+                error!(
+                    "TX GAS MISMATCH {tx_hash:#x}: blockchain={gas_used} sidecar={:?}",
+                    sidecar_result.gas_used,
                 );
             }
         }
