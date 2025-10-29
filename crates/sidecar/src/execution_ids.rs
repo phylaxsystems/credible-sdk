@@ -72,7 +72,11 @@ impl TxExecutionId {
 
 impl fmt::Display for TxExecutionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#x}", self.tx_hash)
+        f.debug_struct("TxExecutionId")
+            .field("block_number", &self.block_number)
+            .field("iteration_id", &self.iteration_id)
+            .field("tx_hash", &format_args!("{:#x}", self.tx_hash))
+            .finish()
     }
 }
 
