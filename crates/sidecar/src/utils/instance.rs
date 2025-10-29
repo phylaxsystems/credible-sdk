@@ -267,8 +267,12 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Builds a `TxExecutionId` with the block hash and instance
     /// currently in use by the `LocalInstance`.
     fn build_tx_id(&self, tx_hash: B256) -> TxExecutionId {
+        // `self.block_number` reflects the next block env number we will emit.
+        // Transactions relate to the block being constructed, which is one ahead
+        // of the last block env (i.e. the current `self.block_number` value).
+        let block_number = self.block_number;
         TxExecutionId {
-            block_number: self.block_number,
+            block_number,
             // TODO: Needs to be configurable when we add per instance
             // execution!!!
             iteration_id: 1,

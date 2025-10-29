@@ -203,6 +203,8 @@ pub enum EngineError {
     NoSyncedSources,
     #[error("Infallible: Missing current block data")]
     MissingCurrentBlockData,
+    #[error("Block number specified by transaction and block number currently built do not match!")]
+    TxBlockMismatch,
 }
 
 impl From<&EngineError> for ErrorRecoverability {
@@ -216,6 +218,7 @@ impl From<&EngineError> for ErrorRecoverability {
             EngineError::TransactionError
             | EngineError::ChannelClosed
             | EngineError::GetTxResultChannelClosed
+            | EngineError::TxBlockMismatch
             | EngineError::NoSyncedSources => ErrorRecoverability::Recoverable,
         }
     }
@@ -973,6 +976,23 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             return Err(EngineError::TransactionError);
         };
 
+        // Checks if the received `TxExecutionId` matches blockenv requirements.
+        // `tx_execution_id` must be `self.block_env.number + 1`, otherwise we should
+        // drop the event.
+        if block.number + 1 != tx_execution_id.block_number {
+            warn!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                blockenv_block_number = block.number,
+                tx_block_number = tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                caller = %tx_env.caller,
+                "Requested transaction block number does not match block number currently built in engine!"
+            );
+
+            return Err(EngineError::TxBlockMismatch);
+        }
+
         // Initialize the current block iteration id if it does not exist
         self.current_block_iterations
             .entry(tx_execution_id.as_block_execution_id())
@@ -1097,6 +1117,33 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             tx_hash = %tx_execution_id.tx_hash,
             "Checking reorg validity for hash"
         );
+
+        let Some(ref block) = self.block_env else {
+            error!(
+                target = "engine",
+                tx_hash = %tx_execution_id.tx_hash,
+                block_number = tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                "Received reorg without first receiving a BlockEnv"
+            );
+            return Err(EngineError::TransactionError);
+        };
+
+        // Checks if the received `TxExecutionId` matches blockenv requirements.
+        // `tx_execution_id` must be `self.block_env.number + 1`, otherwise we should
+        // drop the event.
+        if block.number + 1 != tx_execution_id.block_number {
+            warn!(
+                target = "engine",
+                tx_hash = %tx_execution_id.tx_hash,
+                blockenv_block_number = block.number,
+                tx_block_number = tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                "Requested reorg block number does not match block number currently built in engine!"
+            );
+
+            return Err(EngineError::TxBlockMismatch);
+        }
 
         let current_block_iteration = self
             .current_block_iterations
@@ -1274,7 +1321,7 @@ mod tests {
             selected_iteration_id: Some(0),
         };
         let queue_tx = queue::QueueTransaction {
-            tx_execution_id: TxExecutionId::from_hash(B256::from([0x11; 32])),
+            tx_execution_id: TxExecutionId::new(1, 0, B256::from([0x11; 32])),
             tx_env: TxEnv::default(),
         };
 
@@ -1991,7 +2038,6 @@ mod tests {
         instance.send_all_tx_types().await.unwrap();
     }
 
-    #[tracing_test::traced_test]
     #[crate::utils::engine_test(http)]
     async fn test_block_env_transaction_number_greater_than_zero_and_no_last_tx_hash(
         mut instance: crate::utils::LocalInstance,
@@ -2018,7 +2064,6 @@ mod tests {
         assert!(res.is_err());
     }
 
-    #[tracing_test::traced_test]
     #[crate::utils::engine_test(http)]
     async fn test_block_env_transaction_number_zero_and_last_tx_hash(
         mut instance: crate::utils::LocalInstance,
