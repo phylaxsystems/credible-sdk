@@ -14,6 +14,7 @@ use crate::{
 use revm::{
     Database,
     Inspector,
+    bytecode::opcode::OpCode,
     context::{
         JournalInner,
         journaled_state::JournalCheckpoint,
@@ -23,13 +24,20 @@ use revm::{
         CallOutcome,
         CreateInputs,
         CreateOutcome,
+        interpreter_types::{
+            Jumps,
+            LoopControl,
+        },
     },
 };
 use std::collections::{
     HashMap,
     HashSet,
 };
-use tracing::error;
+use tracing::{
+    error,
+    trace,
+};
 
 /// Macro to implement Inspector trait for multiple context types.
 /// This is cleaner than duplicating the implementation and more reliable than generic bounds.
@@ -37,6 +45,12 @@ macro_rules! impl_call_tracer_inspector {
     ($($context_type:ty),* $(,)?) => {
         $(
             impl<DB: Database> Inspector<$context_type> for CallTracer {
+                fn step(&mut self, interp: &mut revm::interpreter::Interpreter, _context: &mut $context_type) {
+                    self.record_instruction_step(interp);
+                }
+                fn step_end(&mut self, interp: &mut revm::interpreter::Interpreter, _context: &mut $context_type) {
+                    self.log_instruction_step(interp);
+                }
                 fn call(&mut self, context: &mut $context_type, inputs: &mut CallInputs) -> Option<CallOutcome> {
                     let input_bytes = inputs.input.bytes(context);
                     self.record_call_start(inputs.clone(), &input_bytes, &mut context.journaled_state.inner);
@@ -61,6 +75,13 @@ impl_call_tracer_inspector!(EthCtx<'_, DB>, OpCtx<'_, DB>);
 pub struct TargetAndSelector {
     pub target: Address,
     pub selector: FixedBytes<4>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InstructionStep {
+    pc: usize,
+    opcode: u8,
+    gas_remaining_before: u64,
 }
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
@@ -93,6 +114,7 @@ pub struct CallTracer {
     pending_post_call_writes: HashMap<usize, usize>,
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
     pub result: Result<(), CallTracerError>,
+    last_step: Option<InstructionStep>,
 }
 impl Default for CallTracer {
     fn default() -> Self {
@@ -104,6 +126,7 @@ impl Default for CallTracer {
             pending_post_call_writes: HashMap::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
+            last_step: None,
         }
     }
 }
@@ -124,6 +147,7 @@ impl CallTracer {
             pending_post_call_writes: HashMap::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
+            last_step: None,
         }
     }
 
@@ -195,6 +219,33 @@ impl CallTracer {
             self.result = Err(CallTracerError::PendingPostCallWriteNotFound {
                 depth: journal_inner.depth,
             });
+        }
+    }
+
+    pub(crate) fn record_instruction_step(&mut self, interp: &mut revm::interpreter::Interpreter) {
+        let gas_remaining_before = interp.control.gas().remaining();
+        let opcode = interp.bytecode.opcode();
+        let pc = interp.bytecode.pc();
+        self.last_step = Some(InstructionStep {
+            pc,
+            opcode,
+            gas_remaining_before,
+        });
+    }
+
+    pub(crate) fn log_instruction_step(&mut self, interp: &mut revm::interpreter::Interpreter) {
+        if let Some(last_step) = self.last_step.take() {
+            let gas_after = interp.control.gas().remaining();
+            let gas_cost = last_step.gas_remaining_before.saturating_sub(gas_after);
+            let opcode_name = OpCode::name_by_op(last_step.opcode);
+            trace!(
+                target: "assertion-executor::execute_tx",
+                pc = last_step.pc,
+                opcode_name,
+                gas_cost,
+                gas_remaining = gas_after,
+                "Per-instruction gas usage"
+            );
         }
     }
 
