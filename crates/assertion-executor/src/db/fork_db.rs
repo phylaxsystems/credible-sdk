@@ -161,6 +161,7 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
             self.basic.insert(address, account.info.clone());
             match self.storage.get_mut(&address) {
                 Some(s) => {
+                    s.dont_read_from_inner_db = false;
                     s.map.extend(
                         account
                             .storage

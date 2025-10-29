@@ -82,6 +82,7 @@ struct InstructionStep {
     pc: usize,
     opcode: u8,
     gas_remaining_before: u64,
+    memory_size: usize,
 }
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
@@ -226,10 +227,12 @@ impl CallTracer {
         let gas_remaining_before = interp.control.gas().remaining();
         let opcode = interp.bytecode.opcode();
         let pc = interp.bytecode.pc();
+        let memory_size = interp.memory.len();
         self.last_step = Some(InstructionStep {
             pc,
             opcode,
             gas_remaining_before,
+            memory_size,
         });
     }
 
@@ -244,6 +247,7 @@ impl CallTracer {
                 opcode_name,
                 gas_cost,
                 gas_remaining = gas_after,
+                memory_size = last_step.memory_size,
                 "Per-instruction gas usage"
             );
         }
