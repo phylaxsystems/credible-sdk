@@ -30,7 +30,10 @@ use std::sync::{
         Ordering,
     },
 };
-use tracing::trace;
+use tracing::{
+    Span,
+    trace,
+};
 
 impl DBErrorMarker for JsonRpcDbError {}
 
@@ -119,8 +122,9 @@ impl DatabaseRef for JsonRpcDb {
             Ok(Some(account_info))
         };
         let handle = tokio::runtime::Handle::current();
+        let span = Span::current();
         std::thread::scope(|s| {
-            s.spawn(|| handle.block_on(future))
+            s.spawn(move || span.in_scope(|| handle.block_on(future)))
                 .join()
                 .map_err(|_| JsonRpcDbError::Runtime)?
         })
@@ -163,8 +167,9 @@ impl DatabaseRef for JsonRpcDb {
             Ok(value)
         };
         let handle = tokio::runtime::Handle::current();
+        let span = Span::current();
         std::thread::scope(|s| {
-            s.spawn(|| handle.block_on(future))
+            s.spawn(move || span.in_scope(|| handle.block_on(future)))
                 .join()
                 .map_err(|_| JsonRpcDbError::Runtime)?
         })
@@ -191,8 +196,9 @@ impl DatabaseRef for JsonRpcDb {
             Ok(block.header.hash)
         };
         let handle = tokio::runtime::Handle::current();
+        let span = Span::current();
         std::thread::scope(|s| {
-            s.spawn(|| handle.block_on(future))
+            s.spawn(move || span.in_scope(|| handle.block_on(future)))
                 .join()
                 .map_err(|_| JsonRpcDbError::Runtime)?
         })
