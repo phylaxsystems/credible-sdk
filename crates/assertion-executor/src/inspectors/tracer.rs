@@ -14,6 +14,7 @@ use crate::{
 use revm::{
     Database,
     Inspector,
+    bytecode::opcode::OpCode,
     context::{
         JournalInner,
         journaled_state::JournalCheckpoint,
@@ -236,10 +237,11 @@ impl CallTracer {
         if let Some(last_step) = self.last_step.take() {
             let gas_after = interp.control.gas().remaining();
             let gas_cost = last_step.gas_remaining_before.saturating_sub(gas_after);
+            let opcode_name = OpCode::name_by_op(last_step.opcode);
             trace!(
                 target: "assertion-executor::execute_tx",
                 pc = last_step.pc,
-                opcode = tracing::field::display(format_args!("0x{:02x}", last_step.opcode)),
+                opcode_name,
                 gas_cost,
                 gas_remaining = gas_after,
                 "Per-instruction gas usage"
