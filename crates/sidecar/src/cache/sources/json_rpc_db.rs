@@ -160,8 +160,8 @@ impl DatabaseRef for JsonRpcDb {
                 access = "storage_ref",
                 block = target_block,
                 address = ?address,
-                index = ?index,
-                value = ?value
+                index = %format_args!("{:#x}", index),
+                value = %format_args!("{:#x}", value)
             );
 
             Ok(value)

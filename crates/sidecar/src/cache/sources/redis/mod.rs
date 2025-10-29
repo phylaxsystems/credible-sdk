@@ -219,8 +219,8 @@ impl DatabaseRef for RedisCache {
             block = current_block,
             address = ?address,
             index = ?index,
-            slot = ?slot,
-            value = ?value
+            slot = %format_args!("{:#x}", slot),
+            value = %format_args!("{:#x}", value)
         );
         Ok(value)
     }
