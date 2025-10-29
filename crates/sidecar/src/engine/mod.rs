@@ -987,12 +987,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 tx_block_number = tx_execution_id.block_number,
                 iteration_id = tx_execution_id.iteration_id,
                 caller = %tx_env.caller,
-                "Requested transaction block number does not match block number currently built on in engine!"
+                "Requested transaction block number does not match block number currently built in engine!"
             );
 
             return Err(EngineError::TxBlockMismatch);
         }
-        
+
         // Initialize the current block iteration id if it does not exist
         self.current_block_iterations
             .entry(tx_execution_id.as_block_execution_id())
@@ -1117,6 +1117,33 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             tx_hash = %tx_execution_id.tx_hash,
             "Checking reorg validity for hash"
         );
+
+        let Some(ref block) = self.block_env else {
+            error!(
+                target = "engine",
+                tx_hash = %tx_execution_id.tx_hash,
+                block_number = tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                "Received reorg without first receiving a BlockEnv"
+            );
+            return Err(EngineError::TransactionError);
+        };
+
+        // Checks if the received `TxExecutionId` matches blockenv requirements.
+        // `tx_execution_id` must be `self.block_env.number + 1`, otherwise we should
+        // drop the event.
+        if block.number + 1 != tx_execution_id.block_number {
+            warn!(
+                target = "engine",
+                tx_hash = %tx_execution_id.tx_hash,
+                blockenv_block_number = block.number,
+                tx_block_number = tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                "Requested reorg block number does not match block number currently built in engine!"
+            );
+
+            return Err(EngineError::TxBlockMismatch);
+        }
 
         let current_block_iteration = self
             .current_block_iterations
