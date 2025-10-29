@@ -1175,6 +1175,15 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             return Ok(());
         }
 
+        error!(
+            target = "engine",
+            request_tx_hash = %tx_execution_id.tx_hash,
+            request_iteration_id = %tx_execution_id.iteration_id,
+            current_block_iteration_tx_hash = ?current_block_iteration.last_executed_tx.current().map(|(tx_id, _)| tx_id.tx_hash),
+            current_block_iteration_tx_block_number = current_block_iteration.last_executed_tx.current().map(|(tx_id, _)| tx_id.block_number),
+            "Reorg not found"
+        );
+
         // If we received a reorg event before executing a tx,
         // or if the tx hashes dont match something bad happened and we need to exit
         Err(EngineError::BadReorgHash)
