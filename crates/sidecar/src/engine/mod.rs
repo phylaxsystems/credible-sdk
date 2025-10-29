@@ -1114,16 +1114,14 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     fn execute_reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), EngineError> {
         trace!(
             target = "engine",
-            tx_hash = %tx_execution_id.tx_hash,
+            tx_execution_id = %tx_execution_id,
             "Checking reorg validity for hash"
         );
 
         let Some(ref block) = self.block_env else {
             error!(
                 target = "engine",
-                tx_hash = %tx_execution_id.tx_hash,
-                block_number = tx_execution_id.block_number,
-                iteration_id = tx_execution_id.iteration_id,
+                tx_execution_id = %tx_execution_id,
                 "Received reorg without first receiving a BlockEnv"
             );
             return Err(EngineError::TransactionError);
@@ -1137,8 +1135,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 target = "engine",
                 tx_hash = %tx_execution_id.tx_hash,
                 blockenv_block_number = block.number,
-                tx_block_number = tx_execution_id.block_number,
-                iteration_id = tx_execution_id.iteration_id,
+                tx_execution_id = %tx_execution_id,
                 "Requested reorg block number does not match block number currently built in engine!"
             );
 
@@ -1156,7 +1153,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         {
             info!(
                 target = "engine",
-                tx_hash = %tx_execution_id.tx_hash,
+                tx_execution_id = %tx_execution_id,
                 "Executing reorg for hash"
             );
 
@@ -1177,8 +1174,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         error!(
             target = "engine",
-            request_tx_hash = %tx_execution_id.tx_hash,
-            request_iteration_id = %tx_execution_id.iteration_id,
+            tx_execution_id = %tx_execution_id,
             current_block_iteration_tx_hash = ?current_block_iteration.last_executed_tx.current().map(|(tx_id, _)| tx_id.tx_hash),
             current_block_iteration_tx_block_number = current_block_iteration.last_executed_tx.current().map(|(tx_id, _)| tx_id.block_number),
             "Reorg not found"
