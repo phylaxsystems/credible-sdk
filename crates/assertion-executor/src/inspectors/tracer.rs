@@ -9,12 +9,17 @@ use crate::{
         Bytes,
         FixedBytes,
         JournalEntry,
+        U256,
     },
 };
 use revm::{
     Database,
     Inspector,
-    bytecode::opcode::OpCode,
+    bytecode::opcode::{
+        MSTORE,
+        OpCode,
+        SSTORE,
+    },
     context::{
         JournalInner,
         journaled_state::JournalCheckpoint,
@@ -82,6 +87,13 @@ struct InstructionStep {
     pc: usize,
     opcode: u8,
     gas_remaining_before: u64,
+    write_info: Option<WriteInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WriteInfo {
+    Memory { offset: U256 },
+    Storage { slot: U256 },
 }
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
@@ -115,6 +127,7 @@ pub struct CallTracer {
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
     pub result: Result<(), CallTracerError>,
     last_step: Option<InstructionStep>,
+    total_gas_used: u64,
 }
 impl Default for CallTracer {
     fn default() -> Self {
@@ -127,6 +140,7 @@ impl Default for CallTracer {
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             last_step: None,
+            total_gas_used: 0,
         }
     }
 }
@@ -148,6 +162,7 @@ impl CallTracer {
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             last_step: None,
+            total_gas_used: 0,
         }
     }
 
@@ -226,26 +241,87 @@ impl CallTracer {
         let gas_remaining_before = interp.control.gas().remaining();
         let opcode = interp.bytecode.opcode();
         let pc = interp.bytecode.pc();
+        let write_info = match opcode {
+            MSTORE => {
+                let stack = interp.stack.data();
+                if stack.len() >= 2 {
+                    Some(WriteInfo::Memory {
+                        offset: stack[stack.len().saturating_sub(1)],
+                    })
+                } else {
+                    None
+                }
+            }
+            SSTORE => {
+                let stack = interp.stack.data();
+                if stack.len() >= 2 {
+                    Some(WriteInfo::Storage {
+                        slot: stack[stack.len().saturating_sub(1)],
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         self.last_step = Some(InstructionStep {
             pc,
             opcode,
             gas_remaining_before,
+            write_info,
         });
     }
 
     pub(crate) fn log_instruction_step(&mut self, interp: &mut revm::interpreter::Interpreter) {
+        /// EVM word-size, memory and storage expansion happens in words
+        const WORD_SIZE_BYTES: u64 = 32;
+
         if let Some(last_step) = self.last_step.take() {
             let gas_after = interp.control.gas().remaining();
             let gas_cost = last_step.gas_remaining_before.saturating_sub(gas_after);
             let opcode_name = OpCode::name_by_op(last_step.opcode);
-            trace!(
-                target: "assertion-executor::execute_tx",
-                pc = last_step.pc,
-                opcode_name,
-                gas_cost,
-                gas_remaining = gas_after,
-                "Per-instruction gas usage"
-            );
+            self.total_gas_used = self.total_gas_used.saturating_add(gas_cost);
+            let total_gas_used = self.total_gas_used;
+
+            match last_step.write_info {
+                Some(WriteInfo::Memory { offset }) => {
+                    trace!(
+                        target: "assertion-executor::execute_tx",
+                        pc = last_step.pc,
+                        opcode_name,
+                        gas_cost,
+                        gas_used_total = total_gas_used,
+                        gas_remaining = gas_after,
+                        memory_offset = %offset,
+                        memory_write_size = WORD_SIZE_BYTES,
+                        "Per-instruction gas usage"
+                    );
+                }
+                Some(WriteInfo::Storage { slot }) => {
+                    trace!(
+                        target: "assertion-executor::execute_tx",
+                        pc = last_step.pc,
+                        opcode_name,
+                        gas_cost,
+                        gas_used_total = total_gas_used,
+                        gas_remaining = gas_after,
+                        storage_slot = %slot,
+                        storage_write_size = WORD_SIZE_BYTES,
+                        "Per-instruction gas usage"
+                    );
+                }
+                None => {
+                    trace!(
+                        target: "assertion-executor::execute_tx",
+                        pc = last_step.pc,
+                        opcode_name,
+                        gas_cost,
+                        gas_used_total = total_gas_used,
+                        gas_remaining = gas_after,
+                        "Per-instruction gas usage"
+                    );
+                }
+            }
         }
     }
 
