@@ -315,7 +315,7 @@ impl DatabaseRef for Cache {
         trace!(
             target = "cache::storage_ref",
             address = %address,
-            index = %index,
+            index = %format_args!("{:#x}", index),
             "Function call",
         );
         self.metrics.increase_storage_ref_counter_counter();
@@ -335,7 +335,7 @@ impl DatabaseRef for Cache {
                         target = "cache::storage_ref",
                         name = %source.name(),
                         address = %address,
-                        index = %index,
+                        index = %format_args!("{:#x}", index),
                         "Cache source reported storage cache miss",
                     );
                 }
@@ -344,7 +344,7 @@ impl DatabaseRef for Cache {
                         target = "cache::storage_ref",
                         name = %source.name(),
                         address = %address,
-                        index = %index,
+                        index = %format_args!("{:#x}", index),
                         error = ?e,
                         "Failed to fetch the storage from cache source",
                     );
