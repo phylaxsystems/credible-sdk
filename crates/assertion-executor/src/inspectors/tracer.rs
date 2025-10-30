@@ -127,7 +127,6 @@ pub struct CallTracer {
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
     pub result: Result<(), CallTracerError>,
     last_step: Option<InstructionStep>,
-    total_gas_used: u64,
 }
 impl Default for CallTracer {
     fn default() -> Self {
@@ -140,7 +139,6 @@ impl Default for CallTracer {
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             last_step: None,
-            total_gas_used: 0,
         }
     }
 }
@@ -162,7 +160,6 @@ impl CallTracer {
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             last_step: None,
-            total_gas_used: 0,
         }
     }
 
@@ -273,15 +270,17 @@ impl CallTracer {
     }
 
     pub(crate) fn log_instruction_step(&mut self, interp: &mut revm::interpreter::Interpreter) {
-        /// EVM word-size, memory and storage expansion happens in words
+        /// EVM word-size, memory expansion and storage writes happens in words
         const WORD_SIZE_BYTES: u64 = 32;
 
         if let Some(last_step) = self.last_step.take() {
-            let gas_after = interp.control.gas().remaining();
-            let gas_cost = last_step.gas_remaining_before.saturating_sub(gas_after);
+            let gas = interp.control.gas();
+            let gas_remaining = interp.control.gas().remaining();
+            // How much gas this op took by subtracting how much we have left
+            // from how much we had left on the last instruction/step
+            let gas_cost = last_step.gas_remaining_before.saturating_sub(gas_remaining);
+
             let opcode_name = OpCode::name_by_op(last_step.opcode);
-            self.total_gas_used = self.total_gas_used.saturating_add(gas_cost);
-            let total_gas_used = self.total_gas_used;
 
             match last_step.write_info {
                 Some(WriteInfo::Memory { offset }) => {
@@ -290,8 +289,8 @@ impl CallTracer {
                         pc = last_step.pc,
                         opcode_name,
                         gas_cost,
-                        gas_used_total = total_gas_used,
-                        gas_remaining = gas_after,
+                        gas_used_total = gas.spent(),
+                        gas_remaining = gas_remaining,
                         memory_offset = %offset,
                         memory_write_size = WORD_SIZE_BYTES,
                         "Per-instruction gas usage"
@@ -303,8 +302,8 @@ impl CallTracer {
                         pc = last_step.pc,
                         opcode_name,
                         gas_cost,
-                        gas_used_total = total_gas_used,
-                        gas_remaining = gas_after,
+                        gas_used_total = gas.spent(),
+                        gas_remaining = gas_remaining,
                         storage_slot = %slot,
                         storage_write_size = WORD_SIZE_BYTES,
                         "Per-instruction gas usage"
@@ -316,8 +315,8 @@ impl CallTracer {
                         pc = last_step.pc,
                         opcode_name,
                         gas_cost,
-                        gas_used_total = total_gas_used,
-                        gas_remaining = gas_after,
+                        gas_used_total = gas.spent(),
+                        gas_remaining = gas_remaining,
                         "Per-instruction gas usage"
                     );
                 }
