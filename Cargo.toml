@@ -15,7 +15,7 @@ members = [
     "crates/state-worker",
     "crates/shadow-driver",
     "crates/state-store",
-    "crates/state-checker",
+    "crates/state-checker", "crates/revm-test",
 ]
 exclude = ["fuzz"]
 resolver = "2"

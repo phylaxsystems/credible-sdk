@@ -1,0 +1,22 @@
+[package]
+name = "revm-test"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+assertion-executor = { workspace = true, default-features = false, features = ["linea"] }
+revm = { workspace = true }
+alloy = { workspace = true, features = ["consensus"] }
+alloy-provider = { workspace = true }
+alloy-rpc-types = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-transport = { workspace = true }
+anyhow = "1.0.100"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+hex = "0.4.3"
+futures = { workspace = true }
+sidecar = { path = "../sidecar" }
