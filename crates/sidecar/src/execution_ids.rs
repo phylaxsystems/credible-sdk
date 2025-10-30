@@ -68,6 +68,16 @@ impl TxExecutionId {
     pub fn tx_hash_hex(self) -> String {
         format!("{:#x}", self.tx_hash)
     }
+
+    /// Render the execution identifier as a JSON object string for structured tracing fields.
+    pub fn to_json_string(&self) -> String {
+        format!(
+            r#"{{"block_number":{},"iteration_id":{},"tx_hash":"{}"}}"#,
+            self.block_number,
+            self.iteration_id,
+            self.tx_hash_hex()
+        )
+    }
 }
 
 impl fmt::Display for TxExecutionId {
