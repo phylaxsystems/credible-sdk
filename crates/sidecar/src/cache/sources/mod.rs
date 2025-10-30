@@ -44,9 +44,9 @@ pub mod sequencer;
 /// }
 ///
 /// impl Source for MySource {
-///     fn is_synced(&self, current_block: u64) -> bool {
+///     fn is_synced(&self, latest_head: u64) -> bool {
 ///         let max = self.max_block.load(Ordering::Acquire);
-///         current_block <= max
+///         latest_head <= max
 ///     }
 ///
 ///     fn name(&self) -> &'static str {
@@ -69,7 +69,7 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     ///
     /// # Arguments
     ///
-    /// * `current_block_number` - The block number to check synchronization against
+    /// * `latest_head` - The latest head to check synchronization against
     ///
     /// # Returns
     ///
@@ -82,11 +82,11 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     /// number to ensure thread safety. The typical pattern is:
     ///
     /// ```rust,ignore
-    /// fn is_synced(&self, current_block: u64) -> bool {
+    /// fn is_synced(&self, latest_head: u64) -> bool {
     ///     // Check if this source has data for `current`
     /// }
     /// ```
-    fn is_synced(&self, current_block_number: u64) -> bool;
+    fn is_synced(&self, latest_head: u64) -> bool;
 
     /// Returns a unique identifier for this source.
     ///
@@ -99,12 +99,12 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     /// A `SourceName` that uniquely identifies this source.
     fn name(&self) -> SourceName;
 
-    /// Updates the block number that queries should target.
+    /// Updates the min head that queries should target.
     ///
     /// Implementations may use this hint to issue RPC calls against a specific
     /// block rather than the latest head. The default implementation is a
     /// no-op for sources that do not depend on block context.
-    fn update_target_block(&self, block_number: u64);
+    fn update_min_sync_head(&self, block_number: u64);
 }
 
 /// Names for a particular source.

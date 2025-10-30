@@ -65,12 +65,12 @@ use tokio_util::sync::CancellationToken;
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
-pub struct RedisCache {
+pub struct RedisSource {
     backend: StateReader,
-    /// Current block we are processing in the sidecar.
-    current_block: Arc<AtomicU64>,
+    /// Latest head the underlying node has seen
+    min_sync_head: Arc<AtomicU64>,
     /// Records newest block the background poller has seen.
-    observed_block: Arc<AtomicU64>,
+    observed_head: Arc<AtomicU64>,
     /// Oldest block that exists in redis buffer. Used to prevent asking for a block redis doesnt have.
     oldest_block: Arc<AtomicU64>,
     sync_status: Arc<AtomicBool>,
@@ -78,18 +78,18 @@ pub struct RedisCache {
     sync_task: JoinHandle<()>,
 }
 
-impl RedisCache {
+impl RedisSource {
     /// Creates a cache that stores entries under the default `state` namespace.
     pub fn new(backend: StateReader) -> Self {
-        let current_block = Arc::new(AtomicU64::new(0));
-        let observed_block = Arc::new(AtomicU64::new(0));
+        let min_sync_head = Arc::new(AtomicU64::new(0));
+        let observed_head = Arc::new(AtomicU64::new(0));
         let oldest_block = Arc::new(AtomicU64::new(0));
         let sync_status = Arc::new(AtomicBool::new(false));
         let cancel_token = CancellationToken::new();
         let sync_task = sync_task::spawn_sync_task(
             backend.clone(),
-            current_block.clone(),
-            observed_block.clone(),
+            min_sync_head.clone(),
+            observed_head.clone(),
             oldest_block.clone(),
             sync_status.clone(),
             cancel_token.clone(),
@@ -98,8 +98,8 @@ impl RedisCache {
 
         Self {
             backend,
-            current_block,
-            observed_block,
+            min_sync_head,
+            observed_head,
             oldest_block,
             sync_status,
             cancel_token,
@@ -111,23 +111,23 @@ impl RedisCache {
         publish_sync_state(
             None,
             None,
-            &self.current_block,
-            &self.observed_block,
+            &self.min_sync_head,
+            &self.observed_head,
             &self.oldest_block,
             &self.sync_status,
         );
     }
 }
 
-impl DatabaseRef for RedisCache {
+impl DatabaseRef for RedisSource {
     type Error = super::SourceError;
 
     /// Reconstructs an account from cached metadata, returning `None` when absent.
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        let current_block = self.current_block.load(Ordering::Relaxed);
+        let latest_head = self.min_sync_head.load(Ordering::Relaxed);
         let Some(account) = self
             .backend
-            .get_account(address.into(), current_block)
+            .get_account(address.into(), latest_head)
             .map_err(Self::Error::RedisAccount)?
         else {
             return Ok(None);
@@ -153,10 +153,10 @@ impl DatabaseRef for RedisCache {
 
     /// Loads bytecode previously stored for a code hash.
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        let current_block = self.current_block.load(Ordering::Relaxed);
+        let latest_head = self.min_sync_head.load(Ordering::Relaxed);
         let bytecode = Bytecode::new_raw(
             self.backend
-                .get_code(code_hash, current_block)
+                .get_code(code_hash, latest_head)
                 .map_err(Self::Error::RedisCodeByHash)?
                 .ok_or(Self::Error::CodeByHashNotFound)?
                 .into(),
@@ -172,41 +172,41 @@ impl DatabaseRef for RedisCache {
     ) -> Result<StorageValue, Self::Error> {
         let slot_hash = keccak256(index.to_be_bytes::<32>());
         let slot = U256::from_be_bytes(slot_hash.into());
-        let current_block = self.current_block.load(Ordering::Relaxed);
+        let latest_head = self.min_sync_head.load(Ordering::Relaxed);
         let value = self
             .backend
-            .get_storage(address.into(), slot, current_block)
+            .get_storage(address.into(), slot, latest_head)
             .map_err(Self::Error::RedisStorage)?
             .ok_or(Self::Error::StorageNotFound)?;
         Ok(value)
     }
 }
 
-impl Source for RedisCache {
+impl Source for RedisSource {
     /// Reports whether the cache has synchronized past the requested block.
-    fn is_synced(&self, required_block_number: u64) -> bool {
+    fn is_synced(&self, latest_head: u64) -> bool {
         if !self.sync_status.load(Ordering::Acquire) {
             return false;
         }
 
-        let target_block = self.current_block.load(Ordering::Relaxed);
-        let observed_block = self.observed_block.load(Ordering::Acquire);
+        let target_head = self.min_sync_head.load(Ordering::Relaxed);
+        let observed_head = self.observed_head.load(Ordering::Acquire);
         let oldest_block = self.oldest_block.load(Ordering::Acquire);
 
-        if observed_block < required_block_number {
+        if observed_head < latest_head {
             return false;
         }
 
-        if target_block == 0 {
+        if target_head == 0 {
             return oldest_block == 0;
         }
 
-        oldest_block <= target_block && target_block <= observed_block
+        oldest_block <= target_head && target_head <= observed_head
     }
 
-    /// Updates the block number that queries should target.
-    fn update_target_block(&self, block_number: u64) {
-        self.current_block.store(block_number, Ordering::Relaxed);
+    /// Updates the min sync head that queries should target.
+    fn update_min_sync_head(&self, block_number: u64) {
+        self.min_sync_head.store(block_number, Ordering::Relaxed);
     }
 
     /// Provides an identifier used in logs and metrics.
@@ -215,7 +215,7 @@ impl Source for RedisCache {
     }
 }
 
-impl Drop for RedisCache {
+impl Drop for RedisSource {
     fn drop(&mut self) {
         self.cancel_token.cancel();
         self.sync_task.abort();
