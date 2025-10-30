@@ -4,8 +4,8 @@ use super::instance::{
     TestTransport,
 };
 use crate::{
-    Cache,
     CoreEngine,
+    Sources,
     cache::sources::{
         Source,
         besu_client::BesuClient,
@@ -90,7 +90,7 @@ use tracing::{
 };
 
 /// Setup test database with common accounts pre-funded
-fn populate_test_database(underlying_db: &mut CacheDB<Arc<Cache>>) -> Address {
+fn populate_test_database(underlying_db: &mut CacheDB<Arc<Sources>>) -> Address {
     // Insert default counter contract into the underlying db
     underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
 
@@ -180,8 +180,8 @@ impl LocalInstanceMockDriver {
 
 /// Common initialization for all driver types
 struct CommonSetup {
-    underlying_db: Arc<CacheDB<Arc<Cache>>>,
-    cache: Arc<Cache>,
+    underlying_db: Arc<CacheDB<Arc<Sources>>>,
+    cache: Arc<Sources>,
     sequencer_http_mock: DualProtocolMockServer,
     besu_client_http_mock: DualProtocolMockServer,
     assertion_store: Arc<AssertionStore>,
@@ -212,7 +212,7 @@ impl CommonSetup {
         .await
         .expect("Failed to create besu client mock");
         let sources = vec![mock_besu_client_db, mock_sequencer_db];
-        let cache = Arc::new(Cache::new(sources.clone(), 10));
+        let cache = Arc::new(Sources::new(sources.clone(), 10));
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
 
