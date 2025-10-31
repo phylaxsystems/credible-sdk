@@ -110,8 +110,11 @@ async fn main() -> anyhow::Result<()> {
         {
             sources.push(Arc::new(sequencer));
         }
-        if let Some(besu_client_url) = &config.state.besu_client_ws_url
-            && let Ok(besu_client) = BesuClient::try_build(besu_client_url).await
+        if let (Some(besu_client_ws_url), Some(besu_client_http_url)) = (
+            &config.state.besu_client_ws_url,
+            &config.state.besu_client_http_url,
+        ) && let Ok(besu_client) =
+            BesuClient::try_build(besu_client_ws_url.as_str(), besu_client_http_url.as_str()).await
         {
             sources.push(besu_client);
         }

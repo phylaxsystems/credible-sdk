@@ -147,8 +147,10 @@ pub struct TransportConfig {
 pub struct StateConfig {
     /// Sequencer bind address and port
     pub sequencer_url: Option<String>,
-    /// Besu client bind address and port
+    /// Besu client websocket bind address and port
     pub besu_client_ws_url: Option<String>,
+    /// Besu client HTTP bind address and port
+    pub besu_client_http_url: Option<String>,
     /// Redis bind address and port
     pub redis_url: Option<String>,
     /// Namespace prefix for Redis keys.
@@ -207,6 +209,7 @@ mod tests {
   "state": {
     "sequencer_url": "http://localhost:8547",
     "besu_client_ws_url": "ws://localhost:8548",
+    "besu_client_http_url": "http://localhost:8545",
     "redis_url": "redis://localhost:6379",
     "redis_namespace": "sidecar",
     "redis_depth": 100,
@@ -258,6 +261,10 @@ mod tests {
         assert_eq!(
             config.state.besu_client_ws_url,
             Some("ws://localhost:8548".to_string())
+        );
+        assert_eq!(
+            config.state.besu_client_http_url,
+            Some("http://localhost:8545".to_string())
         );
         assert_eq!(
             config.state.redis_url,

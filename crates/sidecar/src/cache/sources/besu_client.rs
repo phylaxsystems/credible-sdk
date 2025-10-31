@@ -69,13 +69,16 @@ struct BesuClientInner {
     provider: Arc<RootProvider>,
     /// Current block
     current_block: Arc<AtomicU64>,
-    /// JsonRpcDb using http for making `DatabaseRef` calls
+    /// `JsonRpcDb` using http for making `DatabaseRef` calls
     json_rpc_db: JsonRpcDb,
 }
 
 impl BesuClient {
     /// Create a new `BesuStateSync` instance
-    pub async fn try_build(ws_url: impl Into<String>, http_url: impl Into<String>) -> Result<Arc<Self>, BesuClientError> {
+    pub async fn try_build(
+        ws_url: impl Into<String>,
+        http_url: impl Into<String>,
+    ) -> Result<Arc<Self>, BesuClientError> {
         let ws = WsConnect::new(ws_url.into());
         let provider = Arc::new(
             ProviderBuilder::new()
@@ -87,7 +90,11 @@ impl BesuClient {
         );
 
         let http_provider = Arc::new(
-            ProviderBuilder::new().connect_http(reqwest::Url::parse(&http_url.into())?).root().clone());
+            ProviderBuilder::new()
+                .connect_http(reqwest::Url::parse(&http_url.into())?)
+                .root()
+                .clone(),
+        );
 
         let inner = Arc::new(BesuClientInner {
             current_block: Arc::new(AtomicU64::new(0)),
