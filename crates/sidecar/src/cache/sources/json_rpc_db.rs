@@ -1,4 +1,5 @@
 use alloy::{
+    consensus::EMPTY_ROOT_HASH,
     eips::BlockId,
     primitives::{
         Address,
@@ -272,7 +273,8 @@ impl DatabaseRef for JsonRpcDb {
 fn proof_indicates_missing_account(proof: &EIP1186AccountProofResponse) -> bool {
     let code_hash_is_empty =
         proof.code_hash == B256::ZERO || proof.code_hash == revm::primitives::KECCAK_EMPTY;
-    let storage_root_is_empty = proof.storage_hash == B256::ZERO;
+    let storage_root_is_empty =
+        proof.storage_hash == B256::ZERO || proof.storage_hash == EMPTY_ROOT_HASH;
 
     code_hash_is_empty && storage_root_is_empty && proof.balance.is_zero() && proof.nonce == 0
 }

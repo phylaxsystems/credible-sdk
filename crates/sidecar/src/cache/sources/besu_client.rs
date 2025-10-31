@@ -99,7 +99,10 @@ impl BesuClient {
 
         let inner = Arc::new(BesuClientInner {
             current_block: Arc::new(AtomicU64::new(0)),
-            json_rpc_db: JsonRpcDb::new_with_provider(http_provider.clone(), use_debug_code_by_hash),
+            json_rpc_db: JsonRpcDb::new_with_provider(
+                http_provider.clone(),
+                use_debug_code_by_hash,
+            ),
             ws_provider,
         });
         let handler = tokio::task::spawn(inner.clone().run_with_reconnect());
