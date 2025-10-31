@@ -65,16 +65,17 @@ impl Drop for BesuClient {
 
 #[derive(Debug)]
 struct BesuClientInner {
-    /// Provider
+    /// Provider for sync status
     provider: Arc<RootProvider>,
     /// Current block
     current_block: Arc<AtomicU64>,
+    /// JsonRpcDb using http for making `DatabaseRef` calls
     json_rpc_db: JsonRpcDb,
 }
 
 impl BesuClient {
     /// Create a new `BesuStateSync` instance
-    pub async fn try_build(ws_url: impl Into<String>) -> Result<Arc<Self>, BesuClientError> {
+    pub async fn try_build(ws_url: impl Into<String>, http_url: impl Into<String>) -> Result<Arc<Self>, BesuClientError> {
         let ws = WsConnect::new(ws_url.into());
         let provider = Arc::new(
             ProviderBuilder::new()
@@ -84,12 +85,17 @@ impl BesuClient {
                 .root()
                 .clone(),
         );
+
+        let http_provider = Arc::new(
+            ProviderBuilder::new().connect_http(reqwest::Url::parse(&http_url.into())?).root().clone());
+
         let inner = Arc::new(BesuClientInner {
             current_block: Arc::new(AtomicU64::new(0)),
-            json_rpc_db: JsonRpcDb::new_with_provider(provider.clone()),
+            json_rpc_db: JsonRpcDb::new_with_provider(http_provider.clone()),
             provider,
         });
         let handler = tokio::task::spawn(inner.clone().run_with_reconnect());
+
         Ok(Arc::new(Self {
             inner,
             handler: handler.abort_handle(),
@@ -216,4 +222,6 @@ impl Source for BesuClient {
 pub enum BesuClientError {
     #[error("Failed to connect to the websocket provider")]
     Provider(#[source] RpcError<TransportErrorKind>),
+    #[error("Failed to parse the HTTP provider URL")]
+    HttpUrl(#[from] url::ParseError),
 }

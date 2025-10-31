@@ -41,6 +41,7 @@ hex = { workspace = true }
 moka = { version = "0.12.10", features = ["sync"], optional = true }
 alloy-rpc-types-trace = { workspace = true, optional = true }
 criterion = "0.6"
+url = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
 tokio-metrics = { workspace = true, optional = true }
 sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
