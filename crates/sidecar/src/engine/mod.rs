@@ -1365,11 +1365,8 @@ mod tests {
         let mismatched_block_number = block_env.number;
         engine.block_env = Some(block_env);
 
-        let tx_execution_id = TxExecutionId::new(
-            mismatched_block_number,
-            0,
-            B256::from([0x42; 32]),
-        );
+        let tx_execution_id =
+            TxExecutionId::new(mismatched_block_number, 0, B256::from([0x42; 32]));
         let queue_transaction = queue::QueueTransaction {
             tx_execution_id,
             tx_env: TxEnv::default(),
@@ -1395,7 +1392,9 @@ mod tests {
                     "error message should mention the expected block number"
                 );
             }
-            TransactionResult::ValidationCompleted { .. } => panic!("expected validation error, found ValidationCompleted"),
+            TransactionResult::ValidationCompleted { .. } => {
+                panic!("expected validation error, found ValidationCompleted")
+            }
         }
 
         assert!(
@@ -1710,7 +1709,7 @@ mod tests {
         mut instance: crate::utils::LocalInstance,
     ) {
         // Execute two successful transactions
-        let tx1 = instance
+        let mut tx1 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .expect("tx1 should be sent successfully");
@@ -1727,6 +1726,7 @@ mod tests {
 
         // Reorg for the previous tx (tx1) should be rejected
         // Because the engine only keeps the last executed tx in the buffer
+        tx1.block_number += 1;
         assert!(
             instance.send_reorg(tx1).await.is_err(),
             "Reorg with wrong hash should be rejected and exit engine"
