@@ -138,8 +138,10 @@ impl Cache {
             .store(block_number, Ordering::Relaxed);
         self.metrics.set_current_block_number(block_number);
 
+        let minimum_synced_block_number = self.get_minimum_synced_block_number();
+
         for source in &self.sources {
-            source.update_target_block(block_number);
+            source.update_target_block(minimum_synced_block_number);
         }
     }
 
@@ -171,11 +173,7 @@ impl Cache {
     pub fn iter_synced_sources(&self) -> impl Iterator<Item = Arc<dyn Source>> {
         let instant = Instant::now();
 
-        // MAX(latest BlockEnv - MINIMUM_STATE_DIFF, First block env processed)
-        let required_block_number = self.required_block_number.load(Ordering::Acquire);
-        let current_block_number = self.current_block_number.load(Ordering::Acquire);
-        let block_number =
-            required_block_number.max(current_block_number.saturating_sub(self.max_depth));
+        let block_number = self.get_minimum_synced_block_number();
 
         let sources = self
             .sources
@@ -186,6 +184,13 @@ impl Cache {
         self.metrics.is_sync_duration(instant.elapsed());
 
         sources
+    }
+
+    fn get_minimum_synced_block_number(&self) -> u64 {
+        // MAX(latest BlockEnv - MINIMUM_STATE_DIFF, First block env processed)
+        let required_block_number = self.required_block_number.load(Ordering::Acquire);
+        let current_block_number = self.current_block_number.load(Ordering::Acquire);
+        required_block_number.max(current_block_number.saturating_sub(self.max_depth))
     }
 }
 
