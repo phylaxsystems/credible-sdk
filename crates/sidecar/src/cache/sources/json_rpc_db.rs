@@ -6,6 +6,7 @@ use alloy::{
         U256,
     },
     providers::ProviderBuilder,
+    rpc::types::eth::EIP1186AccountProofResponse,
     transports::{
         RpcError,
         TransportError,
@@ -19,7 +20,6 @@ use alloy_provider::{
 use revm::{
     DatabaseRef,
     database::DBErrorMarker,
-    primitives::FixedBytes,
     state::{
         AccountInfo,
         Bytecode,
@@ -83,23 +83,13 @@ impl DatabaseRef for JsonRpcDb {
         let provider = self.provider.clone();
         let target_block = self.target_block();
         let future = async move {
-            let proof = match provider
+            let proof = provider
                 .get_proof(address, vec![])
                 .number(target_block)
                 .await
-            {
-                Ok(proof) => Some(proof),
-                Err(TransportError::DeserError { text, .. })
-                    if text.trim().eq_ignore_ascii_case("null") =>
-                {
-                    // If the account does not exist, we get a
-                    // deserialization error because we get "null" as a response.
-                    None
-                }
-                Err(err) => return Err(JsonRpcDbError::Provider(Box::new(err))),
-            };
+                .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
 
-            let Some(proof) = proof else {
+            if proof_indicates_missing_account(&proof) {
                 trace!(
                     target = "engine::overlay",
                     overlay_kind = "json_rpc",
@@ -109,10 +99,10 @@ impl DatabaseRef for JsonRpcDb {
                     status = "account_not_found"
                 );
                 return Ok(None);
-            };
+            }
 
             let mut code = None;
-            let code_hash = if proof.code_hash == FixedBytes::<32>::default() {
+            let code_hash = if proof.code_hash == revm::primitives::KECCAK_EMPTY {
                 revm::primitives::KECCAK_EMPTY
             } else {
                 // If we have a code hash, we query the bytecode
@@ -230,6 +220,15 @@ impl DatabaseRef for JsonRpcDb {
                 .map_err(|_| JsonRpcDbError::Runtime)?
         })
     }
+}
+
+/// Detects whether a proof corresponds to an account that does not exist on-chain.
+fn proof_indicates_missing_account(proof: &EIP1186AccountProofResponse) -> bool {
+    let code_hash_is_empty =
+        proof.code_hash == B256::ZERO || proof.code_hash == revm::primitives::KECCAK_EMPTY;
+    let storage_root_is_empty = proof.storage_hash == B256::ZERO;
+
+    code_hash_is_empty && storage_root_is_empty && proof.balance.is_zero() && proof.nonce == 0
 }
 
 #[derive(Debug, thiserror::Error)]
