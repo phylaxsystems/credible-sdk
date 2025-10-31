@@ -8,6 +8,7 @@ use alloy::{
     providers::ProviderBuilder,
     transports::{
         RpcError,
+        TransportError,
         TransportErrorKind,
     },
 };
@@ -16,12 +17,10 @@ use alloy_provider::{
     RootProvider,
 };
 use revm::{
-    DatabaseRef,
-    database::DBErrorMarker,
-    state::{
+    database::DBErrorMarker, primitives::FixedBytes, state::{
         AccountInfo,
         Bytecode,
-    },
+    }, DatabaseRef
 };
 use std::sync::{
     Arc,
@@ -81,26 +80,49 @@ impl DatabaseRef for JsonRpcDb {
         let provider = self.provider.clone();
         let target_block = self.target_block();
         let future = async move {
-            // Get balance, nonce, and code in parallel for efficiency
-            let (balance_result, nonce_result, code_result) = tokio::join!(
-                provider.get_balance(address).number(target_block),
-                provider.get_transaction_count(address).number(target_block),
-                provider.get_code_at(address).number(target_block)
-            );
+            let proof = match provider
+                .get_proof(address, vec![])
+                .number(target_block)
+                .await
+            {
+                Ok(proof) => Some(proof),
+                Err(TransportError::DeserError { text, .. })
+                    if text.trim().eq_ignore_ascii_case("null") =>
+                {
+                    // If the account does not exist, we get a 
+                    // deserialization error because we get "null" as a response.
+                    None
+                }
+                Err(err) => return Err(JsonRpcDbError::Provider(Box::new(err))),
+            };
 
-            let balance = balance_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
-            let nonce = nonce_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
-            let code = code_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
+            let Some(proof) = proof else {
+                trace!(
+                    target = "engine::overlay",
+                    overlay_kind = "json_rpc",
+                    access = "basic_ref",
+                    block = target_block,
+                    address = ?address,
+                    status = "account_not_found"
+                );
+                return Ok(None);
+            };
 
-            let code_hash = if code.is_empty() {
+            let code = provider
+                .get_code_at(address)
+                .number(target_block)
+                .await
+                .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
+
+            let code_hash = if proof.code_hash == FixedBytes::<32>::default() {
                 revm::primitives::KECCAK_EMPTY
             } else {
-                revm::primitives::keccak256(&code)
+                proof.code_hash
             };
 
             let account_info = AccountInfo {
-                balance,
-                nonce,
+                balance: proof.balance,
+                nonce: proof.nonce,
                 code_hash,
                 code: if code.is_empty() {
                     None
