@@ -18,6 +18,7 @@ bincode = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 metrics = { workspace = true }
 futures = { workspace = true }
+dashmap = { workspace = true }
 
 
 # ETH deps

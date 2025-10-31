@@ -1585,6 +1585,7 @@ dependencies = [
  "bollard",
  "clap",
  "criterion 0.5.1",
+ "dashmap",
  "enum-as-inner",
  "evm-glue",
  "futures",
