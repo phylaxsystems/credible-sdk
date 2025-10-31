@@ -17,10 +17,13 @@ use alloy_provider::{
     RootProvider,
 };
 use revm::{
-    database::DBErrorMarker, primitives::FixedBytes, state::{
+    DatabaseRef,
+    database::DBErrorMarker,
+    primitives::FixedBytes,
+    state::{
         AccountInfo,
         Bytecode,
-    }, DatabaseRef
+    },
 };
 use std::sync::{
     Arc,
@@ -89,7 +92,7 @@ impl DatabaseRef for JsonRpcDb {
                 Err(TransportError::DeserError { text, .. })
                     if text.trim().eq_ignore_ascii_case("null") =>
                 {
-                    // If the account does not exist, we get a 
+                    // If the account does not exist, we get a
                     // deserialization error because we get "null" as a response.
                     None
                 }
