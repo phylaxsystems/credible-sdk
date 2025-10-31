@@ -468,6 +468,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             .get_mut(&tx_execution_id.as_block_execution_id())
             .ok_or(EngineError::MissingCurrentBlockData)?;
         #[cfg(feature = "cache_validation")]
+        // FIXME: needs to be iteration aware
         self.processed_transactions
             .insert(tx_execution_id.tx_hash, state.clone());
 
@@ -977,7 +978,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         // Checks if the received `TxExecutionId` matches blockenv requirements.
         // `tx_execution_id` must be `self.block_env.number + 1`, otherwise we should
         // drop the event.
-        if block.number + 1 != tx_execution_id.block_number {
+        let expected_block_number = block.number + 1;
+        if expected_block_number != tx_execution_id.block_number {
             warn!(
                 target = "engine",
                 tx_hash = %tx_hash,
@@ -988,7 +990,16 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 "Requested transaction block number does not match block number currently built in engine!"
             );
 
-            return Err(EngineError::TxBlockMismatch);
+            let error_message = format!(
+                "Transaction targeted block {} but engine is building block {}",
+                tx_execution_id.block_number, expected_block_number
+            );
+            self.transaction_results.add_transaction_result(
+                tx_execution_id,
+                &TransactionResult::ValidationError(error_message),
+            );
+
+            return Ok(());
         }
 
         // Initialize the current block iteration id if it does not exist
@@ -1137,7 +1148,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 "Requested reorg block number does not match block number currently built in engine!"
             );
 
-            return Err(EngineError::TxBlockMismatch);
+            return Ok(());
         }
 
         let current_block_iteration = self
@@ -1342,6 +1353,52 @@ mod tests {
         assert!(
             matches!(result, Err(EngineError::NoSyncedSources)),
             "expected NoSyncedSources error, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tx_block_mismatch_yields_validation_error() {
+        let (mut engine, _) = create_test_engine().await;
+        let block_env = create_test_block_env();
+        let expected_block_number = block_env.number + 1;
+        let mismatched_block_number = block_env.number;
+        engine.block_env = Some(block_env);
+
+        let tx_execution_id =
+            TxExecutionId::new(mismatched_block_number, 0, B256::from([0x42; 32]));
+        let queue_transaction = queue::QueueTransaction {
+            tx_execution_id,
+            tx_env: TxEnv::default(),
+        };
+
+        let result = engine.process_transaction_event(queue_transaction).await;
+        assert!(
+            result.is_ok(),
+            "mismatched block number should not return an engine error, got {result:?}"
+        );
+
+        let stored_result = engine
+            .get_transaction_result_cloned(&tx_execution_id)
+            .expect("validation error should be recorded");
+        match stored_result {
+            TransactionResult::ValidationError(message) => {
+                assert!(
+                    message.contains(&mismatched_block_number.to_string()),
+                    "error message should mention the transaction block number"
+                );
+                assert!(
+                    message.contains(&expected_block_number.to_string()),
+                    "error message should mention the expected block number"
+                );
+            }
+            TransactionResult::ValidationCompleted { .. } => {
+                panic!("expected validation error, found ValidationCompleted")
+            }
+        }
+
+        assert!(
+            engine.current_block_iterations.is_empty(),
+            "transaction with mismatched block number should not create block iteration state"
         );
     }
 
@@ -1651,7 +1708,7 @@ mod tests {
         mut instance: crate::utils::LocalInstance,
     ) {
         // Execute two successful transactions
-        let tx1 = instance
+        let mut tx1 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
             .await
             .expect("tx1 should be sent successfully");
@@ -1668,6 +1725,7 @@ mod tests {
 
         // Reorg for the previous tx (tx1) should be rejected
         // Because the engine only keeps the last executed tx in the buffer
+        tx1.block_number += 1;
         assert!(
             instance.send_reorg(tx1).await.is_err(),
             "Reorg with wrong hash should be rejected and exit engine"
