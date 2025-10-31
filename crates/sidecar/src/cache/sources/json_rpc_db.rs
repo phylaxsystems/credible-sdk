@@ -111,15 +111,22 @@ impl DatabaseRef for JsonRpcDb {
                 return Ok(None);
             };
 
-            let code = provider
-                .get_code_at(address)
-                .number(target_block)
-                .await
-                .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
-
+            let mut code = None;
             let code_hash = if proof.code_hash == FixedBytes::<32>::default() {
                 revm::primitives::KECCAK_EMPTY
             } else {
+                // If we have a code hash, we query the bytecode
+                let code_bytes = provider
+                    .get_code_at(address)
+                    .number(target_block)
+                    .await
+                    .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
+
+                // If the code is not empty we create a `Bytecode` from it
+                if !code_bytes.is_empty() {
+                    code = Some(Bytecode::new_raw(code_bytes));
+                }
+
                 proof.code_hash
             };
 
@@ -127,12 +134,7 @@ impl DatabaseRef for JsonRpcDb {
                 balance: proof.balance,
                 nonce: proof.nonce,
                 code_hash,
-                code: if code.is_empty() {
-                    None
-                } else {
-                    let bytecode = Bytecode::new_raw(code);
-                    Some(bytecode)
-                },
+                code,
             };
 
             trace!(

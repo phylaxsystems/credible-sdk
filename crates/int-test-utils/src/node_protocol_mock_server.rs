@@ -519,7 +519,7 @@ impl DualProtocolMockServer {
         let id = request.get("id").cloned().unwrap_or(json!(1));
 
         // Track calls that correspond to basic_ref operations
-        if matches!(method, "eth_getBalance") {
+        if matches!(method, "eth_getBalance" | "eth_getProof") {
             if let Some(params) = request.get("params").and_then(|p| p.as_array()) {
                 if let Some(address_str) = params.first().and_then(|addr| addr.as_str()) {
                     if address_str.starts_with("0x") && address_str.len() == 42 {
