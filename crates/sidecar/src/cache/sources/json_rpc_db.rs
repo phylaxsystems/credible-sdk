@@ -16,6 +16,7 @@ use alloy::{
 use alloy_provider::{
     Provider,
     RootProvider,
+    ext::DebugApi,
 };
 use revm::{
     DatabaseRef,
@@ -44,10 +45,18 @@ impl DBErrorMarker for JsonRpcDbError {}
 pub struct JsonRpcDb {
     provider: Arc<RootProvider>,
     target_block: AtomicU64,
+    /// Enables the use of the debug `code_by_hash` RPC method.
+    ///
+    /// Use of this method means that code will only be queried when
+    /// `DatabaseRef` `code_by_hash` is called.
+    use_debug_code_by_hash: bool,
 }
 
 impl JsonRpcDb {
-    pub async fn try_new_with_rpc_url(rpc_url: &str) -> Result<Self, JsonRpcDbError> {
+    pub async fn try_new_with_rpc_url(
+        rpc_url: &str,
+        use_debug_code_by_hash: bool,
+    ) -> Result<Self, JsonRpcDbError> {
         // Create provider (this needs to be done in async context)
         let provider = ProviderBuilder::new()
             .connect(rpc_url)
@@ -57,13 +66,15 @@ impl JsonRpcDb {
         Ok(Self {
             provider: Arc::new(provider.root().clone()),
             target_block: AtomicU64::new(0),
+            use_debug_code_by_hash,
         })
     }
 
-    pub fn new_with_provider(provider: Arc<RootProvider>) -> Self {
+    pub fn new_with_provider(provider: Arc<RootProvider>, use_debug_code_by_hash: bool) -> Self {
         Self {
             provider,
             target_block: AtomicU64::new(0),
+            use_debug_code_by_hash,
         }
     }
 
@@ -105,16 +116,23 @@ impl DatabaseRef for JsonRpcDb {
             let code_hash = if proof.code_hash == revm::primitives::KECCAK_EMPTY {
                 revm::primitives::KECCAK_EMPTY
             } else {
-                // If we have a code hash, we query the bytecode
-                let code_bytes = provider
-                    .get_code_at(address)
-                    .number(target_block)
-                    .await
-                    .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
+                // If we have `use_debug_code_by_hash` disabled, we have to
+                // querry the code here
+                //
+                // Otherwise, if enabled, the code will remain `None` and
+                // we will querry it in `code_by_hash_ref`
+                if !self.use_debug_code_by_hash {
+                    // If we have a code hash, we query the bytecode
+                    let code_bytes = provider
+                        .get_code_at(address)
+                        .number(target_block)
+                        .await
+                        .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
 
-                // If the code is not empty we create a `Bytecode` from it
-                if !code_bytes.is_empty() {
-                    code = Some(Bytecode::new_raw(code_bytes));
+                    // If the code is not empty we create a `Bytecode` from it
+                    if !code_bytes.is_empty() {
+                        code = Some(Bytecode::new_raw(code_bytes));
+                    }
                 }
 
                 proof.code_hash
@@ -147,17 +165,45 @@ impl DatabaseRef for JsonRpcDb {
         })
     }
 
-    fn code_by_hash_ref(&self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-        // If not in cache, we can't retrieve it via standard JSON-RPC
-        // This should not happen if basic_ref is always called before code_by_hash_ref
-        // NOTE: Since this will be part of the OverlayDB, it is guaranteed to be in the cache of the OverlayDB
-        trace!(
-            target = "engine::overlay",
-            overlay_kind = "json_rpc",
-            access = "code_by_hash_ref",
-            status = "not_supported"
-        );
-        Err(JsonRpcDbError::CodeByHashNotFound)
+    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        if !self.use_debug_code_by_hash {
+            // If not in cache, we can't retrieve it via standard JSON-RPC
+            // This should not happen if basic_ref is always called before code_by_hash_ref
+            // NOTE: Since this will be part of the OverlayDB, it is guaranteed to be in the cache of the OverlayDB
+            trace!(
+                target = "engine::overlay",
+                overlay_kind = "json_rpc",
+                access = "code_by_hash_ref",
+                status = "not_supported"
+            );
+            return Err(JsonRpcDbError::CodeByHashNotFound);
+        }
+
+        let future = async move {
+            let bytecode = self
+                .provider
+                .debug_code_by_hash(
+                    code_hash,
+                    Some(BlockId::Number(alloy::eips::BlockNumberOrTag::Number(
+                        self.target_block(),
+                    ))),
+                )
+                .await
+                .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
+            if let Some(bytecode) = bytecode {
+                return Ok(Bytecode::new_raw(bytecode));
+            }
+
+            Ok(Bytecode::new())
+        };
+
+        let handle = tokio::runtime::Handle::current();
+        let span = Span::current();
+        std::thread::scope(|s| {
+            s.spawn(move || span.in_scope(|| handle.block_on(future)))
+                .join()
+                .map_err(|_| JsonRpcDbError::Runtime)?
+        })
     }
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
