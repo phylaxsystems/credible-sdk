@@ -153,12 +153,17 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
                 continue;
             }
 
-            if account.info.code.is_some() {
-                self.code_by_hash
-                    .insert(account.info.code_hash, account.info.code.clone().unwrap());
+            if let Some(prev_info) = self.basic.insert(address, account.info.clone()) {
+                if prev_info.code.is_some() && prev_info.code_hash != account.info.code_hash {
+                    self.code_by_hash.remove(&prev_info.code_hash);
+                }
             }
 
-            self.basic.insert(address, account.info.clone());
+            if let Some(code) = account.info.code.clone() {
+                self.code_by_hash.insert(account.info.code_hash, code);
+            } else {
+                self.code_by_hash.remove(&account.info.code_hash);
+            }
             match self.storage.get_mut(&address) {
                 Some(s) => {
                     s.map.extend(

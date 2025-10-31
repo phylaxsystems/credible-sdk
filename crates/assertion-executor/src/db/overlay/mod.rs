@@ -500,15 +500,24 @@ impl<Db> OverlayDb<Db> {
         // Update account info
         for (address, account_info) in fork_db.basic {
             let key = TableKey::Basic(address);
-            self.overlay
-                .insert(key, TableValue::Basic(account_info.clone()));
-        }
 
-        // Update code if present
-        for (address, code) in fork_db.code_by_hash {
-            let code_key = TableKey::CodeByHash(address);
-            self.overlay
-                .insert(code_key, TableValue::CodeByHash(code.clone()));
+            if let Some(TableValue::Basic(prev_info)) = self
+                .overlay
+                .insert(key, TableValue::Basic(account_info.clone()))
+            {
+                if prev_info.code.is_some() && prev_info.code_hash != account_info.code_hash {
+                    self.overlay
+                        .remove(&TableKey::CodeByHash(prev_info.code_hash));
+                }
+            }
+
+            if let Some(code) = account_info.code.clone() {
+                let code_key = TableKey::CodeByHash(account_info.code_hash);
+                self.overlay.insert(code_key, TableValue::CodeByHash(code));
+            } else {
+                self.overlay
+                    .remove(&TableKey::CodeByHash(account_info.code_hash));
+            }
         }
 
         // Update storage slots
