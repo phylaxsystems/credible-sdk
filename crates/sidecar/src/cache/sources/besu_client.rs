@@ -78,6 +78,7 @@ impl BesuClient {
     pub async fn try_build(
         ws_url: impl Into<String>,
         http_url: impl Into<String>,
+        use_debug_code_by_hash: bool,
     ) -> Result<Arc<Self>, BesuClientError> {
         let ws = WsConnect::new(ws_url.into());
         let ws_provider = Arc::new(
@@ -98,7 +99,7 @@ impl BesuClient {
 
         let inner = Arc::new(BesuClientInner {
             current_block: Arc::new(AtomicU64::new(0)),
-            json_rpc_db: JsonRpcDb::new_with_provider(http_provider.clone()),
+            json_rpc_db: JsonRpcDb::new_with_provider(http_provider.clone(), use_debug_code_by_hash),
             ws_provider,
         });
         let handler = tokio::task::spawn(inner.clone().run_with_reconnect());

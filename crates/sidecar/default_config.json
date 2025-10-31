@@ -28,6 +28,7 @@
     "besu_client_http_url": "http://127.0.0.1:8545",
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
-    "sources_monitoring_period_ms": 500
+    "sources_monitoring_period_ms": 500,
+    "use_debug_code_by_hash": false
   }
 }
