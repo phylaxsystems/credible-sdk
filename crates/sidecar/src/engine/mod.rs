@@ -468,6 +468,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             .get_mut(&tx_execution_id.as_block_execution_id())
             .ok_or(EngineError::MissingCurrentBlockData)?;
         #[cfg(feature = "cache_validation")]
+        // FIXME: needs to be iteration aware
         self.processed_transactions
             .insert(tx_execution_id.tx_hash, state.clone());
 
@@ -997,8 +998,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 tx_execution_id,
                 &TransactionResult::ValidationError(error_message),
             );
-            #[cfg(feature = "cache_validation")]
-            self.processed_transactions.insert(tx_hash, None);
 
             return Ok(());
         }
