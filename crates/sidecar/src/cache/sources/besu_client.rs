@@ -65,18 +65,22 @@ impl Drop for BesuClient {
 
 #[derive(Debug)]
 struct BesuClientInner {
-    /// Provider
-    provider: Arc<RootProvider>,
+    /// Provider for sync status
+    ws_provider: Arc<RootProvider>,
     /// Current block
     current_block: Arc<AtomicU64>,
+    /// `JsonRpcDb` using http for making `DatabaseRef` calls
     json_rpc_db: JsonRpcDb,
 }
 
 impl BesuClient {
     /// Create a new `BesuStateSync` instance
-    pub async fn try_build(ws_url: impl Into<String>) -> Result<Arc<Self>, BesuClientError> {
+    pub async fn try_build(
+        ws_url: impl Into<String>,
+        http_url: impl Into<String>,
+    ) -> Result<Arc<Self>, BesuClientError> {
         let ws = WsConnect::new(ws_url.into());
-        let provider = Arc::new(
+        let ws_provider = Arc::new(
             ProviderBuilder::new()
                 .connect_ws(ws)
                 .await
@@ -84,12 +88,21 @@ impl BesuClient {
                 .root()
                 .clone(),
         );
+
+        let http_provider = Arc::new(
+            ProviderBuilder::new()
+                .connect_http(reqwest::Url::parse(&http_url.into())?)
+                .root()
+                .clone(),
+        );
+
         let inner = Arc::new(BesuClientInner {
             current_block: Arc::new(AtomicU64::new(0)),
-            json_rpc_db: JsonRpcDb::new_with_provider(provider.clone()),
-            provider,
+            json_rpc_db: JsonRpcDb::new_with_provider(http_provider.clone()),
+            ws_provider,
         });
         let handler = tokio::task::spawn(inner.clone().run_with_reconnect());
+
         Ok(Arc::new(Self {
             inner,
             handler: handler.abort_handle(),
@@ -103,13 +116,13 @@ impl BesuClientInner {
     /// Connect to Besu node and start syncing
     async fn connect_and_sync_head(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
         // Get the current block to initialize state
-        if let Ok(block_number) = self.provider.get_block_number().await {
+        if let Ok(block_number) = self.ws_provider.get_block_number().await {
             self.current_block.store(block_number, Ordering::Relaxed);
             info!("Initial block number: {}", block_number);
         }
 
         // Subscribe to new heads
-        let subscription = self.provider.subscribe_blocks().await?;
+        let subscription = self.ws_provider.subscribe_blocks().await?;
         let mut stream = subscription.into_stream();
 
         // Process incoming header
@@ -216,4 +229,6 @@ impl Source for BesuClient {
 pub enum BesuClientError {
     #[error("Failed to connect to the websocket provider")]
     Provider(#[source] RpcError<TransportErrorKind>),
+    #[error("Failed to parse the HTTP provider URL")]
+    HttpUrl(#[from] url::ParseError),
 }

@@ -328,6 +328,16 @@ The configuration file is a JSON file with the following schema:
             "ws://besu-service:8548"
           ]
         },
+        "besu_client_http_url": {
+          "type": "string",
+          "description": "Besu client HTTP bind address and port (optional)",
+          "format": "uri",
+          "pattern": "^https?://",
+          "examples": [
+            "http://localhost:8548",
+            "http://besu-service:8548"
+          ]
+        },
         "redis_url": {
           "type": "string",
           "description": "Redis bind address and port (optional)",
@@ -424,6 +434,7 @@ The default configuration can be found in [default_config.json](default_config.j
   "state": {
     "sequencer_url": "http://127.0.0.1:8545",
     "besu_client_ws_url": "ws://127.0.0.1:8546",
+    "besu_client_http_url": "http://127.0.0.1:8545",
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
     "sources_monitoring_period_ms": 500
