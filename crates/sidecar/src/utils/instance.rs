@@ -549,6 +549,38 @@ impl<T: TestTransport> LocalInstance<T> {
         Ok(tx_execution_id)
     }
 
+    pub async fn send_call_tx_dry(
+        &mut self,
+        to: Address,
+        value: U256,
+        data: Bytes,
+    ) -> Result<TxExecutionId, String> {
+        let tx_hash = Self::generate_random_tx_hash();
+        let tx_execution_id = self.build_tx_id(tx_hash);
+
+        let nonce = self.next_nonce(
+            self.default_account,
+            tx_execution_id.as_block_execution_id(),
+        );
+
+        let tx_env = TxEnvBuilder::new()
+            .caller(self.default_account)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Call(to))
+            .value(value)
+            .data(data)
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
+
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
+
+        Ok(tx_execution_id)
+    }
+
     /// Send a CALL transaction to an existing contract using the default account
     pub async fn send_call_tx(
         &mut self,
