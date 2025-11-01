@@ -212,13 +212,13 @@ impl From<&EngineError> for ErrorRecoverability {
         match e {
             EngineError::DatabaseError
             | EngineError::AssertionError
-            | EngineError::NothingToCommit
-            | EngineError::MissingCurrentBlockData
-            | EngineError::BadReorgHash => ErrorRecoverability::Unrecoverable,
+            | EngineError::MissingCurrentBlockData => ErrorRecoverability::Unrecoverable,
             EngineError::TransactionError
             | EngineError::ChannelClosed
             | EngineError::GetTxResultChannelClosed
+            | EngineError::NothingToCommit
             | EngineError::TxBlockMismatch
+            | EngineError::BadReorgHash
             | EngineError::NoSyncedSources => ErrorRecoverability::Recoverable,
         }
     }
