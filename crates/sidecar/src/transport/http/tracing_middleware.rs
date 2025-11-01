@@ -24,14 +24,14 @@ pub async fn tracing_middleware(
     let path = request.uri().path().to_string();
 
     // Get the current block number for the span
-    let current_block = block_context.current_block_number();
+    let latest_head = block_context.current_head();
 
     // Create span with block context
     let span = info_span!(
         "json_rpc_request",
         method = %method,
         path = %path,
-        block.number = current_block,
+        block.number = latest_head,
         tx.hash = tracing::field::Empty,
     );
 

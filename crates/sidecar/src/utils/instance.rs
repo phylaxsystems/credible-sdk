@@ -1,6 +1,6 @@
 use crate::{
     cache::{
-        Cache,
+        Sources,
         sources::Source,
     },
     engine::TransactionResult,
@@ -115,9 +115,9 @@ pub trait TestTransport: Sized {
 /// manually sending/verifying because of this.
 pub struct LocalInstance<T: TestTransport> {
     /// The underlying database
-    db: Arc<CacheDB<Arc<Cache>>>,
+    db: Arc<CacheDB<Arc<Sources>>>,
     /// Underlying cache
-    cache: Arc<Cache>,
+    cache: Arc<Sources>,
     /// List of cache sources
     pub sources: Vec<Arc<dyn Source>>,
     /// The mock HTTP representing the sequencer
@@ -157,8 +157,8 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Internal constructor for creating `LocalInstance` with all fields
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_internal(
-        db: Arc<CacheDB<Arc<Cache>>>,
-        cache: Arc<Cache>,
+        db: Arc<CacheDB<Arc<Sources>>>,
+        cache: Arc<Sources>,
         sequencer_http_mock: DualProtocolMockServer,
         besu_client_http_mock: DualProtocolMockServer,
         assertion_store: Arc<AssertionStore>,
@@ -216,13 +216,13 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Get a reference to the underlying database
-    pub fn db(&self) -> &Arc<CacheDB<Arc<Cache>>> {
+    pub fn db(&self) -> &Arc<CacheDB<Arc<Sources>>> {
         &self.db
     }
 
     /// Return the number of cache resets observed so far.
     pub fn cache_reset_count(&self) -> u64 {
-        self.cache.reset_required_block_number_count()
+        self.cache.reset_required_head_count()
     }
 
     /// Get a reference to the assertion store

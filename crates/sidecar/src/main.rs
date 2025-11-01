@@ -11,7 +11,7 @@ use assertion_executor::{
 };
 use crossbeam::channel::unbounded;
 use sidecar::{
-    cache::sources::redis::RedisCache,
+    cache::sources::redis::Redis,
     config::{
         init_assertion_store,
         init_executor_config,
@@ -34,7 +34,7 @@ use sidecar::{
         TransportProtocol,
     },
     cache::{
-        Cache,
+        Sources,
         sources::{
             Source,
             besu_client::BesuClient,
@@ -127,13 +127,13 @@ async fn main() -> anyhow::Result<()> {
             redis_namespace,
             CircularBufferConfig::new(redis_depth)?,
         ) {
-            let redis_cache = Arc::new(RedisCache::new(redis_client));
+            let redis_cache = Arc::new(Redis::new(redis_client));
             sources.push(redis_cache);
         }
 
         // The cache is flushed on restart
-        let cache = Arc::new(Cache::new(sources, config.state.minimum_state_diff));
-        let state: OverlayDb<Cache> = OverlayDb::new(
+        let cache = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
+        let state: OverlayDb<Sources> = OverlayDb::new(
             Some(cache.clone()),
             config.credible.overlay_cache_capacity.unwrap_or(100_000) as u64,
         );

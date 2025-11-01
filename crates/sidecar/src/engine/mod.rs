@@ -85,7 +85,7 @@ use assertion_executor::{
 use revm::state::EvmState;
 
 use crate::{
-    cache::Cache,
+    cache::Sources,
     engine::transactions_results::TransactionsResults,
     execution_ids::{
         BlockExecutionId,
@@ -257,7 +257,7 @@ pub struct CoreEngine<DB> {
     /// In-memory `revm::Database` cache. Populated as the sidecar executes blocks.
     ///
     /// This is the state the `CoreEngine` is executing transactions against.
-    state: OverlayDb<DB>,
+    cache: OverlayDb<DB>,
     /// Current block iteration data per block execution id.
     current_block_iterations: HashMap<BlockExecutionId, BlockIterationData<DB>>,
     /// External providers of state we use when we do not have a piece of state cached in our in memory db.
@@ -265,7 +265,7 @@ pub struct CoreEngine<DB> {
     /// for execution with it.
     ///
     /// Some state providers may be slow which is why we use them as a fallback for `state: OverlayDb<DB>`.
-    cache: Arc<Cache>,
+    sources: Arc<Sources>,
     /// Channel on which the core engine receives events. Events include new transactions, blocks(block envs), reorgs.
     tx_receiver: TransactionQueueReceiver,
     /// Core engines instance of the assertion executor, executes transactions and assertions
@@ -303,7 +303,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[instrument(name = "engine::new", skip_all, level = "debug")]
     pub async fn new(
         state: OverlayDb<DB>,
-        cache: Arc<Cache>,
+        cache: Arc<Sources>,
         tx_receiver: TransactionQueueReceiver,
         assertion_executor: AssertionExecutor,
         state_results: Arc<TransactionsState>,
@@ -330,9 +330,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             (processed_transactions, handle)
         };
         Self {
-            state,
+            cache: state,
             current_block_iterations: HashMap::new(),
-            cache: cache.clone(),
+            sources: cache.clone(),
             tx_receiver,
             assertion_executor,
             block_env: None,
@@ -359,9 +359,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[allow(clippy::missing_panics_doc)]
     pub fn new_test() -> Self {
         let (_, tx_receiver) = crossbeam::channel::unbounded();
-        let cache = Arc::new(Cache::new(vec![], 10));
+        let cache = Arc::new(Sources::new(vec![], 10));
         Self {
-            state: OverlayDb::new(None, 64),
+            cache: OverlayDb::new(None, 64),
             current_block_iterations: HashMap::new(),
             tx_receiver,
             assertion_executor: AssertionExecutor::new(
@@ -369,7 +369,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 AssertionStore::new_ephemeral().expect("REASON"),
             ),
             block_env: None,
-            cache: cache.clone(),
+            sources: cache.clone(),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
             block_metrics: BlockMetrics::new(),
             state_sources_sync_timeout: Duration::from_millis(100),
@@ -647,7 +647,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// Get the state of the engine's overlay database for testing purposes.
     #[cfg(test)]
     pub fn get_state(&self) -> &OverlayDb<DB> {
-        &self.state
+        &self.cache
     }
 
     /// Get a reference to the block environment for testing purposes.
@@ -697,13 +697,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
     /// Invalidates the state, cache and last executed tx
     fn invalidate_all(&mut self, queue_block_env: &QueueBlockEnv) {
-        self.cache
-            .reset_required_block_number(queue_block_env.block_env.number);
+        self.sources
+            .reset_required_head(queue_block_env.block_env.number);
 
         // Measure cache invalidation time and set its new min required driver height
         let instant = Instant::now();
         self.check_sources_available = true;
-        self.state.invalidate_all();
+        self.cache.invalidate_all();
         self.current_block_iterations.clear();
         self.block_metrics
             .increment_cache_invalidation(instant.elapsed(), queue_block_env.block_env.number);
@@ -783,7 +783,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let start = Instant::now();
         loop {
             if self
-                .cache
+                .sources
                 .iter_synced_sources()
                 .into_iter()
                 .any(|a| a.is_synced(block_number))
@@ -873,7 +873,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 info!(
                     target = "engine",
                     blocks = processed_blocks,
-                    cache_entries = self.state.cache_entry_count(),
+                    cache_entries = self.cache.cache_entry_count(),
                     "Engine processing stats"
                 );
             }
@@ -937,7 +937,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             "Block details"
         );
 
-        self.cache.set_block_number(block_env.number);
+        self.sources.set_block_number(block_env.number);
 
         self.block_metrics.block_processing_duration = block_processing_time.elapsed();
         self.block_metrics.current_height = block_env.number;
@@ -1006,7 +1006,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.current_block_iterations
             .entry(tx_execution_id.as_block_execution_id())
             .or_insert(BlockIterationData {
-                fork_db: self.state.fork(),
+                fork_db: self.cache.fork(),
                 n_transactions: 0,
                 last_executed_tx: LastExecutedTx::new(),
             });
@@ -1070,7 +1070,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         );
 
         // Commit the entire block's state to the underlying OverlayDb
-        self.state
+        self.cache
             .commit_overlay_fork_db(current_block_iteration.fork_db.clone());
     }
 
@@ -1093,7 +1093,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         {
             let changes = state.clone();
             let changes = changes.ok_or(EngineError::NothingToCommit)?;
-            self.state.commit(changes);
+            self.cache.commit(changes);
         }
         current_block_iteration.last_executed_tx = LastExecutedTx::new();
         Ok(())
@@ -1297,7 +1297,7 @@ mod tests {
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
         let state_results = TransactionsState::new();
-        let cache = Arc::new(Cache::new(vec![], 10));
+        let cache = Arc::new(Sources::new(vec![], 10));
         let engine = CoreEngine::new(
             state,
             cache,
@@ -1837,7 +1837,7 @@ mod tests {
         engine.block_env = Some(block_env);
 
         let current_block_iteration_id = BlockIterationData {
-            fork_db: engine.state.fork(),
+            fork_db: engine.cache.fork(),
             n_transactions: 0,
             last_executed_tx: LastExecutedTx::new(),
         };
@@ -2174,7 +2174,7 @@ mod tests {
         last_executed_tx.push(tx_execution_id, None);
 
         let current_block_iteration_id = BlockIterationData {
-            fork_db: engine.state.fork(),
+            fork_db: engine.cache.fork(),
             n_transactions: 0,
             last_executed_tx,
         };
