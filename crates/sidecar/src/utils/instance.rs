@@ -60,7 +60,10 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::Arc,
-    time::Duration,
+    time::{
+        Duration,
+        Instant,
+    },
 };
 use tokio::task::JoinHandle;
 use tracing::info;
@@ -148,6 +151,8 @@ pub struct LocalInstance<T: TestTransport> {
 
 impl<T: TestTransport> LocalInstance<T> {
     const TRANSACTION_RESULT_TIMEOUT: Duration = Duration::from_millis(250);
+    const CONDITION_TIMEOUT: Duration = Duration::from_secs(10);
+    const CONDITION_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
     /// Create a new local instance with mock transport
     pub async fn new() -> Result<LocalInstance<T>, String> {
@@ -268,6 +273,32 @@ impl<T: TestTransport> LocalInstance<T> {
         tokio::time::sleep(duration).await;
     }
 
+    /// Wait for a specific source to report as synced up to a block number
+    pub async fn wait_for_source_synced(
+        &self,
+        source_index: usize,
+        block_number: u64,
+    ) -> Result<(), String> {
+        let source = self
+            .sources
+            .get(source_index)
+            .cloned()
+            .ok_or_else(|| format!("source index {source_index} out of bounds"))?;
+
+        tokio::time::timeout(Self::CONDITION_TIMEOUT, async move {
+            loop {
+                if source.is_synced(block_number) {
+                    return;
+                }
+                tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            format!("timed out waiting for source {source_index} to sync to block {block_number}")
+        })
+    }
+
     async fn wait_for_transaction_result(
         &self,
         tx_execution_id: &TxExecutionId,
@@ -375,11 +406,18 @@ impl<T: TestTransport> LocalInstance<T> {
     {
         let before = self.cache_reset_count();
         action(self).await?;
-        self.wait_for_processing(Duration::from_millis(15)).await;
-        let after = self.cache_reset_count();
-        tracing::debug!("Flushes before {}, after {}", before, after);
-        if after <= before {
-            return Err("cache flush was not observed".to_string());
+
+        let start = Instant::now();
+        loop {
+            let after = self.cache_reset_count();
+            tracing::debug!("Flushes before {}, after {}", before, after);
+            if after > before {
+                break;
+            }
+            if start.elapsed() > Self::CONDITION_TIMEOUT {
+                return Err("cache flush was not observed within timeout".to_string());
+            }
+            tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
         }
         self.clear_nonce();
 
