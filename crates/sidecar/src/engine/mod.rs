@@ -1261,6 +1261,7 @@ mod tests {
     use crate::utils::TestDbError;
     use assertion_executor::{
         ExecutorConfig,
+        primitives::AccountInfo,
         store::AssertionStore,
     };
     use revm::{
@@ -2890,5 +2891,188 @@ mod tests {
             .unwrap();
 
         assert!(instance.is_transaction_successful(&final_tx).await.unwrap());
+    }
+
+    #[crate::utils::engine_test(all)]
+    async fn test_storage_slot_persistence_intra_and_cross_block(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // Deploy a contract that can SET and VERIFY arbitrary storage slots
+        // Calldata format:
+        // - Bytes [0:32]: operation (0=SET, 1=VERIFY)
+        // - Bytes [32:64]: slot
+        // - Bytes [64:96]: value (for SET) or expected value (for VERIFY)
+
+        let constructor_bytecode = Bytes::from(vec![
+            // Constructor: copy runtime code to memory and return it
+            0x60, 0x30, // PUSH1 48 (runtime size)
+            0x80, // DUP1
+            0x60, 0x0b, // PUSH1 11 (runtime code starts here)
+            0x60, 0x00, // PUSH1 0 (memory offset)
+            0x39, // CODECOPY
+            0x60, 0x00, // PUSH1 0
+            0xf3, // RETURN
+            // Runtime code (48 bytes):
+            0x60, 0x00, // PUSH1 0
+            0x35, // CALLDATALOAD (load operation)
+            0x80, // DUP1
+            0x15, // ISZERO (check if operation == 0)
+            0x60, 0x13, // PUSH1 19 (jump to SET)
+            0x57, // JUMPI
+            0x60, 0x01, // PUSH1 1
+            0x14, // EQ (check if operation == 1)
+            0x60, 0x1c, // PUSH1 28 (jump to VERIFY)
+            0x57, // JUMPI
+            0x60, 0x00, // PUSH1 0
+            0x60, 0x00, // PUSH1 0
+            0xfd, // REVERT (invalid operation)
+            // SET operation (offset 0x13)
+            0x5b, // JUMPDEST
+            0x60, 0x40, // PUSH1 64       ← FIXED: load value first
+            0x35, // CALLDATALOAD (load value)
+            0x60, 0x20, // PUSH1 32       ← FIXED: then load slot
+            0x35, // CALLDATALOAD (load slot)
+            0x55, // SSTORE (now: value at slot, correct!)
+            0x00, // STOP
+            // VERIFY operation (offset 0x1c)
+            0x5b, // JUMPDEST
+            0x60, 0x20, // PUSH1 32
+            0x35, // CALLDATALOAD (load slot)
+            0x80, // DUP1
+            0x54, // SLOAD
+            0x60, 0x40, // PUSH1 64
+            0x35, // CALLDATALOAD (load expected value)
+            0x14, // EQ
+            0x60, 0x2e, // PUSH1 46 (jump to success)
+            0x57, // JUMPI
+            0x60, 0x00, // PUSH1 0
+            0x60, 0x00, // PUSH1 0
+            0xfd, // REVERT (value mismatch)
+            // Success (offset 0x2e)
+            0x5b, // JUMPDEST
+            0x00, // STOP
+        ]);
+
+        // Helper to create SET calldata
+        let set_calldata = |slot: U256, value: U256| -> Bytes {
+            let mut data = Vec::with_capacity(96);
+            data.extend_from_slice(&[0u8; 32]); // operation = 0 (SET)
+            data.extend_from_slice(&slot.to_be_bytes::<32>());
+            data.extend_from_slice(&value.to_be_bytes::<32>());
+            Bytes::from(data)
+        };
+
+        // Helper to create VERIFY calldata
+        let verify_calldata = |slot: U256, expected: U256| -> Bytes {
+            let mut data = Vec::with_capacity(96);
+            let mut op = [0u8; 32];
+            op[31] = 1; // operation = 1 (VERIFY)
+            data.extend_from_slice(&op);
+            data.extend_from_slice(&slot.to_be_bytes::<32>());
+            data.extend_from_slice(&expected.to_be_bytes::<32>());
+            Bytes::from(data)
+        };
+
+        // Start Block 1
+        instance.new_block().await.unwrap();
+
+        // TX1: Deploy the storage test contract
+        let deploy_tx = instance
+            .send_successful_create_tx_dry(uint!(0_U256), constructor_bytecode)
+            .await
+            .unwrap();
+
+        assert!(
+            instance
+                .is_transaction_successful(&deploy_tx)
+                .await
+                .unwrap(),
+            "Contract deployment should succeed"
+        );
+
+        // Calculate contract address
+        let sender = instance.default_account();
+        let contract_address = sender.create(0);
+        info!("Storage test contract deployed at: {}", contract_address);
+
+        // TX2: Write slot 5 = 0x42
+        let tx2 = instance
+            .send_call_tx_dry(
+                contract_address,
+                uint!(0_U256),
+                set_calldata(uint!(5_U256), uint!(0x42_U256)),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&tx2).await.unwrap(),
+            "TX2: SET slot 5 = 0x42 should succeed"
+        );
+
+        // TX3: Verify slot 5 == 0x42 (intra-block read)
+        let tx3 = instance
+            .send_call_tx_dry(
+                contract_address,
+                uint!(0_U256),
+                verify_calldata(uint!(5_U256), uint!(0x42_U256)),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&tx3).await.unwrap(),
+            "TX3: VERIFY slot 5 == 0x42 should succeed (intra-block persistence)"
+        );
+
+        // TX4: Write slot 5 = 0x43
+        let tx4 = instance
+            .send_call_tx_dry(
+                contract_address,
+                uint!(0_U256),
+                set_calldata(uint!(5_U256), uint!(0x43_U256)),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&tx4).await.unwrap(),
+            "TX4: SET slot 5 = 0x43 should succeed"
+        );
+
+        // TX5: Verify slot 5 == 0x43 (intra-block read after update)
+        let tx5 = instance
+            .send_call_tx_dry(
+                contract_address,
+                uint!(0_U256),
+                verify_calldata(uint!(5_U256), uint!(0x43_U256)),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&tx5).await.unwrap(),
+            "TX5: VERIFY slot 5 == 0x43 should succeed (intra-block after update)"
+        );
+
+        info!("✓ Intra-block storage persistence verified");
+
+        // Start Block 2 (commits Block 1 state)
+        instance.new_block().await.unwrap();
+
+        // TX6: Verify slot 5 == 0x43 (cross-block read)
+        let tx6 = instance
+            .send_call_tx_dry(
+                contract_address,
+                uint!(0_U256),
+                verify_calldata(uint!(5_U256), uint!(0x43_U256)),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            instance.is_transaction_successful(&tx6).await.unwrap(),
+            "TX6: VERIFY slot 5 == 0x43 should succeed (cross-block persistence)"
+        );
     }
 }
