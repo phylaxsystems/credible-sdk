@@ -18,8 +18,8 @@ use crate::{
 use alloy_primitives::KECCAK256_EMPTY;
 use revm::database::InMemoryDB;
 
-use moka::sync::Cache;
-
+use super::OverlayDb;
+use dashmap::DashMap;
 use std::{
     collections::HashMap,
     sync::{
@@ -28,14 +28,11 @@ use std::{
     },
 };
 
-use super::OverlayDb;
-
 impl<Db> OverlayDb<Db> {
     pub fn new_test() -> OverlayDb<InMemoryDB> {
-        let cache = Cache::builder().max_capacity(10_000).build();
         OverlayDb {
             underlying_db: Some(Arc::new(InMemoryDB::default())),
-            overlay: cache,
+            overlay: Arc::new(DashMap::new()),
         }
     }
 }

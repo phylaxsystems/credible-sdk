@@ -26,6 +26,7 @@ use crate::{
         EvmState,
     },
 };
+use dashmap::DashMap;
 use metrics::counter;
 use tracing::trace;
 
@@ -41,7 +42,6 @@ use std::{
 };
 
 use enum_as_inner::EnumAsInner;
-use moka::sync::Cache;
 
 use super::fork_db::ForkDb;
 
@@ -80,7 +80,7 @@ pub enum TableValue {
 #[derive(Debug)]
 pub struct OverlayDb<Db> {
     underlying_db: Option<Arc<Db>>,
-    pub overlay: Cache<TableKey, TableValue>,
+    pub overlay: Arc<DashMap<TableKey, TableValue>>,
 }
 
 impl<Db> Clone for OverlayDb<Db> {
@@ -96,39 +96,32 @@ impl<Db> Default for OverlayDb<Db> {
     fn default() -> Self {
         Self {
             underlying_db: None,
-            overlay: Cache::builder().max_capacity(1024).build(),
+            overlay: Arc::new(DashMap::new()),
         }
     }
 }
 
 impl<Db> OverlayDb<Db> {
     /// Creates a new `OverlayDB` with the max cache size in bytes.
-    pub fn new(underlying_db: Option<Arc<Db>>, max_capacity: u64) -> Self {
-        let cache = Cache::builder().max_capacity(max_capacity).build();
+    pub fn new(underlying_db: Option<Arc<Db>>, _max_capacity: u64) -> Self {
         Self {
             underlying_db,
-            overlay: cache,
+            overlay: Arc::new(DashMap::new()),
         }
     }
 
     /// Creates a new `OverlayDb` with the max capacity being determined by the number
     /// of elements inside of the cache instead of the size.
-    pub fn new_with_len(underlying_db: Option<Arc<Db>>, max_capacity: u64) -> Self {
-        let cache = Cache::new(max_capacity);
+    pub fn new_with_len(underlying_db: Option<Arc<Db>>, _max_capacity: u64) -> Self {
         Self {
             underlying_db,
-            overlay: cache,
+            overlay: Arc::new(DashMap::new()),
         }
-    }
-
-    /// Clears the buffer.
-    pub fn run_pending_tasks(&self) {
-        self.overlay.run_pending_tasks();
     }
 
     ///Invalidates all cache entries.
     pub fn invalidate_all(&self) {
-        self.overlay.invalidate_all();
+        self.overlay.clear();
     }
 
     /// Replaces underlying database refrance with a new one.
@@ -179,7 +172,7 @@ impl<Db> OverlayDb<Db> {
 
     /// Returns the number of entries inside the cache.
     pub fn cache_entry_count(&self) -> u64 {
-        self.overlay.entry_count()
+        self.overlay.iter().count() as u64
     }
 }
 
@@ -884,12 +877,10 @@ mod overlay_db_tests {
         // Read to populate cache
         let _ = overlay_db.basic_ref(addr1).unwrap();
         assert!(overlay_db.is_cached(&key1));
-        overlay_db.run_pending_tasks();
         assert_eq!(overlay_db.cache_entry_count(), 1);
 
         // Invalidate
         overlay_db.invalidate_all();
-        overlay_db.run_pending_tasks(); // Ensure invalidation completes for test
 
         // Check cache is empty
         assert!(!overlay_db.is_cached(&key1));
@@ -946,7 +937,6 @@ mod overlay_db_tests {
 
         // 5. Invalidate cache
         overlay_db.invalidate_all();
-        overlay_db.run_pending_tasks();
         assert!(!overlay_db.is_cached(&key1));
         assert!(!overlay_db.is_cached(&key2));
 
@@ -1092,7 +1082,6 @@ mod overlay_db_tests {
         assert!(!overlay_db.is_cached(&TableKey::Basic(addr3)));
 
         // Run pending tasks to ensure all entries are properly cached
-        overlay_db.run_pending_tasks();
         assert_eq!(overlay_db.cache_entry_count(), 6); // 2 accounts + 1 code + 3 storage slots
     }
 
@@ -1160,10 +1149,6 @@ mod overlay_db_tests {
 
         // Commit to the ActiveOverlay
         active_overlay.commit(evm_state);
-
-        // Run pending tasks to ensure cache propagation
-        active_overlay.run_pending_tasks();
-        parent_overlay_db.run_pending_tasks();
 
         // Verify that changes are now visible in the PARENT OverlayDb
         assert!(parent_overlay_db.is_cached(&TableKey::Basic(addr1)));

@@ -80,7 +80,17 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
         address: Address,
     ) -> Result<Option<AccountInfo>, <Self as DatabaseRef>::Error> {
         match self.basic.get(&address) {
-            Some(b) => Ok(Some(b.clone())),
+            Some(b) => {
+                tracing::trace!(
+                    target = "engine::overlay",
+                    overlay_kind = "fork",
+                    underlying_present = true,
+                    address = ?address,
+                    account_info = ?b,
+                    "Returning cached account info value"
+                );
+                Ok(Some(b.clone()))
+            }
             None => Ok(self.inner_db.basic_ref(address)?),
         }
     }
@@ -100,6 +110,15 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
                     source = "fork_selfdestruct_override";
                     *s.map.get(&slot).unwrap_or(&U256::ZERO)
                 } else if let Some(v) = s.map.get(&slot) {
+                    tracing::trace!(
+                        target = "engine::overlay",
+                        overlay_kind = "fork",
+                        underlying_present = true,
+                        address = ?address,
+                        slot= ?slot,
+                        value = ?v,
+                        "Returning cached storage slot value"
+                    );
                     source = "fork_pending_write";
                     *v
                 } else {
@@ -125,7 +144,17 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
     }
     fn code_by_hash_ref(&self, hash: B256) -> Result<Bytecode, <Self as DatabaseRef>::Error> {
         match self.code_by_hash.get(&hash) {
-            Some(code) => Ok(code.clone()),
+            Some(code) => {
+                tracing::trace!(
+                    target = "engine::overlay",
+                    overlay_kind = "fork",
+                    underlying_present = true,
+                    hash = ?hash,
+                    code = ?code,
+                    "Returning cached code by hash value"
+                );
+                Ok(code.clone())
+            }
             None => Ok(self.inner_db.code_by_hash_ref(hash)?),
         }
     }
