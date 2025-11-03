@@ -121,11 +121,10 @@ message TxExecutionId {
   string tx_hash = 3;      // 0x-prefixed hash string
 }
 
-// Commits an iteration as the canonical head
 message CommitHead {
   string last_tx_hash = 1; // empty string means absent
   uint64 n_transactions = 2; // n transactions included in the iteration
-  uint64 selected_iteration_id = 3; // selected iteration id
+  optional uint64 selected_iteration_id = 3; // selected iteration id
 }
 
 // Info about a new iteration, used to initialize building for an iteration id
@@ -140,7 +139,6 @@ message BatchEvents {
     oneof event {
       CommitHead commit_head = 1;
       NewIteration new_iteration = 2;
-      Transaction transaction = 3;
     }
   }
 
@@ -148,12 +146,13 @@ message BatchEvents {
 }
 
 service SidecarTransport {
+  // Deprecated: prefer CommitHead/NewIteration/SendEvents
   rpc SendBlockEnv(BlockEnvEnvelope) returns (BasicAck);
+  rpc CommitHead(CommitHead) returns (BasicAck);
+  rpc NewIteration(NewIteration) returns (BasicAck);
+  rpc SendEvents(BatchEvents) returns (BasicAck);
   rpc SendTransactions(SendTransactionsRequest) returns (SendTransactionsResponse);
   rpc Reorg(ReorgRequest) returns (BasicAck);
   rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
   rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
-  rpc SendCommitHead(CommitHead) returns (BasicAck);
-  rpc SendNewIteration(NewIteration) returns (BasicAck);
-  rpc SendEvents(BatchEvents) returns (BasicAck);
 }

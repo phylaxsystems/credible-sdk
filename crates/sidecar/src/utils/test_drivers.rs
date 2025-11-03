@@ -24,7 +24,6 @@ use crate::{
             GrpcTransport,
             config::GrpcTransportConfig,
             pb::{
-                BlockEnvEnvelope,
                 ReorgRequest,
                 SendTransactionsRequest,
                 Transaction as GrpcTransaction,
@@ -970,25 +969,50 @@ impl TestTransport for LocalInstanceGrpcDriver {
             ..Default::default()
         };
 
-        let request = BlockEnvEnvelope {
-            block_env: Some(crate::transport::grpc::pb::BlockEnv {
-                number: blockenv.number,
-                beneficiary: blockenv.beneficiary.to_string(),
-                timestamp: blockenv.timestamp,
-                gas_limit: blockenv.gas_limit,
-                basefee: blockenv.basefee,
-                difficulty: format!("0x{:x}", blockenv.difficulty),
-                prevrandao: blockenv.prevrandao.map(|h| h.to_string()),
-                blob_excess_gas_and_price: blockenv.blob_excess_gas_and_price.map(|blob| {
-                    crate::transport::grpc::pb::BlobExcessGasAndPrice {
-                        excess_blob_gas: blob.excess_blob_gas,
-                        blob_gasprice: blob.blob_gasprice.to_string(),
-                    }
-                }),
+        let block_env_pb = crate::transport::grpc::pb::BlockEnv {
+            number: blockenv.number,
+            beneficiary: blockenv.beneficiary.to_string(),
+            timestamp: blockenv.timestamp,
+            gas_limit: blockenv.gas_limit,
+            basefee: blockenv.basefee,
+            difficulty: format!("0x{:x}", blockenv.difficulty),
+            prevrandao: blockenv.prevrandao.map(|h| h.to_string()),
+            blob_excess_gas_and_price: blockenv.blob_excess_gas_and_price.map(|blob| {
+                crate::transport::grpc::pb::BlobExcessGasAndPrice {
+                    excess_blob_gas: blob.excess_blob_gas,
+                    blob_gasprice: blob.blob_gasprice.to_string(),
+                }
             }),
+        };
+
+        let commit_head = crate::transport::grpc::pb::CommitHead {
             last_tx_hash: last_tx_hash.map(|h| h.to_string()).unwrap_or_default(),
             n_transactions,
             selected_iteration_id: Some(selected_iteration_id),
+        };
+
+        let new_iteration = crate::transport::grpc::pb::NewIteration {
+            iteration_id: selected_iteration_id,
+            block_env: Some(block_env_pb),
+        };
+
+        let request = crate::transport::grpc::pb::SendEvents {
+            events: vec![
+                crate::transport::grpc::pb::send_events::Event {
+                    event: Some(
+                        crate::transport::grpc::pb::send_events::event::Event::CommitHead(
+                            commit_head,
+                        ),
+                    ),
+                },
+                crate::transport::grpc::pb::send_events::Event {
+                    event: Some(
+                        crate::transport::grpc::pb::send_events::event::Event::NewIteration(
+                            new_iteration,
+                        ),
+                    ),
+                },
+            ],
         };
 
         self.block_tx_hashes_by_iteration.clear();
@@ -1001,11 +1025,11 @@ impl TestTransport for LocalInstanceGrpcDriver {
         while attempts < MAX_HTTP_RETRY_ATTEMPTS {
             attempts += 1;
 
-            match self.client.send_block_env(request.clone()).await {
+            match self.client.send_events(request.clone()).await {
                 Ok(response) => {
                     let ack = response.into_inner();
                     if !ack.accepted {
-                        return Err(format!("Block env rejected: {}", ack.message));
+                        return Err(format!("Events request rejected: {}", ack.message));
                     }
                     return Ok(());
                 }
