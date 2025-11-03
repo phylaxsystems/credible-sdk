@@ -25,7 +25,10 @@
 //! Reorg events are signals from the driver to the engine that it should discard the last
 //! executed transaction.
 
-use crate::execution_ids::TxExecutionId;
+use crate::execution_ids::{
+    BlockExecutionId,
+    TxExecutionId,
+};
 use alloy::primitives::TxHash;
 use crossbeam::channel::{
     Receiver,
@@ -56,28 +59,57 @@ pub struct QueueTransaction {
     pub tx_env: TxEnv,
 }
 
-/// `QueueBlockEnv` encapsulates block environment data, the hash of the last transaction in the
-/// queue (if any), and the total number of transactions in the queue.
+/// `QueueIteration` encapsulates the iteration block environment data and iteration identifier.
 ///
 /// # Fields
 ///
 /// * `block_env` - A `BlockEnv` struct that contains the block environment details required for the queue.
-/// * `last_tx_hash` - An `Option` containing the hash of the last transaction in the queue, or `None` if no transactions exist.
-/// * `n_transactions` - A `u64` value indicating the total number of transactions queued.
-/// * `selected_iteration_id` - An `Option` containing the selected iteration ID, or `None` if not specified.
+/// * `iteration_id` - A `u64` value indicating the iteration identifier.
 #[derive(Clone, Debug, Default)]
-pub struct QueueBlockEnv {
+pub struct QueueIteration {
     pub block_env: BlockEnv,
+    pub iteration_id: u64,
+}
+
+impl From<&QueueIteration> for BlockExecutionId {
+    fn from(iteration: &QueueIteration) -> Self {
+        BlockExecutionId {
+            block_number: iteration.block_env.number,
+            iteration_id: iteration.iteration_id,
+        }
+    }
+}
+
+/// `QueueCommitHead` encapsulates the information needed to commit an iteration head
+///
+/// # Fields
+///
+/// * `iteration_id` (`u64`) - An identifier containing the selected iteration ID to be committed.
+/// * `block_number` (`u64`) - The block number of the selected iteration.
+/// * `last_tx_hash` (`Option<TxHash>`) - An optional field that stores the hash of the last processed transaction. If there are no transactions processed yet, this value will be `None`.
+/// * `n_transactions` (`u64`) - The total number of transactions that have been processed up to this point in the selected iteration.
+#[derive(Clone, Debug, Default)]
+pub struct QueueCommitHead {
+    pub iteration_id: u64,
+    pub block_number: u64,
     pub last_tx_hash: Option<TxHash>,
     pub n_transactions: u64,
-    pub selected_iteration_id: Option<u64>,
+}
+
+impl From<&QueueCommitHead> for BlockExecutionId {
+    fn from(commit_head: &QueueCommitHead) -> Self {
+        BlockExecutionId {
+            block_number: commit_head.block_number,
+            iteration_id: commit_head.iteration_id,
+        }
+    }
 }
 
 // We cannot use `#[serde(flatten)]` because it does not support custom
 // fields (https://github.com/serde-rs/serde/issues/1183) and it breaks the custom deserialization
 // for `u128`.
 
-impl Serialize for QueueBlockEnv {
+impl Serialize for QueueIteration {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -90,15 +122,12 @@ impl Serialize for QueueBlockEnv {
 
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("block_env", &block_env_value)?;
-        map.serialize_entry("last_tx_hash", &self.last_tx_hash)?;
-        map.serialize_entry("n_transactions", &self.n_transactions)?;
-        map.serialize_entry("selected_iteration_id", &self.selected_iteration_id)?;
+        map.serialize_entry("iteration_id", &self.iteration_id)?;
         map.end()
     }
 }
 
-impl<'de> Deserialize<'de> for QueueBlockEnv {
-    #[allow(clippy::too_many_lines)]
+impl<'de> Deserialize<'de> for QueueIteration {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -114,55 +143,13 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
             .get("block_env")
             .ok_or_else(|| serde::de::Error::custom("missing field: block_env"))?;
 
-        let last_tx_hash =
-            match map.get("last_tx_hash") {
-                Some(Value::Null) | None => None,
-                Some(Value::String(s)) if s.is_empty() => None,
-                Some(v) => {
-                    Some(serde_json::from_value(v.clone()).map_err(|e| {
-                        serde::de::Error::custom(format!("invalid last_tx_hash: {e}"))
-                    })?)
-                }
-            };
-
-        let n_transactions = match map.get("n_transactions") {
+        let iteration_id = match map.get("iteration_id") {
             Some(Value::Null) | None => 0,
             Some(v) => {
                 serde_json::from_value(v.clone())
-                    .map_err(|e| serde::de::Error::custom(format!("invalid n_transactions: {e}")))?
+                    .map_err(|e| serde::de::Error::custom(format!("invalid iteration_id: {e}")))?
             }
         };
-
-        let selected_iteration_id = match map.get("selected_iteration_id") {
-            Some(Value::Null) | None => None,
-            Some(v) => {
-                Some(serde_json::from_value(v.clone()).map_err(|e| {
-                    serde::de::Error::custom(format!("invalid selected_iteration_id: {e}"))
-                })?)
-            }
-        };
-
-        // Validate sequencer requirements:
-        // N > 0 + must contain last tx hash
-        // N = 0, must contain txhash = [empty, "", null] or missing
-        match n_transactions {
-            0 => {
-                // When n_transactions is 0, last_tx_hash must be None, empty string, null, or missing
-                if last_tx_hash.is_some() {
-                    return Err(serde::de::Error::custom(
-                        "validation error: last_tx_hash must be null, empty, or missing when n_transactions is 0",
-                    ));
-                }
-            }
-            _ => {
-                // When n_transactions > 0, last_tx_hash must be present and valid
-                if last_tx_hash.is_none() {
-                    return Err(serde::de::Error::custom(
-                        "validation error: last_tx_hash must be provided and non-empty when n_transactions > 0",
-                    ));
-                }
-            }
-        }
 
         let block_env = serde_json::from_value(block_env_value.clone()).map_err(|e| {
             let msg = e.to_string();
@@ -216,11 +203,9 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
             serde::de::Error::custom(custom_msg)
         })?;
 
-        Ok(QueueBlockEnv {
+        Ok(QueueIteration {
             block_env,
-            last_tx_hash,
-            n_transactions,
-            selected_iteration_id,
+            iteration_id,
         })
     }
 }
@@ -239,7 +224,8 @@ impl<'de> Deserialize<'de> for QueueBlockEnv {
 /// transaction execution id and should only process it as a valid event if it matches.
 #[derive(Debug)]
 pub enum TxQueueContents {
-    Block(QueueBlockEnv, tracing::Span),
+    CommitHead(QueueCommitHead, tracing::Span),
+    Iteration(QueueIteration, tracing::Span),
     Tx(QueueTransaction, tracing::Span),
     Reorg(TxExecutionId, tracing::Span),
 }

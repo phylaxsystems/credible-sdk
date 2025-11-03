@@ -4,7 +4,7 @@ use crate::transport::{
         Decoder,
         HttpDecoderError,
         HttpTransactionDecoder,
-        QueueBlockEnv,
+        QueueIteration,
         TxQueueContents,
     },
     http::server::JsonRpcRequest,
@@ -863,7 +863,7 @@ fn test_block_env_deserialization_valid() {
         "selected_iteration_id": 42u64
     });
 
-    let result = serde_json::from_value::<QueueBlockEnv>(valid_request);
+    let result = serde_json::from_value::<QueueIteration>(valid_request);
     assert!(result.is_ok(), "Should deserialize valid BlockEnv");
 
     let queue_block_env = result.unwrap();
@@ -872,16 +872,7 @@ fn test_block_env_deserialization_valid() {
     assert_eq!(block_env.basefee, 1000000000u64);
     assert_eq!(block_env.gas_limit, 30000000u64);
     assert_eq!(block_env.timestamp, 1234567890u64);
-    assert_eq!(
-        queue_block_env.last_tx_hash,
-        Some(
-            "0x2222222222222222222222222222222222222222222222222222222222222222"
-                .parse()
-                .unwrap()
-        )
-    );
-    assert_eq!(queue_block_env.n_transactions, 1000);
-    assert_eq!(queue_block_env.selected_iteration_id, Some(42));
+    assert_eq!(queue_block_env.iteration_id, 42);
 }
 
 #[test]
@@ -903,7 +894,7 @@ fn test_block_env_with_optional_fields() {
         "selected_iteration_id": 7u64
     });
 
-    let result = serde_json::from_value::<QueueBlockEnv>(with_optional);
+    let result = serde_json::from_value::<QueueIteration>(with_optional);
     assert!(
         result.is_ok(),
         "Should deserialize BlockEnv with optional fields"
@@ -913,7 +904,7 @@ fn test_block_env_with_optional_fields() {
     let block_env = queue_block_env.block_env;
     assert!(block_env.prevrandao.is_some());
     assert!(block_env.blob_excess_gas_and_price.is_some());
-    assert_eq!(queue_block_env.selected_iteration_id, Some(7));
+    assert_eq!(queue_block_env.iteration_id, 7);
 }
 
 #[test]
@@ -949,7 +940,7 @@ fn test_block_env_boundary_values() {
     ];
 
     for (name, request) in test_cases {
-        let result = serde_json::from_value::<QueueBlockEnv>(request);
+        let result = serde_json::from_value::<QueueIteration>(request);
         assert!(result.is_ok(), "Failed for case: {name}");
     }
 }
@@ -1020,7 +1011,7 @@ fn test_block_env_missing_required_fields() {
     ];
 
     for (name, request) in test_cases {
-        let result = serde_json::from_value::<QueueBlockEnv>(request);
+        let result = serde_json::from_value::<QueueIteration>(request);
         assert!(result.is_err(), "Should fail for: {name}");
     }
 }
@@ -1152,7 +1143,7 @@ fn test_block_env_invalid_field_types() {
     ];
 
     for (name, request) in test_cases {
-        let result = serde_json::from_value::<QueueBlockEnv>(request);
+        let result = serde_json::from_value::<QueueIteration>(request);
         assert!(result.is_err(), "Should fail for: {name}");
     }
 }
@@ -1208,14 +1199,14 @@ fn test_block_env_validation_rules() {
     ];
 
     for (name, request) in test_cases {
-        let result = serde_json::from_value::<QueueBlockEnv>(request);
+        let result = serde_json::from_value::<QueueIteration>(request);
         assert!(result.is_err(), "Should fail validation for: {name}");
     }
 }
 
 #[test]
 fn test_block_env_serialization_round_trip() {
-    let original = QueueBlockEnv {
+    let original = QueueIteration {
         block_env: BlockEnv {
             number: 123456u64,
             beneficiary: Address::ZERO,
@@ -1229,17 +1220,11 @@ fn test_block_env_serialization_round_trip() {
                 blob_gasprice: 2000u128,
             }),
         },
-        last_tx_hash: Some(
-            "0x2222222222222222222222222222222222222222222222222222222222222222"
-                .parse()
-                .unwrap(),
-        ),
-        n_transactions: 25,
-        selected_iteration_id: Some(88),
+        iteration_id: 88,
     };
 
     let serialized = serde_json::to_value(&original).unwrap();
-    let deserialized = serde_json::from_value::<QueueBlockEnv>(serialized).unwrap();
+    let deserialized = serde_json::from_value::<QueueIteration>(serialized).unwrap();
 
     assert_eq!(original.block_env.number, deserialized.block_env.number);
     assert_eq!(
@@ -1250,12 +1235,7 @@ fn test_block_env_serialization_round_trip() {
         original.block_env.timestamp,
         deserialized.block_env.timestamp
     );
-    assert_eq!(original.last_tx_hash, deserialized.last_tx_hash);
-    assert_eq!(original.n_transactions, deserialized.n_transactions);
-    assert_eq!(
-        original.selected_iteration_id,
-        deserialized.selected_iteration_id
-    );
+    assert_eq!(original.iteration_id, deserialized.iteration_id);
 }
 
 // ============================================================================
