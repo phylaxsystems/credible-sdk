@@ -31,7 +31,9 @@ use crate::{
     engine::{
         TransactionResult,
         queue::{
-            QueueIteration,
+            CommitHead as QueueCommitHead,
+            NewIteration as QueueNewIteration,
+            QueueBlockEnv,
             QueueTransaction,
             TransactionQueueSender,
             TxQueueContents,
@@ -85,7 +87,6 @@ use std::{
         },
     },
 };
-use tokio::sync::Mutex;
 use tonic::{
     Request,
     Response,
@@ -133,7 +134,7 @@ pub struct GrpcService {
     has_blockenv: Arc<AtomicBool>,
     tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
-    pending_commit_head: Arc<Mutex<Option<PendingCommitHead>>>,
+    commit_head_pending: Arc<AtomicBool>,
 }
 
 impl GrpcService {
@@ -146,95 +147,38 @@ impl GrpcService {
             has_blockenv,
             tx_sender,
             transactions_results,
-            pending_commit_head: Arc::new(Mutex::new(None)),
+            commit_head_pending: Arc::new(AtomicBool::new(false)),
         }
-    }
-
-    async fn handle_commit_head(&self, commit_head: PbCommitHead) -> Result<(), Status> {
-        let parsed = parse_commit_head(&commit_head)?;
-        let mut pending = self.pending_commit_head.lock().await;
-        if pending.is_some() {
-            return Err(Status::failed_precondition(
-                "commit_head already pending; send new_iteration before another commit_head",
-            ));
-        }
-        *pending = Some(parsed);
-        Ok(())
-    }
-
-    async fn handle_new_iteration(&self, new_iteration: PbNewIteration) -> Result<(), Status> {
-        let commit_head = {
-            let mut pending = self.pending_commit_head.lock().await;
-            pending
-                .take()
-                .ok_or_else(|| {
-                    Status::failed_precondition(
-                        "commit_head must be sent before new_iteration",
-                    )
-                })?
-        };
-
-        let queue_block_env = convert_new_iteration(commit_head, new_iteration)?;
-        self.enqueue_block_env(queue_block_env)?;
-        Ok(())
-    }
-
-    async fn clear_pending_commit_head(&self) {
-        let mut pending = self.pending_commit_head.lock().await;
-        if pending.take().is_some() {
-            debug!("Clearing pending commit_head due to deprecated SendBlockEnv usage");
-        }
-    }
-
-    fn enqueue_block_env(&self, block: QueueBlockEnv) -> Result<(), Status> {
-        let event = TxQueueContents::Block(block, tracing::Span::current());
-        self.transactions_results.add_accepted_tx(&event);
-        self.tx_sender
-            .send(event)
-            .map_err(|e| Status::internal(format!("failed to queue block env: {e}")))?;
-
-        if !self.has_blockenv.load(Ordering::Relaxed) {
-            self.has_blockenv.store(true, Ordering::Release);
-        }
-
-        Ok(())
     }
 }
 
-#[derive(Debug, Clone)]
-struct PendingCommitHead {
-    last_tx_hash: Option<TxHash>,
-    n_transactions: u64,
-    selected_iteration_id: Option<u64>,
-}
-
-fn parse_commit_head(commit_head: &PbCommitHead) -> Result<PendingCommitHead, Status> {
+fn convert_pb_commit_head(commit_head: PbCommitHead) -> Result<QueueCommitHead, Status> {
+    let selected_iteration_id = commit_head
+        .selected_iteration_id
+        .ok_or_else(|| Status::invalid_argument("selected_iteration_id is required"))?;
     let last_tx_hash =
         parse_commit_metadata(&commit_head.last_tx_hash, commit_head.n_transactions)?;
 
-    Ok(PendingCommitHead {
+    Ok(QueueCommitHead::new(
         last_tx_hash,
-        n_transactions: commit_head.n_transactions,
-        selected_iteration_id: commit_head.selected_iteration_id,
-    })
+        commit_head.n_transactions,
+        selected_iteration_id,
+    ))
 }
 
-fn convert_new_iteration(
-    commit_head: PendingCommitHead,
+fn convert_pb_new_iteration(
     mut new_iteration: PbNewIteration,
-) -> Result<QueueBlockEnv, Status> {
+) -> Result<QueueNewIteration, Status> {
     let block_env_pb = new_iteration
         .block_env
         .take()
         .ok_or_else(|| Status::invalid_argument("block_env is required"))?;
     let block_env = convert_pb_block_env(&block_env_pb)?;
 
-    Ok(QueueBlockEnv {
+    Ok(QueueNewIteration::new(
+        new_iteration.iteration_id,
         block_env,
-        last_tx_hash: commit_head.last_tx_hash,
-        n_transactions: commit_head.n_transactions,
-        selected_iteration_id: commit_head.selected_iteration_id,
-    })
+    ))
 }
 
 #[tonic::async_trait]
@@ -253,9 +197,37 @@ impl SidecarTransport for GrpcService {
         trace!("Processing gRPC SendBlockEnv request");
 
         // Decode into proper structs instead of manually merging JSON
-        let block = decode_block_env_envelope(&payload)?;
-        self.clear_pending_commit_head().await;
-        self.enqueue_block_env(block)?;
+        let legacy_block = decode_block_env_envelope(&payload)?;
+        let Some(selected_iteration_id) = legacy_block.selected_iteration_id else {
+            return Err(Status::invalid_argument(
+                "selected_iteration_id is required for commitHead",
+            ));
+        };
+
+        let commit_head = QueueCommitHead::new(
+            legacy_block.last_tx_hash,
+            legacy_block.n_transactions,
+            selected_iteration_id,
+        );
+        let new_iteration =
+            QueueNewIteration::new(selected_iteration_id, legacy_block.block_env);
+
+        if let Err(e) = self.tx_sender.send(TxQueueContents::CommitHead(
+            commit_head,
+            tracing::Span::current(),
+        )) {
+            self.commit_head_pending.store(false, Ordering::Release);
+            return Err(Status::internal(format!("failed to queue commit head: {e}")));
+        }
+
+        if let Err(e) = self.tx_sender.send(TxQueueContents::NewIteration(
+            new_iteration,
+            tracing::Span::current(),
+        )) {
+            self.commit_head_pending.store(false, Ordering::Release);
+            return Err(Status::internal(format!("failed to queue commit head: {e}")));
+        }
+
 
         Ok(Response::new(BasicAck {
             accepted: true,
@@ -275,7 +247,16 @@ impl SidecarTransport for GrpcService {
     ) -> Result<Response<BasicAck>, Status> {
         trace!("Processing gRPC CommitHead request");
         let payload = request.into_inner();
-        self.handle_commit_head(payload).await?;
+        let commit_head = convert_pb_commit_head(payload)?;
+
+        if let Err(e) = self.tx_sender.send(TxQueueContents::CommitHead(
+            commit_head,
+            tracing::Span::current(),
+        )) {
+            self.commit_head_pending.store(false, Ordering::Release);
+            return Err(Status::internal(format!("failed to queue commit head: {e}")));
+        }
+
         Ok(Response::new(BasicAck {
             accepted: true,
             message: "commit head accepted".into(),
@@ -294,7 +275,16 @@ impl SidecarTransport for GrpcService {
     ) -> Result<Response<BasicAck>, Status> {
         trace!("Processing gRPC NewIteration request");
         let payload = request.into_inner();
-        self.handle_new_iteration(payload).await?;
+        let new_iteration = convert_pb_new_iteration(payload)?;
+
+        if let Err(e) = self.tx_sender.send(TxQueueContents::NewIteration(
+            new_iteration,
+            tracing::Span::current(),
+        )) {
+            self.commit_head_pending.store(false, Ordering::Release);
+            return Err(Status::internal(format!("failed to queue commit head: {e}")));
+        }
+
         Ok(Response::new(BasicAck {
             accepted: true,
             message: "new iteration accepted".into(),
@@ -324,10 +314,24 @@ impl SidecarTransport for GrpcService {
 
             match event_variant {
                 SendEventVariant::CommitHead(commit) => {
-                    self.handle_commit_head(commit).await?;
+                    let commit_head = convert_pb_commit_head(commit)?;
+                    if let Err(e) = self.tx_sender.send(TxQueueContents::CommitHead(
+                        commit_head,
+                        tracing::Span::current(),
+                    )) {
+                        self.commit_head_pending.store(false, Ordering::Release);
+                        return Err(Status::internal(format!("failed to queue commit head: {e}")));
+                    }
                 }
                 SendEventVariant::NewIteration(iteration) => {
-                    self.handle_new_iteration(iteration).await?;
+                    let new_iteration = convert_pb_new_iteration(iteration)?;
+                    if let Err(e) = self.tx_sender.send(TxQueueContents::NewIteration(
+                        new_iteration,
+                        tracing::Span::current(),
+                    )) {
+                        self.commit_head_pending.store(false, Ordering::Release);
+                        return Err(Status::internal(format!("failed to queue commit head: {e}")));
+                    }
                 }
             }
         }
@@ -834,7 +838,7 @@ fn parse_commit_metadata(
 }
 
 /// Decode `BlockEnvEnvelope` into a `QueueBlockEnv`.
-fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueIteration, Status> {
+fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueBlockEnv, Status> {
     let block_env_pb = payload
         .block_env
         .as_ref()
@@ -843,9 +847,11 @@ fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueIteratio
 
     let last_tx_hash = parse_commit_metadata(&payload.last_tx_hash, payload.n_transactions)?;
 
-    Ok(QueueIteration {
+    Ok(QueueBlockEnv {
         block_env,
-        iteration_id: payload.selected_iteration_id.unwrap_or_default(),
+        last_tx_hash,
+        n_transactions: payload.n_transactions,
+        selected_iteration_id: payload.selected_iteration_id,
     })
 }
 

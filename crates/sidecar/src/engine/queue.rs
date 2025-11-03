@@ -251,21 +251,51 @@ pub enum TxQueueContents {
 /// Includes `last_tx_hash` and `n_transactions` to ensure consistency.
 /// `CommitHead` *MUST* select an iteration to apply.
 #[derive(Debug, Clone)]
-struct CommitHead {
+pub struct CommitHead {
     /// Last included tx hash, can be optional if the block is empty.
-    last_tx_hash: Option<TxHash>,
+    pub(crate) last_tx_hash: Option<TxHash>,
     /// Number of txs included in the block.
-    n_transactions: u64,
+    pub(crate) n_transactions: u64,
     /// Identifier of the selected iteration. Selected iteration will be
     /// applied as the head block.
-    selected_iteration_id: u64,
+    pub(crate) selected_iteration_id: u64,
+}
+
+impl CommitHead {
+    /// Construct a new commit head event.
+    pub fn new(
+        last_tx_hash: Option<TxHash>,
+        n_transactions: u64,
+        selected_iteration_id: u64,
+    ) -> Self {
+        Self {
+            last_tx_hash,
+            n_transactions,
+            selected_iteration_id,
+        }
+    }
+
+    /// Accessor for the selected iteration identifier.
+    pub fn iteration_id(&self) -> u64 {
+        self.selected_iteration_id
+    }
 }
 
 /// Creates a new iteration with a specific block env
 #[derive(Debug, Clone)]
-struct NewIteration {
-    iteration_id: u64,
-    block_env: BlockEnv,
+pub struct NewIteration {
+    pub(crate) iteration_id: u64,
+    pub(crate) block_env: BlockEnv,
+}
+
+impl NewIteration {
+    /// Construct a new iteration event.
+    pub fn new(iteration_id: u64, block_env: BlockEnv) -> Self {
+        Self {
+            iteration_id,
+            block_env,
+        }
+    }
 }
 
 /// `crossbeam` sender for the transaction queue. Sends data to tx queue.

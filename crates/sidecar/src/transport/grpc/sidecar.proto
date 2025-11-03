@@ -134,7 +134,7 @@ message NewIteration {
 }
 
 // Batch of iteration events sent to the sidecar transport.
-message BatchEvents {
+message SendEvents {
   message Event {
     oneof event {
       CommitHead commit_head = 1;
@@ -148,9 +148,9 @@ message BatchEvents {
 service SidecarTransport {
   // Deprecated: prefer CommitHead/NewIteration/SendEvents
   rpc SendBlockEnv(BlockEnvEnvelope) returns (BasicAck);
-  rpc CommitHead(CommitHead) returns (BasicAck);
-  rpc NewIteration(NewIteration) returns (BasicAck);
-  rpc SendEvents(BatchEvents) returns (BasicAck);
+  rpc CommitHead(sidecar.transport.v1.CommitHead) returns (BasicAck);
+  rpc NewIteration(sidecar.transport.v1.NewIteration) returns (BasicAck);
+  rpc SendEvents(sidecar.transport.v1.SendEvents) returns (BasicAck);
   rpc SendTransactions(SendTransactionsRequest) returns (SendTransactionsResponse);
   rpc Reorg(ReorgRequest) returns (BasicAck);
   rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
