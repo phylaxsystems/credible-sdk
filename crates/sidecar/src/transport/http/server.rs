@@ -309,6 +309,7 @@ impl JsonRpcResponse {
 #[derive(Clone, Debug)]
 pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
+    commit_head_seen: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
     /// Block context for tracing
@@ -318,12 +319,14 @@ pub struct ServerState {
 impl ServerState {
     pub fn new(
         has_blockenv: Arc<AtomicBool>,
+        commit_head_seen: Arc<AtomicBool>,
         tx_sender: TransactionQueueSender,
         transactions_results: QueryTransactionsResults,
         block_context: BlockContext,
     ) -> Self {
         Self {
             has_blockenv,
+            commit_head_seen,
             tx_sender,
             transactions_results,
             block_context,
@@ -454,6 +457,7 @@ async fn process_request(
 
     let request_count = tx_queue_contents.len();
     let mut saw_block_context = false;
+    let mut commit_head_seen = state.commit_head_seen.load(Ordering::Acquire);
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
@@ -461,6 +465,23 @@ async fn process_request(
             &queue_tx,
             TxQueueContents::Block(_, _) | TxQueueContents::NewIteration(_, _)
         );
+        let is_commit_head_event = matches!(&queue_tx, TxQueueContents::CommitHead(_, _));
+
+        match &queue_tx {
+            TxQueueContents::CommitHead(_, _) => {
+                commit_head_seen = true;
+            }
+            TxQueueContents::NewIteration(_, _) | TxQueueContents::Tx(_, _) => {
+                if !commit_head_seen {
+                    debug!("Rejecting request without prior commit head");
+                    return Ok(JsonRpcResponse::invalid_request(
+                        request,
+                        "commit head must be received before other events",
+                    ));
+                }
+            }
+            _ => {}
+        }
 
         trace_tx_queue_contents(&state.block_context, &queue_tx);
         if let TxQueueContents::Tx(tx, _) = &queue_tx
@@ -484,6 +505,10 @@ async fn process_request(
                 request,
                 "Internal error: failed to queue transaction",
             ));
+        }
+
+        if is_commit_head_event {
+            state.commit_head_seen.store(true, Ordering::Release);
         }
 
         if is_block_context_event {
