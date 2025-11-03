@@ -14,22 +14,21 @@ The gRPC transport implements the `SidecarTransport` service with iteration life
 ### `CommitHead`
 
 Announces which iteration should be committed and provides metadata about the previously executed transactions.
-Must be called before `NewIteration`.
+Must be called before `NewIteration` built on the new head.
 
 - **Request:** `CommitHead`
 - **Response:** `BasicAck`
 
 ### `NewIteration`
 
-Starts building a new iteration by providing the block environment to target. Requires that the most recent request was a
-`CommitHead`.
+Starts building a new iteration by providing the block environment to target.
 
 - **Request:** `NewIteration`
 - **Response:** `BasicAck`
 
 ### `SendEvents`
 
-Allows bundling multiple iteration events that must be applied sequentially. A typical new block announcement includes
+Allows bundling multiple core engine events that must be applied sequentially. A typical new block announcement includes
 `[CommitHead, NewIteration]`.
 
 - **Request:** `SendEvents`
@@ -85,7 +84,7 @@ Block data and transactions are encoded according to the protobuf schema:
 - **NewIteration**: Wraps a native `BlockEnv` message alongside the target iteration identifier.
 - **Transaction** (in `SendEvents`): Shares the same layout as the standalone `Transaction` message so iteration batches
   can include queued transactions.
-- **SendEvents**: Bundles a sequence of `CommitHead`, `NewIteration`, and `Transaction` messages for atomic submission.
+- **SendEvents**: Bundles a sequence of core engine messages for atomic submission.
 - **BlockEnvEnvelope** *(deprecated)*: Legacy structure that combines commit metadata and block environment in one payload.
 - **BlockEnv**: Uses strongly typed fields (e.g., `number`, `timestamp`, `gas_limit`) and string-encoded large
   integers (`difficulty`, `blob_gasprice`).

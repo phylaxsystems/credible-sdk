@@ -124,13 +124,14 @@ message TxExecutionId {
 message CommitHead {
   string last_tx_hash = 1; // empty string means absent
   uint64 n_transactions = 2; // n transactions included in the iteration
-  optional uint64 selected_iteration_id = 3; // selected iteration id
+  uint64 block_number = 3; // Block number of the iteration we're commiting
+  optional uint64 selected_iteration_id = 4; // selected iteration id
 }
 
 // Info about a new iteration, used to initialize building for an iteration id
 message NewIteration {
-  uint64 iteration_id = 1; // Iteration Id
-  BlockEnv block_env = 2; // Blockenv
+  BlockEnv block_env = 1; // Blockenv
+  uint64 iteration_id = 2; // Iteration Id
 }
 
 // Batch of iteration events sent to the sidecar transport.

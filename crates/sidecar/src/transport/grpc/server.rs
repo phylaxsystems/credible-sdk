@@ -134,7 +134,7 @@ pub struct GrpcService {
     has_blockenv: Arc<AtomicBool>,
     tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
-    commit_head_pending: Arc<AtomicBool>,
+    commit_head_seen: Arc<AtomicBool>,
 }
 
 impl GrpcService {
@@ -147,7 +147,7 @@ impl GrpcService {
             has_blockenv,
             tx_sender,
             transactions_results,
-            commit_head_pending: Arc::new(AtomicBool::new(false)),
+            commit_head_seen: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -156,10 +156,23 @@ impl GrpcService {
         contents: TxQueueContents,
         item_name: &'static str,
     ) -> Result<(), Status> {
-        self.tx_sender.send(contents).map_err(|e| {
-            self.commit_head_pending.store(false, Ordering::Release);
-            Status::internal(format!("failed to queue {item_name}: {e}"))
-        })
+        self.tx_sender
+            .send(contents)
+            .map_err(|e| Status::internal(format!("failed to queue {item_name}: {e}")))
+    }
+
+    fn mark_commit_head_seen(&self) {
+        self.commit_head_seen.store(true, Ordering::Release);
+    }
+
+    fn ensure_commit_head_seen(&self) -> Result<(), Status> {
+        if self.commit_head_seen.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(Status::failed_precondition(
+                "commit head must be received before other events",
+            ))
+        }
     }
 }
 
@@ -226,6 +239,7 @@ impl SidecarTransport for GrpcService {
             TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
             "commit head",
         )?;
+        self.mark_commit_head_seen();
 
         self.send_queue_event(
             TxQueueContents::NewIteration(new_iteration, tracing::Span::current()),
@@ -252,6 +266,7 @@ impl SidecarTransport for GrpcService {
             TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
             "commit head",
         )?;
+        self.mark_commit_head_seen();
 
         Ok(Response::new(BasicAck {
             accepted: true,
@@ -270,6 +285,7 @@ impl SidecarTransport for GrpcService {
         request: Request<PbNewIteration>,
     ) -> Result<Response<BasicAck>, Status> {
         trace!("Processing gRPC NewIteration request");
+        self.ensure_commit_head_seen()?;
         let payload = request.into_inner();
         let new_iteration = convert_pb_new_iteration(payload)?;
 
@@ -308,8 +324,10 @@ impl SidecarTransport for GrpcService {
                         TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
                         "commit head",
                     )?;
+                    self.mark_commit_head_seen();
                 }
                 SendEventVariant::NewIteration(iteration) => {
+                    self.ensure_commit_head_seen()?;
                     let new_iteration = convert_pb_new_iteration(iteration)?;
                     self.send_queue_event(
                         TxQueueContents::NewIteration(new_iteration, tracing::Span::current()),
@@ -317,6 +335,7 @@ impl SidecarTransport for GrpcService {
                     )?;
                 }
                 SendEventVariant::Transaction(transaction) => {
+                    self.ensure_commit_head_seen()?;
                     let queue_tx = to_queue_tx(&transaction).map_err(|e| {
                         Status::invalid_argument(format!("invalid transaction: {e}"))
                     })?;
@@ -362,6 +381,8 @@ impl SidecarTransport for GrpcService {
                 "block environment not available",
             ));
         }
+
+        self.ensure_commit_head_seen()?;
 
         let req = request.into_inner();
         let total = req.transactions.len() as u64;

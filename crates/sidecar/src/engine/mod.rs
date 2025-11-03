@@ -861,6 +861,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     let _guard = current_span.enter();
                     self.execute_reorg(tx_execution_id)?;
                 }
+                TxQueueContents::CommitHead(_, _) | TxQueueContents::NewIteration(_, _) => {
+                    unimplemented!()
+                }
             }
 
             // Accumulate event processing time
