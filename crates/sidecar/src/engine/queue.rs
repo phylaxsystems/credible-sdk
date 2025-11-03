@@ -256,6 +256,8 @@ pub struct CommitHead {
     pub(crate) last_tx_hash: Option<TxHash>,
     /// Number of txs included in the block.
     pub(crate) n_transactions: u64,
+    /// Block number of the selected iteration.
+    pub(crate) block_number: u64,
     /// Identifier of the selected iteration. Selected iteration will be
     /// applied as the head block.
     pub(crate) selected_iteration_id: u64,
@@ -266,11 +268,13 @@ impl CommitHead {
     pub fn new(
         last_tx_hash: Option<TxHash>,
         n_transactions: u64,
+        block_number: u64,
         selected_iteration_id: u64,
     ) -> Self {
         Self {
             last_tx_hash,
             n_transactions,
+            block_number,
             selected_iteration_id,
         }
     }

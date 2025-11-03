@@ -186,6 +186,7 @@ fn convert_pb_commit_head(commit_head: &PbCommitHead) -> Result<QueueCommitHead,
     Ok(QueueCommitHead::new(
         last_tx_hash,
         commit_head.n_transactions,
+        commit_head.block_number,
         selected_iteration_id,
     ))
 }
@@ -231,6 +232,7 @@ impl SidecarTransport for GrpcService {
         let commit_head = QueueCommitHead::new(
             legacy_block.last_tx_hash,
             legacy_block.n_transactions,
+            legacy_block.block_env.number,
             selected_iteration_id,
         );
         let new_iteration = QueueNewIteration::new(selected_iteration_id, legacy_block.block_env);

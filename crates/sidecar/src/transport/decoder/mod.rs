@@ -213,6 +213,7 @@ struct CommitHeadEvent {
     #[serde(default)]
     last_tx_hash: Option<String>,
     n_transactions: u64,
+    block_number: u64,
     selected_iteration_id: Option<u64>,
 }
 
@@ -260,6 +261,7 @@ fn convert_commit_head_event(
     Ok(QueueCommitHead::new(
         last_tx_hash,
         commit_head.n_transactions,
+        commit_head.block_number,
         selected_iteration_id,
     ))
 }
