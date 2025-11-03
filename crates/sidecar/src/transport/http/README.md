@@ -74,6 +74,79 @@ Error responses include an error object with code and message:
 
 The Core API provides essential methods for transaction execution and block management.
 
+### `sendEvents`
+
+Bundles iteration metadata and transactions into a single JSON-RPC request. Each element of the `events` array must
+contain exactly one of the following keys:
+
+- `commit_head`: Includes `last_tx_hash`, `n_transactions`, and `selected_iteration_id`
+- `new_iteration`: Includes `iteration_id` plus a `block_env` payload
+- `transaction`: Includes both `tx_execution_id` and `tx_env`
+
+Events are applied in-order, allowing commit metadata, the next iteration block environment, and queued transactions to
+arrive atomically in one call. The `events` array must not be empty.
+
+**Request:**
+
+```json
+{
+  "id": 3,
+  "jsonrpc": "2.0",
+  "method": "sendEvents",
+  "params": {
+    "events": [
+      {
+        "commit_head": {
+          "last_tx_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+          "n_transactions": 100,
+          "selected_iteration_id": 6
+        }
+      },
+      {
+        "new_iteration": {
+          "iteration_id": 7,
+          "block_env": {
+            "number": 12346,
+            "beneficiary": "0x742d35Cc6634C0532925a3b844B9c7e07e3E23eF4",
+            "timestamp": 1625150405,
+            "gas_limit": 30000000,
+            "basefee": 1000000000,
+            "difficulty": "0x0",
+            "prevrandao": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdff"
+          }
+        }
+      },
+      {
+        "transaction": {
+          "tx_execution_id": {
+            "block_number": 12346,
+            "iteration_id": 7,
+            "tx_hash": "0x1234567890abcdef..."
+          },
+          "tx_env": {
+            /* TxEnv object */
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "id": 3,
+  "jsonrpc": "2.0",
+  "result": {
+    "status": "accepted",
+    "request_count": 3,
+    "message": "Requests processed successfully"
+  }
+}
+```
+
 ## Transaction Object Structure
 
 Each transaction in the `sendTransactions` request consists of two parts:

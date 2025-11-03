@@ -209,9 +209,7 @@ pub enum EngineError {
     TxBlockMismatch,
     #[error("commitHead not received before newIteration")]
     MissingCommitHead,
-    #[error(
-        "commitHead iteration {commit_iteration} does not match newIteration {new_iteration}"
-    )]
+    #[error("commitHead iteration {commit_iteration} does not match newIteration {new_iteration}")]
     CommitIterationMismatch {
         commit_iteration: u64,
         new_iteration: u64,

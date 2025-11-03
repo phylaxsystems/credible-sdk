@@ -139,6 +139,7 @@ message SendEvents {
     oneof event {
       CommitHead commit_head = 1;
       NewIteration new_iteration = 2;
+      Transaction transaction = 3;
     }
   }
 

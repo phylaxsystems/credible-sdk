@@ -48,12 +48,16 @@ pub enum HttpDecoderError {
     NoTransactions,
     #[error("Missing field 'transactions'")]
     MissingTransactionsField,
+    #[error("Missing field 'events'")]
+    MissingEventsField,
     #[error("Missing field 'txExecutionId' in transaction")]
     MissingTxExecutionId,
     #[error("Missing field 'txEnv' in transaction")]
     MissingTxEnv,
     #[error("Missing field 'hash' in transaction")]
     MissingHashField,
+    #[error("Missing field 'selected_iteration_id' in commit head event")]
+    MissingSelectedIterationId,
     #[error("Invalid kind: {0}")]
     InvalidKind(String),
     #[error("Invalid access list")]
@@ -80,6 +84,8 @@ pub enum HttpDecoderError {
     InvalidChainId(String),
     #[error("Invalid transaction format: {0}")]
     InvalidTransaction(String),
+    #[error("Invalid sendEvents payload: {0}")]
+    InvalidEvent(String),
     #[error("Missing field 'number' in BlockEnv")]
     MissingBlockNumber,
     #[error("Missing field 'beneficiary' in BlockEnv")]
@@ -92,4 +98,6 @@ pub enum HttpDecoderError {
     MissingBasefee,
     #[error("Missing field 'difficulty' in BlockEnv")]
     MissingDifficulty,
+    #[error("No events found in request")]
+    NoEvents,
 }

@@ -156,16 +156,14 @@ impl GrpcService {
         contents: TxQueueContents,
         item_name: &'static str,
     ) -> Result<(), Status> {
-        self.tx_sender
-            .send(contents)
-            .map_err(|e| {
-                self.commit_head_pending.store(false, Ordering::Release);
-                Status::internal(format!("failed to queue {item_name}: {e}"))
-            })
+        self.tx_sender.send(contents).map_err(|e| {
+            self.commit_head_pending.store(false, Ordering::Release);
+            Status::internal(format!("failed to queue {item_name}: {e}"))
+        })
     }
 }
 
-fn convert_pb_commit_head(commit_head: PbCommitHead) -> Result<QueueCommitHead, Status> {
+fn convert_pb_commit_head(commit_head: &PbCommitHead) -> Result<QueueCommitHead, Status> {
     let selected_iteration_id = commit_head
         .selected_iteration_id
         .ok_or_else(|| Status::invalid_argument("selected_iteration_id is required"))?;
@@ -222,8 +220,7 @@ impl SidecarTransport for GrpcService {
             legacy_block.n_transactions,
             selected_iteration_id,
         );
-        let new_iteration =
-            QueueNewIteration::new(selected_iteration_id, legacy_block.block_env);
+        let new_iteration = QueueNewIteration::new(selected_iteration_id, legacy_block.block_env);
 
         self.send_queue_event(
             TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
@@ -235,7 +232,6 @@ impl SidecarTransport for GrpcService {
             "new iteration",
         )?;
 
-
         Ok(Response::new(BasicAck {
             accepted: true,
             message: "block env accepted".into(),
@@ -243,18 +239,14 @@ impl SidecarTransport for GrpcService {
     }
 
     /// Handle gRPC request for `CommitHead`.
-    #[instrument(
-        name = "grpc_server::CommitHead",
-        skip(self, request),
-        level = "debug"
-    )]
+    #[instrument(name = "grpc_server::CommitHead", skip(self, request), level = "debug")]
     async fn commit_head(
         &self,
         request: Request<PbCommitHead>,
     ) -> Result<Response<BasicAck>, Status> {
         trace!("Processing gRPC CommitHead request");
         let payload = request.into_inner();
-        let commit_head = convert_pb_commit_head(payload)?;
+        let commit_head = convert_pb_commit_head(&payload)?;
 
         self.send_queue_event(
             TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
@@ -293,11 +285,7 @@ impl SidecarTransport for GrpcService {
     }
 
     /// Handle gRPC request for batched iteration events.
-    #[instrument(
-        name = "grpc_server::SendEvents",
-        skip(self, request),
-        level = "debug"
-    )]
+    #[instrument(name = "grpc_server::SendEvents", skip(self, request), level = "debug")]
     async fn send_events(
         &self,
         request: Request<PbSendEvents>,
@@ -315,7 +303,7 @@ impl SidecarTransport for GrpcService {
 
             match event_variant {
                 SendEventVariant::CommitHead(commit) => {
-                    let commit_head = convert_pb_commit_head(commit)?;
+                    let commit_head = convert_pb_commit_head(&commit)?;
                     self.send_queue_event(
                         TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
                         "commit head",
@@ -329,8 +317,9 @@ impl SidecarTransport for GrpcService {
                     )?;
                 }
                 SendEventVariant::Transaction(transaction) => {
-                    let queue_tx = to_queue_tx(&transaction)
-                        .map_err(|e| Status::invalid_argument(format!("invalid transaction: {e}")))?;
+                    let queue_tx = to_queue_tx(&transaction).map_err(|e| {
+                        Status::invalid_argument(format!("invalid transaction: {e}"))
+                    })?;
 
                     if let TxQueueContents::Tx(tx, _) = &queue_tx
                         && self

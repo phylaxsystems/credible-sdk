@@ -83,7 +83,9 @@ Block data and transactions are encoded according to the protobuf schema:
 
 - **CommitHead**: Carries iteration commit metadata (`last_tx_hash`, `n_transactions`, `selected_iteration_id`).
 - **NewIteration**: Wraps a native `BlockEnv` message alongside the target iteration identifier.
-- **SendEvents**: Bundles a sequence of `CommitHead` and `NewIteration` messages for atomic submission.
+- **Transaction** (in `SendEvents`): Shares the same layout as the standalone `Transaction` message so iteration batches
+  can include queued transactions.
+- **SendEvents**: Bundles a sequence of `CommitHead`, `NewIteration`, and `Transaction` messages for atomic submission.
 - **BlockEnvEnvelope** *(deprecated)*: Legacy structure that combines commit metadata and block environment in one payload.
 - **BlockEnv**: Uses strongly typed fields (e.g., `number`, `timestamp`, `gas_limit`) and string-encoded large
   integers (`difficulty`, `blob_gasprice`).
