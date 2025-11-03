@@ -138,10 +138,7 @@ async fn main() -> anyhow::Result<()> {
 
         // The cache is flushed on restart
         let cache = Arc::new(Cache::new(sources, config.state.minimum_state_diff));
-        let state: OverlayDb<Cache> = OverlayDb::new(
-            Some(cache.clone()),
-            config.credible.overlay_cache_capacity.unwrap_or(100_000) as u64,
-        );
+        let state: OverlayDb<Cache> = OverlayDb::new(Some(cache.clone()));
 
         let (tx_sender, tx_receiver) = unbounded();
         let mut transport =

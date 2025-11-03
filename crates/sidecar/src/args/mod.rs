@@ -96,8 +96,6 @@ pub struct ChainConfig {
 pub struct CredibleConfig {
     /// Gas limit for assertion execution
     pub assertion_gas_limit: u64,
-    /// Overlay cache capacity in elements
-    pub overlay_cache_capacity: Option<usize>,
     /// Whether the overlay cache has to be invalidated every block
     pub overlay_cache_invalidation_every_block: Option<bool>,
     /// Sled cache capacity, used in the `FsDb`, 256mb default
@@ -244,7 +242,6 @@ mod tests {
 
         // Verify credible config
         assert_eq!(config.credible.assertion_gas_limit, 30000000);
-        assert_eq!(config.credible.overlay_cache_capacity, Some(1000));
         assert_eq!(config.credible.cache_capacity_bytes, Some(268435456));
         assert_eq!(config.credible.flush_every_ms, Some(5000));
         assert_eq!(
