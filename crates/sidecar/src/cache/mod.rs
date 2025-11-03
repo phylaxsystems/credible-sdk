@@ -1441,9 +1441,10 @@ mod tests {
         instance.besu_client_http_mock.send_new_head();
 
         // Wait for the Besu client to be synced
-        while !instance.sources[0].is_synced(1) {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        instance
+            .wait_for_source_synced(0, 1)
+            .await
+            .expect("Besu client should sync to block 1");
 
         // Send a random tx whose data is not in the in-memory cache
         let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
@@ -1482,9 +1483,10 @@ mod tests {
         instance.besu_client_http_mock.send_new_head();
 
         // Wait for the Besu client to be synced for block 1
-        while !instance.sources[0].is_synced(1) {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        instance
+            .wait_for_source_synced(0, 1)
+            .await
+            .expect("Besu client should sync to block 1");
 
         // Send a random tx whose data is not in the in-memory cache
         let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
@@ -1523,9 +1525,10 @@ mod tests {
         instance.besu_client_http_mock.send_new_head();
 
         // Wait for the Besu client to be synced
-        while !instance.sources[0].is_synced(1) {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        instance
+            .wait_for_source_synced(0, 1)
+            .await
+            .expect("Besu client should sync to block 1");
 
         // Bad response for Besu client
         instance.besu_client_http_mock.mock_rpc_error(
@@ -1567,9 +1570,10 @@ mod tests {
         instance.besu_client_http_mock.send_new_head();
 
         // Wait for the Besu client to be synced
-        while !instance.sources[0].is_synced(1) {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        instance
+            .wait_for_source_synced(0, 1)
+            .await
+            .expect("Besu client should sync to block 1");
 
         // Bad response for Besu client
         instance.besu_client_http_mock.mock_rpc_error(
@@ -1590,9 +1594,13 @@ mod tests {
         // Await result
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
-        while !logs_contain("critical") {
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !logs_contain("critical") {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("expected critical log after exhausting fallbacks");
 
         // The first fallback is hit
         let besu_client_db_basic_ref_counter = *instance

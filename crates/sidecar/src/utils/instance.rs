@@ -60,7 +60,10 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::Arc,
-    time::Duration,
+    time::{
+        Duration,
+        Instant,
+    },
 };
 use tokio::task::JoinHandle;
 use tracing::info;
@@ -148,6 +151,8 @@ pub struct LocalInstance<T: TestTransport> {
 
 impl<T: TestTransport> LocalInstance<T> {
     const TRANSACTION_RESULT_TIMEOUT: Duration = Duration::from_millis(250);
+    const CONDITION_TIMEOUT: Duration = Duration::from_secs(10);
+    const CONDITION_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
     /// Create a new local instance with mock transport
     pub async fn new() -> Result<LocalInstance<T>, String> {
@@ -268,6 +273,54 @@ impl<T: TestTransport> LocalInstance<T> {
         tokio::time::sleep(duration).await;
     }
 
+    /// Wait until a transaction is processed, retrying until timeout.
+    pub async fn wait_for_transaction_processed(
+        &self,
+        tx_execution_id: &TxExecutionId,
+    ) -> Result<TransactionResult, String> {
+        tokio::time::timeout(Self::CONDITION_TIMEOUT, async {
+            loop {
+                match self.wait_for_transaction_result(tx_execution_id).await {
+                    Ok(result) => return Ok(result),
+                    Err(WaitError::ChannelClosed) => {
+                        return Err("transaction result channel closed".to_string());
+                    }
+                    Err(WaitError::Timeout) => {
+                        tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| "timed out waiting for transaction result".to_string())?
+    }
+
+    /// Wait for a specific source to report as synced up to a block number
+    pub async fn wait_for_source_synced(
+        &self,
+        source_index: usize,
+        block_number: u64,
+    ) -> Result<(), String> {
+        let source = self
+            .sources
+            .get(source_index)
+            .cloned()
+            .ok_or_else(|| format!("source index {source_index} out of bounds"))?;
+
+        tokio::time::timeout(Self::CONDITION_TIMEOUT, async move {
+            loop {
+                if source.is_synced(block_number) {
+                    return;
+                }
+                tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            format!("timed out waiting for source {source_index} to sync to block {block_number}")
+        })
+    }
+
     async fn wait_for_transaction_result(
         &self,
         tx_execution_id: &TxExecutionId,
@@ -375,11 +428,18 @@ impl<T: TestTransport> LocalInstance<T> {
     {
         let before = self.cache_reset_count();
         action(self).await?;
-        self.wait_for_processing(Duration::from_millis(15)).await;
-        let after = self.cache_reset_count();
-        tracing::debug!("Flushes before {}, after {}", before, after);
-        if after <= before {
-            return Err("cache flush was not observed".to_string());
+
+        let start = Instant::now();
+        loop {
+            let after = self.cache_reset_count();
+            tracing::debug!("Flushes before {}, after {}", before, after);
+            if after > before {
+                break;
+            }
+            if start.elapsed() > Self::CONDITION_TIMEOUT {
+                return Err("cache flush was not observed within timeout".to_string());
+            }
+            tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
         }
         self.clear_nonce();
 
@@ -632,8 +692,10 @@ impl<T: TestTransport> LocalInstance<T> {
     #[allow(clippy::too_many_lines)]
     pub async fn send_all_tx_types(&mut self) -> Result<(), String> {
         // legacy tx
-        self.send_successful_create_tx(U256::default(), Bytes::default())
+        let legacy_tx = self
+            .send_successful_create_tx(U256::default(), Bytes::default())
             .await?;
+        let _ = self.wait_for_transaction_processed(&legacy_tx).await?;
 
         // type 1, eip-2930 optional access lists
         // verify that we spend less gas on storage reads
@@ -673,9 +735,11 @@ impl<T: TestTransport> LocalInstance<T> {
             .tx_type(Some(1))
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
+        let tx_id_eip2930 = tx_execution_id;
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        let _ = self.wait_for_transaction_processed(&tx_id_eip2930).await?;
 
         // type2, eip-1559
         // verify we correctly decrement gas for the account sending the tx
@@ -711,9 +775,11 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
+        let tx_id_eip1559 = tx_execution_id;
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        let _ = self.wait_for_transaction_processed(&tx_id_eip1559).await?;
 
         // type3, eip-4844
         self.send_block(self.block_number).await?;
@@ -744,9 +810,11 @@ impl<T: TestTransport> LocalInstance<T> {
             .tx_type(Some(3))
             .build()
             .unwrap();
+        let tx_id_eip4844 = tx_execution_id;
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        let _ = self.wait_for_transaction_processed(&tx_id_eip4844).await?;
 
         // type4, eip-7702
         // Authorization list present, should derive EIP-7702
@@ -762,18 +830,28 @@ impl<T: TestTransport> LocalInstance<T> {
             },
             RecoveredAuthority::Valid(Address::default()),
         );
+        let caller = Address::from([1u8; 20]);
+        let tx_hash = Self::generate_random_tx_hash();
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        let nonce = self.next_nonce(caller, tx_execution_id.as_block_execution_id());
         let tx_env = TxEnvBuilder::new()
-            .caller(Address::from([1u8; 20]))
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(1)
             .gas_priority_fee(Some(10))
             .authorization_list(vec![Either::Right(auth)])
             .kind(TxKind::Call(Address::from([2u8; 20])))
+            .value(U256::ZERO)
+            .data(Bytes::default())
+            .nonce(nonce)
             .tx_type(Some(4))
             .build()
             .unwrap();
-        let tx_hash = Self::generate_random_tx_hash();
-        let tx_execution_id = self.build_tx_id(tx_hash);
         self.transport
             .send_transaction(tx_execution_id, tx_env)
+            .await?;
+        let _ = self
+            .wait_for_transaction_processed(&tx_execution_id)
             .await?;
 
         Ok(())

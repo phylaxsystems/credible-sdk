@@ -114,13 +114,21 @@ pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #fn_vis async fn #test_fn_name() {
                     use crate::utils::LocalInstance;
                     use crate::utils::instance::TestTransport;
+                    use std::time::Duration;
+                    use tokio::time::timeout;
 
-                    let mut instance = <#transport_type>::new()
+                    let instance = <#transport_type>::new()
                         .await
                         .expect("Failed to create LocalInstance");
 
                     let test_fn = |mut instance: LocalInstance<#transport_type>| async move #fn_body;
-                    test_fn(instance).await;
+                    match timeout(Duration::from_secs(10), test_fn(instance)).await {
+                        Ok(result) => result,
+                        Err(_) => panic!(
+                            "test '{}' timed out after 10s",
+                            stringify!(#test_fn_name)
+                        ),
+                    }
                 }
             }
         })
