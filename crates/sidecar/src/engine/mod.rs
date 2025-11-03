@@ -472,22 +472,22 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         tx_execution_id: TxExecutionId,
         result: &TransactionResult,
         state: Option<EvmState>,
-    ) {
-        if let Some(current_block_iteration) = self
+    ) -> Result<(), EngineError> {
+        let current_block_iteration = self
             .current_block_iterations
             .get_mut(&tx_execution_id.as_block_execution_id())
-        {
-            #[cfg(feature = "cache_validation")]
-            // FIXME: needs to be iteration aware
-            self.processed_transactions
-                .insert(tx_execution_id.tx_hash, state.clone());
+            .ok_or(EngineError::TransactionError)?;
+        #[cfg(feature = "cache_validation")]
+        // FIXME: needs to be iteration aware
+        self.processed_transactions
+            .insert(tx_execution_id.tx_hash, state.clone());
 
-            current_block_iteration
-                .last_executed_tx
-                .push(tx_execution_id, state);
-            self.transaction_results
-                .add_transaction_result(tx_execution_id, result);
-        }
+        current_block_iteration
+            .last_executed_tx
+            .push(tx_execution_id, state);
+        self.transaction_results
+            .add_transaction_result(tx_execution_id, result);
+        Ok(())
     }
 
     fn trace_execute_transaction_result(
@@ -834,14 +834,14 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             let event_start = Instant::now();
 
             match event {
-                TxQueueContents::QueueIteration(queue_block_env, current_span) => {
+                TxQueueContents::Iteration(queue_iteration, current_span) => {
                     let _guard = current_span.enter();
-                    self.process_iteration(&queue_block_env);
+                    self.process_iteration(&queue_iteration);
                 }
-                TxQueueContents::QueueCommitHead(queue_block_env, current_span) => {
+                TxQueueContents::CommitHead(queue_commit_head, current_span) => {
                     let _guard = current_span.enter();
                     self.process_commit_head(
-                        &queue_block_env,
+                        &queue_commit_head,
                         &mut processed_blocks,
                         &mut block_processing_time,
                     );
@@ -942,30 +942,39 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         // If it is configured to invalidate the cache every block, do so
         if self.overlay_cache_invalidation_every_block {
             self.invalidate_all(queue_commit_head);
-        } else if let Some(current_block_iteration) =
-            self.current_block_iterations.get(&block_execution_id)
-        {
+        } else {
             // If not, check if the cache should be invalidated.
+            let current_block_iteration = self.current_block_iterations.get(&block_execution_id);
             self.check_cache(
                 queue_commit_head,
-                current_block_iteration
-                    .last_executed_tx
-                    .current()
-                    .map(|(a, _)| a)
-                    .copied(),
-                current_block_iteration.n_transactions,
+                current_block_iteration.and_then(|current_block_iteration| {
+                    current_block_iteration
+                        .last_executed_tx
+                        .current()
+                        .map(|(a, _)| a)
+                        .copied()
+                }),
+                current_block_iteration.map_or(0, |current_block_iteration| {
+                    current_block_iteration.n_transactions
+                }),
             );
         }
 
         // Finalize the previous block by committing its fork to the underlying state
         // Apply the last transaction's state to the current block fork
-        self.apply_state_buffer_to_fork(block_execution_id)?;
-        self.finalize_previous_block(block_execution_id);
+        if self
+            .current_block_iterations
+            .contains_key(&block_execution_id)
+        {
+            self.apply_state_buffer_to_fork(block_execution_id)?;
+            self.finalize_previous_block(block_execution_id);
+        }
 
         *processed_blocks += 1;
 
         // Set the block number to the latest applied head
         self.cache.set_block_number(queue_commit_head.block_number);
+        self.current_head = queue_commit_head.block_number;
 
         self.block_metrics.block_processing_duration = block_processing_time.elapsed();
         self.block_metrics.current_height = queue_commit_head.block_number;
@@ -1336,7 +1345,7 @@ mod tests {
         };
 
         tx_sender
-            .send(TxQueueContents::QueueIteration(
+            .send(TxQueueContents::Iteration(
                 queue_iteration,
                 tracing::Span::none(),
             ))

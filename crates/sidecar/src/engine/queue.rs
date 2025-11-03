@@ -224,8 +224,8 @@ impl<'de> Deserialize<'de> for QueueIteration {
 /// transaction execution id and should only process it as a valid event if it matches.
 #[derive(Debug)]
 pub enum TxQueueContents {
-    QueueCommitHead(QueueCommitHead, tracing::Span),
-    QueueIteration(QueueIteration, tracing::Span),
+    CommitHead(QueueCommitHead, tracing::Span),
+    Iteration(QueueIteration, tracing::Span),
     Tx(QueueTransaction, tracing::Span),
     Reorg(TxExecutionId, tracing::Span),
 }
