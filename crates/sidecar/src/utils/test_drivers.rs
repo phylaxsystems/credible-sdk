@@ -404,7 +404,7 @@ impl TestTransport for LocalInstanceMockDriver {
 
         let result = self
             .mock_sender
-            .send(TxQueueContents::Iteration(block_env, Span::current()))
+            .send(TxQueueContents::QueueIteration(block_env, Span::current()))
             .map_err(|e| format!("Failed to send block: {e}"));
         match &result {
             Ok(()) => info!(target: "test_transport", "Successfully sent block to mock_sender"),

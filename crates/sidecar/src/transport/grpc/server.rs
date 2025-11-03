@@ -162,7 +162,7 @@ impl SidecarTransport for GrpcService {
 
         // Decode into proper structs instead of manually merging JSON
         let block = decode_block_env_envelope(&payload)?;
-        let event = TxQueueContents::Iteration(block, span);
+        let event = TxQueueContents::QueueIteration(block, span);
 
         self.transactions_results.add_accepted_tx(&event);
         self.tx_sender

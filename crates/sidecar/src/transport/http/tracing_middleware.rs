@@ -44,7 +44,7 @@ pub async fn tracing_middleware(
 pub fn trace_tx_queue_contents(block_context: &BlockContext, tx_queue_contents: &TxQueueContents) {
     match tx_queue_contents {
         // If we receive a commit head, update the block context
-        TxQueueContents::CommitHead(commit_head, _) => {
+        TxQueueContents::QueueCommitHead(commit_head, _) => {
             block_context.update(commit_head.block_number);
         }
         // If we receive a tx, add the tx hash to the current span
@@ -56,7 +56,7 @@ pub fn trace_tx_queue_contents(block_context: &BlockContext, tx_queue_contents: 
             span.record("tx.hash", display(tx_execution_id));
         }
         // Record the block number and iteration ID of the iteration
-        TxQueueContents::Iteration(iteration, span) => {
+        TxQueueContents::QueueIteration(iteration, span) => {
             span.record("iteration_id", display(iteration.iteration_id));
             span.record("block_number", display(iteration.block_env.number));
         }

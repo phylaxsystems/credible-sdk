@@ -116,7 +116,7 @@ impl Decoder for HttpTransactionDecoder {
                 let block = serde_json::from_value::<QueueIteration>(params.clone())
                     .map_err(|e| map_block_env_error(&e))?;
                 let current_span = tracing::Span::current();
-                Ok(vec![TxQueueContents::Iteration(block, current_span)])
+                Ok(vec![TxQueueContents::QueueIteration(block, current_span)])
             }
             METHOD_REORG => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;

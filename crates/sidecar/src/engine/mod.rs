@@ -188,6 +188,8 @@ pub enum EngineError {
     DatabaseError,
     #[error("Transaction error")]
     TransactionError,
+    #[error("Iteration error")]
+    IterationError,
     #[error("Reorg error")]
     ReorgError,
     #[error("Assertion error")]
@@ -206,8 +208,6 @@ pub enum EngineError {
     NoSyncedSources,
     #[error("No iteration data to commit")]
     NoIterationDataToCommit,
-    #[error("Infallible: Missing current block data")]
-    MissingCurrentBlockData,
     #[error("Block number specified by transaction and block number currently built do not match!")]
     TxBlockMismatch,
 }
@@ -215,11 +215,12 @@ pub enum EngineError {
 impl From<&EngineError> for ErrorRecoverability {
     fn from(e: &EngineError) -> Self {
         match e {
-            EngineError::DatabaseError
-            | EngineError::AssertionError
-            | EngineError::MissingCurrentBlockData => ErrorRecoverability::Unrecoverable,
+            EngineError::DatabaseError | EngineError::AssertionError => {
+                ErrorRecoverability::Unrecoverable
+            }
             EngineError::TransactionError
             | EngineError::ReorgError
+            | EngineError::IterationError
             | EngineError::ChannelClosed
             | EngineError::GetTxResultChannelClosed
             | EngineError::NothingToCommit
@@ -440,7 +441,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     tx_execution_id,
                     &TransactionResult::ValidationError(format!("{e:?}")),
                     None,
-                )?;
+                );
                 Ok(())
             }
             ExecutorError::AssertionExecutionError(state, _) => {
@@ -471,22 +472,22 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         tx_execution_id: TxExecutionId,
         result: &TransactionResult,
         state: Option<EvmState>,
-    ) -> Result<(), EngineError> {
-        let current_block_iteration = self
+    ) {
+        if let Some(current_block_iteration) = self
             .current_block_iterations
             .get_mut(&tx_execution_id.as_block_execution_id())
-            .ok_or(EngineError::MissingCurrentBlockData)?;
-        #[cfg(feature = "cache_validation")]
-        // FIXME: needs to be iteration aware
-        self.processed_transactions
-            .insert(tx_execution_id.tx_hash, state.clone());
+        {
+            #[cfg(feature = "cache_validation")]
+            // FIXME: needs to be iteration aware
+            self.processed_transactions
+                .insert(tx_execution_id.tx_hash, state.clone());
 
-        current_block_iteration
-            .last_executed_tx
-            .push(tx_execution_id, state);
-        self.transaction_results
-            .add_transaction_result(tx_execution_id, result);
-        Ok(())
+            current_block_iteration
+                .last_executed_tx
+                .push(tx_execution_id, state);
+            self.transaction_results
+                .add_transaction_result(tx_execution_id, result);
+        }
     }
 
     fn trace_execute_transaction_result(
@@ -579,7 +580,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let current_block_iteration = self
             .current_block_iterations
             .get_mut(&tx_execution_id.as_block_execution_id())
-            .ok_or(EngineError::MissingCurrentBlockData)?;
+            .ok_or(EngineError::TransactionError)?;
         current_block_iteration.n_transactions += 1;
 
         let mut tx_metrics = TransactionMetrics::new();
@@ -643,7 +644,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 execution_result: rax.result_and_state.result,
             },
             Some(rax.result_and_state.state),
-        )?;
+        );
 
         trace!("Transaction execution completed");
         Ok(())
@@ -760,10 +761,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     ///
     /// If the sources do not become synced after a set amount of time, the function
     /// errors.
-    async fn verify_state_sources_synced_for_tx(
-        &mut self,
-        block_number: u64,
-    ) -> Result<(), EngineError> {
+    async fn verify_state_sources_synced_for_tx(&mut self) -> Result<(), EngineError> {
         const RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
         if !self.check_sources_available {
@@ -777,7 +775,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 .cache
                 .iter_synced_sources()
                 .into_iter()
-                .any(|a| a.is_synced(block_number))
+                .any(|a| a.is_synced(self.current_head))
             {
                 return Ok(());
             }
@@ -836,11 +834,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             let event_start = Instant::now();
 
             match event {
-                TxQueueContents::Iteration(queue_block_env, current_span) => {
+                TxQueueContents::QueueIteration(queue_block_env, current_span) => {
                     let _guard = current_span.enter();
                     self.process_iteration(&queue_block_env);
                 }
-                TxQueueContents::CommitHead(queue_block_env, current_span) => {
+                TxQueueContents::QueueCommitHead(queue_block_env, current_span) => {
                     let _guard = current_span.enter();
                     self.process_commit_head(
                         &queue_block_env,
@@ -882,6 +880,20 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             queue_iteration = ?queue_iteration,
             "Processing a new iteration",
         );
+        // Checks if the received iteration is sequential to the current head, otherwise we should
+        // drop the event.
+        let expected_block_number = self.current_head + 1;
+        if expected_block_number != queue_iteration.block_env.number {
+            warn!(
+                target = "engine",
+                current_head = self.current_head,
+                block_env = ?queue_iteration.block_env,
+                iteration_id = %queue_iteration.iteration_id,
+                "Iteration block number does not match block number currently built in engine!"
+            );
+
+            return Err(EngineError::IterationError);
+        }
 
         let block_env = &queue_iteration.block_env;
 
@@ -904,7 +916,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             number = block_env.number,
             gas_limit = block_env.gas_limit,
             base_fee = ?block_env.basefee,
-            "CommitHead successfully applied"
+            iteration_id = block_execution_id.iteration_id,
+            "Iteration successfully created"
         );
 
         Ok(())
@@ -926,15 +939,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         let block_execution_id = BlockExecutionId::from(queue_commit_head);
 
-        let current_block_iteration = self
-            .current_block_iterations
-            .get(&block_execution_id)
-            .ok_or(EngineError::NoIterationDataToCommit)?;
-
         // If it is configured to invalidate the cache every block, do so
         if self.overlay_cache_invalidation_every_block {
             self.invalidate_all(queue_commit_head);
-        } else {
+        } else if let Some(current_block_iteration) =
+            self.current_block_iterations.get(&block_execution_id)
+        {
             // If not, check if the cache should be invalidated.
             self.check_cache(
                 queue_commit_head,
@@ -1008,35 +1018,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             return Err(EngineError::TransactionError);
         };
 
-        // Checks if the received `TxExecutionId` matches blockenv requirements.
-        // `tx_execution_id` must be `self.block_env.number + 1`, otherwise we should
-        // drop the event.
-        let expected_block_number = self.current_head + 1;
-        if expected_block_number != tx_execution_id.block_number {
-            warn!(
-                target = "engine",
-                tx_hash = %tx_hash,
-                current_head = self.current_head,
-                tx_block_number = tx_execution_id.block_number,
-                iteration_id = tx_execution_id.iteration_id,
-                caller = %tx_env.caller,
-                "Requested transaction block number does not match block number currently built in engine!"
-            );
-
-            let error_message = format!(
-                "Transaction targeted block {} but engine is building block {}",
-                tx_execution_id.block_number, expected_block_number
-            );
-            self.transaction_results.add_transaction_result(
-                tx_execution_id,
-                &TransactionResult::ValidationError(error_message),
-            );
-
-            return Ok(());
-        }
-
-        self.verify_state_sources_synced_for_tx(tx_execution_id.block_number)
-            .await?;
+        self.verify_state_sources_synced_for_tx().await?;
 
         debug!(
             target = "engine",
@@ -1165,21 +1147,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             return Err(EngineError::ReorgError);
         };
 
-        // Checks if the received `TxExecutionId` matches blockenv requirements.
-        // `tx_execution_id` must be `self.block_env.number + 1`, otherwise we should
-        // drop the event.
-        if current_block_iteration.block_env.number + 1 != tx_execution_id.block_number {
-            warn!(
-                target = "engine",
-                tx_hash = %tx_execution_id.tx_hash,
-                blockenv_block_number = current_block_iteration.block_env.number,
-                tx_execution_id = %tx_execution_id.to_json_string(),
-                "Requested reorg block number does not match block number currently built in engine!"
-            );
-
-            return Ok(());
-        }
-
         // Check if we have received a transaction at all
         if let Some((last_execution_id, _)) = current_block_iteration.last_executed_tx.current()
             && tx_execution_id == *last_execution_id
@@ -1281,6 +1248,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
     use crate::utils::TestDbError;
     use assertion_executor::{
@@ -1353,18 +1321,23 @@ mod tests {
 
         let engine_handle = tokio::spawn(async move { engine.run().await });
 
-        let queue_block_env = queue::QueueIteration {
-            block_env: BlockEnv::default(),
+        // Create iteration with block number 1
+        let mut block_env = BlockEnv::default();
+        block_env.number = 1; // Match the transaction's block number
+
+        let queue_iteration = queue::QueueIteration {
+            block_env,
             iteration_id: 0,
         };
+
         let queue_tx = queue::QueueTransaction {
             tx_execution_id: TxExecutionId::new(1, 0, B256::from([0x11; 32])),
             tx_env: TxEnv::default(),
         };
 
         tx_sender
-            .send(TxQueueContents::Iteration(
-                queue_block_env,
+            .send(TxQueueContents::QueueIteration(
+                queue_iteration,
                 tracing::Span::none(),
             ))
             .expect("queue send should succeed");
@@ -1382,10 +1355,48 @@ mod tests {
     #[tokio::test]
     async fn test_tx_block_mismatch_yields_validation_error() {
         let (mut engine, _) = create_test_engine().await;
-        let block_env = create_test_block_env();
-        let expected_block_number = block_env.number + 1;
-        let mismatched_block_number = block_env.number;
 
+        // Set up and commit block 1 to establish current_head = 1
+        let block_env_1 = BlockEnv {
+            number: 1,
+            basefee: 0,
+            ..Default::default()
+        };
+
+        let queue_iteration_1 = queue::QueueIteration {
+            block_env: block_env_1,
+            iteration_id: 0,
+        };
+        engine.process_iteration(&queue_iteration_1).unwrap();
+
+        let queue_commit_1 = queue::QueueCommitHead {
+            block_number: 1,
+            iteration_id: 0,
+            last_tx_hash: None,
+            n_transactions: 0,
+        };
+        engine
+            .process_commit_head(&queue_commit_1, &mut 0, &mut Instant::now())
+            .unwrap();
+
+        // Now current_head = 1, so expected_block_number = 2
+        let expected_block_number = engine.current_head + 1; // = 2
+
+        // Create an iteration for a mismatched block (e.g., block 5)
+        let mismatched_block_number = 5;
+        let block_env_mismatched = BlockEnv {
+            number: mismatched_block_number,
+            basefee: 0,
+            ..Default::default()
+        };
+
+        let queue_iteration_mismatch = queue::QueueIteration {
+            block_env: block_env_mismatched,
+            iteration_id: 0,
+        };
+        engine.process_iteration(&queue_iteration_mismatch).unwrap();
+
+        // Send transaction for the mismatched block
         let tx_execution_id =
             TxExecutionId::new(mismatched_block_number, 0, B256::from([0x42; 32]));
         let queue_transaction = queue::QueueTransaction {
@@ -1399,6 +1410,7 @@ mod tests {
             "mismatched block number should not return an engine error, got {result:?}"
         );
 
+        // Verify the validation error was recorded
         let stored_result = engine
             .get_transaction_result_cloned(&tx_execution_id)
             .expect("validation error should be recorded");
@@ -1406,22 +1418,17 @@ mod tests {
             TransactionResult::ValidationError(message) => {
                 assert!(
                     message.contains(&mismatched_block_number.to_string()),
-                    "error message should mention the transaction block number"
+                    "error message should mention the transaction block number: {message}"
                 );
                 assert!(
                     message.contains(&expected_block_number.to_string()),
-                    "error message should mention the expected block number"
+                    "error message should mention the expected block number: {message}"
                 );
             }
             TransactionResult::ValidationCompleted { .. } => {
                 panic!("expected validation error, found ValidationCompleted")
             }
         }
-
-        assert!(
-            engine.current_block_iterations.is_empty(),
-            "transaction with mismatched block number should not create block iteration state"
-        );
     }
 
     #[test]

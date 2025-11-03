@@ -205,7 +205,7 @@ mod tests {
 
     /// Helper function to create a test `TxQueueContents` with block
     fn create_test_block_queue_contents() -> TxQueueContents {
-        TxQueueContents::Iteration(QueueIteration::default(), Span::current())
+        TxQueueContents::QueueIteration(QueueIteration::default(), Span::current())
     }
 
     #[test]

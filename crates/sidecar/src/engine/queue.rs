@@ -90,8 +90,8 @@ impl From<&QueueIteration> for BlockExecutionId {
 /// * `n_transactions` (`u64`) - The total number of transactions that have been processed up to this point in the selected iteration.
 #[derive(Clone, Debug, Default)]
 pub struct QueueCommitHead {
-    pub iteration_id: u64,
     pub block_number: u64,
+    pub iteration_id: u64,
     pub last_tx_hash: Option<TxHash>,
     pub n_transactions: u64,
 }
@@ -224,8 +224,8 @@ impl<'de> Deserialize<'de> for QueueIteration {
 /// transaction execution id and should only process it as a valid event if it matches.
 #[derive(Debug)]
 pub enum TxQueueContents {
-    CommitHead(QueueCommitHead, tracing::Span),
-    Iteration(QueueIteration, tracing::Span),
+    QueueCommitHead(QueueCommitHead, tracing::Span),
+    QueueIteration(QueueIteration, tracing::Span),
     Tx(QueueTransaction, tracing::Span),
     Reorg(TxExecutionId, tracing::Span),
 }
