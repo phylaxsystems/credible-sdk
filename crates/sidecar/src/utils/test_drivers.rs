@@ -244,7 +244,7 @@ impl CommonSetup {
         &self,
         engine_rx: channel::Receiver<TxQueueContents>,
     ) -> tokio::task::JoinHandle<()> {
-        let state = OverlayDb::new(Some(self.underlying_db.clone()), 1024);
+        let state = OverlayDb::new(Some(self.underlying_db.clone()));
         let assertion_executor =
             AssertionExecutor::new(ExecutorConfig::default(), (*self.assertion_store).clone());
 

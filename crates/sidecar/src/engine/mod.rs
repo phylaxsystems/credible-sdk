@@ -361,7 +361,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         let (_, tx_receiver) = crossbeam::channel::unbounded();
         let cache = Arc::new(Cache::new(vec![], 10));
         Self {
-            state: OverlayDb::new(None, 64),
+            state: OverlayDb::new(None),
             current_block_iterations: HashMap::new(),
             tx_receiver,
             assertion_executor: AssertionExecutor::new(
@@ -1291,7 +1291,7 @@ mod tests {
     ) {
         let (tx_sender, tx_receiver) = crossbeam::channel::unbounded();
         let underlying_db = CacheDB::new(EmptyDBTyped::default());
-        let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)), 1024);
+        let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)));
         let assertion_store =
             AssertionStore::new_ephemeral().expect("Failed to create assertion store");
         let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);

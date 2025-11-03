@@ -103,7 +103,7 @@ impl<Db> Default for OverlayDb<Db> {
 
 impl<Db> OverlayDb<Db> {
     /// Creates a new `OverlayDB` with the max cache size in bytes.
-    pub fn new(underlying_db: Option<Arc<Db>>, _max_capacity: u64) -> Self {
+    pub fn new(underlying_db: Option<Arc<Db>>) -> Self {
         Self {
             underlying_db,
             overlay: Arc::new(DashMap::new()),
@@ -112,7 +112,7 @@ impl<Db> OverlayDb<Db> {
 
     /// Creates a new `OverlayDb` with the max capacity being determined by the number
     /// of elements inside of the cache instead of the size.
-    pub fn new_with_len(underlying_db: Option<Arc<Db>>, _max_capacity: u64) -> Self {
+    pub fn new_with_len(underlying_db: Option<Arc<Db>>) -> Self {
         Self {
             underlying_db,
             overlay: Arc::new(DashMap::new()),
@@ -148,7 +148,7 @@ impl<Db> OverlayDb<Db> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let overlay_db = OverlayDb::new(None, 1024);
+    /// let overlay_db = OverlayDb::new(None);
     /// let active_overlay = overlay_db.create_overlay(active_db);
     ///
     /// // Commit to active overlay
@@ -663,7 +663,7 @@ mod overlay_db_tests {
         let mock_db_arc = Arc::new(mock_db);
 
         // Use small capacity for testing potential eviction later
-        let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()), 1024);
+        let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()));
 
         // 1. Initial state: Cache is empty
         assert!(!overlay_db.is_cached(&key1));
@@ -722,7 +722,7 @@ mod overlay_db_tests {
         mock_db.insert_storage(addr1, slot1, value1);
         let mock_db_arc = Arc::new(mock_db);
 
-        let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()), 1024);
+        let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()));
 
         // 1. Initial state
         assert!(!overlay_db.is_cached(&key1));
@@ -772,7 +772,7 @@ mod overlay_db_tests {
         mock_db.insert_account(addr1, info1);
         let mock_db_arc = Arc::new(mock_db);
 
-        let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()), 1024);
+        let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()));
 
         // 1. Initial state
         assert!(!overlay_db.is_cached(&key1));
@@ -809,7 +809,7 @@ mod overlay_db_tests {
         mock_db.insert_block_hash(num1, hash1);
         let mock_db_arc = Arc::new(mock_db);
 
-        let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()), 1024);
+        let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()));
 
         // 1. Initial state
         assert!(!overlay_db.is_cached(&key1));
@@ -841,7 +841,7 @@ mod overlay_db_tests {
         let block_num1: u64 = 50;
 
         // Create OverlayDb with NO underlying database
-        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None, 1024); // Specify MockDb type arg
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None); // Specify MockDb type arg
 
         // Read basic - should return None
         assert_eq!(overlay_db.basic_ref(addr1).unwrap(), None);
@@ -872,7 +872,7 @@ mod overlay_db_tests {
         mock_db.insert_account(addr1, info1.clone());
         let mock_db_arc = Arc::new(mock_db);
 
-        let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()), 1024);
+        let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()));
 
         // Read to populate cache
         let _ = overlay_db.basic_ref(addr1).unwrap();
@@ -913,7 +913,7 @@ mod overlay_db_tests {
         mock_db2.insert_account(addr2, info2.clone());
         let mock_db2_arc = Arc::new(mock_db2);
 
-        let mut overlay_db = OverlayDb::new(Some(mock_db1_arc.clone()), 1024);
+        let mut overlay_db = OverlayDb::new(Some(mock_db1_arc.clone()));
 
         // 1. Read from DB1 (miss -> cache)
         assert_eq!(overlay_db.basic_ref(addr1).unwrap(), Some(info1.clone()));
