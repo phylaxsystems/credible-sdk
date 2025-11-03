@@ -150,6 +150,19 @@ impl GrpcService {
             commit_head_pending: Arc::new(AtomicBool::new(false)),
         }
     }
+
+    fn send_queue_event(
+        &self,
+        contents: TxQueueContents,
+        item_name: &'static str,
+    ) -> Result<(), Status> {
+        self.tx_sender
+            .send(contents)
+            .map_err(|e| {
+                self.commit_head_pending.store(false, Ordering::Release);
+                Status::internal(format!("failed to queue {item_name}: {e}"))
+            })
+    }
 }
 
 fn convert_pb_commit_head(commit_head: PbCommitHead) -> Result<QueueCommitHead, Status> {
@@ -212,21 +225,15 @@ impl SidecarTransport for GrpcService {
         let new_iteration =
             QueueNewIteration::new(selected_iteration_id, legacy_block.block_env);
 
-        if let Err(e) = self.tx_sender.send(TxQueueContents::CommitHead(
-            commit_head,
-            tracing::Span::current(),
-        )) {
-            self.commit_head_pending.store(false, Ordering::Release);
-            return Err(Status::internal(format!("failed to queue commit head: {e}")));
-        }
+        self.send_queue_event(
+            TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
+            "commit head",
+        )?;
 
-        if let Err(e) = self.tx_sender.send(TxQueueContents::NewIteration(
-            new_iteration,
-            tracing::Span::current(),
-        )) {
-            self.commit_head_pending.store(false, Ordering::Release);
-            return Err(Status::internal(format!("failed to queue commit head: {e}")));
-        }
+        self.send_queue_event(
+            TxQueueContents::NewIteration(new_iteration, tracing::Span::current()),
+            "new iteration",
+        )?;
 
 
         Ok(Response::new(BasicAck {
@@ -249,13 +256,10 @@ impl SidecarTransport for GrpcService {
         let payload = request.into_inner();
         let commit_head = convert_pb_commit_head(payload)?;
 
-        if let Err(e) = self.tx_sender.send(TxQueueContents::CommitHead(
-            commit_head,
-            tracing::Span::current(),
-        )) {
-            self.commit_head_pending.store(false, Ordering::Release);
-            return Err(Status::internal(format!("failed to queue commit head: {e}")));
-        }
+        self.send_queue_event(
+            TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
+            "commit head",
+        )?;
 
         Ok(Response::new(BasicAck {
             accepted: true,
@@ -277,13 +281,10 @@ impl SidecarTransport for GrpcService {
         let payload = request.into_inner();
         let new_iteration = convert_pb_new_iteration(payload)?;
 
-        if let Err(e) = self.tx_sender.send(TxQueueContents::NewIteration(
-            new_iteration,
-            tracing::Span::current(),
-        )) {
-            self.commit_head_pending.store(false, Ordering::Release);
-            return Err(Status::internal(format!("failed to queue commit head: {e}")));
-        }
+        self.send_queue_event(
+            TxQueueContents::NewIteration(new_iteration, tracing::Span::current()),
+            "new iteration",
+        )?;
 
         Ok(Response::new(BasicAck {
             accepted: true,
@@ -315,23 +316,36 @@ impl SidecarTransport for GrpcService {
             match event_variant {
                 SendEventVariant::CommitHead(commit) => {
                     let commit_head = convert_pb_commit_head(commit)?;
-                    if let Err(e) = self.tx_sender.send(TxQueueContents::CommitHead(
-                        commit_head,
-                        tracing::Span::current(),
-                    )) {
-                        self.commit_head_pending.store(false, Ordering::Release);
-                        return Err(Status::internal(format!("failed to queue commit head: {e}")));
-                    }
+                    self.send_queue_event(
+                        TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
+                        "commit head",
+                    )?;
                 }
                 SendEventVariant::NewIteration(iteration) => {
                     let new_iteration = convert_pb_new_iteration(iteration)?;
-                    if let Err(e) = self.tx_sender.send(TxQueueContents::NewIteration(
-                        new_iteration,
-                        tracing::Span::current(),
-                    )) {
-                        self.commit_head_pending.store(false, Ordering::Release);
-                        return Err(Status::internal(format!("failed to queue commit head: {e}")));
+                    self.send_queue_event(
+                        TxQueueContents::NewIteration(new_iteration, tracing::Span::current()),
+                        "new iteration",
+                    )?;
+                }
+                SendEventVariant::Transaction(transaction) => {
+                    let queue_tx = to_queue_tx(&transaction)
+                        .map_err(|e| Status::invalid_argument(format!("invalid transaction: {e}")))?;
+
+                    if let TxQueueContents::Tx(tx, _) = &queue_tx
+                        && self
+                            .transactions_results
+                            .is_tx_received(&tx.tx_execution_id)
+                    {
+                        warn!(
+                            tx_hash = %tx.tx_execution_id.tx_hash_hex(),
+                            "TX hash already received, skipping"
+                        );
+                        continue;
                     }
+
+                    self.transactions_results.add_accepted_tx(&queue_tx);
+                    self.send_queue_event(queue_tx, "transaction")?;
                 }
             }
         }
