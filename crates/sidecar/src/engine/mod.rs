@@ -43,8 +43,6 @@ pub mod queue;
 mod transactions_results;
 
 use super::engine::queue::{
-    CommitHead as QueueCommitHead,
-    NewIteration as QueueNewIteration,
     QueueBlockEnv,
     QueueTransaction,
     TransactionQueueReceiver,
@@ -207,13 +205,6 @@ pub enum EngineError {
     MissingCurrentBlockData,
     #[error("Block number specified by transaction and block number currently built do not match!")]
     TxBlockMismatch,
-    #[error("commitHead not received before newIteration")]
-    MissingCommitHead,
-    #[error("commitHead iteration {commit_iteration} does not match newIteration {new_iteration}")]
-    CommitIterationMismatch {
-        commit_iteration: u64,
-        new_iteration: u64,
-    },
 }
 
 impl From<&EngineError> for ErrorRecoverability {
@@ -228,9 +219,7 @@ impl From<&EngineError> for ErrorRecoverability {
             | EngineError::NothingToCommit
             | EngineError::TxBlockMismatch
             | EngineError::BadReorgHash
-            | EngineError::NoSyncedSources
-            | EngineError::MissingCommitHead
-            | EngineError::CommitIterationMismatch { .. } => ErrorRecoverability::Recoverable,
+            | EngineError::NoSyncedSources => ErrorRecoverability::Recoverable,
         }
     }
 }
@@ -283,8 +272,6 @@ pub struct CoreEngine<DB> {
     assertion_executor: AssertionExecutor,
     /// Block env we are currently working on
     block_env: Option<BlockEnv>,
-    /// Commit head metadata pending a new iteration event.
-    pending_commit_head: Option<QueueCommitHead>,
     /// Stores results of executed transactions
     transaction_results: TransactionsResults,
     /// Core engine related block building metrics
@@ -349,7 +336,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             tx_receiver,
             assertion_executor,
             block_env: None,
-            pending_commit_head: None,
             transaction_results: TransactionsResults::new(
                 state_results,
                 transaction_results_max_capacity,
@@ -383,7 +369,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 AssertionStore::new_ephemeral().expect("REASON"),
             ),
             block_env: None,
-            pending_commit_head: None,
             cache: cache.clone(),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
             block_metrics: BlockMetrics::new(),
@@ -876,18 +861,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     let _guard = current_span.enter();
                     self.execute_reorg(tx_execution_id)?;
                 }
-                TxQueueContents::CommitHead(commit_head, current_span) => {
-                    let _guard = current_span.enter();
-                    self.process_commit_head_event(commit_head)?;
-                }
-                TxQueueContents::NewIteration(new_iteration, current_span) => {
-                    let _guard = current_span.enter();
-                    self.process_new_iteration_event(
-                        new_iteration,
-                        &mut processed_blocks,
-                        &mut block_processing_time,
-                    )?;
-                }
             }
 
             // Accumulate event processing time
@@ -907,64 +880,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
     }
 
-    #[instrument(name = "engine::process_commit_head_event", skip_all, level = "info")]
-    fn process_commit_head_event(
-        &mut self,
-        commit_head: QueueCommitHead,
-    ) -> Result<(), EngineError> {
-        if let Some(existing) = &self.pending_commit_head {
-            warn!(
-                target = "engine",
-                pending_iteration = existing.selected_iteration_id,
-                new_iteration = commit_head.selected_iteration_id,
-                "Overwriting pending commitHead"
-            );
-        }
-
-        self.pending_commit_head = Some(commit_head);
-        Ok(())
-    }
-
-    #[instrument(
-        name = "engine::process_new_iteration_event",
-        skip_all,
-        fields(iteration_id = new_iteration.iteration_id),
-        level = "info"
-    )]
-    fn process_new_iteration_event(
-        &mut self,
-        new_iteration: QueueNewIteration,
-        processed_blocks: &mut u64,
-        block_processing_time: &mut Instant,
-    ) -> Result<(), EngineError> {
-        let commit_head = self
-            .pending_commit_head
-            .take()
-            .ok_or(EngineError::MissingCommitHead)?;
-
-        if commit_head.selected_iteration_id != new_iteration.iteration_id {
-            warn!(
-                target = "engine",
-                commit_iteration = commit_head.selected_iteration_id,
-                new_iteration = new_iteration.iteration_id,
-                "commitHead iteration mismatch"
-            );
-            return Err(EngineError::CommitIterationMismatch {
-                commit_iteration: commit_head.selected_iteration_id,
-                new_iteration: new_iteration.iteration_id,
-            });
-        }
-
-        let queue_block_env = QueueBlockEnv {
-            block_env: new_iteration.block_env,
-            last_tx_hash: commit_head.last_tx_hash,
-            n_transactions: commit_head.n_transactions,
-            selected_iteration_id: Some(commit_head.selected_iteration_id),
-        };
-
-        self.process_block_event(queue_block_env, processed_blocks, block_processing_time)
-    }
-
     #[instrument(name = "engine::process_block_event", skip_all, level = "info")]
     fn process_block_event(
         &mut self,
@@ -972,9 +887,6 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         processed_blocks: &mut u64,
         block_processing_time: &mut Instant,
     ) -> Result<(), EngineError> {
-        // Legacy block events take precedence; clear any pending commit head metadata.
-        self.pending_commit_head = None;
-
         let block_env = &queue_block_env.block_env;
 
         let block_execution_id =
