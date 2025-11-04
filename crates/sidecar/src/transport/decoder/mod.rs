@@ -289,11 +289,9 @@ fn parse_block_env_payload(params: Value) -> Result<BlockEnvPayload, HttpDecoder
         ));
     };
 
-    let block_env_value = map
-        .get("block_env")
-        .ok_or_else(|| {
-            HttpDecoderError::InvalidTransaction("missing field: block_env".to_string())
-        })?;
+    let block_env_value = map.get("block_env").ok_or_else(|| {
+        HttpDecoderError::InvalidTransaction("missing field: block_env".to_string())
+    })?;
 
     let block_env = serde_json::from_value::<BlockEnv>(block_env_value.clone())
         .map_err(|e| map_block_env_error(&e))?;
@@ -302,10 +300,7 @@ fn parse_block_env_payload(params: Value) -> Result<BlockEnvPayload, HttpDecoder
         Some(Value::Null) | None => None,
         Some(Value::String(s)) if s.is_empty() => None,
         Some(Value::String(s)) => {
-            Some(
-                TxHash::from_str(s)
-                    .map_err(|_| HttpDecoderError::InvalidLastTxHash(s.to_string()))?,
-            )
+            Some(TxHash::from_str(s).map_err(|_| HttpDecoderError::InvalidLastTxHash(s.clone()))?)
         }
         Some(other) => {
             return Err(HttpDecoderError::InvalidLastTxHash(other.to_string()));
@@ -314,24 +309,25 @@ fn parse_block_env_payload(params: Value) -> Result<BlockEnvPayload, HttpDecoder
 
     let n_transactions = match map.get("n_transactions") {
         Some(Value::Null) | None => 0,
-        Some(v) => serde_json::from_value::<u64>(v.clone())
-            .map_err(|e| HttpDecoderError::InvalidNTransactions(e.to_string()))?,
+        Some(v) => {
+            serde_json::from_value::<u64>(v.clone())
+                .map_err(|e| HttpDecoderError::InvalidNTransactions(e.to_string()))?
+        }
     };
 
     let selected_iteration_id = match map.get("selected_iteration_id") {
         Some(Value::Null) | None => None,
-        Some(v) => Some(serde_json::from_value::<u64>(v.clone()).map_err(|e| {
-            HttpDecoderError::InvalidTransaction(format!(
-                "invalid selected_iteration_id: {e}"
-            ))
-        })?),
+        Some(v) => {
+            Some(serde_json::from_value::<u64>(v.clone()).map_err(|e| {
+                HttpDecoderError::InvalidTransaction(format!("invalid selected_iteration_id: {e}"))
+            })?)
+        }
     };
 
     match n_transactions {
         0 if last_tx_hash.is_some() => {
             return Err(HttpDecoderError::BlockEnvValidation(
-                "last_tx_hash must be null, empty, or missing when n_transactions is 0"
-                    .to_string(),
+                "last_tx_hash must be null, empty, or missing when n_transactions is 0".to_string(),
             ));
         }
         n if n > 0 && last_tx_hash.is_none() => {

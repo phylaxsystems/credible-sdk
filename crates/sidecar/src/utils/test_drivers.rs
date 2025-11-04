@@ -399,8 +399,12 @@ impl TestTransport for LocalInstanceMockDriver {
         self.override_n_transactions = None;
         self.override_last_tx_hash = None;
 
-        let commit_head =
-            CommitHead::new(last_tx_hash, n_transactions, block_number, selected_iteration_id);
+        let commit_head = CommitHead::new(
+            last_tx_hash,
+            n_transactions,
+            block_number,
+            selected_iteration_id,
+        );
         let new_iteration = NewIteration::new(selected_iteration_id, block_env);
 
         self.mock_sender

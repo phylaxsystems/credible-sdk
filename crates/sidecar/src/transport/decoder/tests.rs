@@ -1,13 +1,15 @@
 #![allow(clippy::match_wildcard_for_single_variants)]
-use crate::engine::queue::NewIteration;
-use crate::transport::{
-    decoder::{
-        Decoder,
-        HttpDecoderError,
-        HttpTransactionDecoder,
-        TxQueueContents,
+use crate::{
+    engine::queue::NewIteration,
+    transport::{
+        decoder::{
+            Decoder,
+            HttpDecoderError,
+            HttpTransactionDecoder,
+            TxQueueContents,
+        },
+        http::server::JsonRpcRequest,
     },
-    http::server::JsonRpcRequest,
 };
 use alloy::primitives::{
     Address,
@@ -877,7 +879,11 @@ fn test_block_env_deserialization_valid() {
     });
 
     let result = decode_block_env_request(params).expect("block env decoding should succeed");
-    assert_eq!(result.len(), 2, "Expected commit head + new iteration events");
+    assert_eq!(
+        result.len(),
+        2,
+        "Expected commit head + new iteration events"
+    );
 
     let commit_head = match &result[0] {
         TxQueueContents::CommitHead(commit_head, _) => commit_head,
@@ -889,10 +895,8 @@ fn test_block_env_deserialization_valid() {
     assert_eq!(
         commit_head.last_tx_hash,
         Some(
-            B256::from_str(
-                "0x2222222222222222222222222222222222222222222222222222222222222222"
-            )
-            .unwrap()
+            B256::from_str("0x2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap()
         )
     );
 
@@ -1167,7 +1171,10 @@ fn test_block_env_validation_rules() {
 
     for (name, request) in test_cases {
         let result = decode_block_env_request(request);
-        assert!(matches!(result, Err(HttpDecoderError::BlockEnvValidation(_))), "Should fail validation for: {name}");
+        assert!(
+            matches!(result, Err(HttpDecoderError::BlockEnvValidation(_))),
+            "Should fail validation for: {name}"
+        );
     }
 }
 

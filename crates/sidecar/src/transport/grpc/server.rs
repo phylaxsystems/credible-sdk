@@ -190,19 +190,14 @@ fn convert_pb_commit_head(commit_head: &PbCommitHead) -> Result<CommitHead, Stat
     ))
 }
 
-fn convert_pb_new_iteration(
-    mut new_iteration: PbNewIteration,
-) -> Result<NewIteration, Status> {
+fn convert_pb_new_iteration(mut new_iteration: PbNewIteration) -> Result<NewIteration, Status> {
     let block_env_pb = new_iteration
         .block_env
         .take()
         .ok_or_else(|| Status::invalid_argument("block_env is required"))?;
     let block_env = convert_pb_block_env(&block_env_pb)?;
 
-    Ok(NewIteration::new(
-        new_iteration.iteration_id,
-        block_env,
-    ))
+    Ok(NewIteration::new(new_iteration.iteration_id, block_env))
 }
 
 #[tonic::async_trait]
@@ -235,8 +230,12 @@ impl SidecarTransport for GrpcService {
             selected_iteration_id: _,
         } = legacy_block;
 
-        let commit_head =
-            CommitHead::new(last_tx_hash, n_transactions, block_env.number, selected_iteration_id);
+        let commit_head = CommitHead::new(
+            last_tx_hash,
+            n_transactions,
+            block_env.number,
+            selected_iteration_id,
+        );
         let new_iteration = NewIteration::new(selected_iteration_id, block_env);
 
         self.send_queue_event(

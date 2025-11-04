@@ -1,3 +1,7 @@
+use crate::engine::queue::{
+    CommitHead,
+    NewIteration,
+};
 use revm::primitives::alloy_primitives::TxHash;
 use serde::{
     Deserialize,
@@ -253,7 +257,3 @@ mod tests {
         );
     }
 }
-use crate::engine::queue::{
-    CommitHead,
-    NewIteration,
-};

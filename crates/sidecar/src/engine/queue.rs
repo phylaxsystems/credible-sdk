@@ -12,14 +12,14 @@
 //! ## Channel contents
 //!
 //! Channel contents can either be:
-//! - CommitHead events,
-//! - New iteration events,
+//! - `CommitHead` events,
+//! - `NewIteration` events,
 //! - New transactions,
 //! - Reorg events.
 //!
-//! CommitHead events advance the canonical head to a finalized iteration selected by the driver.
-//! New iteration events contain `BlockEnv`s for the next block the sidecar should build on top of.
-//! At least one new iteration event is needed for the sidecar to accept transactions.
+//! `CommitHead` events advance the canonical head to a finalized iteration selected by the driver.
+//! `NewIteration` events contain `BlockEnv`s for the next block the sidecar should build on top of.
+//! At least one `NewIteration` event is needed for the sidecar to accept transactions.
 //!
 //! New transaction events are transactions that should be executed and included for the
 //! current `BlockEnv`.

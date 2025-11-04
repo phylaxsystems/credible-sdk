@@ -477,7 +477,7 @@ async fn process_request(
                     ));
                 }
             }
-            _ => {}
+            TxQueueContents::Reorg(_, _) => {}
         }
 
         trace_tx_queue_contents(&state.block_context, &queue_tx);
