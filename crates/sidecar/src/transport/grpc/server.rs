@@ -27,7 +27,7 @@ use crate::{
     engine::{
         TransactionResult,
         queue::{
-            QueueBlockEnv,
+            QueueIteration,
             QueueTransaction,
             TransactionQueueSender,
             TxQueueContents,
@@ -162,7 +162,7 @@ impl SidecarTransport for GrpcService {
 
         // Decode into proper structs instead of manually merging JSON
         let block = decode_block_env_envelope(&payload)?;
-        let event = TxQueueContents::Block(block, span);
+        let event = TxQueueContents::Iteration(block, span);
 
         self.transactions_results.add_accepted_tx(&event);
         self.tx_sender
@@ -646,7 +646,7 @@ fn parse_authorization_list(
 }
 
 /// Decode `BlockEnvEnvelope` into a `QueueBlockEnv`.
-fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueBlockEnv, Status> {
+fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueIteration, Status> {
     let block_env_pb = payload
         .block_env
         .as_ref()
@@ -677,11 +677,9 @@ fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueBlockEnv
         ));
     }
 
-    Ok(QueueBlockEnv {
+    Ok(QueueIteration {
         block_env,
-        last_tx_hash,
-        n_transactions: payload.n_transactions,
-        selected_iteration_id: payload.selected_iteration_id,
+        iteration_id: payload.selected_iteration_id.unwrap_or_default(),
     })
 }
 

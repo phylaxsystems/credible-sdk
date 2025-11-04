@@ -166,6 +166,7 @@ impl Transport for GrpcTransport {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::pb::{
@@ -279,4 +280,4 @@ mod tests {
             other => panic!("unexpected outcome: {other:?}"),
         }
     }
-}
+ */

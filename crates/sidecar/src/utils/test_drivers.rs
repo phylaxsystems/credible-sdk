@@ -12,7 +12,7 @@ use crate::{
         sequencer::Sequencer,
     },
     engine::queue::{
-        QueueBlockEnv,
+        QueueIteration,
         QueueTransaction,
         TransactionQueueSender,
         TxQueueContents,
@@ -389,15 +389,13 @@ impl TestTransport for LocalInstanceMockDriver {
     ) -> Result<(), String> {
         info!(target: "test_transport", "LocalInstance sending block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
         let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
-        let block_env = QueueBlockEnv {
+        let block_env = QueueIteration {
             block_env: BlockEnv {
                 number: block_number,
                 gas_limit: 50_000_000, // Set higher gas limit for assertions
                 ..Default::default()
             },
-            last_tx_hash,
-            n_transactions,
-            selected_iteration_id: Some(selected_iteration_id),
+            iteration_id: selected_iteration_id,
         };
 
         self.block_tx_hashes_by_iteration.clear();
@@ -406,7 +404,7 @@ impl TestTransport for LocalInstanceMockDriver {
 
         let result = self
             .mock_sender
-            .send(TxQueueContents::Block(block_env, Span::current()))
+            .send(TxQueueContents::Iteration(block_env, Span::current()))
             .map_err(|e| format!("Failed to send block: {e}"));
         match &result {
             Ok(()) => info!(target: "test_transport", "Successfully sent block to mock_sender"),

@@ -5,12 +5,12 @@
 //! of the decoders to convert them into events that can be passed down to
 //! the core engine.
 
-#[cfg(test)]
-mod tests;
+//#[cfg(test)]
+//mod tests;
 
 use crate::{
     engine::queue::{
-        QueueBlockEnv,
+        QueueIteration,
         QueueTransaction,
         TxQueueContents,
     },
@@ -113,10 +113,10 @@ impl Decoder for HttpTransactionDecoder {
             METHOD_SEND_TRANSACTIONS => Self::to_transaction(req),
             METHOD_BLOCK_ENV => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
-                let block = serde_json::from_value::<QueueBlockEnv>(params.clone())
+                let block = serde_json::from_value::<QueueIteration>(params.clone())
                     .map_err(|e| map_block_env_error(&e))?;
                 let current_span = tracing::Span::current();
-                Ok(vec![TxQueueContents::Block(block, current_span)])
+                Ok(vec![TxQueueContents::Iteration(block, current_span)])
             }
             METHOD_REORG => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;

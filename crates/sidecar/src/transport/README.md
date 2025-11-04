@@ -1,6 +1,7 @@
 # Transport
 
-The transport module handles communication between the driver (external system) and the core engine. It provides an abstraction layer that supports multiple transport mechanisms while maintaining a consistent interface.
+The transport module handles communication between the driver (external system) and the core engine. It provides an
+abstraction layer that supports multiple transport mechanisms while maintaining a consistent interface.
 
 ## Architecture
 
@@ -18,13 +19,15 @@ The transport system consists of:
 
 The HTTP transport provides a JSON-RPC 2.0 interface running on port 8080 by default.
 
-**[See HTTP Transport Documentation](http/README.md)** for detailed API reference, transaction examples, and implementation details.
+**[See HTTP Transport Documentation](http/README.md)** for detailed API reference, transaction examples, and
+implementation details.
 
 ### gRPC Transport
 
 The gRPC transport provides a high-performance binary protocol for communication.
 
-**[See gRPC Transport Documentation](grpc/README.md)** (currently under active development) for detailed API reference and implementation details.
+**[See gRPC Transport Documentation](grpc/README.md)** (currently under active development) for detailed API reference
+and implementation details.
 
 ## Choosing a Transport
 
@@ -65,11 +68,16 @@ Every transaction in the sidecar is uniquely identified by a `TxExecutionId`:
 - `iteration_id`: An arbitrary identifier for this block creation attempt (chosen by the sequencer, never 0)
 - `tx_hash`: The transaction hash (32-byte hex string)
 
-**Purpose**: TxExecutionId allows tracking transactions across multiple block creation attempts by the sequencer. When a sequencer creates multiple candidate blocks (iterations), only one will ultimately be selected. The `iteration_id` differentiates between transactions in different candidate blocks for the same block number.
+**Purpose**: TxExecutionId allows tracking transactions across multiple block creation attempts by the sequencer. When a
+sequencer creates multiple candidate blocks (iterations), only one will ultimately be selected. The `iteration_id`
+differentiates between transactions in different candidate blocks for the same block number.
 
-**Note**: The `iteration_id` is arbitrarily chosen by the sequencer and should not be assumed to be sequential. The sequencer will never use 0 as an iteration_id.
+**Note**: The `iteration_id` is arbitrarily chosen by the sequencer and should not be assumed to be sequential. The
+sequencer will never use 0 as an iteration_id.
 
-**Example**: If a sequencer creates three candidate blocks for block 100, they might use `iteration_id` values like 42, 1001, and 2050. The sidecar can validate transactions from all three attempts, even though only one block will be finalized.
+**Example**: If a sequencer creates three candidate blocks for block 100, they might use `iteration_id` values like 42,
+1001, and 2050. The sidecar can validate transactions from all three attempts, even though only one block will be
+finalized.
 
 ### Transaction Structure
 
@@ -81,6 +89,7 @@ When sending transactions via `sendTransactions`, each transaction consists of:
 ## Long-Polling Semantics
 
 The `getTransactions` and `getTransaction` methods use long-polling:
+
 - Requests will block until results are available
 - Configure appropriate timeouts on your client
 - For transactions not yet received, the response includes them in the `not_found` array
@@ -89,7 +98,8 @@ The `getTransactions` and `getTransaction` methods use long-polling:
 
 ### Decoder
 
-The decoder module (`decoder.rs`) is shared across transports and handles conversion from transport-specific formats to internal queue messages. It supports:
+The decoder module (`decoder.rs`) is shared across transports and handles conversion from transport-specific formats to
+internal queue messages. It supports:
 
 - Transaction decoding with full TxEnv support
 - Block environment decoding
@@ -100,21 +110,23 @@ The decoder module (`decoder.rs`) is shared across transports and handles conver
 
 All transports communicate with the core engine through a unified message queue:
 
-```rust
-use sidecar::engine::queue::{QueueTransaction, QueueBlockEnv};
-use alloy::primitives::B256;
+```rust, ignore
+use sidecar::engine::queue::{QueueCommitHead, QueueIteration, QueueTransaction, TxExecutionId};
 use tracing::Span;
 
+#[derive(Debug)]
 pub enum TxQueueContents {
-    Tx(QueueTransaction, Span),
-    Block(QueueBlockEnv, Span),
-    Reorg(B256, Span),
+    CommitHead(QueueCommitHead, tracing::Span),
+    Iteration(QueueIteration, tracing::Span),
+    Tx(QueueTransaction, tracing::Span),
+    Reorg(TxExecutionId, tracing::Span),
 }
 ```
 
 ## Transaction Types
 
-The sidecar supports all Ethereum transaction types through the `TxEnv` structure. This structure is used consistently across all transport protocols (HTTP JSON-RPC, gRPC, etc.).
+The sidecar supports all Ethereum transaction types through the `TxEnv` structure. This structure is used consistently
+across all transport protocols (HTTP JSON-RPC, gRPC, etc.).
 
 ### Supported Types
 
@@ -141,11 +153,13 @@ The sidecar supports all Ethereum transaction types through the `TxEnv` structur
 - `max_fee_per_blob_gas`: Maximum fee per blob gas (type 3 only)
 - `authorization_list`: List of authorizations (type 4 only)
 
-**Best Practice**: Omit fields that are not relevant for the transaction type you're using. Don't include empty arrays, null values, or zero values for fields that don't apply to your transaction type.
+**Best Practice**: Omit fields that are not relevant for the transaction type you're using. Don't include empty arrays,
+null values, or zero values for fields that don't apply to your transaction type.
 
 ### Transaction Examples
 
-These examples show the `TxEnv` structure for each transaction type. The exact wrapper format depends on your transport protocol (JSON-RPC for HTTP, protobuf for gRPC).
+These examples show the `TxEnv` structure for each transaction type. The exact wrapper format depends on your transport
+protocol (JSON-RPC for HTTP, protobuf for gRPC).
 
 #### Type 0: Legacy Transaction
 
@@ -173,9 +187,11 @@ Contract deployment:
   "caller": "0x742d35Cc6634C0532925a3b844B9c7e07e3E23eF4",
   "gas_limit": 1000000,
   "gas_price": 20000000000,
-  "kind": null, // null or omitted for contract creation
+  "kind": null,
+  // null or omitted for contract creation
   "value": "0",
-  "data": "0x608060405234801561001057600080fd5b50...", // Contract bytecode
+  "data": "0x608060405234801561001057600080fd5b50...",
+  // Contract bytecode
   "nonce": 43,
   "chain_id": 1
 }
@@ -191,7 +207,8 @@ Contract deployment:
   "gas_price": 30000000000,
   "kind": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
   "value": "0",
-  "data": "0xa9059cbb000000...", // transfer(address,uint256)
+  "data": "0xa9059cbb000000...",
+  // transfer(address,uint256)
   "nonce": 44,
   "chain_id": 1,
   "access_list": [
@@ -215,13 +232,15 @@ Simple transfer:
   "tx_type": 2,
   "caller": "0x742d35Cc6634C0532925a3b844B9c7e07e3E23eF4",
   "gas_limit": 21000,
-  "gas_price": 50000000000, // max_fee_per_gas
+  "gas_price": 50000000000,
+  // max_fee_per_gas
   "kind": "0x8ba1f109551bD432803012645Ac136c9Ca2A1",
   "value": "2000000000000000000",
   "data": "0x",
   "nonce": 45,
   "chain_id": 1,
-  "gas_priority_fee": 2000000000 // max_priority_fee_per_gas
+  "gas_priority_fee": 2000000000
+  // max_priority_fee_per_gas
 }
 ```
 
@@ -258,7 +277,8 @@ With access list (Type 2 supports all Type 1 features):
   "caller": "0x742d35Cc6634C0532925a3b844B9c7e07e3E23eF4",
   "gas_limit": 210000,
   "gas_price": 50000000000,
-  "kind": "0x8ba1f109551bD432803012645Ac136c9Ca2A1", // Must be a call
+  "kind": "0x8ba1f109551bD432803012645Ac136c9Ca2A1",
+  // Must be a call
   "value": "0",
   "data": "0x",
   "nonce": 46,
@@ -280,7 +300,8 @@ With access list (Type 2 supports all Type 1 features):
   "caller": "0x742d35Cc6634C0532925a3b844B9c7e07e3E23eF4",
   "gas_limit": 150000,
   "gas_price": 50000000000,
-  "kind": "0x8ba1f109551bD432803012645Ac136c9Ca2A1", // Must be a call
+  "kind": "0x8ba1f109551bD432803012645Ac136c9Ca2A1",
+  // Must be a call
   "value": "0",
   "data": "0x",
   "nonce": 47,
@@ -319,7 +340,8 @@ If `tx_type` is omitted, the system automatically derives it based on fields pre
 
 ## Configuration
 
-Transport configuration can be set via command-line arguments or environment variables. See [`src/args/mod.rs`](../args/mod.rs) for the complete list of configuration options.
+Transport configuration can be set via command-line arguments or environment variables. See [
+`src/args/mod.rs`](../args/mod.rs) for the complete list of configuration options.
 
 ### Transport Protocol Selection
 
@@ -331,9 +353,9 @@ Transport configuration can be set via command-line arguments or environment var
 ### HTTP Transport Configuration
 
 - **Bind Address**:
-  - **CLI Flag**: `--transport.bind-addr <address:port>`
-  - **Environment Variable**: `TRANSPORT_BIND_ADDR`
-  - **Default**: `0.0.0.0:50051`
+    - **CLI Flag**: `--transport.bind-addr <address:port>`
+    - **Environment Variable**: `TRANSPORT_BIND_ADDR`
+    - **Default**: `0.0.0.0:50051`
 
 ### gRPC Transport Configuration
 
