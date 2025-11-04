@@ -1022,7 +1022,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 block_number = tx_execution_id.block_number,
                 iteration_id = tx_execution_id.iteration_id,
                 caller = %tx_env.caller,
-                "Received transaction without first receiving a BlockEnv"
+                "Received transaction without first receiving a BlockEnv. An iteration for the id must be received first"
             );
             return Err(EngineError::TransactionError);
         };
@@ -1521,6 +1521,7 @@ mod tests {
     async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {
         // Send an empty block to verify we can advance the chain with empty blocks
         instance.new_block().await.unwrap();
+        instance.new_instance(1).await.unwrap();
 
         // Send and verify a reverting CREATE transaction
         let tx_hash = instance.send_reverting_create_tx().await.unwrap();

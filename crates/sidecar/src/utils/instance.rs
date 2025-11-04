@@ -468,6 +468,12 @@ impl<T: TestTransport> LocalInstance<T> {
             )
             .await?;
 
+        let next_block_number = block_number + 1;
+        let block_env = Self::default_block_env(next_block_number);
+        self.transport
+            .new_instance(self.iteration_id, block_env)
+            .await?;
+
         // TODO: commit tx numbers to this map!
         self.iteration_tx_map.clear();
         Ok(())
@@ -508,12 +514,14 @@ impl<T: TestTransport> LocalInstance<T> {
     ///
     /// Generates a default `BlockEnv` matching our other helpers so callers only
     /// need to provide the iteration identifier.
+    ///
+    /// Subsequent transactions will use the instnce id set here.
     pub async fn new_instance(&mut self, iteration_id: u64) -> Result<(), String> {
         if self.block_number == 0 {
             return Err("new_instance requires at least one block to have been sent".to_string());
         }
 
-        let current_block_number = self.block_number - 1;
+        let current_block_number = self.block_number;
         let block_env = Self::default_block_env(current_block_number);
 
         self.iteration_id = iteration_id;
@@ -610,10 +618,6 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Send a reverting CREATE transaction using the default account
     pub async fn send_reverting_create_tx(&mut self) -> Result<TxExecutionId, String> {
-        // Ensure we have a block
-        self.send_block(self.block_number).await?;
-        self.block_number += 1;
-
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
 
