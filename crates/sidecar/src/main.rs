@@ -105,21 +105,16 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         let mut sources: Vec<Arc<dyn Source>> = vec![];
-        let use_debug_code_by_hash = config.state.use_debug_code_by_hash;
         if let Some(sequencer_url) = &config.state.sequencer_url
-            && let Ok(sequencer) = Sequencer::try_new(sequencer_url, use_debug_code_by_hash).await
+            && let Ok(sequencer) = Sequencer::try_new(sequencer_url).await
         {
             sources.push(Arc::new(sequencer));
         }
         if let (Some(besu_client_ws_url), Some(besu_client_http_url)) = (
             &config.state.besu_client_ws_url,
             &config.state.besu_client_http_url,
-        ) && let Ok(besu_client) = BesuClient::try_build(
-            besu_client_ws_url.as_str(),
-            besu_client_http_url.as_str(),
-            use_debug_code_by_hash,
-        )
-        .await
+        ) && let Ok(besu_client) =
+            BesuClient::try_build(besu_client_ws_url.as_str(), besu_client_http_url.as_str()).await
         {
             sources.push(besu_client);
         }

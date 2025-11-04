@@ -1532,7 +1532,7 @@ mod tests {
 
         // Bad response for Besu client
         instance.besu_client_http_mock.mock_rpc_error(
-            "eth_getProof",
+            "eth_getBalance",
             -32000,               // Error code
             "Insufficient funds", // Error message
         );
@@ -1577,14 +1577,14 @@ mod tests {
 
         // Bad response for Besu client
         instance.besu_client_http_mock.mock_rpc_error(
-            "eth_getProof",
+            "eth_getBalance",
             -32000,               // Error code
             "Insufficient funds", // Error message
         );
 
         // Bad response for sequencer
         instance.sequencer_http_mock.mock_rpc_error(
-            "eth_getProof",
+            "eth_getBalance",
             -32000,               // Error code
             "Insufficient funds", // Error message
         );
