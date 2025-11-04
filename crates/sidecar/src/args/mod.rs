@@ -140,10 +140,6 @@ pub struct TransportConfig {
     pub bind_addr: String,
 }
 
-fn default_use_debug_code_by_hash() -> bool {
-    false
-}
-
 /// State configuration from file
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StateConfig {
@@ -166,9 +162,6 @@ pub struct StateConfig {
     pub sources_sync_timeout_ms: u64,
     /// Period (ms) the engine will check if the state sources are synced.
     pub sources_monitoring_period_ms: u64,
-    /// Whether to use the `debug_codeByHash` RPC method when fetching bytecode.
-    #[serde(default = "default_use_debug_code_by_hash")]
-    pub use_debug_code_by_hash: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -220,8 +213,7 @@ mod tests {
     "redis_depth": 100,
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
-    "sources_monitoring_period_ms": 1000,
-    "use_debug_code_by_hash": false
+    "sources_monitoring_period_ms": 1000
   }
 }"#
         .to_string()
@@ -280,7 +272,6 @@ mod tests {
         assert_eq!(config.state.minimum_state_diff, 10);
         assert_eq!(config.state.sources_sync_timeout_ms, 30000);
         assert_eq!(config.state.sources_monitoring_period_ms, 1000);
-        assert!(!config.state.use_debug_code_by_hash);
     }
 
     #[test]

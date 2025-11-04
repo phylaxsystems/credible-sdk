@@ -26,12 +26,9 @@ pub struct Sequencer {
 }
 
 impl Sequencer {
-    pub async fn try_new(
-        rpc_url: &str,
-        use_debug_code_by_hash: bool,
-    ) -> Result<Self, JsonRpcDbError> {
+    pub async fn try_new(rpc_url: &str) -> Result<Self, JsonRpcDbError> {
         Ok(Sequencer {
-            json_rpc_db: JsonRpcDb::try_new_with_rpc_url(rpc_url, use_debug_code_by_hash).await?,
+            json_rpc_db: JsonRpcDb::try_new_with_rpc_url(rpc_url).await?,
         })
     }
 }

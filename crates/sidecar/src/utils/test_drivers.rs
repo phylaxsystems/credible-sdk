@@ -201,14 +201,13 @@ impl CommonSetup {
             .await
             .expect("Failed to create besu client mock");
         let mock_sequencer_db: Arc<dyn Source> = Arc::new(
-            Sequencer::try_new(&sequencer_http_mock.http_url(), false)
+            Sequencer::try_new(&sequencer_http_mock.http_url())
                 .await
                 .expect("Failed to create sequencer mock"),
         );
         let mock_besu_client_db: Arc<dyn Source> = BesuClient::try_build(
             besu_client_http_mock.ws_url(),
             besu_client_http_mock.http_url(),
-            false,
         )
         .await
         .expect("Failed to create besu client mock");
