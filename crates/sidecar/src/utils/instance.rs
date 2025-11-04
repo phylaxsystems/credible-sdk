@@ -1103,14 +1103,15 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     fn default_block_env(block_number: u64) -> BlockEnv {
-        let mut block_env = BlockEnv::default();
-        block_env.number = block_number;
-        block_env.gas_limit = 50_000_000;
-        block_env.blob_excess_gas_and_price = Some(BlobExcessGasAndPrice {
-            excess_blob_gas: 0,
-            blob_gasprice: 0,
-        });
-        block_env
+        BlockEnv {
+            number: block_number,
+            gas_limit: 50_000_000,
+            blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
+                excess_blob_gas: 0,
+                blob_gasprice: 0,
+            }),
+            ..BlockEnv::default()
+        }
     }
 }
 

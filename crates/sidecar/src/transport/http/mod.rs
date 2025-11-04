@@ -203,7 +203,6 @@ impl Transport for HttpTransport {
         self.shutdown_token.cancel();
     }
 }
-
 /*
 #[cfg(test)]
 mod tests {
@@ -488,4 +487,4 @@ mod tests {
         Err(last_error)
     }
 }
- */
+*/

@@ -165,7 +165,6 @@ impl Transport for GrpcTransport {
         self.shutdown_token.cancel();
     }
 }
-
 /*
 #[cfg(test)]
 mod tests {
@@ -280,4 +279,5 @@ mod tests {
             other => panic!("unexpected outcome: {other:?}"),
         }
     }
- */
+}
+*/
