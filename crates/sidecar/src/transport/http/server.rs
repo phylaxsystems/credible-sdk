@@ -456,15 +456,12 @@ async fn process_request(
     };
 
     let request_count = tx_queue_contents.len();
-    let mut saw_block_context = false;
+    let mut saw_new_iteration = false;
     let mut commit_head_seen = state.commit_head_seen.load(Ordering::Acquire);
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
-        let is_block_context_event = matches!(
-            &queue_tx,
-            TxQueueContents::Block(_, _) | TxQueueContents::NewIteration(_, _)
-        );
+        let is_new_iteration_event = matches!(&queue_tx, TxQueueContents::NewIteration(_, _));
         let is_commit_head_event = matches!(&queue_tx, TxQueueContents::CommitHead(_, _));
 
         match &queue_tx {
@@ -511,12 +508,12 @@ async fn process_request(
             state.commit_head_seen.store(true, Ordering::Release);
         }
 
-        if is_block_context_event {
-            saw_block_context = true;
+        if is_new_iteration_event {
+            saw_new_iteration = true;
         }
     }
 
-    if saw_block_context && !state.has_blockenv.load(Ordering::Relaxed) {
+    if saw_new_iteration && !state.has_blockenv.load(Ordering::Relaxed) {
         state.has_blockenv.store(true, Ordering::Release);
     }
 

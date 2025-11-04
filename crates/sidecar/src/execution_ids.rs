@@ -80,6 +80,24 @@ impl TxExecutionId {
     }
 }
 
+impl From<&NewIteration> for BlockExecutionId {
+    fn from(new_iteration: &NewIteration) -> Self {
+        Self {
+            block_number: new_iteration.block_env.number,
+            iteration_id: new_iteration.iteration_id,
+        }
+    }
+}
+
+impl From<&CommitHead> for BlockExecutionId {
+    fn from(commit_head: &CommitHead) -> Self {
+        Self {
+            block_number: commit_head.block_number,
+            iteration_id: commit_head.selected_iteration_id,
+        }
+    }
+}
+
 impl fmt::Display for TxExecutionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TxExecutionId")
@@ -235,3 +253,7 @@ mod tests {
         );
     }
 }
+use crate::engine::queue::{
+    CommitHead,
+    NewIteration,
+};

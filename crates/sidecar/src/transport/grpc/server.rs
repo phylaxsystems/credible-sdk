@@ -31,9 +31,8 @@ use crate::{
     engine::{
         TransactionResult,
         queue::{
-            CommitHead as QueueCommitHead,
-            NewIteration as QueueNewIteration,
-            QueueBlockEnv,
+            CommitHead,
+            NewIteration,
             QueueTransaction,
             TransactionQueueSender,
             TxQueueContents,
@@ -176,14 +175,14 @@ impl GrpcService {
     }
 }
 
-fn convert_pb_commit_head(commit_head: &PbCommitHead) -> Result<QueueCommitHead, Status> {
+fn convert_pb_commit_head(commit_head: &PbCommitHead) -> Result<CommitHead, Status> {
     let selected_iteration_id = commit_head
         .selected_iteration_id
         .ok_or_else(|| Status::invalid_argument("selected_iteration_id is required"))?;
     let last_tx_hash =
         parse_commit_metadata(&commit_head.last_tx_hash, commit_head.n_transactions)?;
 
-    Ok(QueueCommitHead::new(
+    Ok(CommitHead::new(
         last_tx_hash,
         commit_head.n_transactions,
         commit_head.block_number,
@@ -193,14 +192,14 @@ fn convert_pb_commit_head(commit_head: &PbCommitHead) -> Result<QueueCommitHead,
 
 fn convert_pb_new_iteration(
     mut new_iteration: PbNewIteration,
-) -> Result<QueueNewIteration, Status> {
+) -> Result<NewIteration, Status> {
     let block_env_pb = new_iteration
         .block_env
         .take()
         .ok_or_else(|| Status::invalid_argument("block_env is required"))?;
     let block_env = convert_pb_block_env(&block_env_pb)?;
 
-    Ok(QueueNewIteration::new(
+    Ok(NewIteration::new(
         new_iteration.iteration_id,
         block_env,
     ))
@@ -229,13 +228,16 @@ impl SidecarTransport for GrpcService {
             ));
         };
 
-        let commit_head = QueueCommitHead::new(
-            legacy_block.last_tx_hash,
-            legacy_block.n_transactions,
-            legacy_block.block_env.number,
-            selected_iteration_id,
-        );
-        let new_iteration = QueueNewIteration::new(selected_iteration_id, legacy_block.block_env);
+        let BlockEnvelope {
+            block_env,
+            last_tx_hash,
+            n_transactions,
+            selected_iteration_id: _,
+        } = legacy_block;
+
+        let commit_head =
+            CommitHead::new(last_tx_hash, n_transactions, block_env.number, selected_iteration_id);
+        let new_iteration = NewIteration::new(selected_iteration_id, block_env);
 
         self.send_queue_event(
             TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
@@ -815,8 +817,15 @@ fn parse_commit_metadata(
     Ok(parsed_hash)
 }
 
-/// Decode `BlockEnvEnvelope` into a `QueueBlockEnv`.
-fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueBlockEnv, Status> {
+struct BlockEnvelope {
+    block_env: RevmBlockEnv,
+    last_tx_hash: Option<TxHash>,
+    n_transactions: u64,
+    selected_iteration_id: Option<u64>,
+}
+
+/// Decode `BlockEnvEnvelope` into block metadata.
+fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<BlockEnvelope, Status> {
     let block_env_pb = payload
         .block_env
         .as_ref()
@@ -825,7 +834,7 @@ fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueBlockEnv
 
     let last_tx_hash = parse_commit_metadata(&payload.last_tx_hash, payload.n_transactions)?;
 
-    Ok(QueueBlockEnv {
+    Ok(BlockEnvelope {
         block_env,
         last_tx_hash,
         n_transactions: payload.n_transactions,

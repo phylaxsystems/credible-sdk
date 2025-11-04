@@ -111,13 +111,13 @@ internal queue messages. It supports:
 All transports communicate with the core engine through a unified message queue:
 
 ```rust, ignore
-use sidecar::engine::queue::{QueueCommitHead, QueueIteration, QueueTransaction, TxExecutionId};
+use sidecar::engine::queue::{CommitHead, NewIteration, QueueTransaction, TxExecutionId};
 use tracing::Span;
 
 #[derive(Debug)]
 pub enum TxQueueContents {
-    CommitHead(QueueCommitHead, tracing::Span),
-    Iteration(QueueIteration, tracing::Span),
+    CommitHead(CommitHead, tracing::Span),
+    NewIteration(NewIteration, tracing::Span),
     Tx(QueueTransaction, tracing::Span),
     Reorg(TxExecutionId, tracing::Span),
 }

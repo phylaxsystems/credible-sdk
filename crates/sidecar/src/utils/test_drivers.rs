@@ -12,8 +12,8 @@ use crate::{
         sequencer::Sequencer,
     },
     engine::queue::{
+        CommitHead,
         NewIteration,
-        QueueBlockEnv,
         QueueTransaction,
         TransactionQueueSender,
         TxQueueContents,
@@ -389,28 +389,34 @@ impl TestTransport for LocalInstanceMockDriver {
     ) -> Result<(), String> {
         info!(target: "test_transport", "LocalInstance sending block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
         let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
-        let block_env = QueueBlockEnv {
-            block_env: BlockEnv {
-                number: block_number,
-                gas_limit: 50_000_000, // Set higher gas limit for assertions
-                ..Default::default()
-            },
-            last_tx_hash,
-            n_transactions,
-            selected_iteration_id: Some(selected_iteration_id),
+        let block_env = BlockEnv {
+            number: block_number,
+            gas_limit: 50_000_000, // Set higher gas limit for assertions
+            ..Default::default()
         };
 
         self.block_tx_hashes_by_iteration.clear();
         self.override_n_transactions = None;
         self.override_last_tx_hash = None;
 
+        let commit_head =
+            CommitHead::new(last_tx_hash, n_transactions, block_number, selected_iteration_id);
+        let new_iteration = NewIteration::new(selected_iteration_id, block_env);
+
+        self.mock_sender
+            .send(TxQueueContents::CommitHead(commit_head, Span::current()))
+            .map_err(|e| format!("Failed to send commit head: {e}"))?;
+
         let result = self
             .mock_sender
-            .send(TxQueueContents::Block(block_env, Span::current()))
-            .map_err(|e| format!("Failed to send block: {e}"));
+            .send(TxQueueContents::NewIteration(
+                new_iteration,
+                Span::current(),
+            ))
+            .map_err(|e| format!("Failed to send new iteration: {e}"));
         match &result {
-            Ok(()) => info!(target: "test_transport", "Successfully sent block to mock_sender"),
-            Err(e) => error!(target: "test_transport", "Failed to send block: {}", e),
+            Ok(()) => info!(target: "test_transport", "Successfully sent iteration to mock_sender"),
+            Err(e) => error!(target: "test_transport", "Failed to send iteration: {}", e),
         }
         result
     }
