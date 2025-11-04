@@ -61,8 +61,8 @@ const CONNECT_TIMEOUT_MS: u64 = 500;
 const TCP_KEEPALIVE_SECS: u64 = 60;
 
 // Transaction retry configuration
-const TX_MAX_RETRIES: u32 = 5;
-const TX_INITIAL_RETRY_DELAY_MS: u64 = 10;
+const EVENT_MAX_RETRIES: u32 = 5;
+const EVENT_INITIAL_RETRY_DELAY_MS: u64 = 10;
 const TX_MAX_RETRY_DELAY_MS: u64 = 250;
 
 /// Wrapper for serializing `TxEnv` with the transaction hash
@@ -209,7 +209,7 @@ impl Listener {
             info!("Sending initial CommitHead for block {initial_commit_block}");
 
             // Send CommitHead with no transactions (we're just marking it as committed)
-            self.send_commit_head(initial_commit_block, None, 0)
+            self.send_commit_head_with_retry(initial_commit_block, None, 0)
                 .await
                 .context("failed to send initial CommitHead")?;
 
@@ -374,7 +374,7 @@ impl Listener {
 
     /// Process a single block with the flow using sendEvents:
     /// 1. Send `NewIteration` event
-    /// 2. Send all transactions
+    /// 2. Send all transactions (only if `NewIteration` succeeds)
     /// 3. Send `CommitHead` event to finalize the block
     /// 4. Mark block as committed only after all steps succeed
     /// 5. Optionally query and compare transaction results
@@ -415,59 +415,70 @@ impl Listener {
             Some(format!("{:#x}", transactions.last().unwrap().inner.hash()))
         };
 
-        // STEP 1: Send NewIteration event (contains block_env)
+        // STEP 1: Send NewIteration event (contains block_env) with retry
         info!("Step 1/3: Sending NewIteration event for block {block_number}");
-        if let Err(e) = self.send_new_iteration(block).await {
-            warn!(
-                error = ?e,
-                "Failed to send NewIteration for block {block_number}, will skip this block",
-            );
-        }
-
-        // STEP 2: Send all transactions for the current block
-        info!(
-            "Step 2/3: Sending {} transactions for block {block_number}",
-            transactions.len()
-        );
-        for (index, tx) in transactions.iter().enumerate() {
-            let tx_hash = *tx.inner.hash();
-            tx_hashes.push(tx_hash);
-
-            // Retry transaction sending with exponential backoff
-            if let Err(e) = self
-                .send_transaction_with_retry(tx, index as u64, block_number)
-                .await
-            {
+        let new_iteration_succeeded = match self.send_new_iteration_with_retry(block).await {
+            Ok(()) => {
+                info!("Successfully sent NewIteration for block {block_number}");
+                true
+            }
+            Err(e) => {
                 warn!(
                     error = ?e,
-                    "Failed to send transaction {index} in block {block_number} after all retries",
+                    "Failed to send NewIteration for block {block_number} after all retries, will skip transactions",
                 );
-                // Transaction failed after all retries - still continue to commit head
-                // The sidecar should handle missing transactions gracefully
+                false
             }
-        }
+        };
 
-        if !transactions.is_empty() {
-            debug!(
-                "Successfully sent {} transactions for block {block_number}",
+        // STEP 2: Send all transactions for the current block (only if NewIteration succeeded)
+        if new_iteration_succeeded {
+            info!(
+                "Step 2/3: Sending {} transactions for block {block_number}",
                 transactions.len()
             );
+            for (index, tx) in transactions.iter().enumerate() {
+                let tx_hash = *tx.inner.hash();
+                tx_hashes.push(tx_hash);
+
+                // Retry transaction sending with exponential backoff
+                if let Err(e) = self
+                    .send_transaction_with_retry(tx, index as u64, block_number)
+                    .await
+                {
+                    warn!(
+                        error = ?e,
+                        "Failed to send transaction {index} in block {block_number} after all retries",
+                    );
+                    // Transaction failed after all retries - still continue to commit head
+                    // The sidecar should handle missing transactions gracefully
+                }
+            }
+
+            if !transactions.is_empty() {
+                debug!(
+                    "Successfully sent {} transactions for block {block_number}",
+                    transactions.len()
+                );
+            }
+        } else {
+            warn!("Skipping transactions for block {block_number} due to NewIteration failure");
         }
 
-        // STEP 3: Send CommitHead event to finalize the block
+        // STEP 3: Send CommitHead event to finalize the block (always attempt, with retry)
         info!("Step 3/3: Sending CommitHead event for block {block_number}");
         if let Err(e) = self
-            .send_commit_head(block_number, last_tx_hash, transactions.len())
+            .send_commit_head_with_retry(block_number, last_tx_hash, transactions.len())
             .await
         {
             warn!(
                 error = ?e,
-                "Failed to send CommitHead for block {block_number}, will skip this block",
+                "Failed to send CommitHead for block {block_number} after all retries, will skip this block",
             );
             return Ok(());
         }
 
-        // STEP 4: Mark block as committed ONLY after all steps succeed
+        // STEP 4: Mark block as committed ONLY after CommitHead succeeds
         self.last_committed_block = Some(block_number);
 
         info!("Successfully committed block {block_number}");
@@ -485,31 +496,27 @@ impl Listener {
         Ok(())
     }
 
-    /// Send a transaction with retry logic and exponential backoff
-    async fn send_transaction_with_retry(
-        &self,
-        tx: &alloy::rpc::types::Transaction,
-        tx_index: u64,
-        block_number: u64,
-    ) -> Result<()> {
-        let mut retry_delay = Duration::from_millis(TX_INITIAL_RETRY_DELAY_MS);
-        let max_delay = Duration::from_millis(TX_MAX_RETRY_DELAY_MS);
+    /// Send `NewIteration` with retry logic and exponential backoff
+    async fn send_new_iteration_with_retry(&self, block: &alloy::rpc::types::Block) -> Result<()> {
+        let mut retry_delay = Duration::from_millis(EVENT_INITIAL_RETRY_DELAY_MS);
+        let max_delay = Duration::from_millis(MAX_RETRY_DELAY_SECS);
+        let block_number = block.header.number;
 
-        for attempt in 0..=TX_MAX_RETRIES {
-            match self.send_transaction(tx, tx_index, block_number).await {
+        for attempt in 0..=EVENT_MAX_RETRIES {
+            match self.send_new_iteration(block).await {
                 Ok(()) => {
                     if attempt > 0 {
                         info!(
-                            "Successfully sent transaction {tx_index} in block {block_number} after {attempt} retries"
+                            "Successfully sent NewIteration for block {block_number} after {attempt} retries"
                         );
                     }
                     return Ok(());
                 }
                 Err(e) => {
-                    if attempt < TX_MAX_RETRIES {
+                    if attempt < EVENT_MAX_RETRIES {
                         warn!(
                             error = ?e,
-                            "Failed to send transaction {tx_index} in block {block_number} (attempt {}/{TX_MAX_RETRIES}), retrying in {}ms",
+                            "Failed to send NewIteration for block {block_number} (attempt {}/{EVENT_MAX_RETRIES}), retrying in {}ms",
                             attempt + 1,
                             retry_delay.as_millis()
                         );
@@ -520,7 +527,102 @@ impl Listener {
                         // Final attempt failed
                         error!(
                             error = ?e,
-                            "Failed to send transaction {tx_index} in block {block_number} after {TX_MAX_RETRIES} retries, giving up"
+                            "Failed to send NewIteration for block {block_number} after {EVENT_MAX_RETRIES} retries, giving up"
+                        );
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send `CommitHead` with retry logic and exponential backoff
+    async fn send_commit_head_with_retry(
+        &self,
+        block_number: u64,
+        last_tx_hash: Option<String>,
+        n_transactions: usize,
+    ) -> Result<()> {
+        let mut retry_delay = Duration::from_millis(EVENT_INITIAL_RETRY_DELAY_MS);
+        let max_delay = Duration::from_millis(MAX_RETRY_DELAY_SECS);
+
+        for attempt in 0..=EVENT_MAX_RETRIES {
+            match self
+                .send_commit_head(block_number, last_tx_hash.clone(), n_transactions)
+                .await
+            {
+                Ok(()) => {
+                    if attempt > 0 {
+                        info!(
+                            "Successfully sent CommitHead for block {block_number} after {attempt} retries"
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempt < EVENT_MAX_RETRIES {
+                        warn!(
+                            error = ?e,
+                            "Failed to send CommitHead for block {block_number} (attempt {}/{EVENT_MAX_RETRIES}), retrying in {}ms",
+                            attempt + 1,
+                            retry_delay.as_millis()
+                        );
+                        time::sleep(retry_delay).await;
+                        // Exponential backoff with cap
+                        retry_delay = std::cmp::min(retry_delay * 2, max_delay);
+                    } else {
+                        // Final attempt failed
+                        error!(
+                            error = ?e,
+                            "Failed to send CommitHead for block {block_number} after {EVENT_MAX_RETRIES} retries, giving up"
+                        );
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send a transaction with retry logic and exponential backoff
+    async fn send_transaction_with_retry(
+        &self,
+        tx: &alloy::rpc::types::Transaction,
+        tx_index: u64,
+        block_number: u64,
+    ) -> Result<()> {
+        let mut retry_delay = Duration::from_millis(EVENT_INITIAL_RETRY_DELAY_MS);
+        let max_delay = Duration::from_millis(TX_MAX_RETRY_DELAY_MS);
+
+        for attempt in 0..=EVENT_MAX_RETRIES {
+            match self.send_transaction(tx, tx_index, block_number).await {
+                Ok(()) => {
+                    if attempt > 0 {
+                        info!(
+                            "Successfully sent transaction {tx_index} in block {block_number} after {attempt} retries"
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempt < EVENT_MAX_RETRIES {
+                        warn!(
+                            error = ?e,
+                            "Failed to send transaction {tx_index} in block {block_number} (attempt {}/{EVENT_MAX_RETRIES}), retrying in {}ms",
+                            attempt + 1,
+                            retry_delay.as_millis()
+                        );
+                        time::sleep(retry_delay).await;
+                        // Exponential backoff with cap
+                        retry_delay = std::cmp::min(retry_delay * 2, max_delay);
+                    } else {
+                        // Final attempt failed
+                        error!(
+                            error = ?e,
+                            "Failed to send transaction {tx_index} in block {block_number} after {EVENT_MAX_RETRIES} retries, giving up"
                         );
                         return Err(e);
                     }
