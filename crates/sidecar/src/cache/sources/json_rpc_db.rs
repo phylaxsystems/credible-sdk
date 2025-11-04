@@ -95,11 +95,13 @@ impl DatabaseRef for JsonRpcDb {
         let provider = self.provider.clone();
         let target_block = self.target_block();
         let future = async move {
-            let proof = provider
+            let Ok(proof) = provider
                 .get_proof(address, vec![])
                 .number(target_block)
                 .await
-                .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
+            else {
+                return Ok(None);
+            };
 
             if proof_indicates_missing_account(&proof) {
                 trace!(
