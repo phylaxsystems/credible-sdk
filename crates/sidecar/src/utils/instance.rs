@@ -83,11 +83,15 @@ enum WaitError {
 pub trait TestTransport: Sized {
     /// Creates a `LocalInstance` with a specific transport
     async fn new() -> Result<LocalInstance<Self>, String>;
-    /// Advance the core engine block by sending a new blockenv to it
+    /// Advance the core engine block by finalizing what iteration was selected,
+    /// and sending a blockenv for the subsequent block.
+    ///
+    /// Should send a `CommitHead` event to the core engine.
     async fn new_block(
         &mut self,
         block_number: u64,
         selected_iteration_id: u64,
+        n_transactions: u64,
     ) -> Result<(), String>;
     /// Send a transaction to the core engine via the transport
     async fn send_transaction(
@@ -95,7 +99,9 @@ pub trait TestTransport: Sized {
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
     ) -> Result<(), String>;
-    /// Send a new iteration event with custom block environment data
+    /// Send a new iteration event with custom block environment data.
+    ///
+    /// Should send a `NewIteration` event to the core engine.
     async fn new_instance(&mut self, iteration_id: u64, block_env: BlockEnv) -> Result<(), String>;
     /// Send a new transaction reorg event. Removes the last executed transaction.
     /// Transaction hash provided as an argument must match the last executed tx.
@@ -151,6 +157,8 @@ pub struct LocalInstance<T: TestTransport> {
     pub local_address: Option<SocketAddr>,
     /// Current iteration ID to be set in the transactions and `blockEnv`
     pub iteration_id: u64,
+    /// Hashmap of number of transactions sent per iteration
+    pub iteration_tx_map: HashMap<u64, u64>,
 }
 
 impl<T: TestTransport> LocalInstance<T> {
@@ -196,6 +204,7 @@ impl<T: TestTransport> LocalInstance<T> {
             sources,
             local_address: local_address.copied(),
             iteration_id: 1,
+            iteration_tx_map: HashMap::new(),
         }
     }
 
@@ -452,8 +461,15 @@ impl<T: TestTransport> LocalInstance<T> {
 
     async fn send_block(&mut self, block_number: u64) -> Result<(), String> {
         self.transport
-            .new_block(self.block_number, self.iteration_id)
+            .new_block(
+                block_number,
+                self.iteration_id,
+                *self.iteration_tx_map.get(&self.iteration_id).unwrap_or(&0)
+            )
             .await?;
+
+        // TODO: commit tx numbers to this map!
+        self.iteration_tx_map.clear();
         Ok(())
     }
 

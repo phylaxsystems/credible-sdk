@@ -94,10 +94,10 @@ pub struct CommitHead {
 impl CommitHead {
     /// Construct a new commit head event.
     pub fn new(
-        last_tx_hash: Option<TxHash>,
-        n_transactions: u64,
         block_number: u64,
         selected_iteration_id: u64,
+        last_tx_hash: Option<TxHash>,
+        n_transactions: u64,
     ) -> Self {
         Self {
             block_number,
