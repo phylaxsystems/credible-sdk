@@ -475,15 +475,15 @@ impl<T: TestTransport> LocalInstance<T> {
             .new_block(
                 block_number,
                 self.iteration_id,
-                *self.iteration_tx_map.get(&self.iteration_id).unwrap_or(&0)
+                *self.iteration_tx_map.get(&self.iteration_id).unwrap_or(&0),
             )
             .await?;
 
         // Update committed nonce snapshot using the iteration we just finalized.
         let selected_iteration_id = self.iteration_id;
-        for ((address, iteration_id), next_nonce) in self.iteration_nonce.iter() {
+        for ((address, iteration_id), &next_nonce) in &self.iteration_nonce {
             if *iteration_id == selected_iteration_id {
-                self.committed_nonce.insert(*address, *next_nonce);
+                self.committed_nonce.insert(*address, next_nonce);
             }
         }
         self.iteration_nonce.clear();
@@ -553,9 +553,7 @@ impl<T: TestTransport> LocalInstance<T> {
         let current_block_number = self.block_number;
         let block_env = Self::default_block_env(current_block_number);
 
-        self.transport
-            .new_instance(iteration_id, block_env)
-            .await?;
+        self.transport.new_instance(iteration_id, block_env).await?;
         self.active_iterations.insert(iteration_id);
         Ok(())
     }

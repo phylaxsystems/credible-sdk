@@ -1017,17 +1017,12 @@ impl TestTransport for LocalInstanceGrpcDriver {
             block_number,
         };
 
-
         let request = crate::transport::grpc::pb::SendEvents {
-            events: vec![
-                crate::transport::grpc::pb::send_events::Event {
-                    event: Some(
-                        crate::transport::grpc::pb::send_events::event::Event::CommitHead(
-                            commit_head,
-                        ),
-                    ),
-                },
-            ],
+            events: vec![crate::transport::grpc::pb::send_events::Event {
+                event: Some(
+                    crate::transport::grpc::pb::send_events::event::Event::CommitHead(commit_head),
+                ),
+            }],
         };
 
         self.block_tx_hashes_by_iteration.clear();

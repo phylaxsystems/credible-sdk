@@ -883,19 +883,17 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         // Checks if the received iteration is sequential to the current head, otherwise we should
         // drop the event.
         let expected_block_number = self.current_head + 1;
-        if expected_block_number != new_iteration.block_env.number {
+        let block_env = &new_iteration.block_env;
+        if expected_block_number != block_env.number {
             warn!(
                 target = "engine",
                 current_head = self.current_head,
-                block_env = ?new_iteration.block_env,
+                block_env = ?block_env,
                 iteration_id = %new_iteration.iteration_id,
                 "Iteration block number does not match block number currently built in engine!"
             );
-
             return Err(EngineError::IterationError);
         }
-
-        let block_env = &new_iteration.block_env;
 
         let block_execution_id = BlockExecutionId::from(new_iteration);
 
@@ -1026,6 +1024,29 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             );
             return Err(EngineError::TransactionError);
         };
+
+        let expected_block_number = self.current_head + 1;
+        let iteration_block_number = current_block_iteration.block_env.number;
+        if iteration_block_number != expected_block_number {
+            warn!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                tx_block = tx_execution_id.block_number,
+                iteration_block = iteration_block_number,
+                expected_block = expected_block_number,
+                "Transaction block number does not match expected block number"
+            );
+            let message = format!(
+                "Transaction targeted block {} but expected block {} based on current head {}",
+                tx_execution_id.block_number, expected_block_number, self.current_head
+            );
+            self.add_transaction_result(
+                tx_execution_id,
+                &TransactionResult::ValidationError(message),
+                None,
+            )?;
+            return Ok(());
+        }
 
         self.verify_state_sources_synced_for_tx().await?;
 
@@ -1255,7 +1276,6 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
@@ -1399,7 +1419,11 @@ mod tests {
             block_env: block_env_mismatched,
             iteration_id: 0,
         };
-        engine.process_iteration(&queue_iteration_mismatch).unwrap();
+        let iteration_result = engine.process_iteration(&queue_iteration_mismatch);
+        assert!(
+            matches!(iteration_result, Err(EngineError::IterationError)),
+            "mismatched block iteration should be rejected"
+        );
 
         // Send transaction for the mismatched block
         let tx_execution_id =
@@ -1411,29 +1435,16 @@ mod tests {
 
         let result = engine.process_transaction_event(queue_transaction).await;
         assert!(
-            result.is_ok(),
-            "mismatched block number should not return an engine error, got {result:?}"
+            matches!(result, Err(EngineError::TransactionError)),
+            "Transaction for rejected iteration should fail, got {result:?}"
         );
 
-        // Verify the validation error was recorded
-        let stored_result = engine
-            .get_transaction_result_cloned(&tx_execution_id)
-            .expect("validation error should be recorded");
-        match stored_result {
-            TransactionResult::ValidationError(message) => {
-                assert!(
-                    message.contains(&mismatched_block_number.to_string()),
-                    "error message should mention the transaction block number: {message}"
-                );
-                assert!(
-                    message.contains(&expected_block_number.to_string()),
-                    "error message should mention the expected block number: {message}"
-                );
-            }
-            TransactionResult::ValidationCompleted { .. } => {
-                panic!("expected validation error, found ValidationCompleted")
-            }
-        }
+        assert!(
+            engine
+                .get_transaction_result_cloned(&tx_execution_id)
+                .is_none(),
+            "Rejected iteration should not record a transaction result"
+        );
     }
 
     #[test]
