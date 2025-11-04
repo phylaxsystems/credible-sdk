@@ -57,7 +57,10 @@ use revm::{
     },
 };
 use std::{
-    collections::HashMap,
+    collections::{
+        HashMap,
+        HashSet,
+    },
     future::Future,
     net::SocketAddr,
     pin::Pin,
@@ -159,6 +162,8 @@ pub struct LocalInstance<T: TestTransport> {
     pub iteration_id: u64,
     /// Hashmap of number of transactions sent per iteration
     pub iteration_tx_map: HashMap<u64, u64>,
+    /// Tracks which iteration IDs have already been seeded with a `BlockEnv` for the current block
+    active_iterations: HashSet<u64>,
 }
 
 impl<T: TestTransport> LocalInstance<T> {
@@ -205,6 +210,7 @@ impl<T: TestTransport> LocalInstance<T> {
             local_address: local_address.copied(),
             iteration_id: 1,
             iteration_tx_map: HashMap::new(),
+            active_iterations: HashSet::new(),
         }
     }
 
@@ -468,11 +474,14 @@ impl<T: TestTransport> LocalInstance<T> {
             )
             .await?;
 
+        self.active_iterations.clear();
+
         let next_block_number = block_number + 1;
         let block_env = Self::default_block_env(next_block_number);
         self.transport
             .new_instance(self.iteration_id, block_env)
             .await?;
+        self.active_iterations.insert(self.iteration_id);
 
         // TODO: commit tx numbers to this map!
         self.iteration_tx_map.clear();
@@ -521,11 +530,20 @@ impl<T: TestTransport> LocalInstance<T> {
             return Err("new_instance requires at least one block to have been sent".to_string());
         }
 
+        self.iteration_id = iteration_id;
+
+        if self.active_iterations.contains(&iteration_id) {
+            return Ok(());
+        }
+
         let current_block_number = self.block_number;
         let block_env = Self::default_block_env(current_block_number);
 
-        self.iteration_id = iteration_id;
-        self.transport.new_instance(iteration_id, block_env).await
+        self.transport
+            .new_instance(iteration_id, block_env)
+            .await?;
+        self.active_iterations.insert(iteration_id);
+        Ok(())
     }
 
     /// Send a successful CREATE transaction using the default account, without a new blockenv

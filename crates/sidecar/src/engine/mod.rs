@@ -2620,25 +2620,25 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Send transactions with alternating iteration IDs
-        instance.set_current_iteration_id(1);
+        instance.new_instance(1).await.unwrap();
         let tx1_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(2);
+        instance.new_instance(2).await.unwrap();
         let tx1_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(1);
+        instance.new_instance(1).await.unwrap();
         let tx2_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(2);
+        instance.new_instance(2).await.unwrap();
         let tx2_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2671,8 +2671,8 @@ mod tests {
         );
 
         // Block 2: Select iteration 1 (should have 2 transactions)
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_instance(2).await.unwrap();
 
         let tx_block2 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
