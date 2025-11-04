@@ -133,10 +133,8 @@ impl Transport for GrpcTransport {
 
         let incoming = TcpListenerStream::new(listener);
 
-        let service = server::GrpcService::new(
-            self.tx_sender.clone(),
-            self.transactions_results.clone(),
-        );
+        let service =
+            server::GrpcService::new(self.tx_sender.clone(), self.transactions_results.clone());
 
         info!(bind_addr = %self.bind_addr, "gRPC transport server starting");
 
