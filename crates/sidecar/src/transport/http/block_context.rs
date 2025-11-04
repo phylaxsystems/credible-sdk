@@ -18,10 +18,10 @@ impl BlockContext {
     }
 
     /// Update block context with a new `BlockEnv` info
-    pub fn update(&self, block_number: u64) {
+    pub fn update(&self, block_env: &BlockEnv) {
         match self.current_block_number.write() {
             Ok(mut guard) => {
-                *guard = Some(block_number);
+                *guard = Some(block_env.number);
             }
             Err(e) => {
                 tracing::error!(error = ?e, "Failed to acquire write lock for block context");

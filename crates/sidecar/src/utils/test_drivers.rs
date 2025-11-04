@@ -579,6 +579,7 @@ impl TestTransport for LocalInstanceHttpDriver {
         info!(target: "LocalInstanceHttpDriver", "LocalInstance sending block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
 
         let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
+        let last_tx_hash = last_tx_hash.map(|hash| hash.to_string());
         let blockenv = BlockEnv {
             number: block_number,
             gas_limit: 50_000_000, // Set higher gas limit for assertions
@@ -589,28 +590,40 @@ impl TestTransport for LocalInstanceHttpDriver {
             ..Default::default()
         };
 
-        // jsonrpc request for sending a blockenv to the sidecar
+        // jsonrpc request for sending commit head + block env events to the sidecar
         let request = json!({
           "id": 1,
           "jsonrpc": "2.0",
-          "method": "sendBlockEnv",
+          "method": "sendEvents",
           "params": {
-                "block_env": {
-                    "number": blockenv.number,
-                    "beneficiary": blockenv.beneficiary.to_string(),
-                    "timestamp": blockenv.timestamp,
-                    "gas_limit": blockenv.gas_limit,
-                    "basefee": blockenv.basefee,
-                    "difficulty": format!("0x{:x}", blockenv.difficulty),
-                    "prevrandao": blockenv.prevrandao.map(|h| h.to_string()),
-                    "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| json!({
-                        "excess_blob_gas": blob.excess_blob_gas,
-                        "blob_gasprice": blob.blob_gasprice
-                    })),
-                },
-                "n_transactions": n_transactions,
-                "last_tx_hash": last_tx_hash,
-                "selected_iteration_id": Some(selected_iteration_id)
+                "events": [
+                    {
+                        "commit_head": {
+                            "last_tx_hash": last_tx_hash,
+                            "n_transactions": n_transactions,
+                            "block_number": block_number,
+                            "selected_iteration_id": selected_iteration_id
+                        }
+                    },
+                    {
+                        "new_iteration": {
+                            "iteration_id": selected_iteration_id,
+                            "block_env": {
+                                "number": blockenv.number,
+                                "beneficiary": blockenv.beneficiary.to_string(),
+                                "timestamp": blockenv.timestamp,
+                                "gas_limit": blockenv.gas_limit,
+                                "basefee": blockenv.basefee,
+                                "difficulty": format!("0x{:x}", blockenv.difficulty),
+                                "prevrandao": blockenv.prevrandao.map(|h| h.to_string()),
+                                "blob_excess_gas_and_price": blockenv.blob_excess_gas_and_price.map(|blob| json!({
+                                    "excess_blob_gas": blob.excess_blob_gas,
+                                    "blob_gasprice": blob.blob_gasprice
+                                })),
+                            }
+                        }
+                    }
+                ]
           }
         });
 
@@ -989,6 +1002,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             last_tx_hash: last_tx_hash.map(|h| h.to_string()).unwrap_or_default(),
             n_transactions,
             selected_iteration_id: Some(selected_iteration_id),
+            block_number,
         };
 
         let new_iteration = crate::transport::grpc::pb::NewIteration {

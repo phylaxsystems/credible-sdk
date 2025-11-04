@@ -79,7 +79,7 @@ The Core API provides essential methods for transaction execution and block mana
 Bundles iteration metadata and transactions into a single JSON-RPC request. Each element of the `events` array must
 contain exactly one of the following keys:
 
-- `commit_head`: Includes `last_tx_hash`, `n_transactions`, and `selected_iteration_id`
+- `commit_head`: Includes `last_tx_hash`, `n_transactions`, `block_number`, and `selected_iteration_id`
 - `new_iteration`: Includes `iteration_id` plus a `block_env` payload
 - `transaction`: Includes both `tx_execution_id` and `tx_env`
 
@@ -99,6 +99,7 @@ arrive atomically in one call. The `events` array must not be empty.
         "commit_head": {
           "last_tx_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
           "n_transactions": 100,
+          "block_number": 12346,
           "selected_iteration_id": 6
         }
       },
