@@ -64,15 +64,15 @@ impl HttpTransactionDecoder {
         for event in send_params.events {
             let current_span = tracing::Span::current();
             match event {
-                SendEvent::CommitHead { commit_head } => {
+                SendEvent::CommitHead(commit_head) => {
                     let commit_head = convert_commit_head_event(&commit_head)?;
                     queue_events.push(TxQueueContents::CommitHead(commit_head, current_span));
                 }
-                SendEvent::NewIteration { new_iteration } => {
+                SendEvent::NewIteration(new_iteration) => {
                     let new_iteration = convert_new_iteration_event(new_iteration);
                     queue_events.push(TxQueueContents::NewIteration(new_iteration, current_span));
                 }
-                SendEvent::Transaction { transaction } => {
+                SendEvent::Transaction(transaction) => {
                     let tx_execution_id = transaction.tx_execution_id;
                     let tx_env = transaction.tx_env;
 
@@ -207,17 +207,11 @@ struct SendEventsParams {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[serde(rename_all = "snake_case")]
 enum SendEvent {
-    CommitHead {
-        commit_head: CommitHeadEvent,
-    },
-    NewIteration {
-        new_iteration: NewIterationEvent,
-    },
-    Transaction {
-        transaction: super::http::server::Transaction,
-    },
+    CommitHead(CommitHeadEvent),
+    NewIteration(NewIterationEvent),
+    Transaction(super::http::server::Transaction),
 }
 
 #[derive(Debug, Deserialize)]
