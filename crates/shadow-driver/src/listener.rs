@@ -128,8 +128,8 @@ pub struct Listener {
     provider: Arc<RootProvider>,
     sidecar_client: Client,
     sidecar_url: String,
-    /// Tracks the last block whose block env was successfully sent and accepted
-    last_block_env_sent: Option<u64>,
+    /// Tracks the last block that was fully committed (new iteration + txs + commit head)
+    last_committed_block: Option<u64>,
     starting_block: Option<u64>,
     /// Flag to enable/disable transaction result querying
     query_results: bool,
@@ -154,7 +154,7 @@ impl Listener {
                 .build()
                 .expect("failed to create sidecar HTTP client"),
             sidecar_url: sidecar_url.to_string(),
-            last_block_env_sent: None,
+            last_committed_block: None,
             starting_block,
             query_results: false, // Disabled by default
         }
@@ -189,16 +189,16 @@ impl Listener {
             .await
             .context("failed to get current block number")?;
 
-        if let Some(last_block_env) = self.last_block_env_sent {
-            // If we've sent block envs before and there's a gap, catch up
-            if current_block > last_block_env {
-                let missed_count = current_block - last_block_env;
+        if let Some(last_committed) = self.last_committed_block {
+            // If we've committed blocks before and there's a gap, catch up
+            if current_block > last_committed {
+                let missed_count = current_block - last_committed;
                 info!(
                     "Catching up on {missed_count} missed blocks (from {} to {current_block})",
-                    last_block_env + 1,
+                    last_committed + 1,
                 );
 
-                self.process_and_handle_failures(last_block_env + 1, current_block, "Catch-up")
+                self.process_and_handle_failures(last_committed + 1, current_block, "Catch-up")
                     .await?;
             } else {
                 debug!("No missed blocks to catch up on");
@@ -209,7 +209,7 @@ impl Listener {
                 warn!(
                     "Starting block {start_block} is ahead of current head {current_block}, will wait for blocks",
                 );
-                self.last_block_env_sent = Some(start_block - 1);
+                self.last_committed_block = Some(start_block - 1);
             } else {
                 info!(
                     "Starting from block {start_block} and catching up to current head {current_block} ({} blocks)",
@@ -234,18 +234,18 @@ impl Listener {
         end: u64,
         operation_name: &str,
     ) -> Result<()> {
-        let initial_last_sent = self.last_block_env_sent;
+        let initial_last_committed = self.last_committed_block;
 
         self.process_block_range(start, end).await?;
 
         // If the sidecar was down and no blocks succeeded, skip to the end block
-        if self.last_block_env_sent == initial_last_sent {
+        if self.last_committed_block == initial_last_committed {
             warn!("{operation_name} failed (sidecar likely down), will skip to block {end}");
-            self.last_block_env_sent = Some(end);
+            self.last_committed_block = Some(end);
         } else {
             info!(
                 "{operation_name} complete, now at block {}",
-                self.last_block_env_sent.unwrap_or(end)
+                self.last_committed_block.unwrap_or(end)
             );
         }
 
@@ -330,20 +330,20 @@ impl Listener {
             let block_number = inner.number;
 
             // Check for missing blocks in the stream
-            if let Some(last_block_env) = self.last_block_env_sent {
-                if block_number > last_block_env + 1 {
+            if let Some(last_committed) = self.last_committed_block {
+                if block_number > last_committed + 1 {
                     // We've skipped blocks, fill them in
                     warn!(
                         "Block skip detected in stream: expected {}, got {block_number}",
-                        last_block_env + 1,
+                        last_committed + 1,
                     );
 
-                    if let Err(e) = self.fill_missing_blocks(last_block_env, block_number).await {
+                    if let Err(e) = self.fill_missing_blocks(last_committed, block_number).await {
                         error!(error = ?e, "Failed to fill missing blocks");
                         // Return error to trigger reconnection
                         return Err(e);
                     }
-                } else if block_number <= last_block_env {
+                } else if block_number <= last_committed {
                     // Skip duplicate/stale blocks
                     debug!("Skipping already processed block {block_number}");
                     continue;
@@ -362,21 +362,20 @@ impl Listener {
         Err(anyhow!("block subscription completed"))
     }
 
-    /// Process a single block with strict sequencing:
-    /// 1. Only send transactions if the previous block env was accepted
-    /// 2. Send transactions for the current block (with retries)
-    /// 3. Send block env for the current block (which allows the next block's txs)
-    /// 4. Mark block env as sent only after it succeeds
-    /// 5. If the sidecar is down (send fails after retries), continue to the next block without marking as sent
-    /// 6. Optionally query and compare transaction results if enabled
+    /// Process a single block with the flow using sendEvents:
+    /// 1. Send `NewIteration` event
+    /// 2. Send all transactions
+    /// 3. Send `CommitHead` event to finalize the block
+    /// 4. Mark block as committed only after all steps succeed
+    /// 5. Optionally query and compare transaction results
     async fn process_block(&mut self, block: &alloy::rpc::types::Block) -> Result<()> {
         let block_number = block.header.number;
 
         // Skip already processed blocks (prevent duplicates)
-        if let Some(last_block_env) = self.last_block_env_sent
-            && block_number <= last_block_env
+        if let Some(last_committed) = self.last_committed_block
+            && block_number <= last_committed
         {
-            debug!("Skipping already processed block {block_number}");
+            debug!("Skipping already committed block {block_number}");
             return Ok(());
         }
 
@@ -399,53 +398,72 @@ impl Listener {
         // Collect transaction hashes for later querying
         let mut tx_hashes: Vec<TxHash> = Vec::new();
 
-        // STEP 1: Send transactions ONLY if previous block env was accepted
-        // (First block won't send transactions as last_block_env_sent will be None)
-        if self.last_block_env_sent.is_some() {
-            for (index, tx) in transactions.iter().enumerate() {
-                let tx_hash = *tx.inner.hash();
-                tx_hashes.push(tx_hash);
-
-                // Retry transaction sending with exponential backoff
-                if let Err(e) = self
-                    .send_transaction_with_retry(tx, index as u64, block_number)
-                    .await
-                {
-                    warn!(
-                        error = ?e,
-                        "Failed to send transaction {index} in block {block_number} after all retries, will continue to block env",
-                    );
-                    // Transaction failed after all retries - still try to send block env
-                    // so we can move to the next block
-                    break;
-                }
-            }
-            debug!("Successfully sent transactions for block {block_number}");
+        // Get the last transaction hash if transactions exist
+        let last_tx_hash = if transactions.is_empty() {
+            None
         } else {
-            debug!(
-                "Skipping transactions for block {block_number} (first block or no prior block env)"
-            );
-        }
+            Some(format!("{:#x}", transactions.last().unwrap().inner.hash()))
+        };
 
-        // STEP 2: Send block environment
-        // This must succeed for the next block's transactions to be sent
-        if let Err(e) = self.send_block_env(block, transactions.len()).await {
+        // STEP 1: Send NewIteration event (contains block_env)
+        info!("Step 1/3: Sending NewIteration event for block {block_number}");
+        if let Err(e) = self.send_new_iteration(block).await {
             warn!(
                 error = ?e,
-                "Failed to send block env for block {block_number} (sidecar may be down), will continue to next block",
+                "Failed to send NewIteration for block {block_number}, will skip this block",
             );
-            // Sidecar is down - don't mark as sent, continue to the next block
-            // When sidecar comes back up, we'll successfully send a later block env
             return Ok(());
         }
 
-        // STEP 3: Mark block env as sent ONLY after it succeeds
-        // This ensures strict sequential block env numbering for blocks that succeed
-        // and prevents duplicates on reconnection
-        self.last_block_env_sent = Some(block_number);
+        // STEP 2: Send all transactions for the current block
+        info!(
+            "Step 2/3: Sending {} transactions for block {block_number}",
+            transactions.len()
+        );
+        for (index, tx) in transactions.iter().enumerate() {
+            let tx_hash = *tx.inner.hash();
+            tx_hashes.push(tx_hash);
 
-        info!("Successfully processed block {block_number} (env sent, ready for next block's txs)");
+            // Retry transaction sending with exponential backoff
+            if let Err(e) = self
+                .send_transaction_with_retry(tx, index as u64, block_number)
+                .await
+            {
+                warn!(
+                    error = ?e,
+                    "Failed to send transaction {index} in block {block_number} after all retries",
+                );
+                // Transaction failed after all retries - still continue to commit head
+                // The sidecar should handle missing transactions gracefully
+            }
+        }
 
+        if !transactions.is_empty() {
+            debug!(
+                "Successfully sent {} transactions for block {block_number}",
+                transactions.len()
+            );
+        }
+
+        // STEP 3: Send CommitHead event to finalize the block
+        info!("Step 3/3: Sending CommitHead event for block {block_number}");
+        if let Err(e) = self
+            .send_commit_head(block_number, last_tx_hash, transactions.len())
+            .await
+        {
+            warn!(
+                error = ?e,
+                "Failed to send CommitHead for block {block_number}, will skip this block",
+            );
+            return Ok(());
+        }
+
+        // STEP 4: Mark block as committed ONLY after all steps succeed
+        self.last_committed_block = Some(block_number);
+
+        info!("Successfully committed block {block_number}");
+
+        // STEP 5: Optionally query and compare transaction results
         if self.query_results
             && !tx_hashes.is_empty()
             && let Err(e) = self
@@ -504,39 +522,16 @@ impl Listener {
         Ok(())
     }
 
-    /// Send block environment to the sidecar
-    async fn send_block_env(
-        &self,
-        block: &alloy::rpc::types::Block,
-        n_transactions: usize,
-    ) -> Result<()> {
-        // Get the last transaction hash if transactions exist
-        let last_tx_hash = match &block.transactions {
-            alloy::rpc::types::BlockTransactions::Full(txs) if !txs.is_empty() => {
-                Some(format!("{:#x}", txs.last().unwrap().inner.hash()))
-            }
-            alloy::rpc::types::BlockTransactions::Hashes(hashes) if !hashes.is_empty() => {
-                Some(format!("{:#x}", hashes.last().unwrap()))
-            }
-            _ => None,
-        };
-
-        let events_payload = json!({
+    /// Send `NewIteration` event to the sidecar
+    async fn send_new_iteration(&self, block: &alloy::rpc::types::Block) -> Result<()> {
+        let new_iteration_payload = json!({
             "jsonrpc": "2.0",
             "method": "sendEvents",
             "params": {
                 "events": [
                     {
-                        "commit_head": {
-                            "last_tx_hash": last_tx_hash,
-                            "n_transactions": n_transactions as u64,
-                            "block_number": block.header.number,
-                            "selected_iteration_id": 0
-                        }
-                    },
-                    {
                         "new_iteration": {
-                            "iteration_id": 0,
+                            "iteration_id": 1,
                             "block_env": {
                                 "number": block.header.number,
                                 "beneficiary": format!("{:#x}", block.header.beneficiary),
@@ -545,10 +540,10 @@ impl Listener {
                                 "basefee": block.header.base_fee_per_gas,
                                 "difficulty": block.header.difficulty,
                                 "prevrandao": format!("{:#x}", block.header.mix_hash),
-                                "blob_excess_gas_and_price": json!({
+                                "blob_excess_gas_and_price": {
                                     "excess_blob_gas": 0,
                                     "blob_gasprice": 1
-                                })
+                                },
                             }
                         }
                     }
@@ -557,15 +552,15 @@ impl Listener {
             "id": 1
         });
 
-        debug!("Sending block env for block {}", block.header.number);
+        debug!("Sending NewIteration for block {}", block.header.number);
 
         let response = self
             .sidecar_client
             .post(format!("{}/tx", self.sidecar_url))
-            .json(&events_payload)
+            .json(&new_iteration_payload)
             .send()
             .await
-            .context("failed to send block env request to sidecar")?;
+            .context("failed to send NewIteration request to sidecar")?;
 
         let response_status = response.status();
         let body = response
@@ -587,9 +582,67 @@ impl Listener {
         }
 
         debug!(
-            "Successfully sent block env for block {}",
+            "Successfully sent NewIteration for block {}",
             block.header.number
         );
+        Ok(())
+    }
+
+    /// Send `CommitHead` event to finalize the block
+    async fn send_commit_head(
+        &self,
+        block_number: u64,
+        last_tx_hash: Option<String>,
+        n_transactions: usize,
+    ) -> Result<()> {
+        let commit_payload = json!({
+            "jsonrpc": "2.0",
+            "method": "sendEvents",
+            "params": {
+                "events": [
+                    {
+                        "commit_head": {
+                            "block_number": block_number,
+                            "last_tx_hash": last_tx_hash,
+                            "n_transactions": n_transactions,
+                            "selected_iteration_id": 1,
+                        }
+                    }
+                ]
+            },
+            "id": 1
+        });
+
+        debug!("Sending CommitHead for block {block_number}");
+
+        let response = self
+            .sidecar_client
+            .post(format!("{}/tx", self.sidecar_url))
+            .json(&commit_payload)
+            .send()
+            .await
+            .context("failed to send CommitHead request to sidecar")?;
+
+        let response_status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "unknown error".to_string());
+        if !response_status.is_success() {
+            return Err(anyhow!("sidecar returned error {response_status}: {body}",));
+        }
+
+        if let Ok(error_response) = serde_json::from_str::<Response>(&body)
+            && let Some(json_rpc_error) = error_response.error
+        {
+            return Err(anyhow!(
+                "sidecar returned JSON-RPC error (code: {}): {}",
+                json_rpc_error.code,
+                json_rpc_error.message
+            ));
+        }
+
+        debug!("Successfully sent CommitHead for block {block_number}");
         Ok(())
     }
 
@@ -644,7 +697,7 @@ impl Listener {
                     })
                     .collect::<Vec<_>>()
                     .into(),
-            ); // Convert Vec<AccessListItem> to AccessList
+            );
         }
 
         // Handle different transaction types
@@ -719,7 +772,7 @@ impl Listener {
             tx_env,
             tx_execution_id: TxExecutionId {
                 block_number,
-                iteration_id: 0,
+                iteration_id: 1,
                 tx_hash: *tx.inner.hash(),
             },
         };
@@ -773,7 +826,7 @@ impl Listener {
             .map(|tx_hash| {
                 json!({
                     "block_number": block_number,
-                    "iteration_id": 0,
+                    "iteration_id": 1,
                     "tx_hash": format!("{tx_hash:#x}")
                 })
             })
