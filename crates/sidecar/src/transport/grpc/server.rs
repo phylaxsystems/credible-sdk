@@ -130,7 +130,6 @@ fn parse_pb_tx_execution_id_http(pb: &PbTxExecutionId) -> Result<TxExecutionId, 
 
 #[derive(Clone)]
 pub struct GrpcService {
-    has_blockenv: Arc<AtomicBool>,
     tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
     commit_head_seen: Arc<AtomicBool>,
@@ -143,7 +142,6 @@ impl GrpcService {
         transactions_results: QueryTransactionsResults,
     ) -> Self {
         Self {
-            has_blockenv,
             tx_sender,
             transactions_results,
             commit_head_seen: Arc::new(AtomicBool::new(false)),
@@ -330,13 +328,6 @@ impl SidecarTransport for GrpcService {
         request: Request<SendTransactionsRequest>,
     ) -> Result<Response<SendTransactionsResponse>, Status> {
         trace!("Processing gRPC SendTransactions request");
-        if !self.has_blockenv.load(Ordering::Relaxed) {
-            debug!("Rejecting transactions - no block environment available");
-            return Err(Status::failed_precondition(
-                "block environment not available",
-            ));
-        }
-
         self.ensure_commit_head_seen()?;
 
         let req = request.into_inner();
@@ -412,12 +403,7 @@ impl SidecarTransport for GrpcService {
         request: Request<GetTransactionsRequest>,
     ) -> Result<Response<GetTransactionsResponse>, Status> {
         trace!("Processing gRPC GetTransactions request");
-        if !self.has_blockenv.load(Ordering::Relaxed) {
-            debug!("Rejecting query - no block environment available");
-            return Err(Status::failed_precondition(
-                "block environment not available",
-            ));
-        }
+        self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();
         let mut received: Vec<TxExecutionId> = Vec::new();
@@ -470,13 +456,7 @@ impl SidecarTransport for GrpcService {
         request: Request<GetTransactionRequest>,
     ) -> Result<Response<GetTransactionResponse>, Status> {
         trace!("Processing gRPC GetTransaction request");
-
-        if !self.has_blockenv.load(Ordering::Relaxed) {
-            debug!("Rejecting query - no block environment available");
-            return Err(Status::failed_precondition(
-                "block environment not available",
-            ));
-        }
+        self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();
 

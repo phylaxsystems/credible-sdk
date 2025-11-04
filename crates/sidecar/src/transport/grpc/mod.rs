@@ -91,8 +91,6 @@ pub struct GrpcTransport {
     bind_addr: SocketAddr,
     /// Shutdown cancellation token
     shutdown_token: CancellationToken,
-    /// Signal if the transport has seen a blockenv
-    has_blockenv: Arc<AtomicBool>,
     /// Shared transaction results state
     transactions_results: QueryTransactionsResults,
 }
@@ -112,7 +110,6 @@ impl Transport for GrpcTransport {
             tx_sender,
             bind_addr: config.bind_addr,
             shutdown_token: CancellationToken::new(),
-            has_blockenv: Arc::new(AtomicBool::new(false)),
             transactions_results: QueryTransactionsResults::new(state_results),
         })
     }

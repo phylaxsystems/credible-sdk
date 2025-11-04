@@ -207,7 +207,6 @@ struct SendEventsParams {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
 enum SendEvent {
     CommitHead {
         commit_head: CommitHeadEvent,
