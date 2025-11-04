@@ -9,11 +9,14 @@
 use super::pb::{
     BasicAck,
     BlockEnvEnvelope,
+    CommitHead as PbCommitHead,
     GetTransactionRequest,
     GetTransactionResponse,
     GetTransactionsRequest,
     GetTransactionsResponse,
+    NewIteration as PbNewIteration,
     ReorgRequest,
+    SendEvents as PbSendEvents,
     SendTransactionsRequest,
     SendTransactionsResponse,
     Transaction,
@@ -21,13 +24,15 @@ use super::pb::{
     TransactionResult as PbTransactionResult,
     TxExecutionId as PbTxExecutionId,
     get_transaction_response::Outcome as GetTransactionOutcome,
+    send_events::event::Event as SendEventVariant,
     sidecar_transport_server::SidecarTransport,
 };
 use crate::{
     engine::{
         TransactionResult,
         queue::{
-            QueueIteration,
+            CommitHead,
+            NewIteration,
             QueueTransaction,
             TransactionQueueSender,
             TxQueueContents,
@@ -128,6 +133,7 @@ pub struct GrpcService {
     has_blockenv: Arc<AtomicBool>,
     tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
+    commit_head_seen: Arc<AtomicBool>,
 }
 
 impl GrpcService {
@@ -140,8 +146,58 @@ impl GrpcService {
             has_blockenv,
             tx_sender,
             transactions_results,
+            commit_head_seen: Arc::new(AtomicBool::new(false)),
         }
     }
+
+    fn send_queue_event(
+        &self,
+        contents: TxQueueContents,
+        item_name: &'static str,
+    ) -> Result<(), Status> {
+        self.tx_sender
+            .send(contents)
+            .map_err(|e| Status::internal(format!("failed to queue {item_name}: {e}")))
+    }
+
+    fn mark_commit_head_seen(&self) {
+        self.commit_head_seen.store(true, Ordering::Release);
+    }
+
+    fn ensure_commit_head_seen(&self) -> Result<(), Status> {
+        if self.commit_head_seen.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(Status::failed_precondition(
+                "commit head must be received before other events",
+            ))
+        }
+    }
+}
+
+fn convert_pb_commit_head(commit_head: &PbCommitHead) -> Result<CommitHead, Status> {
+    let selected_iteration_id = commit_head
+        .selected_iteration_id
+        .ok_or_else(|| Status::invalid_argument("selected_iteration_id is required"))?;
+    let last_tx_hash =
+        parse_commit_metadata(&commit_head.last_tx_hash, commit_head.n_transactions)?;
+
+    Ok(CommitHead::new(
+        last_tx_hash,
+        commit_head.n_transactions,
+        commit_head.block_number,
+        selected_iteration_id,
+    ))
+}
+
+fn convert_pb_new_iteration(mut new_iteration: PbNewIteration) -> Result<NewIteration, Status> {
+    let block_env_pb = new_iteration
+        .block_env
+        .take()
+        .ok_or_else(|| Status::invalid_argument("block_env is required"))?;
+    let block_env = convert_pb_block_env(&block_env_pb)?;
+
+    Ok(NewIteration::new(new_iteration.iteration_id, block_env))
 }
 
 #[tonic::async_trait]
@@ -157,25 +213,109 @@ impl SidecarTransport for GrpcService {
         request: Request<BlockEnvEnvelope>,
     ) -> Result<Response<BasicAck>, Status> {
         let payload = request.into_inner();
-        let span = tracing::Span::current();
         trace!("Processing gRPC SendBlockEnv request");
 
         // Decode into proper structs instead of manually merging JSON
-        let block = decode_block_env_envelope(&payload)?;
-        let event = TxQueueContents::Iteration(block, span);
+        let legacy_block = decode_block_env_envelope(&payload)?;
+        let Some(selected_iteration_id) = legacy_block.selected_iteration_id else {
+            return Err(Status::invalid_argument(
+                "selected_iteration_id is required for commitHead",
+            ));
+        };
 
-        self.transactions_results.add_accepted_tx(&event);
-        self.tx_sender
-            .send(event)
-            .map_err(|e| Status::internal(format!("failed to queue block env: {e}")))?;
+        let BlockEnvelope {
+            block_env,
+            last_tx_hash,
+            n_transactions,
+            selected_iteration_id: _,
+        } = legacy_block;
 
-        if !self.has_blockenv.load(Ordering::Relaxed) {
-            self.has_blockenv.store(true, Ordering::Release);
-        }
+        let commit_head = CommitHead::new(
+            last_tx_hash,
+            n_transactions,
+            block_env.number,
+            selected_iteration_id,
+        );
+        let new_iteration = NewIteration::new(selected_iteration_id, block_env);
+
+        self.send_queue_event(
+            TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
+            "commit head",
+        )?;
+        self.mark_commit_head_seen();
+
+        self.send_queue_event(
+            TxQueueContents::NewIteration(new_iteration, tracing::Span::current()),
+            "new iteration",
+        )?;
 
         Ok(Response::new(BasicAck {
             accepted: true,
             message: "block env accepted".into(),
+        }))
+    }
+
+    /// Handle gRPC request for batched iteration events.
+    #[instrument(name = "grpc_server::SendEvents", skip(self, request), level = "debug")]
+    async fn send_events(
+        &self,
+        request: Request<PbSendEvents>,
+    ) -> Result<Response<BasicAck>, Status> {
+        trace!("Processing gRPC SendEvents request");
+        let payload = request.into_inner();
+        if payload.events.is_empty() {
+            return Err(Status::invalid_argument("events must not be empty"));
+        }
+
+        for event in payload.events {
+            let Some(event_variant) = event.event else {
+                return Err(Status::invalid_argument("event payload missing"));
+            };
+
+            match event_variant {
+                SendEventVariant::CommitHead(commit) => {
+                    let commit_head = convert_pb_commit_head(&commit)?;
+                    self.send_queue_event(
+                        TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
+                        "commit head",
+                    )?;
+                    self.mark_commit_head_seen();
+                }
+                SendEventVariant::NewIteration(iteration) => {
+                    self.ensure_commit_head_seen()?;
+                    let new_iteration = convert_pb_new_iteration(iteration)?;
+                    self.send_queue_event(
+                        TxQueueContents::NewIteration(new_iteration, tracing::Span::current()),
+                        "new iteration",
+                    )?;
+                }
+                SendEventVariant::Transaction(transaction) => {
+                    self.ensure_commit_head_seen()?;
+                    let queue_tx = to_queue_tx(&transaction).map_err(|e| {
+                        Status::invalid_argument(format!("invalid transaction: {e}"))
+                    })?;
+
+                    if let TxQueueContents::Tx(tx, _) = &queue_tx
+                        && self
+                            .transactions_results
+                            .is_tx_received(&tx.tx_execution_id)
+                    {
+                        warn!(
+                            tx_hash = %tx.tx_execution_id.tx_hash_hex(),
+                            "TX hash already received, skipping"
+                        );
+                        continue;
+                    }
+
+                    self.transactions_results.add_accepted_tx(&queue_tx);
+                    self.send_queue_event(queue_tx, "transaction")?;
+                }
+            }
+        }
+
+        Ok(Response::new(BasicAck {
+            accepted: true,
+            message: "events processed".into(),
         }))
     }
 
@@ -196,6 +336,8 @@ impl SidecarTransport for GrpcService {
                 "block environment not available",
             ));
         }
+
+        self.ensure_commit_head_seen()?;
 
         let req = request.into_inner();
         let total = req.transactions.len() as u64;
@@ -645,41 +787,57 @@ fn parse_authorization_list(
         .collect()
 }
 
-/// Decode `BlockEnvEnvelope` into a `QueueBlockEnv`.
-fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<QueueIteration, Status> {
+fn parse_commit_metadata(
+    last_tx_hash_raw: &str,
+    n_transactions: u64,
+) -> Result<Option<TxHash>, Status> {
+    let parsed_hash = if last_tx_hash_raw.is_empty() {
+        None
+    } else {
+        Some(
+            last_tx_hash_raw
+                .parse::<TxHash>()
+                .map_err(|_| Status::invalid_argument("invalid last_tx_hash"))?,
+        )
+    };
+
+    if n_transactions == 0 && parsed_hash.is_some() {
+        return Err(Status::invalid_argument(
+            "when n_transactions is 0, last_tx_hash must be null, empty, or missing",
+        ));
+    }
+
+    if n_transactions > 0 && parsed_hash.is_none() {
+        return Err(Status::invalid_argument(
+            "when n_transactions > 0, last_tx_hash must be provided",
+        ));
+    }
+
+    Ok(parsed_hash)
+}
+
+struct BlockEnvelope {
+    block_env: RevmBlockEnv,
+    last_tx_hash: Option<TxHash>,
+    n_transactions: u64,
+    selected_iteration_id: Option<u64>,
+}
+
+/// Decode `BlockEnvEnvelope` into block metadata.
+fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<BlockEnvelope, Status> {
     let block_env_pb = payload
         .block_env
         .as_ref()
         .ok_or_else(|| Status::invalid_argument("block_env is required"))?;
     let block_env = convert_pb_block_env(block_env_pb)?;
 
-    // Parse optional last_tx_hash (empty string indicates absence for parity with HTTP schema)
-    let last_tx_hash = if payload.last_tx_hash.is_empty() {
-        None
-    } else {
-        Some(
-            payload
-                .last_tx_hash
-                .parse::<TxHash>()
-                .map_err(|_| Status::invalid_argument("invalid last_tx_hash"))?,
-        )
-    };
+    let last_tx_hash = parse_commit_metadata(&payload.last_tx_hash, payload.n_transactions)?;
 
-    // Validate invariants consistent with `QueueBlockEnv` JSON deserializer
-    if payload.n_transactions == 0 && last_tx_hash.is_some() {
-        return Err(Status::invalid_argument(
-            "when n_transactions is 0, last_tx_hash must be null, empty, or missing",
-        ));
-    }
-    if payload.n_transactions > 0 && last_tx_hash.is_none() {
-        return Err(Status::invalid_argument(
-            "when n_transactions > 0, last_tx_hash must be provided",
-        ));
-    }
-
-    Ok(QueueIteration {
+    Ok(BlockEnvelope {
         block_env,
-        iteration_id: payload.selected_iteration_id.unwrap_or_default(),
+        last_tx_hash,
+        n_transactions: payload.n_transactions,
+        selected_iteration_id: payload.selected_iteration_id,
     })
 }
 

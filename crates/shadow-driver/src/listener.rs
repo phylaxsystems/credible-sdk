@@ -521,26 +521,38 @@ impl Listener {
             _ => None,
         };
 
-        let block_env_payload = json!({
+        let events_payload = json!({
             "jsonrpc": "2.0",
-            "method": "sendBlockEnv",
+            "method": "sendEvents",
             "params": {
-                "block_env": {
-                    "number": block.header.number,
-                    "beneficiary": format!("{:#x}", block.header.beneficiary),
-                    "timestamp": block.header.timestamp,
-                    "gas_limit": block.header.gas_limit,
-                    "basefee": block.header.base_fee_per_gas,
-                    "difficulty": block.header.difficulty,
-                    "prevrandao": format!("{:#x}", block.header.mix_hash),
-                    "blob_excess_gas_and_price": json!({
-                        "excess_blob_gas": 0,
-                        "blob_gasprice": 1
-                    }),
-                },
-                "n_transactions": n_transactions,
-                "selected_iteration_id": 0,
-                "last_tx_hash": last_tx_hash,
+                "events": [
+                    {
+                        "commit_head": {
+                            "last_tx_hash": last_tx_hash,
+                            "n_transactions": n_transactions as u64,
+                            "block_number": block.header.number,
+                            "selected_iteration_id": 0
+                        }
+                    },
+                    {
+                        "new_iteration": {
+                            "iteration_id": 0,
+                            "block_env": {
+                                "number": block.header.number,
+                                "beneficiary": format!("{:#x}", block.header.beneficiary),
+                                "timestamp": block.header.timestamp,
+                                "gas_limit": block.header.gas_limit,
+                                "basefee": block.header.base_fee_per_gas,
+                                "difficulty": block.header.difficulty,
+                                "prevrandao": format!("{:#x}", block.header.mix_hash),
+                                "blob_excess_gas_and_price": json!({
+                                    "excess_blob_gas": 0,
+                                    "blob_gasprice": 1
+                                })
+                            }
+                        }
+                    }
+                ]
             },
             "id": 1
         });
@@ -550,7 +562,7 @@ impl Listener {
         let response = self
             .sidecar_client
             .post(format!("{}/tx", self.sidecar_url))
-            .json(&block_env_payload)
+            .json(&events_payload)
             .send()
             .await
             .context("failed to send block env request to sidecar")?;

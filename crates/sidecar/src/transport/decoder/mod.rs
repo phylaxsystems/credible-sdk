@@ -5,12 +5,13 @@
 //! of the decoders to convert them into events that can be passed down to
 //! the core engine.
 
-//#[cfg(test)]
-//mod tests;
+#[cfg(test)]
+mod tests;
 
 use crate::{
     engine::queue::{
-        QueueIteration,
+        CommitHead,
+        NewIteration,
         QueueTransaction,
         TxQueueContents,
     },
@@ -21,11 +22,19 @@ use crate::{
             JsonRpcRequest,
             METHOD_BLOCK_ENV,
             METHOD_REORG,
+            METHOD_SEND_EVENTS,
             METHOD_SEND_TRANSACTIONS,
             SendTransactionsParams,
         },
     },
 };
+use revm::{
+    context::BlockEnv,
+    primitives::alloy_primitives::TxHash,
+};
+use serde::Deserialize;
+use serde_json::Value;
+use std::str::FromStr;
 
 pub trait Decoder {
     type RawEvent: Send + Clone + Sized;
@@ -40,6 +49,47 @@ pub trait Decoder {
 pub struct HttpTransactionDecoder;
 
 impl HttpTransactionDecoder {
+    fn to_events(req: &JsonRpcRequest) -> Result<Vec<TxQueueContents>, HttpDecoderError> {
+        let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
+
+        let send_params: SendEventsParams =
+            serde_json::from_value(params.clone()).map_err(|e| map_send_events_error(&e))?;
+
+        if send_params.events.is_empty() {
+            return Err(HttpDecoderError::NoEvents);
+        }
+
+        let mut queue_events = Vec::with_capacity(send_params.events.len());
+
+        for event in send_params.events {
+            let current_span = tracing::Span::current();
+            match event {
+                SendEvent::CommitHead { commit_head } => {
+                    let commit_head = convert_commit_head_event(&commit_head)?;
+                    queue_events.push(TxQueueContents::CommitHead(commit_head, current_span));
+                }
+                SendEvent::NewIteration { new_iteration } => {
+                    let new_iteration = convert_new_iteration_event(new_iteration);
+                    queue_events.push(TxQueueContents::NewIteration(new_iteration, current_span));
+                }
+                SendEvent::Transaction { transaction } => {
+                    let tx_execution_id = transaction.tx_execution_id;
+                    let tx_env = transaction.tx_env;
+
+                    queue_events.push(TxQueueContents::Tx(
+                        QueueTransaction {
+                            tx_execution_id,
+                            tx_env,
+                        },
+                        current_span,
+                    ));
+                }
+            }
+        }
+
+        Ok(queue_events)
+    }
+
     fn to_transaction(req: &JsonRpcRequest) -> Result<Vec<TxQueueContents>, HttpDecoderError> {
         let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
 
@@ -111,12 +161,28 @@ impl Decoder for HttpTransactionDecoder {
     fn to_tx_queue_contents(req: &Self::RawEvent) -> Result<Vec<TxQueueContents>, Self::Error> {
         match req.method.as_str() {
             METHOD_SEND_TRANSACTIONS => Self::to_transaction(req),
+            METHOD_SEND_EVENTS => Self::to_events(req),
             METHOD_BLOCK_ENV => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
-                let block = serde_json::from_value::<QueueIteration>(params.clone())
-                    .map_err(|e| map_block_env_error(&e))?;
+                let block = parse_block_env_payload(params.clone())?;
                 let current_span = tracing::Span::current();
-                Ok(vec![TxQueueContents::Iteration(block, current_span)])
+
+                let selected_iteration_id = block
+                    .selected_iteration_id
+                    .ok_or(HttpDecoderError::MissingSelectedIterationId)?;
+
+                let commit_head = CommitHead::new(
+                    block.last_tx_hash,
+                    block.n_transactions,
+                    block.block_env.number,
+                    selected_iteration_id,
+                );
+                let new_iteration = NewIteration::new(selected_iteration_id, block.block_env);
+
+                Ok(vec![
+                    TxQueueContents::CommitHead(commit_head, current_span.clone()),
+                    TxQueueContents::NewIteration(new_iteration, current_span),
+                ])
             }
             METHOD_REORG => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
@@ -133,6 +199,158 @@ impl Decoder for HttpTransactionDecoder {
             }
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct SendEventsParams {
+    events: Vec<SendEvent>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SendEvent {
+    CommitHead {
+        commit_head: CommitHeadEvent,
+    },
+    NewIteration {
+        new_iteration: NewIterationEvent,
+    },
+    Transaction {
+        transaction: super::http::server::Transaction,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitHeadEvent {
+    #[serde(default)]
+    last_tx_hash: Option<String>,
+    n_transactions: u64,
+    block_number: u64,
+    selected_iteration_id: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NewIterationEvent {
+    iteration_id: u64,
+    block_env: BlockEnv,
+}
+
+fn convert_commit_head_event(
+    commit_head: &CommitHeadEvent,
+) -> Result<CommitHead, HttpDecoderError> {
+    let last_tx_hash = match commit_head.last_tx_hash.as_deref() {
+        Some("") | None => None,
+        Some(hash) => {
+            Some(
+                TxHash::from_str(hash)
+                    .map_err(|_| HttpDecoderError::InvalidLastTxHash(hash.to_string()))?,
+            )
+        }
+    };
+
+    match commit_head.n_transactions {
+        0 => {
+            if last_tx_hash.is_some() {
+                return Err(HttpDecoderError::InvalidTransaction(
+                    "last_tx_hash must be null, empty, or missing when n_transactions is 0"
+                        .to_string(),
+                ));
+            }
+        }
+        _ => {
+            if last_tx_hash.is_none() {
+                return Err(HttpDecoderError::InvalidTransaction(
+                    "last_tx_hash must be provided when n_transactions > 0".to_string(),
+                ));
+            }
+        }
+    }
+
+    let selected_iteration_id = commit_head
+        .selected_iteration_id
+        .ok_or(HttpDecoderError::MissingSelectedIterationId)?;
+
+    Ok(CommitHead::new(
+        last_tx_hash,
+        commit_head.n_transactions,
+        commit_head.block_number,
+        selected_iteration_id,
+    ))
+}
+
+fn convert_new_iteration_event(new_iteration: NewIterationEvent) -> NewIteration {
+    NewIteration::new(new_iteration.iteration_id, new_iteration.block_env)
+}
+
+fn parse_block_env_payload(params: Value) -> Result<BlockEnvPayload, HttpDecoderError> {
+    let Value::Object(map) = params else {
+        return Err(HttpDecoderError::InvalidTransaction(
+            "BlockEnv payload must be an object".to_string(),
+        ));
+    };
+
+    let block_env_value = map.get("block_env").ok_or_else(|| {
+        HttpDecoderError::InvalidTransaction("missing field: block_env".to_string())
+    })?;
+
+    let block_env = serde_json::from_value::<BlockEnv>(block_env_value.clone())
+        .map_err(|e| map_block_env_error(&e))?;
+
+    let last_tx_hash = match map.get("last_tx_hash") {
+        Some(Value::Null) | None => None,
+        Some(Value::String(s)) if s.is_empty() => None,
+        Some(Value::String(s)) => {
+            Some(TxHash::from_str(s).map_err(|_| HttpDecoderError::InvalidLastTxHash(s.clone()))?)
+        }
+        Some(other) => {
+            return Err(HttpDecoderError::InvalidLastTxHash(other.to_string()));
+        }
+    };
+
+    let n_transactions = match map.get("n_transactions") {
+        Some(Value::Null) | None => 0,
+        Some(v) => {
+            serde_json::from_value::<u64>(v.clone())
+                .map_err(|e| HttpDecoderError::InvalidNTransactions(e.to_string()))?
+        }
+    };
+
+    let selected_iteration_id = match map.get("selected_iteration_id") {
+        Some(Value::Null) | None => None,
+        Some(v) => {
+            Some(serde_json::from_value::<u64>(v.clone()).map_err(|e| {
+                HttpDecoderError::InvalidTransaction(format!("invalid selected_iteration_id: {e}"))
+            })?)
+        }
+    };
+
+    match n_transactions {
+        0 if last_tx_hash.is_some() => {
+            return Err(HttpDecoderError::BlockEnvValidation(
+                "last_tx_hash must be null, empty, or missing when n_transactions is 0".to_string(),
+            ));
+        }
+        n if n > 0 && last_tx_hash.is_none() => {
+            return Err(HttpDecoderError::BlockEnvValidation(
+                "last_tx_hash must be provided when n_transactions > 0".to_string(),
+            ));
+        }
+        _ => {}
+    }
+
+    Ok(BlockEnvPayload {
+        block_env,
+        last_tx_hash,
+        n_transactions,
+        selected_iteration_id,
+    })
+}
+
+struct BlockEnvPayload {
+    block_env: BlockEnv,
+    last_tx_hash: Option<TxHash>,
+    n_transactions: u64,
+    selected_iteration_id: Option<u64>,
 }
 
 fn map_block_env_error(e: &serde_json::Error) -> HttpDecoderError {
@@ -180,4 +398,14 @@ fn map_block_env_error(e: &serde_json::Error) -> HttpDecoderError {
     }
 
     HttpDecoderError::BlockEnvValidation(msg)
+}
+
+fn map_send_events_error(e: &serde_json::Error) -> HttpDecoderError {
+    let msg = e.to_string();
+
+    if msg.contains("missing field `events`") {
+        HttpDecoderError::MissingEventsField
+    } else {
+        HttpDecoderError::InvalidEvent(msg)
+    }
 }

@@ -63,6 +63,7 @@ use tracing::{
 };
 
 pub(in crate::transport) const METHOD_SEND_TRANSACTIONS: &str = "sendTransactions";
+pub(in crate::transport) const METHOD_SEND_EVENTS: &str = "sendEvents";
 pub(in crate::transport) const METHOD_BLOCK_ENV: &str = "sendBlockEnv";
 pub(in crate::transport) const METHOD_REORG: &str = "reorg";
 pub(in crate::transport) const METHOD_GET_TRANSACTIONS: &str = "getTransactions";
@@ -308,6 +309,7 @@ impl JsonRpcResponse {
 #[derive(Clone, Debug)]
 pub struct ServerState {
     pub has_blockenv: Arc<AtomicBool>,
+    commit_head_seen: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
     /// Block context for tracing
@@ -317,12 +319,14 @@ pub struct ServerState {
 impl ServerState {
     pub fn new(
         has_blockenv: Arc<AtomicBool>,
+        commit_head_seen: Arc<AtomicBool>,
         tx_sender: TransactionQueueSender,
         transactions_results: QueryTransactionsResults,
         block_context: BlockContext,
     ) -> Self {
         Self {
             has_blockenv,
+            commit_head_seen,
             tx_sender,
             transactions_results,
             block_context,
@@ -347,6 +351,7 @@ pub async fn handle_transaction_rpc(
 
     let response = match request.method.as_str() {
         METHOD_SEND_TRANSACTIONS => handle_send_transactions(&state, &request).await?,
+        METHOD_SEND_EVENTS => handle_send_events(&state, &request).await?,
         METHOD_BLOCK_ENV => handle_block_env(&state, &request).await?,
         METHOD_REORG => handle_reorg(&state, &request).await?,
         METHOD_GET_TRANSACTIONS => handle_get_transactions(&state, &request).await?,
@@ -403,6 +408,15 @@ async fn handle_send_transactions(
     process_request(state, request).await
 }
 
+#[instrument(name = "http_server::handle_send_events", skip_all, level = "debug")]
+async fn handle_send_events(
+    state: &ServerState,
+    request: &JsonRpcRequest,
+) -> Result<JsonRpcResponse, StatusCode> {
+    trace!("Processing sendEvents request");
+    process_request(state, request).await
+}
+
 #[instrument(name = "http_server::handle_reorg", skip_all, level = "debug")]
 async fn handle_reorg(
     state: &ServerState,
@@ -442,9 +456,30 @@ async fn process_request(
     };
 
     let request_count = tx_queue_contents.len();
+    let mut saw_new_iteration = false;
+    let mut commit_head_seen = state.commit_head_seen.load(Ordering::Acquire);
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
+        let is_new_iteration_event = matches!(&queue_tx, TxQueueContents::NewIteration(_, _));
+        let is_commit_head_event = matches!(&queue_tx, TxQueueContents::CommitHead(_, _));
+
+        match &queue_tx {
+            TxQueueContents::CommitHead(_, _) => {
+                commit_head_seen = true;
+            }
+            TxQueueContents::NewIteration(_, _) | TxQueueContents::Tx(_, _) => {
+                if !commit_head_seen {
+                    debug!("Rejecting request without prior commit head");
+                    return Ok(JsonRpcResponse::invalid_request(
+                        request,
+                        "commit head must be received before other events",
+                    ));
+                }
+            }
+            TxQueueContents::Reorg(_, _) => {}
+        }
+
         trace_tx_queue_contents(&state.block_context, &queue_tx);
         if let TxQueueContents::Tx(tx, _) = &queue_tx
             && state
@@ -468,6 +503,18 @@ async fn process_request(
                 "Internal error: failed to queue transaction",
             ));
         }
+
+        if is_commit_head_event {
+            state.commit_head_seen.store(true, Ordering::Release);
+        }
+
+        if is_new_iteration_event {
+            saw_new_iteration = true;
+        }
+    }
+
+    if saw_new_iteration && !state.has_blockenv.load(Ordering::Relaxed) {
+        state.has_blockenv.store(true, Ordering::Release);
     }
 
     debug!(

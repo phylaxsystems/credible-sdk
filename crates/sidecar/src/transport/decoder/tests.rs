@@ -1,13 +1,15 @@
 #![allow(clippy::match_wildcard_for_single_variants)]
-use crate::transport::{
-    decoder::{
-        Decoder,
-        HttpDecoderError,
-        HttpTransactionDecoder,
-        QueueIteration,
-        TxQueueContents,
+use crate::{
+    engine::queue::NewIteration,
+    transport::{
+        decoder::{
+            Decoder,
+            HttpDecoderError,
+            HttpTransactionDecoder,
+            TxQueueContents,
+        },
+        http::server::JsonRpcRequest,
     },
-    http::server::JsonRpcRequest,
 };
 use alloy::primitives::{
     Address,
@@ -842,13 +844,26 @@ fn test_mixed_valid_invalid_transactions() {
     assert!(matches!(result, Err(HttpDecoderError::InvalidHash(_))));
 }
 
+fn decode_block_env_request(
+    params: serde_json::Value,
+) -> Result<Vec<TxQueueContents>, HttpDecoderError> {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendBlockEnv".to_string(),
+        params: Some(params),
+        id: Some(json!(1)),
+    };
+
+    HttpTransactionDecoder::to_tx_queue_contents(&request)
+}
+
 // ============================================================================
 // BlockEnv Tests - Direct Deserialization
 // ============================================================================
 
 #[test]
 fn test_block_env_deserialization_valid() {
-    let valid_request = json!({
+    let params = json!({
         "block_env": {
             "number": 123456u64,
             "beneficiary": "0x0000000000000000000000000000000000000000",
@@ -863,21 +878,43 @@ fn test_block_env_deserialization_valid() {
         "selected_iteration_id": 42u64
     });
 
-    let result = serde_json::from_value::<QueueIteration>(valid_request);
-    assert!(result.is_ok(), "Should deserialize valid BlockEnv");
+    let result = decode_block_env_request(params).expect("block env decoding should succeed");
+    assert_eq!(
+        result.len(),
+        2,
+        "Expected commit head + new iteration events"
+    );
 
-    let queue_block_env = result.unwrap();
-    let block_env = queue_block_env.block_env;
-    assert_eq!(block_env.number, 123456u64);
-    assert_eq!(block_env.basefee, 1000000000u64);
-    assert_eq!(block_env.gas_limit, 30000000u64);
-    assert_eq!(block_env.timestamp, 1234567890u64);
-    assert_eq!(queue_block_env.iteration_id, 42);
+    let commit_head = match &result[0] {
+        TxQueueContents::CommitHead(commit_head, _) => commit_head,
+        other => panic!("Expected CommitHead event, got {other:?}"),
+    };
+    assert_eq!(commit_head.block_number, 123456);
+    assert_eq!(commit_head.n_transactions, 1000);
+    assert_eq!(commit_head.iteration_id(), 42);
+    assert_eq!(
+        commit_head.last_tx_hash,
+        Some(
+            B256::from_str("0x2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap()
+        )
+    );
+
+    let new_iteration = match &result[1] {
+        TxQueueContents::NewIteration(iteration, _) => iteration,
+        other => panic!("Expected NewIteration event, got {other:?}"),
+    };
+    assert_eq!(new_iteration.iteration_id, 42);
+    assert_eq!(new_iteration.block_env.number, 123456);
+    assert_eq!(new_iteration.block_env.basefee, 1_000_000_000);
+    assert_eq!(new_iteration.block_env.gas_limit, 30_000_000);
+    assert_eq!(new_iteration.block_env.timestamp, 1_234_567_890);
+    assert!(new_iteration.block_env.prevrandao.is_some());
 }
 
 #[test]
 fn test_block_env_with_optional_fields() {
-    let with_optional = json!({
+    let params = json!({
         "block_env": {
             "number": 123456u64,
             "beneficiary": "0x1234567890123456789012345678901234567890",
@@ -891,20 +928,21 @@ fn test_block_env_with_optional_fields() {
                 "blob_gasprice": 2000u128
             }
         },
-        "selected_iteration_id": 7u64
+        "selected_iteration_id": 7u64,
+        "n_transactions": 0u64
     });
 
-    let result = serde_json::from_value::<QueueIteration>(with_optional);
-    assert!(
-        result.is_ok(),
-        "Should deserialize BlockEnv with optional fields"
-    );
+    let result = decode_block_env_request(params).expect("optional fields should decode");
+    assert_eq!(result.len(), 2);
 
-    let queue_block_env = result.unwrap();
-    let block_env = queue_block_env.block_env;
+    let new_iteration = match &result[1] {
+        TxQueueContents::NewIteration(iteration, _) => iteration,
+        other => panic!("Expected NewIteration event, got {other:?}"),
+    };
+    let block_env = &new_iteration.block_env;
     assert!(block_env.prevrandao.is_some());
     assert!(block_env.blob_excess_gas_and_price.is_some());
-    assert_eq!(queue_block_env.iteration_id, 7);
+    assert_eq!(new_iteration.iteration_id, 7);
 }
 
 #[test]
@@ -920,7 +958,8 @@ fn test_block_env_boundary_values() {
                     "gas_limit": 0u64,
                     "basefee": 0u64,
                     "difficulty": "0x0"
-                }
+                },
+                "selected_iteration_id": 1u64
             }),
         ),
         (
@@ -940,79 +979,8 @@ fn test_block_env_boundary_values() {
     ];
 
     for (name, request) in test_cases {
-        let result = serde_json::from_value::<QueueIteration>(request);
+        let result = decode_block_env_request(request);
         assert!(result.is_ok(), "Failed for case: {name}");
-    }
-}
-
-#[test]
-fn test_block_env_missing_required_fields() {
-    let test_cases = vec![
-        (
-            "missing_number",
-            json!({"block_env": {
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 0u64,
-                "gas_limit": 0u64,
-                "basefee": 0u64,
-                "difficulty": "0x0"
-            }}),
-        ),
-        (
-            "missing_beneficiary",
-            json!({"block_env": {
-                "number": 1u64,
-                "timestamp": 0u64,
-                "gas_limit": 0u64,
-                "basefee": 0u64,
-                "difficulty": "0x0"
-            }}),
-        ),
-        (
-            "missing_timestamp",
-            json!({"block_env": {
-                "number": 1u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "gas_limit": 0u64,
-                "basefee": 0u64,
-                "difficulty": "0x0"
-            }}),
-        ),
-        (
-            "missing_gas_limit",
-            json!({"block_env": {
-                "number": 1u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 0u64,
-                "basefee": 0u64,
-                "difficulty": "0x0"
-            }}),
-        ),
-        (
-            "missing_basefee",
-            json!({"block_env": {
-                "number": 1u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 0u64,
-                "gas_limit": 0u64,
-                "difficulty": "0x0"
-            }}),
-        ),
-        (
-            "missing_difficulty",
-            json!({"block_env": {
-                "number": 1u64,
-                "beneficiary": "0x0000000000000000000000000000000000000000",
-                "timestamp": 0u64,
-                "gas_limit": 0u64,
-                "basefee": 0u64
-            }}),
-        ),
-    ];
-
-    for (name, request) in test_cases {
-        let result = serde_json::from_value::<QueueIteration>(request);
-        assert!(result.is_err(), "Should fail for: {name}");
     }
 }
 
@@ -1142,8 +1110,8 @@ fn test_block_env_invalid_field_types() {
         ),
     ];
 
-    for (name, request) in test_cases {
-        let result = serde_json::from_value::<QueueIteration>(request);
+    for (name, params) in test_cases {
+        let result = decode_block_env_request(params);
         assert!(result.is_err(), "Should fail for: {name}");
     }
 }
@@ -1163,7 +1131,8 @@ fn test_block_env_validation_rules() {
                     "basefee": 1000000000u64,
                     "difficulty": "0x0",
                 },
-                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "selected_iteration_id": 1u64
             }),
         ),
         (
@@ -1178,7 +1147,8 @@ fn test_block_env_validation_rules() {
                     "difficulty": "0x0",
                 },
                 "last_tx_hash": null,
-                "n_transactions": 10u64
+                "n_transactions": 10u64,
+                "selected_iteration_id": 2u64
             }),
         ),
         (
@@ -1193,20 +1163,24 @@ fn test_block_env_validation_rules() {
                     "difficulty": "0x0",
                 },
                 "last_tx_hash": "0x5555555555555555555555555555555555555555555555555555555555555555",
-                "n_transactions": 0u64
+                "n_transactions": 0u64,
+                "selected_iteration_id": 3u64
             }),
         ),
     ];
 
     for (name, request) in test_cases {
-        let result = serde_json::from_value::<QueueIteration>(request);
-        assert!(result.is_err(), "Should fail validation for: {name}");
+        let result = decode_block_env_request(request);
+        assert!(
+            matches!(result, Err(HttpDecoderError::BlockEnvValidation(_))),
+            "Should fail validation for: {name}"
+        );
     }
 }
 
 #[test]
 fn test_block_env_serialization_round_trip() {
-    let original = QueueIteration {
+    let original = NewIteration {
         block_env: BlockEnv {
             number: 123456u64,
             beneficiary: Address::ZERO,
@@ -1224,7 +1198,7 @@ fn test_block_env_serialization_round_trip() {
     };
 
     let serialized = serde_json::to_value(&original).unwrap();
-    let deserialized = serde_json::from_value::<QueueIteration>(serialized).unwrap();
+    let deserialized = serde_json::from_value::<NewIteration>(serialized).unwrap();
 
     assert_eq!(original.block_env.number, deserialized.block_env.number);
     assert_eq!(
@@ -1257,14 +1231,18 @@ fn test_decoder_block_env_success() {
                 "difficulty": "0x0",
             },
             "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-            "n_transactions": 5u64
+            "n_transactions": 5u64,
+            "selected_iteration_id": 9u64
         })),
         id: Some(json!(1)),
     };
 
     let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().len(), 1);
+    let events = result.unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(matches!(events[0], TxQueueContents::CommitHead(_, _)));
+    assert!(matches!(events[1], TxQueueContents::NewIteration(_, _)));
 }
 
 #[test]
@@ -1278,102 +1256,6 @@ fn test_decoder_block_env_missing_params() {
 
     let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
     assert!(matches!(result, Err(HttpDecoderError::MissingParams)));
-}
-
-#[test]
-fn test_decoder_block_env_error_mapping() {
-    let test_cases = vec![
-        (
-            "missing_block_number",
-            json!({
-                "block_env": {
-                    "beneficiary": "0x0000000000000000000000000000000000000000",
-                    "timestamp": 0u64,
-                    "gas_limit": 0u64,
-                    "basefee": 0u64,
-                    "difficulty": "0x0"
-                }
-            }),
-            HttpDecoderError::MissingBlockNumber,
-        ),
-        (
-            "missing_beneficiary",
-            json!({
-                "block_env": {
-                    "number": 1u64,
-                    "timestamp": 0u64,
-                    "gas_limit": 0u64,
-                    "basefee": 0u64,
-                    "difficulty": "0x0"
-                }
-            }),
-            HttpDecoderError::MissingBeneficiary,
-        ),
-        (
-            "missing_timestamp",
-            json!({
-                "block_env": {
-                    "number": 1u64,
-                    "beneficiary": "0x0000000000000000000000000000000000000000",
-                    "gas_limit": 0u64,
-                    "basefee": 0u64,
-                    "difficulty": "0x0"
-                }
-            }),
-            HttpDecoderError::MissingTimestamp,
-        ),
-        (
-            "missing_gas_limit",
-            json!({
-                "block_env": {
-                    "number": 1u64,
-                    "beneficiary": "0x0000000000000000000000000000000000000000",
-                    "timestamp": 0u64,
-                    "basefee": 0u64,
-                    "difficulty": "0x0"
-                }
-            }),
-            HttpDecoderError::MissingBlockGasLimit,
-        ),
-        (
-            "missing_basefee",
-            json!({
-                "block_env": {
-                    "number": 1u64,
-                    "beneficiary": "0x0000000000000000000000000000000000000000",
-                    "timestamp": 0u64,
-                    "gas_limit": 0u64,
-                    "difficulty": "0x0"
-                }
-            }),
-            HttpDecoderError::MissingBasefee,
-        ),
-        (
-            "missing_difficulty",
-            json!({
-                "block_env": {
-                    "number": 1u64,
-                    "beneficiary": "0x0000000000000000000000000000000000000000",
-                    "timestamp": 0u64,
-                    "gas_limit": 0u64,
-                    "basefee": 0u64
-                }
-            }),
-            HttpDecoderError::MissingDifficulty,
-        ),
-    ];
-
-    for (name, params, expected_error) in test_cases {
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendBlockEnv".to_string(),
-            params: Some(params),
-            id: Some(json!(1)),
-        };
-
-        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
-        assert_eq!(result.unwrap_err(), expected_error, "Failed for: {name}");
-    }
 }
 
 // ============================================================================

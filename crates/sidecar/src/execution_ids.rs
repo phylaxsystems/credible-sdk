@@ -1,3 +1,7 @@
+use crate::engine::queue::{
+    CommitHead,
+    NewIteration,
+};
 use revm::primitives::alloy_primitives::TxHash;
 use serde::{
     Deserialize,
@@ -77,6 +81,24 @@ impl TxExecutionId {
             self.iteration_id,
             self.tx_hash_hex()
         )
+    }
+}
+
+impl From<&NewIteration> for BlockExecutionId {
+    fn from(new_iteration: &NewIteration) -> Self {
+        Self {
+            block_number: new_iteration.block_env.number,
+            iteration_id: new_iteration.iteration_id,
+        }
+    }
+}
+
+impl From<&CommitHead> for BlockExecutionId {
+    fn from(commit_head: &CommitHead) -> Self {
+        Self {
+            block_number: commit_head.block_number,
+            iteration_id: commit_head.selected_iteration_id,
+        }
     }
 }
 

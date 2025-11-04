@@ -138,7 +138,7 @@ mod tests {
     #![allow(clippy::cast_sign_loss)]
     use super::*;
     use crate::engine::queue::{
-        QueueIteration,
+        NewIteration,
         QueueTransaction,
         TxQueueContents,
     };
@@ -205,7 +205,7 @@ mod tests {
 
     /// Helper function to create a test `TxQueueContents` with block
     fn create_test_block_queue_contents() -> TxQueueContents {
-        TxQueueContents::Iteration(QueueIteration::default(), Span::current())
+        TxQueueContents::NewIteration(NewIteration::default(), Span::current())
     }
 
     #[test]

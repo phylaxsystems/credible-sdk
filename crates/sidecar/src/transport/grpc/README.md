@@ -9,11 +9,34 @@ The complete gRPC service definition and message schemas are specified in [`side
 
 ## Core API Methods
 
-The gRPC transport implements the `SidecarTransport` service with four main RPCs.
+The gRPC transport implements the `SidecarTransport` service with iteration lifecycle RPCs plus transaction/result APIs.
 
-### `SendBlockEnv`
+### `CommitHead`
 
-Sends block environment data to the sidecar using native protobuf typing. Must be called before processing transactions.
+Announces which iteration should be committed and provides metadata about the previously executed transactions.
+Must be called before `NewIteration` built on the new head.
+
+- **Request:** `CommitHead`
+- **Response:** `BasicAck`
+
+### `NewIteration`
+
+Starts building a new iteration by providing the block environment to target.
+
+- **Request:** `NewIteration`
+- **Response:** `BasicAck`
+
+### `SendEvents`
+
+Allows bundling multiple core engine events that must be applied sequentially. A typical new block announcement includes
+`[CommitHead, NewIteration]`.
+
+- **Request:** `SendEvents`
+- **Response:** `BasicAck`
+
+### `SendBlockEnv` (deprecated)
+
+Legacy API that sends block environment and commit metadata in a single call. Prefer the event-based RPCs above.
 
 - **Request:** `BlockEnvEnvelope`
 - **Response:** `BasicAck`
@@ -57,8 +80,12 @@ the [Transport Transaction Types Documentation](../README.md#transaction-types).
 
 Block data and transactions are encoded according to the protobuf schema:
 
-- **BlockEnvEnvelope**: Contains a native `BlockEnv` message plus optional `last_tx_hash`, `selected_iteration_id` and
-  `n_transactions` values for parity with HTTP.
+- **CommitHead**: Carries iteration commit metadata (`last_tx_hash`, `n_transactions`, `selected_iteration_id`).
+- **NewIteration**: Wraps a native `BlockEnv` message alongside the target iteration identifier.
+- **Transaction** (in `SendEvents`): Shares the same layout as the standalone `Transaction` message so iteration batches
+  can include queued transactions.
+- **SendEvents**: Bundles a sequence of core engine messages for atomic submission.
+- **BlockEnvEnvelope** *(deprecated)*: Legacy structure that combines commit metadata and block environment in one payload.
 - **BlockEnv**: Uses strongly typed fields (e.g., `number`, `timestamp`, `gas_limit`) and string-encoded large
   integers (`difficulty`, `blob_gasprice`).
 
@@ -68,8 +95,9 @@ For transaction fields, protobuf still lacks native large-integer support, so:
 - **Addresses & Hashes**: Hex strings with optional `0x` prefix
 - **Binary data**: Hex strings with optional `0x` prefix
 
-The `BlockEnvEnvelope`, `TxExecutionId`, `BlockEnv`, and `TransactionEnv` messages in [`sidecar.proto`](sidecar.proto)
-define the precise field layout and encoding expectations.
+The `CommitHead`, `NewIteration`, `SendEvents`, `TxExecutionId`, `BlockEnv`, and `TransactionEnv` messages in
+[`sidecar.proto`](sidecar.proto) define the precise field layout and encoding expectations. `BlockEnvEnvelope` remains
+for compatibility but is slated for removal.
 
 ## Example Usage
 
