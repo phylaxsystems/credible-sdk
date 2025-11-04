@@ -308,7 +308,7 @@ impl JsonRpcResponse {
 // use axum. we can use other frameworks but id rather not
 #[derive(Clone, Debug)]
 pub struct ServerState {
-    pub has_blockenv: Arc<AtomicBool>,
+    pub has_commit_head: Arc<AtomicBool>,
     commit_head_seen: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
@@ -325,7 +325,7 @@ impl ServerState {
         block_context: BlockContext,
     ) -> Self {
         Self {
-            has_blockenv,
+            has_commit_head: has_blockenv,
             commit_head_seen,
             tx_sender,
             transactions_results,
@@ -382,8 +382,8 @@ async fn handle_block_env(
 
     let response = process_request(state, request).await?;
     // If the `process_request` call was successful, we can mark the block environment as received
-    if !state.has_blockenv.load(Ordering::Relaxed) {
-        state.has_blockenv.store(true, Ordering::Release);
+    if !state.has_commit_head.load(Ordering::Relaxed) {
+        state.has_commit_head.store(true, Ordering::Release);
     }
 
     Ok(response)
@@ -401,7 +401,7 @@ async fn handle_send_transactions(
     trace!("Processing sendTransactions request");
 
     // Check if we have block environment before processing transactions
-    if !state.has_blockenv.load(Ordering::Relaxed) {
+    if !state.has_commit_head.load(Ordering::Relaxed) {
         debug!("Rejecting transaction - no block environment available");
         return Ok(JsonRpcResponse::block_not_available(request));
     }
@@ -457,7 +457,7 @@ async fn process_request(
 
     let request_count = tx_queue_contents.len();
     let mut saw_new_iteration = false;
-    let mut commit_head_seen = state.commit_head_seen.load(Ordering::Acquire);
+    let mut commit_head_seen = { state.commit_head_seen.load(Ordering::Relaxed) };
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
@@ -466,7 +466,9 @@ async fn process_request(
 
         match &queue_tx {
             TxQueueContents::CommitHead(_, _) => {
-                commit_head_seen = true;
+                if !commit_head_seen {
+                    state.has_commit_head.store(true, Ordering::Release);
+                }
             }
             TxQueueContents::NewIteration(_, _) | TxQueueContents::Tx(_, _) => {
                 if !commit_head_seen {
@@ -513,8 +515,8 @@ async fn process_request(
         }
     }
 
-    if saw_new_iteration && !state.has_blockenv.load(Ordering::Relaxed) {
-        state.has_blockenv.store(true, Ordering::Release);
+    if saw_new_iteration && !state.has_commit_head.load(Ordering::Relaxed) {
+        state.has_commit_head.store(true, Ordering::Release);
     }
 
     debug!(
@@ -536,7 +538,7 @@ fn ensure_block_environment_available(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Option<JsonRpcResponse> {
-    if state.has_blockenv.load(Ordering::Relaxed) {
+    if state.has_commit_head.load(Ordering::Relaxed) {
         None
     } else {
         debug!("Rejecting transaction - no block environment available");
