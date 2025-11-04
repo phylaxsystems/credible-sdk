@@ -189,8 +189,37 @@ impl Listener {
             .await
             .context("failed to get current block number")?;
 
+        // If this is the first run (no blocks committed yet), send an initial CommitHead
+        if self.last_committed_block.is_none() {
+            let initial_commit_block = if let Some(start_block) = self.starting_block {
+                // Commit the block before the starting block
+                if start_block == 0 {
+                    warn!(
+                        "Starting block is 0, cannot commit previous block. Committing block 0 instead."
+                    );
+                    0
+                } else {
+                    start_block.saturating_sub(1)
+                }
+            } else {
+                // No starting block specified, commit the current block
+                current_block
+            };
+
+            info!("Sending initial CommitHead for block {initial_commit_block}");
+
+            // Send CommitHead with no transactions (we're just marking it as committed)
+            self.send_commit_head(initial_commit_block, None, 0)
+                .await
+                .context("failed to send initial CommitHead")?;
+
+            self.last_committed_block = Some(initial_commit_block);
+
+            info!("Successfully sent initial CommitHead for block {initial_commit_block}");
+        }
+
+        // Now check if we need to catch up on any blocks
         if let Some(last_committed) = self.last_committed_block {
-            // If we've committed blocks before and there's a gap, catch up
             if current_block > last_committed {
                 let missed_count = current_block - last_committed;
                 info!(
@@ -203,25 +232,6 @@ impl Listener {
             } else {
                 debug!("No missed blocks to catch up on");
             }
-        } else if let Some(start_block) = self.starting_block {
-            // First time running with a specified starting block
-            if start_block > current_block {
-                warn!(
-                    "Starting block {start_block} is ahead of current head {current_block}, will wait for blocks",
-                );
-                self.last_committed_block = Some(start_block - 1);
-            } else {
-                info!(
-                    "Starting from block {start_block} and catching up to current head {current_block} ({} blocks)",
-                    current_block - start_block + 1
-                );
-
-                self.process_and_handle_failures(start_block, current_block, "Initial catch-up")
-                    .await?;
-            }
-        } else {
-            // First time running, start from the current block
-            info!("Starting from current block {current_block}");
         }
 
         Ok(())
