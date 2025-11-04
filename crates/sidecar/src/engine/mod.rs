@@ -725,7 +725,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         block_iteration_data_n_transactions: u64,
     ) {
         // If the block env is not +1 from the previous block env, invalidate the cache
-        if self.current_head != commit_head.block_number - 1 {
+        if self.current_head != commit_head.block_number.saturating_sub(1) {
             warn!(current_head = %self.current_head, commit_head = %commit_head.block_number, "CommitHead received is not +1 from the current head, invalidating cache");
             self.invalidate_all(commit_head);
         }
@@ -1255,7 +1255,7 @@ where
     }
 }
 
-/*
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
@@ -1379,7 +1379,7 @@ mod tests {
         };
         engine.process_iteration(&queue_iteration_1).unwrap();
 
-        let queue_commit_1 = queue::CommitHead::new(None, 0, 1, 0);
+        let queue_commit_1 = queue::CommitHead::new(1, 0, None, 0);
         engine
             .process_commit_head(&queue_commit_1, &mut 0, &mut Instant::now())
             .unwrap();
@@ -3109,4 +3109,3 @@ mod tests {
         );
     }
 }
-*/
