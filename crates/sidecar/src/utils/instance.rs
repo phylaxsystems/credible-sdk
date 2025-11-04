@@ -164,6 +164,8 @@ pub struct LocalInstance<T: TestTransport> {
     pub iteration_tx_map: HashMap<u64, u64>,
     /// Tracks which iteration IDs have already been seeded with a `BlockEnv` for the current block
     active_iterations: HashSet<u64>,
+    /// Tracks the next committed nonce per address after the latest finalized block
+    committed_nonce: HashMap<Address, u64>,
 }
 
 impl<T: TestTransport> LocalInstance<T> {
@@ -211,6 +213,7 @@ impl<T: TestTransport> LocalInstance<T> {
             iteration_id: 1,
             iteration_tx_map: HashMap::new(),
             active_iterations: HashSet::new(),
+            committed_nonce: HashMap::new(),
         }
     }
 
@@ -266,8 +269,9 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Get the current nonce for a specific address in a specific iteration and increment it
     pub fn next_nonce(&mut self, caller: Address, block_execution_id: BlockExecutionId) -> u64 {
+        let committed = *self.committed_nonce.get(&caller).unwrap_or(&0);
         let key = (caller, block_execution_id.iteration_id);
-        let entry = self.iteration_nonce.entry(key).or_insert(0);
+        let entry = self.iteration_nonce.entry(key).or_insert(committed);
 
         let nonce = *entry;
         *entry += 1;
@@ -283,6 +287,7 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Clear all nonces
     pub fn clear_nonce(&mut self) {
         self.iteration_nonce.clear();
+        self.committed_nonce.clear();
     }
 
     /// Wait for a short time to allow transaction processing
@@ -473,6 +478,15 @@ impl<T: TestTransport> LocalInstance<T> {
                 *self.iteration_tx_map.get(&self.iteration_id).unwrap_or(&0)
             )
             .await?;
+
+        // Update committed nonce snapshot using the iteration we just finalized.
+        let selected_iteration_id = self.iteration_id;
+        for ((address, iteration_id), next_nonce) in self.iteration_nonce.iter() {
+            if *iteration_id == selected_iteration_id {
+                self.committed_nonce.insert(*address, *next_nonce);
+            }
+        }
+        self.iteration_nonce.clear();
 
         self.active_iterations.clear();
 

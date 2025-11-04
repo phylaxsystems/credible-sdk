@@ -2297,14 +2297,14 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Iteration 1: Create a contract at value 100
-        instance.set_current_iteration_id(1);
+        instance.new_instance(1).await.unwrap();
         let tx_iter1 = instance
             .send_successful_create_tx_dry(uint!(100_U256), Bytes::new())
             .await
             .unwrap();
 
         // Iteration 2: Create a contract at value 200
-        instance.set_current_iteration_id(2);
+        instance.new_instance(2).await.unwrap();
         let tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(200_U256), Bytes::new())
             .await
@@ -2314,8 +2314,8 @@ mod tests {
         assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
 
         // Block 2: Select iteration 1 as the winner
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_instance(1).await.unwrap();
 
         // The state should reflect iteration 1's changes, not iteration 2's
         let tx_verify = instance
@@ -2585,7 +2585,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Only send transactions in iteration 2
-        instance.set_current_iteration_id(2);
+        instance.new_instance(2).await.unwrap();
         let tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2594,8 +2594,8 @@ mod tests {
         assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
 
         // Block 2: Select iteration 1 which has no transactions
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_instance(1).await.unwrap();
 
         // Should still work
         let tx_block2 = instance
