@@ -422,7 +422,6 @@ impl Listener {
                 error = ?e,
                 "Failed to send NewIteration for block {block_number}, will skip this block",
             );
-            return Ok(());
         }
 
         // STEP 2: Send all transactions for the current block
