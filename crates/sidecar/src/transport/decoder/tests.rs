@@ -6,6 +6,9 @@ use crate::{
             Decoder,
             HttpDecoderError,
             HttpTransactionDecoder,
+            NewIterationEvent,
+            SendEvent,
+            SendEventsParams,
             TxQueueContents,
         },
         http::server::JsonRpcRequest,
@@ -1476,4 +1479,649 @@ fn test_reorg_with_various_block_numbers() {
             "Should succeed with {description} block number",
         );
     }
+}
+
+// ============================================================================
+// SendEvents Tests - Valid Cases
+// ============================================================================
+
+#[test]
+fn test_send_events_single_commit_head() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "events": [
+                {
+                    "commit_head": {
+                        "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                        "n_transactions": 10,
+                        "block_number": 100,
+                        "selected_iteration_id": 5
+                    }
+                }
+            ]
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(result.is_ok());
+    let events = result.unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], TxQueueContents::CommitHead(_, _)));
+}
+
+#[test]
+fn test_send_events_single_new_iteration() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "events": [
+                {
+                    "new_iteration": {
+                        "iteration_id": 42,
+                        "block_env": {
+                            "number": 123456u64,
+                            "beneficiary": "0x0000000000000000000000000000000000000000",
+                            "timestamp": 1234567890u64,
+                            "gas_limit": 30000000u64,
+                            "basefee": 1000000000u64,
+                            "difficulty": "0x0"
+                        }
+                    }
+                }
+            ]
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(result.is_ok());
+    let events = result.unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], TxQueueContents::NewIteration(_, _)));
+}
+
+#[test]
+fn test_send_events_commit_head_with_zero_transactions() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "events": [
+                {
+                    "commit_head": {
+                        "n_transactions": 0,
+                        "block_number": 100,
+                        "selected_iteration_id": 1
+                    }
+                }
+            ]
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_send_events_commit_head_last_tx_hash_variations() {
+    let test_cases = vec![
+        ("null_hash", json!(null)),
+        ("empty_string", json!("")),
+        ("omitted", serde_json::Value::Null), // Will be omitted in construction
+    ];
+
+    for (name, hash_value) in test_cases {
+        let mut commit_head = json!({
+            "n_transactions": 0,
+            "block_number": 100,
+            "selected_iteration_id": 1
+        });
+
+        if !hash_value.is_null() || name == "null_hash" || name == "empty_string" {
+            commit_head["last_tx_hash"] = hash_value;
+        }
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendEvents".to_string(),
+            params: Some(json!({
+                "events": [{"commit_head": commit_head}]
+            })),
+            id: Some(json!(1)),
+        };
+
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(result.is_ok(), "Failed for case: {name}");
+    }
+}
+
+#[test]
+fn test_send_events_new_iteration_with_optional_block_fields() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "events": [
+                {
+                    "new_iteration": {
+                        "iteration_id": 42,
+                        "block_env": {
+                            "number": 123456u64,
+                            "beneficiary": "0x1234567890123456789012345678901234567890",
+                            "timestamp": 1234567890u64,
+                            "gas_limit": 30000000u64,
+                            "basefee": 1000000000u64,
+                            "difficulty": "0x0",
+                            "prevrandao": "0x1234567890123456789012345678901234567890123456789012345678901234",
+                            "blob_excess_gas_and_price": {
+                                "excess_blob_gas": 1000,
+                                "blob_gasprice": 2000
+                            }
+                        }
+                    }
+                }
+            ]
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(result.is_ok());
+}
+
+// ============================================================================
+// SendEvents Tests - Error Cases
+// ============================================================================
+
+#[test]
+fn test_send_events_missing_params() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: None,
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(matches!(result, Err(HttpDecoderError::MissingParams)));
+}
+
+#[test]
+fn test_send_events_empty_events_array() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "events": []
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(matches!(result, Err(HttpDecoderError::NoEvents)));
+}
+
+#[test]
+fn test_send_events_missing_events_field() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "invalid_field": "value"
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(matches!(result, Err(HttpDecoderError::MissingEventsField)));
+}
+
+#[test]
+fn test_send_events_commit_head_missing_required_fields() {
+    let test_cases = vec![
+        (
+            "missing_n_transactions",
+            json!({
+                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "block_number": 100,
+                "selected_iteration_id": 1
+            }),
+        ),
+        (
+            "missing_block_number",
+            json!({
+                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "n_transactions": 10,
+                "selected_iteration_id": 1
+            }),
+        ),
+        (
+            "missing_selected_iteration_id",
+            json!({
+                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "n_transactions": 10,
+                "block_number": 100
+            }),
+        ),
+    ];
+
+    for (name, commit_head) in test_cases {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendEvents".to_string(),
+            params: Some(json!({
+                "events": [{"commit_head": commit_head}]
+            })),
+            id: Some(json!(1)),
+        };
+
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(result.is_err(), "Should fail for: {name}");
+    }
+}
+
+#[test]
+fn test_send_events_commit_head_validation_errors() {
+    let test_cases = vec![
+        (
+            "zero_transactions_with_hash",
+            json!({
+                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "n_transactions": 0,
+                "block_number": 100,
+                "selected_iteration_id": 1
+            }),
+        ),
+        (
+            "nonzero_transactions_without_hash",
+            json!({
+                "n_transactions": 10,
+                "block_number": 100,
+                "selected_iteration_id": 1
+            }),
+        ),
+        (
+            "nonzero_transactions_with_null_hash",
+            json!({
+                "last_tx_hash": null,
+                "n_transactions": 10,
+                "block_number": 100,
+                "selected_iteration_id": 1
+            }),
+        ),
+        (
+            "nonzero_transactions_with_empty_hash",
+            json!({
+                "last_tx_hash": "",
+                "n_transactions": 10,
+                "block_number": 100,
+                "selected_iteration_id": 1
+            }),
+        ),
+    ];
+
+    for (name, commit_head) in test_cases {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendEvents".to_string(),
+            params: Some(json!({
+                "events": [{"commit_head": commit_head}]
+            })),
+            id: Some(json!(1)),
+        };
+
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(
+            matches!(result, Err(HttpDecoderError::InvalidTransaction(_))),
+            "Should fail validation for: {name}"
+        );
+    }
+}
+
+#[test]
+fn test_send_events_commit_head_invalid_hash() {
+    let test_cases = vec![
+        ("invalid_hash", "not_a_hash"),
+        ("wrong_length", "0x1234"),
+        ("malformed", "0xgg"),
+    ];
+
+    for (name, hash) in test_cases {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendEvents".to_string(),
+            params: Some(json!({
+                "events": [{
+                    "commit_head": {
+                        "last_tx_hash": hash,
+                        "n_transactions": 10,
+                        "block_number": 100,
+                        "selected_iteration_id": 1
+                    }
+                }]
+            })),
+            id: Some(json!(1)),
+        };
+
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(
+            matches!(result, Err(HttpDecoderError::InvalidLastTxHash(_))),
+            "Should fail for: {name}"
+        );
+    }
+}
+
+#[test]
+fn test_send_events_new_iteration_missing_fields() {
+    let test_cases = vec![
+        (
+            "missing_iteration_id",
+            json!({
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0"
+                }
+            }),
+        ),
+        (
+            "missing_block_env",
+            json!({
+                "iteration_id": 42
+            }),
+        ),
+    ];
+
+    for (name, new_iteration) in test_cases {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendEvents".to_string(),
+            params: Some(json!({
+                "events": [{"new_iteration": new_iteration}]
+            })),
+            id: Some(json!(1)),
+        };
+
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(result.is_err(), "Should fail for: {name}");
+    }
+}
+
+#[test]
+fn test_send_events_new_iteration_invalid_block_env() {
+    let test_cases = vec![
+        (
+            "invalid_number",
+            json!({
+                "iteration_id": 42,
+                "block_env": {
+                    "number": "invalid",
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0"
+                }
+            }),
+        ),
+        (
+            "invalid_beneficiary",
+            json!({
+                "iteration_id": 42,
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "invalid_address",
+                    "timestamp": 1234567890u64,
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0"
+                }
+            }),
+        ),
+        (
+            "missing_timestamp",
+            json!({
+                "iteration_id": 42,
+                "block_env": {
+                    "number": 123456u64,
+                    "beneficiary": "0x0000000000000000000000000000000000000000",
+                    "gas_limit": 30000000u64,
+                    "basefee": 1000000000u64,
+                    "difficulty": "0x0"
+                }
+            }),
+        ),
+    ];
+
+    for (name, new_iteration) in test_cases {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendEvents".to_string(),
+            params: Some(json!({
+                "events": [{"new_iteration": new_iteration}]
+            })),
+            id: Some(json!(1)),
+        };
+
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(result.is_err(), "Should fail for: {name}");
+    }
+}
+
+#[test]
+fn test_send_events_invalid_transaction() {
+    let invalid_tx = json!({
+        "tx_execution_id": {
+            "block_number": 1,
+            "iteration_id": 1,
+            "tx_hash": "invalid_hash"
+        },
+        "tx_env": {
+            "caller": "0x1234567890123456789012345678901234567890",
+            "kind": "0x9876543210987654321098765432109876543210",
+            "value": "1000000000000000000",
+            "data": "0x",
+            "gas_limit": 21000,
+            "gas_price": 20000000000_u64,
+            "nonce": 0,
+            "chain_id": 1,
+            "tx_type": 0,
+            "access_list": [],
+            "gas_priority_fee": null,
+            "blob_hashes": [],
+            "max_fee_per_blob_gas": 0,
+            "authorization_list": []
+        }
+    });
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "events": [{"transaction": invalid_tx}]
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_send_events_mixed_valid_and_invalid() {
+    let valid_commit_head = json!({
+        "commit_head": {
+            "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "n_transactions": 5,
+            "block_number": 100,
+            "selected_iteration_id": 1
+        }
+    });
+
+    let invalid_commit_head = json!({
+        "commit_head": {
+            "last_tx_hash": "invalid_hash",
+            "n_transactions": 5,
+            "block_number": 100,
+            "selected_iteration_id": 1
+        }
+    });
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "events": [valid_commit_head, invalid_commit_head]
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_send_events_unrecognized_event_structure() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "events": [
+                {
+                    "unknown_event": {
+                        "some_field": "some_value"
+                    }
+                }
+            ]
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_send_events_commit_head_invalid_field_types() {
+    let test_cases = vec![
+        (
+            "string_n_transactions",
+            json!({
+                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "n_transactions": "10",
+                "block_number": 100,
+                "selected_iteration_id": 1
+            }),
+        ),
+        (
+            "string_block_number",
+            json!({
+                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "n_transactions": 10,
+                "block_number": "100",
+                "selected_iteration_id": 1
+            }),
+        ),
+        (
+            "negative_n_transactions",
+            json!({
+                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "n_transactions": -1,
+                "block_number": 100,
+                "selected_iteration_id": 1
+            }),
+        ),
+    ];
+
+    for (name, commit_head) in test_cases {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendEvents".to_string(),
+            params: Some(json!({
+                "events": [{"commit_head": commit_head}]
+            })),
+            id: Some(json!(1)),
+        };
+
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(result.is_err(), "Should fail for: {name}");
+    }
+}
+
+#[test]
+fn test_send_events_boundary_values() {
+    let test_cases = vec![
+        (
+            "max_u64_values",
+            json!({
+                "commit_head": {
+                    "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                    "n_transactions": u64::MAX,
+                    "block_number": u64::MAX,
+                    "selected_iteration_id": u64::MAX
+                }
+            }),
+        ),
+        (
+            "zero_block_number",
+            json!({
+                "commit_head": {
+                    "n_transactions": 0,
+                    "block_number": 0,
+                    "selected_iteration_id": 1
+                }
+            }),
+        ),
+    ];
+
+    for (name, event) in test_cases {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendEvents".to_string(),
+            params: Some(json!({
+                "events": [event]
+            })),
+            id: Some(json!(1)),
+        };
+
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(result.is_ok(), "Should succeed for: {name}");
+    }
+}
+
+#[test]
+fn test_send_events_large_event_array() {
+    let mut events = Vec::new();
+
+    for i in 0..100 {
+        events.push(json!({
+            "commit_head": {
+                "n_transactions": 0,
+                "block_number": i,
+                "selected_iteration_id": 1
+            }
+        }));
+    }
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "events": events
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(result.is_ok());
+    let decoded_events = result.unwrap();
+    assert_eq!(decoded_events.len(), 100);
 }
