@@ -27,6 +27,7 @@ use assertion_executor::{
         AccountInfo,
         Address,
         B256,
+        BlockEnv,
         TxEnv,
         TxKind,
         U256,
@@ -48,6 +49,7 @@ use revm::{
         transaction::AccessListItem,
         tx::TxEnvBuilder,
     },
+    context_interface::block::BlobExcessGasAndPrice,
     database::CacheDB,
     primitives::{
         Bytes,
@@ -93,6 +95,8 @@ pub trait TestTransport: Sized {
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
     ) -> Result<(), String>;
+    /// Send a new iteration event with custom block environment data
+    async fn new_instance(&mut self, iteration_id: u64, block_env: BlockEnv) -> Result<(), String>;
     /// Send a new transaction reorg event. Removes the last executed transaction.
     /// Transaction hash provided as an argument must match the last executed tx.
     /// If not the call should succeed but the core engine should produce an error.
@@ -482,6 +486,22 @@ impl<T: TestTransport> LocalInstance<T> {
             .await?;
 
         Ok(tx_execution_id)
+    }
+
+    /// Send a standalone new iteration event for the most recent block.
+    ///
+    /// Generates a default `BlockEnv` matching our other helpers so callers only
+    /// need to provide the iteration identifier.
+    pub async fn new_instance(&mut self, iteration_id: u64) -> Result<(), String> {
+        if self.block_number == 0 {
+            return Err("new_instance requires at least one block to have been sent".to_string());
+        }
+
+        let current_block_number = self.block_number - 1;
+        let block_env = Self::default_block_env(current_block_number);
+
+        self.iteration_id = iteration_id;
+        self.transport.new_instance(iteration_id, block_env).await
     }
 
     /// Send a successful CREATE transaction using the default account, without a new blockenv
@@ -1080,6 +1100,17 @@ impl<T: TestTransport> LocalInstance<T> {
         self.block_number += 1;
 
         Ok(())
+    }
+
+    fn default_block_env(block_number: u64) -> BlockEnv {
+        let mut block_env = BlockEnv::default();
+        block_env.number = block_number;
+        block_env.gas_limit = 50_000_000;
+        block_env.blob_excess_gas_and_price = Some(BlobExcessGasAndPrice {
+            excess_blob_gas: 0,
+            blob_gasprice: 0,
+        });
+        block_env
     }
 }
 
