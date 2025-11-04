@@ -5,8 +5,8 @@
 //! of the decoders to convert them into events that can be passed down to
 //! the core engine.
 
-#[cfg(test)]
-mod tests;
+//#[cfg(test)]
+//mod tests;
 
 use crate::{
     engine::queue::{

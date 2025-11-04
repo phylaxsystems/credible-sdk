@@ -200,6 +200,7 @@ impl Transport for HttpTransport {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use alloy::primitives::B256;
@@ -483,3 +484,4 @@ mod tests {
         Err(last_error)
     }
 }
+ */

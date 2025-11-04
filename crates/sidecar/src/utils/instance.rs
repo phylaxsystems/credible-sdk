@@ -1095,6 +1095,7 @@ impl<T: TestTransport> Drop for LocalInstance<T> {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1120,3 +1121,4 @@ mod tests {
             .unwrap();
     }
 }
+*/

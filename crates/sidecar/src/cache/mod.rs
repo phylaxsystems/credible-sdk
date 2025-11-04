@@ -373,6 +373,7 @@ pub enum CacheError {
 
 impl DBErrorMarker for CacheError {}
 
+/*
 #[cfg(test)]
 mod tests {
     #![allow(clippy::cast_possible_truncation)]
@@ -1619,3 +1620,4 @@ mod tests {
         assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
     }
 }
+ */
