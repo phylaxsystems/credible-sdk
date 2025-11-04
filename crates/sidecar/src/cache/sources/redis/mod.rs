@@ -124,10 +124,10 @@ impl DatabaseRef for RedisSource {
 
     /// Reconstructs an account from cached metadata, returning `None` when absent.
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        let latest_head = self.min_sync_head.load(Ordering::Relaxed);
+        let min_sync_head = self.min_sync_head.load(Ordering::Relaxed);
         let Some(account) = self
             .backend
-            .get_account(address.into(), latest_head)
+            .get_account(address.into(), min_sync_head)
             .map_err(Self::Error::RedisAccount)?
         else {
             return Ok(None);
@@ -153,10 +153,10 @@ impl DatabaseRef for RedisSource {
 
     /// Loads bytecode previously stored for a code hash.
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        let latest_head = self.min_sync_head.load(Ordering::Relaxed);
+        let min_sync_head = self.min_sync_head.load(Ordering::Relaxed);
         let bytecode = Bytecode::new_raw(
             self.backend
-                .get_code(code_hash, latest_head)
+                .get_code(code_hash, min_sync_head)
                 .map_err(Self::Error::RedisCodeByHash)?
                 .ok_or(Self::Error::CodeByHashNotFound)?
                 .into(),
@@ -172,10 +172,10 @@ impl DatabaseRef for RedisSource {
     ) -> Result<StorageValue, Self::Error> {
         let slot_hash = keccak256(index.to_be_bytes::<32>());
         let slot = U256::from_be_bytes(slot_hash.into());
-        let latest_head = self.min_sync_head.load(Ordering::Relaxed);
+        let min_sync_head = self.min_sync_head.load(Ordering::Relaxed);
         let value = self
             .backend
-            .get_storage(address.into(), slot, latest_head)
+            .get_storage(address.into(), slot, min_sync_head)
             .map_err(Self::Error::RedisStorage)?
             .ok_or(Self::Error::StorageNotFound)?;
         Ok(value)
