@@ -254,54 +254,6 @@ impl SidecarTransport for GrpcService {
         }))
     }
 
-    /// Handle gRPC request for `CommitHead`.
-    #[instrument(name = "grpc_server::CommitHead", skip(self, request), level = "debug")]
-    async fn commit_head(
-        &self,
-        request: Request<PbCommitHead>,
-    ) -> Result<Response<BasicAck>, Status> {
-        trace!("Processing gRPC CommitHead request");
-        let payload = request.into_inner();
-        let commit_head = convert_pb_commit_head(&payload)?;
-
-        self.send_queue_event(
-            TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
-            "commit head",
-        )?;
-        self.mark_commit_head_seen();
-
-        Ok(Response::new(BasicAck {
-            accepted: true,
-            message: "commit head accepted".into(),
-        }))
-    }
-
-    /// Handle gRPC request for `NewIteration`.
-    #[instrument(
-        name = "grpc_server::NewIteration",
-        skip(self, request),
-        level = "debug"
-    )]
-    async fn new_iteration(
-        &self,
-        request: Request<PbNewIteration>,
-    ) -> Result<Response<BasicAck>, Status> {
-        trace!("Processing gRPC NewIteration request");
-        self.ensure_commit_head_seen()?;
-        let payload = request.into_inner();
-        let new_iteration = convert_pb_new_iteration(payload)?;
-
-        self.send_queue_event(
-            TxQueueContents::NewIteration(new_iteration, tracing::Span::current()),
-            "new iteration",
-        )?;
-
-        Ok(Response::new(BasicAck {
-            accepted: true,
-            message: "new iteration accepted".into(),
-        }))
-    }
-
     /// Handle gRPC request for batched iteration events.
     #[instrument(name = "grpc_server::SendEvents", skip(self, request), level = "debug")]
     async fn send_events(

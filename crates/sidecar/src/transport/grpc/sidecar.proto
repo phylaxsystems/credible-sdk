@@ -150,8 +150,6 @@ message SendEvents {
 service SidecarTransport {
   // Deprecated: prefer CommitHead/NewIteration/SendEvents
   rpc SendBlockEnv(BlockEnvEnvelope) returns (BasicAck);
-  rpc CommitHead(sidecar.transport.v1.CommitHead) returns (BasicAck);
-  rpc NewIteration(sidecar.transport.v1.NewIteration) returns (BasicAck);
   rpc SendEvents(sidecar.transport.v1.SendEvents) returns (BasicAck);
   rpc SendTransactions(SendTransactionsRequest) returns (SendTransactionsResponse);
   rpc Reorg(ReorgRequest) returns (BasicAck);
