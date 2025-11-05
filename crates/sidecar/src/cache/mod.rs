@@ -521,7 +521,7 @@ mod tests {
             latest_head >= self.synced_threshold
         }
 
-        fn update_latest_head(&self, _block_number: u64) {}
+        fn update_min_synced_head(&self, _block_number: u64) {}
 
         fn name(&self) -> SourceName {
             self.name
@@ -1197,7 +1197,7 @@ mod tests {
         assert_eq!(synced.len(), 3);
 
         // Set required block to 0 to test depth filtering
-        cache.reset_required_head(0);
+        cache.reset_latest_unprocessed_block(0);
 
         // Now effective block: max(0, 100 - 20) = 80
         // Sources: source1 (80 >= 10 ✓), source2 (80 >= 50 ✓), source3 (80 >= 100 ✗)
@@ -1211,7 +1211,7 @@ mod tests {
         // Test with max_depth = 60
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 60);
         cache.set_block_number(100);
-        cache.reset_required_head(0);
+        cache.reset_latest_unprocessed_block(0);
 
         // Effective block: max(0, 100 - 60) = 40
         // Sources: source1 (40 >= 10 ✓), source2 (40 >= 50 ✗), source3 (40 >= 100 ✗)
@@ -1222,7 +1222,7 @@ mod tests {
         // Test with max_depth = 200 (larger than current block)
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 200);
         cache.set_block_number(100);
-        cache.reset_required_head(0);
+        cache.reset_latest_unprocessed_block(0);
 
         // Effective block: max(0, 100 - 200) = 0
         // Sources: source1 (0 >= 10 ✗), source2 (0 >= 50 ✗), source3 (0 >= 100 ✗)
@@ -1246,7 +1246,7 @@ mod tests {
         assert_eq!(synced.len(), 2);
 
         // Set required block number to 30
-        cache.reset_required_head(30);
+        cache.reset_latest_unprocessed_block(30);
 
         // The effective block number should be max(30, 100 - 20) = max(30, 80) = 80
         // Both sources synced at block 80 (80 >= 10, 80 >= 50)
@@ -1254,7 +1254,7 @@ mod tests {
         assert_eq!(synced.len(), 2);
 
         // Set required block number to 5 (lower than depth calculation)
-        cache.reset_required_head(5);
+        cache.reset_latest_unprocessed_block(5);
 
         // The effective block number should be max(5, 80) = 80
         let synced: Vec<_> = cache.iter_synced_sources().collect();
@@ -1274,18 +1274,18 @@ mod tests {
         // Verify required block number is set to 100
         assert_eq!(
             cache
-                .required_head
+                .latest_unprocessed_block
                 .load(std::sync::atomic::Ordering::Acquire),
             100
         );
 
         // Reset required block number to 0
-        cache.reset_required_head(0);
+        cache.reset_latest_unprocessed_block(0);
 
         // Verify it's now 0
         assert_eq!(
             cache
-                .required_head
+                .latest_unprocessed_block
                 .load(std::sync::atomic::Ordering::Acquire),
             0
         );
@@ -1296,10 +1296,10 @@ mod tests {
         assert_eq!(synced.len(), 2);
 
         // Reset to current block (simulating the old behavior)
-        cache.reset_required_head(100);
+        cache.reset_latest_unprocessed_block(100);
         assert_eq!(
             cache
-                .required_head
+                .latest_unprocessed_block
                 .load(std::sync::atomic::Ordering::Acquire),
             100
         );
@@ -1315,7 +1315,7 @@ mod tests {
 
         // Scenario 1: Set block and reset to test depth filtering
         cache.set_block_number(150);
-        cache.reset_required_head(0);
+        cache.reset_latest_unprocessed_block(0);
         // Effective block number: max(0, 150 - 50) = 100
         // Sources synced at block 100: only source1 (100 >= 100)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
@@ -1325,7 +1325,7 @@ mod tests {
         // Scenario 2: Lower block number
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
         cache.set_block_number(50);
-        cache.reset_required_head(0);
+        cache.reset_latest_unprocessed_block(0);
         // Effective block number: max(0, 50 - 50) = 0
         // Sources synced at block 0: none (0 < 100, 0 < 200, 0 < 300)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
@@ -1334,7 +1334,7 @@ mod tests {
         // Scenario 3: Required block number forces higher sync requirement
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
         cache.set_block_number(400);
-        cache.reset_required_head(380);
+        cache.reset_latest_unprocessed_block(380);
         // Effective block number: max(380, 400 - 50) = max(380, 350) = 380
         // Sources synced at block 380: all sources (380 >= 100, 380 >= 200, 380 >= 300)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
@@ -1357,7 +1357,7 @@ mod tests {
         // Test with maximum block number
         let cache = Sources::new(vec![source1.clone(), source2.clone()], u64::MAX);
         cache.set_block_number(u64::MAX);
-        cache.reset_required_head(0);
+        cache.reset_latest_unprocessed_block(0);
         // Effective block number: max(0, u64::MAX - u64::MAX) = 0
         // Only source1 synced at block 0 (0 >= 0)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
@@ -1367,7 +1367,7 @@ mod tests {
         // Test with zero max_depth
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 0);
         cache.set_block_number(100);
-        cache.reset_required_head(0);
+        cache.reset_latest_unprocessed_block(0);
         // Effective block number: max(0, 100 - 0) = 100
         // Both sources: source1 (100 >= 0 ✓), source2 (100 >= u64::MAX ✗)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
@@ -1417,14 +1417,14 @@ mod tests {
         assert_eq!(synced.len(), 2); // Both sources synced at block 100
 
         // Simulate cache invalidation by resetting required block to 0
-        cache.reset_required_head(0);
+        cache.reset_latest_unprocessed_block(0);
         // Effective block: max(0, 100 - 40) = 60
         // Both sources still synced (60 >= 10, 60 >= 50)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
 
         // Simulate more restrictive invalidation
-        cache.reset_required_head(0);
+        cache.reset_latest_unprocessed_block(0);
         cache.set_block_number(70); // Lower current block
         // Effective block: max(0, 70 - 40) = 30
         // Only source1 synced (30 >= 10, but 30 < 50)

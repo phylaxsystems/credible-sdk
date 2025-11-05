@@ -1880,7 +1880,7 @@ mod tests {
         let tx_execution_id = TxExecutionId::from_hash(tx_hash);
 
         // Get initial cache state
-        let initial_cache_count = engine.get_state().cache_entry_count();
+        let initial_cache_count = engine.get_cache().cache_entry_count();
 
         let current_block_iteration_id = BlockIterationData {
             fork_db: engine.cache.fork(),
@@ -1905,7 +1905,7 @@ mod tests {
 
         // Verify the caller's account state was updated
         let caller_account = engine
-            .get_state()
+            .get_cache()
             .basic_ref(tx_env.caller)
             .expect("Should be able to read caller account");
         assert!(
@@ -1928,7 +1928,7 @@ mod tests {
         let contract_address = address!("76cae8af66cb2488933e640ba08650a3a8e7ae19");
 
         let contract_account = engine
-            .get_state()
+            .get_cache()
             .basic_ref(contract_address)
             .expect("Should be able to read contract account");
         assert!(
@@ -1955,14 +1955,14 @@ mod tests {
 
         // Verify that data has been committed by checking the cache count increases when we read data
         // (The overlay cache gets populated when data is read from the underlying database)
-        let final_cache_count = engine.get_state().cache_entry_count();
+        let final_cache_count = engine.get_cache().cache_entry_count();
         assert!(
             final_cache_count >= initial_cache_count,
             "Transaction executed and state is readable - data was committed. Initial: {initial_cache_count}, Final: {final_cache_count}"
         );
 
         // Verify we can read storage from the state after commit
-        let state_result = engine.get_state().storage_ref(tx_env.caller, U256::ZERO);
+        let state_result = engine.get_cache().storage_ref(tx_env.caller, U256::ZERO);
         assert!(
             state_result.is_ok(),
             "Should be able to read from committed state"
