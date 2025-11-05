@@ -27,8 +27,6 @@ use std::{
 };
 
 use metrics::counter;
-use tracing::trace;
-
 #[derive(Debug)]
 /// An active overlay is a wrapper around the `overlaydb` meant to be used
 /// when temporarily needing to change what database to use as the underlying.
@@ -88,14 +86,6 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
             // Found in cache
             counter!("assex_active_overlay_db_basic_ref_hits").increment(1);
             let result = Some(value.as_basic().unwrap().clone());
-            trace!(
-                target = "engine::overlay",
-                overlay_kind = "active",
-                access = "basic_ref",
-                source = "cache",
-                address = ?address,
-                value = ?result
-            );
             return Ok(result);
         }
 
@@ -114,15 +104,6 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
                 .insert(key, TableValue::Basic(account_info.clone()));
         }
 
-        trace!(
-            target = "engine::overlay",
-            overlay_kind = "active",
-            access = "basic_ref",
-            source = "underlying_db",
-            address = ?address,
-            value = ?result
-        );
-
         Ok(result)
     }
 
@@ -132,15 +113,6 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
             // Found in cache
             counter!("assex_active_overlay_db_code_by_hash_ref_hits").increment(1);
             let bytecode = value.as_code_by_hash().cloned().unwrap(); // unwrap safe, Clone Bytecode
-            trace!(
-                target = "engine::overlay",
-                overlay_kind = "active",
-                access = "code_by_hash_ref",
-                source = "cache",
-                code_hash = ?code_hash,
-                bytecode_len = bytecode.len(),
-                bytecode = ?bytecode
-            );
             return Ok(bytecode);
         }
 
@@ -155,15 +127,6 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
         // Found in DB, cache it
         self.overlay
             .insert(key, TableValue::CodeByHash(bytecode.clone()));
-        trace!(
-            target = "engine::overlay",
-            overlay_kind = "active",
-            access = "code_by_hash_ref",
-            source = "underlying_db",
-            code_hash = ?code_hash,
-            bytecode_len = bytecode.len(),
-            bytecode = ?bytecode
-        );
         Ok(bytecode)
     }
 
@@ -177,15 +140,6 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
             // Found in cache, convert B256 back to U256
             counter!("assex_active_overlay_db_storage_ref_hits").increment(1);
             let value_u256: U256 = (*value.as_storage().unwrap()).into();
-            trace!(
-                target = "engine::overlay",
-                overlay_kind = "active",
-                access = "storage_ref",
-                source = "cache",
-                address = ?address,
-                slot = ?slot,
-                value = ?value_u256
-            );
             return Ok(value_u256); // unwrap safe
         }
 
@@ -199,15 +153,6 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
         // Found in DB (even if zero), cache it as B256
         let value_b256: B256 = value_u256.to_be_bytes().into();
         self.overlay.insert(key, TableValue::Storage(value_b256));
-        trace!(
-            target = "engine::overlay",
-            overlay_kind = "active",
-            access = "storage_ref",
-            source = "underlying_db",
-            address = ?address,
-            slot = ?slot,
-            value = ?value_u256
-        );
         Ok(value_u256) // Return the U256 value
     }
 
@@ -217,14 +162,6 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
             // Found in cache
             counter!("assex_active_overlay_db_block_hash_ref_hits").increment(1);
             let block_hash = *value.as_block_hash().unwrap();
-            trace!(
-                target = "engine::overlay",
-                overlay_kind = "active",
-                access = "block_hash_ref",
-                source = "cache",
-                block_number = number,
-                block_hash = ?block_hash
-            );
             return Ok(block_hash); // unwrap safe
         }
 
@@ -237,14 +174,6 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
         };
         // Found in DB, cache it
         self.overlay.insert(key, TableValue::BlockHash(block_hash));
-        trace!(
-            target = "engine::overlay",
-            overlay_kind = "active",
-            access = "block_hash_ref",
-            source = "underlying_db",
-            block_number = number,
-            block_hash = ?block_hash
-        );
         Ok(block_hash)
     }
 }
