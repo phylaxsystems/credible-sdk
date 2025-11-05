@@ -132,15 +132,18 @@ impl Sources {
         if self.latest_head.load(Ordering::Acquire) == 0 {
             self.latest_unprocessed_block
                 .store(block_number, Ordering::Relaxed);
-            self.metrics.set_required_head(block_number);
+            self.metrics.set_latest_unprocessed_block(block_number);
         }
         self.latest_head.store(block_number, Ordering::Relaxed);
         self.metrics.set_latest_head(block_number);
 
         let minimum_synced_block_number = self.get_minimum_synced_block_number();
 
+        self.metrics
+            .set_min_synced_head(minimum_synced_block_number);
+
         for source in &self.sources {
-            source.update_min_sync_head(minimum_synced_block_number);
+            source.update_min_synced_head(minimum_synced_block_number);
         }
     }
 
@@ -152,7 +155,7 @@ impl Sources {
     /// If the internal cache is flushed, this method must be called to sync the required head to
     /// the latest block, as the current cache is stale
     pub fn reset_latest_unprocessed_block(&self, required_block: u64) {
-        self.metrics.increase_reset_last_unprocessed_block();
+        self.metrics.increase_reset_latest_unprocessed_block();
         self.latest_unprocessed_block
             .store(required_block, Ordering::Relaxed);
     }
@@ -161,7 +164,7 @@ impl Sources {
     #[cfg(any(test, feature = "test", feature = "bench-utils"))]
     pub fn reset_latest_unprocessed_block_count(&self) -> u64 {
         self.metrics
-            .reset_last_unprocessed_block
+            .reset_latest_unprocessed_block
             .load(Ordering::Relaxed)
     }
 

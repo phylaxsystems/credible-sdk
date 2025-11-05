@@ -220,7 +220,7 @@ impl Source for BesuClient {
         }
     }
 
-    fn update_min_sync_head(&self, block_number: u64) {
+    fn update_min_synced_head(&self, block_number: u64) {
         self.inner.json_rpc_db.set_target_block(block_number);
     }
 }

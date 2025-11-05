@@ -104,7 +104,7 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     /// Implementations may use this hint to issue RPC calls against a specific
     /// block rather than the latest head. The default implementation is a
     /// no-op for sources that do not depend on block context.
-    fn update_min_sync_head(&self, block_number: u64);
+    fn update_min_synced_head(&self, block_number: u64);
 }
 
 /// Names for a particular source.

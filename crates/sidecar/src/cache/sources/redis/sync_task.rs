@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 pub fn publish_sync_state(
     latest_head: Option<u64>,
     oldest_block: Option<u64>,
-    min_sync_head: &AtomicU64,
+    min_synced_head: &AtomicU64,
     observed_block: &AtomicU64,
     oldest_observed_block: &AtomicU64,
     sync_status: &AtomicBool,
@@ -36,11 +36,11 @@ pub fn publish_sync_state(
         let oldest = oldest_block.unwrap_or(block_number);
         oldest_observed_block.store(oldest, Ordering::Release);
 
-        let latest_head = min_sync_head.load(Ordering::Acquire);
-        let within_target = if latest_head == 0 {
+        let min_synced_head = min_synced_head.load(Ordering::Acquire);
+        let within_target = if min_synced_head == 0 {
             oldest == 0
         } else {
-            oldest <= latest_head && latest_head <= block_number
+            oldest <= min_synced_head && min_synced_head <= block_number
         };
 
         sync_status.store(within_target, Ordering::Release);

@@ -194,26 +194,34 @@ impl Drop for TransactionMetrics {
 /// for tracking purposes
 #[derive(Debug, Default)]
 pub struct StateMetrics {
-    pub required_head: AtomicU64,
+    pub latest_unprocessed_block: AtomicU64,
     pub latest_head: AtomicU64,
-    pub reset_last_unprocessed_block: AtomicU64,
+    pub reset_latest_unprocessed_block: AtomicU64,
 }
 
 impl StateMetrics {
     pub fn new() -> Self {
         Self {
-            required_head: AtomicU64::new(0),
+            latest_unprocessed_block: AtomicU64::new(0),
             latest_head: AtomicU64::new(0),
-            reset_last_unprocessed_block: AtomicU64::new(0),
+            reset_latest_unprocessed_block: AtomicU64::new(0),
         }
     }
 
-    /// Set the state sources required head (`sidecar_cache_required_head`)
+    /// Set the state sources latest unprocessed block number (`sidecar_cache_latest_unprocessed_block`)
     ///
     /// Commited as a `Gauge`.
-    pub fn set_required_head(&self, block_number: u64) {
-        self.required_head.store(block_number, Ordering::Relaxed);
-        gauge!("sidecar_cache_required_head").set(block_number as f64);
+    pub fn set_latest_unprocessed_block(&self, block_number: u64) {
+        self.latest_unprocessed_block
+            .store(block_number, Ordering::Relaxed);
+        gauge!("sidecar_cache_latest_unprocessed_block").set(block_number as f64);
+    }
+
+    /// Set the state sources min synced head (`sidecar_cache_min_synced_head`)
+    ///
+    /// Commited as a `Gauge`.
+    pub fn set_min_synced_head(&self, number: u64) {
+        gauge!("sidecar_cache_min_synced_head").set(number as f64);
     }
 
     /// Set the state sources latest head (`sidecar_cache_latest_head`)
@@ -257,15 +265,15 @@ impl StateMetrics {
     }
 
     /// Track the number of times the required last unprocessed block was reset
-    /// (`sidecar_cache_reset_last_unprocessed_block_counter`)
+    /// (`sidecar_cache_reset_latest_unprocessed_block_counter`)
     ///
     /// Commited as a `Counter`.
-    pub fn increase_reset_last_unprocessed_block(&self) {
+    pub fn increase_reset_latest_unprocessed_block(&self) {
         let reset_required_head_counter =
-            self.reset_last_unprocessed_block.load(Ordering::Relaxed) + 1;
-        self.reset_last_unprocessed_block
+            self.reset_latest_unprocessed_block.load(Ordering::Relaxed) + 1;
+        self.reset_latest_unprocessed_block
             .store(reset_required_head_counter, Ordering::Relaxed);
-        counter!("sidecar_cache_reset_last_unprocessed_block_counter").increment(1);
+        counter!("sidecar_cache_reset_latest_unprocessed_block_counter").increment(1);
     }
 
     /// Track the duration of the `is_sync` call
