@@ -385,8 +385,9 @@ impl TestTransport for LocalInstanceMockDriver {
         &mut self,
         block_number: u64,
         selected_iteration_id: u64,
+        n_transactions: u64,
     ) -> Result<(), String> {
-        info!(target: "test_transport", "LocalInstance sending block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
+        info!(target: "test_transport", "LocalInstance finalizing block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
         let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
         let block_env = BlockEnv {
             number: block_number,
@@ -399,29 +400,18 @@ impl TestTransport for LocalInstanceMockDriver {
         self.override_last_tx_hash = None;
 
         let commit_head = CommitHead::new(
-            last_tx_hash,
-            n_transactions,
             block_number,
             selected_iteration_id,
+            last_tx_hash,
+            n_transactions,
         );
-        let new_iteration = NewIteration::new(selected_iteration_id, block_env);
 
         self.mock_sender
             .send(TxQueueContents::CommitHead(commit_head, Span::current()))
             .map_err(|e| format!("Failed to send commit head: {e}"))?;
 
-        let result = self
-            .mock_sender
-            .send(TxQueueContents::NewIteration(
-                new_iteration,
-                Span::current(),
-            ))
-            .map_err(|e| format!("Failed to send new iteration: {e}"));
-        match &result {
-            Ok(()) => info!(target: "test_transport", "Successfully sent iteration to mock_sender"),
-            Err(e) => error!(target: "test_transport", "Failed to send iteration: {}", e),
-        }
-        result
+        info!(target: "test_transport", "Successfully sent  to mock_sender");
+        Ok(())
     }
 
     async fn send_transaction(
@@ -445,7 +435,11 @@ impl TestTransport for LocalInstanceMockDriver {
             .map_err(|e| format!("Failed to send transaction: {e}"))
     }
 
-    async fn new_instance(&mut self, iteration_id: u64, block_env: BlockEnv) -> Result<(), String> {
+    async fn new_iteration(
+        &mut self,
+        iteration_id: u64,
+        block_env: BlockEnv,
+    ) -> Result<(), String> {
         info!(target: "test_transport", "LocalInstance sending new iteration: {}", iteration_id);
         self.block_tx_hashes_by_iteration
             .insert(iteration_id, Vec::new());
@@ -664,21 +658,12 @@ impl TestTransport for LocalInstanceHttpDriver {
         &mut self,
         block_number: u64,
         selected_iteration_id: u64,
+        n_transactions: u64,
     ) -> Result<(), String> {
-        info!(target: "LocalInstanceHttpDriver", "LocalInstance sending block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
+        info!(target: "LocalInstanceHttpDriver", "LocalInstance finalizing block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
 
         let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
         let last_tx_hash = last_tx_hash.map(|hash| hash.to_string());
-        let blockenv = BlockEnv {
-            number: block_number,
-            gas_limit: 50_000_000, // Set higher gas limit for assertions
-            blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
-                excess_blob_gas: 0,
-                blob_gasprice: 0,
-            }),
-            ..Default::default()
-        };
-        let block_env_json = Self::block_env_to_json(&blockenv);
 
         // jsonrpc request for sending commit head + block env events to the sidecar
         let request = json!({
@@ -695,12 +680,6 @@ impl TestTransport for LocalInstanceHttpDriver {
                             "selected_iteration_id": selected_iteration_id
                         }
                     },
-                    {
-                        "new_iteration": {
-                            "iteration_id": selected_iteration_id,
-                            "block_env": block_env_json
-                        }
-                    }
                 ]
           }
         });
@@ -789,7 +768,11 @@ impl TestTransport for LocalInstanceHttpDriver {
         ))
     }
 
-    async fn new_instance(&mut self, iteration_id: u64, block_env: BlockEnv) -> Result<(), String> {
+    async fn new_iteration(
+        &mut self,
+        iteration_id: u64,
+        block_env: BlockEnv,
+    ) -> Result<(), String> {
         info!(target: "LocalInstanceHttpDriver", "LocalInstance sending new iteration: {} with block {}", iteration_id, block_env.number);
         self.block_tx_hashes_by_iteration
             .insert(iteration_id, Vec::new());
@@ -1028,35 +1011,11 @@ impl TestTransport for LocalInstanceGrpcDriver {
         &mut self,
         block_number: u64,
         selected_iteration_id: u64,
+        n_transactions: u64,
     ) -> Result<(), String> {
-        info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
+        info!(target: "LocalInstanceGrpcDriver", "LocalInstance finalizing block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
 
         let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
-        let blockenv = BlockEnv {
-            number: block_number,
-            gas_limit: 50_000_000, // Set higher gas limit for assertions
-            blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
-                excess_blob_gas: 0,
-                blob_gasprice: 0,
-            }),
-            ..Default::default()
-        };
-
-        let block_env_pb = crate::transport::grpc::pb::BlockEnv {
-            number: blockenv.number,
-            beneficiary: blockenv.beneficiary.to_string(),
-            timestamp: blockenv.timestamp,
-            gas_limit: blockenv.gas_limit,
-            basefee: blockenv.basefee,
-            difficulty: format!("0x{:x}", blockenv.difficulty),
-            prevrandao: blockenv.prevrandao.map(|h| h.to_string()),
-            blob_excess_gas_and_price: blockenv.blob_excess_gas_and_price.map(|blob| {
-                crate::transport::grpc::pb::BlobExcessGasAndPrice {
-                    excess_blob_gas: blob.excess_blob_gas,
-                    blob_gasprice: blob.blob_gasprice.to_string(),
-                }
-            }),
-        };
 
         let commit_head = crate::transport::grpc::pb::CommitHead {
             last_tx_hash: last_tx_hash.map(|h| h.to_string()).unwrap_or_default(),
@@ -1065,28 +1024,12 @@ impl TestTransport for LocalInstanceGrpcDriver {
             block_number,
         };
 
-        let new_iteration = crate::transport::grpc::pb::NewIteration {
-            iteration_id: selected_iteration_id,
-            block_env: Some(block_env_pb),
-        };
-
         let request = crate::transport::grpc::pb::SendEvents {
-            events: vec![
-                crate::transport::grpc::pb::send_events::Event {
-                    event: Some(
-                        crate::transport::grpc::pb::send_events::event::Event::CommitHead(
-                            commit_head,
-                        ),
-                    ),
-                },
-                crate::transport::grpc::pb::send_events::Event {
-                    event: Some(
-                        crate::transport::grpc::pb::send_events::event::Event::NewIteration(
-                            new_iteration,
-                        ),
-                    ),
-                },
-            ],
+            events: vec![crate::transport::grpc::pb::send_events::Event {
+                event: Some(
+                    crate::transport::grpc::pb::send_events::event::Event::CommitHead(commit_head),
+                ),
+            }],
         };
 
         self.block_tx_hashes_by_iteration.clear();
@@ -1250,7 +1193,11 @@ impl TestTransport for LocalInstanceGrpcDriver {
         ))
     }
 
-    async fn new_instance(&mut self, iteration_id: u64, block_env: BlockEnv) -> Result<(), String> {
+    async fn new_iteration(
+        &mut self,
+        iteration_id: u64,
+        block_env: BlockEnv,
+    ) -> Result<(), String> {
         info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending new iteration: {} with block {}", iteration_id, block_env.number);
         self.block_tx_hashes_by_iteration
             .insert(iteration_id, Vec::new());

@@ -725,7 +725,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         block_iteration_data_n_transactions: u64,
     ) {
         // If the block env is not +1 from the previous block env, invalidate the cache
-        if self.current_head != commit_head.block_number - 1 {
+        if self.current_head != commit_head.block_number.saturating_sub(1) {
             warn!(current_head = %self.current_head, commit_head = %commit_head.block_number, "CommitHead received is not +1 from the current head, invalidating cache");
             self.invalidate_all(commit_head);
         }
@@ -883,19 +883,17 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         // Checks if the received iteration is sequential to the current head, otherwise we should
         // drop the event.
         let expected_block_number = self.current_head + 1;
-        if expected_block_number != new_iteration.block_env.number {
+        let block_env = &new_iteration.block_env;
+        if expected_block_number != block_env.number {
             warn!(
                 target = "engine",
                 current_head = self.current_head,
-                block_env = ?new_iteration.block_env,
+                block_env = ?block_env,
                 iteration_id = %new_iteration.iteration_id,
                 "Iteration block number does not match block number currently built in engine!"
             );
-
             return Err(EngineError::IterationError);
         }
-
-        let block_env = &new_iteration.block_env;
 
         let block_execution_id = BlockExecutionId::from(new_iteration);
 
@@ -1022,10 +1020,33 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                 block_number = tx_execution_id.block_number,
                 iteration_id = tx_execution_id.iteration_id,
                 caller = %tx_env.caller,
-                "Received transaction without first receiving a BlockEnv"
+                "Received transaction without first receiving a BlockEnv. An iteration for the id must be received first"
             );
             return Err(EngineError::TransactionError);
         };
+
+        let expected_block_number = self.current_head + 1;
+        let iteration_block_number = current_block_iteration.block_env.number;
+        if iteration_block_number != expected_block_number {
+            warn!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                tx_block = tx_execution_id.block_number,
+                iteration_block = iteration_block_number,
+                expected_block = expected_block_number,
+                "Transaction block number does not match expected block number"
+            );
+            let message = format!(
+                "Transaction targeted block {} but expected block {} based on current head {}",
+                tx_execution_id.block_number, expected_block_number, self.current_head
+            );
+            self.add_transaction_result(
+                tx_execution_id,
+                &TransactionResult::ValidationError(message),
+                None,
+            )?;
+            return Ok(());
+        }
 
         self.verify_state_sources_synced_for_tx().await?;
 
@@ -1255,7 +1276,6 @@ where
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
@@ -1379,7 +1399,7 @@ mod tests {
         };
         engine.process_iteration(&queue_iteration_1).unwrap();
 
-        let queue_commit_1 = queue::CommitHead::new(None, 0, 1, 0);
+        let queue_commit_1 = queue::CommitHead::new(1, 0, None, 0);
         engine
             .process_commit_head(&queue_commit_1, &mut 0, &mut Instant::now())
             .unwrap();
@@ -1399,7 +1419,11 @@ mod tests {
             block_env: block_env_mismatched,
             iteration_id: 0,
         };
-        engine.process_iteration(&queue_iteration_mismatch).unwrap();
+        let iteration_result = engine.process_iteration(&queue_iteration_mismatch);
+        assert!(
+            matches!(iteration_result, Err(EngineError::IterationError)),
+            "mismatched block iteration should be rejected"
+        );
 
         // Send transaction for the mismatched block
         let tx_execution_id =
@@ -1411,29 +1435,16 @@ mod tests {
 
         let result = engine.process_transaction_event(queue_transaction).await;
         assert!(
-            result.is_ok(),
-            "mismatched block number should not return an engine error, got {result:?}"
+            matches!(result, Err(EngineError::TransactionError)),
+            "Transaction for rejected iteration should fail, got {result:?}"
         );
 
-        // Verify the validation error was recorded
-        let stored_result = engine
-            .get_transaction_result_cloned(&tx_execution_id)
-            .expect("validation error should be recorded");
-        match stored_result {
-            TransactionResult::ValidationError(message) => {
-                assert!(
-                    message.contains(&mismatched_block_number.to_string()),
-                    "error message should mention the transaction block number: {message}"
-                );
-                assert!(
-                    message.contains(&expected_block_number.to_string()),
-                    "error message should mention the expected block number: {message}"
-                );
-            }
-            TransactionResult::ValidationCompleted { .. } => {
-                panic!("expected validation error, found ValidationCompleted")
-            }
-        }
+        assert!(
+            engine
+                .get_transaction_result_cloned(&tx_execution_id)
+                .is_none(),
+            "Rejected iteration should not record a transaction result"
+        );
     }
 
     #[test]
@@ -1521,6 +1532,7 @@ mod tests {
     async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {
         // Send an empty block to verify we can advance the chain with empty blocks
         instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         // Send and verify a reverting CREATE transaction
         let tx_hash = instance.send_reverting_create_tx().await.unwrap();
@@ -2227,19 +2239,19 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Send transactions with different iteration IDs in Block 1
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let tx_block1_iter1 = instance
             .send_successful_create_tx_dry(uint!(100_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let tx_block1_iter2 = instance
             .send_successful_create_tx_dry(uint!(200_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(3);
+        instance.new_iteration(3).await.unwrap();
         let tx_block1_iter3 = instance
             .send_successful_create_tx_dry(uint!(300_U256), Bytes::new())
             .await
@@ -2266,8 +2278,8 @@ mod tests {
         );
 
         // Block 2: Select iteration 2 as the winner from Block 1
-        instance.set_current_iteration_id(2);
         instance.new_block().await.unwrap();
+        instance.new_iteration(2).await.unwrap();
 
         // Send a transaction to verify state was committed correctly
         let tx_block2 = instance
@@ -2296,14 +2308,14 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Iteration 1: Create a contract at value 100
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let tx_iter1 = instance
             .send_successful_create_tx_dry(uint!(100_U256), Bytes::new())
             .await
             .unwrap();
 
         // Iteration 2: Create a contract at value 200
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(200_U256), Bytes::new())
             .await
@@ -2313,8 +2325,8 @@ mod tests {
         assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
 
         // Block 2: Select iteration 1 as the winner
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         // The state should reflect iteration 1's changes, not iteration 2's
         let tx_verify = instance
@@ -2350,14 +2362,14 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Send transaction in iteration 1
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let tx_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         // Send transaction in iteration 2
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2367,7 +2379,7 @@ mod tests {
         assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
 
         // Block 2: Select iteration 3 (which doesn't exist)
-        instance.set_current_iteration_id(3);
+        instance.new_iteration(3).await.unwrap();
         instance.transport.set_last_tx_hash(Some(B256::random())); // Wrong hash
         instance.transport.set_n_transactions(1);
 
@@ -2404,7 +2416,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Send multiple transactions all in iteration 2
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let tx1_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2441,8 +2453,8 @@ mod tests {
         );
 
         // Block 2: Select iteration 2 with all 3 transactions
-        instance.set_current_iteration_id(2);
         instance.new_block().await.unwrap();
+        instance.new_iteration(2).await.unwrap();
 
         let tx_block2 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -2468,7 +2480,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Iteration 1: 2 transactions
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let tx1_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2493,7 +2505,7 @@ mod tests {
         );
 
         // Block 2: Select iteration 1 but set the wrong count (3 instead of 2)
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         instance.transport.set_n_transactions(3);
 
         instance
@@ -2517,7 +2529,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Iteration 1: Send 2 transactions
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let tx1_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2529,7 +2541,7 @@ mod tests {
             .unwrap();
 
         // Iteration 2: Send 1 transaction
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let tx1_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2555,12 +2567,12 @@ mod tests {
         );
 
         // Reorg last transaction in iteration 1
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         instance.send_reorg(tx2_iter1).await.unwrap();
 
         // Block 2: Select iteration 1 with only 1 transaction (after reorg)
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         let tx_block2 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -2584,7 +2596,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Only send transactions in iteration 2
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2593,8 +2605,8 @@ mod tests {
         assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
 
         // Block 2: Select iteration 1 which has no transactions
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         // Should still work
         let tx_block2 = instance
@@ -2619,25 +2631,25 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Send transactions with alternating iteration IDs
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let tx1_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let tx1_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let tx2_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let tx2_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2670,8 +2682,8 @@ mod tests {
         );
 
         // Block 2: Select iteration 1 (should have 2 transactions)
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_iteration(2).await.unwrap();
 
         let tx_block2 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -2694,37 +2706,37 @@ mod tests {
         // Block 1
         instance.new_block().await.unwrap();
 
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let b1_tx_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let b1_tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         // Block 2: Select iteration 2 from Block 1
-        instance.set_current_iteration_id(2);
         instance.new_block().await.unwrap();
+        instance.new_iteration(2).await.unwrap();
 
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let b2_tx_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let b2_tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         // Block 3: Select iteration 1 from Block 2
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         let tx_block3 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -2789,53 +2801,53 @@ mod tests {
         // Block 1
         instance.new_block().await.unwrap();
 
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let b1_i1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let b1_i2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         // Block 2: Select iteration 1
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let b2_i1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let b2_i2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         // Block 3: Switch to iteration 2
-        instance.set_current_iteration_id(2);
         instance.new_block().await.unwrap();
+        instance.new_iteration(2).await.unwrap();
 
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let b3_i1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let b3_i2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         // Block 4: Switch back to iteration 1
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         let final_tx = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -2856,7 +2868,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Iteration 1: 3 transactions
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         let tx1_i1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2871,7 +2883,7 @@ mod tests {
             .unwrap();
 
         // Iteration 2: 2 transactions
-        instance.set_current_iteration_id(2);
+        instance.new_iteration(2).await.unwrap();
         let tx1_i2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2889,7 +2901,7 @@ mod tests {
         assert!(instance.is_transaction_successful(&tx2_i2).await.unwrap());
 
         // Reorg last transaction in iteration 1
-        instance.set_current_iteration_id(1);
+        instance.new_iteration(1).await.unwrap();
         instance.send_reorg(tx3_i1).await.unwrap();
 
         // Verify reorg only affected iteration 1
@@ -2915,8 +2927,8 @@ mod tests {
         );
 
         // Block 2: Select iteration 1 (now with 2 transactions)
-        instance.set_current_iteration_id(1);
         instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         let final_tx = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -3109,4 +3121,3 @@ mod tests {
         );
     }
 }
-*/

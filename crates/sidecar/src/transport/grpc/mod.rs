@@ -159,7 +159,7 @@ impl Transport for GrpcTransport {
         self.shutdown_token.cancel();
     }
 }
-/*
+
 #[cfg(test)]
 mod tests {
     use super::pb::{
@@ -274,4 +274,3 @@ mod tests {
         }
     }
 }
-*/

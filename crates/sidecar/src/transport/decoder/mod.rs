@@ -172,10 +172,10 @@ impl Decoder for HttpTransactionDecoder {
                     .ok_or(HttpDecoderError::MissingSelectedIterationId)?;
 
                 let commit_head = CommitHead::new(
-                    block.last_tx_hash,
-                    block.n_transactions,
                     block.block_env.number,
                     selected_iteration_id,
+                    block.last_tx_hash,
+                    block.n_transactions,
                 );
                 let new_iteration = NewIteration::new(selected_iteration_id, block.block_env);
 
@@ -265,10 +265,10 @@ fn convert_commit_head_event(
         .ok_or(HttpDecoderError::MissingSelectedIterationId)?;
 
     Ok(CommitHead::new(
-        last_tx_hash,
-        commit_head.n_transactions,
         commit_head.block_number,
         selected_iteration_id,
+        last_tx_hash,
+        commit_head.n_transactions,
     ))
 }
 

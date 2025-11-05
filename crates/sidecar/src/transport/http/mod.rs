@@ -203,7 +203,7 @@ impl Transport for HttpTransport {
         self.shutdown_token.cancel();
     }
 }
-/*
+
 #[cfg(test)]
 mod tests {
     use alloy::primitives::B256;
@@ -224,6 +224,8 @@ mod tests {
 
     #[crate::utils::engine_test(http)]
     async fn test_invalid_block_env_request(mut instance: crate::utils::LocalInstance) {
+        instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         // Send a valid transaction
         let _ = instance.send_reverting_create_tx().await.unwrap();
 
@@ -254,6 +256,9 @@ mod tests {
 
     #[crate::utils::engine_test(http)]
     async fn test_invalid_reorg_request(mut instance: crate::utils::LocalInstance) {
+        instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
+
         // Send a valid transaction
         let _ = instance.send_reverting_create_tx().await.unwrap();
 
@@ -277,6 +282,9 @@ mod tests {
 
     #[crate::utils::engine_test(http)]
     async fn test_invalid_transaction_request(mut instance: crate::utils::LocalInstance) {
+        instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
+
         // Send a valid transaction
         let _ = instance.send_reverting_create_tx().await.unwrap();
 
@@ -315,6 +323,9 @@ mod tests {
     async fn test_get_transaction_returns_successful_result(
         mut instance: crate::utils::LocalInstance,
     ) {
+        instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
+
         let tx_execution_id = instance
             .send_successful_create_tx(U256::from(0u64), Bytes::new())
             .await
@@ -403,9 +414,7 @@ mod tests {
             .new_block()
             .await
             .expect("failed to announce new block");
-        instance
-            .wait_for_processing(Duration::from_millis(10))
-            .await;
+        instance.new_iteration(1).await.unwrap();
 
         let missing_hash = B256::repeat_byte(0x42);
 
@@ -487,4 +496,3 @@ mod tests {
         Err(last_error)
     }
 }
-*/

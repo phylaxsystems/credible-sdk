@@ -57,7 +57,10 @@ use revm::{
     },
 };
 use std::{
-    collections::HashMap,
+    collections::{
+        HashMap,
+        HashSet,
+    },
     future::Future,
     net::SocketAddr,
     pin::Pin,
@@ -83,11 +86,15 @@ enum WaitError {
 pub trait TestTransport: Sized {
     /// Creates a `LocalInstance` with a specific transport
     async fn new() -> Result<LocalInstance<Self>, String>;
-    /// Advance the core engine block by sending a new blockenv to it
+    /// Advance the core engine block by finalizing what iteration was selected,
+    /// and sending a blockenv for the subsequent block.
+    ///
+    /// Should send a `CommitHead` event to the core engine.
     async fn new_block(
         &mut self,
         block_number: u64,
         selected_iteration_id: u64,
+        n_transactions: u64,
     ) -> Result<(), String>;
     /// Send a transaction to the core engine via the transport
     async fn send_transaction(
@@ -95,8 +102,11 @@ pub trait TestTransport: Sized {
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
     ) -> Result<(), String>;
-    /// Send a new iteration event with custom block environment data
-    async fn new_instance(&mut self, iteration_id: u64, block_env: BlockEnv) -> Result<(), String>;
+    /// Send a new iteration event with custom block environment data.
+    ///
+    /// Should send a `NewIteration` event to the core engine.
+    async fn new_iteration(&mut self, iteration_id: u64, block_env: BlockEnv)
+    -> Result<(), String>;
     /// Send a new transaction reorg event. Removes the last executed transaction.
     /// Transaction hash provided as an argument must match the last executed tx.
     /// If not the call should succeed but the core engine should produce an error.
@@ -151,6 +161,12 @@ pub struct LocalInstance<T: TestTransport> {
     pub local_address: Option<SocketAddr>,
     /// Current iteration ID to be set in the transactions and `blockEnv`
     pub iteration_id: u64,
+    /// Hashmap of number of transactions sent per iteration
+    pub iteration_tx_map: HashMap<u64, u64>,
+    /// Tracks which iteration IDs have already been seeded with a `BlockEnv` for the current block
+    active_iterations: HashSet<u64>,
+    /// Tracks the next committed nonce per address after the latest finalized block
+    committed_nonce: HashMap<Address, u64>,
 }
 
 impl<T: TestTransport> LocalInstance<T> {
@@ -196,6 +212,9 @@ impl<T: TestTransport> LocalInstance<T> {
             sources,
             local_address: local_address.copied(),
             iteration_id: 1,
+            iteration_tx_map: HashMap::new(),
+            active_iterations: HashSet::new(),
+            committed_nonce: HashMap::new(),
         }
     }
 
@@ -251,8 +270,9 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Get the current nonce for a specific address in a specific iteration and increment it
     pub fn next_nonce(&mut self, caller: Address, block_execution_id: BlockExecutionId) -> u64 {
+        let committed = *self.committed_nonce.get(&caller).unwrap_or(&0);
         let key = (caller, block_execution_id.iteration_id);
-        let entry = self.iteration_nonce.entry(key).or_insert(0);
+        let entry = self.iteration_nonce.entry(key).or_insert(committed);
 
         let nonce = *entry;
         *entry += 1;
@@ -268,6 +288,7 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Clear all nonces
     pub fn clear_nonce(&mut self) {
         self.iteration_nonce.clear();
+        self.committed_nonce.clear();
     }
 
     /// Wait for a short time to allow transaction processing
@@ -452,8 +473,33 @@ impl<T: TestTransport> LocalInstance<T> {
 
     async fn send_block(&mut self, block_number: u64) -> Result<(), String> {
         self.transport
-            .new_block(self.block_number, self.iteration_id)
+            .new_block(
+                block_number,
+                self.iteration_id,
+                *self.iteration_tx_map.get(&self.iteration_id).unwrap_or(&0),
+            )
             .await?;
+
+        // Update committed nonce snapshot using the iteration we just finalized.
+        let selected_iteration_id = self.iteration_id;
+        for ((address, iteration_id), &next_nonce) in &self.iteration_nonce {
+            if *iteration_id == selected_iteration_id {
+                self.committed_nonce.insert(*address, next_nonce);
+            }
+        }
+        self.iteration_nonce.clear();
+
+        self.active_iterations.clear();
+
+        let next_block_number = block_number + 1;
+        let block_env = Self::default_block_env(next_block_number);
+        self.transport
+            .new_iteration(self.iteration_id, block_env)
+            .await?;
+        self.active_iterations.insert(self.iteration_id);
+
+        // TODO: commit tx numbers to this map!
+        self.iteration_tx_map.clear();
         Ok(())
     }
 
@@ -492,16 +538,27 @@ impl<T: TestTransport> LocalInstance<T> {
     ///
     /// Generates a default `BlockEnv` matching our other helpers so callers only
     /// need to provide the iteration identifier.
-    pub async fn new_instance(&mut self, iteration_id: u64) -> Result<(), String> {
+    ///
+    /// Subsequent transactions will use the iteration id set here.
+    pub async fn new_iteration(&mut self, iteration_id: u64) -> Result<(), String> {
         if self.block_number == 0 {
-            return Err("new_instance requires at least one block to have been sent".to_string());
+            return Err("new_iteration requires at least one block to have been sent".to_string());
         }
 
-        let current_block_number = self.block_number - 1;
+        self.iteration_id = iteration_id;
+
+        if self.active_iterations.contains(&iteration_id) {
+            return Ok(());
+        }
+
+        let current_block_number = self.block_number;
         let block_env = Self::default_block_env(current_block_number);
 
-        self.iteration_id = iteration_id;
-        self.transport.new_instance(iteration_id, block_env).await
+        self.transport
+            .new_iteration(iteration_id, block_env)
+            .await?;
+        self.active_iterations.insert(iteration_id);
+        Ok(())
     }
 
     /// Send a successful CREATE transaction using the default account, without a new blockenv
@@ -594,10 +651,6 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Send a reverting CREATE transaction using the default account
     pub async fn send_reverting_create_tx(&mut self) -> Result<TxExecutionId, String> {
-        // Ensure we have a block
-        self.send_block(self.block_number).await?;
-        self.block_number += 1;
-
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
 
@@ -1127,7 +1180,6 @@ impl<T: TestTransport> Drop for LocalInstance<T> {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1153,4 +1205,3 @@ mod tests {
             .unwrap();
     }
 }
-*/

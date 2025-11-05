@@ -180,10 +180,10 @@ fn convert_pb_commit_head(commit_head: &PbCommitHead) -> Result<CommitHead, Stat
         parse_commit_metadata(&commit_head.last_tx_hash, commit_head.n_transactions)?;
 
     Ok(CommitHead::new(
-        last_tx_hash,
-        commit_head.n_transactions,
         commit_head.block_number,
         selected_iteration_id,
+        last_tx_hash,
+        commit_head.n_transactions,
     ))
 }
 
@@ -228,10 +228,10 @@ impl SidecarTransport for GrpcService {
         } = legacy_block;
 
         let commit_head = CommitHead::new(
-            last_tx_hash,
-            n_transactions,
             block_env.number,
             selected_iteration_id,
+            last_tx_hash,
+            n_transactions,
         );
         let new_iteration = NewIteration::new(selected_iteration_id, block_env);
 
