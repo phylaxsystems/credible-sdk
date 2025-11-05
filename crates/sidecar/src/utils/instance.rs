@@ -1,3 +1,19 @@
+//! # `LocalInstance`
+//!
+//! The `LocalInstance` contains helpers for instantiating a sidecar and comminicating to it
+//! via any viable transport. Transport communication is abstracted via the `TestTransport`
+//! trait, and the `LocalInstance` can be initialized with any transport which impls it.
+//!
+//! Alongside the `engine_test` macro, the `LocalInstance` serves to abstract a lot of the
+//! interactions and boilerplate one would have to write for the sidecar tests.
+//!
+//! In summary, the `LocalInstance`:
+//!
+//! - Instantiates a sidecar with all necessary components needed to run assertions and accept txs,
+//! - Create new blocks and iterations,
+//! - Create and send arbitrary transaction events over the transports,
+//! - Contains helper functions to validate transaction inclusion and assertion execution.
+
 use crate::{
     cache::{
         Sources,

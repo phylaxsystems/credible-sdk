@@ -193,7 +193,7 @@ sidecar needs to know which block it's building on top of.
     },
     "last_tx_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
     "n_transactions": 100,
-    "selected_iteration_id": 0
+    "selected_iteration_id": 1
   }
 }
 ```

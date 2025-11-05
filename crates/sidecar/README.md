@@ -42,19 +42,9 @@ All configuration follows a structured naming pattern with the following prefixe
 - `telemetry.*` - Telemetry and monitoring settings
 - `state.*` - State source configuration
 
-Run `cargo run -p sidecar -- --help` to see all available options.
-
-```
-      --config-file-path <CHAIN_ID>
-          Path to the configuration file [env: CONFIG_FILE_PATH=] 
-          
-Chain:
-      --chain.spec-id <SPEC_ID>
-          What EVM specification to use. Only latest for now [env: CHAIN_SPEC_ID=] [default: Cancun] [possible values: latest]
-
-      --chain.chain-id <CHAIN_ID>
-          Chain ID [env: CHAIN_CHAIN_ID=] [default: 1337]
-```
+Currently the binary only exposes the configuration file selector. Run `cargo run -p sidecar -- --help` to confirm the
+supported flags. To override individual settings, update the JSON configuration (either the embedded default or a custom
+file passed via `--config-file-path`).
 
 The configuration file is a JSON file with the following schema:
 
@@ -415,7 +405,7 @@ The default configuration can be found in [default_config.json](default_config.j
   "credible": {
     "assertion_gas_limit": 3000000,
     "overlay_cache_capacity": 100000,
-    "overlay_cache_invalidation_every_block": true,
+    "overlay_cache_invalidation_every_block": false,
     "cache_capacity_bytes": 256000000,
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://127.0.0.1:5001",
@@ -435,6 +425,8 @@ The default configuration can be found in [default_config.json](default_config.j
     "sequencer_url": "http://127.0.0.1:8545",
     "besu_client_ws_url": "ws://127.0.0.1:8546",
     "besu_client_http_url": "http://127.0.0.1:8545",
+    "redis_namespace": "sidecar",
+    "redis_depth": 3,
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
     "sources_monitoring_period_ms": 500

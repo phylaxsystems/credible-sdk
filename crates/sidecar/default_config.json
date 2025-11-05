@@ -26,6 +26,8 @@
     "sequencer_url": "http://127.0.0.1:8545",
     "besu_client_ws_url": "ws://127.0.0.1:8546",
     "besu_client_http_url": "http://127.0.0.1:8545",
+    "redis_namespace": "sidecar",
+    "redis_depth": 3,
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
     "sources_monitoring_period_ms": 500

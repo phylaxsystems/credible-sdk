@@ -1,3 +1,15 @@
+//! Caches provide the sidecar with state that it does not have locally.
+//!
+//! The sidecar cache serve sstate from external providers
+//! to the sidecar in a `revm::DatabaseRef` compatible format.
+//!
+//! The cache includes many state sources inside of it, which are responsible for
+//! querying state externally, and forwarding it to the sidecar.
+//! The cache deals with making sure that state sources are healthy and forwarding
+//! the requests to the most appropriate source.
+//!
+//! More details about state source implementations can be seen in their respective modules.
+
 use crate::{
     cache::sources::{
         Source,
@@ -38,6 +50,7 @@ use tracing::{
     trace,
 };
 
+/// Sources bridge external state to the sidecar.
 pub mod sources;
 
 /// A multi-layered cache for blockchain state data.
