@@ -5,7 +5,7 @@ an external redis database.
 
 The `state-worker` subscribes to the `newHeads` subscription over WS and then for every new block
 it uses `trace_replayBlockTransactions` to get the state changes made in a block which later get collapsed
-into a single block which gets commited to redis.
+into a single block which gets committed to redis.
 
 The changes are stored in a `revm::DatabaseRef` compatible format so we can consume the redis cache directly
 in the sidecar by calling into it.

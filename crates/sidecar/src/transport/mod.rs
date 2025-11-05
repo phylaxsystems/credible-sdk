@@ -74,10 +74,6 @@ use std::sync::Arc;
 /// If the core engine runs into state it does not have cached locally, it should query it via
 /// the transport, which should query the driver and store the response into the sidecar cache.
 ///
-/// ### Querying and storing state; Communicating with engine
-///
-/// ***TODO: expand docs on interacting with state when implementing the state mod***
-///
 /// ## Erroring
 ///
 /// The `Error` type defined in the trait should be used for exiting the transport when it

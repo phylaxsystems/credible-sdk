@@ -1,4 +1,6 @@
 //! HTTP JSON-RPC transport
+#![doc = include_str!("./README.md")]
+
 use crate::{
     engine::queue::TransactionQueueSender,
     transactions_state::TransactionsState,

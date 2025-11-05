@@ -411,6 +411,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             .map(|_| ())
     }
 
+    /// Helper function to take an errored transaction, and either:
+    ///
+    /// - raise its error further if necessary,
+    /// - store the execution failure if the transaction itself failed.
+    ///
+    /// "Transction itself failing" in this contexts means
+    /// there was a tx validation error like out of gas.
     fn process_transaction_validation_error<ErrType>(
         &mut self,
         tx_execution_id: TxExecutionId,
@@ -493,6 +500,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         Ok(())
     }
 
+    /// Takes a transaction validation result and dispatches metrics according
+    /// to it.
     fn trace_execute_transaction_result(
         &mut self,
         tx_execution_id: TxExecutionId,
@@ -562,7 +571,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
     }
 
-    /// Execute transaction with the core engines blockenv.
+    /// Execute transaction and relted assertions with the core engines blockenv.
     #[instrument(
         name = "engine::execute_transaction",
         skip(self, tx_env),
@@ -876,6 +885,13 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
     }
 
+    /// Create a new block iteration for the current block.
+    ///
+    /// Iterations are *sub-blocks* that are built sequentially under one slot.
+    /// The rationale is that when its time to commit a block to a slot an
+    /// iteration is selected and its state committed.
+    ///
+    /// This selection is done entirely by the driver of the sidecar.
     #[instrument(name = "engine::process_iteration", skip_all, level = "info")]
     fn process_iteration(&mut self, new_iteration: &NewIteration) -> Result<(), EngineError> {
         info!(
@@ -924,6 +940,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         Ok(())
     }
 
+    /// Commits an iteration as the chain head and mark the start of a new block.
+    ///
+    /// A `CommitHead` event must be processed before we can accept an iteration
+    /// for a new block. This is so we know what/if we need to commit a specific
+    /// iteration as the canonical head of the chain.
     #[instrument(name = "engine::process_commit_head", skip_all, level = "info")]
     fn process_commit_head(
         &mut self,
@@ -997,6 +1018,9 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         Ok(())
     }
 
+    /// Process an incoming transaction.
+    ///
+    /// Executes a transaction against an iteration, executing and validating all assertions.
     #[instrument(name = "engine::process_transaction_event", skip_all, level = "info")]
     async fn process_transaction_event(
         &mut self,

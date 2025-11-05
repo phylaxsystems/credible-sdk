@@ -3,12 +3,12 @@
 //! The overlay is a primitive used to cache EVM state in-memory from a on-disk store.
 //! It can be tuned to store either a set number of entries or by size.
 //!
-//! The overlay has a buffer it uses before commiting values to the underlying hashmap.
+//! The overlay has a buffer it uses before committing values to the underlying hashmap.
 //! The data structure can be modeled as follows:
 //! ```Buffer -> TinyLFU Hashmap -> Disk```
 //! 
-//! Eviction happens at the `TinyLFU` layer when commiting the buffer. The buffer can either
-//! be commited manually or when it becomes full. It is recommended to clear the buffer during
+//! Eviction happens at the `TinyLFU` layer when committing the buffer. The buffer can either
+//! be committed manually or when it becomes full. It is recommended to clear the buffer during
 //! downtime, i.e., when calculating the state root.
 
 #![allow(clippy::double_parens)]

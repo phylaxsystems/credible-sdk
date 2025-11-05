@@ -153,7 +153,7 @@ where
     }
 }
 
-/// Builds a Linea EVM enviroment. Replaces specific opcodes with their linea compatible counterparts.
+/// Builds a Linea EVM environment. Replaces specific opcodes with their linea compatible counterparts.
 ///
 /// ***IMPORTANT:*** To get linea precompile functionality, you must use either the `CallTracer`,
 /// `TriggerRecorder` or `PhEvmInspector` inspectors.
