@@ -4,8 +4,8 @@ use super::instance::{
     TestTransport,
 };
 use crate::{
-    Cache,
     CoreEngine,
+    Sources,
     cache::sources::{
         Source,
         besu_client::BesuClient,
@@ -90,7 +90,7 @@ use tracing::{
 };
 
 /// Setup test database with common accounts pre-funded
-fn populate_test_database(underlying_db: &mut CacheDB<Arc<Cache>>) -> Address {
+fn populate_test_database(underlying_db: &mut CacheDB<Arc<Sources>>) -> Address {
     // Insert default counter contract into the underlying db
     underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
 
@@ -180,14 +180,14 @@ impl LocalInstanceMockDriver {
 
 /// Common initialization for all driver types
 struct CommonSetup {
-    underlying_db: Arc<CacheDB<Arc<Cache>>>,
-    cache: Arc<Cache>,
+    underlying_db: Arc<CacheDB<Arc<Sources>>>,
+    sources: Arc<Sources>,
     sequencer_http_mock: DualProtocolMockServer,
     besu_client_http_mock: DualProtocolMockServer,
     assertion_store: Arc<AssertionStore>,
     state_results: Arc<crate::TransactionsState>,
     default_account: Address,
-    sources: Vec<Arc<dyn Source>>,
+    list_of_sources: Vec<Arc<dyn Source>>,
 }
 
 impl CommonSetup {
@@ -212,7 +212,7 @@ impl CommonSetup {
         .await
         .expect("Failed to create besu client mock");
         let sources = vec![mock_besu_client_db, mock_sequencer_db];
-        let cache = Arc::new(Cache::new(sources.clone(), 10));
+        let cache = Arc::new(Sources::new(sources.clone(), 10));
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
 
@@ -228,13 +228,13 @@ impl CommonSetup {
 
         Ok(CommonSetup {
             underlying_db,
-            cache,
+            sources: cache,
             sequencer_http_mock,
             besu_client_http_mock,
             assertion_store,
             state_results,
             default_account,
-            sources,
+            list_of_sources: sources,
         })
     }
 
@@ -249,7 +249,7 @@ impl CommonSetup {
 
         let mut engine = CoreEngine::new(
             state,
-            self.cache.clone(),
+            self.sources.clone(),
             engine_rx,
             assertion_executor,
             self.state_results.clone(),
@@ -309,7 +309,7 @@ impl LocalInstanceMockDriver {
 
         Ok(LocalInstance::new_internal(
             setup.underlying_db,
-            setup.cache.clone(),
+            setup.sources.clone(),
             setup.sequencer_http_mock,
             setup.besu_client_http_mock,
             setup.assertion_store,
@@ -319,7 +319,7 @@ impl LocalInstanceMockDriver {
             setup.state_results,
             setup.default_account,
             None,
-            setup.sources,
+            setup.list_of_sources,
             LocalInstanceMockDriver {
                 mock_sender: mock_tx,
                 block_tx_hashes_by_iteration: HashMap::new(),
@@ -361,7 +361,7 @@ impl TestTransport for LocalInstanceMockDriver {
 
         Ok(LocalInstance::new_internal(
             setup.underlying_db,
-            setup.cache.clone(),
+            setup.sources.clone(),
             setup.sequencer_http_mock,
             setup.besu_client_http_mock,
             setup.assertion_store,
@@ -371,7 +371,7 @@ impl TestTransport for LocalInstanceMockDriver {
             setup.state_results,
             setup.default_account,
             None,
-            setup.sources,
+            setup.list_of_sources,
             LocalInstanceMockDriver {
                 mock_sender: mock_tx,
                 block_tx_hashes_by_iteration: HashMap::new(),
@@ -620,7 +620,7 @@ impl LocalInstanceHttpDriver {
 
         Ok(LocalInstance::new_internal(
             setup.underlying_db,
-            setup.cache.clone(),
+            setup.sources.clone(),
             setup.sequencer_http_mock,
             setup.besu_client_http_mock,
             setup.assertion_store,
@@ -630,7 +630,7 @@ impl LocalInstanceHttpDriver {
             setup.state_results,
             setup.default_account,
             Some(&address),
-            setup.sources,
+            setup.list_of_sources,
             LocalInstanceHttpDriver {
                 client: reqwest::Client::new(),
                 address,
@@ -974,7 +974,7 @@ impl LocalInstanceGrpcDriver {
 
         Ok(LocalInstance::new_internal(
             setup.underlying_db,
-            setup.cache.clone(),
+            setup.sources.clone(),
             setup.sequencer_http_mock,
             setup.besu_client_http_mock,
             setup.assertion_store,
@@ -984,7 +984,7 @@ impl LocalInstanceGrpcDriver {
             setup.state_results,
             setup.default_account,
             Some(&address),
-            setup.sources,
+            setup.list_of_sources,
             LocalInstanceGrpcDriver {
                 client,
                 block_tx_hashes_by_iteration: HashMap::new(),

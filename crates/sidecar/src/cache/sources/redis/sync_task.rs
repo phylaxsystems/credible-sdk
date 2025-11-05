@@ -24,23 +24,23 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 pub fn publish_sync_state(
-    latest_block: Option<u64>,
+    latest_head: Option<u64>,
     oldest_block: Option<u64>,
-    current_block: &AtomicU64,
+    min_synced_head: &AtomicU64,
     observed_block: &AtomicU64,
     oldest_observed_block: &AtomicU64,
     sync_status: &AtomicBool,
 ) {
-    if let Some(block_number) = latest_block {
+    if let Some(block_number) = latest_head {
         observed_block.store(block_number, Ordering::Release);
         let oldest = oldest_block.unwrap_or(block_number);
         oldest_observed_block.store(oldest, Ordering::Release);
 
-        let target_block = current_block.load(Ordering::Acquire);
-        let within_target = if target_block == 0 {
+        let min_synced_head = min_synced_head.load(Ordering::Acquire);
+        let within_target = if min_synced_head == 0 {
             oldest == 0
         } else {
-            oldest <= target_block && target_block <= block_number
+            oldest <= min_synced_head && min_synced_head <= block_number
         };
 
         sync_status.store(within_target, Ordering::Release);
@@ -53,7 +53,7 @@ pub fn publish_sync_state(
 
 pub fn spawn_sync_task(
     reader: StateReader,
-    current_block: Arc<AtomicU64>,
+    min_sync_block: Arc<AtomicU64>,
     observed_block: Arc<AtomicU64>,
     oldest_block: Arc<AtomicU64>,
     sync_status: Arc<AtomicBool>,
@@ -73,11 +73,11 @@ pub fn spawn_sync_task(
                         spawn_blocking(move || reader.get_available_block_range()).await;
 
                     match available_range {
-                        Ok(Ok(Some((oldest, latest)))) => {
+                        Ok(Ok(Some((oldest, latest_head)))) => {
                             publish_sync_state(
-                                Some(latest),
+                                Some(latest_head),
                                 Some(oldest),
-                                &current_block,
+                                &min_sync_block,
                                 &observed_block,
                                 &oldest_block,
                                 &sync_status,
@@ -87,7 +87,7 @@ pub fn spawn_sync_task(
                             publish_sync_state(
                                 None,
                                 None,
-                                &current_block,
+                                &min_sync_block,
                                 &observed_block,
                                 &oldest_block,
                                 &sync_status,
@@ -98,7 +98,7 @@ pub fn spawn_sync_task(
                             publish_sync_state(
                                 None,
                                 None,
-                                &current_block,
+                                &min_sync_block,
                                 &observed_block,
                                 &oldest_block,
                                 &sync_status,
@@ -109,7 +109,7 @@ pub fn spawn_sync_task(
                             publish_sync_state(
                                 None,
                                 None,
-                                &current_block,
+                                &min_sync_block,
                                 &observed_block,
                                 &oldest_block,
                                 &sync_status,
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn publish_sync_state_sets_values_within_target_range() {
-        let current_block = AtomicU64::new(7);
+        let latest_head = AtomicU64::new(7);
         let observed_block = AtomicU64::new(0);
         let oldest_block = AtomicU64::new(0);
         let sync_status = AtomicBool::new(false);
@@ -137,7 +137,7 @@ mod tests {
         publish_sync_state(
             Some(8),
             Some(6),
-            &current_block,
+            &latest_head,
             &observed_block,
             &oldest_block,
             &sync_status,
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn publish_sync_state_marks_unsynced_when_target_below_oldest() {
-        let current_block = AtomicU64::new(5);
+        let latest_head = AtomicU64::new(5);
         let observed_block = AtomicU64::new(0);
         let oldest_block = AtomicU64::new(0);
         let sync_status = AtomicBool::new(true);
@@ -158,7 +158,7 @@ mod tests {
         publish_sync_state(
             Some(8),
             Some(6),
-            &current_block,
+            &latest_head,
             &observed_block,
             &oldest_block,
             &sync_status,
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn publish_sync_state_resets_when_latest_missing() {
-        let current_block = AtomicU64::new(10);
+        let latest_head = AtomicU64::new(10);
         let observed_block = AtomicU64::new(9);
         let oldest_block = AtomicU64::new(7);
         let sync_status = AtomicBool::new(true);
@@ -179,7 +179,7 @@ mod tests {
         publish_sync_state(
             None,
             None,
-            &current_block,
+            &latest_head,
             &observed_block,
             &oldest_block,
             &sync_status,
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn publish_sync_state_requires_genesis_for_zero_target() {
-        let current_block = AtomicU64::new(0);
+        let latest_head = AtomicU64::new(0);
         let observed_block = AtomicU64::new(0);
         let oldest_block = AtomicU64::new(0);
         let sync_status = AtomicBool::new(true);
@@ -200,7 +200,7 @@ mod tests {
         publish_sync_state(
             Some(5),
             Some(1),
-            &current_block,
+            &latest_head,
             &observed_block,
             &oldest_block,
             &sync_status,

@@ -1,5 +1,5 @@
 use crate::{
-    Cache,
+    Sources as CacheSources,
     cache::sources::SourceName,
     engine::EngineError,
     metrics::SourceMetrics,
@@ -50,8 +50,8 @@ pub struct SourcesInner {
     any_source_synced: AtomicBool,
     /// Per-source metrics tracking, keyed by source name
     metrics: DashMap<SourceName, SourceMetrics>,
-    /// Reference to the cache containing sources to monitor
-    cache: Arc<Cache>,
+    /// Reference to the underlying state sources
+    cache_sources: Arc<CacheSources>,
     /// Current head block number
     head_block_number: AtomicU64,
 }
@@ -64,14 +64,14 @@ impl Drop for Sources {
 
 impl Sources {
     /// Creates a new `Sources` monitoring instance
-    pub fn new(cache: Arc<Cache>, period: Duration) -> Arc<Self> {
+    pub fn new(cache_sources: Arc<CacheSources>, period: Duration) -> Arc<Self> {
         let sources_inner = Arc::new(SourcesInner {
-            metrics: cache
+            metrics: cache_sources
                 .list_configured_sources()
                 .into_iter()
                 .map(|source| (source, SourceMetrics::default()))
                 .collect(),
-            cache,
+            cache_sources,
             period,
             any_source_synced: AtomicBool::new(false),
             head_block_number: AtomicU64::new(0),
@@ -128,7 +128,7 @@ impl SourcesInner {
 
                 // Get the source from cache and check its sync status
                 let is_synced = self
-                    .cache
+                    .cache_sources
                     .iter_synced_sources()
                     .find(|s| s.name() == *source_name)
                     .is_some_and(|source| source.is_synced(head_block_number)); // Default to not

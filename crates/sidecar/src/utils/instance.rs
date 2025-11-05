@@ -1,6 +1,6 @@
 use crate::{
     cache::{
-        Cache,
+        Sources,
         sources::Source,
     },
     engine::TransactionResult,
@@ -132,11 +132,11 @@ pub trait TestTransport: Sized {
 /// manually sending/verifying because of this.
 pub struct LocalInstance<T: TestTransport> {
     /// The underlying database
-    db: Arc<CacheDB<Arc<Cache>>>,
+    db: Arc<CacheDB<Arc<Sources>>>,
     /// Underlying cache
-    cache: Arc<Cache>,
+    sources: Arc<Sources>,
     /// List of cache sources
-    pub sources: Vec<Arc<dyn Source>>,
+    pub list_of_sources: Vec<Arc<dyn Source>>,
     /// The mock HTTP representing the sequencer
     pub sequencer_http_mock: DualProtocolMockServer,
     /// The mock HTTP representing the Besu client
@@ -182,8 +182,8 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Internal constructor for creating `LocalInstance` with all fields
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_internal(
-        db: Arc<CacheDB<Arc<Cache>>>,
-        cache: Arc<Cache>,
+        db: Arc<CacheDB<Arc<Sources>>>,
+        sources: Arc<Sources>,
         sequencer_http_mock: DualProtocolMockServer,
         besu_client_http_mock: DualProtocolMockServer,
         assertion_store: Arc<AssertionStore>,
@@ -193,12 +193,12 @@ impl<T: TestTransport> LocalInstance<T> {
         transaction_results: Arc<crate::TransactionsState>,
         default_account: Address,
         local_address: Option<&SocketAddr>,
-        sources: Vec<Arc<dyn Source>>,
+        list_of_sources: Vec<Arc<dyn Source>>,
         transport: T,
     ) -> Self {
         Self {
             db,
-            cache,
+            sources,
             sequencer_http_mock,
             besu_client_http_mock,
             assertion_store,
@@ -209,7 +209,7 @@ impl<T: TestTransport> LocalInstance<T> {
             default_account,
             iteration_nonce: HashMap::new(),
             transport,
-            sources,
+            list_of_sources,
             local_address: local_address.copied(),
             iteration_id: 1,
             iteration_tx_map: HashMap::new(),
@@ -244,13 +244,13 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Get a reference to the underlying database
-    pub fn db(&self) -> &Arc<CacheDB<Arc<Cache>>> {
+    pub fn db(&self) -> &Arc<CacheDB<Arc<Sources>>> {
         &self.db
     }
 
     /// Return the number of cache resets observed so far.
     pub fn cache_reset_count(&self) -> u64 {
-        self.cache.reset_required_block_number_count()
+        self.sources.reset_latest_unprocessed_block_count()
     }
 
     /// Get a reference to the assertion store
@@ -327,7 +327,7 @@ impl<T: TestTransport> LocalInstance<T> {
         block_number: u64,
     ) -> Result<(), String> {
         let source = self
-            .sources
+            .list_of_sources
             .get(source_index)
             .cloned()
             .ok_or_else(|| format!("source index {source_index} out of bounds"))?;

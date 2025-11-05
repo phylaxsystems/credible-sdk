@@ -36,7 +36,7 @@ impl Sequencer {
 impl Source for Sequencer {
     // The Sequencer is always synced.
     #[inline]
-    fn is_synced(&self, _current_block_number: u64) -> bool {
+    fn is_synced(&self, _latest_head: u64) -> bool {
         true
     }
 
@@ -46,7 +46,7 @@ impl Source for Sequencer {
     }
 
     #[inline]
-    fn update_target_block(&self, block_number: u64) {
+    fn update_min_synced_head(&self, block_number: u64) {
         self.json_rpc_db.set_target_block(block_number);
     }
 }

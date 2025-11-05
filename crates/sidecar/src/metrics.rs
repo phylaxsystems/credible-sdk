@@ -190,40 +190,46 @@ impl Drop for TransactionMetrics {
     }
 }
 
-/// Cache metrics. The metrics are committed to prometheus on write. The fields in this struct are
+/// State metrics. The metrics are committed to prometheus on write. The fields in this struct are
 /// for tracking purposes
 #[derive(Debug, Default)]
-pub struct CacheMetrics {
-    pub required_block_number: AtomicU64,
-    pub current_block_number: AtomicU64,
-    pub reset_required_block_number_counter: AtomicU64,
+pub struct StateMetrics {
+    pub latest_unprocessed_block: AtomicU64,
+    pub latest_head: AtomicU64,
+    pub reset_latest_unprocessed_block: AtomicU64,
 }
 
-impl CacheMetrics {
+impl StateMetrics {
     pub fn new() -> Self {
         Self {
-            required_block_number: AtomicU64::new(0),
-            current_block_number: AtomicU64::new(0),
-            reset_required_block_number_counter: AtomicU64::new(0),
+            latest_unprocessed_block: AtomicU64::new(0),
+            latest_head: AtomicU64::new(0),
+            reset_latest_unprocessed_block: AtomicU64::new(0),
         }
     }
 
-    /// Set the cache required block number (`sidecar_cache_required_block_number`)
+    /// Set the state sources latest unprocessed block number (`sidecar_cache_latest_unprocessed_block`)
     ///
     /// Commited as a `Gauge`.
-    pub fn set_required_block_number(&self, block_number: u64) {
-        self.required_block_number
+    pub fn set_latest_unprocessed_block(&self, block_number: u64) {
+        self.latest_unprocessed_block
             .store(block_number, Ordering::Relaxed);
-        gauge!("sidecar_cache_required_block_number").set(block_number as f64);
+        gauge!("sidecar_cache_latest_unprocessed_block").set(block_number as f64);
     }
 
-    /// Set the cache current block number (`sidecar_cache_current_block_number`)
+    /// Set the state sources min synced head (`sidecar_cache_min_synced_head`)
     ///
     /// Commited as a `Gauge`.
-    pub fn set_current_block_number(&self, block_number: u64) {
-        self.current_block_number
-            .store(block_number, Ordering::Relaxed);
-        gauge!("sidecar_cache_current_block_number").set(block_number as f64);
+    pub fn set_min_synced_head(&self, number: u64) {
+        gauge!("sidecar_cache_min_synced_head").set(number as f64);
+    }
+
+    /// Set the state sources latest head (`sidecar_cache_latest_head`)
+    ///
+    /// Commited as a `Gauge`.
+    pub fn set_latest_head(&self, block_number: u64) {
+        self.latest_head.store(block_number, Ordering::Relaxed);
+        gauge!("sidecar_cache_latest_head").set(block_number as f64);
     }
 
     /// Track the number of times the `basic_ref` was called
@@ -258,18 +264,16 @@ impl CacheMetrics {
         counter!("sidecar_cache_storage_ref_counter").increment(1);
     }
 
-    /// Track the number of times the required block number was reset
-    /// (`sidecar_cache_reset_required_block_number_counter`)
+    /// Track the number of times the required last unprocessed block was reset
+    /// (`sidecar_cache_reset_latest_unprocessed_block_counter`)
     ///
     /// Commited as a `Counter`.
-    pub fn increase_reset_required_block_number_counter(&self) {
-        let reset_required_block_number_counter = self
-            .reset_required_block_number_counter
-            .load(Ordering::Relaxed)
-            + 1;
-        self.reset_required_block_number_counter
-            .store(reset_required_block_number_counter, Ordering::Relaxed);
-        counter!("sidecar_cache_reset_required_block_number_counter").increment(1);
+    pub fn increase_reset_latest_unprocessed_block(&self) {
+        let reset_required_head_counter =
+            self.reset_latest_unprocessed_block.load(Ordering::Relaxed) + 1;
+        self.reset_latest_unprocessed_block
+            .store(reset_required_head_counter, Ordering::Relaxed);
+        counter!("sidecar_cache_reset_latest_unprocessed_block_counter").increment(1);
     }
 
     /// Track the duration of the `is_sync` call
