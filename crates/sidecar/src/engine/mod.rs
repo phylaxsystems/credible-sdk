@@ -1532,7 +1532,7 @@ mod tests {
     async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {
         // Send an empty block to verify we can advance the chain with empty blocks
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         // Send and verify a reverting CREATE transaction
         let tx_hash = instance.send_reverting_create_tx().await.unwrap();
@@ -2239,19 +2239,19 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Send transactions with different iteration IDs in Block 1
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let tx_block1_iter1 = instance
             .send_successful_create_tx_dry(uint!(100_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let tx_block1_iter2 = instance
             .send_successful_create_tx_dry(uint!(200_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.new_instance(3).await.unwrap();
+        instance.new_iteration(3).await.unwrap();
         let tx_block1_iter3 = instance
             .send_successful_create_tx_dry(uint!(300_U256), Bytes::new())
             .await
@@ -2279,7 +2279,7 @@ mod tests {
 
         // Block 2: Select iteration 2 as the winner from Block 1
         instance.new_block().await.unwrap();
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
 
         // Send a transaction to verify state was committed correctly
         let tx_block2 = instance
@@ -2308,14 +2308,14 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Iteration 1: Create a contract at value 100
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let tx_iter1 = instance
             .send_successful_create_tx_dry(uint!(100_U256), Bytes::new())
             .await
             .unwrap();
 
         // Iteration 2: Create a contract at value 200
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(200_U256), Bytes::new())
             .await
@@ -2326,7 +2326,7 @@ mod tests {
 
         // Block 2: Select iteration 1 as the winner
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         // The state should reflect iteration 1's changes, not iteration 2's
         let tx_verify = instance
@@ -2362,14 +2362,14 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Send transaction in iteration 1
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let tx_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
         // Send transaction in iteration 2
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2379,7 +2379,7 @@ mod tests {
         assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
 
         // Block 2: Select iteration 3 (which doesn't exist)
-        instance.new_instance(3).await.unwrap();
+        instance.new_iteration(3).await.unwrap();
         instance.transport.set_last_tx_hash(Some(B256::random())); // Wrong hash
         instance.transport.set_n_transactions(1);
 
@@ -2416,7 +2416,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Send multiple transactions all in iteration 2
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let tx1_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2454,7 +2454,7 @@ mod tests {
 
         // Block 2: Select iteration 2 with all 3 transactions
         instance.new_block().await.unwrap();
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
 
         let tx_block2 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -2480,7 +2480,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Iteration 1: 2 transactions
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let tx1_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2505,7 +2505,7 @@ mod tests {
         );
 
         // Block 2: Select iteration 1 but set the wrong count (3 instead of 2)
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         instance.transport.set_n_transactions(3);
 
         instance
@@ -2529,7 +2529,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Iteration 1: Send 2 transactions
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let tx1_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2541,7 +2541,7 @@ mod tests {
             .unwrap();
 
         // Iteration 2: Send 1 transaction
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let tx1_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2567,12 +2567,12 @@ mod tests {
         );
 
         // Reorg last transaction in iteration 1
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         instance.send_reorg(tx2_iter1).await.unwrap();
 
         // Block 2: Select iteration 1 with only 1 transaction (after reorg)
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         let tx_block2 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -2596,7 +2596,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Only send transactions in iteration 2
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2606,7 +2606,7 @@ mod tests {
 
         // Block 2: Select iteration 1 which has no transactions
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         // Should still work
         let tx_block2 = instance
@@ -2631,25 +2631,25 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Send transactions with alternating iteration IDs
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let tx1_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let tx1_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let tx2_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let tx2_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2683,7 +2683,7 @@ mod tests {
 
         // Block 2: Select iteration 1 (should have 2 transactions)
         instance.new_block().await.unwrap();
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
 
         let tx_block2 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -2706,13 +2706,13 @@ mod tests {
         // Block 1
         instance.new_block().await.unwrap();
 
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let b1_tx_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let b1_tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2720,15 +2720,15 @@ mod tests {
 
         // Block 2: Select iteration 2 from Block 1
         instance.new_block().await.unwrap();
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
 
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let b2_tx_iter1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let b2_tx_iter2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2736,7 +2736,7 @@ mod tests {
 
         // Block 3: Select iteration 1 from Block 2
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         let tx_block3 = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -2801,13 +2801,13 @@ mod tests {
         // Block 1
         instance.new_block().await.unwrap();
 
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let b1_i1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let b1_i2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2815,15 +2815,15 @@ mod tests {
 
         // Block 2: Select iteration 1
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let b2_i1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let b2_i2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2831,15 +2831,15 @@ mod tests {
 
         // Block 3: Switch to iteration 2
         instance.new_block().await.unwrap();
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
 
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let b3_i1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
             .unwrap();
 
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let b3_i2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2847,7 +2847,7 @@ mod tests {
 
         // Block 4: Switch back to iteration 1
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         let final_tx = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -2868,7 +2868,7 @@ mod tests {
         instance.new_block().await.unwrap();
 
         // Iteration 1: 3 transactions
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         let tx1_i1 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2883,7 +2883,7 @@ mod tests {
             .unwrap();
 
         // Iteration 2: 2 transactions
-        instance.new_instance(2).await.unwrap();
+        instance.new_iteration(2).await.unwrap();
         let tx1_i2 = instance
             .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
             .await
@@ -2901,7 +2901,7 @@ mod tests {
         assert!(instance.is_transaction_successful(&tx2_i2).await.unwrap());
 
         // Reorg last transaction in iteration 1
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         instance.send_reorg(tx3_i1).await.unwrap();
 
         // Verify reorg only affected iteration 1
@@ -2928,7 +2928,7 @@ mod tests {
 
         // Block 2: Select iteration 1 (now with 2 transactions)
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         let final_tx = instance
             .send_successful_create_tx(uint!(0_U256), Bytes::new())

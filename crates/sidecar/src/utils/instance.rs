@@ -105,7 +105,8 @@ pub trait TestTransport: Sized {
     /// Send a new iteration event with custom block environment data.
     ///
     /// Should send a `NewIteration` event to the core engine.
-    async fn new_instance(&mut self, iteration_id: u64, block_env: BlockEnv) -> Result<(), String>;
+    async fn new_iteration(&mut self, iteration_id: u64, block_env: BlockEnv)
+    -> Result<(), String>;
     /// Send a new transaction reorg event. Removes the last executed transaction.
     /// Transaction hash provided as an argument must match the last executed tx.
     /// If not the call should succeed but the core engine should produce an error.
@@ -493,7 +494,7 @@ impl<T: TestTransport> LocalInstance<T> {
         let next_block_number = block_number + 1;
         let block_env = Self::default_block_env(next_block_number);
         self.transport
-            .new_instance(self.iteration_id, block_env)
+            .new_iteration(self.iteration_id, block_env)
             .await?;
         self.active_iterations.insert(self.iteration_id);
 
@@ -538,10 +539,10 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Generates a default `BlockEnv` matching our other helpers so callers only
     /// need to provide the iteration identifier.
     ///
-    /// Subsequent transactions will use the instnce id set here.
-    pub async fn new_instance(&mut self, iteration_id: u64) -> Result<(), String> {
+    /// Subsequent transactions will use the iteration id set here.
+    pub async fn new_iteration(&mut self, iteration_id: u64) -> Result<(), String> {
         if self.block_number == 0 {
-            return Err("new_instance requires at least one block to have been sent".to_string());
+            return Err("new_iteration requires at least one block to have been sent".to_string());
         }
 
         self.iteration_id = iteration_id;
@@ -553,7 +554,9 @@ impl<T: TestTransport> LocalInstance<T> {
         let current_block_number = self.block_number;
         let block_env = Self::default_block_env(current_block_number);
 
-        self.transport.new_instance(iteration_id, block_env).await?;
+        self.transport
+            .new_iteration(iteration_id, block_env)
+            .await?;
         self.active_iterations.insert(iteration_id);
         Ok(())
     }

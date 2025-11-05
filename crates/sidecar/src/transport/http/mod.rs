@@ -225,7 +225,7 @@ mod tests {
     #[crate::utils::engine_test(http)]
     async fn test_invalid_block_env_request(mut instance: crate::utils::LocalInstance) {
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
         // Send a valid transaction
         let _ = instance.send_reverting_create_tx().await.unwrap();
 
@@ -257,7 +257,7 @@ mod tests {
     #[crate::utils::engine_test(http)]
     async fn test_invalid_reorg_request(mut instance: crate::utils::LocalInstance) {
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         // Send a valid transaction
         let _ = instance.send_reverting_create_tx().await.unwrap();
@@ -283,7 +283,7 @@ mod tests {
     #[crate::utils::engine_test(http)]
     async fn test_invalid_transaction_request(mut instance: crate::utils::LocalInstance) {
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         // Send a valid transaction
         let _ = instance.send_reverting_create_tx().await.unwrap();
@@ -324,7 +324,7 @@ mod tests {
         mut instance: crate::utils::LocalInstance,
     ) {
         instance.new_block().await.unwrap();
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         let tx_execution_id = instance
             .send_successful_create_tx(U256::from(0u64), Bytes::new())
@@ -414,7 +414,7 @@ mod tests {
             .new_block()
             .await
             .expect("failed to announce new block");
-        instance.new_instance(1).await.unwrap();
+        instance.new_iteration(1).await.unwrap();
 
         let missing_hash = B256::repeat_byte(0x42);
 

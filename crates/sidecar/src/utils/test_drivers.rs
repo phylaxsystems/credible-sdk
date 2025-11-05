@@ -436,7 +436,11 @@ impl TestTransport for LocalInstanceMockDriver {
             .map_err(|e| format!("Failed to send transaction: {e}"))
     }
 
-    async fn new_instance(&mut self, iteration_id: u64, block_env: BlockEnv) -> Result<(), String> {
+    async fn new_iteration(
+        &mut self,
+        iteration_id: u64,
+        block_env: BlockEnv,
+    ) -> Result<(), String> {
         info!(target: "test_transport", "LocalInstance sending new iteration: {}", iteration_id);
         self.block_tx_hashes_by_iteration
             .insert(iteration_id, Vec::new());
@@ -765,7 +769,11 @@ impl TestTransport for LocalInstanceHttpDriver {
         ))
     }
 
-    async fn new_instance(&mut self, iteration_id: u64, block_env: BlockEnv) -> Result<(), String> {
+    async fn new_iteration(
+        &mut self,
+        iteration_id: u64,
+        block_env: BlockEnv,
+    ) -> Result<(), String> {
         info!(target: "LocalInstanceHttpDriver", "LocalInstance sending new iteration: {} with block {}", iteration_id, block_env.number);
         self.block_tx_hashes_by_iteration
             .insert(iteration_id, Vec::new());
@@ -1186,7 +1194,11 @@ impl TestTransport for LocalInstanceGrpcDriver {
         ))
     }
 
-    async fn new_instance(&mut self, iteration_id: u64, block_env: BlockEnv) -> Result<(), String> {
+    async fn new_iteration(
+        &mut self,
+        iteration_id: u64,
+        block_env: BlockEnv,
+    ) -> Result<(), String> {
         info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending new iteration: {} with block {}", iteration_id, block_env.number);
         self.block_tx_hashes_by_iteration
             .insert(iteration_id, Vec::new());
