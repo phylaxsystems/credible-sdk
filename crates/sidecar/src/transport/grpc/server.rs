@@ -94,7 +94,6 @@ use tonic::{
 use tracing::{
     debug,
     instrument,
-    trace,
     warn,
 };
 
@@ -210,8 +209,6 @@ impl SidecarTransport for GrpcService {
         request: Request<BlockEnvEnvelope>,
     ) -> Result<Response<BasicAck>, Status> {
         let payload = request.into_inner();
-        trace!("Processing gRPC SendBlockEnv request");
-
         // Decode into proper structs instead of manually merging JSON
         let legacy_block = decode_block_env_envelope(&payload)?;
         let Some(selected_iteration_id) = legacy_block.selected_iteration_id else {
@@ -258,7 +255,6 @@ impl SidecarTransport for GrpcService {
         &self,
         request: Request<PbSendEvents>,
     ) -> Result<Response<BasicAck>, Status> {
-        trace!("Processing gRPC SendEvents request");
         let payload = request.into_inner();
         if payload.events.is_empty() {
             return Err(Status::invalid_argument("events must not be empty"));
@@ -326,7 +322,6 @@ impl SidecarTransport for GrpcService {
         &self,
         request: Request<SendTransactionsRequest>,
     ) -> Result<Response<SendTransactionsResponse>, Status> {
-        trace!("Processing gRPC SendTransactions request");
         self.ensure_commit_head_seen()?;
 
         let req = request.into_inner();
@@ -371,7 +366,6 @@ impl SidecarTransport for GrpcService {
     /// Handle gRPC request for `Reorg` messages.
     #[instrument(name = "grpc_server::Reorg", skip(self, request), level = "debug")]
     async fn reorg(&self, request: Request<ReorgRequest>) -> Result<Response<BasicAck>, Status> {
-        trace!("Processing gRPC Reorg request");
         let payload = request.into_inner();
         let Some(pb_tx_execution_id) = payload.tx_execution_id else {
             return Err(Status::invalid_argument("missing tx_execution_id"));
@@ -401,7 +395,6 @@ impl SidecarTransport for GrpcService {
         &self,
         request: Request<GetTransactionsRequest>,
     ) -> Result<Response<GetTransactionsResponse>, Status> {
-        trace!("Processing gRPC GetTransactions request");
         self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();
@@ -454,7 +447,6 @@ impl SidecarTransport for GrpcService {
         &self,
         request: Request<GetTransactionRequest>,
     ) -> Result<Response<GetTransactionResponse>, Status> {
-        trace!("Processing gRPC GetTransaction request");
         self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();

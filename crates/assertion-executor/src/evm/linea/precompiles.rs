@@ -153,20 +153,6 @@ pub fn execute_linea_precompile<DB: revm::Database>(
 
 // Manually implemented for linea
 impl<DB: Database> Inspector<LineaCtx<'_, DB>> for CallTracer {
-    fn step(
-        &mut self,
-        interp: &mut revm::interpreter::Interpreter,
-        _context: &mut LineaCtx<'_, DB>,
-    ) {
-        self.record_instruction_step(interp);
-    }
-    fn step_end(
-        &mut self,
-        interp: &mut revm::interpreter::Interpreter,
-        _context: &mut LineaCtx<'_, DB>,
-    ) {
-        self.log_instruction_step(interp);
-    }
     fn call(
         &mut self,
         context: &mut LineaCtx<'_, DB>,

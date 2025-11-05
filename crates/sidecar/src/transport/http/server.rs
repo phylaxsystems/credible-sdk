@@ -58,7 +58,6 @@ use tracing::{
     debug,
     error,
     instrument,
-    trace,
     warn,
 };
 
@@ -378,8 +377,6 @@ async fn handle_block_env(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    trace!("Processing blockEnv request");
-
     let response = process_request(state, request).await?;
     // If the `process_request` call was successful, we can mark the block environment as received
     if !state.has_commit_head.load(Ordering::Relaxed) {
@@ -398,8 +395,6 @@ async fn handle_send_transactions(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    trace!("Processing sendTransactions request");
-
     // Check if we have block environment before processing transactions
     if !state.has_commit_head.load(Ordering::Relaxed) {
         debug!("Rejecting transaction - no block environment available");
@@ -413,7 +408,6 @@ async fn handle_send_events(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    trace!("Processing sendEvents request");
     process_request(state, request).await
 }
 
@@ -422,7 +416,6 @@ async fn handle_reorg(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    trace!("Processing reorg request");
     process_request(state, request).await
 }
 
@@ -431,8 +424,6 @@ async fn process_request(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    trace!("Processing incoming request and sending to the queue");
-
     let Some(_) = &request.params else {
         debug!("request missing required parameters");
         return Ok(JsonRpcResponse::invalid_params(
@@ -570,8 +561,6 @@ async fn handle_get_transactions(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    trace!("Processing getTransactions request");
-
     // Check if we have block environment before processing transactions
     // NOTE: This can be dropped once we implement the "not_found" feature, the result will be "not_found" by default because there cannot be any tx hash consumed if no BlockEnv was received first
     if let Some(response) = ensure_block_environment_available(state, request) {
@@ -614,8 +603,6 @@ async fn handle_get_transaction(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    trace!("Processing getTransaction request");
-
     if let Some(response) = ensure_block_environment_available(state, request) {
         return Ok(response);
     }
