@@ -1,6 +1,6 @@
 //! Caches provide the sidecar with state that it does not have locally.
 //!
-//! The sidecar cache serve sstate from external providers
+//! The sidecar cache serves state from external providers
 //! to the sidecar in a `revm::DatabaseRef` compatible format.
 //!
 //! The cache includes many state sources inside of it, which are responsible for

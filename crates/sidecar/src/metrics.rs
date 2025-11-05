@@ -30,60 +30,60 @@ use std::sync::atomic::{
 /// ## Additional metrics
 ///
 /// Metrics `sidecar_cache_invalidations` (counter), `sidecar_cache_min_required_height` (counter),
-/// and `sidecar_cache_invalidations_time_seconds` (gauge) are commited in a different way to the
-/// metrics below, but are can be accessed the same way in prometheus.
+/// and `sidecar_cache_invalidations_time_seconds` (gauge) are committed in a different way to the
+/// metrics below, but can be accessed the same way in prometheus.
 #[derive(Clone, Debug, Default)]
 pub struct BlockMetrics {
-    /// Duration elapsed from receving one blockenv to a new one.
+    /// Duration elapsed from receiving one blockenv to a new one.
     /// Does not necessarily equate to how much active time was spent
     /// working on transactions.
     ///
-    /// Commited as a `Histogram`.
+    /// Committed as a `Histogram`.
     pub block_processing_duration: std::time::Duration,
     /// Time spent idling and not building blocks
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub idle_time: std::time::Duration,
     /// Time spent processing events
     ///
-    /// Commited as a `Gauge` and `Histogram`.
+    /// Committed as a `Gauge` and `Histogram`.
     pub event_processing_time: std::time::Duration,
     /// How many transactions the engine has seen
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub transactions_considered: u64,
     /// How many txs were executed
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub transactions_simulated: u64,
     /// How many transactions we have executed successfully
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub transactions_simulated_success: u64,
     /// How many transactions we have executed unsuccessfully
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub transactions_simulated_failure: u64,
     /// How many transactions we have executed successfully,
     /// which ended up invalidating assertions
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub invalidated_transactions: u64,
     /// How much gas was used in a block
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub block_gas_used: u64,
     /// How many assertions we have executed in the block
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub assertions_per_block: u64,
     /// How much assertion gas we executed in a block
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub assertion_gas_per_block: u64,
     /// Current block height
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub current_height: u64,
 }
 
@@ -235,7 +235,7 @@ impl StateMetrics {
     /// Track the number of times the `basic_ref` was called
     /// (`sidecar_cache_basic_ref_counter`)
     ///
-    /// Commited as a `Counter`.
+    /// Committed as a `Counter`.
     pub fn increase_basic_ref_counter(&self) {
         counter!("sidecar_cache_basic_ref_counter").increment(1);
     }
@@ -243,7 +243,7 @@ impl StateMetrics {
     /// Track the number of times the `code_by_hash_ref` was called
     /// (`sidecar_cache_code_by_hash_ref_counter`)
     ///
-    /// Commited as a `Counter`.
+    /// Committed as a `Counter`.
     pub fn increase_code_by_hash_ref_counter(&self) {
         counter!("sidecar_cache_code_by_hash_ref_counter").increment(1);
     }
@@ -251,7 +251,7 @@ impl StateMetrics {
     /// Track the number of times the `block_hash_ref` was called
     /// (`sidecar_cache_block_hash_ref_counter`)
     ///
-    /// Commited as a `Counter`.
+    /// Committed as a `Counter`.
     pub fn increase_block_hash_ref_counter(&self) {
         counter!("sidecar_cache_block_hash_ref_counter").increment(1);
     }
@@ -259,7 +259,7 @@ impl StateMetrics {
     /// Track the number of times the `storage_ref` was called
     /// (`sidecar_cache_storage_ref_counter`)
     ///
-    /// Commited as a `Counter`.
+    /// Committed as a `Counter`.
     pub fn increase_storage_ref_counter_counter(&self) {
         counter!("sidecar_cache_storage_ref_counter").increment(1);
     }
@@ -279,7 +279,7 @@ impl StateMetrics {
     /// Track the duration of the `is_sync` call
     /// (`sidecar_cache_is_sync_duration`)
     ///
-    /// Commited as a `Histogram`.
+    /// Committed as a `Histogram`.
     pub fn is_sync_duration(&self, duration: std::time::Duration) {
         histogram!("sidecar_cache_is_sync_duration").record(duration);
     }
@@ -287,7 +287,7 @@ impl StateMetrics {
     /// Track the total duration of the `basic_ref` call
     /// (`sidecar_cache_total_basic_ref_duration`)
     ///
-    /// Commited as a `Histogram`.
+    /// Committed as a `Histogram`.
     pub fn total_basic_ref_duration(&self, duration: std::time::Duration) {
         histogram!("sidecar_cache_total_basic_ref_duration").record(duration);
     }
@@ -295,7 +295,7 @@ impl StateMetrics {
     /// Track the duration of the `basic_ref` call per source
     /// (`sidecar_cache_basic_ref_duration`)
     ///
-    /// Commited as a `Histogram`.
+    /// Committed as a `Histogram`.
     pub fn basic_ref_duration(&self, source: &impl ToString, duration: std::time::Duration) {
         histogram!("sidecar_cache_basic_ref_duration", "source" => source.to_string())
             .record(duration);
@@ -304,7 +304,7 @@ impl StateMetrics {
     /// Track the total duration of the `block_hash_ref` call
     /// (`sidecar_cache_total_block_hash_ref_duration`)
     ///
-    /// Commited as a `Histogram`.
+    /// Committed as a `Histogram`.
     pub fn total_block_hash_ref_duration(&self, duration: std::time::Duration) {
         histogram!("sidecar_cache_total_block_hash_ref_duration").record(duration);
     }
@@ -312,7 +312,7 @@ impl StateMetrics {
     /// Track the duration of the `block_hash_ref` call per source
     /// (`sidecar_cache_block_hash_ref_duration`)
     ///
-    /// Commited as a `Histogram`.
+    /// Committed as a `Histogram`.
     pub fn block_hash_ref_duration(&self, source: &impl ToString, duration: std::time::Duration) {
         histogram!("sidecar_cache_block_hash_ref_duration", "source" => source.to_string())
             .record(duration);
@@ -321,7 +321,7 @@ impl StateMetrics {
     /// Track the total duration of the `code_by_hash_ref` call
     /// (`sidecar_cache_total_code_by_hash_ref_duration`)
     ///
-    /// Commited as a `Histogram`.
+    /// Committed as a `Histogram`.
     pub fn total_code_by_hash_ref_duration(&self, duration: std::time::Duration) {
         histogram!("sidecar_cache_total_code_by_hash_ref_duration").record(duration);
     }
@@ -329,7 +329,7 @@ impl StateMetrics {
     /// Track the duration of the `code_by_hash_ref` call per source
     /// (`sidecar_cache_code_by_hash_ref_duration`)
     ///
-    /// Commited as a `Histogram`.
+    /// Committed as a `Histogram`.
     pub fn code_by_hash_ref_duration(&self, source: &impl ToString, duration: std::time::Duration) {
         histogram!("sidecar_cache_code_by_hash_ref_duration", "source" => source.to_string())
             .record(duration);
@@ -338,7 +338,7 @@ impl StateMetrics {
     /// Track the total duration of the `storage_ref` call
     /// (`sidecar_cache_total_storage_ref_duration`)
     ///
-    /// Commited as a `Histogram`.
+    /// Committed as a `Histogram`.
     pub fn total_storage_ref_duration(&self, duration: std::time::Duration) {
         histogram!("sidecar_cache_total_storage_ref_duration").record(duration);
     }
@@ -346,7 +346,7 @@ impl StateMetrics {
     /// Track the duration of the `storage_ref` call per source
     /// (`sidecar_cache_storage_ref_duration`)
     ///
-    /// Commited as a `Histogram`.
+    /// Committed as a `Histogram`.
     pub fn storage_ref_duration(&self, source: &impl ToString, duration: std::time::Duration) {
         histogram!("sidecar_cache_storage_ref_duration", "source" => source.to_string())
             .record(duration);

@@ -124,7 +124,7 @@ message TxExecutionId {
 message CommitHead {
   string last_tx_hash = 1; // empty string means absent
   uint64 n_transactions = 2; // n transactions included in the iteration
-  uint64 block_number = 3; // Block number of the iteration we're commiting
+  uint64 block_number = 3; // Block number of the iteration we're committing
   optional uint64 selected_iteration_id = 4; // selected iteration id
 }
 

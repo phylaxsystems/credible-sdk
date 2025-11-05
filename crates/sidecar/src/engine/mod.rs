@@ -888,8 +888,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     /// Create a new block iteration for the current block.
     ///
     /// Iterations are *sub-blocks* that are built sequentially under one slot.
-    /// The rationale is that when its time to commit a block to a slot the most appropriate
-    /// iteration is slected and its state commited.
+    /// The rationale is that when its time to commit a block to a slot an
+    /// iteration is selected and its state committed.
     ///
     /// This selection is done entirely by the driver of the sidecar.
     #[instrument(name = "engine::process_iteration", skip_all, level = "info")]

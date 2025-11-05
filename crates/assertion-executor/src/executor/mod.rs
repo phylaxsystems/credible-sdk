@@ -121,7 +121,7 @@ impl AssertionExecutor {
     /// assertions.
     ///
     /// We execute against an external database here to satisfy a requirement within op-talos, where
-    /// transactions couldnt be properly commited if they weren't touched by the database beforehand.
+    /// transactions couldn't be properly committed if they weren't touched by the database beforehand.
     ///
     /// Returns the results of the assertions, as well as the state changes that should be
     /// committed if the assertions pass. Errors if the tx execution encounters an internal error.

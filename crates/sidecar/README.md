@@ -11,7 +11,7 @@ configured via env vars!**
 
 ### Tracing and metrics
 
-Tracing and metrics is configured bia the rust-tracing crate. These are the enviroment vars to set to configure
+Tracing and metrics are configured via the rust-tracing crate. These are the environment vars to set to configure
 tracing/metrics collection:
 
 - `OTEL_EXPORTER_OTLP_ENDPOINT` - optional. The endpoint to send traces to,
@@ -26,7 +26,7 @@ name` resource key according to the OTEL conventions.
 - `OTEL_SERVICE_NAME` - optional. Value for the `service.name` resource key
   according to the OTEL conventions. If set, this will override the default
   service name taken from `CARGO_PKG_NAME`.
-- `TRACING_METRICS_PORT` - Which port to bind the the exporter to. If the variable is missing or unparseable, it
+- `TRACING_METRICS_PORT` - Which port to bind the exporter to. If the variable is missing or unparseable, it
   defaults to 9000.
 - `TRACING_LOG_JSON` - If set, will enable JSON logging.
 
@@ -136,18 +136,6 @@ The configuration file is a JSON file with the following schema:
           "examples": [
             30000000
           ]
-        },
-        "overlay_cache_capacity": {
-          "type": "integer",
-          "description": "Overlay cache capacity in elements (optional)",
-          "minimum": 0,
-          "examples": [
-            1000
-          ]
-        },
-        "overlay_cache_invalidation_every_block": {
-          "type": "boolean",
-          "description": "Whether the overlay cache has to be invalidated every block"
         },
         "cache_capacity_bytes": {
           "type": "integer",
@@ -404,8 +392,6 @@ The default configuration can be found in [default_config.json](default_config.j
   },
   "credible": {
     "assertion_gas_limit": 3000000,
-    "overlay_cache_capacity": 100000,
-    "overlay_cache_invalidation_every_block": false,
     "cache_capacity_bytes": 256000000,
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://127.0.0.1:5001",
