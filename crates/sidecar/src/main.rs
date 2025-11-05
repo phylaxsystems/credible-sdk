@@ -127,21 +127,21 @@ async fn main() -> anyhow::Result<()> {
             redis_namespace,
             CircularBufferConfig::new(redis_depth)?,
         ) {
-            let redis_cache = Arc::new(RedisSource::new(redis_client));
-            sources.push(redis_cache);
+            let redis_source = Arc::new(RedisSource::new(redis_client));
+            sources.push(redis_source);
         }
 
         // The cache is flushed on restart
-        let cache = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
-        let state: OverlayDb<Sources> = OverlayDb::new(Some(cache.clone()));
+        let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
+        let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
         let (tx_sender, tx_receiver) = unbounded();
         let mut transport =
             create_transport_from_args(&config, tx_sender, engine_state_results.clone())?;
 
         let mut engine = CoreEngine::new(
-            state,
             cache,
+            state,
             tx_receiver,
             assertion_executor.clone(),
             engine_state_results.clone(),

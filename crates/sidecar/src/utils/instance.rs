@@ -250,7 +250,7 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Return the number of cache resets observed so far.
     pub fn cache_reset_count(&self) -> u64 {
-        self.sources.reset_required_head_count()
+        self.sources.reset_latest_unprocessed_block_count()
     }
 
     /// Get a reference to the assertion store

@@ -190,16 +190,16 @@ impl Drop for TransactionMetrics {
     }
 }
 
-/// Cache metrics. The metrics are committed to prometheus on write. The fields in this struct are
+/// State metrics. The metrics are committed to prometheus on write. The fields in this struct are
 /// for tracking purposes
 #[derive(Debug, Default)]
-pub struct CacheMetrics {
+pub struct StateMetrics {
     pub required_head: AtomicU64,
     pub latest_head: AtomicU64,
     pub reset_last_unprocessed_block: AtomicU64,
 }
 
-impl CacheMetrics {
+impl StateMetrics {
     pub fn new() -> Self {
         Self {
             required_head: AtomicU64::new(0),
@@ -208,7 +208,7 @@ impl CacheMetrics {
         }
     }
 
-    /// Set the cache required head (`sidecar_cache_required_head`)
+    /// Set the state sources required head (`sidecar_cache_required_head`)
     ///
     /// Commited as a `Gauge`.
     pub fn set_required_head(&self, block_number: u64) {
@@ -216,7 +216,7 @@ impl CacheMetrics {
         gauge!("sidecar_cache_required_head").set(block_number as f64);
     }
 
-    /// Set the cache latest head (`sidecar_cache_latest_head`)
+    /// Set the state sources latest head (`sidecar_cache_latest_head`)
     ///
     /// Commited as a `Gauge`.
     pub fn set_latest_head(&self, block_number: u64) {

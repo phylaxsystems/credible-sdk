@@ -4,7 +4,7 @@ use crate::{
         SourceError,
         SourceName,
     },
-    metrics::CacheMetrics,
+    metrics::StateMetrics,
 };
 use assertion_executor::primitives::{
     AccountInfo,
@@ -87,7 +87,7 @@ pub struct Sources {
     /// The maximum depth of the cache to be considered synced.
     max_depth: u64,
     /// Metrics for the cache.
-    metrics: CacheMetrics,
+    metrics: StateMetrics,
 }
 
 impl Sources {
@@ -107,7 +107,7 @@ impl Sources {
             sources,
             latest_unprocessed_block: AtomicU64::new(0),
             max_depth,
-            metrics: CacheMetrics::new(),
+            metrics: StateMetrics::new(),
         }
     }
 
@@ -159,7 +159,7 @@ impl Sources {
 
     /// Returns how many times the cache has been explicitly reset.
     #[cfg(any(test, feature = "test", feature = "bench-utils"))]
-    pub fn reset_required_head_count(&self) -> u64 {
+    pub fn reset_latest_unprocessed_block_count(&self) -> u64 {
         self.metrics
             .reset_last_unprocessed_block
             .load(Ordering::Relaxed)
@@ -187,9 +187,9 @@ impl Sources {
 
     fn get_minimum_synced_block_number(&self) -> u64 {
         // MAX(latest BlockEnv - MINIMUM_STATE_DIFF, First block env processed)
-        let required_head = self.latest_unprocessed_block.load(Ordering::Acquire);
+        let latest_unprocessed_block = self.latest_unprocessed_block.load(Ordering::Acquire);
         let latest_head = self.latest_head.load(Ordering::Acquire);
-        required_head.max(latest_head.saturating_sub(self.max_depth))
+        latest_unprocessed_block.max(latest_head.saturating_sub(self.max_depth))
     }
 }
 
