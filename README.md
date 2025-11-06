@@ -5,12 +5,14 @@ The credible sdk contains building blocks for running transactions against phyla
 ## Directory structure
 
 1. **Core PCL Crates**
+
    - `pcl-core`: Core functionality including assertion DA, submission logic, auth, and project management
    - `pcl-cli`: Main CLI binary that provides the `pcl` command
    - `pcl-common`: Shared utilities and types used across PCL crates
    - `pcl-phoundry`: Foundry integration for building and testing Solidity assertions
 
 2. **Data Availability Layer**
+
    - `da-server`: HTTP server that stores assertion bytecode and metadata
    - `da-client`: Client library for interacting with DA server
    - `da-core`: Core types and traits shared between DA components
@@ -21,6 +23,7 @@ The credible sdk contains building blocks for running transactions against phyla
 ### READMEs
 
 For more detailed info on how to run, build and test the `credible-sdk` see:
+
 - [Assertion DA](crates/assertion-da/README.md) - Documentation for the Data Availability server component
 - [`pcl`](crates/pcl/README.md) - Documentation for phylax command line utilities
 - [Assertion Executor](crates/assertion-executor/README.md) - Documentation for assertion execution
@@ -59,10 +62,11 @@ cargo build --release --bin pcl
 ```
 
 Common workflows include:
+
 ```bash
 pcl auth login                                     # Authenticate with wallet
 pcl build                                          # Compile Solidity assertions
-pcl test                                           # Run assertion tests  
+pcl test                                           # Run assertion tests
 pcl store AssertionName                            # Upload to DA layer (no constructor args)
 pcl store AssertionName 0x123... 100              # Upload to DA layer (with constructor args)
 pcl submit AssertionName                          # Submit single assertion (no args)
@@ -71,3 +75,7 @@ pcl submit -a "AssertionName1(0x123...,100)" -a "AssertionName2(arg1,arg2)"  # S
 ```
 
 The CLI automatically detects assertion projects by looking for an `assertions/` directory or `foundry.toml` file.
+
+## License
+
+This repository is distributed under the Business Source License 1.1 (BUSL-1.1). The `LICENSE` file documents the licensor, scope, additional use grants, change date (currently 2029-06-18), and the MIT fallback license; maintainers will finalize any remaining placeholders as part of the release process.
