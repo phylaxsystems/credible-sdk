@@ -3,6 +3,18 @@
 version = 4
 
 [[package]]
+name = "account-proof-poc"
+version = "0.7.0"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "clap",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -16,6 +16,7 @@ members = [
     "crates/shadow-driver",
     "crates/state-store",
     "crates/state-checker",
+    "crates/account-proof-poc",
 ]
 exclude = ["fuzz"]
 resolver = "2"
