@@ -11,6 +11,7 @@ pub mod cache;
 pub mod config;
 pub mod engine;
 pub mod execution_ids;
+pub mod health;
 pub mod indexer;
 pub mod metrics;
 pub mod transactions_state;
