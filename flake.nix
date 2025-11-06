@@ -27,8 +27,6 @@
 
         systemSpecific = with pkgs;
           if stdenv.isDarwin then [
-            darwin.apple_sdk.frameworks.Security
-            darwin.apple_sdk.frameworks.SystemConfiguration
             libiconv
           ] else [
             llvm.libcxx
@@ -39,7 +37,7 @@
         devShells.default = pkgs.mkShell {
           # Use the clang stdenv to set default CC/CXX etc.
           stdenv = clangStdenv;
-          name = "op-talos-dev";
+          name = "credible-sdk-dev";
 
           buildInputs = with pkgs; [
             rustNightly
