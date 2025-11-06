@@ -145,10 +145,10 @@ pub struct TransportConfig {
 pub struct StateConfig {
     /// Sequencer bind address and port
     pub sequencer_url: Option<String>,
-    /// Besu client websocket bind address and port
-    pub besu_client_ws_url: Option<String>,
-    /// Besu client HTTP bind address and port
-    pub besu_client_http_url: Option<String>,
+    /// Eth RPC source websocket bind address and port
+    pub eth_rpc_source_ws_url: Option<String>,
+    /// Eth RCP source HTTP bind address and port
+    pub eth_rpc_source_http_url: Option<String>,
     /// Redis bind address and port
     pub redis_url: Option<String>,
     /// Namespace prefix for Redis keys.
@@ -206,8 +206,8 @@ mod tests {
   },
   "state": {
     "sequencer_url": "http://localhost:8547",
-    "besu_client_ws_url": "ws://localhost:8548",
-    "besu_client_http_url": "http://localhost:8545",
+    "eth_rpc_source_ws_url": "ws://localhost:8548",
+    "eth_rpc_source_http_url": "http://localhost:8545",
     "redis_url": "redis://localhost:6379",
     "redis_namespace": "sidecar",
     "redis_depth": 100,
@@ -256,11 +256,11 @@ mod tests {
             Some("http://localhost:8547".to_string())
         );
         assert_eq!(
-            config.state.besu_client_ws_url,
+            config.state.eth_rpc_source_ws_url,
             Some("ws://localhost:8548".to_string())
         );
         assert_eq!(
-            config.state.besu_client_http_url,
+            config.state.eth_rpc_source_http_url,
             Some("http://localhost:8545".to_string())
         );
         assert_eq!(
@@ -454,7 +454,7 @@ mod tests {
         let config = Config::from_file(temp_file.path()).unwrap();
 
         assert_eq!(config.state.sequencer_url, None);
-        assert_eq!(config.state.besu_client_ws_url, None);
+        assert_eq!(config.state.eth_rpc_source_ws_url, None);
         assert_eq!(config.state.redis_url, None);
     }
 }

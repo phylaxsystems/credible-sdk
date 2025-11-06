@@ -8,7 +8,7 @@ use crate::{
     Sources,
     cache::sources::{
         Source,
-        besu_client::BesuClient,
+        eth_rpc_source::EthRpcSource,
         sequencer::Sequencer,
     },
     engine::queue::{
@@ -183,7 +183,7 @@ struct CommonSetup {
     underlying_db: Arc<CacheDB<Arc<Sources>>>,
     sources: Arc<Sources>,
     sequencer_http_mock: DualProtocolMockServer,
-    besu_client_http_mock: DualProtocolMockServer,
+    eth_rpc_source_http_mock: DualProtocolMockServer,
     assertion_store: Arc<AssertionStore>,
     state_results: Arc<crate::TransactionsState>,
     default_account: Address,
@@ -197,21 +197,21 @@ impl CommonSetup {
         let sequencer_http_mock = DualProtocolMockServer::new()
             .await
             .expect("Failed to create sequencer mock");
-        let besu_client_http_mock = DualProtocolMockServer::new()
+        let eth_rpc_source_http_mock = DualProtocolMockServer::new()
             .await
-            .expect("Failed to create besu client mock");
+            .expect("Failed to create eth rpc source mock");
         let mock_sequencer_db: Arc<dyn Source> = Arc::new(
             Sequencer::try_new(&sequencer_http_mock.http_url())
                 .await
                 .expect("Failed to create sequencer mock"),
         );
-        let mock_besu_client_db: Arc<dyn Source> = BesuClient::try_build(
-            besu_client_http_mock.ws_url(),
-            besu_client_http_mock.http_url(),
+        let eth_rpc_source_db: Arc<dyn Source> = EthRpcSource::try_build(
+            eth_rpc_source_http_mock.ws_url(),
+            eth_rpc_source_http_mock.http_url(),
         )
         .await
-        .expect("Failed to create besu client mock");
-        let sources = vec![mock_besu_client_db, mock_sequencer_db];
+        .expect("Failed to create eth rpc source mock");
+        let sources = vec![eth_rpc_source_db, mock_sequencer_db];
         let cache = Arc::new(Sources::new(sources.clone(), 10));
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
@@ -230,7 +230,7 @@ impl CommonSetup {
             underlying_db,
             sources: cache,
             sequencer_http_mock,
-            besu_client_http_mock,
+            eth_rpc_source_http_mock,
             assertion_store,
             state_results,
             default_account,
@@ -258,7 +258,7 @@ impl CommonSetup {
             Duration::from_millis(20),
             false,
             #[cfg(feature = "cache_validation")]
-            Some(&self.besu_client_http_mock.ws_url()),
+            Some(&self.eth_rpc_source_http_mock.ws_url()),
         )
         .await;
 
@@ -311,7 +311,7 @@ impl LocalInstanceMockDriver {
             setup.underlying_db,
             setup.sources.clone(),
             setup.sequencer_http_mock,
-            setup.besu_client_http_mock,
+            setup.eth_rpc_source_http_mock,
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
@@ -363,7 +363,7 @@ impl TestTransport for LocalInstanceMockDriver {
             setup.underlying_db,
             setup.sources.clone(),
             setup.sequencer_http_mock,
-            setup.besu_client_http_mock,
+            setup.eth_rpc_source_http_mock,
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
@@ -622,7 +622,7 @@ impl LocalInstanceHttpDriver {
             setup.underlying_db,
             setup.sources.clone(),
             setup.sequencer_http_mock,
-            setup.besu_client_http_mock,
+            setup.eth_rpc_source_http_mock,
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
@@ -976,7 +976,7 @@ impl LocalInstanceGrpcDriver {
             setup.underlying_db,
             setup.sources.clone(),
             setup.sequencer_http_mock,
-            setup.besu_client_http_mock,
+            setup.eth_rpc_source_http_mock,
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),

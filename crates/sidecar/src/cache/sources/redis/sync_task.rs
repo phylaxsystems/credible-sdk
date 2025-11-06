@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 pub fn publish_sync_state(
     latest_head: Option<u64>,
     oldest_block: Option<u64>,
-    min_synced_head: &AtomicU64,
+    target_block: &AtomicU64,
     observed_block: &AtomicU64,
     oldest_observed_block: &AtomicU64,
     sync_status: &AtomicBool,
@@ -36,12 +36,9 @@ pub fn publish_sync_state(
         let oldest = oldest_block.unwrap_or(block_number);
         oldest_observed_block.store(oldest, Ordering::Release);
 
-        let min_synced_head = min_synced_head.load(Ordering::Acquire);
-        let within_target = if min_synced_head == 0 {
-            oldest == 0
-        } else {
-            oldest <= min_synced_head && min_synced_head <= block_number
-        };
+        let target_block = target_block.load(Ordering::Acquire);
+
+        let within_target = target_block >= oldest && target_block <= block_number;
 
         sync_status.store(within_target, Ordering::Release);
     } else {
@@ -53,7 +50,7 @@ pub fn publish_sync_state(
 
 pub fn spawn_sync_task(
     reader: StateReader,
-    min_sync_block: Arc<AtomicU64>,
+    target_block: Arc<AtomicU64>,
     observed_block: Arc<AtomicU64>,
     oldest_block: Arc<AtomicU64>,
     sync_status: Arc<AtomicBool>,
@@ -77,7 +74,7 @@ pub fn spawn_sync_task(
                             publish_sync_state(
                                 Some(latest_head),
                                 Some(oldest),
-                                &min_sync_block,
+                                &target_block,
                                 &observed_block,
                                 &oldest_block,
                                 &sync_status,
@@ -87,7 +84,7 @@ pub fn spawn_sync_task(
                             publish_sync_state(
                                 None,
                                 None,
-                                &min_sync_block,
+                                &target_block,
                                 &observed_block,
                                 &oldest_block,
                                 &sync_status,
@@ -98,7 +95,7 @@ pub fn spawn_sync_task(
                             publish_sync_state(
                                 None,
                                 None,
-                                &min_sync_block,
+                                &target_block,
                                 &observed_block,
                                 &oldest_block,
                                 &sync_status,
@@ -109,7 +106,7 @@ pub fn spawn_sync_task(
                             publish_sync_state(
                                 None,
                                 None,
-                                &min_sync_block,
+                                &target_block,
                                 &observed_block,
                                 &oldest_block,
                                 &sync_status,

@@ -726,13 +726,13 @@ mod tests {
         });
 
         instance
-            .besu_client_http_mock
+            .eth_rpc_source_http_mock
             .add_response("trace_replayBlockTransactions", mock_trace_response);
 
         // Step 3: Send a newHeads notification for BLOCK 0 (not block 1!)
         // The transaction was processed in block 0, so we need to trigger block 0
         instance
-            .besu_client_http_mock
+            .eth_rpc_source_http_mock
             .send_new_head_with_block_number(0);
 
         // Step 4: Wait for the CacheChecker to detect the mismatch

@@ -118,6 +118,7 @@ impl SourcesInner {
         let start = Instant::now();
         loop {
             let head_block_number = self.head_block_number.load(Ordering::Relaxed);
+            let min_synced_block = self.cache_sources.get_minimum_synced_block_number();
             let timestamp = Instant::now().duration_since(start).as_secs();
 
             let mut any_synced = false;
@@ -131,7 +132,7 @@ impl SourcesInner {
                     .cache_sources
                     .iter_synced_sources()
                     .find(|s| s.name() == *source_name)
-                    .is_some_and(|source| source.is_synced(head_block_number)); // Default to not
+                    .is_some_and(|source| source.is_synced(min_synced_block, head_block_number)); // Default to not
                 // synced if source not found
 
                 // Update per-source metrics

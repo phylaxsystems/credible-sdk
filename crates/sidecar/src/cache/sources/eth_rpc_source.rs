@@ -49,42 +49,42 @@ use tracing::{
     warn,
 };
 
-/// Besu state sync manager using Alloy
+/// Eth RPC source state sync manager using Alloy
 #[derive(Debug)]
-pub struct BesuClient {
-    inner: Arc<BesuClientInner>,
+pub struct EthRpcSource {
+    inner: Arc<EthRpcSourceInner>,
     handler: AbortHandle,
 }
 
-impl Drop for BesuClient {
+impl Drop for EthRpcSource {
     fn drop(&mut self) {
         self.handler.abort();
-        info!("BesuClient subscription cleaned up");
+        info!("EthRpcSource subscription cleaned up");
     }
 }
 
 #[derive(Debug)]
-struct BesuClientInner {
+struct EthRpcSourceInner {
     /// Provider for sync status
     ws_provider: Arc<RootProvider>,
-    /// Latest head the underlying node has seen
+    /// The latest head the underlying node has seen
     latest_head: Arc<AtomicU64>,
     /// `JsonRpcDb` using http for making `DatabaseRef` calls
     json_rpc_db: JsonRpcDb,
 }
 
-impl BesuClient {
-    /// Create a new `BesuStateSync` instance
+impl EthRpcSource {
+    /// Create a new `EthRpcSource` instance
     pub async fn try_build(
         ws_url: impl Into<String>,
         http_url: impl Into<String>,
-    ) -> Result<Arc<Self>, BesuClientError> {
+    ) -> Result<Arc<Self>, EthRpcSourceError> {
         let ws = WsConnect::new(ws_url.into());
         let ws_provider = Arc::new(
             ProviderBuilder::new()
                 .connect_ws(ws)
                 .await
-                .map_err(BesuClientError::Provider)?
+                .map_err(EthRpcSourceError::Provider)?
                 .root()
                 .clone(),
         );
@@ -96,7 +96,7 @@ impl BesuClient {
                 .clone(),
         );
 
-        let inner = Arc::new(BesuClientInner {
+        let inner = Arc::new(EthRpcSourceInner {
             latest_head: Arc::new(AtomicU64::new(0)),
             json_rpc_db: JsonRpcDb::new_with_provider(http_provider.clone()),
             ws_provider,
@@ -110,10 +110,10 @@ impl BesuClient {
     }
 }
 
-impl BesuClientInner {
+impl EthRpcSourceInner {
     const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
-    /// Connect to Besu node and start syncing
+    /// Connect to an Eth RPC node and start syncing
     async fn connect_and_sync_head(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
         // Get the current block to initialize state
         if let Ok(block_number) = self.ws_provider.get_block_number().await {
@@ -172,7 +172,7 @@ impl BesuClientInner {
     }
 }
 
-impl DatabaseRef for BesuClient {
+impl DatabaseRef for EthRpcSource {
     type Error = SourceError;
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         self.inner
@@ -207,26 +207,28 @@ impl DatabaseRef for BesuClient {
     }
 }
 
-impl Source for BesuClient {
+impl Source for EthRpcSource {
     fn name(&self) -> SourceName {
-        SourceName::BesuClient
+        SourceName::EthRpcSource
     }
 
-    fn is_synced(&self, latest_head: u64) -> bool {
-        if latest_head > 0 {
-            self.inner.get_latest_head() >= latest_head
-        } else {
-            false
+    fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool {
+        let client_latest_head = self.inner.latest_head.load(Ordering::Acquire);
+        min_synced_block <= client_latest_head && client_latest_head <= latest_head
+    }
+
+    fn update_cache_status(&self, min_synced_block: u64, latest_head: u64) {
+        let client_latest_head = self.inner.latest_head.load(Ordering::Acquire);
+        // Update the target block if the client is synced and the latest head is within the
+        // range of the client's latest head
+        if min_synced_block <= client_latest_head && client_latest_head <= latest_head {
+            self.inner.json_rpc_db.set_target_block(client_latest_head);
         }
-    }
-
-    fn update_min_synced_head(&self, block_number: u64) {
-        self.inner.json_rpc_db.set_target_block(block_number);
     }
 }
 
 #[derive(Error, Debug)]
-pub enum BesuClientError {
+pub enum EthRpcSourceError {
     #[error("Failed to connect to the websocket provider")]
     Provider(#[source] RpcError<TransportErrorKind>),
     #[error("Failed to parse the HTTP provider URL")]
