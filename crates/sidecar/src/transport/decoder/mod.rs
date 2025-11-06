@@ -20,7 +20,6 @@ use crate::{
         common::HttpDecoderError,
         http::server::{
             JsonRpcRequest,
-            METHOD_BLOCK_ENV,
             METHOD_REORG,
             METHOD_SEND_EVENTS,
             METHOD_SEND_TRANSACTIONS,
@@ -162,28 +161,6 @@ impl Decoder for HttpTransactionDecoder {
         match req.method.as_str() {
             METHOD_SEND_TRANSACTIONS => Self::to_transaction(req),
             METHOD_SEND_EVENTS => Self::to_events(req),
-            METHOD_BLOCK_ENV => {
-                let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
-                let block = parse_block_env_payload(params.clone())?;
-                let current_span = tracing::Span::current();
-
-                let selected_iteration_id = block
-                    .selected_iteration_id
-                    .ok_or(HttpDecoderError::MissingSelectedIterationId)?;
-
-                let commit_head = CommitHead::new(
-                    block.block_env.number,
-                    selected_iteration_id,
-                    block.last_tx_hash,
-                    block.n_transactions,
-                );
-                let new_iteration = NewIteration::new(selected_iteration_id, block.block_env);
-
-                Ok(vec![
-                    TxQueueContents::CommitHead(commit_head, current_span.clone()),
-                    TxQueueContents::NewIteration(new_iteration, current_span),
-                ])
-            }
             METHOD_REORG => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
                 let reorg = serde_json::from_value::<TxExecutionId>(params.clone())

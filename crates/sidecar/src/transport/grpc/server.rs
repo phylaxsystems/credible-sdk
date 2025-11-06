@@ -8,7 +8,6 @@
 
 use super::pb::{
     BasicAck,
-    BlockEnvEnvelope,
     CommitHead as PbCommitHead,
     GetTransactionRequest,
     GetTransactionResponse,
@@ -198,57 +197,6 @@ fn convert_pb_new_iteration(mut new_iteration: PbNewIteration) -> Result<NewIter
 
 #[tonic::async_trait]
 impl SidecarTransport for GrpcService {
-    /// Handle gRPC request for `SendBlockEnv`.
-    #[instrument(
-        name = "grpc_server::SendBlockEnv",
-        skip(self, request),
-        level = "debug"
-    )]
-    async fn send_block_env(
-        &self,
-        request: Request<BlockEnvEnvelope>,
-    ) -> Result<Response<BasicAck>, Status> {
-        let payload = request.into_inner();
-        // Decode into proper structs instead of manually merging JSON
-        let legacy_block = decode_block_env_envelope(&payload)?;
-        let Some(selected_iteration_id) = legacy_block.selected_iteration_id else {
-            return Err(Status::invalid_argument(
-                "selected_iteration_id is required for commitHead",
-            ));
-        };
-
-        let BlockEnvelope {
-            block_env,
-            last_tx_hash,
-            n_transactions,
-            selected_iteration_id: _,
-        } = legacy_block;
-
-        let commit_head = CommitHead::new(
-            block_env.number,
-            selected_iteration_id,
-            last_tx_hash,
-            n_transactions,
-        );
-        let new_iteration = NewIteration::new(selected_iteration_id, block_env);
-
-        self.send_queue_event(
-            TxQueueContents::CommitHead(commit_head, tracing::Span::current()),
-            "commit head",
-        )?;
-        self.mark_commit_head_seen();
-
-        self.send_queue_event(
-            TxQueueContents::NewIteration(new_iteration, tracing::Span::current()),
-            "new iteration",
-        )?;
-
-        Ok(Response::new(BasicAck {
-            accepted: true,
-            message: "block env accepted".into(),
-        }))
-    }
-
     /// Handle gRPC request for batched iteration events.
     #[instrument(name = "grpc_server::SendEvents", skip(self, request), level = "debug")]
     async fn send_events(
@@ -792,24 +740,6 @@ struct BlockEnvelope {
     last_tx_hash: Option<TxHash>,
     n_transactions: u64,
     selected_iteration_id: Option<u64>,
-}
-
-/// Decode `BlockEnvEnvelope` into block metadata.
-fn decode_block_env_envelope(payload: &BlockEnvEnvelope) -> Result<BlockEnvelope, Status> {
-    let block_env_pb = payload
-        .block_env
-        .as_ref()
-        .ok_or_else(|| Status::invalid_argument("block_env is required"))?;
-    let block_env = convert_pb_block_env(block_env_pb)?;
-
-    let last_tx_hash = parse_commit_metadata(&payload.last_tx_hash, payload.n_transactions)?;
-
-    Ok(BlockEnvelope {
-        block_env,
-        last_tx_hash,
-        n_transactions: payload.n_transactions,
-        selected_iteration_id: payload.selected_iteration_id,
-    })
 }
 
 fn convert_pb_block_env(block_env: &super::pb::BlockEnv) -> Result<RevmBlockEnv, Status> {

@@ -63,7 +63,6 @@ use tracing::{
 
 pub(in crate::transport) const METHOD_SEND_TRANSACTIONS: &str = "sendTransactions";
 pub(in crate::transport) const METHOD_SEND_EVENTS: &str = "sendEvents";
-pub(in crate::transport) const METHOD_BLOCK_ENV: &str = "sendBlockEnv";
 pub(in crate::transport) const METHOD_REORG: &str = "reorg";
 pub(in crate::transport) const METHOD_GET_TRANSACTIONS: &str = "getTransactions";
 pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransaction";
@@ -351,7 +350,6 @@ pub async fn handle_transaction_rpc(
     let response = match request.method.as_str() {
         METHOD_SEND_TRANSACTIONS => handle_send_transactions(&state, &request).await?,
         METHOD_SEND_EVENTS => handle_send_events(&state, &request).await?,
-        METHOD_BLOCK_ENV => handle_block_env(&state, &request).await?,
         METHOD_REORG => handle_reorg(&state, &request).await?,
         METHOD_GET_TRANSACTIONS => handle_get_transactions(&state, &request).await?,
         METHOD_GET_TRANSACTION => handle_get_transaction(&state, &request).await?,
@@ -370,20 +368,6 @@ pub async fn handle_transaction_rpc(
     );
 
     Ok(ResponseJson(response))
-}
-
-#[instrument(name = "http_server::handle_block_env", skip_all, level = "debug")]
-async fn handle_block_env(
-    state: &ServerState,
-    request: &JsonRpcRequest,
-) -> Result<JsonRpcResponse, StatusCode> {
-    let response = process_request(state, request).await?;
-    // If the `process_request` call was successful, we can mark the block environment as received
-    if !state.has_commit_head.load(Ordering::Relaxed) {
-        state.has_commit_head.store(true, Ordering::Release);
-    }
-
-    Ok(response)
 }
 
 #[instrument(

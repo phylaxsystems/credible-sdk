@@ -251,7 +251,7 @@ mod tests {
         let res = send_raw_request(invalid_request, local_address)
             .await
             .unwrap();
-        assert!(res.contains("Failed to decode transactions: Block env validation error: invalid type: string \\\"invalid_number\\\", expected u64\""));
+        assert!(res.contains(r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"Method not found"},"id":1}"#));
     }
 
     #[crate::utils::engine_test(http)]
