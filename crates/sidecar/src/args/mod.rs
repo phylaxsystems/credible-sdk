@@ -22,6 +22,10 @@ use std::{
 
 const DEFAULT_CONFIG: &str = include_str!("../../default_config.json");
 
+fn default_health_bind_addr() -> String {
+    "0.0.0.0:8080".to_string()
+}
+
 /// Configuration loaded from JSON file
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Config {
@@ -138,6 +142,9 @@ pub struct TransportConfig {
     pub protocol: TransportProtocol,
     /// Server bind address and port
     pub bind_addr: String,
+    /// Health server bind address and port
+    #[serde(default = "default_health_bind_addr")]
+    pub health_bind_addr: String,
 }
 
 /// State configuration from file
@@ -202,7 +209,8 @@ mod tests {
   },
   "transport": {
     "protocol": "http",
-    "bind_addr": "127.0.0.1:3000"
+    "bind_addr": "127.0.0.1:3000",
+    "health_bind_addr": "127.0.0.1:3001"
   },
   "state": {
     "sequencer_url": "http://localhost:8547",

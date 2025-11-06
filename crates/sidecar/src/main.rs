@@ -21,9 +21,11 @@ use sidecar::{
         CoreEngine,
         queue::TransactionQueueSender,
     },
+    health::HealthServer,
     transport::Transport,
 };
 use std::{
+    net::SocketAddr,
     sync::Arc,
     time::Duration,
 };
@@ -37,6 +39,7 @@ use sidecar::{
         Sources,
         sources::{
             Source,
+            besu_client::BesuClient,
             eth_rpc_source::EthRpcSource,
             sequencer::Sequencer,
         },
@@ -104,12 +107,22 @@ async fn main() -> anyhow::Result<()> {
 
     let engine_state_results = TransactionsState::new();
 
+    let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
+
     loop {
         let mut sources: Vec<Arc<dyn Source>> = vec![];
         if let Some(sequencer_url) = &config.state.sequencer_url
             && let Ok(sequencer) = Sequencer::try_new(sequencer_url).await
         {
             sources.push(Arc::new(sequencer));
+        }
+        if let (Some(besu_client_ws_url), Some(besu_client_http_url)) = (
+            &config.state.besu_client_ws_url,
+            &config.state.besu_client_http_url,
+        ) && let Ok(besu_client) =
+            BesuClient::try_build(besu_client_ws_url.as_str(), besu_client_http_url.as_str()).await
+        {
+            sources.push(besu_client);
         }
         if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
             &config.state.eth_rpc_source_ws_url,
@@ -146,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
 
         let mut event_sequencing =
             EventSequencing::new(event_sequencing_tx_receiver, event_sequencing_tx_sender);
+        let mut health_server = HealthServer::new(health_bind_addr);
 
         let mut engine = CoreEngine::new(
             cache,
@@ -203,6 +217,11 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            result = health_server.run() => {
+                if let Err(e) = result {
+                    critical!(error = ?e, "Health server exited");
+                }
+            }
             result = indexer::run_indexer(indexer_cfg) => {
                 if let Err(e) = result {
                     if ErrorRecoverability::from(&e).is_recoverable() {
@@ -213,9 +232,10 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-
         transport.stop();
+        health_server.stop();
         drop(transport);
+        drop(health_server);
         drop(engine);
         tracing::warn!("Sidecar restarted.");
     }

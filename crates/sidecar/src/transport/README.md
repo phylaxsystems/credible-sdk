@@ -359,3 +359,11 @@ Transport configuration can be set via command-line arguments or environment var
 ### gRPC Transport Configuration
 
 The gRPC transport is currently in development. Configuration options will be added as the implementation progresses.
+
+### Health Endpoint Server
+
+- **Bind Address**:
+    - **CLI Flag**: `--transport.health-bind-addr <address:port>`
+    - **Environment Variable**: `TRANSPORT_HEALTH_BIND_ADDR`
+    - **Default**: `0.0.0.0:8080`
+- Responds on `/health` with the current sidecar status.
