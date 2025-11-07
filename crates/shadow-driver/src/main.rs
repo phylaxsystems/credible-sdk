@@ -8,18 +8,8 @@ use crate::{
 
 use rust_tracing::trace;
 
-use alloy_provider::{
-    Provider,
-    ProviderBuilder,
-    RootProvider,
-    WsConnect,
-};
-use anyhow::{
-    Context,
-    Result,
-};
+use anyhow::Result;
 use clap::Parser;
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,13 +21,13 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let provider = connect_provider(&args.ws_url).await?;
     let mut listener = Listener::new(
-        provider,
+        &args.ws_url,
         &args.sidecar_url,
         args.request_timeout_seconds,
         args.starting_block,
     )
+    .await
     .with_result_querying(true);
 
     tokio::select! {
@@ -64,16 +54,4 @@ async fn wait_for_sigterm() {
     };
     let mut sigterm = signal(SignalKind::terminate()).expect("failed to setup SIGTERM handler");
     sigterm.recv().await;
-}
-
-/// Establish a WebSocket connection to the execution node and expose the
-/// underlying `RootProvider`. The root provider gives us access to the
-/// subscription + debug APIs used throughout the worker.
-async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>> {
-    let ws = WsConnect::new(ws_url);
-    let provider = ProviderBuilder::new()
-        .connect_ws(ws)
-        .await
-        .context("failed to connect to websocket provider")?;
-    Ok(Arc::new(provider.root().clone()))
 }
