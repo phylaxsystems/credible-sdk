@@ -390,7 +390,7 @@ impl SidecarTransport for GrpcService {
     #[instrument(
         name = "grpc_server::GetTransactions",
         skip(self, request),
-        fields(hash_values = tracing::field::Empty),
+        fields(tx_execution_ids = tracing::field::Empty),
         level = "debug"
     )]
     async fn get_transactions(
@@ -405,8 +405,6 @@ impl SidecarTransport for GrpcService {
             .iter()
             .map(|pb| pb.tx_hash.clone())
             .collect();
-        let joined_hashes = provided_hashes.join(",");
-        Span::current().record("hash_values", tracing::field::display(&joined_hashes));
         let mut received: Vec<TxExecutionId> = Vec::new();
         let mut not_found = Vec::new();
 
@@ -432,6 +430,7 @@ impl SidecarTransport for GrpcService {
                 not_found.push(hash_value);
             }
         }
+        Span::current().record("tx_execution_ids", tracing::field::debug(&received));
 
         let mut results = Vec::with_capacity(received.len());
         for tx_execution_id in received {
@@ -472,7 +471,7 @@ impl SidecarTransport for GrpcService {
     #[instrument(
         name = "grpc_server::GetTransaction",
         skip(self),
-        fields(hash_value = tracing::field::Empty),
+        fields(tx_execution_id = tracing::field::Empty),
         level = "debug"
     )]
     async fn get_transaction(
@@ -488,7 +487,6 @@ impl SidecarTransport for GrpcService {
         };
 
         let hash_value = pb_tx_execution_id.tx_hash.clone();
-        Span::current().record("hash_value", tracing::field::display(&hash_value));
 
         let Ok(tx_execution_id) = parse_pb_tx_execution_id(&pb_tx_execution_id) else {
             tracing::debug!(
@@ -500,6 +498,7 @@ impl SidecarTransport for GrpcService {
                 outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
             }));
         };
+        Span::current().record("tx_execution_id", tracing::field::display(&tx_execution_id));
 
         if !self.transactions_results.is_tx_received(&tx_execution_id) {
             tracing::debug!(
