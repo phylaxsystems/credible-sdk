@@ -117,6 +117,31 @@ pub struct ExecuteForkedTxResult {
 }
 
 impl AssertionExecutor {
+
+    pub fn validate_block<ExtDb, Active>(
+        &mut self,
+        block_env: BlockEnv,
+        tx_envs: Vec<TxEnv>,
+        fork_db: &mut ForkDb<Active>,
+        external_db: &mut ExtDb,
+    ) -> Result<
+        (),
+        ExecutorError<<Active as DatabaseRef>::Error, <ExtDb as Database>::Error>,
+    >
+    where
+        ExtDb: Database + Sync + Send,
+        ExtDb::Error: Send,
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+    {
+        /// root db, state at the start of the block before
+        /// any tx execution
+        let block_db = fork_db.clone();
+
+
+        unimplemented!()
+    }
+
     /// Executes a transaction against an external revm database, and runs the appropriate
     /// assertions.
     ///

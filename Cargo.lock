@@ -1613,6 +1613,7 @@ dependencies = [
 name = "assex-example"
 version = "0.1.0"
 dependencies = [
+ "alloy-sol-types",
  "assertion-executor 0.7.0",
  "revm",
 ]
