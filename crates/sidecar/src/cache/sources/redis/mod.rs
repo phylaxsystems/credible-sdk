@@ -76,6 +76,13 @@ pub struct RedisSource {
     sync_status: Arc<AtomicBool>,
     cancel_token: CancellationToken,
     sync_task: JoinHandle<()>,
+    cache_status: Arc<CacheStatus>,
+}
+
+#[derive(Debug)]
+pub(crate) struct CacheStatus {
+    pub min_synced_block: AtomicU64,
+    pub latest_head: AtomicU64,
 }
 
 impl RedisSource {
@@ -86,7 +93,12 @@ impl RedisSource {
         let oldest_block = Arc::new(AtomicU64::new(0));
         let sync_status = Arc::new(AtomicBool::new(false));
         let cancel_token = CancellationToken::new();
+        let cache_status = Arc::new(CacheStatus {
+            min_synced_block: AtomicU64::new(0),
+            latest_head: AtomicU64::new(0),
+        });
         let sync_task = sync_task::spawn_sync_task(
+            cache_status.clone(),
             backend.clone(),
             target_block.clone(),
             observed_head.clone(),
@@ -104,11 +116,13 @@ impl RedisSource {
             sync_status,
             cancel_token,
             sync_task,
+            cache_status,
         }
     }
 
     fn mark_unsynced(&self) {
         publish_sync_state(
+            self.cache_status.clone(),
             None,
             None,
             &self.target_block,
@@ -200,6 +214,13 @@ impl Source for RedisSource {
 
     /// Updates the current cache status and set the target block
     fn update_cache_status(&self, min_synced_block: u64, latest_head: u64) {
+        self.cache_status
+            .min_synced_block
+            .store(min_synced_block, Ordering::Relaxed);
+        self.cache_status
+            .latest_head
+            .store(latest_head, Ordering::Relaxed);
+
         let redis_observed_head = self.observed_head.load(Ordering::Acquire);
         let redis_oldest_block = self.oldest_block.load(Ordering::Acquire);
 
@@ -491,5 +512,163 @@ mod tests {
         assert!(cache.is_synced(200, 200));
         cache.update_cache_status(200, 200);
         assert_eq!(cache.get_target_block(), 200);
+    }
+
+    #[test]
+    fn test_target_block_updates_when_redis_syncs_late() {
+        let cache = TestRedisCache::new(97, 99, true);
+
+        // Simulate set_block_number(100) being called
+        cache.update_cache_status(100, 100);
+
+        // No overlap, target_block not updated
+        assert_eq!(
+            cache.get_target_block(),
+            0,
+            "target_block should not be set initially"
+        );
+        assert!(!cache.is_synced(100, 100), "Should not be synced yet");
+
+        // RACE CONDITION: Redis syncs to block 100 AFTER update_cache_status was called
+        cache.observed_head.store(100, Ordering::Release);
+        cache.oldest_block.store(98, Ordering::Release);
+
+        // Now Redis has the block, call update_cache_status again
+        // (This simulates what the background sync task does)
+        cache.update_cache_status(100, 100);
+
+        // With fix: target_block should now be 100
+        assert_eq!(
+            cache.get_target_block(),
+            100,
+            "target_block should be updated to 100 after Redis syncs"
+        );
+        assert!(cache.is_synced(100, 100), "Should be synced now");
+    }
+
+    #[test]
+    fn test_target_block_race_with_empty_cache() {
+        // Simulate the exact scenario from the bug report:
+        // Cache is empty/invalidated, Redis hasn't synced to new block yet
+        let cache = TestRedisCache::new(97, 99, true);
+
+        // Block 100 arrives, cache is invalidated
+        cache.update_cache_status(100, 100);
+
+        // No overlap, target_block stays at 0
+        assert_eq!(cache.get_target_block(), 0);
+        assert!(!cache.is_synced(100, 100));
+
+        // Execution starts, first few transactions succeed...
+
+        // HALFWAY THROUGH: Redis syncs to block 100
+        cache.observed_head.store(100, Ordering::Release);
+        cache.oldest_block.store(98, Ordering::Release);
+
+        // Background sync task (or iter_synced_sources) calls update_cache_status again
+        cache.update_cache_status(100, 100);
+
+        // Now target_block should be correct
+        assert_eq!(
+            cache.get_target_block(),
+            100,
+            "target_block should be updated when Redis catches up"
+        );
+        assert!(cache.is_synced(100, 100));
+    }
+
+    #[test]
+    fn test_target_block_stays_in_valid_range() {
+        let cache = TestRedisCache::new(95, 98, true);
+
+        // Set initial target
+        cache.update_cache_status(96, 97);
+        assert_eq!(cache.get_target_block(), 97);
+
+        // Redis syncs forward
+        cache.observed_head.store(100, Ordering::Release);
+
+        // Update should pick the most recent valid block
+        cache.update_cache_status(96, 97);
+        assert_eq!(
+            cache.get_target_block(),
+            97,
+            "Should pick min(latest_head, redis_observed_head) = 97"
+        );
+
+        // Now increase latest_head to 105
+        cache.update_cache_status(96, 105);
+        assert_eq!(
+            cache.get_target_block(),
+            100,
+            "Should pick min(105, 100) = 100"
+        );
+    }
+
+    #[test]
+    fn test_target_block_not_updated_when_no_overlap() {
+        let cache = TestRedisCache::new(100, 150, true);
+
+        // Set valid target first
+        cache.update_cache_status(120, 140);
+        assert_eq!(cache.get_target_block(), 140);
+
+        // Request block range that doesn't overlap with Redis
+        cache.update_cache_status(200, 250);
+
+        // target_block should NOT change (stays at previous valid value)
+        assert_eq!(
+            cache.get_target_block(),
+            140,
+            "target_block should not change when no overlap exists"
+        );
+        assert!(!cache.is_synced(200, 250));
+    }
+
+    #[test]
+    fn test_target_block_multiple_sync_updates() {
+        let cache = TestRedisCache::new(95, 100, true);
+
+        // First update: Redis has [95, 100], request [98, 99]
+        cache.update_cache_status(98, 99);
+        assert_eq!(cache.get_target_block(), 99);
+
+        // Redis syncs forward to 105
+        cache.observed_head.store(105, Ordering::Release);
+
+        // Second update: request [100, 102]
+        cache.update_cache_status(100, 102);
+        assert_eq!(
+            cache.get_target_block(),
+            102,
+            "Should update to new valid block"
+        );
+
+        // Third update: request [103, 105]
+        cache.update_cache_status(103, 105);
+        assert_eq!(cache.get_target_block(), 105);
+    }
+
+    #[test]
+    fn test_target_block_with_moving_oldest_block() {
+        let cache = TestRedisCache::new(90, 100, true);
+
+        // Initial state: Redis buffer is [90, 100]
+        cache.update_cache_status(95, 98);
+        assert_eq!(cache.get_target_block(), 98);
+
+        // Redis buffer advances (oldest moves forward), now [95, 105]
+        cache.oldest_block.store(95, Ordering::Release);
+        cache.observed_head.store(105, Ordering::Release);
+
+        // Request same range [95, 98] - should still work
+        cache.update_cache_status(95, 98);
+        assert_eq!(cache.get_target_block(), 98);
+
+        // But request [90, 94] should fail now (below oldest)
+        cache.update_cache_status(90, 94);
+        // target_block shouldn't change from previous valid value
+        assert_eq!(cache.get_target_block(), 98);
+        assert!(!cache.is_synced(90, 94));
     }
 }

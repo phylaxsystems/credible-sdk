@@ -537,11 +537,11 @@ mod tests {
 
     impl Source for MockSource {
         fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool {
-            // Source has data from [synced_threshold, ∞)
+            // Source has data from [synced_threshold, Inf)
             // We need data from [min_synced_block, latest_head]
             // Check if these ranges intersect:
             let lower_bound = min_synced_block.max(self.synced_threshold);
-            let upper_bound = latest_head; // min(latest_head, ∞) = latest_head
+            let upper_bound = latest_head; // min(latest_head, Inf) = latest_head
             lower_bound <= upper_bound
         }
 
@@ -1220,9 +1220,9 @@ mod tests {
 
         // min_synced_block = max(100, 100 - 20) = 100
         // Checking range [100, 100]:
-        // source1 [10, ∞): max(100, 10) = 100 ≤ 100 -> OK
-        // source2 [50, ∞): max(100, 50) = 100 ≤ 100 -> OK
-        // source3 [101, ∞): max(100, 101) = 101 > 100 -> NOT SYNCED
+        // source1 [10, Inf): max(100, 10) = 100 ≤ 100 -> OK
+        // source2 [50, Inf): max(100, 50) = 100 ≤ 100 -> OK
+        // source3 [101, Inf): max(100, 101) = 101 > 100 -> NOT SYNCED
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2); // CHANGED: 3 -> 2
 
@@ -1231,9 +1231,9 @@ mod tests {
 
         // min_synced_block = max(80, 100 - 20) = max(80, 80) = 80
         // Checking range [80, 100]:
-        // source1 [10, ∞): max(80, 10) = 80 ≤ 100 -> OK
-        // source2 [50, ∞): max(80, 50) = 80 ≤ 100 -> OK
-        // source3 [101, ∞): max(80, 101) = 101 > 100 -> NOT SYNCED
+        // source1 [10, Inf): max(80, 10) = 80 ≤ 100 -> OK
+        // source2 [50, Inf): max(80, 50) = 80 ≤ 100 -> OK
+        // source3 [101, Inf): max(80, 101) = 101 > 100 -> NOT SYNCED
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
         let names: Vec<_> = synced.iter().map(|s| s.name()).collect();
@@ -1248,9 +1248,9 @@ mod tests {
 
         // min_synced_block = max(40, 49 - 60) = max(40, 0) = 40
         // Checking range [40, 49]:
-        // source1 [10, ∞): max(40, 10) = 40 ≤ 49 -> OK
-        // source2 [50, ∞): max(40, 50) = 50 > 49 -> NOT SYNCED (source2 starts at 50, can't serve blocks < 50)
-        // source3 [101, ∞): max(40, 101) = 101 > 49 -> NOT SYNCED
+        // source1 [10, Inf): max(40, 10) = 40 ≤ 49 -> OK
+        // source2 [50, Inf): max(40, 50) = 50 > 49 -> NOT SYNCED (source2 starts at 50, can't serve blocks < 50)
+        // source3 [101, Inf): max(40, 101) = 101 > 49 -> NOT SYNCED
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
         assert_eq!(synced[0].name(), SourceName::Sequencer);
@@ -1262,9 +1262,9 @@ mod tests {
 
         // min_synced_block = max(5, 9 - 200) = max(5, 0) = 5
         // Checking range [5, 9]:
-        // source1 [10, ∞): max(5, 10) = 10 > 9 NOT SYNCED (source1 starts at 10, can't serve blocks < 10)
-        // source2 [50, ∞): max(5, 50) = 50 > 9 NOT SYNCED
-        // source3 [101, ∞): max(5, 101) = 101 > 9 NOT SYNCED
+        // source1 [10, Inf): max(5, 10) = 10 > 9 NOT SYNCED (source1 starts at 10, can't serve blocks < 10)
+        // source2 [50, Inf): max(5, 50) = 50 > 9 NOT SYNCED
+        // source3 [101, Inf): max(5, 101) = 101 > 9 NOT SYNCED
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 0);
     }
@@ -1468,8 +1468,8 @@ mod tests {
         cache.set_block_number(49); // Lower current block
         // min_synced_block = max(40, 49-40) = max(40, 9) = 40
         // Checking range [40, 49]:
-        // source1 [10, ∞) can serve [40, 49] -> OK
-        // source2 [50, ∞) CANNOT serve [40, 49] because max(40, 50) = 50 > 49 -> NOT SYNCED
+        // source1 [10, Inf) can serve [40, 49] -> OK
+        // source2 [50, Inf) CANNOT serve [40, 49] because max(40, 50) = 50 > 49 -> NOT SYNCED
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
         assert_eq!(synced[0].name(), SourceName::Sequencer);
