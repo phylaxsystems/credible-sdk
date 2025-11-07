@@ -14,11 +14,13 @@ use alloy::{
         Bytes,
         TxHash,
     },
+    providers::WsConnect,
     rpc::types::Header,
     signers::Either,
 };
 use alloy_provider::{
     Provider,
+    ProviderBuilder,
     RootProvider,
 };
 use anyhow::{
@@ -125,6 +127,7 @@ struct JsonRpcErrorResponse {
 
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct Listener {
+    ws_url: String,
     provider: Arc<RootProvider>,
     sidecar_client: Client,
     sidecar_url: String,
@@ -137,14 +140,17 @@ pub struct Listener {
 
 impl Listener {
     /// Build a worker that shares the provider/Redis client across async tasks.
-    pub fn new(
-        provider: Arc<RootProvider>,
+    pub async fn new(
+        ws_url: &str,
         sidecar_url: &str,
         request_timeout_seconds: u64,
         starting_block: Option<u64>,
     ) -> Self {
         Self {
-            provider,
+            ws_url: ws_url.to_string(),
+            provider: Self::connect_provider_with_url(ws_url)
+                .await
+                .expect("failed to connect to websocket provider"),
             sidecar_client: Client::builder()
                 .pool_idle_timeout(Duration::from_secs(POOL_IDLE_TIMEOUT_SECS))
                 .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
@@ -158,6 +164,22 @@ impl Listener {
             starting_block,
             query_results: false, // Disabled by default
         }
+    }
+
+    /// Establish a WebSocket connection to the execution node and expose the
+    /// underlying `RootProvider`. The root provider gives us access to the
+    /// subscription + debug APIs used throughout the worker.
+    async fn connect_provider(&self) -> Result<Arc<RootProvider>> {
+        Self::connect_provider_with_url(&self.ws_url).await
+    }
+
+    async fn connect_provider_with_url(ws_url: &str) -> Result<Arc<RootProvider>> {
+        let ws = WsConnect::new(ws_url);
+        let provider = ProviderBuilder::new()
+            .connect_ws(ws)
+            .await
+            .context("failed to connect to websocket provider")?;
+        Ok(Arc::new(provider.root().clone()))
     }
 
     /// Enable transaction result querying and comparison
@@ -177,6 +199,8 @@ impl Listener {
                 // Exponential backoff with cap
                 retry_delay = std::cmp::min(retry_delay * 2, max_delay);
             }
+            // Reconnect on error
+            self.provider = self.connect_provider().await?;
         }
     }
 
