@@ -4,7 +4,10 @@ use axum::{
     Router,
     routing::get,
 };
-use std::net::SocketAddr;
+use std::{
+    io,
+    net::SocketAddr,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{
     error,
@@ -14,10 +17,18 @@ use tracing::{
 
 #[derive(thiserror::Error, Debug)]
 pub enum HealthServerError {
-    #[error("failed to bind health server address: {0}")]
-    BindAddress(String),
-    #[error("health server error: {0}")]
-    ServerError(String),
+    #[error("failed to bind health server address: {addr}")]
+    BindAddress {
+        addr: SocketAddr,
+        #[source]
+        source: io::Error,
+    },
+    #[error("health server error on {addr}")]
+    ServerError {
+        addr: SocketAddr,
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// Health endpoint, used to signal sidecar readiness
@@ -50,7 +61,10 @@ impl HealthServer {
                     error = ?e,
                     "Failed to bind health server listener"
                 );
-                HealthServerError::BindAddress(self.bind_addr.to_string())
+                HealthServerError::BindAddress {
+                    addr: self.bind_addr,
+                    source: e,
+                }
             })?;
 
         info!(
@@ -64,7 +78,10 @@ impl HealthServer {
             .await
             .map_err(|e| {
                 error!(error = ?e, "Health server failed");
-                HealthServerError::ServerError(e.to_string())
+                HealthServerError::ServerError {
+                    addr: self.bind_addr,
+                    source: e,
+                }
             })?;
 
         Ok(())
