@@ -400,11 +400,6 @@ impl SidecarTransport for GrpcService {
         self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();
-        let provided_hashes: Vec<String> = payload
-            .tx_execution_id
-            .iter()
-            .map(|pb| pb.tx_hash.clone())
-            .collect();
         let mut received: Vec<TxExecutionId> = Vec::new();
         let mut not_found = Vec::new();
 
