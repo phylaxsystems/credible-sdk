@@ -1254,6 +1254,45 @@ fn test_send_events_new_iteration_with_optional_block_fields() {
     assert!(result.is_ok());
 }
 
+#[test]
+fn test_send_events_new_iteration_iteration_id_boundaries() {
+    let test_cases = vec![(0u64, "zero"), (u64::MAX, "max")];
+
+    for (iteration_id, name) in test_cases {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendEvents".to_string(),
+            params: Some(json!({
+                "events": [{
+                    "new_iteration": {
+                        "iteration_id": iteration_id,
+                        "block_env": {
+                            "number": 1u64,
+                            "beneficiary": "0x0000000000000000000000000000000000000000",
+                            "timestamp": 1u64,
+                            "gas_limit": 30000000u64,
+                            "basefee": 1u64,
+                            "difficulty": "0x0"
+                        }
+                    }
+                }]
+            })),
+            id: Some(json!(1)),
+        };
+
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(result.is_ok(), "Failed for case: {name}");
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            TxQueueContents::NewIteration(new_iteration, _) => {
+                assert_eq!(new_iteration.iteration_id, iteration_id);
+            }
+            _ => panic!("Expected NewIteration event for case: {name}"),
+        }
+    }
+}
+
 // ============================================================================
 // SendEvents Tests - Error Cases
 // ============================================================================
@@ -1537,6 +1576,75 @@ fn test_send_events_new_iteration_invalid_block_env() {
 }
 
 #[test]
+fn test_send_events_new_iteration_invalid_optional_fields() {
+    let test_cases = vec![
+        (
+            "invalid_prevrandao",
+            json!({
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "prevrandao": "not_hex"
+            }),
+        ),
+        (
+            "invalid_blob_excess_gas",
+            json!({
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "blob_excess_gas_and_price": {
+                    "excess_blob_gas": "invalid",
+                    "blob_gasprice": 2000
+                }
+            }),
+        ),
+        (
+            "missing_blob_gasprice",
+            json!({
+                "number": 123456u64,
+                "beneficiary": "0x0000000000000000000000000000000000000000",
+                "timestamp": 1234567890u64,
+                "gas_limit": 30000000u64,
+                "basefee": 1000000000u64,
+                "difficulty": "0x0",
+                "blob_excess_gas_and_price": {
+                    "excess_blob_gas": 1000
+                }
+            }),
+        ),
+    ];
+
+    for (name, block_env) in test_cases {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendEvents".to_string(),
+            params: Some(json!({
+                "events": [{
+                    "new_iteration": {
+                        "iteration_id": 42,
+                        "block_env": block_env
+                    }
+                }]
+            })),
+            id: Some(json!(1)),
+        };
+
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+        assert!(
+            result.is_err(),
+            "Optional field validation should fail for: {name}"
+        );
+    }
+}
+
+#[test]
 fn test_send_events_invalid_transaction() {
     let invalid_tx = json!({
         "tx_execution_id": {
@@ -1627,6 +1735,52 @@ fn test_send_events_unrecognized_event_structure() {
 
     let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_send_events_mixed_commit_head_and_new_iteration_success() {
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "sendEvents".to_string(),
+        params: Some(json!({
+            "events": [
+                {
+                    "commit_head": {
+                        "n_transactions": 0,
+                        "block_number": 100,
+                        "selected_iteration_id": 1
+                    }
+                },
+                {
+                    "new_iteration": {
+                        "iteration_id": 7,
+                        "block_env": {
+                            "number": 200u64,
+                            "beneficiary": "0x0000000000000000000000000000000000000000",
+                            "timestamp": 1234567890u64,
+                            "gas_limit": 30000000u64,
+                            "basefee": 1000000000u64,
+                            "difficulty": "0x0"
+                        }
+                    }
+                }
+            ]
+        })),
+        id: Some(json!(1)),
+    };
+
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+    assert!(result.is_ok());
+    let events = result.unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(
+        matches!(events[0], TxQueueContents::CommitHead(_, _)),
+        "First event should be CommitHead"
+    );
+    assert!(
+        matches!(events[1], TxQueueContents::NewIteration(_, _)),
+        "Second event should be NewIteration"
+    );
 }
 
 #[test]

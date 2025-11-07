@@ -363,7 +363,5 @@ The gRPC transport is currently in development. Configuration options will be ad
 ### Health Endpoint Server
 
 - **Bind Address**:
-    - **CLI Flag**: `--transport.health-bind-addr <address:port>`
-    - **Environment Variable**: `TRANSPORT_HEALTH_BIND_ADDR`
     - **Default**: `0.0.0.0:8080`
 - Responds on `/health` with the current sidecar status.
