@@ -1610,6 +1610,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "assex-example"
+version = "0.1.0"
+dependencies = [
+ "assertion-executor 0.7.0",
+ "revm",
+]
+
+[[package]]
 name = "async-attributes"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

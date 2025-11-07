@@ -1,0 +1,8 @@
+[package]
+name = "assex-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+assex = { package = "assertion-executor", path = "../../crates/assertion-executor", features = ["test"] }
+revm = { workspace = true }
