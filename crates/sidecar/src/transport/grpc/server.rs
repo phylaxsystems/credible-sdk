@@ -390,6 +390,7 @@ impl SidecarTransport for GrpcService {
     #[instrument(
         name = "grpc_server::GetTransactions",
         skip(self, request),
+        fields(hash_values = tracing::field::Empty),
         level = "debug"
     )]
     async fn get_transactions(
@@ -399,19 +400,36 @@ impl SidecarTransport for GrpcService {
         self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();
+        let provided_hashes: Vec<String> = payload
+            .tx_execution_id
+            .iter()
+            .map(|pb| pb.tx_hash.clone())
+            .collect();
+        let joined_hashes = provided_hashes.join(",");
+        Span::current().record("hash_values", tracing::field::display(&joined_hashes));
         let mut received: Vec<TxExecutionId> = Vec::new();
         let mut not_found = Vec::new();
 
         for pb_tx_execution_id in &payload.tx_execution_id {
-            match parse_pb_tx_execution_id(pb_tx_execution_id) {
-                Ok(tx_execution_id) => {
-                    if self.transactions_results.is_tx_received(&tx_execution_id) {
-                        received.push(tx_execution_id);
-                    } else {
-                        not_found.push(pb_tx_execution_id.tx_hash.clone());
-                    }
+            let hash_value = pb_tx_execution_id.tx_hash.clone();
+            if let Ok(tx_execution_id) = parse_pb_tx_execution_id(pb_tx_execution_id) {
+                if self.transactions_results.is_tx_received(&tx_execution_id) {
+                    received.push(tx_execution_id);
+                } else {
+                    tracing::debug!(
+                        target = "grpc_server::GetTransactions",
+                        %hash_value,
+                        "Transaction not found"
+                    );
+                    not_found.push(hash_value);
                 }
-                Err(_) => not_found.push(pb_tx_execution_id.tx_hash.clone()),
+            } else {
+                tracing::debug!(
+                    target = "grpc_server::GetTransactions",
+                    %hash_value,
+                    "Failed to parse protobuf tx_execution_id"
+                );
+                not_found.push(hash_value);
             }
         }
 
@@ -429,8 +447,20 @@ impl SidecarTransport for GrpcService {
                     }
                 }
             };
+            tracing::debug!(
+                target = "grpc_server::GetTransactions",
+                hash_value = %tx_execution_id.tx_hash_hex(),
+                "Processed transaction query"
+            );
             results.push(into_pb_transaction_result(tx_execution_id, &result));
         }
+
+        tracing::debug!(
+            target = "grpc_server::GetTransactions",
+            result_count = results.len(),
+            not_found_count = not_found.len(),
+            "Finished processing GetTransactions request"
+        );
 
         Ok(Response::new(GetTransactionsResponse {
             results,
@@ -458,20 +488,17 @@ impl SidecarTransport for GrpcService {
         };
 
         let hash_value = pb_tx_execution_id.tx_hash.clone();
-        Span::current().record("hash_value", &tracing::field::display(&hash_value));
+        Span::current().record("hash_value", tracing::field::display(&hash_value));
 
-        let tx_execution_id = match parse_pb_tx_execution_id(&pb_tx_execution_id) {
-            Ok(tx_execution_id) => tx_execution_id,
-            Err(_) => {
-                tracing::debug!(
-                    target = "grpc_server::GetTransaction",
-                    %hash_value,
-                    "Failed to parse protobuf tx_execution_id"
-                );
-                return Ok(Response::new(GetTransactionResponse {
-                    outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
-                }));
-            }
+        let Ok(tx_execution_id) = parse_pb_tx_execution_id(&pb_tx_execution_id) else {
+            tracing::debug!(
+                target = "grpc_server::GetTransaction",
+                %hash_value,
+                "Failed to parse protobuf tx_execution_id"
+            );
+            return Ok(Response::new(GetTransactionResponse {
+                outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
+            }));
         };
 
         if !self.transactions_results.is_tx_received(&tx_execution_id) {
