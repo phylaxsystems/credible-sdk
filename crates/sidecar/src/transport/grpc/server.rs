@@ -92,6 +92,7 @@ use tonic::{
     Status,
 };
 use tracing::{
+    Span,
     debug,
     instrument,
     warn,
@@ -440,7 +441,8 @@ impl SidecarTransport for GrpcService {
     /// Handle gRPC request for `GetTransaction` messages.
     #[instrument(
         name = "grpc_server::GetTransaction",
-        skip(self, request),
+        skip(self),
+        fields(hash_value = tracing::field::Empty),
         level = "debug"
     )]
     async fn get_transaction(
@@ -456,14 +458,28 @@ impl SidecarTransport for GrpcService {
         };
 
         let hash_value = pb_tx_execution_id.tx_hash.clone();
+        Span::current().record("hash_value", &tracing::field::display(&hash_value));
 
-        let Ok(tx_execution_id) = parse_pb_tx_execution_id(&pb_tx_execution_id) else {
-            return Ok(Response::new(GetTransactionResponse {
-                outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
-            }));
+        let tx_execution_id = match parse_pb_tx_execution_id(&pb_tx_execution_id) {
+            Ok(tx_execution_id) => tx_execution_id,
+            Err(_) => {
+                tracing::debug!(
+                    target = "grpc_server::GetTransaction",
+                    %hash_value,
+                    "Failed to parse protobuf tx_execution_id"
+                );
+                return Ok(Response::new(GetTransactionResponse {
+                    outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
+                }));
+            }
         };
 
         if !self.transactions_results.is_tx_received(&tx_execution_id) {
+            tracing::debug!(
+                target = "grpc_server::GetTransaction",
+                %hash_value,
+                "Transaction not found"
+            );
             return Ok(Response::new(GetTransactionResponse {
                 outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
             }));
@@ -482,6 +498,11 @@ impl SidecarTransport for GrpcService {
             }
         };
 
+        tracing::debug!(
+            target = "grpc_server::GetTransaction",
+            %hash_value,
+            "Processed transaction query"
+        );
         Ok(Response::new(GetTransactionResponse {
             outcome: Some(GetTransactionOutcome::Result(into_pb_transaction_result(
                 tx_execution_id,
