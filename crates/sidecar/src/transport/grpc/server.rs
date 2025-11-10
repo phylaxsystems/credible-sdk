@@ -169,6 +169,54 @@ impl GrpcService {
             ))
         }
     }
+
+    async fn fetch_transaction_result(
+        &self,
+        tx_execution_id: TxExecutionId,
+    ) -> Result<PbTransactionResult, Status> {
+        let result = match self
+            .transactions_results
+            .request_transaction_result(&tx_execution_id)
+        {
+            crate::transactions_state::RequestTransactionResult::Result(r) => r,
+            crate::transactions_state::RequestTransactionResult::Channel(rx) => {
+                match rx.await {
+                    Ok(r) => r,
+                    Err(_) => return Err(Status::internal("engine unavailable")),
+                }
+            }
+        };
+
+        Ok(into_pb_transaction_result(tx_execution_id, &result))
+    }
+
+    async fn collect_transaction_results<'a, I>(
+        &self,
+        ids: I,
+    ) -> Result<(Vec<PbTransactionResult>, Vec<String>), Status>
+    where
+        I: IntoIterator<Item = &'a PbTxExecutionId>,
+    {
+        let mut iter = ids.into_iter();
+        let (lower_bound, _) = iter.size_hint();
+        let mut results = Vec::with_capacity(lower_bound);
+        let mut not_found = Vec::new();
+
+        for pb_tx_execution_id in iter {
+            match parse_pb_tx_execution_id(pb_tx_execution_id) {
+                Ok(tx_execution_id) => {
+                    if self.transactions_results.is_tx_received(&tx_execution_id) {
+                        results.push(self.fetch_transaction_result(tx_execution_id).await?);
+                    } else {
+                        not_found.push(pb_tx_execution_id.tx_hash.clone());
+                    }
+                }
+                Err(_) => not_found.push(pb_tx_execution_id.tx_hash.clone()),
+            }
+        }
+
+        Ok((results, not_found))
+    }
 }
 
 fn convert_pb_commit_head(commit_head: &PbCommitHead) -> Result<CommitHead, Status> {
@@ -338,7 +386,6 @@ impl SidecarTransport for GrpcService {
     #[instrument(
         name = "grpc_server::GetTransactions",
         skip(self, request),
-        fields(tx_execution_ids = tracing::field::Empty),
         level = "debug"
     )]
     async fn get_transactions(
@@ -348,61 +395,9 @@ impl SidecarTransport for GrpcService {
         self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();
-        let mut received: Vec<TxExecutionId> = Vec::new();
-        let mut not_found = Vec::new();
-
-        for pb_tx_execution_id in &payload.tx_execution_id {
-            let hash_value = pb_tx_execution_id.tx_hash.clone();
-            if let Ok(tx_execution_id) = parse_pb_tx_execution_id(pb_tx_execution_id) {
-                if self.transactions_results.is_tx_received(&tx_execution_id) {
-                    received.push(tx_execution_id);
-                } else {
-                    tracing::debug!(
-                        target = "grpc_server::GetTransactions",
-                        %hash_value,
-                        "Transaction not found"
-                    );
-                    not_found.push(hash_value);
-                }
-            } else {
-                tracing::debug!(
-                    target = "grpc_server::GetTransactions",
-                    %hash_value,
-                    "Failed to parse protobuf tx_execution_id"
-                );
-                not_found.push(hash_value);
-            }
-        }
-        Span::current().record("tx_execution_ids", tracing::field::debug(&received));
-
-        let mut results = Vec::with_capacity(received.len());
-        for tx_execution_id in received {
-            let result = match self
-                .transactions_results
-                .request_transaction_result(&tx_execution_id)
-            {
-                crate::transactions_state::RequestTransactionResult::Result(r) => r,
-                crate::transactions_state::RequestTransactionResult::Channel(rx) => {
-                    match rx.await {
-                        Ok(r) => r,
-                        Err(_) => return Err(Status::internal("engine unavailable")),
-                    }
-                }
-            };
-            tracing::debug!(
-                target = "grpc_server::GetTransactions",
-                hash_value = %tx_execution_id.tx_hash_hex(),
-                "Processed transaction query"
-            );
-            results.push(into_pb_transaction_result(tx_execution_id, &result));
-        }
-
-        tracing::debug!(
-            target = "grpc_server::GetTransactions",
-            result_count = results.len(),
-            not_found_count = not_found.len(),
-            "Finished processing GetTransactions request"
-        );
+        let (results, not_found) = self
+            .collect_transaction_results(payload.tx_execution_id.iter())
+            .await?;
 
         Ok(Response::new(GetTransactionsResponse {
             results,
@@ -413,8 +408,7 @@ impl SidecarTransport for GrpcService {
     /// Handle gRPC request for `GetTransaction` messages.
     #[instrument(
         name = "grpc_server::GetTransaction",
-        skip(self),
-        fields(tx_execution_id = tracing::field::Empty),
+        skip(self, request),
         level = "debug"
     )]
     async fn get_transaction(
@@ -431,53 +425,20 @@ impl SidecarTransport for GrpcService {
 
         let hash_value = pb_tx_execution_id.tx_hash.clone();
 
-        let Ok(tx_execution_id) = parse_pb_tx_execution_id(&pb_tx_execution_id) else {
-            tracing::debug!(
-                target = "grpc_server::GetTransaction",
-                %hash_value,
-                "Failed to parse protobuf tx_execution_id"
-            );
-            return Ok(Response::new(GetTransactionResponse {
-                outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
-            }));
-        };
-        Span::current().record("tx_execution_id", tracing::field::display(&tx_execution_id));
+        let (mut results, mut not_found) = self
+            .collect_transaction_results(std::iter::once(&pb_tx_execution_id))
+            .await?;
 
-        if !self.transactions_results.is_tx_received(&tx_execution_id) {
-            tracing::debug!(
-                target = "grpc_server::GetTransaction",
-                %hash_value,
-                "Transaction not found"
-            );
-            return Ok(Response::new(GetTransactionResponse {
-                outcome: Some(GetTransactionOutcome::NotFound(hash_value)),
-            }));
+        if let Some(result) = results.pop() {
+            Ok(Response::new(GetTransactionResponse {
+                outcome: Some(GetTransactionOutcome::Result(result)),
+            }))
+        } else {
+            let not_found_hash = not_found.pop().unwrap_or(hash_value);
+            Ok(Response::new(GetTransactionResponse {
+                outcome: Some(GetTransactionOutcome::NotFound(not_found_hash)),
+            }))
         }
-
-        let result = match self
-            .transactions_results
-            .request_transaction_result(&tx_execution_id)
-        {
-            crate::transactions_state::RequestTransactionResult::Result(r) => r,
-            crate::transactions_state::RequestTransactionResult::Channel(rx) => {
-                match rx.await {
-                    Ok(r) => r,
-                    Err(_) => return Err(Status::internal("engine unavailable")),
-                }
-            }
-        };
-
-        tracing::debug!(
-            target = "grpc_server::GetTransaction",
-            %hash_value,
-            "Processed transaction query"
-        );
-        Ok(Response::new(GetTransactionResponse {
-            outcome: Some(GetTransactionOutcome::Result(into_pb_transaction_result(
-                tx_execution_id,
-                &result,
-            ))),
-        }))
     }
 }
 
