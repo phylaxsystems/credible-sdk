@@ -316,14 +316,14 @@ pub struct ServerState {
 
 impl ServerState {
     pub fn new(
-        has_blockenv: Arc<AtomicBool>,
+        has_commit_head: Arc<AtomicBool>,
         commit_head_seen: Arc<AtomicBool>,
         tx_sender: TransactionQueueSender,
         transactions_results: QueryTransactionsResults,
         block_context: BlockContext,
     ) -> Self {
         Self {
-            has_commit_head: has_blockenv,
+            has_commit_head,
             commit_head_seen,
             tx_sender,
             transactions_results,

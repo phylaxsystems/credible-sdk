@@ -92,8 +92,8 @@ pub struct HttpTransport {
     bind_addr: SocketAddr,
     /// Shutdown cancellation token
     shutdown_token: CancellationToken,
-    /// Signal if the transport has seen a blockenv, will respond to txs with errors if not
-    has_blockenv: Arc<AtomicBool>,
+    /// Signal if the transport has seen a commit head yet
+    has_commit_head: Arc<AtomicBool>,
     /// Signal if a commit head has been received via HTTP
     commit_head_seen: Arc<AtomicBool>,
     /// Shared transaction results state
@@ -131,7 +131,7 @@ impl Transport for HttpTransport {
             tx_sender,
             bind_addr: config.bind_addr,
             shutdown_token: CancellationToken::new(),
-            has_blockenv: Arc::new(AtomicBool::new(false)),
+            has_commit_head: Arc::new(AtomicBool::new(false)),
             commit_head_seen: Arc::new(AtomicBool::new(false)),
             transactions_results: QueryTransactionsResults::new(state_results),
             block_context: BlockContext::default(),
@@ -146,7 +146,7 @@ impl Transport for HttpTransport {
     )]
     async fn run(&self) -> Result<(), Self::Error> {
         let state = server::ServerState::new(
-            self.has_blockenv.clone(),
+            self.has_commit_head.clone(),
             self.commit_head_seen.clone(),
             self.tx_sender.clone(),
             self.transactions_results.clone(),

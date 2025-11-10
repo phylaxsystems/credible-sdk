@@ -363,6 +363,8 @@ impl SidecarTransport for GrpcService {
     /// Handle gRPC request for `Reorg` messages.
     #[instrument(name = "grpc_server::Reorg", skip(self, request), level = "debug")]
     async fn reorg(&self, request: Request<ReorgRequest>) -> Result<Response<BasicAck>, Status> {
+        self.ensure_commit_head_seen()?;
+
         let payload = request.into_inner();
         let Some(pb_tx_execution_id) = payload.tx_execution_id else {
             return Err(Status::invalid_argument("missing tx_execution_id"));
