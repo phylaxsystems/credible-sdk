@@ -688,17 +688,18 @@ mod tests {
         use serde_json::json;
 
         // Step 1: Send a real transaction and wait for it to be processed by the engine
-        let (tx_address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+        let (tx_address, tx_iteration_id) =
+            instance.send_create_tx_with_cache_miss().await.unwrap();
 
         // Wait for the engine to process it
-        let _ = instance.is_transaction_successful(&tx_hash).await;
+        let _ = instance.is_transaction_successful(&tx_iteration_id).await;
 
         // Step 2: Mock the trace_replayBlockTransactions RPC response with MISMATCHED state
         let mock_trace_response = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "result": [{
-                "transactionHash": format!("{:#x}", tx_hash),
+                "transactionHash": format!("{:#x}", tx_iteration_id.tx_hash),
                 "output": "0x",
                 "trace": [],
                 "vmTrace": null,

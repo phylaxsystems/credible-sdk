@@ -107,6 +107,7 @@ use assertion_executor::{
         fork_db::ForkDb,
     },
 };
+use dashmap::DashMap;
 #[cfg(feature = "cache_validation")]
 use monitoring::cache::CacheChecker;
 #[allow(unused_imports)]
@@ -296,6 +297,9 @@ pub struct CoreEngine<DB> {
     #[cfg(feature = "cache_validation")]
     processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
     #[cfg(feature = "cache_validation")]
+    iteration_pending_processed_transactions:
+        HashMap<BlockExecutionId, HashMap<TxHash, Option<EvmState>>>,
+    #[cfg(feature = "cache_validation")]
     cache_checker: Option<AbortHandle>,
 }
 
@@ -357,6 +361,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             overlay_cache_invalidation_every_block,
             #[cfg(feature = "cache_validation")]
             processed_transactions,
+            #[cfg(feature = "cache_validation")]
+            iteration_pending_processed_transactions: HashMap::new(),
             #[cfg(feature = "cache_validation")]
             cache_checker,
         }
@@ -439,9 +445,12 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             .get_mut(&tx_execution_id.as_block_execution_id())
             .ok_or(EngineError::TransactionError)?;
         #[cfg(feature = "cache_validation")]
-        // FIXME: needs to be iteration aware
-        self.processed_transactions
-            .insert(tx_execution_id.tx_hash, state.clone());
+        self.iteration_pending_processed_transactions
+            .entry(tx_execution_id.as_block_execution_id())
+            .and_modify(|d| {
+                d.insert(tx_execution_id.tx_hash, state.clone());
+            })
+            .or_insert(HashMap::from([(tx_execution_id.tx_hash, state.clone())]));
 
         current_block_iteration
             .last_executed_tx
@@ -883,6 +892,19 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
 
         *processed_blocks += 1;
+
+        #[cfg(feature = "cache_validation")]
+        {
+            if let Some(iteration) = self
+                .iteration_pending_processed_transactions
+                .remove(&block_execution_id)
+            {
+                for (tx_hash, state) in iteration {
+                    self.processed_transactions.insert(tx_hash, state);
+                }
+            }
+            self.iteration_pending_processed_transactions = HashMap::new();
+        }
 
         // Set the block number to the latest applied head
         self.sources.set_block_number(commit_head.block_number);

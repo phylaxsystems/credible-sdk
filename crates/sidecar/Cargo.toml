@@ -73,7 +73,7 @@ tokio-console = [
     "console-subscriber",
     "tokio-metrics",
 ]
-cache_validation = ["moka"]
+cache_validation = ["moka", "alloy-rpc-types-trace"]
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
