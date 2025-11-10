@@ -432,7 +432,7 @@ async fn process_request(
 
     let request_count = tx_queue_contents.len();
     let mut saw_new_iteration = false;
-    let mut commit_head_seen = { state.commit_head_seen.load(Ordering::Relaxed) };
+    let mut commit_head_seen = state.commit_head_seen.load(Ordering::Relaxed);
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
@@ -442,6 +442,7 @@ async fn process_request(
         match &queue_tx {
             TxQueueContents::CommitHead(_, _) => {
                 if !commit_head_seen {
+                    commit_head_seen = true;
                     state.has_commit_head.store(true, Ordering::Release);
                 }
             }
@@ -454,7 +455,15 @@ async fn process_request(
                     ));
                 }
             }
-            TxQueueContents::Reorg(_, _) => {}
+            TxQueueContents::Reorg(_, _) => {
+                if !commit_head_seen {
+                    debug!("Rejecting reorg without prior commit head");
+                    return Ok(JsonRpcResponse::invalid_request(
+                        request,
+                        "commit head must be received before other events",
+                    ));
+                }
+            }
         }
 
         trace_tx_queue_contents(&state.block_context, &queue_tx);
