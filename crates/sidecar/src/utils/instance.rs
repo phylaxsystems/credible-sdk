@@ -155,8 +155,8 @@ pub struct LocalInstance<T: TestTransport> {
     pub list_of_sources: Vec<Arc<dyn Source>>,
     /// The mock HTTP representing the sequencer
     pub sequencer_http_mock: DualProtocolMockServer,
-    /// The mock HTTP representing the Besu client
-    pub besu_client_http_mock: DualProtocolMockServer,
+    /// The mock HTTP representing the Eth RPC source
+    pub eth_rpc_source_http_mock: DualProtocolMockServer,
     /// The assertion store
     assertion_store: Arc<AssertionStore>,
     /// Transport task handle
@@ -201,7 +201,7 @@ impl<T: TestTransport> LocalInstance<T> {
         db: Arc<CacheDB<Arc<Sources>>>,
         sources: Arc<Sources>,
         sequencer_http_mock: DualProtocolMockServer,
-        besu_client_http_mock: DualProtocolMockServer,
+        eth_rpc_source_http_mock: DualProtocolMockServer,
         assertion_store: Arc<AssertionStore>,
         transport_handle: Option<JoinHandle<()>>,
         engine_handle: Option<JoinHandle<()>>,
@@ -216,7 +216,7 @@ impl<T: TestTransport> LocalInstance<T> {
             db,
             sources,
             sequencer_http_mock,
-            besu_client_http_mock,
+            eth_rpc_source_http_mock,
             assertion_store,
             transport_handle,
             engine_handle,
@@ -341,6 +341,7 @@ impl<T: TestTransport> LocalInstance<T> {
         &self,
         source_index: usize,
         block_number: u64,
+        min_synced_block: u64,
     ) -> Result<(), String> {
         let source = self
             .list_of_sources
@@ -350,7 +351,7 @@ impl<T: TestTransport> LocalInstance<T> {
 
         tokio::time::timeout(Self::CONDITION_TIMEOUT, async move {
             loop {
-                if source.is_synced(block_number) {
+                if source.is_synced(min_synced_block, block_number) {
                     return;
                 }
                 tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
@@ -629,7 +630,7 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Send a successful CREATE transaction using a random account to enforce a cache miss (in the
-    /// in-memory cache) and therefore, enforcing a cache fetch from the providers (e.g., Besu client)
+    /// in-memory cache) and therefore, enforcing a cache fetch from the providers (e.g., Eth RPC source)
     pub async fn send_create_tx_with_cache_miss(
         &mut self,
     ) -> Result<(Address, TxExecutionId), String> {

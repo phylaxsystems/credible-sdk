@@ -7,7 +7,7 @@ use std::fmt::{
 };
 use thiserror::Error;
 
-pub mod besu_client;
+pub mod eth_rpc_source;
 mod json_rpc_db;
 pub mod redis;
 pub mod sequencer;
@@ -61,7 +61,8 @@ pub mod sequencer;
 /// // Also implement DatabaseRef trait methods...
 /// ```
 pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
-    /// Checks if this source is synchronized up to the specified block number.
+    /// Checks if this source is synchronized up to the specified block number knowing the minimum
+    /// synced block needed by the cache.
     ///
     /// A source is considered synchronized if it can reliably provide data
     /// for the given block number. Sources that are not synchronized should
@@ -69,6 +70,7 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     ///
     /// # Arguments
     ///
+    /// * `min_synced_block` - The minimum block needed to be synced to
     /// * `latest_head` - The latest head to check synchronization against
     ///
     /// # Returns
@@ -82,11 +84,11 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     /// number to ensure thread safety. The typical pattern is:
     ///
     /// ```rust,ignore
-    /// fn is_synced(&self, latest_head: u64) -> bool {
+    /// fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool {
     ///     // Check if this source has data for `current`
     /// }
     /// ```
-    fn is_synced(&self, latest_head: u64) -> bool;
+    fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool;
 
     /// Returns a unique identifier for this source.
     ///
@@ -99,18 +101,19 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     /// A `SourceName` that uniquely identifies this source.
     fn name(&self) -> SourceName;
 
-    /// Updates the min head that queries should target.
+    /// Updates the current cache status
     ///
-    /// Implementations may use this hint to issue RPC calls against a specific
-    /// block rather than the latest head. The default implementation is a
-    /// no-op for sources that do not depend on block context.
-    fn update_min_synced_head(&self, block_number: u64);
+    /// Updates the current cache status for the Source by passing the minimum block needed
+    /// to be synced to (`min_synced_block`) and the latest head in the cache (`latest_head`)
+    ///
+    /// The two inputs represent the range of blocks from which the source can fetch the data
+    fn update_cache_status(&self, min_synced_block: u64, latest_head: u64);
 }
 
 /// Names for a particular source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SourceName {
-    BesuClient,
+    EthRpcSource,
     Redis,
     Sequencer,
 }
@@ -119,7 +122,7 @@ pub enum SourceName {
 impl Display for SourceName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SourceName::BesuClient => write!(f, "BesuClient"),
+            SourceName::EthRpcSource => write!(f, "EthRpcSource"),
             SourceName::Redis => write!(f, "Redis"),
             SourceName::Sequencer => write!(f, "Sequencer"),
         }

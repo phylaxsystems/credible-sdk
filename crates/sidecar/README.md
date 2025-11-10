@@ -296,9 +296,9 @@ The configuration file is a JSON file with the following schema:
             "http://sequencer-service:8547"
           ]
         },
-        "besu_client_ws_url": {
+        "eth_rpc_source_ws_url": {
           "type": "string",
-          "description": "Besu client WebSocket bind address and port (optional)",
+          "description": "Eth RPC source WebSocket bind address and port (optional)",
           "format": "uri",
           "pattern": "^wss?://",
           "examples": [
@@ -306,9 +306,9 @@ The configuration file is a JSON file with the following schema:
             "ws://besu-service:8548"
           ]
         },
-        "besu_client_http_url": {
+        "eth_rpc_source_http_url": {
           "type": "string",
-          "description": "Besu client HTTP bind address and port (optional)",
+          "description": "Eth RPC source client HTTP bind address and port (optional)",
           "format": "uri",
           "pattern": "^https?://",
           "examples": [
@@ -409,8 +409,8 @@ The default configuration can be found in [default_config.json](default_config.j
   },
   "state": {
     "sequencer_url": "http://127.0.0.1:8545",
-    "besu_client_ws_url": "ws://127.0.0.1:8546",
-    "besu_client_http_url": "http://127.0.0.1:8545",
+    "eth_rpc_source_ws_url": "ws://127.0.0.1:8546",
+    "eth_rpc_source_http_url": "http://127.0.0.1:8545",
     "redis_namespace": "sidecar",
     "redis_depth": 3,
     "minimum_state_diff": 100,

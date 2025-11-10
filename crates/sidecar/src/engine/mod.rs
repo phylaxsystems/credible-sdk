@@ -783,12 +783,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
 
         let start = Instant::now();
         loop {
-            if self
-                .sources
-                .iter_synced_sources()
-                .into_iter()
-                .any(|a| a.is_synced(self.current_head))
-            {
+            if self.sources.iter_synced_sources().into_iter().any(|a| {
+                // For this case, the min_synced_block is the current head too, meaning that
+                // the sources must be synced up to the current head
+                a.is_synced(self.current_head, self.current_head)
+            }) {
                 return Ok(());
             }
 
@@ -2129,7 +2128,7 @@ mod tests {
         );
         assert!(
             instance
-                .besu_client_http_mock
+                .eth_rpc_source_http_mock
                 .eth_balance_counter
                 .get(&instance.default_account)
                 .is_none()
