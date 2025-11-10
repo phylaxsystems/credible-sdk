@@ -306,7 +306,6 @@ impl JsonRpcResponse {
 // use axum. we can use other frameworks but id rather not
 #[derive(Clone, Debug)]
 pub struct ServerState {
-    pub has_commit_head: Arc<AtomicBool>,
     commit_head_seen: Arc<AtomicBool>,
     pub tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
@@ -316,19 +315,24 @@ pub struct ServerState {
 
 impl ServerState {
     pub fn new(
-        has_commit_head: Arc<AtomicBool>,
-        commit_head_seen: Arc<AtomicBool>,
         tx_sender: TransactionQueueSender,
         transactions_results: QueryTransactionsResults,
         block_context: BlockContext,
     ) -> Self {
         Self {
-            has_commit_head,
-            commit_head_seen,
+            commit_head_seen: Arc::new(AtomicBool::new(false)),
             tx_sender,
             transactions_results,
             block_context,
         }
+    }
+
+    fn has_commit_head(&self) -> bool {
+        self.commit_head_seen.load(Ordering::Acquire)
+    }
+
+    fn mark_commit_head_seen(&self) {
+        self.commit_head_seen.store(true, Ordering::Release);
     }
 }
 
@@ -379,10 +383,8 @@ async fn handle_send_transactions(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    // Check if we have block environment before processing transactions
-    if !state.has_commit_head.load(Ordering::Relaxed) {
-        debug!("Rejecting transaction - no block environment available");
-        return Ok(JsonRpcResponse::block_not_available(request));
+    if let Some(response) = ensure_commit_head_seen(state, request) {
+        return Ok(response);
     }
     process_request(state, request).await
 }
@@ -431,33 +433,18 @@ async fn process_request(
     };
 
     let request_count = tx_queue_contents.len();
-    let mut saw_new_iteration = false;
-    let mut commit_head_seen = state.commit_head_seen.load(Ordering::Relaxed);
 
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
-        let is_new_iteration_event = matches!(&queue_tx, TxQueueContents::NewIteration(_, _));
-        let is_commit_head_event = matches!(&queue_tx, TxQueueContents::CommitHead(_, _));
-
         match &queue_tx {
             TxQueueContents::CommitHead(_, _) => {
-                if !commit_head_seen {
-                    commit_head_seen = true;
-                    state.has_commit_head.store(true, Ordering::Release);
-                }
+                state.mark_commit_head_seen();
             }
-            TxQueueContents::NewIteration(_, _) | TxQueueContents::Tx(_, _) => {
-                if !commit_head_seen {
+            TxQueueContents::NewIteration(_, _)
+            | TxQueueContents::Tx(_, _)
+            | TxQueueContents::Reorg(_, _) => {
+                if !state.has_commit_head() {
                     debug!("Rejecting request without prior commit head");
-                    return Ok(JsonRpcResponse::invalid_request(
-                        request,
-                        "commit head must be received before other events",
-                    ));
-                }
-            }
-            TxQueueContents::Reorg(_, _) => {
-                if !commit_head_seen {
-                    debug!("Rejecting reorg without prior commit head");
                     return Ok(JsonRpcResponse::invalid_request(
                         request,
                         "commit head must be received before other events",
@@ -489,18 +476,6 @@ async fn process_request(
                 "Internal error: failed to queue transaction",
             ));
         }
-
-        if is_commit_head_event {
-            state.commit_head_seen.store(true, Ordering::Release);
-        }
-
-        if is_new_iteration_event {
-            saw_new_iteration = true;
-        }
-    }
-
-    if saw_new_iteration && !state.has_commit_head.load(Ordering::Relaxed) {
-        state.has_commit_head.store(true, Ordering::Release);
     }
 
     debug!(
@@ -518,14 +493,14 @@ async fn process_request(
     ))
 }
 
-fn ensure_block_environment_available(
+fn ensure_commit_head_seen(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Option<JsonRpcResponse> {
-    if state.has_commit_head.load(Ordering::Relaxed) {
+    if state.has_commit_head() {
         None
     } else {
-        debug!("Rejecting transaction - no block environment available");
+        debug!("Rejecting request - commit head not yet received");
         Some(JsonRpcResponse::block_not_available(request))
     }
 }
@@ -556,7 +531,7 @@ async fn handle_get_transactions(
 ) -> Result<JsonRpcResponse, StatusCode> {
     // Check if we have block environment before processing transactions
     // NOTE: This can be dropped once we implement the "not_found" feature, the result will be "not_found" by default because there cannot be any tx hash consumed if no BlockEnv was received first
-    if let Some(response) = ensure_block_environment_available(state, request) {
+    if let Some(response) = ensure_commit_head_seen(state, request) {
         return Ok(response);
     }
 
@@ -596,7 +571,7 @@ async fn handle_get_transaction(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    if let Some(response) = ensure_block_environment_available(state, request) {
+    if let Some(response) = ensure_commit_head_seen(state, request) {
         return Ok(response);
     }
 

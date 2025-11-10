@@ -39,7 +39,6 @@ use sidecar::{
         Sources,
         sources::{
             Source,
-            besu_client::BesuClient,
             eth_rpc_source::EthRpcSource,
             sequencer::Sequencer,
         },
@@ -115,14 +114,6 @@ async fn main() -> anyhow::Result<()> {
             && let Ok(sequencer) = Sequencer::try_new(sequencer_url).await
         {
             sources.push(Arc::new(sequencer));
-        }
-        if let (Some(besu_client_ws_url), Some(besu_client_http_url)) = (
-            &config.state.besu_client_ws_url,
-            &config.state.besu_client_http_url,
-        ) && let Ok(besu_client) =
-            BesuClient::try_build(besu_client_ws_url.as_str(), besu_client_http_url.as_str()).await
-        {
-            sources.push(besu_client);
         }
         if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
             &config.state.eth_rpc_source_ws_url,
