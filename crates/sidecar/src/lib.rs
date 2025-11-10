@@ -10,6 +10,7 @@ pub mod args;
 pub mod cache;
 pub mod config;
 pub mod engine;
+pub mod event_sequencing;
 pub mod execution_ids;
 pub mod indexer;
 pub mod metrics;

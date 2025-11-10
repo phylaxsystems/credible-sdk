@@ -42,6 +42,7 @@ use sidecar::{
         },
     },
     critical,
+    event_sequencing::EventSequencing,
     indexer,
     transactions_state::TransactionsState,
     transport::{
@@ -138,14 +139,18 @@ async fn main() -> anyhow::Result<()> {
         let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
         let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
-        let (tx_sender, tx_receiver) = unbounded();
+        let (transport_tx_sender, event_sequencing_tx_receiver) = unbounded();
+        let (event_sequencing_tx_sender, core_engine_tx_receiver) = unbounded();
         let mut transport =
-            create_transport_from_args(&config, tx_sender, engine_state_results.clone())?;
+            create_transport_from_args(&config, transport_tx_sender, engine_state_results.clone())?;
+
+        let mut event_sequencing =
+            EventSequencing::new(event_sequencing_tx_receiver, event_sequencing_tx_sender);
 
         let mut engine = CoreEngine::new(
             cache,
             state,
-            tx_receiver,
+            core_engine_tx_receiver,
             assertion_executor.clone(),
             engine_state_results.clone(),
             config.credible.transaction_results_max_capacity,
@@ -186,6 +191,15 @@ async fn main() -> anyhow::Result<()> {
                         tracing::error!(error = ?e, "Transport exited");
                     } else {
                         critical!(error = ?e, "Transport exited");
+                    }
+                }
+            }
+            result = event_sequencing.run() => {
+                if let Err(e) = result {
+                    if ErrorRecoverability::from(&e).is_recoverable() {
+                        tracing::error!(error = ?e, "Event sequencing exited");
+                    } else {
+                        critical!(error = ?e, "Event sequencing exited");
                     }
                 }
             }
