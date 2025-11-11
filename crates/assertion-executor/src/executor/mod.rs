@@ -1,8 +1,14 @@
 pub mod config;
 
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 use std::{
     fmt::Debug,
-    sync::atomic::AtomicU64,
+    sync::{
+        atomic::AtomicU64,
+        mpsc::Receiver,
+    },
+    thread::JoinHandle,
 };
 
 use crate::{
@@ -116,28 +122,108 @@ pub struct ExecuteForkedTxResult {
     pub result_and_state: ResultAndState,
 }
 
-impl AssertionExecutor {
+type FailureIndex = u64;
 
+/// Signal for either succesful execution of assertions, or a failure.
+#[derive(Debug)]
+enum AssertionThreadOutcome{
+    /// No txs invalidated or err'd
+    Pass,
+    /// Assertion execution failed. Gives the transaction index
+    /// and failure reason.
+    Fail(FailureIndex),
+}
+
+impl AssertionExecutor {
+    fn run_assertions_on_channel<Active>(
+        assex: AssertionExecutor,
+        per_block_fork: Arc<parking_lot::Mutex<Vec<ForkDb<Active>>>>,
+        block_env: BlockEnv,
+        transaction_rx: Receiver<ExecuteForkedTxResult>,
+        at_outcome: Sender<AssertionThreadOutcome>,
+        block_size: u64,
+    ) -> () 
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+    {
+        let mut tx_index;
+
+        for event in transaction_rx.recv() {
+            // Acquire the forkdb for the post state of the transaction
+            let tx_fork_db =  per_block_fork.lock_arc().get((tx_index + 1) as usize).unwrap();
+            // execute assertions for the tx agains for.
+            match assex.execute_assertions(block_env, tx_fork_db.to_owned(), &event) {
+                Ok(rax) => {
+                    !rax.is_empty() {
+                        // not being empty means that we have had assertions fail and
+                        // that we need to revert to the pre state
+                        at_outcome.send(AssertionThreadOutcome::Fail(tx_index)).unwrap();
+                    }
+                },
+                Err(err) => {
+                    // misc assex error, revert tx
+                    at_outcome.send(AssertionThreadOutcome::Fail(tx_index)).unwrap();
+                },
+            };
+
+            tx_index += 1;
+
+            // we executed all txs, we're free!
+            if block_size == tx_index {
+                at_outcome.send(AssertionThreadOutcome::Pass).unwrap();
+                break;
+            }
+        }
+
+        unimplemented!()
+    }
+
+    // fn exec_all_txs<ExtDb, Active>(
+    //     &self,
+    //     block_env: BlockEnv,
+    //     external_db: &mut ExtDb,
+    //     transaction_list: Vec<TxEnv>,
+    // ) -> Result<(), ExecutorError<<Active as DatabaseRef>::Error, <ExtDb as Database>::Error>>
+    // where
+    //     ExtDb: Database + Sync + Send,
+    //     ExtDb::Error: Send,
+    //     Active: DatabaseRef + Sync + Send + Clone,
+    //     Active::Error: Send,
+    // {
+
+    //     unimplemented!()
+    // }
+
+    /// Validates a vec of txs
+    #[instrument(level = "debug", skip_all, target = "executor::validate_block")]
     pub fn validate_block<ExtDb, Active>(
         &mut self,
         block_env: BlockEnv,
-        tx_envs: Vec<TxEnv>,
+        transaction_list: Vec<TxEnv>,
         fork_db: &mut ForkDb<Active>,
         external_db: &mut ExtDb,
-    ) -> Result<
-        (),
-        ExecutorError<<Active as DatabaseRef>::Error, <ExtDb as Database>::Error>,
-    >
+    ) -> Result<(), ExecutorError<<Active as DatabaseRef>::Error, <ExtDb as Database>::Error>>
     where
         ExtDb: Database + Sync + Send,
         ExtDb::Error: Send,
         Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
-        /// root db, state at the start of the block before
-        /// any tx execution
+        // root db, state at the start of the block before
+        // any tx execution
         let block_db = fork_db.clone();
+        // for every tx, we store a the state for it BEFORE it was executed
+        // so for tx n, per_block_fork[n] contains the state before the changes of n were commited
+        let mut per_block_fork: Vec<ForkDb<Active>> = Vec::with_capacity(transaction_list.len());
+        per_block_fork[0] = block_db.clone();
+        // put in arc'd mutex so we can share it
+        let per_block_fork = Arc::new(parking_lot::Mutex::new(per_block_fork));
 
+        let (transaction_tx, transaction_rx) = std::sync::mpsc::channel::<ExecuteForkedTxResult>();
+        let (at_outcome_tx, at_outcome_rx) = std::sync::mpsc::channel::<AssertionThreadOutcome>();
+
+        loop {}
 
         unimplemented!()
     }

@@ -1,5 +1,8 @@
+use alloy_sol_types::{
+    sol,
+    SolCall,
+};
 use assex::{
-    ExecutorConfig,
     constants::{
         ASSERTION_CONTRACT,
         CALLER,
@@ -15,10 +18,7 @@ use assex::{
         counter_acct_info,
         COUNTER_ADDRESS,
     },
-};
-use alloy_sol_types::{
-    SolCall,
-    sol,
+    ExecutorConfig,
 };
 use revm::database::InMemoryDB;
 
