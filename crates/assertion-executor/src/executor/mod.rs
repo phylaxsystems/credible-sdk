@@ -3,7 +3,6 @@ pub mod config;
 use std::{
     fmt::Debug,
     sync::{
-        Arc,
         atomic::AtomicU64,
         mpsc::{
             Receiver,
@@ -126,9 +125,10 @@ pub struct ExecuteForkedTxResult {
 }
 
 #[derive(Debug)]
-struct AssertionTask {
+struct AssertionTask<Active: DatabaseRef> {
     tx_index: usize,
     forked_tx_result: ExecuteForkedTxResult,
+    tx_fork_db: ForkDb<Active>,
 }
 
 /// Signal for either succesful execution of assertions, or a failure.
@@ -155,9 +155,8 @@ enum AttemptStatus {
 
 fn run_assertions_on_channel<Active>(
     assex: AssertionExecutor,
-    per_block_fork: Arc<parking_lot::Mutex<Vec<ForkDb<Active>>>>,
     block_env: BlockEnv,
-    transaction_rx: Receiver<AssertionTask>,
+    transaction_rx: Receiver<AssertionTask<Active>>,
     at_outcome: Sender<AssertionThreadOutcome<Active>>,
 ) where
     Active: DatabaseRef + Sync + Send + Clone,
@@ -168,19 +167,12 @@ fn run_assertions_on_channel<Active>(
     while let Ok(AssertionTask {
         tx_index,
         forked_tx_result,
+        tx_fork_db,
     }) = transaction_rx.recv()
     {
         if draining {
             continue;
         }
-
-        let tx_fork_db = {
-            let fork_guard = per_block_fork.lock_arc();
-            fork_guard
-                .get(tx_index)
-                .cloned()
-                .expect("missing fork db snapshot for tx index")
-        };
 
         match assex.execute_assertions(block_env.clone(), tx_fork_db, &forked_tx_result) {
             Ok(results) => {
@@ -259,30 +251,28 @@ impl AssertionExecutor {
         }
 
         // Optimistic execution plan:
-        // 1. Maintain pre-tx snapshots for every tx in `per_block_fork`.
+        // 1. Maintain pre-tx snapshots for every tx in `fork_history`.
         // 2. Execute txs sequentially while queuing their execution results to the assertion thread.
         // 3. The assertion thread drains tasks, returning `TxValidationResult`s (success/failure).
         // 4. On the first failure we revert to its pre-state snapshot and stop, returning
         //    the successes/failures observed so far.
         let mut fork_history = Vec::with_capacity(block_size.saturating_add(1));
         fork_history.push(fork_db.clone());
-        let per_block_fork = Arc::new(parking_lot::Mutex::new(fork_history));
         let mut block_outcomes = BlockTxOutcomes::default();
 
         let attempt = std::thread::scope(
             |scope| -> Result<AttemptStatus, ExecutorError<<Active as DatabaseRef>::Error>> {
-                let (transaction_tx, transaction_rx) = std::sync::mpsc::channel::<AssertionTask>();
+                let (transaction_tx, transaction_rx) =
+                    std::sync::mpsc::channel::<AssertionTask<Active>>();
                 let (at_outcome_tx, at_outcome_rx) =
                     std::sync::mpsc::channel::<AssertionThreadOutcome<Active>>();
 
-                let per_block_fork_for_thread = Arc::clone(&per_block_fork);
                 let block_env_for_thread = block_env.clone();
                 let assex_thread = self.clone();
 
                 scope.spawn(move || {
                     run_assertions_on_channel(
                         assex_thread,
-                        per_block_fork_for_thread,
                         block_env_for_thread,
                         transaction_rx,
                         at_outcome_tx,
@@ -315,15 +305,9 @@ impl AssertionExecutor {
                         .map_err(ExecutorError::ForkTxExecutionError)?;
 
                     fork_db.commit(forked_tx_result.result_and_state.state.clone());
-                    {
-                        let mut guard = per_block_fork.lock();
-                        debug_assert_eq!(
-                            guard.len(),
-                            tx_index + 1,
-                            "unexpected fork history length while validating block"
-                        );
-                        guard.push(fork_db.clone());
-                    }
+
+                    let snapshot = fork_db.clone();
+                    fork_history.push(snapshot.clone());
 
                     trace!(
                         target: "assertion-executor::validate_block",
@@ -339,6 +323,7 @@ impl AssertionExecutor {
                         .send(AssertionTask {
                             tx_index,
                             forked_tx_result,
+                            tx_fork_db: snapshot,
                         })
                         .is_err()
                     {
@@ -374,14 +359,11 @@ impl AssertionExecutor {
                 Ok(block_outcomes)
             }
             AttemptStatus::Failed { failure_index } => {
-                let snapshot = {
-                    let mut guard = per_block_fork.lock();
-                    guard.truncate(failure_index + 1);
-                    guard
-                        .get(failure_index)
-                        .cloned()
-                        .expect("missing fork snapshot for failure index")
-                };
+                fork_history.truncate(failure_index + 1);
+                let snapshot = fork_history
+                    .get(failure_index)
+                    .cloned()
+                    .expect("missing fork snapshot for failure index");
 
                 *fork_db = snapshot;
                 debug!(
