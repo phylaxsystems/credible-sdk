@@ -248,7 +248,8 @@ The configuration file is a JSON file with the following schema:
       "description": "Transport protocol configuration",
       "required": [
         "protocol",
-        "bind_addr"
+        "bind_addr",
+        "health_bind_addr"
       ],
       "properties": {
         "protocol": {
@@ -270,6 +271,15 @@ The configuration file is a JSON file with the following schema:
             "127.0.0.1:3000",
             "0.0.0.0:8080",
             "localhost:9000"
+          ]
+        },
+        "health_bind_addr": {
+          "type": "string",
+          "description": "Bind address for the always-on health probe server",
+          "pattern": "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|[a-zA-Z0-9.-]+):[0-9]{1,5}$",
+          "examples": [
+            "127.0.0.1:3001",
+            "0.0.0.0:8080"
           ]
         }
       },
@@ -405,7 +415,8 @@ The default configuration can be found in [default_config.json](default_config.j
   },
   "transport": {
     "protocol": "grpc",
-    "bind_addr": "0.0.0.0:50051"
+    "bind_addr": "0.0.0.0:50051",
+    "health_bind_addr": "0.0.0.0:8080"
   },
   "state": {
     "sequencer_url": "http://127.0.0.1:8545",

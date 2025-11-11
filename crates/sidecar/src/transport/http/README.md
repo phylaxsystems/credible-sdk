@@ -165,60 +165,10 @@ The `iteration_id` field tracks different candidate blocks created by the sequen
 
 Contains the transaction execution environment. See [Transaction Types](../README.md#transaction-types) for detailed field documentation.
 
-### `sendBlockEnv`
-
-Sends block environment data to the sidecar. This must be called before any transactions can be processed, as the
-sidecar needs to know which block it's building on top of.
-
-**Request:**
-
-```json
-{
-  "id": 1,
-  "jsonrpc": "2.0",
-  "method": "sendBlockEnv",
-  "params": {
-    "block_env": {
-      "number": 12345,
-      "beneficiary": "0x742d35Cc6634C0532925a3b844B9c7e07e3E23eF4",
-      "timestamp": 1625150400,
-      "gas_limit": 30000000,
-      "basefee": 1000000000,
-      "difficulty": "0x0",
-      "prevrandao": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-      "blob_excess_gas_and_price": {
-        "excess_blob_gas": 0,
-        "blob_gasprice": 1
-      }
-    },
-    "last_tx_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
-    "n_transactions": 100,
-    "selected_iteration_id": 1
-  }
-}
-```
-
-**Response:**
-
-```json
-{
-  "id": 1,
-  "jsonrpc": "2.0",
-  "result": {
-    "status": "accepted",
-    "request_count": 1,
-    "message": "BlockEnv received"
-  }
-}
-```
-
-_Note: A successful response only means that the blockEnv has been received by the sidecar but may not be active yet as
-it gets queued for the core engine to process the event._
-
 ### `sendTransactions`
 
-Sends batch of transactions to sidecar for processing. Must include at least one transaction. Blocked until a BlockEnv
-call is received, as we need information about what block we are executing txs on top of.
+Sends batch of transactions to sidecar for processing. Must include at least one transaction. Blocked until `commit_head` + `new_iteration`
+is received, as we need information about what block we are executing txs on top of.
 
 **Request:**
 

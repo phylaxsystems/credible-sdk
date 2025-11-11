@@ -12,8 +12,12 @@ contract Ownable {
     }
 
     modifier onlyOwner() {
-        require(_owner == msg.sender, "Ownable: caller is not the owner");
+        _onlyOwner();
         _;
+    }
+
+    function _onlyOwner() internal {
+        require(_owner == msg.sender, "Ownable: caller is not the owner");
     }
 
     // Get the current owner
