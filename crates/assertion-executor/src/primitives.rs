@@ -120,6 +120,25 @@ impl TxValidationResult {
     }
 }
 
+/// Aggregated (joined) outcomes for an entire block validation attempt.
+#[derive(Debug, Default)]
+pub struct BlockTxOutcomes {
+    /// Transactions whose state transitions were committed successfully.
+    pub successful: Vec<TxValidationResult>,
+    /// Transactions that were invalidated by assertions (index, outcome).
+    pub failed: Vec<(usize, TxValidationResult)>,
+}
+
+impl BlockTxOutcomes {
+    pub fn record_success(&mut self, result: TxValidationResult) {
+        self.successful.push(result);
+    }
+
+    pub fn record_failure(&mut self, tx_index: usize, result: TxValidationResult) {
+        self.failed.push((tx_index, result));
+    }
+}
+
 /// Result of a single assertion contract execution
 #[derive(Debug, Default)]
 pub struct AssertionContractExecution {

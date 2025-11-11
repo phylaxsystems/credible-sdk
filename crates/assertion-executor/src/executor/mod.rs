@@ -1,14 +1,16 @@
 pub mod config;
 
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 use std::{
     fmt::Debug,
     sync::{
+        Arc,
         atomic::AtomicU64,
-        mpsc::Receiver,
+        mpsc::{
+            Receiver,
+            Sender,
+            TryRecvError,
+        },
     },
-    thread::JoinHandle,
 };
 
 use crate::{
@@ -46,6 +48,7 @@ use crate::{
         AssertionFunctionExecutionResult,
         AssertionFunctionResult,
         BlockEnv,
+        BlockTxOutcomes,
         Bytecode,
         EvmState,
         EvmStorage,
@@ -122,63 +125,97 @@ pub struct ExecuteForkedTxResult {
     pub result_and_state: ResultAndState,
 }
 
-type FailureIndex = u64;
+#[derive(Debug)]
+struct AssertionTask {
+    tx_index: usize,
+    forked_tx_result: ExecuteForkedTxResult,
+}
 
 /// Signal for either succesful execution of assertions, or a failure.
 #[derive(Debug)]
-enum AssertionThreadOutcome{
-    /// No txs invalidated or err'd
-    Pass,
-    /// Assertion execution failed. Gives the transaction index
-    /// and failure reason.
-    Fail(FailureIndex),
+enum AssertionThreadOutcome<Active: DatabaseRef> {
+    /// Assertions finished for a tx.
+    TxResult {
+        tx_index: usize,
+        validation: TxValidationResult,
+    },
+    /// Assertions crashed.
+    AssertionError {
+        state: EvmState,
+        error: AssertionExecutionError<<Active as DatabaseRef>::Error>,
+    },
+    /// Channel drained.
+    Finished,
+}
+
+enum AttemptStatus {
+    Completed,
+    Failed { failure_index: usize },
+}
+
+fn run_assertions_on_channel<Active>(
+    assex: AssertionExecutor,
+    per_block_fork: Arc<parking_lot::Mutex<Vec<ForkDb<Active>>>>,
+    block_env: BlockEnv,
+    transaction_rx: Receiver<AssertionTask>,
+    at_outcome: Sender<AssertionThreadOutcome<Active>>,
+) where
+    Active: DatabaseRef + Sync + Send + Clone,
+    Active::Error: Send,
+{
+    let mut draining = false;
+
+    while let Ok(AssertionTask {
+        tx_index,
+        forked_tx_result,
+    }) = transaction_rx.recv()
+    {
+        if draining {
+            continue;
+        }
+
+        let tx_fork_db = {
+            let fork_guard = per_block_fork.lock_arc();
+            fork_guard
+                .get(tx_index)
+                .cloned()
+                .expect("missing fork db snapshot for tx index")
+        };
+
+        match assex.execute_assertions(block_env.clone(), tx_fork_db, &forked_tx_result) {
+            Ok(results) => {
+                let mut validation =
+                    TxValidationResult::new(true, forked_tx_result.result_and_state, results);
+                if !validation.assertions_executions.is_empty() {
+                    let invalid = validation.assertions_executions.iter().any(|a| {
+                        !a.assertion_fns_results
+                            .iter()
+                            .all(AssertionFunctionResult::is_success)
+                    });
+                    if invalid {
+                        validation.transaction_valid = false;
+                        draining = true;
+                    }
+                }
+                let _ = at_outcome.send(AssertionThreadOutcome::TxResult {
+                    tx_index,
+                    validation,
+                });
+            }
+            Err(error) => {
+                draining = true;
+                let _ = at_outcome.send(AssertionThreadOutcome::AssertionError {
+                    state: forked_tx_result.result_and_state.state.clone(),
+                    error,
+                });
+            }
+        };
+    }
+
+    let _ = at_outcome.send(AssertionThreadOutcome::Finished);
 }
 
 impl AssertionExecutor {
-    fn run_assertions_on_channel<Active>(
-        assex: AssertionExecutor,
-        per_block_fork: Arc<parking_lot::Mutex<Vec<ForkDb<Active>>>>,
-        block_env: BlockEnv,
-        transaction_rx: Receiver<ExecuteForkedTxResult>,
-        at_outcome: Sender<AssertionThreadOutcome>,
-        block_size: u64,
-    ) -> () 
-    where
-        Active: DatabaseRef + Sync + Send + Clone,
-        Active::Error: Send,
-    {
-        let mut tx_index;
-
-        for event in transaction_rx.recv() {
-            // Acquire the forkdb for the post state of the transaction
-            let tx_fork_db =  per_block_fork.lock_arc().get((tx_index + 1) as usize).unwrap();
-            // execute assertions for the tx agains for.
-            match assex.execute_assertions(block_env, tx_fork_db.to_owned(), &event) {
-                Ok(rax) => {
-                    !rax.is_empty() {
-                        // not being empty means that we have had assertions fail and
-                        // that we need to revert to the pre state
-                        at_outcome.send(AssertionThreadOutcome::Fail(tx_index)).unwrap();
-                    }
-                },
-                Err(err) => {
-                    // misc assex error, revert tx
-                    at_outcome.send(AssertionThreadOutcome::Fail(tx_index)).unwrap();
-                },
-            };
-
-            tx_index += 1;
-
-            // we executed all txs, we're free!
-            if block_size == tx_index {
-                at_outcome.send(AssertionThreadOutcome::Pass).unwrap();
-                break;
-            }
-        }
-
-        unimplemented!()
-    }
-
     // fn exec_all_txs<ExtDb, Active>(
     //     &self,
     //     block_env: BlockEnv,
@@ -202,30 +239,217 @@ impl AssertionExecutor {
         block_env: BlockEnv,
         transaction_list: Vec<TxEnv>,
         fork_db: &mut ForkDb<Active>,
-        external_db: &mut ExtDb,
-    ) -> Result<(), ExecutorError<<Active as DatabaseRef>::Error, <ExtDb as Database>::Error>>
+        _external_db: &mut ExtDb,
+    ) -> Result<BlockTxOutcomes, ExecutorError<<Active as DatabaseRef>::Error>>
     where
         ExtDb: Database + Sync + Send,
         ExtDb::Error: Send,
         Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
-        // root db, state at the start of the block before
-        // any tx execution
-        let block_db = fork_db.clone();
-        // for every tx, we store a the state for it BEFORE it was executed
-        // so for tx n, per_block_fork[n] contains the state before the changes of n were commited
-        let mut per_block_fork: Vec<ForkDb<Active>> = Vec::with_capacity(transaction_list.len());
-        per_block_fork[0] = block_db.clone();
-        // put in arc'd mutex so we can share it
-        let per_block_fork = Arc::new(parking_lot::Mutex::new(per_block_fork));
+        if transaction_list.is_empty() {
+            return Ok(BlockTxOutcomes::default());
+        }
 
-        let (transaction_tx, transaction_rx) = std::sync::mpsc::channel::<ExecuteForkedTxResult>();
-        let (at_outcome_tx, at_outcome_rx) = std::sync::mpsc::channel::<AssertionThreadOutcome>();
+        // Optimistic execution plan:
+        // 1. Maintain pre-tx snapshots for every tx in `per_block_fork`.
+        // 2. Execute txs sequentially while queuing their execution results to the assertion thread.
+        // 3. The assertion thread drains tasks, returning `TxValidationResult`s (success/failure).
+        // 4. On the first failure we revert to its pre-state snapshot and stop, returning
+        //    the successes/failures observed so far.
+        let block_size = transaction_list.len();
+        let mut fork_history = Vec::with_capacity(block_size.saturating_add(1));
+        fork_history.push(fork_db.clone());
+        let per_block_fork = Arc::new(parking_lot::Mutex::new(fork_history));
+        let mut block_outcomes = BlockTxOutcomes::default();
 
-        loop {}
+        let attempt = std::thread::scope(
+            |scope| -> Result<AttemptStatus, ExecutorError<<Active as DatabaseRef>::Error>> {
+                let (transaction_tx, transaction_rx) = std::sync::mpsc::channel::<AssertionTask>();
+                let (at_outcome_tx, at_outcome_rx) =
+                    std::sync::mpsc::channel::<AssertionThreadOutcome<Active>>();
 
-        unimplemented!()
+                let per_block_fork_for_thread = Arc::clone(&per_block_fork);
+                let block_env_for_thread = block_env.clone();
+                let assex_thread = self.clone();
+
+                scope.spawn(move || {
+                    run_assertions_on_channel(
+                        assex_thread,
+                        per_block_fork_for_thread,
+                        block_env_for_thread,
+                        transaction_rx,
+                        at_outcome_tx,
+                    )
+                });
+
+                let mut failure_index: Option<usize> = None;
+                let mut finished = false;
+
+                for tx_index in 0..block_size {
+                    Self::drain_outcomes::<Active>(
+                        &at_outcome_rx,
+                        &mut block_outcomes,
+                        &mut failure_index,
+                        &mut finished,
+                    )?;
+
+                    if failure_index.is_some() || finished {
+                        break;
+                    }
+
+                    let tx_env = transaction_list[tx_index].clone();
+                    let forked_tx_result = self
+                        .execute_forked_tx_fork_db::<Active>(&block_env, tx_env, fork_db)
+                        .map_err(ExecutorError::ForkTxExecutionError)?;
+
+                    fork_db.commit(forked_tx_result.result_and_state.state.clone());
+                    {
+                        let mut guard = per_block_fork.lock();
+                        debug_assert_eq!(
+                            guard.len(),
+                            tx_index + 1,
+                            "unexpected fork history length while validating block"
+                        );
+                        guard.push(fork_db.clone());
+                    }
+
+                    if transaction_tx
+                        .send(AssertionTask {
+                            tx_index,
+                            forked_tx_result,
+                        })
+                        .is_err()
+                    {
+                        failure_index = Some(tx_index);
+                        break;
+                    }
+                }
+
+                drop(transaction_tx);
+
+                Self::drain_until_finished::<Active>(
+                    &at_outcome_rx,
+                    &mut block_outcomes,
+                    &mut failure_index,
+                )?;
+
+                if let Some(idx) = failure_index {
+                    return Ok(AttemptStatus::Failed { failure_index: idx });
+                }
+
+                Ok(AttemptStatus::Completed)
+            },
+        )?;
+
+        match attempt {
+            AttemptStatus::Completed => Ok(block_outcomes),
+            AttemptStatus::Failed { failure_index } => {
+                let snapshot = {
+                    let mut guard = per_block_fork.lock();
+                    guard.truncate(failure_index + 1);
+                    guard
+                        .get(failure_index)
+                        .cloned()
+                        .expect("missing fork snapshot for failure index")
+                };
+
+                *fork_db = snapshot;
+                Ok(block_outcomes)
+            }
+        }
+    }
+
+    fn drain_outcomes<Active>(
+        at_outcome_rx: &Receiver<AssertionThreadOutcome<Active>>,
+        block_outcomes: &mut BlockTxOutcomes,
+        failure_index: &mut Option<usize>,
+        finished: &mut bool,
+    ) -> Result<(), ExecutorError<<Active as DatabaseRef>::Error>>
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+    {
+        loop {
+            match at_outcome_rx.try_recv() {
+                Ok(message) => {
+                    Self::handle_outcome_message::<Active>(
+                        message,
+                        block_outcomes,
+                        failure_index,
+                        finished,
+                    )?;
+                    if *finished || failure_index.is_some() {
+                        break;
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    *finished = true;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn drain_until_finished<Active>(
+        at_outcome_rx: &Receiver<AssertionThreadOutcome<Active>>,
+        block_outcomes: &mut BlockTxOutcomes,
+        failure_index: &mut Option<usize>,
+    ) -> Result<(), ExecutorError<<Active as DatabaseRef>::Error>>
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+    {
+        let mut finished = false;
+        while !finished {
+            match at_outcome_rx.recv() {
+                Ok(message) => {
+                    Self::handle_outcome_message::<Active>(
+                        message,
+                        block_outcomes,
+                        failure_index,
+                        &mut finished,
+                    )?;
+                }
+                Err(_) => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_outcome_message<Active>(
+        message: AssertionThreadOutcome<Active>,
+        block_outcomes: &mut BlockTxOutcomes,
+        failure_index: &mut Option<usize>,
+        finished: &mut bool,
+    ) -> Result<(), ExecutorError<<Active as DatabaseRef>::Error>>
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+    {
+        match message {
+            AssertionThreadOutcome::TxResult {
+                tx_index,
+                validation,
+            } => {
+                if validation.is_valid() {
+                    block_outcomes.record_success(validation);
+                } else {
+                    block_outcomes.record_failure(tx_index, validation);
+                    *failure_index = Some(tx_index);
+                }
+            }
+            AssertionThreadOutcome::AssertionError { state, error } => {
+                return Err(ExecutorError::AssertionExecutionError(state, error));
+            }
+            AssertionThreadOutcome::Finished => {
+                *finished = true;
+            }
+        }
+
+        Ok(())
     }
 
     /// Executes a transaction against an external revm database, and runs the appropriate
@@ -822,7 +1046,10 @@ mod test {
             },
         },
         primitives::{
+            AccountInfo,
             BlockEnv,
+            TxEnv,
+            TxValidationResult,
             U256,
             uint,
         },
@@ -848,6 +1075,53 @@ mod test {
     type TestDB = OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>;
     // Define the Fork DB type alias used in tests
     type TestForkDB = ForkDb<TestDB>;
+
+    fn setup_validate_block_fixture() -> (AssertionExecutor, TestForkDB, MockDb, BlockEnv, Address)
+    {
+        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+        let mut fork_db: TestForkDB = test_db.fork();
+
+        fork_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
+        let tx_caller = Address::ZERO;
+        fork_db.insert_account_info(
+            tx_caller,
+            AccountInfo {
+                balance: U256::MAX,
+                ..Default::default()
+            },
+        );
+
+        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
+        assertion_store
+            .insert(
+                COUNTER_ADDRESS,
+                AssertionState::new_test(&assertion_bytecode),
+            )
+            .unwrap();
+
+        let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
+        let block_env = BlockEnv {
+            number: 1,
+            basefee: 10,
+            ..Default::default()
+        };
+
+        (executor, fork_db, MockDb::new(), block_env, tx_caller)
+    }
+
+    fn build_counter_block(basefee: u64, nonces: &[u64], caller: Address) -> Vec<TxEnv> {
+        nonces
+            .iter()
+            .map(|nonce| {
+                let mut tx = counter_call();
+                tx.caller = caller;
+                tx.nonce = *nonce;
+                tx.gas_price = basefee.into();
+                tx
+            })
+            .collect()
+    }
 
     #[test]
     fn test_deploy_assertion_contract() {
@@ -1035,5 +1309,46 @@ mod test {
 
         // Check original TestDB via executor.db
         assert_eq!(test_db.basic_ref(ASSERTION_CONTRACT).unwrap(), None);
+    }
+
+    #[test]
+    fn test_validate_block_all_successes() {
+        let (mut executor, mut fork_db, mut mock_db, block_env, tx_caller) =
+            setup_validate_block_fixture();
+        let block = build_counter_block(block_env.basefee, &[0], tx_caller);
+
+        let outcomes = executor
+            .validate_block(block_env.clone(), block, &mut fork_db, &mut mock_db)
+            .unwrap();
+
+        assert!(outcomes.failed.is_empty());
+        assert_eq!(outcomes.successful.len(), 1);
+        assert!(outcomes.successful.iter().all(TxValidationResult::is_valid));
+        assert_eq!(
+            fork_db.storage_ref(COUNTER_ADDRESS, U256::ZERO),
+            Ok(uint!(1_U256))
+        );
+    }
+
+    #[test]
+    fn test_validate_block_stops_on_first_failure() {
+        let (mut executor, mut fork_db, mut mock_db, block_env, tx_caller) =
+            setup_validate_block_fixture();
+        let block = build_counter_block(block_env.basefee, &[0, 1, 2], tx_caller);
+
+        let outcomes = executor
+            .validate_block(block_env.clone(), block, &mut fork_db, &mut mock_db)
+            .unwrap();
+
+        assert_eq!(outcomes.successful.len(), 1);
+        assert_eq!(outcomes.failed.len(), 1);
+        let (failing_index, failing_result) = &outcomes.failed[0];
+        assert_eq!(*failing_index, 1);
+        assert!(!failing_result.transaction_valid);
+        assert_eq!(
+            fork_db.storage_ref(COUNTER_ADDRESS, U256::ZERO),
+            Ok(uint!(1_U256)),
+            "State should revert to the last valid snapshot",
+        );
     }
 }
