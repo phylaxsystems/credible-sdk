@@ -762,13 +762,19 @@ impl AssertionExecutor {
             inspector,
         } = params;
 
+        let caller_nonce = multi_fork_db
+            .basic_ref(CALLER)
+            .expect("failed to read caller account info for assertions")
+            .expect("caller account missing while executing assertions")
+            .nonce;
+
         let tx_env = TxEnv {
             kind: TxKind::Call(ASSERTION_CONTRACT),
             caller: CALLER,
             data: (*fn_selector).into(),
             gas_limit: self.config.assertion_gas_limit,
             gas_price: block_env.basefee.into(),
-            nonce: 42,
+            nonce: caller_nonce,
             chain_id: Some(self.config.chain_id),
             ..Default::default()
         };
