@@ -247,6 +247,13 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
+        let block_size = transaction_list.len();
+        debug!(
+            target: "assertion-executor::validate_block",
+            block_number = block_env.number,
+            tx_count = block_size,
+            "Starting optimistic block validation"
+        );
         if transaction_list.is_empty() {
             return Ok(BlockTxOutcomes::default());
         }
@@ -257,7 +264,6 @@ impl AssertionExecutor {
         // 3. The assertion thread drains tasks, returning `TxValidationResult`s (success/failure).
         // 4. On the first failure we revert to its pre-state snapshot and stop, returning
         //    the successes/failures observed so far.
-        let block_size = transaction_list.len();
         let mut fork_history = Vec::with_capacity(block_size.saturating_add(1));
         fork_history.push(fork_db.clone());
         let per_block_fork = Arc::new(parking_lot::Mutex::new(fork_history));
@@ -298,6 +304,11 @@ impl AssertionExecutor {
                         break;
                     }
 
+                    debug!(
+                        target: "assertion-executor::validate_block",
+                        tx_index,
+                        "Executing transaction for optimistic validation"
+                    );
                     let tx_env = transaction_list[tx_index].clone();
                     let forked_tx_result = self
                         .execute_forked_tx_fork_db::<Active>(&block_env, tx_env, fork_db)
@@ -314,6 +325,16 @@ impl AssertionExecutor {
                         guard.push(fork_db.clone());
                     }
 
+                    trace!(
+                        target: "assertion-executor::validate_block",
+                        tx_index,
+                        "Committed speculative snapshot"
+                    );
+                    trace!(
+                        target: "assertion-executor::validate_block",
+                        tx_index,
+                        "Queued tx for assertion validation"
+                    );
                     if transaction_tx
                         .send(AssertionTask {
                             tx_index,
@@ -343,7 +364,15 @@ impl AssertionExecutor {
         )?;
 
         match attempt {
-            AttemptStatus::Completed => Ok(block_outcomes),
+            AttemptStatus::Completed => {
+                debug!(
+                    target: "assertion-executor::validate_block",
+                    success_count = block_outcomes.successful.len(),
+                    failure_count = block_outcomes.failed.len(),
+                    "Block validation completed"
+                );
+                Ok(block_outcomes)
+            }
             AttemptStatus::Failed { failure_index } => {
                 let snapshot = {
                     let mut guard = per_block_fork.lock();
@@ -355,6 +384,11 @@ impl AssertionExecutor {
                 };
 
                 *fork_db = snapshot;
+                debug!(
+                    target: "assertion-executor::validate_block",
+                    failure_index,
+                    "Stopped at first failed tx and reverted to its pre-state"
+                );
                 Ok(block_outcomes)
             }
         }
@@ -434,14 +468,31 @@ impl AssertionExecutor {
                 tx_index,
                 validation,
             } => {
+                debug!(
+                    target: "assertion-executor::validate_block",
+                    tx_index,
+                    valid = validation.transaction_valid,
+                    assertion_count = validation.assertions_executions.len(),
+                    "Received assertion outcome"
+                );
                 if validation.is_valid() {
                     block_outcomes.record_success(validation);
                 } else {
                     block_outcomes.record_failure(tx_index, validation);
                     *failure_index = Some(tx_index);
+                    debug!(
+                        target: "assertion-executor::validate_block",
+                        tx_index,
+                        "Assertion validation failed, reverting to snapshot"
+                    );
                 }
             }
             AssertionThreadOutcome::AssertionError { state, error } => {
+                debug!(
+                    target: "assertion-executor::validate_block",
+                    error = ?error,
+                    "Assertion thread crashed"
+                );
                 return Err(ExecutorError::AssertionExecutionError(state, error));
             }
             AssertionThreadOutcome::Finished => {
