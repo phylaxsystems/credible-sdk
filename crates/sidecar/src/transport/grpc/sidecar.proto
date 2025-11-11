@@ -2,18 +2,6 @@ syntax = "proto3";
 
 package sidecar.transport.v1;
 
-// Envelope for sending block environment to the sidecar.
-// The block environment is transmitted using native protobuf typing to
-// avoid JSON-in-protobuf payloads.
-message BlockEnvEnvelope {
-  BlockEnv block_env = 1;
-  // Optional last tx hash and transaction count to mirror HTTP schema.
-  // When n_transactions > 0, last_tx_hash must be provided and non-empty.
-  string last_tx_hash = 2; // empty string means absent
-  uint64 n_transactions = 3;
-  optional uint64 selected_iteration_id = 4;
-}
-
 message BlockEnv {
   uint64 number = 1;                     // block number
   string beneficiary = 2;                // 20-byte address as hex string
@@ -148,8 +136,6 @@ message SendEvents {
 }
 
 service SidecarTransport {
-  // Deprecated: prefer CommitHead/NewIteration/SendEvents
-  rpc SendBlockEnv(BlockEnvEnvelope) returns (BasicAck);
   rpc SendEvents(sidecar.transport.v1.SendEvents) returns (BasicAck);
   rpc SendTransactions(SendTransactionsRequest) returns (SendTransactionsResponse);
   rpc Reorg(ReorgRequest) returns (BasicAck);

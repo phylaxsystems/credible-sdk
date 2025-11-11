@@ -43,7 +43,6 @@ Both transports implement the same core API methods:
 
 ### Transaction Management
 
-- **`sendBlockEnv`**: Initialize block environment before processing transactions
 - **`sendTransactions`**: Submit batch of transactions for execution
 - **`getTransactions`**: Retrieve transaction results by their hashes
 - **`getTransaction`**: Retrieve a single transaction result by hash
@@ -360,3 +359,9 @@ Transport configuration can be set via command-line arguments or environment var
 ### gRPC Transport Configuration
 
 The gRPC transport is currently in development. Configuration options will be added as the implementation progresses.
+
+### Health Endpoint Server
+
+- **Bind Address**:
+    - **Default**: `0.0.0.0:8080`
+- Responds on `/health` with the current sidecar status.

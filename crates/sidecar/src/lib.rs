@@ -12,6 +12,7 @@ pub mod config;
 pub mod engine;
 pub mod event_sequencing;
 pub mod execution_ids;
+pub mod health;
 pub mod indexer;
 pub mod metrics;
 pub mod transactions_state;

@@ -3,6 +3,7 @@
 
 use crate::{
     engine::queue::TransactionQueueSender,
+    health::health_router,
     transactions_state::TransactionsState,
     transport::{
         Transport,
@@ -18,17 +19,11 @@ use crate::{
 use axum::{
     Router,
     middleware,
-    routing::{
-        get,
-        post,
-    },
+    routing::post,
 };
 use std::{
     net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::AtomicBool,
-    },
+    sync::Arc,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{
@@ -94,26 +89,10 @@ pub struct HttpTransport {
     bind_addr: SocketAddr,
     /// Shutdown cancellation token
     shutdown_token: CancellationToken,
-    /// Signal if the transport has seen a blockenv, will respond to txs with errors if not
-    has_blockenv: Arc<AtomicBool>,
-    /// Signal if a commit head has been received via HTTP
-    commit_head_seen: Arc<AtomicBool>,
     /// Shared transaction results state
     transactions_results: QueryTransactionsResults,
     /// Block context for tracing
     block_context: BlockContext,
-}
-
-/// Health check endpoint
-// TODO: add readiness endpoint
-#[instrument(name = "http_server::health", level = "trace")]
-async fn health() -> &'static str {
-    "OK"
-}
-
-/// Create health check routes
-fn health_routes() -> Router {
-    Router::new().route("/health", get(health))
 }
 
 /// Create transaction submission routes
@@ -145,8 +124,6 @@ impl Transport for HttpTransport {
             tx_sender,
             bind_addr: config.bind_addr,
             shutdown_token: CancellationToken::new(),
-            has_blockenv: Arc::new(AtomicBool::new(false)),
-            commit_head_seen: Arc::new(AtomicBool::new(false)),
             transactions_results: QueryTransactionsResults::new(state_results),
             block_context: BlockContext::default(),
         })
@@ -160,14 +137,12 @@ impl Transport for HttpTransport {
     )]
     async fn run(&self) -> Result<(), Self::Error> {
         let state = server::ServerState::new(
-            self.has_blockenv.clone(),
-            self.commit_head_seen.clone(),
             self.tx_sender.clone(),
             self.transactions_results.clone(),
             self.block_context.clone(),
         );
         let app = Router::new()
-            .merge(health_routes())
+            .merge(health_router())
             .merge(transaction_routes(state, &self.block_context));
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
@@ -251,7 +226,9 @@ mod tests {
         let res = send_raw_request(invalid_request, local_address)
             .await
             .unwrap();
-        assert!(res.contains("Failed to decode transactions: Block env validation error: invalid type: string \\\"invalid_number\\\", expected u64\""));
+        assert!(res.contains(
+            r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"Method not found"},"id":1}"#
+        ));
     }
 
     #[crate::utils::engine_test(http)]

@@ -21,9 +21,11 @@ use sidecar::{
         CoreEngine,
         queue::TransactionQueueSender,
     },
+    health::HealthServer,
     transport::Transport,
 };
 use std::{
+    net::SocketAddr,
     sync::Arc,
     time::Duration,
 };
@@ -104,6 +106,8 @@ async fn main() -> anyhow::Result<()> {
 
     let engine_state_results = TransactionsState::new();
 
+    let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
+
     loop {
         let mut sources: Vec<Arc<dyn Source>> = vec![];
         if let Some(sequencer_url) = &config.state.sequencer_url
@@ -146,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
 
         let mut event_sequencing =
             EventSequencing::new(event_sequencing_tx_receiver, event_sequencing_tx_sender);
+        let mut health_server = HealthServer::new(health_bind_addr);
 
         let mut engine = CoreEngine::new(
             cache,
@@ -203,6 +208,11 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            result = health_server.run() => {
+                if let Err(e) = result {
+                    critical!(error = ?e, "Health server exited");
+                }
+            }
             result = indexer::run_indexer(indexer_cfg) => {
                 if let Err(e) = result {
                     if ErrorRecoverability::from(&e).is_recoverable() {
@@ -213,9 +223,10 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-
         transport.stop();
+        health_server.stop();
         drop(transport);
+        drop(health_server);
         drop(engine);
         tracing::warn!("Sidecar restarted.");
     }
