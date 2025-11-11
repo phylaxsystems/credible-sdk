@@ -62,6 +62,11 @@ const ARTIFACT_ROOT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../testdata/mock-protocol/out"
 );
+const SIDECAR_BENCH_ASSERTIONS_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../crates/sidecar/benches/assertions.json"
+);
+const HEAVY_ASSERTIONS_PER_TX: usize = 16;
 const CALLER_TRANSACTION_START_NONCE: u64 = 42;
 
 type TestDB = OverlayDb<CacheDB<EmptyDBTyped<Infallible>>>;
@@ -96,6 +101,27 @@ fn bench_bytecode(input: &str) -> Bytes {
 
 fn bench_creation_bytecode(input: &str) -> Bytes {
     bench_artifact_bytes(input, "bytecode")
+}
+
+fn load_heavy_assertion_bytecode(count: usize) -> Vec<Bytes> {
+    let path = Path::new(SIDECAR_BENCH_ASSERTIONS_PATH);
+    let file = File::open(path).unwrap_or_else(|err| {
+        panic!(
+            "failed to open heavy assertion file `{}`: {err}",
+            SIDECAR_BENCH_ASSERTIONS_PATH,
+        )
+    });
+    let bytecodes: Vec<String> =
+        serde_json::from_reader(file).expect("failed to parse heavy assertions json");
+    bytecodes
+        .into_iter()
+        .take(count)
+        .map(|bytecode| {
+            Bytes::from(
+                hex::decode(bytecode).expect("failed to decode heavy assertion bytecode"),
+            )
+        })
+        .collect()
 }
 
 fn selector(signature: &str) -> [u8; 4] {
@@ -145,6 +171,13 @@ impl BenchFixture {
             .store
             .insert(BENCH_TRIGGER_ADDRESS, bench_assertion_state)
             .unwrap();
+        for heavy_bytes in load_heavy_assertion_bytecode(HEAVY_ASSERTIONS_PER_TX) {
+            let heavy_state = AssertionState::new_test(&heavy_bytes);
+            executor
+                .store
+                .insert(BENCH_TRIGGER_ADDRESS, heavy_state)
+                .unwrap();
+        }
         executor.insert_persistent_accounts(&bench_assertion_contract, &mut fork_db);
 
         let assertion_account = fork_db
