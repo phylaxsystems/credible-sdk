@@ -54,6 +54,8 @@ impl<DB> CoreEngine<DB> {
             ),
             #[cfg(feature = "cache_validation")]
             cache_checker: None,
+            #[cfg(feature = "cache_validation")]
+            iteration_pending_processed_transactions: HashMap::new(),
             sources_monitoring: monitoring::sources::Sources::new(
                 sources,
                 Duration::from_millis(20),
