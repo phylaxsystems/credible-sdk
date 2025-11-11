@@ -1,3 +1,5 @@
+mod event_metadata;
+
 use crate::{
     engine::{
         EngineError,
@@ -7,9 +9,18 @@ use crate::{
             TxQueueContents,
         },
     },
+    event_sequencing::event_metadata::EventMetadata,
     utils::ErrorRecoverability,
 };
-use std::time::Instant;
+use alloy::primitives::TxHash;
+use std::{
+    collections::{
+        HashMap,
+        HashSet,
+        VecDeque,
+    },
+    time::Instant,
+};
 use thiserror::Error;
 use tracing::{
     error,
@@ -23,6 +34,19 @@ pub struct EventSequencing {
     tx_receiver: TransactionQueueReceiver,
     /// Channel on which the core engine receives events.
     tx_sender: TransactionQueueSender,
+    /// The current head of the chain: The last committed head.
+    current_head: u64,
+    /// Context for each block.
+    context: HashMap<u64, Context>,
+}
+
+/// The `Context` struct contains the context for a block. It is used to track the state of the block
+/// and the events that have been dispatched during the block build.
+struct Context {
+    /// Sent events per iteration
+    sent_events: HashMap<u64, VecDeque<EventMetadata>>,
+    /// Keep track of pending events which haven't been sent yet to the engine
+    dependency_graph: HashMap<EventMetadata, Vec<TxQueueContents>>,
 }
 
 impl EventSequencing {
@@ -36,6 +60,8 @@ impl EventSequencing {
         Self {
             tx_receiver,
             tx_sender,
+            current_head: 0,
+            context: HashMap::new(),
         }
     }
 
