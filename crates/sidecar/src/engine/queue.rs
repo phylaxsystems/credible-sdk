@@ -53,6 +53,7 @@ use serde::{
 pub struct QueueTransaction {
     pub tx_execution_id: TxExecutionId,
     pub tx_env: TxEnv,
+    pub prev_tx_hash: Option<TxHash>,
 }
 
 /// Contains the possible types that can be sent in the transaction queue.
@@ -74,11 +75,31 @@ pub enum TxQueueContents {
     NewIteration(NewIteration, tracing::Span),
 }
 
+impl TxQueueContents {
+    pub fn block_number(&self) -> u64 {
+        match self {
+            TxQueueContents::Tx(v, _) => v.tx_execution_id.block_number,
+            TxQueueContents::Reorg(v, _) => v.block_number,
+            TxQueueContents::CommitHead(v, _) => v.block_number,
+            TxQueueContents::NewIteration(v, _) => v.block_env.number,
+        }
+    }
+
+    pub fn iteration_id(&self) -> u64 {
+        match self {
+            TxQueueContents::Tx(v, _) => v.tx_execution_id.iteration_id,
+            TxQueueContents::Reorg(v, _) => v.iteration_id,
+            TxQueueContents::CommitHead(v, _) => v.selected_iteration_id,
+            TxQueueContents::NewIteration(v, _) => v.iteration_id,
+        }
+    }
+}
+
 /// Event used to commit a built iteration as the head block of the chain.
 ///
 /// Includes `last_tx_hash` and `n_transactions` to ensure consistency.
 /// `CommitHead` *MUST* select an iteration to apply.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitHead {
     /// Block number of the selected iteration.
     pub(crate) block_number: u64,
@@ -114,7 +135,7 @@ impl CommitHead {
 }
 
 /// Creates a new iteration with a specific block env
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewIteration {
     pub(crate) iteration_id: u64,
     pub(crate) block_env: BlockEnv,

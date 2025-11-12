@@ -418,6 +418,7 @@ impl TestTransport for LocalInstanceMockDriver {
         &mut self,
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
+        prev_tx_hash: Option<TxHash>,
     ) -> Result<(), String> {
         let iteration_id = tx_execution_id.iteration_id;
         self.block_tx_hashes_by_iteration
@@ -429,6 +430,7 @@ impl TestTransport for LocalInstanceMockDriver {
         let queue_tx = QueueTransaction {
             tx_execution_id,
             tx_env,
+            prev_tx_hash,
         };
         self.mock_sender
             .send(TxQueueContents::Tx(queue_tx, Span::current()))
@@ -695,6 +697,7 @@ impl TestTransport for LocalInstanceHttpDriver {
         &mut self,
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
+        prev_tx_hash: Option<TxHash>,
     ) -> Result<(), String> {
         debug!(target: "LocalInstanceHttpDriver", "Sending transaction: {:?}", tx_execution_id);
 
@@ -1070,6 +1073,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         &mut self,
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
+        prev_tx_hash: Option<TxHash>,
     ) -> Result<(), String> {
         debug!(target: "LocalInstanceGrpcDriver", "Sending transaction: {:?}", tx_execution_id);
 

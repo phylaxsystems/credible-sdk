@@ -1,4 +1,6 @@
 mod event_metadata;
+#[cfg(test)]
+mod tests;
 
 use crate::{
     engine::{
@@ -42,6 +44,7 @@ pub struct EventSequencing {
 
 /// The `Context` struct contains the context for a block. It is used to track the state of the block
 /// and the events that have been dispatched during the block build.
+#[derive(Default)]
 struct Context {
     /// Sent events per iteration
     sent_events: HashMap<u64, VecDeque<EventMetadata>>,
@@ -94,6 +97,68 @@ impl EventSequencing {
                 );
             }
         }
+    }
+
+    /// Recursively sends an event and all its dependent events from the dependency graph.
+    /// Gracefully handles block transitions when processing dependencies.
+    fn send_event_recursive(&mut self, event: TxQueueContents) {
+        let block_number = event.block_number();
+        let event_metadata = EventMetadata::from(&event);
+
+        // Temporarily remove context to satisfy the borrow checker
+        let mut ctx = self.context.remove(&block_number).unwrap_or_default();
+
+        // Send the event using existing logic
+        self.send_event(event, &mut ctx);
+
+        // Extract any events that were waiting for this event to complete
+        let dependent_events = ctx
+            .dependency_graph
+            .remove(&event_metadata)
+            .unwrap_or_default();
+
+        // Put context back before recursing
+        self.context.insert(block_number, ctx);
+
+        // Recursively process all dependent events
+        for dependent_event in dependent_events {
+            self.send_event_recursive(dependent_event);
+        }
+    }
+
+    fn send_event(&mut self, event: TxQueueContents, ctx: &mut Context) {
+        let iteration_id = event.iteration_id();
+        let event_metadata = EventMetadata::from(&event);
+
+        let queue = ctx.sent_events.entry(iteration_id).or_default();
+
+        // Handle reorg-specific validation
+        if let TxQueueContents::Reorg(_tx_execution_id, _) = &event {
+            match queue.pop_back() {
+                Some(last_sent_event) if !last_sent_event.cancel_each_other(&event_metadata) => {
+                    // If the reorg event is not cancelling the previous transaction, it means
+                    // there was an error in our logic. This case should never happen, but we need to
+                    // handle it gracefully.
+                    error!(
+                        target = "event_sequencing",
+                        "Received reorg event which is not cancelling the previous transaction"
+                    );
+                    queue.push_back(last_sent_event);
+                }
+                // This case should never happen, but we need to handle it gracefully.
+                None => {
+                    error!(
+                        target = "event_sequencing",
+                        "Received reorg event without previous event"
+                    );
+                }
+                _ => {} // Happy path: events cancel each other
+            }
+        }
+
+        // Always send event and record metadata
+        self.tx_sender.send(event);
+        queue.push_back(event_metadata);
     }
 }
 

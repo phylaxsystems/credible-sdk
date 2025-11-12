@@ -53,8 +53,6 @@ fn collect_event_chain_limited(event: &EventMetadata, limit: usize) -> Vec<Event
     chain
 }
 
-// ===== calculate_previous_event tests =====
-
 #[test]
 fn test_transaction_index_0_returns_new_iteration() {
     let tx = EventMetadata::Transaction {
@@ -229,8 +227,6 @@ fn test_new_iteration_at_block_1_returns_commit_head_at_block_0() {
         _ => panic!("Expected CommitHead"),
     }
 }
-
-// ===== Recursive chain tests =====
 
 #[test]
 fn test_recursive_chain_from_commit_head_to_new_iteration() {
@@ -425,8 +421,6 @@ fn test_recursive_chain_preserves_block_and_iteration_within_block() {
         }
     }
 }
-
-// ===== cancel_each_other tests =====
 
 #[test]
 fn test_reorg_and_transaction_cancel() {
@@ -688,8 +682,6 @@ fn test_commit_heads_dont_cancel() {
 
     assert!(!commit1.cancel_each_other(&commit2));
 }
-
-// ===== Hash implementation tests =====
 
 #[test]
 fn test_hash_transaction_same_identity_different_tx_hash() {
@@ -994,8 +986,6 @@ fn test_hash_transaction_and_new_iteration_different() {
     assert_ne!(calculate_hash(&tx), calculate_hash(&new_iter));
 }
 
-// ===== Edge case tests =====
-
 #[test]
 fn test_transaction_at_max_index() {
     let tx = EventMetadata::Transaction {
@@ -1050,4 +1040,558 @@ fn test_hash_consistency_with_clone() {
     let tx2 = tx1.clone();
 
     assert_eq!(calculate_hash(&tx1), calculate_hash(&tx2));
+}
+
+#[test]
+fn test_transaction_equality_ignores_tx_hash() {
+    let tx1 = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: None,
+    };
+
+    let tx2 = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: Some(TxHash::random()),
+    };
+
+    assert_eq!(
+        tx1, tx2,
+        "Transactions with same block/iteration/index should be equal despite different tx_hash"
+    );
+}
+
+#[test]
+fn test_new_iteration_inequality_different_block() {
+    let iter1 = EventMetadata::NewIteration {
+        block_number: 100,
+        iteration_id: 1,
+    };
+
+    let iter2 = EventMetadata::NewIteration {
+        block_number: 101,
+        iteration_id: 1,
+    };
+
+    assert_ne!(
+        iter1, iter2,
+        "NewIterations with different block_number should not be equal"
+    );
+}
+
+#[test]
+fn test_new_iteration_inequality_different_iteration() {
+    let iter1 = EventMetadata::NewIteration {
+        block_number: 100,
+        iteration_id: 1,
+    };
+
+    let iter2 = EventMetadata::NewIteration {
+        block_number: 100,
+        iteration_id: 2,
+    };
+
+    assert_ne!(
+        iter1, iter2,
+        "NewIterations with different iteration_id should not be equal"
+    );
+}
+
+#[test]
+fn test_commit_head_inequality_different_block() {
+    let commit1 = EventMetadata::CommitHead {
+        block_number: 100,
+        selected_iteration_id: 1,
+        n_transactions: 10,
+        prev_tx_hash: Some(TxHash::random()),
+    };
+
+    let commit2 = EventMetadata::CommitHead {
+        block_number: 101,
+        selected_iteration_id: 1,
+        n_transactions: 10,
+        prev_tx_hash: Some(TxHash::random()),
+    };
+
+    assert_ne!(
+        commit1, commit2,
+        "CommitHeads with different block_number should not be equal"
+    );
+}
+
+#[test]
+fn test_transaction_inequality_different_index() {
+    let tx1 = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: None,
+    };
+
+    let tx2 = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 6,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: None,
+    };
+
+    assert_ne!(
+        tx1, tx2,
+        "Transactions with different index should not be equal"
+    );
+}
+
+#[test]
+fn test_reorg_equality_ignores_tx_hash() {
+    let reorg1 = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+    };
+
+    let reorg2 = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+    };
+
+    assert_eq!(
+        reorg1, reorg2,
+        "Reorgs with same block/iteration/index should be equal despite different tx_hash"
+    );
+}
+
+#[test]
+fn test_new_iteration_equality() {
+    let iter1 = EventMetadata::NewIteration {
+        block_number: 100,
+        iteration_id: 1,
+    };
+
+    let iter2 = EventMetadata::NewIteration {
+        block_number: 100,
+        iteration_id: 1,
+    };
+
+    assert_eq!(
+        iter1, iter2,
+        "NewIterations with same block/iteration should be equal"
+    );
+}
+
+#[test]
+fn test_commit_head_equality_ignores_most_fields() {
+    let commit1 = EventMetadata::CommitHead {
+        block_number: 100,
+        selected_iteration_id: 1,
+        n_transactions: 10,
+        prev_tx_hash: Some(TxHash::random()),
+    };
+
+    let commit2 = EventMetadata::CommitHead {
+        block_number: 100,
+        selected_iteration_id: 999, // Different!
+        n_transactions: 5,          // Different!
+        prev_tx_hash: None,         // Different!
+    };
+
+    assert_eq!(
+        commit1, commit2,
+        "CommitHeads with same block_number should be equal regardless of other fields"
+    );
+}
+
+#[test]
+fn test_different_variants_not_equal() {
+    let tx = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::default(),
+        prev_tx_hash: None,
+    };
+
+    let reorg = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::default(),
+    };
+
+    assert_ne!(
+        tx, reorg,
+        "Different event types should not be equal even with same fields"
+    );
+}
+
+#[test]
+fn test_cancel_each_other_transaction_and_reorg() {
+    let tx_hash = TxHash::random();
+
+    let tx = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash,
+        prev_tx_hash: None,
+    };
+
+    let reorg = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash,
+    };
+
+    assert!(
+        tx.cancel_each_other(&reorg),
+        "Transaction and Reorg with same identifiers should cancel"
+    );
+    assert!(
+        reorg.cancel_each_other(&tx),
+        "Should work in both directions"
+    );
+}
+
+#[test]
+fn test_cancel_each_other_different_tx_hash() {
+    let tx = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: None,
+    };
+
+    let reorg = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+    };
+
+    assert!(
+        !tx.cancel_each_other(&reorg),
+        "Transaction and Reorg with different tx_hash should not cancel"
+    );
+}
+
+#[test]
+fn test_cancel_each_other_same_type_no_cancel() {
+    let tx1 = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: None,
+    };
+
+    let tx2 = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: None,
+    };
+
+    assert!(
+        !tx1.cancel_each_other(&tx2),
+        "Two Transactions should not cancel each other"
+    );
+}
+
+#[test]
+fn test_hash_consistency() {
+    use std::hash::{
+        DefaultHasher,
+        Hash,
+        Hasher,
+    };
+
+    fn compute_hash<T: Hash>(value: &T) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    let tx1 = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: None,
+    };
+
+    let tx2 = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: Some(TxHash::random()),
+    };
+
+    assert_eq!(
+        compute_hash(&tx1),
+        compute_hash(&tx2),
+        "Equal events should produce same hash"
+    );
+}
+
+#[test]
+fn test_calculate_previous_event_transaction_first_index() {
+    let tx = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 0,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: None,
+    };
+
+    let prev = tx.calculate_previous_event();
+    assert!(prev.is_some());
+
+    let expected = EventMetadata::NewIteration {
+        block_number: 100,
+        iteration_id: 1,
+    };
+    assert_eq!(prev.unwrap(), expected);
+}
+
+#[test]
+fn test_calculate_previous_event_transaction_non_zero_index() {
+    let tx = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+        prev_tx_hash: None,
+    };
+
+    let prev = tx.calculate_previous_event().unwrap();
+
+    match prev {
+        EventMetadata::Transaction {
+            block_number,
+            iteration_id,
+            index,
+            ..
+        } => {
+            assert_eq!(block_number, 100);
+            assert_eq!(iteration_id, 1);
+            assert_eq!(index, 4);
+        }
+        _ => panic!("Expected Transaction variant"),
+    }
+}
+
+#[test]
+fn test_calculate_previous_event_new_iteration_at_genesis() {
+    let new_iter = EventMetadata::NewIteration {
+        block_number: 0,
+        iteration_id: 0,
+    };
+
+    let prev = new_iter.calculate_previous_event();
+    assert!(
+        prev.is_none(),
+        "NewIteration at block 0 should have no previous event"
+    );
+}
+
+#[test]
+fn test_all_variant_combinations_not_equal() {
+    let tx = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::default(),
+        prev_tx_hash: None,
+    };
+
+    let reorg = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::default(),
+    };
+
+    let new_iter = EventMetadata::NewIteration {
+        block_number: 100,
+        iteration_id: 1,
+    };
+
+    let commit = EventMetadata::CommitHead {
+        block_number: 100,
+        selected_iteration_id: 1,
+        n_transactions: 5,
+        prev_tx_hash: None,
+    };
+
+    // Transaction vs others
+    assert_ne!(tx, reorg, "Transaction != Reorg");
+    assert_ne!(tx, new_iter, "Transaction != NewIteration");
+    assert_ne!(tx, commit, "Transaction != CommitHead");
+
+    // Reorg vs others
+    assert_ne!(reorg, tx, "Reorg != Transaction");
+    assert_ne!(reorg, new_iter, "Reorg != NewIteration");
+    assert_ne!(reorg, commit, "Reorg != CommitHead");
+
+    // NewIteration vs others
+    assert_ne!(new_iter, tx, "NewIteration != Transaction");
+    assert_ne!(new_iter, reorg, "NewIteration != Reorg");
+    assert_ne!(new_iter, commit, "NewIteration != CommitHead");
+
+    // CommitHead vs others
+    assert_ne!(commit, tx, "CommitHead != Transaction");
+    assert_ne!(commit, reorg, "CommitHead != Reorg");
+    assert_ne!(commit, new_iter, "CommitHead != NewIteration");
+}
+
+#[test]
+fn test_cancel_each_other_all_field_combinations() {
+    let base_tx_hash = TxHash::random();
+
+    // Base case - should cancel
+    let tx_base = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: base_tx_hash,
+        prev_tx_hash: None,
+    };
+
+    let reorg_base = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: base_tx_hash,
+    };
+
+    assert!(
+        tx_base.cancel_each_other(&reorg_base),
+        "Base case should cancel"
+    );
+
+    // Different block_number - should NOT cancel
+    let reorg_diff_block = EventMetadata::Reorg {
+        block_number: 101,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: base_tx_hash,
+    };
+    assert!(
+        !tx_base.cancel_each_other(&reorg_diff_block),
+        "Different block_number should not cancel"
+    );
+    assert!(
+        !reorg_diff_block.cancel_each_other(&tx_base),
+        "Should be symmetric"
+    );
+
+    // Different iteration_id - should NOT cancel
+    let reorg_diff_iter = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 2,
+        index: 5,
+        tx_hash: base_tx_hash,
+    };
+    assert!(
+        !tx_base.cancel_each_other(&reorg_diff_iter),
+        "Different iteration_id should not cancel"
+    );
+    assert!(
+        !reorg_diff_iter.cancel_each_other(&tx_base),
+        "Should be symmetric"
+    );
+
+    // Different index - should NOT cancel
+    let reorg_diff_index = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 1,
+        index: 6,
+        tx_hash: base_tx_hash,
+    };
+    assert!(
+        !tx_base.cancel_each_other(&reorg_diff_index),
+        "Different index should not cancel"
+    );
+    assert!(
+        !reorg_diff_index.cancel_each_other(&tx_base),
+        "Should be symmetric"
+    );
+
+    // Different tx_hash - should NOT cancel
+    let reorg_diff_hash = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash: TxHash::random(),
+    };
+    assert!(
+        !tx_base.cancel_each_other(&reorg_diff_hash),
+        "Different tx_hash should not cancel"
+    );
+    assert!(
+        !reorg_diff_hash.cancel_each_other(&tx_base),
+        "Should be symmetric"
+    );
+
+    // Multiple fields different - should NOT cancel
+    let reorg_multiple_diff = EventMetadata::Reorg {
+        block_number: 101,
+        iteration_id: 2,
+        index: 6,
+        tx_hash: TxHash::random(),
+    };
+    assert!(
+        !tx_base.cancel_each_other(&reorg_multiple_diff),
+        "Multiple different fields should not cancel"
+    );
+}
+
+#[test]
+fn test_cancel_each_other_prev_tx_hash_irrelevant() {
+    let tx_hash = TxHash::random();
+
+    let tx_with_prev = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash,
+        prev_tx_hash: Some(TxHash::random()),
+    };
+
+    let tx_without_prev = EventMetadata::Transaction {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash,
+        prev_tx_hash: None,
+    };
+
+    let reorg = EventMetadata::Reorg {
+        block_number: 100,
+        iteration_id: 1,
+        index: 5,
+        tx_hash,
+    };
+
+    assert!(
+        tx_with_prev.cancel_each_other(&reorg),
+        "Transaction with prev_tx_hash should cancel with Reorg"
+    );
+    assert!(
+        tx_without_prev.cancel_each_other(&reorg),
+        "Transaction without prev_tx_hash should cancel with Reorg"
+    );
 }
