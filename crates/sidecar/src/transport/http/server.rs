@@ -384,12 +384,12 @@ async fn handle_send_transactions(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    let mut _rpc_timer =
+    let mut rpc_timer =
         RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "sendTransactions"));
     if let Some(response) = ensure_commit_head_seen(state, request) {
         return Ok(response);
     }
-    process_request(state, request, &mut _rpc_timer).await
+    process_request(state, request, &mut rpc_timer).await
 }
 
 #[instrument(name = "http_server::handle_send_events", skip_all, level = "debug")]
@@ -397,8 +397,8 @@ async fn handle_send_events(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    let mut _rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "sendEvents"));
-    process_request(state, request, &mut _rpc_timer).await
+    let mut rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "sendEvents"));
+    process_request(state, request, &mut rpc_timer).await
 }
 
 #[instrument(name = "http_server::handle_reorg", skip_all, level = "debug")]
@@ -406,8 +406,8 @@ async fn handle_reorg(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    let mut _rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "reorg"));
-    process_request(state, request, &mut _rpc_timer).await
+    let mut rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "reorg"));
+    process_request(state, request, &mut rpc_timer).await
 }
 
 #[instrument(name = "http_server::process_message", skip_all, level = "debug")]
@@ -439,13 +439,12 @@ async fn process_request(
     };
 
     let request_count = tx_queue_contents.len();
-    if request_count == 1 {
-        if let Some(tx_execution_id) = tx_queue_contents
+    if request_count == 1
+        && let Some(tx_execution_id) = tx_queue_contents
             .first()
             .and_then(tx_execution_id_from_queue)
-        {
-            rpc_timer.set_tx_execution_id(&tx_execution_id);
-        }
+    {
+        rpc_timer.set_tx_execution_id(&tx_execution_id);
     }
 
     // Send each decoded transaction to the queue
@@ -551,7 +550,7 @@ async fn handle_get_transactions(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    let mut _rpc_timer =
+    let mut rpc_timer =
         RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "getTransactions"));
     // Check if we have block environment before processing transactions
     // NOTE: This can be dropped once we implement the "not_found" feature, the result will be "not_found" by default because there cannot be any tx hash consumed if no BlockEnv was received first
@@ -564,7 +563,7 @@ async fn handle_get_transactions(
         Err(error_response) => return Ok(error_response),
     };
     if tx_execution_ids.len() == 1 {
-        _rpc_timer.set_tx_execution_id(&tx_execution_ids[0]);
+        rpc_timer.set_tx_execution_id(&tx_execution_ids[0]);
     }
 
     let (received_tx_execution_ids, not_found_tx_execution_ids): (Vec<_>, Vec<_>) =
@@ -598,8 +597,7 @@ async fn handle_get_transaction(
     state: &ServerState,
     request: &JsonRpcRequest,
 ) -> Result<JsonRpcResponse, StatusCode> {
-    let mut _rpc_timer =
-        RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "getTransaction"));
+    let mut rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "getTransaction"));
     if let Some(response) = ensure_commit_head_seen(state, request) {
         return Ok(response);
     }
@@ -621,7 +619,7 @@ async fn handle_get_transaction(
     }
 
     if let Some(first) = tx_execution_ids.first() {
-        _rpc_timer.set_tx_execution_id(first);
+        rpc_timer.set_tx_execution_id(first);
     }
     let tx_execution_id = tx_execution_ids.remove(0);
 

@@ -253,8 +253,7 @@ impl SidecarTransport for GrpcService {
         &self,
         request: Request<PbSendEvents>,
     ) -> Result<Response<BasicAck>, Status> {
-        let mut _rpc_timer =
-            RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "SendEvents"));
+        let mut rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "SendEvents"));
         let mut payload = request.into_inner();
         if payload.events.is_empty() {
             return Err(Status::invalid_argument("events must not be empty"));
@@ -302,10 +301,8 @@ impl SidecarTransport for GrpcService {
                     }
 
                     self.transactions_results.add_accepted_tx(&queue_tx);
-                    if single_event {
-                        if let TxQueueContents::Tx(tx, _) = &queue_tx {
-                            _rpc_timer.set_tx_execution_id(&tx.tx_execution_id);
-                        }
+                    if single_event && let TxQueueContents::Tx(tx, _) = &queue_tx {
+                        rpc_timer.set_tx_execution_id(&tx.tx_execution_id);
                     }
                     self.send_queue_event(queue_tx, "transaction")?;
                 }
@@ -328,7 +325,7 @@ impl SidecarTransport for GrpcService {
         &self,
         request: Request<SendTransactionsRequest>,
     ) -> Result<Response<SendTransactionsResponse>, Status> {
-        let mut _rpc_timer =
+        let mut rpc_timer =
             RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "SendTransactions"));
         self.ensure_commit_head_seen()?;
 
@@ -359,10 +356,8 @@ impl SidecarTransport for GrpcService {
             }
 
             self.transactions_results.add_accepted_tx(&queue_tx);
-            if single_tx_request {
-                if let TxQueueContents::Tx(tx, _) = &queue_tx {
-                    _rpc_timer.set_tx_execution_id(&tx.tx_execution_id);
-                }
+            if single_tx_request && let TxQueueContents::Tx(tx, _) = &queue_tx {
+                rpc_timer.set_tx_execution_id(&tx.tx_execution_id);
             }
             self.tx_sender
                 .send(queue_tx)
@@ -380,7 +375,7 @@ impl SidecarTransport for GrpcService {
     /// Handle gRPC request for `Reorg` messages.
     #[instrument(name = "grpc_server::Reorg", skip(self, request), level = "debug")]
     async fn reorg(&self, request: Request<ReorgRequest>) -> Result<Response<BasicAck>, Status> {
-        let mut _rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "Reorg"));
+        let mut rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "Reorg"));
         self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();
@@ -388,7 +383,7 @@ impl SidecarTransport for GrpcService {
             return Err(Status::invalid_argument("missing tx_execution_id"));
         };
         let tx_execution_id = parse_pb_tx_execution_id(&pb_tx_execution_id)?;
-        _rpc_timer.set_tx_execution_id(&tx_execution_id);
+        rpc_timer.set_tx_execution_id(&tx_execution_id);
 
         let span = tracing::Span::current();
         let event = TxQueueContents::Reorg(tx_execution_id, span);
@@ -413,17 +408,15 @@ impl SidecarTransport for GrpcService {
         &self,
         request: Request<GetTransactionsRequest>,
     ) -> Result<Response<GetTransactionsResponse>, Status> {
-        let mut _rpc_timer =
+        let mut rpc_timer =
             RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "GetTransactions"));
         self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();
-        if payload.tx_execution_id.len() == 1 {
-            if let Some(first) = payload.tx_execution_id.first() {
-                if let Ok(tx_execution_id) = parse_pb_tx_execution_id(first) {
-                    _rpc_timer.set_tx_execution_id(&tx_execution_id);
-                }
-            }
+        if let [first] = payload.tx_execution_id.as_slice()
+            && let Ok(tx_execution_id) = parse_pb_tx_execution_id(first)
+        {
+            rpc_timer.set_tx_execution_id(&tx_execution_id);
         }
         let (results, not_found) = self
             .collect_transaction_results(payload.tx_execution_id.iter())
@@ -445,7 +438,7 @@ impl SidecarTransport for GrpcService {
         &self,
         request: Request<GetTransactionRequest>,
     ) -> Result<Response<GetTransactionResponse>, Status> {
-        let mut _rpc_timer =
+        let mut rpc_timer =
             RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "GetTransaction"));
         self.ensure_commit_head_seen()?;
 
@@ -457,7 +450,7 @@ impl SidecarTransport for GrpcService {
 
         let hash_value = pb_tx_execution_id.tx_hash.clone();
         if let Ok(tx_execution_id) = parse_pb_tx_execution_id(&pb_tx_execution_id) {
-            _rpc_timer.set_tx_execution_id(&tx_execution_id);
+            rpc_timer.set_tx_execution_id(&tx_execution_id);
         }
 
         let (mut results, mut not_found) = self

@@ -41,15 +41,17 @@ impl Drop for RpcRequestDuration {
         match (iteration, self.tx_hash.clone()) {
             (Some(iteration_id), Some(tx_hash)) => {
                 histogram!(self.metric_name, "iteration_id" => iteration_id, "txhash" => tx_hash)
-                    .record(duration)
+                    .record(duration);
             }
             (Some(iteration_id), None) => {
-                histogram!(self.metric_name, "iteration_id" => iteration_id).record(duration)
+                histogram!(self.metric_name, "iteration_id" => iteration_id).record(duration);
             }
             (None, Some(tx_hash)) => {
-                histogram!(self.metric_name, "txhash" => tx_hash).record(duration)
+                histogram!(self.metric_name, "txhash" => tx_hash).record(duration);
             }
-            (None, None) => histogram!(self.metric_name).record(duration),
+            (None, None) => {
+                histogram!(self.metric_name).record(duration);
+            }
         }
     }
 }
