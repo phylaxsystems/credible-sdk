@@ -6,7 +6,10 @@ use crate::{
         TransactionsState,
     },
 };
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::Duration,
+};
 
 /// Wrapper for `TransactionsState` for read-only transactions results.
 /// `QueryTransactionsResults` is a wrapper on top of `TransactionState` exposing only methods to read
@@ -15,6 +18,9 @@ use std::sync::Arc;
 pub struct QueryTransactionsResults {
     transactions_state: Arc<TransactionsState>,
 }
+
+pub const TX_NOT_FOUND_GRACE_PERIOD_MS: u64 = 250;
+pub const TX_SEEN_POLL_INTERVAL_MS: u64 = 10;
 
 impl QueryTransactionsResults {
     pub fn new(transactions_state: Arc<TransactionsState>) -> Self {
@@ -35,5 +41,108 @@ impl QueryTransactionsResults {
     ) -> RequestTransactionResult {
         self.transactions_state
             .request_transaction_result(tx_execution_id)
+    }
+
+    pub async fn wait_for_transaction_seen(&self, tx_execution_id: &TxExecutionId) -> bool {
+        self.wait_for_transaction_seen_with_config(
+            tx_execution_id,
+            Duration::from_millis(TX_NOT_FOUND_GRACE_PERIOD_MS),
+            Duration::from_millis(TX_SEEN_POLL_INTERVAL_MS),
+        )
+        .await
+    }
+
+    pub async fn wait_for_transaction_seen_with_config(
+        &self,
+        tx_execution_id: &TxExecutionId,
+        timeout_duration: Duration,
+        poll_interval: Duration,
+    ) -> bool {
+        if self.is_tx_received(tx_execution_id) {
+            return true;
+        }
+
+        tokio::time::timeout(timeout_duration, async {
+            loop {
+                if self.is_tx_received(tx_execution_id) {
+                    break;
+                }
+                tokio::time::sleep(poll_interval).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        engine::TransactionResult,
+        execution_ids::TxExecutionId,
+    };
+    use alloy::primitives::B256;
+    use std::time::Duration;
+
+    fn create_tx_execution_id(byte: u8) -> TxExecutionId {
+        TxExecutionId::new(1, 0, B256::repeat_byte(byte))
+    }
+
+    fn sample_result() -> TransactionResult {
+        TransactionResult::ValidationError("test error".into())
+    }
+
+    #[tokio::test]
+    async fn wait_for_transaction_seen_returns_immediately_when_present() {
+        let state = TransactionsState::new();
+        let query = QueryTransactionsResults::new(state.clone());
+        let tx_execution_id = create_tx_execution_id(0x11);
+        let result = sample_result();
+        state.add_transaction_result(tx_execution_id, &result);
+
+        assert!(query.wait_for_transaction_seen(&tx_execution_id).await);
+    }
+
+    #[tokio::test]
+    async fn wait_for_transaction_seen_waits_until_result_available() {
+        let state = TransactionsState::new();
+        let query = QueryTransactionsResults::new(state.clone());
+        let tx_execution_id = create_tx_execution_id(0x22);
+        let timeout = Duration::from_millis(50);
+        let poll_interval = Duration::from_millis(5);
+
+        let waiter = {
+            let query = query.clone();
+            tokio::spawn(async move {
+                query
+                    .wait_for_transaction_seen_with_config(&tx_execution_id, timeout, poll_interval)
+                    .await
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let result = sample_result();
+        state.add_transaction_result(tx_execution_id, &result);
+
+        assert!(waiter.await.expect("wait task panicked"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_transaction_seen_times_out_if_missing() {
+        let state = TransactionsState::new();
+        let query = QueryTransactionsResults::new(state.clone());
+        let tx_execution_id = create_tx_execution_id(0x33);
+
+        let result = query
+            .wait_for_transaction_seen_with_config(
+                &tx_execution_id,
+                Duration::from_millis(30),
+                Duration::from_millis(5),
+            )
+            .await;
+
+        assert!(!result, "wait should time out when tx never arrives");
     }
 }

@@ -593,7 +593,11 @@ async fn handle_get_transaction(
 
     let tx_execution_id = tx_execution_ids.remove(0);
 
-    if !state.transactions_results.is_tx_received(&tx_execution_id) {
+    if !state
+        .transactions_results
+        .wait_for_transaction_seen(&tx_execution_id)
+        .await
+    {
         return Ok(JsonRpcResponse::success(
             request,
             serde_json::json!({
