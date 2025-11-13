@@ -88,6 +88,7 @@ mod tests {
     use alloy::primitives::B256;
     use revm::context::TxEnv;
     use std::time::Duration;
+    use tokio::sync::oneshot;
     use tracing::Span;
 
     fn create_tx_execution_id(byte: u8) -> TxExecutionId {
@@ -114,43 +115,77 @@ mod tests {
         let query = QueryTransactionsResults::new(state.clone());
         let tx_execution_id = create_tx_execution_id(0x22);
         let timeout = Duration::from_millis(50);
+        let readiness_timeout = Duration::from_millis(10);
 
+        let (wait_ready_tx, wait_ready_rx) = oneshot::channel();
         let waiter = {
             let query = query.clone();
             tokio::spawn(async move {
+                let _ = wait_ready_tx.send(());
                 query
                     .wait_for_transaction_seen_with_config(&tx_execution_id, timeout)
                     .await
             })
         };
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::timeout(readiness_timeout, wait_ready_rx)
+            .await
+            .expect("waiter did not start waiting in time")
+            .expect("waiter dropped before signaling readiness");
 
         let result = sample_result();
         state.add_transaction_result(tx_execution_id, &result);
 
-        assert!(waiter.await.expect("wait task panicked"));
-        
+        assert!(
+            state.get_transaction_result(&tx_execution_id).is_some(),
+            "transaction result should be stored once available"
+        );
+
+        assert!(
+            tokio::time::timeout(timeout, waiter)
+                .await
+                .expect("waiter timed out waiting for result availability")
+                .expect("wait task panicked")
+        );
+
         let tx_execution_id = create_tx_execution_id(0x23);
-        let tx = QueueTransaction { tx_execution_id, tx_env: TxEnv::default() };
+        let tx = QueueTransaction {
+            tx_execution_id,
+            tx_env: TxEnv::default(),
+        };
         let span = Span::none();
         let contents = TxQueueContents::Tx(tx, span);
 
+        let (wait_ready_tx, wait_ready_rx) = oneshot::channel();
         let waiter = {
             let query = query.clone();
             tokio::spawn(async move {
+                let _ = wait_ready_tx.send(());
                 query
                     .wait_for_transaction_seen_with_config(&tx_execution_id, timeout)
                     .await
             })
         };
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::timeout(readiness_timeout, wait_ready_rx)
+            .await
+            .expect("waiter did not start waiting in time")
+            .expect("waiter dropped before signaling readiness");
 
-        let result = sample_result();
         state.add_accepted_tx(&contents);
 
-        assert!(waiter.await.expect("wait task panicked"));
+        assert!(
+            state.get_transaction_result(&tx_execution_id).is_none()
+                && state.is_tx_received(&tx_execution_id),
+            "accepted txs should be tracked as received without a result"
+        );
+
+        assert!(
+            tokio::time::timeout(timeout, waiter)
+                .await
+                .expect("waiter timed out waiting for accepted tx")
+                .expect("wait task panicked")
+        );
     }
 
     #[tokio::test]
