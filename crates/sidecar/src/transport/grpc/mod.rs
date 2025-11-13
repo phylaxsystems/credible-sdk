@@ -69,16 +69,24 @@ pub enum GrpcTransportError {
     BindAddress(String),
     #[error("Client error: {0}")]
     ClientError(String),
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
 }
 
 impl From<&GrpcTransportError> for ErrorRecoverability {
     fn from(e: &GrpcTransportError) -> Self {
         match e {
-            GrpcTransportError::ServerError(_) | GrpcTransportError::BindAddress(_) => {
+            GrpcTransportError::ServerError(_) | GrpcTransportError::BindAddress(_) | GrpcTransportError::ConfigError(_) => {
                 Self::Unrecoverable
             }
             GrpcTransportError::ClientError(_) => Self::Recoverable,
         }
+    }
+}
+
+impl From<std::io::Error> for GrpcTransportError {
+    fn from(error: std::io::Error) -> Self {
+        GrpcTransportError::ConfigError(error.to_string())
     }
 }
 
@@ -124,13 +132,8 @@ impl Transport for GrpcTransport {
         use tokio_stream::wrappers::TcpListenerStream;
         use tonic::transport::Server;
 
-        let listener = tokio::net::TcpListener::bind(self.bind_addr)
-            .await
-            .map_err(|e| {
-                error!(bind_addr = %self.bind_addr, error = ?e, "Failed to bind gRPC listener");
-                GrpcTransportError::BindAddress(self.bind_addr.to_string())
-            })?;
-
+        let listener = self.create_tcp_listener()?;
+        
         let incoming = TcpListenerStream::new(listener);
 
         let service =
@@ -157,6 +160,38 @@ impl Transport for GrpcTransport {
     fn stop(&mut self) {
         info!("Stopping gRPC transport");
         self.shutdown_token.cancel();
+    }
+}
+
+impl GrpcTransport {
+    fn create_tcp_listener(&self) -> Result<tokio::net::TcpListener, GrpcTransportError> {
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )?;
+
+        socket.set_tcp_nodelay(true)?;
+        socket.set_nonblocking(true)?;
+        socket.set_reuse_address(true)?;
+        socket.set_reuse_port(true)?;
+
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(std::time::Duration::from_secs(30))
+            .with_interval(std::time::Duration::from_secs(10));
+        socket.set_tcp_keepalive(&keepalive)?;
+
+        socket.set_send_buffer_size(1024 * 1024 * 5)?;
+        socket.set_recv_buffer_size(1024 * 1024 * 5)?;
+        socket.bind(&self.bind_addr.into())?;
+        socket.listen(1024)?;
+            
+        let listener = std::net::TcpListener::from(socket);
+        listener.set_nonblocking(true)?;
+
+        tokio::net::TcpListener::from_std(listener).map_err(|err| {
+            GrpcTransportError::ConfigError(format!("Failed to convert listener to tokio listener: {}", err.to_string()))
+        })
     }
 }
 
