@@ -33,8 +33,10 @@ pub struct TxExecutionId {
     pub block_number: u64,
     /// What iteration the transaction should be executed at.
     pub iteration_id: u64,
-    // Transaction hash.
+    /// Transaction hash.
     pub tx_hash: TxHash,
+    /// Index of the transaction within the block.
+    pub index: u64,
 }
 
 /// Unique identifier for a block execution within the sidecar.
@@ -54,6 +56,8 @@ impl TxExecutionId {
             block_number,
             iteration_id,
             tx_hash,
+            // FIXME: Propagate properly from the transport layer
+            index: 0,
         }
     }
 
@@ -195,6 +199,8 @@ impl<'de> Deserialize<'de> for TxExecutionId {
                     block_number,
                     iteration_id,
                     tx_hash,
+                    // FIXME: Propagate properly from the transport layer
+                    index: 0,
                 })
             }
         }

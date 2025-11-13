@@ -4,6 +4,7 @@ mod tests;
 use crate::engine::queue::TxQueueContents;
 use alloy::primitives::TxHash;
 use std::hash::{
+    DefaultHasher,
     Hash,
     Hasher,
 };
@@ -209,6 +210,21 @@ impl Hash for EventMetadata {
     }
 }
 
+impl PartialEq for EventMetadata {
+    fn eq(&self, other: &Self) -> bool {
+        // Helper function to compute hash
+        fn compute_hash<T: Hash>(value: &T) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        compute_hash(self) == compute_hash(other)
+    }
+}
+
+impl Eq for EventMetadata {}
+
 impl From<&TxQueueContents> for EventMetadata {
     fn from(value: &TxQueueContents) -> Self {
         match value {
@@ -216,9 +232,9 @@ impl From<&TxQueueContents> for EventMetadata {
                 Self::Transaction {
                     block_number: queue.tx_execution_id.block_number,
                     iteration_id: queue.tx_execution_id.iteration_id,
-                    index: 0, // FIXME: Propagate the new field
+                    index: queue.tx_execution_id.index,
                     tx_hash: queue.tx_execution_id.tx_hash,
-                    prev_tx_hash: None, // FIXME: Propagate the new field
+                    prev_tx_hash: queue.prev_tx_hash,
                 }
             }
             TxQueueContents::Reorg(queue, _) => {
@@ -226,7 +242,7 @@ impl From<&TxQueueContents> for EventMetadata {
                     block_number: queue.block_number,
                     iteration_id: queue.iteration_id,
                     tx_hash: queue.tx_hash,
-                    index: 0, // FIXME: Propagate the new field
+                    index: queue.index,
                 }
             }
             TxQueueContents::CommitHead(queue, _) => {

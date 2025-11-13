@@ -188,6 +188,7 @@ async fn test_core_engine_errors_when_no_synced_sources() {
     let queue_tx = queue::QueueTransaction {
         tx_execution_id: TxExecutionId::new(1, 0, B256::from([0x11; 32])),
         tx_env: TxEnv::default(),
+        prev_tx_hash: None,
     };
 
     tx_sender
@@ -255,6 +256,7 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     let queue_transaction = queue::QueueTransaction {
         tx_execution_id,
         tx_env: TxEnv::default(),
+        prev_tx_hash: None,
     };
 
     let result = engine.process_transaction_event(queue_transaction);
@@ -1037,6 +1039,7 @@ async fn test_failed_transaction_commit() {
         block_number: 1,
         iteration_id: 1,
         tx_hash,
+        index: 0,
     };
     let mut last_executed_tx = LastExecutedTx::new();
     last_executed_tx.push(tx_execution_id, None);

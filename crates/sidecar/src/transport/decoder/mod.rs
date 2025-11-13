@@ -79,6 +79,8 @@ impl HttpTransactionDecoder {
                         QueueTransaction {
                             tx_execution_id,
                             tx_env,
+                            // FIXME: Propagate this field properly from transport layer
+                            prev_tx_hash: None,
                         },
                         current_span,
                     ));
@@ -144,6 +146,8 @@ impl HttpTransactionDecoder {
                 QueueTransaction {
                     tx_execution_id,
                     tx_env: transaction.tx_env,
+                    // FIXME: Propagate properly from the transport layer
+                    prev_tx_hash: None,
                 },
                 current_span,
             ));

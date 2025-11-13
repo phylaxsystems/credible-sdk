@@ -549,6 +549,8 @@ pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError>
         QueueTransaction {
             tx_execution_id,
             tx_env,
+            // FIXME: Propagate properly from the transport layer
+            prev_tx_hash: None,
         },
         tracing::Span::current(),
     ))

@@ -198,6 +198,7 @@ mod tests {
             QueueTransaction {
                 tx_execution_id,
                 tx_env: TxEnv::default(),
+                prev_tx_hash: None,
             },
             Span::current(),
         )
