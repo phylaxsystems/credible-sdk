@@ -76,11 +76,19 @@ impl QueryTransactionsResults {
 mod tests {
     use super::*;
     use crate::{
-        engine::TransactionResult,
+        engine::{
+            TransactionResult,
+            queue::{
+                QueueTransaction,
+                TxQueueContents,
+            },
+        },
         execution_ids::TxExecutionId,
     };
     use alloy::primitives::B256;
+    use revm::context::TxEnv;
     use std::time::Duration;
+    use tracing::Span;
 
     fn create_tx_execution_id(byte: u8) -> TxExecutionId {
         TxExecutionId::new(1, 0, B256::repeat_byte(byte))
@@ -88,6 +96,16 @@ mod tests {
 
     fn sample_result() -> TransactionResult {
         TransactionResult::ValidationError("test error".into())
+    }
+
+    fn create_queue_transaction(tx_execution_id: TxExecutionId) -> TxQueueContents {
+        TxQueueContents::Tx(
+            QueueTransaction {
+                tx_execution_id,
+                tx_env: TxEnv::default(),
+            },
+            Span::current(),
+        )
     }
 
     #[tokio::test]
@@ -123,6 +141,24 @@ mod tests {
         state.add_transaction_result(tx_execution_id, &result);
 
         assert!(waiter.await.expect("wait task panicked"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_transaction_seen_tx_available() {
+        let state = TransactionsState::new();
+        let query = QueryTransactionsResults::new(state.clone());
+
+        // Case 1: transaction result already stored.
+        let processed_tx = create_tx_execution_id(0x33);
+        let result = sample_result();
+        state.add_transaction_result(processed_tx, &result);
+        assert!(query.wait_for_transaction_seen(&processed_tx).await);
+
+        // Case 2: transaction listed as accepted but result not in the map yet.
+        let accepted_tx = create_tx_execution_id(0x34);
+        let queue_tx = create_queue_transaction(accepted_tx);
+        query.add_accepted_tx(&queue_tx);
+        assert!(query.wait_for_transaction_seen(&accepted_tx).await);
     }
 
     #[tokio::test]
