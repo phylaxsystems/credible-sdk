@@ -118,13 +118,16 @@ mod tests {
         let readiness_timeout = Duration::from_millis(10);
 
         let (wait_ready_tx, wait_ready_rx) = oneshot::channel();
+        let (wait_done_tx, wait_done_rx) = oneshot::channel();
         let waiter = {
             let query = query.clone();
             tokio::spawn(async move {
                 let _ = wait_ready_tx.send(());
-                query
+                let response = query
                     .wait_for_transaction_seen_with_config(&tx_execution_id, timeout)
-                    .await
+                    .await;
+                let _ = wait_done_tx.send(());
+                response
             })
         };
 
@@ -132,6 +135,13 @@ mod tests {
             .await
             .expect("waiter did not start waiting in time")
             .expect("waiter dropped before signaling readiness");
+
+        assert!(
+            tokio::time::timeout(readiness_timeout, wait_done_rx)
+                .await
+                .is_err(),
+            "wait_for_transaction_seen_with_config completed before sending value"
+        );
 
         let result = sample_result();
         state.add_transaction_result(tx_execution_id, &result);
@@ -157,13 +167,16 @@ mod tests {
         let contents = TxQueueContents::Tx(tx, span);
 
         let (wait_ready_tx, wait_ready_rx) = oneshot::channel();
+        let (wait_done_tx, wait_done_rx) = oneshot::channel();
         let waiter = {
             let query = query.clone();
             tokio::spawn(async move {
                 let _ = wait_ready_tx.send(());
-                query
+                let response = query
                     .wait_for_transaction_seen_with_config(&tx_execution_id, timeout)
-                    .await
+                    .await;
+                let _ = wait_done_tx.send(());
+                response
             })
         };
 
@@ -171,6 +184,13 @@ mod tests {
             .await
             .expect("waiter did not start waiting in time")
             .expect("waiter dropped before signaling readiness");
+
+        assert!(
+            tokio::time::timeout(readiness_timeout, wait_done_rx)
+                .await
+                .is_err(),
+            "wait_for_transaction_seen_with_config completed before sending value"
+        );
 
         state.add_accepted_tx(&contents);
 
