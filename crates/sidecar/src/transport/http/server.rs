@@ -439,12 +439,13 @@ async fn process_request(
     };
 
     let request_count = tx_queue_contents.len();
-    if request_count == 1
-        && let Some(tx_execution_id) = tx_queue_contents
-            .first()
-            .and_then(tx_execution_id_from_queue)
+    let mut tx_ids = tx_queue_contents
+        .iter()
+        .filter_map(tx_execution_id_from_queue);
+    if let Some(first_tx_id) = tx_ids.next()
+        && tx_ids.next().is_none()
     {
-        rpc_timer.set_tx_execution_id(&tx_execution_id);
+        rpc_timer.set_tx_execution_id(&first_tx_id);
     }
 
     // Send each decoded transaction to the queue

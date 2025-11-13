@@ -253,7 +253,7 @@ impl SidecarTransport for GrpcService {
         &self,
         request: Request<PbSendEvents>,
     ) -> Result<Response<BasicAck>, Status> {
-        let mut rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "SendEvents"));
+        let mut rpc_timer = None;
         let mut payload = request.into_inner();
         if payload.events.is_empty() {
             return Err(Status::invalid_argument("events must not be empty"));
@@ -301,8 +301,13 @@ impl SidecarTransport for GrpcService {
                     }
 
                     self.transactions_results.add_accepted_tx(&queue_tx);
-                    if single_event && let TxQueueContents::Tx(tx, _) = &queue_tx {
-                        rpc_timer.set_tx_execution_id(&tx.tx_execution_id);
+                    if let TxQueueContents::Tx(tx, _) = &queue_tx {
+                        let timer = rpc_timer.get_or_insert_with(|| {
+                            RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "SendEvents"))
+                        });
+                        if single_event {
+                            timer.set_tx_execution_id(&tx.tx_execution_id);
+                        }
                     }
                     self.send_queue_event(queue_tx, "transaction")?;
                 }
