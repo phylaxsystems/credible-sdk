@@ -20,7 +20,6 @@ pub struct QueryTransactionsResults {
 }
 
 pub const TX_NOT_FOUND_GRACE_PERIOD_MS: u64 = 250;
-pub const TX_SEEN_POLL_INTERVAL_MS: u64 = 10;
 
 impl QueryTransactionsResults {
     pub fn new(transactions_state: Arc<TransactionsState>) -> Self {
@@ -47,7 +46,6 @@ impl QueryTransactionsResults {
         self.wait_for_transaction_seen_with_config(
             tx_execution_id,
             Duration::from_millis(TX_NOT_FOUND_GRACE_PERIOD_MS),
-            Duration::from_millis(TX_SEEN_POLL_INTERVAL_MS),
         )
         .await
     }
@@ -56,7 +54,6 @@ impl QueryTransactionsResults {
         &self,
         tx_execution_id: &TxExecutionId,
         timeout_duration: Duration,
-        poll_interval: Duration,
     ) -> bool {
         if self.is_tx_received(tx_execution_id) {
             return true;
@@ -67,7 +64,7 @@ impl QueryTransactionsResults {
                 if self.is_tx_received(tx_execution_id) {
                     break;
                 }
-                tokio::time::sleep(poll_interval).await;
+                tokio::task::yield_now();
             }
         })
         .await
@@ -110,13 +107,12 @@ mod tests {
         let query = QueryTransactionsResults::new(state.clone());
         let tx_execution_id = create_tx_execution_id(0x22);
         let timeout = Duration::from_millis(50);
-        let poll_interval = Duration::from_millis(5);
 
         let waiter = {
             let query = query.clone();
             tokio::spawn(async move {
                 query
-                    .wait_for_transaction_seen_with_config(&tx_execution_id, timeout, poll_interval)
+                    .wait_for_transaction_seen_with_config(&tx_execution_id, timeout)
                     .await
             })
         };
@@ -139,7 +135,6 @@ mod tests {
             .wait_for_transaction_seen_with_config(
                 &tx_execution_id,
                 Duration::from_millis(30),
-                Duration::from_millis(5),
             )
             .await;
 
