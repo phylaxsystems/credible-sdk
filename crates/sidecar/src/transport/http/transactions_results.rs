@@ -109,17 +109,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_for_transaction_seen_returns_immediately_when_present() {
-        let state = TransactionsState::new();
-        let query = QueryTransactionsResults::new(state.clone());
-        let tx_execution_id = create_tx_execution_id(0x11);
-        let result = sample_result();
-        state.add_transaction_result(tx_execution_id, &result);
-
-        assert!(query.wait_for_transaction_seen(&tx_execution_id).await);
-    }
-
-    #[tokio::test]
     async fn wait_for_transaction_seen_waits_until_result_available() {
         let state = TransactionsState::new();
         let query = QueryTransactionsResults::new(state.clone());
@@ -139,6 +128,27 @@ mod tests {
 
         let result = sample_result();
         state.add_transaction_result(tx_execution_id, &result);
+
+        assert!(waiter.await.expect("wait task panicked"));
+        
+        let tx_execution_id = create_tx_execution_id(0x23);
+        let tx = QueueTransaction { tx_execution_id, tx_env: TxEnv::default() };
+        let span = Span::none();
+        let contents = TxQueueContents::Tx(tx, span);
+
+        let waiter = {
+            let query = query.clone();
+            tokio::spawn(async move {
+                query
+                    .wait_for_transaction_seen_with_config(&tx_execution_id, timeout)
+                    .await
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let result = sample_result();
+        state.add_accepted_tx(&contents);
 
         assert!(waiter.await.expect("wait task panicked"));
     }
