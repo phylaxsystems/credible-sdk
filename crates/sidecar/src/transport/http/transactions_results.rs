@@ -64,7 +64,7 @@ impl QueryTransactionsResults {
                 if self.is_tx_received(tx_execution_id) {
                     break;
                 }
-                tokio::task::yield_now();
+                tokio::task::yield_now().await;
             }
         })
         .await
