@@ -64,7 +64,7 @@ impl QueryTransactionsResults {
                 if self.is_tx_received(tx_execution_id) {
                     break;
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_micros(500)).await;
             }
         })
         .await
@@ -132,10 +132,7 @@ mod tests {
         let tx_execution_id = create_tx_execution_id(0x33);
 
         let result = query
-            .wait_for_transaction_seen_with_config(
-                &tx_execution_id,
-                Duration::from_millis(30),
-            )
+            .wait_for_transaction_seen_with_config(&tx_execution_id, Duration::from_millis(30))
             .await;
 
         assert!(!result, "wait should time out when tx never arrives");
