@@ -64,7 +64,7 @@ impl QueryTransactionsResults {
                 if self.is_tx_received(tx_execution_id) {
                     break;
                 }
-                tokio::time::sleep(Duration::from_micros(500)).await;
+                tokio::time::sleep(Duration::from_micros(50)).await;
             }
         })
         .await
