@@ -40,7 +40,7 @@ use crate::{
     execution_ids::TxExecutionId,
     transport::{
         common::HttpDecoderError,
-        http::transactions_results::QueryTransactionsResults,
+        transactions_results::QueryTransactionsResults,
         rpc_metrics::RpcRequestDuration,
     },
 };

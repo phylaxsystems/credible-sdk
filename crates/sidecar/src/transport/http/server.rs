@@ -18,9 +18,9 @@ use crate::{
         http::{
             block_context::BlockContext,
             tracing_middleware::trace_tx_queue_contents,
-            transactions_results::QueryTransactionsResults,
         },
         rpc_metrics::RpcRequestDuration,
+        transactions_results::QueryTransactionsResults,
     },
 };
 use alloy::rpc::types::error::EthRpcErrorCode;
