@@ -26,8 +26,7 @@ implementation details.
 
 The gRPC transport provides a high-performance binary protocol for communication.
 
-**[See gRPC Transport Documentation](grpc/README.md)** (currently under active development) for detailed API reference
-and implementation details.
+**[See gRPC Transport Documentation](grpc/README.md)** for detailed API reference and implementation details.
 
 ## Choosing a Transport
 
@@ -121,6 +120,26 @@ pub enum TxQueueContents {
     Reorg(TxExecutionId, tracing::Span),
 }
 ```
+
+## Transport Metrics
+
+Both transports expose latency histograms so operators can watch request health in Prometheus/Grafana. Every handler
+creates an `RpcRequestDuration` guard when the request starts and the guard records a value in
+`sidecar_rpc_duration_*` when it drops:
+
+| Transport | Metric Name | Description |
+|-----------|-------------|-------------|
+| HTTP      | `sidecar_rpc_duration_sendTransactions` | JSON-RPC `sendTransactions` batches |
+| HTTP      | `sidecar_rpc_duration_sendEvents` | JSON-RPC `sendEvents` batches |
+| HTTP      | `sidecar_rpc_duration_reorg` | JSON-RPC `reorg` requests |
+| HTTP      | `sidecar_rpc_duration_getTransactions` | JSON-RPC `getTransactions` long-polling calls |
+| HTTP      | `sidecar_rpc_duration_getTransaction` | JSON-RPC `getTransaction` calls |
+| gRPC      | `sidecar_rpc_duration_SendEvents` | `SendEvents` streaming batches |
+| gRPC      | `sidecar_rpc_duration_SendTransactions` | `SendTransactions` batches |
+| gRPC      | `sidecar_rpc_duration_Reorg` | `Reorg` notifications |
+| gRPC      | `sidecar_rpc_duration_GetTransactions` | `GetTransactions` RPC |
+| gRPC      | `sidecar_rpc_duration_GetTransaction` | `GetTransaction` RPC |
+
 
 ## Transaction Types
 

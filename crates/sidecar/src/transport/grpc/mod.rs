@@ -9,6 +9,14 @@
 //! with the above mentioned generated definitions, inside of `run()`
 //! and run the grpc server on the same address we would any other transport.
 //!
+//! ## Metrics
+//! The grpc transport exposes the following metrics:
+//! - `sidecar_rpc_duration_SendEvents`
+//! - `sidecar_rpc_duration_SendTransactions`
+//! - `sidecar_rpc_duration_Reorg`
+//! - `sidecar_rpc_duration_GetTransactions`
+//! - `sidecar_rpc_duration_GetTransaction`
+//!
 //! ## Type definitions
 //! Protobuf typing can be found below:
 //!

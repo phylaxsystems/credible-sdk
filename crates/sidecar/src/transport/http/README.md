@@ -13,6 +13,15 @@ The HTTP transport consists of:
 - **Block Context**: Block environment context management
 - **Transaction Results**: Transaction result tracking and querying
 
+## Metrics
+
+The http transport exposes the following metrics:
+- `sidecar_rpc_duration_SendEvents`
+- `sidecar_rpc_duration_SendTransactions`
+- `sidecar_rpc_duration_Reorg`
+- `sidecar_rpc_duration_GetTransactions`
+- `sidecar_rpc_duration_GetTransaction` 
+
 ## Endpoint
 
 The HTTP transport exposes a single endpoint for all JSON-RPC requests:
