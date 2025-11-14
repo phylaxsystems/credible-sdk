@@ -205,15 +205,7 @@ impl GrpcService {
         for pb_tx_execution_id in iter {
             match parse_pb_tx_execution_id(pb_tx_execution_id) {
                 Ok(tx_execution_id) => {
-                    if self
-                        .transactions_results
-                        .wait_for_transaction_seen(&tx_execution_id)
-                        .await
-                    {
-                        results.push(self.fetch_transaction_result(tx_execution_id).await?);
-                    } else {
-                        not_found.push(pb_tx_execution_id.tx_hash.clone());
-                    }
+                    results.push(self.fetch_transaction_result(tx_execution_id).await?);
                 }
                 Err(_) => not_found.push(pb_tx_execution_id.tx_hash.clone()),
             }
