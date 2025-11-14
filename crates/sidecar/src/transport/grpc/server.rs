@@ -40,8 +40,11 @@ use crate::{
     execution_ids::TxExecutionId,
     transport::{
         common::HttpDecoderError,
-        transactions_results::QueryTransactionsResults,
         rpc_metrics::RpcRequestDuration,
+        transactions_results::{
+            AcceptedState,
+            QueryTransactionsResults,
+        },
     },
 };
 use alloy::{
@@ -85,6 +88,7 @@ use std::{
             Ordering,
         },
     },
+    time::Duration,
 };
 use tonic::{
     Request,
@@ -97,6 +101,8 @@ use tracing::{
     instrument,
     warn,
 };
+
+const TRANSACTION_RECEIVE_WAIT: u64 = 250;
 
 fn parse_pb_tx_execution_id(pb: &PbTxExecutionId) -> Result<TxExecutionId, Status> {
     let tx_hash = pb
@@ -206,10 +212,29 @@ impl GrpcService {
         for pb_tx_execution_id in iter {
             match parse_pb_tx_execution_id(pb_tx_execution_id) {
                 Ok(tx_execution_id) => {
-                    if self.transactions_results.is_tx_received(&tx_execution_id) {
-                        results.push(self.fetch_transaction_result(tx_execution_id).await?);
-                    } else {
-                        not_found.push(pb_tx_execution_id.tx_hash.clone());
+                    // if self.transactions_results.is_tx_received(&tx_execution_id) {
+                    //     results.push(self.fetch_transaction_result(tx_execution_id).await?);
+                    // } else {
+                    //     not_found.push(pb_tx_execution_id.tx_hash.clone());
+                    // }
+                    match self.transactions_results.is_tx_received(&tx_execution_id) {
+                        AcceptedState::Yes => {
+                            results.push(self.fetch_transaction_result(tx_execution_id).await?)
+                        }
+                        AcceptedState::NotYet(mut rx) => {
+                            // Wait on 250ms for timeout
+                            // TODO: for multiple execution ids we need to await in parallel!
+                            if let Ok(_) = tokio::time::timeout(
+                                Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
+                                rx.recv(),
+                            )
+                            .await
+                            {
+                                results.push(self.fetch_transaction_result(tx_execution_id).await?);
+                            } else {
+                                not_found.push(pb_tx_execution_id.tx_hash.clone());
+                            }
+                        }
                     }
                 }
                 Err(_) => not_found.push(pb_tx_execution_id.tx_hash.clone()),
@@ -290,7 +315,7 @@ impl SidecarTransport for GrpcService {
                     if let TxQueueContents::Tx(tx, _) = &queue_tx
                         && self
                             .transactions_results
-                            .is_tx_received(&tx.tx_execution_id)
+                            .is_tx_received_now(&tx.tx_execution_id)
                     {
                         warn!(
                             tx_hash = %tx.tx_execution_id.tx_hash_hex(),
@@ -346,7 +371,7 @@ impl SidecarTransport for GrpcService {
             if let TxQueueContents::Tx(tx, _) = &queue_tx
                 && self
                     .transactions_results
-                    .is_tx_received(&tx.tx_execution_id)
+                    .is_tx_received_now(&tx.tx_execution_id)
             {
                 warn!(
                     tx_hash = %tx.tx_execution_id.tx_hash_hex(),

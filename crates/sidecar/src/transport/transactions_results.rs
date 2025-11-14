@@ -19,7 +19,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 /// Represents the state of a transaction, we either have received a transaction
 /// in which case we return `Yes` or we havent yet, in which case we
-enum AcceptedState {
+pub(crate) enum AcceptedState {
     Yes,
     NotYet(broadcast::Receiver<bool>),
 }
@@ -86,7 +86,7 @@ impl QueryTransactionsResults {
         Ok(())
     }
 
-    /// Spawns a helper task cleans up pendong requests with no receivers.
+    /// Spawns a helper task cleans up pending requests with no receivers.
     fn spawn_cleanup_task(&self, tx_execution_id: &TxExecutionId, sender: broadcast::Sender<bool>) {
         // We dont need to spawn a new bg task because one exists already
         if self.pending_receives.contains_key(tx_execution_id) {
@@ -140,6 +140,16 @@ impl QueryTransactionsResults {
     ) -> RequestTransactionResult {
         self.transactions_state
             .request_transaction_result(tx_execution_id)
+    }
+
+    /// Checks to see if transaction has been received in the transport.
+    /// This will not go through a channel and will respond about the immediate state.
+    pub fn is_tx_received_now(&self, tx_execution_id: &TxExecutionId) -> bool {
+        if self.transactions_state.is_tx_received(tx_execution_id) {
+            return true;
+        }
+
+        false
     }
 }
 
