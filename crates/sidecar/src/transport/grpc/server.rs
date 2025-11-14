@@ -47,6 +47,7 @@ use crate::{
         },
     },
 };
+use futures::future;
 use alloy::{
     eips::eip7702::{
         Authorization,
@@ -208,36 +209,49 @@ impl GrpcService {
         let (lower_bound, _) = iter.size_hint();
         let mut results = Vec::with_capacity(lower_bound);
         let mut not_found = Vec::new();
+        let mut ready_ids = Vec::new();
+        let mut waiters = Vec::new();
 
         for pb_tx_execution_id in iter {
             match parse_pb_tx_execution_id(pb_tx_execution_id) {
                 Ok(tx_execution_id) => {
-                    // if self.transactions_results.is_tx_received(&tx_execution_id) {
-                    //     results.push(self.fetch_transaction_result(tx_execution_id).await?);
-                    // } else {
-                    //     not_found.push(pb_tx_execution_id.tx_hash.clone());
-                    // }
                     match self.transactions_results.is_tx_received(&tx_execution_id) {
-                        AcceptedState::Yes => {
-                            results.push(self.fetch_transaction_result(tx_execution_id).await?)
-                        }
-                        AcceptedState::NotYet(mut rx) => {
-                            // Wait on 250ms for timeout
-                            // TODO: for multiple execution ids we need to await in parallel!
-                            if let Ok(_) = tokio::time::timeout(
-                                Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
-                                rx.recv(),
-                            )
-                            .await
-                            {
-                                results.push(self.fetch_transaction_result(tx_execution_id).await?);
-                            } else {
-                                not_found.push(pb_tx_execution_id.tx_hash.clone());
-                            }
+                        AcceptedState::Yes => ready_ids.push(tx_execution_id),
+                        AcceptedState::NotYet(rx) => {
+                            waiters.push((tx_execution_id, pb_tx_execution_id.tx_hash.clone(), rx));
                         }
                     }
                 }
                 Err(_) => not_found.push(pb_tx_execution_id.tx_hash.clone()),
+            }
+        }
+
+        for tx_execution_id in ready_ids {
+            results.push(self.fetch_transaction_result(tx_execution_id).await?);
+        }
+
+        if !waiters.is_empty() {
+            let wait_futures = waiters.into_iter().map(|(tx_execution_id, hash, mut rx)| async move {
+                let wait_result = tokio::time::timeout(
+                    Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
+                    rx.recv(),
+                )
+                .await;
+
+                (tx_execution_id, hash, wait_result)
+            });
+
+            let wait_outcomes = future::join_all(wait_futures).await;
+
+            for (tx_execution_id, hash, wait_result) in wait_outcomes {
+                match wait_result {
+                    Ok(Ok(true)) => {
+                        results.push(self.fetch_transaction_result(tx_execution_id).await?);
+                    }
+                    Ok(Ok(false)) | Ok(Err(_)) | Err(_) => {
+                        not_found.push(hash);
+                    }
+                }
             }
         }
 
