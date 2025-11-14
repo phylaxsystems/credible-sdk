@@ -45,3 +45,4 @@ crates/dapp-api-client/openapi/
 .local/
 assertion_store_database/
 indexer_database/
+geth/

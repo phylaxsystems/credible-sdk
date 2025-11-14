@@ -11,8 +11,8 @@ use crate::{
             block_context::BlockContext,
             config::HttpTransportConfig,
             tracing_middleware::tracing_middleware,
-            transactions_results::QueryTransactionsResults,
         },
+        transactions_results::QueryTransactionsResults,
     },
     utils::ErrorRecoverability,
 };
@@ -38,7 +38,6 @@ mod block_context;
 pub mod config;
 pub mod server;
 mod tracing_middleware;
-pub mod transactions_results;
 
 #[derive(thiserror::Error, Debug)]
 pub enum HttpTransportError {

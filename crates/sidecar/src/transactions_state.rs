@@ -97,7 +97,9 @@ impl TransactionsState {
         &self.transaction_results
     }
 
-    /// Requests a transaction result, if the result is available, it is returned immediately, if the result is not available, it is return an oneshot channel for receiving the result as soon as it is available
+    /// Requests a transaction result, if the result is available, it is returned immediately,
+    /// if the result is not available, it is return an oneshot channel for receiving the
+    /// result as soon as it is available.
     pub fn request_transaction_result(
         &self,
         tx_execution_id: &TxExecutionId,

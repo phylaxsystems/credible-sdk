@@ -29,7 +29,7 @@ use crate::{
     transactions_state::TransactionsState,
     transport::{
         Transport,
-        http::transactions_results::QueryTransactionsResults,
+        transactions_results::QueryTransactionsResults,
     },
     utils::ErrorRecoverability,
 };
