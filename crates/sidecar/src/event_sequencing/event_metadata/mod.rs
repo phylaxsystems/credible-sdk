@@ -37,6 +37,18 @@ pub enum EventMetadata {
 }
 
 impl EventMetadata {
+    pub fn is_new_iteration(&self) -> bool {
+        matches!(self, Self::NewIteration { .. })
+    }
+
+    pub fn is_reorg(&self) -> bool {
+        matches!(self, Self::Reorg { .. })
+    }
+
+    pub fn is_commit_head(&self) -> bool {
+        matches!(self, Self::CommitHead { .. })
+    }
+
     pub fn calculate_previous_event(&self) -> Option<EventMetadata> {
         match self {
             EventMetadata::Transaction {
