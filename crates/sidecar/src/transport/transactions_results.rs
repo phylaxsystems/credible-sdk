@@ -16,6 +16,9 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// How much we wait for txs to be received
+pub const TRANSACTION_RECEIVE_WAIT: u64 = 250;
+
 #[derive(Debug)]
 /// Represents the state of a transaction, we either have received a transaction
 /// in which case we return `Yes` or we havent yet, in which case we

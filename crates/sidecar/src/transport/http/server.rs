@@ -1,5 +1,8 @@
 //! JSON-RPC server handlers for HTTP transport
 
+use crate::transport::transactions_results::TRANSACTION_RECEIVE_WAIT;
+use crate::transport::transactions_results::AcceptedState;
+use std::time::Duration;
 use crate::{
     engine::{
         TransactionResult,
@@ -461,7 +464,7 @@ async fn process_request(
         if let TxQueueContents::Tx(tx, _) = &queue_tx
             && state
                 .transactions_results
-                .is_tx_received(&tx.tx_execution_id)
+                .is_tx_received_now(&tx.tx_execution_id)
         {
             warn!(
                 tx_hash = %tx.tx_execution_id.tx_hash_hex(),
@@ -599,14 +602,30 @@ async fn handle_get_transaction(
 
     let tx_execution_id = tx_execution_ids.remove(0);
 
-    if !state.transactions_results.is_tx_received(&tx_execution_id) {
-        return Ok(JsonRpcResponse::success(
-            request,
-            serde_json::json!({
-                "not_found": tx_execution_id
-            }),
-        ));
+    match state.transactions_results.is_tx_received(&tx_execution_id) {
+        AcceptedState::Yes => {},
+        AcceptedState::NotYet(mut rx) => {
+            let wait_result = tokio::time::timeout(
+                Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
+                rx.recv(),
+            )
+            .await;
+
+            match wait_result {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) | Ok(Err(_)) | Err(_) => {
+                    return Ok(JsonRpcResponse::success(
+                        request,
+                        serde_json::json!({
+                            "not_found": tx_execution_id
+                        }),
+                    ));
+                }
+            }
+        },
     }
+
+
 
     let result = match resolve_transaction_result(state, request, tx_execution_id).await {
         Ok(result) => result,

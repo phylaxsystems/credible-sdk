@@ -103,8 +103,6 @@ use tracing::{
     warn,
 };
 
-const TRANSACTION_RECEIVE_WAIT: u64 = 250;
-
 fn parse_pb_tx_execution_id(pb: &PbTxExecutionId) -> Result<TxExecutionId, Status> {
     let tx_hash = pb
         .tx_hash
