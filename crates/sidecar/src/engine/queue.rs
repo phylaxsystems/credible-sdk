@@ -67,7 +67,7 @@ pub struct QueueTransaction {
 /// `Reorg` should be used to signal to remove the last executed transaction.
 /// To verify the transaction is indeed the correct one, we include the
 /// transaction execution id and should only process it as a valid event if it matches.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TxQueueContents {
     Tx(QueueTransaction, tracing::Span),
     Reorg(TxExecutionId, tracing::Span),

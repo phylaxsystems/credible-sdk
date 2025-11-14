@@ -37,6 +37,32 @@ pub enum EventMetadata {
 }
 
 impl EventMetadata {
+    pub fn block_number(&self) -> u64 {
+        match self {
+            Self::NewIteration { block_number, .. }
+            | Self::Transaction { block_number, .. }
+            | Self::Reorg { block_number, .. }
+            | Self::CommitHead { block_number, .. } => *block_number,
+        }
+    }
+
+    pub fn is_new_iteration(&self) -> bool {
+        matches!(self, Self::NewIteration { .. })
+    }
+
+    pub fn is_reorg(&self) -> bool {
+        matches!(self, Self::Reorg { .. })
+    }
+
+    pub fn is_commit_head(&self) -> bool {
+        matches!(self, Self::CommitHead { .. })
+    }
+
+    /// Calculates what should be the previous / expected event for a current event.
+    /// For example, if the current event is a transaction index 2, the previous event is the
+    /// previous transaction (index 1).
+    /// If the current event is a commit head, the previous event is the last transaction in the chain.
+    /// Returns `None` if the current event is the first event in the chain.
     pub fn calculate_previous_event(&self) -> Option<EventMetadata> {
         match self {
             EventMetadata::Transaction {
