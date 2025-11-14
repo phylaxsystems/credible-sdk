@@ -1,10 +1,10 @@
-use std::sync::Mutex;
-use std::collections::HashSet;
 use dashmap::DashMap;
-use tokio::{sync::{
-    broadcast,
-    oneshot
-}, task::JoinHandle};
+use std::sync::Mutex;
+use thiserror::Error;
+use tokio::{
+    sync::broadcast,
+    task::JoinHandle,
+};
 
 use crate::{
     engine::queue::TxQueueContents,
@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 /// Represents the state of a transaction, we either have received a transaction
-/// in which case we return `Yes` or we havent yet, in which case we 
+/// in which case we return `Yes` or we havent yet, in which case we
 enum AcceptedState {
     Yes,
     NotYet(broadcast::Receiver<bool>),
@@ -33,23 +33,37 @@ enum AcceptedState {
 #[derive(Clone, Debug)]
 pub struct QueryTransactionsResults {
     transactions_state: Arc<TransactionsState>,
-    pending_requests: Arc<DashMap<TxExecutionId, broadcast::Sender<bool>>>,
+    pending_receives: Arc<DashMap<TxExecutionId, broadcast::Sender<bool>>>,
     bg_task_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+}
+
+pub type QueryTransactionsResultsResult<T = ()> = Result<T, QueryTransactionsResultsError>;
+
+#[derive(Debug, Error)]
+pub enum QueryTransactionsResultsError {
+    #[error("failed to notify waiters for transaction {tx_execution_id}")]
+    NotifyFailed {
+        tx_execution_id: TxExecutionId,
+        #[source]
+        source: broadcast::error::SendError<bool>,
+    },
 }
 
 impl QueryTransactionsResults {
     pub fn new(transactions_state: Arc<TransactionsState>) -> Self {
-        Self { 
+        Self {
             transactions_state,
-            pending_requests: Arc::new(DashMap::new()),
+            pending_receives: Arc::new(DashMap::new()),
             bg_task_handles: Arc::new(Vec::new().into()),
         }
     }
 
     /// Adds accepted tx to `transactions_state` and sends a message to all
     /// waiting channels that the transaction was accepted.
-    /// TODO: need to add proper error types here
-    pub fn add_accepted_tx(&self, tx_queue_contents: &TxQueueContents) {
+    pub fn add_accepted_tx(
+        &self,
+        tx_queue_contents: &TxQueueContents,
+    ) -> QueryTransactionsResultsResult {
         // Add to `transactions_state` first
         self.transactions_state.add_accepted_tx(tx_queue_contents);
 
@@ -58,21 +72,28 @@ impl QueryTransactionsResults {
         // we created should do it for us!
         let tx = match tx_queue_contents {
             TxQueueContents::Tx(tx, _) => tx,
-            _ => return,
+            _ => return Ok(()),
         };
-        if let Some(sender) = self.pending_requests.get(&tx.tx_execution_id) {
-            sender.send(true);
+        if let Some(sender) = self.pending_receives.get(&tx.tx_execution_id) {
+            sender.send(true).map(|_| ()).map_err(|source| {
+                QueryTransactionsResultsError::NotifyFailed {
+                    tx_execution_id: tx.tx_execution_id,
+                    source,
+                }
+            })?;
         }
+
+        Ok(())
     }
 
     /// Spawns a helper task cleans up pendong requests with no receivers.
     fn spawn_cleanup_task(&self, tx_execution_id: &TxExecutionId, sender: broadcast::Sender<bool>) {
         // We dont need to spawn a new bg task because one exists already
-        if self.pending_requests.contains_key(tx_execution_id) {
+        if self.pending_receives.contains_key(tx_execution_id) {
             return;
         }
 
-        let pending_clone = self.pending_requests.clone();
+        let pending_clone = self.pending_receives.clone();
         let execution_id_clone = tx_execution_id.clone();
         let task = tokio::task::spawn(async move {
             // this completes when there are no senders left
@@ -81,7 +102,7 @@ impl QueryTransactionsResults {
             pending_clone.remove(&execution_id_clone);
         });
 
-        // Add task to joinhandles so we can kill on drop !!!TODO!!!
+        // Add task to joinhandles so we can kill on drop
         let mut lock = self.bg_task_handles.lock().map_err(|_| {}).unwrap();
         lock.push(task);
     }
@@ -97,14 +118,18 @@ impl QueryTransactionsResults {
         }
 
         // Check if we already have a channel which we can return
-        if let Some(channel) = self.pending_requests.get(tx_execution_id) {
+        if let Some(channel) = self.pending_receives.get(tx_execution_id) {
             let receiver = channel.subscribe();
             return AcceptedState::NotYet(receiver);
         }
 
         // If we dont, we have to create a new channel and insert it
         let (tx, rx) = broadcast::channel(1);
-        self.pending_requests.insert(*tx_execution_id, tx);
+        // spawn cleanup task
+        self.spawn_cleanup_task(tx_execution_id, tx.clone());
+
+        // Insert into pending_receives
+        self.pending_receives.insert(*tx_execution_id, tx);
 
         return AcceptedState::NotYet(rx);
     }
@@ -115,5 +140,27 @@ impl QueryTransactionsResults {
     ) -> RequestTransactionResult {
         self.transactions_state
             .request_transaction_result(tx_execution_id)
+    }
+}
+
+impl Drop for QueryTransactionsResults {
+    fn drop(&mut self) {
+        // Making sure that this is the final `QueryTransactionsResults`
+        // when we drop.
+        //
+        // We dont want to drop channels for clones of `QueryTransactionsResults`
+        if Arc::strong_count(&self.bg_task_handles) == 1 {
+            if let Ok(mut handles) = self.bg_task_handles.lock() {
+                let tasks: Vec<_> = handles.drain(..).collect();
+                drop(handles);
+                for handle in tasks {
+                    handle.abort();
+                }
+            }
+        }
+
+        if Arc::strong_count(&self.pending_receives) == 1 {
+            self.pending_receives.clear();
+        }
     }
 }
