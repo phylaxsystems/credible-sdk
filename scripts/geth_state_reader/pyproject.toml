@@ -1,0 +1,9 @@
+[project]
+name = "geth-state-reader"
+version = "0.1.0"
+description = "Dump Geth state into a Redis schema compatible with state-worker."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "redis>=5.0.0",
+]
