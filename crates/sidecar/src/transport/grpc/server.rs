@@ -44,10 +44,10 @@ use crate::{
         transactions_results::{
             AcceptedState,
             QueryTransactionsResults,
+            TRANSACTION_RECEIVE_WAIT,
         },
     },
 };
-use futures::future;
 use alloy::{
     eips::eip7702::{
         Authorization,
@@ -63,6 +63,7 @@ use assertion_executor::primitives::{
     TxKind,
     U256,
 };
+use futures::future;
 use revm::{
     context::{
         BlockEnv as RevmBlockEnv,
@@ -229,14 +230,16 @@ impl GrpcService {
         }
 
         if !waiters.is_empty() {
-            let wait_futures = waiters.into_iter().map(|(tx_execution_id, hash, mut rx)| async move {
-                let wait_result = tokio::time::timeout(
-                    Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
-                    rx.recv(),
-                )
-                .await;
+            let wait_futures = waiters.into_iter().map(|(tx_execution_id, hash, mut rx)| {
+                async move {
+                    let wait_result = tokio::time::timeout(
+                        Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
+                        rx.recv(),
+                    )
+                    .await;
 
-                (tx_execution_id, hash, wait_result)
+                    (tx_execution_id, hash, wait_result)
+                }
             });
 
             let wait_outcomes = future::join_all(wait_futures).await;
@@ -246,7 +249,7 @@ impl GrpcService {
                     Ok(Ok(true)) => {
                         results.push(self.fetch_transaction_result(tx_execution_id).await?);
                     }
-                    Ok(Ok(false)) | Ok(Err(_)) | Err(_) => {
+                    Ok(Ok(false) | Err(_)) | Err(_) => {
                         not_found.push(hash);
                     }
                 }

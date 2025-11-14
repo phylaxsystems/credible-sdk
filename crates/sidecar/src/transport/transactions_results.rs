@@ -22,7 +22,7 @@ pub const TRANSACTION_RECEIVE_WAIT: u64 = 250;
 #[derive(Debug)]
 /// Represents the state of a transaction, we either have received a transaction
 /// in which case we return `Yes` or we havent yet, in which case we
-pub(crate) enum AcceptedState {
+pub enum AcceptedState {
     Yes,
     NotYet(broadcast::Receiver<bool>),
 }
@@ -73,9 +73,8 @@ impl QueryTransactionsResults {
         // Next, we send that we have received it to all receivers
         // We dont have to worry about cleanup because the bg task
         // we created should do it for us!
-        let tx = match tx_queue_contents {
-            TxQueueContents::Tx(tx, _) => tx,
-            _ => return Ok(()),
+        let TxQueueContents::Tx(tx, _) = tx_queue_contents else {
+            return Ok(());
         };
         if let Some(sender) = self.pending_receives.get(&tx.tx_execution_id) {
             sender.send(true).map(|_| ()).map_err(|source| {
@@ -97,7 +96,7 @@ impl QueryTransactionsResults {
         }
 
         let pending_clone = self.pending_receives.clone();
-        let execution_id_clone = tx_execution_id.clone();
+        let execution_id_clone = *tx_execution_id;
         let task = tokio::task::spawn(async move {
             // this completes when there are no senders left
             sender.closed().await;
@@ -134,7 +133,7 @@ impl QueryTransactionsResults {
         // Insert into pending_receives
         self.pending_receives.insert(*tx_execution_id, tx);
 
-        return AcceptedState::NotYet(rx);
+        AcceptedState::NotYet(rx)
     }
 
     pub fn request_transaction_result(
@@ -162,13 +161,13 @@ impl Drop for QueryTransactionsResults {
         // when we drop.
         //
         // We dont want to drop channels for clones of `QueryTransactionsResults`
-        if Arc::strong_count(&self.bg_task_handles) == 1 {
-            if let Ok(mut handles) = self.bg_task_handles.lock() {
-                let tasks: Vec<_> = handles.drain(..).collect();
-                drop(handles);
-                for handle in tasks {
-                    handle.abort();
-                }
+        if Arc::strong_count(&self.bg_task_handles) == 1
+            && let Ok(mut handles) = self.bg_task_handles.lock()
+        {
+            let tasks: Vec<_> = handles.drain(..).collect();
+            drop(handles);
+            for handle in tasks {
+                handle.abort();
             }
         }
 

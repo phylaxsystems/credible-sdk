@@ -1,8 +1,5 @@
 //! JSON-RPC server handlers for HTTP transport
 
-use crate::transport::transactions_results::TRANSACTION_RECEIVE_WAIT;
-use crate::transport::transactions_results::AcceptedState;
-use std::time::Duration;
 use crate::{
     engine::{
         TransactionResult,
@@ -23,7 +20,11 @@ use crate::{
             tracing_middleware::trace_tx_queue_contents,
         },
         rpc_metrics::RpcRequestDuration,
-        transactions_results::QueryTransactionsResults,
+        transactions_results::{
+            AcceptedState,
+            QueryTransactionsResults,
+            TRANSACTION_RECEIVE_WAIT,
+        },
     },
 };
 use alloy::rpc::types::error::EthRpcErrorCode;
@@ -36,6 +37,7 @@ use axum::{
     http::StatusCode,
     response::Json as ResponseJson,
 };
+use futures::future;
 use revm::context::TxEnv;
 use serde::{
     Deserialize,
@@ -57,6 +59,7 @@ use std::{
             Ordering,
         },
     },
+    time::Duration,
 };
 use tracing::{
     debug,
@@ -538,7 +541,8 @@ async fn handle_get_transactions(
 ) -> Result<JsonRpcResponse, StatusCode> {
     let _rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "getTransactions"));
     // Check if we have block environment before processing transactions
-    // NOTE: This can be dropped once we implement the "not_found" feature, the result will be "not_found" by default because there cannot be any tx hash consumed if no BlockEnv was received first
+    // NOTE: This can be dropped once we implement the "not_found" feature, the result will be "not_found" by default
+    // because there cannot be any tx hash consumed if no BlockEnv was received first
     if let Some(response) = ensure_commit_head_seen(state, request) {
         return Ok(response);
     }
@@ -548,16 +552,50 @@ async fn handle_get_transactions(
         Err(error_response) => return Ok(error_response),
     };
 
-    let (received_tx_execution_ids, not_found_tx_execution_ids): (Vec<_>, Vec<_>) =
-        tx_execution_ids.into_iter().partition(|tx_execution_id| {
-            state.transactions_results.is_tx_received(tx_execution_id)
-        });
+    let mut ready_ids = Vec::new();
+    let mut pending = Vec::new();
+    let mut not_found_tx_execution_ids = Vec::new();
 
-    let mut results = Vec::with_capacity(received_tx_execution_ids.len());
-    for tx_execution_id in received_tx_execution_ids {
+    for tx_execution_id in tx_execution_ids {
+        match state.transactions_results.is_tx_received(&tx_execution_id) {
+            AcceptedState::Yes => ready_ids.push(tx_execution_id),
+            AcceptedState::NotYet(rx) => pending.push((tx_execution_id, rx)),
+        }
+    }
+
+    let mut results = Vec::with_capacity(ready_ids.len());
+    for tx_execution_id in ready_ids {
         match resolve_transaction_result(state, request, tx_execution_id).await {
             Ok(result) => results.push(result),
             Err(error_response) => return Ok(error_response),
+        }
+    }
+
+    if !pending.is_empty() {
+        let wait_futures = pending.into_iter().map(|(tx_execution_id, mut rx)| {
+            async move {
+                let wait_result = tokio::time::timeout(
+                    Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
+                    rx.recv(),
+                )
+                .await;
+
+                (tx_execution_id, wait_result)
+            }
+        });
+
+        for (tx_execution_id, wait_result) in future::join_all(wait_futures).await {
+            match wait_result {
+                Ok(Ok(true)) => {
+                    match resolve_transaction_result(state, request, tx_execution_id).await {
+                        Ok(result) => results.push(result),
+                        Err(error_response) => return Ok(error_response),
+                    }
+                }
+                Ok(Ok(false) | Err(_)) | Err(_) => {
+                    not_found_tx_execution_ids.push(tx_execution_id);
+                }
+            }
         }
     }
 
@@ -603,17 +641,15 @@ async fn handle_get_transaction(
     let tx_execution_id = tx_execution_ids.remove(0);
 
     match state.transactions_results.is_tx_received(&tx_execution_id) {
-        AcceptedState::Yes => {},
+        AcceptedState::Yes => {}
         AcceptedState::NotYet(mut rx) => {
-            let wait_result = tokio::time::timeout(
-                Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
-                rx.recv(),
-            )
-            .await;
+            let wait_result =
+                tokio::time::timeout(Duration::from_millis(TRANSACTION_RECEIVE_WAIT), rx.recv())
+                    .await;
 
             match wait_result {
                 Ok(Ok(true)) => {}
-                Ok(Ok(false)) | Ok(Err(_)) | Err(_) => {
+                Ok(Ok(false) | Err(_)) | Err(_) => {
                     return Ok(JsonRpcResponse::success(
                         request,
                         serde_json::json!({
@@ -622,10 +658,8 @@ async fn handle_get_transaction(
                     ));
                 }
             }
-        },
+        }
     }
-
-
 
     let result = match resolve_transaction_result(state, request, tx_execution_id).await {
         Ok(result) => result,
