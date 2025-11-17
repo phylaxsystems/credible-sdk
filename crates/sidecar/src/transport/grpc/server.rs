@@ -40,8 +40,12 @@ use crate::{
     execution_ids::TxExecutionId,
     transport::{
         common::HttpDecoderError,
-        http::transactions_results::QueryTransactionsResults,
         rpc_metrics::RpcRequestDuration,
+        transactions_results::{
+            AcceptedState,
+            QueryTransactionsResults,
+            wait_for_pending_transactions,
+        },
     },
 };
 use alloy::{
@@ -202,21 +206,40 @@ impl GrpcService {
         let (lower_bound, _) = iter.size_hint();
         let mut results = Vec::with_capacity(lower_bound);
         let mut not_found = Vec::new();
+        let mut ready_ids = Vec::new();
+        let mut waiters = Vec::new();
 
         for pb_tx_execution_id in iter {
             match parse_pb_tx_execution_id(pb_tx_execution_id) {
                 Ok(tx_execution_id) => {
-                    if self
-                        .transactions_results
-                        .wait_for_transaction_seen(&tx_execution_id)
-                        .await
-                    {
-                        results.push(self.fetch_transaction_result(tx_execution_id).await?);
-                    } else {
-                        not_found.push(pb_tx_execution_id.tx_hash.clone());
+                    match self.transactions_results.is_tx_received(&tx_execution_id) {
+                        AcceptedState::Yes => ready_ids.push(tx_execution_id),
+                        AcceptedState::NotYet(rx) => {
+                            waiters
+                                .push(((tx_execution_id, pb_tx_execution_id.tx_hash.clone()), rx));
+                        }
                     }
                 }
                 Err(_) => not_found.push(pb_tx_execution_id.tx_hash.clone()),
+            }
+        }
+
+        for tx_execution_id in ready_ids {
+            results.push(self.fetch_transaction_result(tx_execution_id).await?);
+        }
+
+        if !waiters.is_empty() {
+            let wait_outcomes = wait_for_pending_transactions(waiters).await;
+
+            for ((tx_execution_id, hash), wait_result) in wait_outcomes {
+                match wait_result {
+                    Ok(Ok(true)) => {
+                        results.push(self.fetch_transaction_result(tx_execution_id).await?);
+                    }
+                    Ok(Ok(false) | Err(_)) | Err(_) => {
+                        not_found.push(hash);
+                    }
+                }
             }
         }
 
@@ -294,7 +317,7 @@ impl SidecarTransport for GrpcService {
                     if let TxQueueContents::Tx(tx, _) = &queue_tx
                         && self
                             .transactions_results
-                            .is_tx_received(&tx.tx_execution_id)
+                            .is_tx_received_now(&tx.tx_execution_id)
                     {
                         warn!(
                             tx_hash = %tx.tx_execution_id.tx_hash_hex(),
@@ -350,7 +373,7 @@ impl SidecarTransport for GrpcService {
             if let TxQueueContents::Tx(tx, _) = &queue_tx
                 && self
                     .transactions_results
-                    .is_tx_received(&tx.tx_execution_id)
+                    .is_tx_received_now(&tx.tx_execution_id)
             {
                 warn!(
                     tx_hash = %tx.tx_execution_id.tx_hash_hex(),

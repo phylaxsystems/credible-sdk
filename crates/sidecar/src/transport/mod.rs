@@ -31,6 +31,7 @@ pub mod grpc;
 pub mod http;
 pub mod mock;
 pub(crate) mod rpc_metrics;
+pub mod transactions_results;
 
 use crate::{
     engine::queue::TransactionQueueSender,
