@@ -375,8 +375,9 @@ impl<T: TestTransport> LocalInstance<T> {
             .request_transaction_result(tx_execution_id)
         {
             RequestTransactionResult::Result(result) => Ok(result),
-            RequestTransactionResult::Channel(receiver) => {
-                match tokio::time::timeout(Self::TRANSACTION_RESULT_TIMEOUT, receiver).await {
+            RequestTransactionResult::Channel(mut receiver) => {
+                match tokio::time::timeout(Self::TRANSACTION_RESULT_TIMEOUT, receiver.recv()).await
+                {
                     Ok(Ok(result)) => Ok(result),
                     Ok(Err(_)) => Err(WaitError::ChannelClosed),
                     Err(_) => Err(WaitError::Timeout),

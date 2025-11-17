@@ -12,17 +12,22 @@ use dashmap::{
     mapref::one::Ref,
 };
 use std::sync::Arc;
-use tokio::sync::oneshot;
+use tokio::sync::broadcast;
 use tracing::error;
 
 #[derive(Debug)]
 pub struct TransactionsState {
     transaction_results: DashMap<TxExecutionId, TransactionResult>,
     /// `DashMap` containing the pending queries from the reading the transaction result.
-    /// It contains the transaction execution id as key and the oneshot sender as value. The result shall be
-    /// sent via oneshot channel once it is ready.
+    /// It contains the transaction execution id as key and the broadcast sender as value. The result shall be
+    /// sent via broadcast channel once it is ready.
+    ///
+    /// It is also used to create new receivers for multiple clients waiting for the result.
+    ///
+    /// Unlike in `QueryTransactionsResults` we dont need a cleanup taks, because we know that
+    /// pending transactions will eventually be included.
     transaction_results_pending_requests:
-        DashMap<TxExecutionId, oneshot::Sender<TransactionResult>>,
+        DashMap<TxExecutionId, broadcast::Sender<TransactionResult>>,
     /// `HashSet` containing the accepted transactions which haven't been processed yet.
     accepted_txs: DashSet<TxExecutionId>,
 }
@@ -108,7 +113,16 @@ impl TransactionsState {
         if let Some(result) = result {
             RequestTransactionResult::Result(result.clone())
         } else {
-            let (response_tx, response_rx) = oneshot::channel();
+            // If we have a channel with clients waiting, we can just create a new
+            // receiver and pass it on
+            if let Some(channel) = self
+                .transaction_results_pending_requests
+                .get(tx_execution_id)
+            {
+                return RequestTransactionResult::Channel(channel.subscribe());
+            }
+
+            let (response_tx, response_rx) = broadcast::channel(1);
             self.transaction_results_pending_requests
                 .insert(*tx_execution_id, response_tx);
 
@@ -131,7 +145,7 @@ impl TransactionsState {
 
 pub enum RequestTransactionResult {
     Result(TransactionResult),
-    Channel(oneshot::Receiver<TransactionResult>),
+    Channel(broadcast::Receiver<TransactionResult>),
 }
 
 #[cfg(test)]
@@ -389,7 +403,7 @@ mod tests {
         let result = create_test_transaction_result();
 
         // First request the transaction result (this will create a pending query)
-        let receiver = match state.request_transaction_result(&tx_execution_id) {
+        let mut receiver = match state.request_transaction_result(&tx_execution_id) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel"),
         };
@@ -412,7 +426,7 @@ mod tests {
         );
 
         // Verify we can receive the result through the channel
-        let received_result = timeout(Duration::from_millis(100), receiver)
+        let received_result = timeout(Duration::from_millis(100), receiver.recv())
             .await
             .expect("Should receive result within timeout")
             .expect("Channel should not be closed");
@@ -427,7 +441,7 @@ mod tests {
         let result = create_test_transaction_result();
 
         // Simulate race condition: add result after request is made but before channel is returned
-        let (tx, _rx) = oneshot::channel();
+        let (tx, _rx) = broadcast::channel(1);
         state
             .transaction_results_pending_requests
             .insert(tx_execution_id, tx);
@@ -461,12 +475,12 @@ mod tests {
         let result2 = create_validation_error_result();
 
         // Create pending queries for both transactions
-        let receiver1 = match state.request_transaction_result(&tx_id1) {
+        let mut receiver1 = match state.request_transaction_result(&tx_id1) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel for tx1"),
         };
 
-        let receiver2 = match state.request_transaction_result(&tx_id2) {
+        let mut receiver2 = match state.request_transaction_result(&tx_id2) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel for tx2"),
         };
@@ -499,7 +513,7 @@ mod tests {
         );
 
         // Verify first receiver gets the result
-        let received_result1 = timeout(Duration::from_millis(100), receiver1)
+        let received_result1 = timeout(Duration::from_millis(100), receiver1.recv())
             .await
             .expect("Should receive result1 within timeout")
             .expect("Channel should not be closed");
@@ -516,7 +530,7 @@ mod tests {
         );
 
         // Verify second receiver gets the result
-        let received_result2 = timeout(Duration::from_millis(100), receiver2)
+        let received_result2 = timeout(Duration::from_millis(100), receiver2.recv())
             .await
             .expect("Should receive result2 within timeout")
             .expect("Channel should not be closed");

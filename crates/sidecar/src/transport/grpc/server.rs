@@ -184,8 +184,8 @@ impl GrpcService {
             .request_transaction_result(&tx_execution_id)
         {
             crate::transactions_state::RequestTransactionResult::Result(r) => r,
-            crate::transactions_state::RequestTransactionResult::Channel(rx) => {
-                match rx.await {
+            crate::transactions_state::RequestTransactionResult::Channel(mut rx) => {
+                match rx.recv().await {
                     Ok(r) => r,
                     Err(_) => return Err(Status::internal("engine unavailable")),
                 }
