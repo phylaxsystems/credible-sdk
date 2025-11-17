@@ -136,19 +136,15 @@ impl QueryTransactionsResults {
             return AcceptedState::Yes;
         }
 
-        // Check if we already have a channel which we can return
-        if let Some(channel) = self.pending_receives.get(tx_execution_id) {
-            let receiver = channel.subscribe();
-            return AcceptedState::NotYet(receiver);
-        }
+        let entry = self
+            .pending_receives
+            .entry(*tx_execution_id)
+            .or_insert_with(|| {
+                let (tx, _) = broadcast::channel(1);
+                tx
+            });
 
-        // If we dont, we have to create a new channel and insert it
-        let (tx, rx) = broadcast::channel(1);
-
-        // Insert into pending_receives
-        self.pending_receives.insert(*tx_execution_id, tx);
-
-        AcceptedState::NotYet(rx)
+        AcceptedState::NotYet(entry.value().subscribe())
     }
 
     pub fn request_transaction_result(
