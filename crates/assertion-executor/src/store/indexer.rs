@@ -73,11 +73,20 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 sol! {
-    #[derive(Debug)]
-    event AssertionAdded(address contractAddress, bytes32 assertionId, uint256 activeAtBlock);
 
+    /// @notice Emitted when a new assertion is added
+    /// @param assertionAdopter The assertion adopter the assertion is associated with
+    /// @param assertionId The unique identifier of the assertion
+    /// @param activationBlock The block number when the assertion becomes active
     #[derive(Debug)]
-    event AssertionRemoved(address contractAddress, bytes32 assertionId, uint256 activeAtBlock);
+    event AssertionAdded(address assertionAdopter, bytes32 assertionId, uint256 activationBlock);
+
+    /// @notice Emitted when an assertion is removed
+    /// @param assertionAdopter The assertion adopter where the assertion is removed from
+    /// @param assertionId The unique identifier of the removed assertion
+    /// @param deactivationBlock The block number when the assertion is going to be inactive
+    #[derive(Debug)]
+    event AssertionRemoved(address assertionAdopter, bytes32 assertionId, uint256 deactivationBlock);
 
 }
 
