@@ -41,7 +41,7 @@ pub enum AcceptedState {
 pub struct QueryTransactionsResults {
     transactions_state: Arc<TransactionsState>,
     pending_receives: Arc<DashMap<TxExecutionId, broadcast::Sender<bool>>>,
-    bg_task_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    bg_task_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 pub type QueryTransactionsResultsResult<T = ()> = Result<T, QueryTransactionsResultsError>;
@@ -58,11 +58,15 @@ pub enum QueryTransactionsResultsError {
 
 impl QueryTransactionsResults {
     pub fn new(transactions_state: Arc<TransactionsState>) -> Self {
-        Self {
+        let this = Self {
             transactions_state,
             pending_receives: Arc::new(DashMap::new()),
-            bg_task_handles: Arc::new(Vec::new().into()),
-        }
+            bg_task_handle: Arc::new(Mutex::new(None)),
+        };
+
+        this.spawn_cleanup_task();
+
+        this
     }
 
     /// Adds accepted tx to `transactions_state` and sends a message to all
@@ -92,25 +96,34 @@ impl QueryTransactionsResults {
         Ok(())
     }
 
-    /// Spawns a helper task cleans up pending requests with no receivers.
-    fn spawn_cleanup_task(&self, tx_execution_id: &TxExecutionId, sender: broadcast::Sender<bool>) {
-        // We dont need to spawn a new bg task because one exists already
-        if self.pending_receives.contains_key(tx_execution_id) {
+    /// Spawns the cleanup task that removes pending receives with no subscribers.
+    fn spawn_cleanup_task(&self) {
+        // Only one background task per QueryTransactionsResults instance.
+        let mut handle_lock = self.bg_task_handle.lock().map_err(|_| {}).unwrap();
+        if handle_lock.is_some() {
             return;
         }
 
         let pending_clone = self.pending_receives.clone();
-        let execution_id_clone = *tx_execution_id;
         let task = tokio::task::spawn(async move {
-            // this completes when there are no senders left
-            sender.closed().await;
-            // clean up the channel
-            pending_clone.remove(&execution_id_clone);
+            let mut cleanup_interval =
+                tokio::time::interval(Duration::from_millis(TRANSACTION_RECEIVE_WAIT));
+            loop {
+                cleanup_interval.tick().await;
+
+                let stale_entries: Vec<_> = pending_clone
+                    .iter()
+                    .filter(|entry| entry.value().receiver_count() == 0)
+                    .map(|entry| *entry.key())
+                    .collect();
+
+                for tx_execution_id in stale_entries {
+                    pending_clone.remove(&tx_execution_id);
+                }
+            }
         });
 
-        // Add task to joinhandles so we can kill on drop
-        let mut lock = self.bg_task_handles.lock().map_err(|_| {}).unwrap();
-        lock.push(task);
+        *handle_lock = Some(task);
     }
 
     /// Checks to see if transaction has been received in the transport.
@@ -131,8 +144,6 @@ impl QueryTransactionsResults {
 
         // If we dont, we have to create a new channel and insert it
         let (tx, rx) = broadcast::channel(1);
-        // spawn cleanup task
-        self.spawn_cleanup_task(tx_execution_id, tx.clone());
 
         // Insert into pending_receives
         self.pending_receives.insert(*tx_execution_id, tx);
@@ -187,18 +198,57 @@ impl Drop for QueryTransactionsResults {
         // when we drop.
         //
         // We dont want to drop channels for clones of `QueryTransactionsResults`
-        if Arc::strong_count(&self.bg_task_handles) == 1
-            && let Ok(mut handles) = self.bg_task_handles.lock()
+        if Arc::strong_count(&self.bg_task_handle) == 1
+            && let Ok(mut handle_lock) = self.bg_task_handle.lock()
+            && let Some(handle) = handle_lock.take()
         {
-            let tasks: Vec<_> = handles.drain(..).collect();
-            drop(handles);
-            for handle in tasks {
-                handle.abort();
-            }
+            handle.abort();
         }
 
         if Arc::strong_count(&self.pending_receives) == 1 {
             self.pending_receives.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use revm::primitives::alloy_primitives::B256;
+
+    #[tokio::test]
+    async fn pending_receive_is_evicted_when_no_receivers_left() {
+        let transactions_state = TransactionsState::new();
+        let query_results = QueryTransactionsResults::new(transactions_state);
+
+        let tx_execution_id = TxExecutionId::new(1, 0, B256::from([3u8; 32]));
+
+        let receiver = match query_results.is_tx_received(&tx_execution_id) {
+            AcceptedState::NotYet(rx) => rx,
+            AcceptedState::Yes => panic!("transaction should not be marked received"),
+        };
+
+        assert!(
+            query_results
+                .pending_receives
+                .contains_key(&tx_execution_id),
+            "pending receives should contain entry immediately after subscribe"
+        );
+
+        drop(receiver);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !query_results
+                    .pending_receives
+                    .contains_key(&tx_execution_id)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("pending receive entry should be removed once last receiver drops");
     }
 }
