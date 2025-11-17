@@ -674,8 +674,8 @@ async fn resolve_transaction_result(
         .request_transaction_result(&tx_execution_id)
     {
         RequestTransactionResult::Result(result) => result,
-        RequestTransactionResult::Channel(receiver) => {
-            if let Ok(result) = receiver.await {
+        RequestTransactionResult::Channel(mut receiver) => {
+            if let Ok(result) = receiver.recv().await {
                 result
             } else {
                 error!(
