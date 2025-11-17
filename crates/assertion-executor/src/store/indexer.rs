@@ -73,11 +73,20 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 sol! {
-    #[derive(Debug)]
-    event AssertionAdded(address contractAddress, bytes32 assertionId, uint256 activeAtBlock);
 
+    /// @notice Emitted when a new assertion is added
+    /// @param assertionAdopter The assertion adopter the assertion is associated with
+    /// @param assertionId The unique identifier of the assertion
+    /// @param activationBlock The block number when the assertion becomes active
     #[derive(Debug)]
-    event AssertionRemoved(address contractAddress, bytes32 assertionId, uint256 activeAtBlock);
+    event AssertionAdded(address assertionAdopter, bytes32 assertionId, uint256 activationBlock);
+
+    /// @notice Emitted when an assertion is removed
+    /// @param assertionAdopter The assertion adopter where the assertion is removed from
+    /// @param assertionId The unique identifier of the removed assertion
+    /// @param deactivationBlock The block number when the assertion is going to be inactive
+    #[derive(Debug)]
+    event AssertionRemoved(address assertionAdopter, bytes32 assertionId, uint256 deactivationBlock);
 
 }
 
@@ -768,23 +777,23 @@ impl Indexer {
 
                 match assertion_contract_res {
                     Ok((assertion_contract, trigger_recorder)) => {
-                        let active_at_block = event
-                            .activeAtBlock
+                        let activation_block = event
+                            .activationBlock
                             .try_into()
                             .map_err(|_| IndexerError::BlockNumberExceedsU64)?;
 
                         debug!(
                             target = "assertion_executor::indexer",
                             assertion_id=?assertion_contract.id,
-                            active_at_block,
+                            activation_block,
                             "assertionAdded event processed",
                         );
 
                         Some(PendingModification::Add {
-                            assertion_adopter: event.contractAddress,
+                            assertion_adopter: event.assertionAdopter,
                             assertion_contract,
                             trigger_recorder,
-                            active_at_block,
+                            activation_block,
                             log_index,
                         })
                     }
@@ -816,21 +825,21 @@ impl Indexer {
                     "AssertionRemoved event decoded"
                 );
 
-                let inactive_at_block = event
-                    .activeAtBlock
+                let inactivation_block = event
+                    .deactivationBlock
                     .try_into()
                     .map_err(|_| IndexerError::BlockNumberExceedsU64)?;
 
                 debug!(
                     target = "assertion_executor::indexer",
                     assertion_id=?event.assertionId,
-                    inactive_at_block,
+                    inactivation_block,
                     "assertionRemoved event processed",
                 );
                 Some(PendingModification::Remove {
                     assertion_contract_id: event.assertionId,
-                    assertion_adopter: event.contractAddress,
-                    inactive_at_block,
+                    assertion_adopter: event.assertionAdopter,
+                    inactivation_block,
                     log_index,
                 })
             }
@@ -1039,7 +1048,7 @@ mod test_indexer {
             assertion_adopter: Address::random(),
             assertion_contract: AssertionContract::default(),
             trigger_recorder: TriggerRecorder::default(),
-            active_at_block: 1,
+            activation_block: 1,
             log_index: 0,
         };
 
@@ -1105,7 +1114,7 @@ mod test_indexer {
         // Create AssertionAdded event data
         let assertion_id = B256::random();
         let contract_address = Address::random();
-        let active_at_block = 100u64;
+        let activation_block = 100u64;
 
         // Create event topics and data
         let mut addr_bytes = [0u8; 32];
@@ -1118,7 +1127,7 @@ mod test_indexer {
         ];
 
         // Create data using proper ABI encoding for the event
-        let data = U256::from(active_at_block).to_be_bytes_vec();
+        let data = U256::from(activation_block).to_be_bytes_vec();
 
         let log_data = alloy::primitives::LogData::new(topics, data.into()).unwrap();
 
@@ -1137,7 +1146,7 @@ mod test_indexer {
         // Create AssertionRemoved event data
         let assertion_id = B256::random();
         let contract_address = Address::random();
-        let active_at_block = 100u64;
+        let activation_block = 100u64;
 
         // Create event topics and data
         let mut addr_bytes = [0u8; 32];
@@ -1150,7 +1159,7 @@ mod test_indexer {
         ];
 
         // Create data using proper ABI encoding for the event
-        let data = U256::from(active_at_block).to_be_bytes_vec();
+        let data = U256::from(activation_block).to_be_bytes_vec();
 
         let log_data = alloy::primitives::LogData::new(topics, data.into()).unwrap();
 
@@ -1162,12 +1171,12 @@ mod test_indexer {
             Ok(Some(PendingModification::Remove {
                 assertion_contract_id,
                 assertion_adopter,
-                inactive_at_block,
+                inactivation_block,
                 log_index,
             })) => {
                 assert_eq!(assertion_contract_id, assertion_id);
                 assert_eq!(assertion_adopter, contract_address);
-                assert_eq!(inactive_at_block, active_at_block);
+                assert_eq!(inactivation_block, activation_block);
                 assert_eq!(log_index, 0);
             }
             Ok(Some(PendingModification::Add { .. })) => {
@@ -1236,7 +1245,7 @@ mod test_indexer {
             assertion_adopter: Address::random(),
             assertion_contract: AssertionContract::default(),
             trigger_recorder: TriggerRecorder::default(),
-            active_at_block: 1,
+            activation_block: 1,
             log_index: 0,
         };
 

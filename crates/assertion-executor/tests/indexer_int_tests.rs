@@ -47,8 +47,8 @@ mod tests {
             assert_eq!(assertions.len(), 1);
             let assertion = assertions.first().unwrap();
             assert_eq!(
-                assertion.active_at_block,
-                assertion.inactive_at_block.unwrap()
+                assertion.activation_block,
+                assertion.inactivation_block.unwrap()
             );
         }
     }
@@ -78,7 +78,7 @@ mod tests {
             assert!(storage_slot.is_some());
             let storage_slot_value = storage_slot.unwrap();
             assert_eq!(storage_slot_value.present_value, U256::from(3));
-            assert!(assertion.inactive_at_block.is_none());
+            assert!(assertion.inactivation_block.is_none());
         }
     }
 
@@ -134,7 +134,7 @@ mod tests {
         let results = test_ctx.store.get_assertions_for_contract(contract_address);
         assert_eq!(results.len(), 1);
         let assertion = results.first().unwrap();
-        assert!(assertion.inactive_at_block.is_some());
+        assert!(assertion.inactivation_block.is_some());
     }
 
     #[tokio::test]
@@ -183,22 +183,22 @@ mod tests {
         test_harness(&mut test_ctx, vec![add_tx1], Some(1)).await;
         let assertions = test_ctx.store.get_assertions_for_contract(contract_address);
         assert_eq!(assertions.len(), 1);
-        assert!(assertions[0].inactive_at_block.is_none());
+        assert!(assertions[0].inactivation_block.is_none());
 
         // Remove assertion
         test_harness(&mut test_ctx, vec![remove_tx], Some(1)).await;
         let assertions = test_ctx.store.get_assertions_for_contract(contract_address);
         assert_eq!(assertions.len(), 1);
-        assert!(assertions[0].inactive_at_block.is_some());
+        assert!(assertions[0].inactivation_block.is_some());
         let assertion = assertions.first().unwrap();
-        assert!(assertion.active_at_block < assertion.inactive_at_block.unwrap());
+        assert!(assertion.activation_block < assertion.inactivation_block.unwrap());
 
         // Add assertion again
         test_harness(&mut test_ctx, vec![add_tx2], Some(1)).await;
         let assertions = test_ctx.store.get_assertions_for_contract(contract_address);
         assert_eq!(assertions.len(), 1);
         let assertion = assertions.first().unwrap();
-        assert!(assertion.active_at_block < assertion.inactive_at_block.unwrap());
+        assert!(assertion.activation_block < assertion.inactivation_block.unwrap());
     }
 
     #[tokio::test]
@@ -224,8 +224,8 @@ mod tests {
         // Should have one active assertion (the last add)
         assert_eq!(assertions.len(), 1);
         let assertion = assertions.first().unwrap();
-        assert!(assertion.inactive_at_block.is_none());
-        assert!(assertion.active_at_block < assertion.inactive_at_block.unwrap());
+        assert!(assertion.inactivation_block.is_none());
+        assert!(assertion.activation_block < assertion.inactivation_block.unwrap());
     }
 
     #[tokio::test]
@@ -284,7 +284,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "full-test")]
-    async fn test_active_at_block_is_expected() {
+    async fn test_activation_block_is_expected() {
         for _ in 0..3 {
             let time_lock_blocks = rand::rng().random_range(1..=1000);
             let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
@@ -294,8 +294,8 @@ mod tests {
                 .await;
 
             let latest_block = test_ctx.provider.get_block_number().await.unwrap();
-            // The expected active_at_block is the block number at which the assertion passed the timeloc
-            let expected_active_at_block = latest_block + time_lock_blocks + 1;
+            // The expected activation_block is the block number at which the assertion passed the timeloc
+            let expected_activation_block = latest_block + time_lock_blocks + 1;
             // Add an assertion
             let add_tx = test_ctx.add_assertion_tx(contract_address).await;
             let remove_tx = test_ctx.remove_assertion_tx(contract_address, 0);
@@ -307,17 +307,17 @@ mod tests {
             assert_eq!(assertions.len(), 1);
             let assertion = assertions.first().unwrap();
 
-            assert_eq!(assertion.active_at_block, expected_active_at_block);
+            assert_eq!(assertion.activation_block, expected_activation_block);
             assert_eq!(
-                assertion.inactive_at_block.unwrap(),
-                expected_active_at_block
+                assertion.inactivation_block.unwrap(),
+                expected_activation_block
             );
         }
     }
 
     #[tokio::test]
     #[cfg(feature = "full-test")]
-    async fn test_active_at_block_is_expected_diff_blocks() {
+    async fn test_activation_block_is_expected_diff_blocks() {
         for _ in 0..3 {
             let time_lock_blocks = rand::rng().random_range(1..=1000);
             let mut test_ctx = setup_int_test_indexer(BlockTag::Finalized, time_lock_blocks).await;
@@ -327,9 +327,9 @@ mod tests {
                 .await;
 
             let latest_block = test_ctx.provider.get_block_number().await.unwrap();
-            // The expected active_at_block is the block number at which the assertion passed the timeloc
-            let expected_active_at_block = latest_block + time_lock_blocks + 1;
-            let expected_inactive_at_block = latest_block + time_lock_blocks + 2;
+            // The expected activation_block is the block number at which the assertion passed the timeloc
+            let expected_activation_block = latest_block + time_lock_blocks + 1;
+            let expected_inactivation_block = latest_block + time_lock_blocks + 2;
             // Add an assertion
             let add_tx = test_ctx.add_assertion_tx(contract_address).await;
             let remove_tx = test_ctx.remove_assertion_tx(contract_address, 0);
@@ -342,10 +342,10 @@ mod tests {
             assert_eq!(assertions.len(), 1);
             let assertion = assertions.first().unwrap();
 
-            assert_eq!(assertion.active_at_block, expected_active_at_block);
+            assert_eq!(assertion.activation_block, expected_activation_block);
             assert_eq!(
-                assertion.inactive_at_block.unwrap(),
-                expected_inactive_at_block
+                assertion.inactivation_block.unwrap(),
+                expected_inactivation_block
             );
         }
     }
