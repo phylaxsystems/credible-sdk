@@ -38,7 +38,7 @@ use std::{
     sync::{
         Arc,
         atomic::AtomicBool,
-    },
+    }, time::Duration,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{
@@ -148,6 +148,10 @@ impl Transport for GrpcTransport {
 
         let shutdown = self.shutdown_token.clone();
         Server::builder()
+            .tcp_nodelay(true)
+            .tcp_keepalive(Some(Duration::from_secs(60)))
+            .http2_keepalive_interval(Some(Duration::from_secs(30)))
+            .http2_keepalive_timeout(Some(Duration::from_secs(60)))
             .add_service(pb::sidecar_transport_server::SidecarTransportServer::new(
                 service,
             ))
