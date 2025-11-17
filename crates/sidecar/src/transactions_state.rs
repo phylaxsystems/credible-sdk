@@ -537,6 +537,75 @@ mod tests {
         assert_eq!(received_result2, result2);
     }
 
+    #[tokio::test]
+    async fn test_multiple_receivers_get_broadcast_result() {
+        let state = TransactionsState::new();
+        let tx_execution_id = create_test_tx_execution_id();
+        let result = create_test_transaction_result();
+
+        // Request the same transaction result twice before it is available so both share the broadcast sender.
+        let mut receiver_one = match state.request_transaction_result(&tx_execution_id) {
+            RequestTransactionResult::Channel(rx) => rx,
+            RequestTransactionResult::Result(_) => panic!("Expected channel for first requester"),
+        };
+
+        let mut receiver_two = match state.request_transaction_result(&tx_execution_id) {
+            RequestTransactionResult::Channel(rx) => rx,
+            RequestTransactionResult::Result(_) => panic!("Expected channel for second requester"),
+        };
+
+        state.add_transaction_result(tx_execution_id, &result.clone());
+
+        // Both receivers should pick up the broadcasted value.
+        let received_one = timeout(Duration::from_millis(100), receiver_one.recv())
+            .await
+            .expect("Should receive result for first receiver")
+            .expect("Channel should not be closed");
+        let received_two = timeout(Duration::from_millis(100), receiver_two.recv())
+            .await
+            .expect("Should receive result for second receiver")
+            .expect("Channel should not be closed");
+
+        assert_eq!(received_one, result);
+        assert_eq!(received_two, result);
+
+        // After delivery, pending requests map should no longer contain the id.
+        assert!(
+            !state
+                .transaction_results_pending_requests
+                .contains_key(&tx_execution_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_new_requester_after_result_gets_immediate_value() {
+        let state = TransactionsState::new();
+        let tx_execution_id = create_test_tx_execution_id();
+        let result = create_test_transaction_result();
+
+        // First subscriber waits for the broadcasted result.
+        let mut waiting_receiver = match state.request_transaction_result(&tx_execution_id) {
+            RequestTransactionResult::Channel(rx) => rx,
+            RequestTransactionResult::Result(_) => panic!("Expected channel"),
+        };
+
+        state.add_transaction_result(tx_execution_id, &result.clone());
+
+        let received = timeout(Duration::from_millis(100), waiting_receiver.recv())
+            .await
+            .expect("Should receive broadcast")
+            .expect("Channel should not be closed");
+        assert_eq!(received, result);
+
+        // A new transport request after the result is stored should receive it immediately.
+        match state.request_transaction_result(&tx_execution_id) {
+            RequestTransactionResult::Result(returned) => assert_eq!(returned, result),
+            RequestTransactionResult::Channel(_) => {
+                panic!("Expected immediate result for new requester")
+            }
+        }
+    }
+
     #[test]
     fn test_process_pending_queries_handles_no_pending_query() {
         let state = TransactionsState::new();
