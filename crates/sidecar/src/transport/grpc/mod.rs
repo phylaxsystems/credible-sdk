@@ -38,7 +38,8 @@ use std::{
     sync::{
         Arc,
         atomic::AtomicBool,
-    }, time::Duration,
+    },
+    time::Duration,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{
