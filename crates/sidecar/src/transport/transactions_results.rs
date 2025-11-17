@@ -1,5 +1,9 @@
 use dashmap::DashMap;
-use std::sync::Mutex;
+use futures::future;
+use std::{
+    sync::Mutex,
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::{
     sync::broadcast,
@@ -153,6 +157,28 @@ impl QueryTransactionsResults {
 
         false
     }
+}
+
+type PendingTxWaitOutcome =
+    Result<Result<bool, broadcast::error::RecvError>, tokio::time::error::Elapsed>;
+
+/// Waits for a batch of pending receivers to signal their transactions were received.
+pub async fn wait_for_pending_transactions<I, K>(pending: I) -> Vec<(K, PendingTxWaitOutcome)>
+where
+    I: IntoIterator<Item = (K, broadcast::Receiver<bool>)>,
+    K: Send,
+{
+    let wait_futures = pending.into_iter().map(|(key, mut rx)| {
+        async move {
+            let wait_result =
+                tokio::time::timeout(Duration::from_millis(TRANSACTION_RECEIVE_WAIT), rx.recv())
+                    .await;
+
+            (key, wait_result)
+        }
+    });
+
+    future::join_all(wait_futures).await
 }
 
 impl Drop for QueryTransactionsResults {

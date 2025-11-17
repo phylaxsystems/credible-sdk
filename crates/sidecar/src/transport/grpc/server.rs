@@ -44,7 +44,7 @@ use crate::{
         transactions_results::{
             AcceptedState,
             QueryTransactionsResults,
-            TRANSACTION_RECEIVE_WAIT,
+            wait_for_pending_transactions,
         },
     },
 };
@@ -63,7 +63,6 @@ use assertion_executor::primitives::{
     TxKind,
     U256,
 };
-use futures::future;
 use revm::{
     context::{
         BlockEnv as RevmBlockEnv,
@@ -90,7 +89,6 @@ use std::{
             Ordering,
         },
     },
-    time::Duration,
 };
 use tonic::{
     Request,
@@ -217,7 +215,8 @@ impl GrpcService {
                     match self.transactions_results.is_tx_received(&tx_execution_id) {
                         AcceptedState::Yes => ready_ids.push(tx_execution_id),
                         AcceptedState::NotYet(rx) => {
-                            waiters.push((tx_execution_id, pb_tx_execution_id.tx_hash.clone(), rx));
+                            waiters
+                                .push(((tx_execution_id, pb_tx_execution_id.tx_hash.clone()), rx));
                         }
                     }
                 }
@@ -230,21 +229,9 @@ impl GrpcService {
         }
 
         if !waiters.is_empty() {
-            let wait_futures = waiters.into_iter().map(|(tx_execution_id, hash, mut rx)| {
-                async move {
-                    let wait_result = tokio::time::timeout(
-                        Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
-                        rx.recv(),
-                    )
-                    .await;
+            let wait_outcomes = wait_for_pending_transactions(waiters).await;
 
-                    (tx_execution_id, hash, wait_result)
-                }
-            });
-
-            let wait_outcomes = future::join_all(wait_futures).await;
-
-            for (tx_execution_id, hash, wait_result) in wait_outcomes {
+            for ((tx_execution_id, hash), wait_result) in wait_outcomes {
                 match wait_result {
                     Ok(Ok(true)) => {
                         results.push(self.fetch_transaction_result(tx_execution_id).await?);

@@ -24,6 +24,7 @@ use crate::{
             AcceptedState,
             QueryTransactionsResults,
             TRANSACTION_RECEIVE_WAIT,
+            wait_for_pending_transactions,
         },
     },
 };
@@ -37,7 +38,6 @@ use axum::{
     http::StatusCode,
     response::Json as ResponseJson,
 };
-use futures::future;
 use revm::context::TxEnv;
 use serde::{
     Deserialize,
@@ -572,19 +572,9 @@ async fn handle_get_transactions(
     }
 
     if !pending.is_empty() {
-        let wait_futures = pending.into_iter().map(|(tx_execution_id, mut rx)| {
-            async move {
-                let wait_result = tokio::time::timeout(
-                    Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
-                    rx.recv(),
-                )
-                .await;
+        let wait_outcomes = wait_for_pending_transactions(pending).await;
 
-                (tx_execution_id, wait_result)
-            }
-        });
-
-        for (tx_execution_id, wait_result) in future::join_all(wait_futures).await {
+        for (tx_execution_id, wait_result) in wait_outcomes {
             match wait_result {
                 Ok(Ok(true)) => {
                     match resolve_transaction_result(state, request, tx_execution_id).await {
