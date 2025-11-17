@@ -693,7 +693,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             if self.sources.iter_synced_sources().into_iter().any(|a| {
                 // For this case, the min_synced_block is the current head too, meaning that
                 // the sources must be synced up to the current head
-                a.is_synced(self.current_head, self.current_head)
+                a.is_synced(
+                    self.sources.get_minimum_synced_block_number(),
+                    self.current_head,
+                )
             }) {
                 return Ok(());
             }
