@@ -79,8 +79,8 @@ struct AssertionsForExecutionMetadata<'a> {
 /// Struct representing a pending assertion modification that has not passed the timelock.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct AssertionState {
-    pub active_at_block: u64,
-    pub inactive_at_block: Option<u64>,
+    pub activation_block: u64,
+    pub inactivation_block: Option<u64>,
     pub assertion_contract: AssertionContract,
     pub trigger_recorder: TriggerRecorder,
 }
@@ -89,9 +89,9 @@ pub struct AssertionState {
 #[derive(Debug)]
 struct AssertionStateMetadata<'a> {
     #[allow(dead_code)]
-    active_at_block: u64,
+    activation_block: u64,
     #[allow(dead_code)]
-    inactive_at_block: Option<u64>,
+    inactivation_block: Option<u64>,
     #[allow(dead_code)]
     assertion_id: &'a B256,
     #[allow(dead_code)]
@@ -109,8 +109,8 @@ impl AssertionState {
     ) -> Result<Self, FnSelectorExtractorError> {
         let (contract, trigger_recorder) = extract_assertion_contract(bytecode, executor_config)?;
         Ok(Self {
-            active_at_block: 0,
-            inactive_at_block: None,
+            activation_block: 0,
+            inactivation_block: None,
             assertion_contract: contract,
             trigger_recorder,
         })
@@ -161,7 +161,7 @@ impl AssertionStore {
         debug!(
             target: "assertion-executor::assertion_store",
             assertion_adopter=?assertion_adopter,
-            active_at_block=?assertion.active_at_block,
+            activation_block=?assertion.activation_block,
             triggers=?assertion.trigger_recorder.triggers,
             "Inserting assertion into store"
         );
@@ -280,8 +280,8 @@ impl AssertionStore {
 
     /// Reads the assertions for the given assertion adopter at the given block.
     /// Returns the assertions that are active at the given block.
-    /// An assertion is considered active at a block if the `active_at_block` is less than or equal
-    /// to the given block, and the `inactive_at_block` is greater than the given block.
+    /// An assertion is considered active at a block if the `activation_block` is less than or equal
+    /// to the given block, and the `inactivation_block` is greater than the given block.
     /// `assertion_adopter` is the address of the contract leveraging assertions.
     #[tracing::instrument(
         skip_all,
@@ -320,8 +320,8 @@ impl AssertionStore {
                 format!("{:?}",
                 AssertionStateMetadata {
                     assertion_id: &a.assertion_contract.id,
-                    active_at_block : a.active_at_block,
-                    inactive_at_block : a.inactive_at_block,
+                    activation_block : a.activation_block,
+                    inactivation_block : a.inactivation_block,
                     recorded_triggers : &a.trigger_recorder.triggers
                 })).collect::<Vec<_>>(),
             "Assertion states in store for adopter.",
@@ -330,11 +330,11 @@ impl AssertionStore {
         let active_assertion_contracts = assertion_states
             .into_iter()
             .filter(|a| {
-                let inactive_block = match a.inactive_at_block {
+                let inactive_block = match a.inactivation_block {
                     Some(inactive_block) => {
                         // If the inactive block is less than the active block, the end bound is
                         // ignored.
-                        if inactive_block < a.active_at_block {
+                        if inactive_block < a.activation_block {
                             u64::MAX
                         } else {
                             inactive_block
@@ -342,7 +342,7 @@ impl AssertionStore {
                     }
                     None => u64::MAX,
                 };
-                let in_bound_start = a.active_at_block <= block;
+                let in_bound_start = a.activation_block <= block;
                 let in_bound_end = block < inactive_block;
                 in_bound_start && in_bound_end
             })
@@ -422,14 +422,14 @@ impl AssertionStore {
                     PendingModification::Add {
                         assertion_contract,
                         trigger_recorder,
-                        active_at_block,
+                        activation_block,
                         ..
                     } => {
                         debug!(
                             target: "assertion-executor::assertion_store",
                             ?assertion_contract,
                             ?trigger_recorder,
-                            active_at_block,
+                            activation_block,
                             "Applying pending assertion addition"
                         );
                         let existing_state = assertions
@@ -438,12 +438,12 @@ impl AssertionStore {
 
                         match existing_state {
                             Some(state) => {
-                                state.active_at_block = *active_at_block;
+                                state.activation_block = *activation_block;
                             }
                             None => {
                                 assertions.push(AssertionState {
-                                    active_at_block: *active_at_block,
-                                    inactive_at_block: None,
+                                    activation_block: *activation_block,
+                                    inactivation_block: None,
                                     assertion_contract: assertion_contract.clone(),
                                     trigger_recorder: trigger_recorder.clone(),
                                 });
@@ -452,13 +452,13 @@ impl AssertionStore {
                     }
                     PendingModification::Remove {
                         assertion_contract_id,
-                        inactive_at_block,
+                        inactivation_block,
                         ..
                     } => {
                         debug!(
                             target: "assertion-executor::assertion_store",
                             ?assertion_contract_id,
-                            inactive_at_block,
+                            inactivation_block,
                             "Applying pending assertion removal"
                         );
                         let existing_state = assertions
@@ -467,10 +467,10 @@ impl AssertionStore {
 
                         match existing_state {
                             Some(state) => {
-                                state.inactive_at_block = Some(*inactive_at_block);
+                                state.inactivation_block = Some(*inactivation_block);
                             }
                             None => {
-                                // The assertion was not found, so we add it with the inactive_at_block set.
+                                // The assertion was not found, so we add it with the inactivation_block set.
                                 error!(
                                     target: "assertion-executor::assertion_store",
                                     ?assertion_contract_id,
@@ -539,12 +539,12 @@ mod tests {
     use std::collections::HashSet;
 
     fn create_test_assertion(
-        active_at_block: u64,
-        inactive_at_block: Option<u64>,
+        activation_block: u64,
+        inactivation_block: Option<u64>,
     ) -> AssertionState {
         AssertionState {
-            active_at_block,
-            inactive_at_block,
+            activation_block,
+            inactivation_block,
             assertion_contract: AssertionContract {
                 id: B256::random(),
                 ..Default::default()
@@ -574,7 +574,7 @@ mod tests {
                 ..Default::default()
             },
             trigger_recorder: TriggerRecorder::default(),
-            active_at_block: active_at,
+            activation_block: active_at,
             log_index,
         }
     }
@@ -589,7 +589,7 @@ mod tests {
             log_index,
             assertion_adopter: aa,
             assertion_contract_id: id,
-            inactive_at_block: inactive_at,
+            inactivation_block: inactive_at,
         }
     }
 
@@ -666,7 +666,7 @@ mod tests {
             log_index: 1,
             assertion_adopter: aa,
             assertion_contract_id: add_mod.assertion_contract_id(),
-            inactive_at_block: 200,
+            inactivation_block: 200,
         };
         store.apply_pending_modifications(vec![remove_mod])?;
 

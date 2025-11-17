@@ -49,13 +49,13 @@ pub enum PendingModification {
         assertion_adopter: Address,
         assertion_contract: AssertionContract,
         trigger_recorder: TriggerRecorder,
-        active_at_block: u64,
+        activation_block: u64,
         log_index: u64,
     },
     Remove {
         assertion_adopter: Address,
         assertion_contract_id: B256,
-        inactive_at_block: u64,
+        inactivation_block: u64,
         log_index: u64,
     },
 }
