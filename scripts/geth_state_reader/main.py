@@ -104,6 +104,14 @@ class DumpMetadata:
     total_accounts: int = 0
 
 
+class GethDumpError(RuntimeError):
+    def __init__(self, command: str, returncode: int, stderr: str) -> None:
+        self.command = command
+        self.returncode = returncode
+        self.stderr = stderr
+        super().__init__(f"geth {command} exited with {returncode}: {stderr}")
+
+
 class JsonSink:
     def __init__(self, path: Optional[str]):
         self._path = path
@@ -224,8 +232,35 @@ def _extract_block_info(stderr_lines: Iterable[str]) -> DumpMetadata:
     return DumpMetadata(block_number, block_hash, None)
 
 
-def run_geth_dump(
+def _build_dump_command(
     *,
+    mode: str,
+    geth_bin: str,
+    datadir: str,
+    block_argument: Optional[str],
+    start_key: Optional[str],
+    limit: Optional[int],
+) -> List[str]:
+    cmd: List[str] = [geth_bin]
+    if mode == "snapshot":
+        cmd.extend(["snapshot", "dump"])
+    else:
+        cmd.append("dump")
+        cmd.extend(["--iterative", "--incompletes"])
+
+    cmd.extend(["--datadir", datadir])
+    if limit is not None:
+        cmd.extend(["--limit", str(limit)])
+    if start_key:
+        cmd.extend(["--start", start_key])
+    if block_argument:
+        cmd.append(block_argument)
+    return cmd
+
+
+def _invoke_geth_dump(
+    *,
+    mode: str,
     geth_bin: str,
     datadir: str,
     block_argument: Optional[str],
@@ -233,22 +268,14 @@ def run_geth_dump(
     limit: Optional[int],
     on_account: Callable[[AccountRecord], None],
 ) -> DumpMetadata:
-    cmd = [
-        geth_bin,
-        "dump",
-        "--datadir",
-        datadir,
-        "--iterative",
-        "--incompletes",
-    ]
-
-    if limit is not None:
-        cmd.extend(["--limit", str(limit)])
-    if start_key:
-        cmd.extend(["--start", start_key])
-
-    if block_argument:
-        cmd.append(block_argument)
+    cmd = _build_dump_command(
+        mode=mode,
+        geth_bin=geth_bin,
+        datadir=datadir,
+        block_argument=block_argument,
+        start_key=start_key,
+        limit=limit,
+    )
 
     try:
         proc = subprocess.Popen(
@@ -290,9 +317,12 @@ def run_geth_dump(
     proc.wait()
     stderr_thread.join()
 
+    stderr_text = "".join(stderr_lines)
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"geth dump exited with {proc.returncode}: {''.join(stderr_lines)}"
+        raise GethDumpError(
+            command="snapshot dump" if mode == "snapshot" else "dump",
+            returncode=proc.returncode,
+            stderr=stderr_text,
         )
 
     info = _extract_block_info(stderr_lines)
@@ -302,6 +332,79 @@ def run_geth_dump(
         metadata.block_hash = info.block_hash
 
     return metadata
+
+
+def _should_retry_snapshot(stderr_text: str) -> bool:
+    lowered = stderr_text.lower()
+    retry_tokens = [
+        "head doesn't match snapshot",
+        "snapshot not found",
+        "snapshot storage not ready",
+        "loaded snapshot journal",
+        "failed to load snapshot",
+    ]
+    return any(token in lowered for token in retry_tokens)
+
+
+def _should_retry_trie(stderr_text: str) -> bool:
+    lowered = stderr_text.lower()
+    return "missing trie node" in lowered or "state is not available" in lowered
+
+
+def run_geth_dump(
+    *,
+    geth_bin: str,
+    datadir: str,
+    block_argument: Optional[str],
+    start_key: Optional[str],
+    limit: Optional[int],
+    on_account: Callable[[AccountRecord], None],
+    dump_backend: str,
+    verbose: bool,
+) -> DumpMetadata:
+    def _backend_order() -> List[str]:
+        if dump_backend == "snapshot":
+            return ["snapshot"]
+        if dump_backend == "trie":
+            return ["trie"]
+        return ["snapshot", "trie"]
+
+    errors: List[GethDumpError] = []
+    for mode in _backend_order():
+        if verbose:
+            print(f"Invoking geth {mode} dump …", file=sys.stderr)
+        try:
+            return _invoke_geth_dump(
+                mode=mode,
+                geth_bin=geth_bin,
+                datadir=datadir,
+                block_argument=block_argument,
+                start_key=start_key,
+                limit=limit,
+                on_account=on_account,
+            )
+        except GethDumpError as exc:
+            errors.append(exc)
+            if dump_backend != "auto":
+                raise
+            if mode == "snapshot" and _should_retry_snapshot(exc.stderr):
+                if verbose:
+                    print(
+                        "Snapshot backend unavailable, falling back to trie dump.",
+                        file=sys.stderr,
+                    )
+                continue
+            if mode == "trie" and _should_retry_trie(exc.stderr):
+                if verbose:
+                    print(
+                        "Trie backend missing node data, falling back to snapshot dump.",
+                        file=sys.stderr,
+                    )
+                continue
+            raise
+
+    error_messages = "\n---\n".join(str(err) for err in errors)
+    raise RuntimeError(f"All geth dump attempts failed:\n{error_messages}")
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -317,6 +420,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--geth-bin",
         default="geth",
         help="Path to the geth binary (defaults to 'geth' in $PATH).",
+    )
+    parser.add_argument(
+        "--geth-dump-backend",
+        choices=("auto", "snapshot", "trie"),
+        default="auto",
+        help=(
+            "State dump implementation to invoke: 'snapshot' (preferred for path scheme), "
+            "'trie' (legacy geth dump), or 'auto' to try snapshot then trie."
+        ),
     )
     parser.add_argument(
         "--block-number",
@@ -405,6 +517,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         start_key=args.start_key,
         limit=args.limit,
         on_account=dispatch,
+        dump_backend=args.geth_dump_backend,
+        verbose=args.verbose,
     )
 
     for sink in sinks:

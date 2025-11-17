@@ -40,6 +40,9 @@ Flags:
 - `--redis-namespace`: Redis namespace prefix (defaults to `state`).
 - `--redis-pipeline-size`: number of commands per pipeline flush (default 1000).
 - `--json-output` + `--json-output-enabled`: enable newline-delimited JSON mirroring.
+- `--geth-dump-backend`: choose between `snapshot`, `trie`, or `auto` (default) for the
+  backing `geth` command. `snapshot` avoids `missing trie node` errors on the modern
+  path database scheme.
 
 ## Verification
 
