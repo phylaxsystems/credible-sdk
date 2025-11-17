@@ -214,14 +214,14 @@ impl Source for EthRpcSource {
 
     fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool {
         let client_latest_head = self.inner.latest_head.load(Ordering::Acquire);
-        min_synced_block <= client_latest_head && client_latest_head <= latest_head
+        min_synced_block <= client_latest_head && latest_head <= client_latest_head
     }
 
     fn update_cache_status(&self, min_synced_block: u64, latest_head: u64) {
         let client_latest_head = self.inner.latest_head.load(Ordering::Acquire);
         // Update the target block if the client is synced and the latest head is within the
         // range of the client's latest head
-        if min_synced_block <= client_latest_head && client_latest_head <= latest_head {
+        if min_synced_block <= client_latest_head && latest_head <= client_latest_head {
             self.inner.json_rpc_db.set_target_block(client_latest_head);
         }
     }
