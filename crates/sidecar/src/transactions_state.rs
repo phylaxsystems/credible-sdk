@@ -180,13 +180,13 @@ mod tests {
     /// Helper function to create a test transaction execution id
     fn create_test_tx_execution_id() -> TxExecutionId {
         let tx_hash = B256::from([1u8; 32]);
-        TxExecutionId::new(1, 0, tx_hash)
+        TxExecutionId::new(1, 0, tx_hash, 0)
     }
 
     /// Helper function to create another test transaction execution id
     fn create_test_tx_execution_id_2() -> TxExecutionId {
         let tx_hash = B256::from([2u8; 32]);
-        TxExecutionId::new(2, 1, tx_hash)
+        TxExecutionId::new(2, 1, tx_hash, 0)
     }
 
     /// Helper function to create a test transaction result
@@ -655,7 +655,7 @@ mod tests {
             let state_clone = Arc::clone(&state);
             let handle = thread::spawn(move || {
                 let tx_execution_id =
-                    TxExecutionId::new((i + 1) as u64, (i % 3) as u64, B256::from([i as u8; 32]));
+                    TxExecutionId::new(i + 1, i % 3, B256::from([i as u8; 32]), i);
                 let result = create_test_transaction_result();
 
                 // Add accepted tx

@@ -117,7 +117,6 @@ pub trait TestTransport: Sized {
         &mut self,
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
-        prev_tx_hash: Option<TxHash>,
     ) -> Result<(), String>;
     /// Send a new iteration event with custom block environment data.
     ///
@@ -249,14 +248,12 @@ impl<T: TestTransport> LocalInstance<T> {
         self.send_block(self.block_number).await?;
         self.block_number += 1;
 
-        let mut prev_tx_hash = None;
         // Then send all transactions
         for (tx_hash, tx_env) in transactions {
             let tx_execution_id = self.build_tx_id(tx_hash);
             self.transport
-                .send_transaction(tx_execution_id, tx_env, prev_tx_hash)
+                .send_transaction(tx_execution_id, tx_env)
                 .await?;
-            prev_tx_hash = Some(tx_hash);
         }
 
         Ok(())
@@ -389,12 +386,12 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Builds a `TxExecutionId` with the block hash and instance
     /// currently in use by the `LocalInstance`.
     fn build_tx_id(&self, tx_hash: B256) -> TxExecutionId {
+        let index = self.iteration_tx_map.get(&self.iteration_id).iter().count();
         TxExecutionId {
             block_number: self.block_number,
             iteration_id: self.iteration_id,
             tx_hash,
-            // FIXME: Propagate correctly the index
-            index: 0,
+            index: u64::try_from(index).unwrap(),
         }
     }
 
@@ -550,9 +547,8 @@ impl<T: TestTransport> LocalInstance<T> {
             tx_execution_id.as_block_execution_id(),
         );
 
-        // FIXME: Propagate correctly the prev tx hash
         self.transport
-            .send_transaction(tx_execution_id, tx_env, None)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         Ok(tx_execution_id)
@@ -613,10 +609,9 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
-        // FIXME: Propagate correctly the prev tx hash
         // Send transaction
         self.transport
-            .send_transaction(tx_execution_id, tx_env, None)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         // Wait for processing
@@ -667,9 +662,8 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
-        // FIXME: Propagate correctly the prev tx hash
         self.transport
-            .send_transaction(tx_execution_id, tx_env, None)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         Ok((caller, tx_execution_id))
@@ -701,9 +695,8 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
-        // FIXME: Propagate correctly the prev tx hash
         self.transport
-            .send_transaction(tx_execution_id, tx_env, None)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         Ok(tx_execution_id)
@@ -736,7 +729,7 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // FIXME: Propagate correctly the prev tx hash
         self.transport
-            .send_transaction(tx_execution_id, tx_env, None)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         Ok(tx_execution_id)
@@ -777,9 +770,8 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
-        // FIXME: Propagate correctly the prev tx hash
         self.transport
-            .send_transaction(tx_execution_id, tx_env, None)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
 
         Ok(tx_execution_id)
@@ -837,10 +829,9 @@ impl<T: TestTransport> LocalInstance<T> {
             .tx_type(Some(1))
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
-        // FIXME: Propagate correctly the prev tx hash
         let tx_id_eip2930 = tx_execution_id;
         self.transport
-            .send_transaction(tx_execution_id, tx_env, None)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
         let _ = self.wait_for_transaction_processed(&tx_id_eip2930).await?;
 
@@ -878,10 +869,9 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
-        // FIXME: Propagate correctly the prev tx hash
         let tx_id_eip1559 = tx_execution_id;
         self.transport
-            .send_transaction(tx_execution_id, tx_env, None)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
         let _ = self.wait_for_transaction_processed(&tx_id_eip1559).await?;
 
@@ -917,7 +907,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // FIXME: Propagate correctly the prev tx hash
         let tx_id_eip4844 = tx_execution_id;
         self.transport
-            .send_transaction(tx_execution_id, tx_env, None)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
         let _ = self.wait_for_transaction_processed(&tx_id_eip4844).await?;
 
@@ -954,7 +944,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .unwrap();
         // FIXME: Propagate correctly the prev tx hash
         self.transport
-            .send_transaction(tx_execution_id, tx_env, None)
+            .send_transaction(tx_execution_id, tx_env)
             .await?;
         let _ = self
             .wait_for_transaction_processed(&tx_execution_id)
@@ -1126,14 +1116,14 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send the passing transaction first
         let tx_execution_id_pass = self.build_tx_id(hash_pass);
         self.transport
-            .send_transaction(tx_execution_id_pass, tx_pass, None)
+            .send_transaction(tx_execution_id_pass, tx_pass)
             .await?;
 
         // FIXME: Propagate correctly the prev tx hash
         // Send the failing transaction second
         let tx_execution_id_fail = self.build_tx_id(hash_fail);
         self.transport
-            .send_transaction(tx_execution_id_fail, tx_fail, None)
+            .send_transaction(tx_execution_id_fail, tx_fail)
             .await?;
 
         // Verify the second transaction failed assertions and was NOT committed

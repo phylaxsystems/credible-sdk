@@ -74,13 +74,13 @@ impl HttpTransactionDecoder {
                 SendEvent::Transaction(transaction) => {
                     let tx_execution_id = transaction.tx_execution_id;
                     let tx_env = transaction.tx_env;
+                    let prev_tx_hash = transaction.prev_tx_hash;
 
                     queue_events.push(TxQueueContents::Tx(
                         QueueTransaction {
                             tx_execution_id,
                             tx_env,
-                            // FIXME: Propagate this field properly from transport layer
-                            prev_tx_hash: None,
+                            prev_tx_hash,
                         },
                         current_span,
                     ));
@@ -146,8 +146,7 @@ impl HttpTransactionDecoder {
                 QueueTransaction {
                     tx_execution_id,
                     tx_env: transaction.tx_env,
-                    // FIXME: Propagate properly from the transport layer
-                    prev_tx_hash: None,
+                    prev_tx_hash: transaction.prev_tx_hash,
                 },
                 current_span,
             ));

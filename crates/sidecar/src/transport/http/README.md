@@ -16,6 +16,7 @@ The HTTP transport consists of:
 ## Metrics
 
 The http transport exposes the following metrics:
+
 - `sidecar_rpc_duration_SendEvents`
 - `sidecar_rpc_duration_SendTransactions`
 - `sidecar_rpc_duration_Reorg`
@@ -133,11 +134,13 @@ arrive atomically in one call. The `events` array must not be empty.
           "tx_execution_id": {
             "block_number": 12346,
             "iteration_id": 7,
-            "tx_hash": "0x1234567890abcdef..."
+            "tx_hash": "0x1234567890abcdef...",
+            "index": 0
           },
           "tx_env": {
             /* TxEnv object */
-          }
+          },
+          "prev_tx_hash": "0x1234567890abcdef..."
         }
       }
     ]
@@ -166,19 +169,23 @@ Each transaction in the `sendTransactions` request consists of two parts:
 ### `tx_execution_id`
 
 Identifies the transaction uniquely within the sidecar:
+
 - `block_number` (u64): Block number
 - `iteration_id` (u64): Arbitrary identifier for the block creation attempt (chosen by sequencer, never 0)
 - `tx_hash` (string): Transaction hash (0x-prefixed hex)
 
-The `iteration_id` field tracks different candidate blocks created by the sequencer for the same block number. When a sequencer produces multiple block candidates, each is assigned a unique iteration_id by the sequencer.
+The `iteration_id` field tracks different candidate blocks created by the sequencer for the same block number. When a
+sequencer produces multiple block candidates, each is assigned a unique iteration_id by the sequencer.
 
 ### `tx_env`
 
-Contains the transaction execution environment. See [Transaction Types](../README.md#transaction-types) for detailed field documentation.
+Contains the transaction execution environment. See [Transaction Types](../README.md#transaction-types) for detailed
+field documentation.
 
 ### `sendTransactions`
 
-Sends batch of transactions to sidecar for processing. Must include at least one transaction. Blocked until `commit_head` + `new_iteration`
+Sends batch of transactions to sidecar for processing. Must include at least one transaction. Blocked until
+`commit_head` + `new_iteration`
 is received, as we need information about what block we are executing txs on top of.
 
 **Request:**
@@ -194,11 +201,13 @@ is received, as we need information about what block we are executing txs on top
         "tx_execution_id": {
           "block_number": 1000,
           "iteration_id": 1,
-          "tx_hash": "0x1234567890abcdef..."
+          "tx_hash": "0x1234567890abcdef...",
+          "index": 0
         },
         "tx_env": {
           /* TxEnv object */
-        }
+        },
+        "prev_tx_hash": "0x1234567890abcdef..."
       }
       // Additional transactions...
     ]
@@ -243,7 +252,8 @@ Reorg the last sent transaction. Hash of the last sent transaction must be the s
   "params": {
     "block_number": 1000,
     "iteration_id": 1,
-    "tx_hash": "0x1234567890abcdef..."
+    "tx_hash": "0x1234567890abcdef...",
+    "index": 0
   }
 }
 ```
@@ -278,17 +288,20 @@ Responds when all requested transactions are available. `results` field contains
     {
       "block_number": 1000,
       "iteration_id": 1,
-      "tx_hash": "0xabcd1234567890abcdef..."
+      "tx_hash": "0xabcd1234567890abcdef...",
+      "index": 0
     },
     {
       "block_number": 1000,
       "iteration_id": 1,
-      "tx_hash": "0xefgh5678901234567890..."
+      "tx_hash": "0xefgh5678901234567890...",
+      "index": 0
     },
     {
       "block_number": 1000,
       "iteration_id": 1,
-      "tx_hash": "0xijkl9012345678901234..."
+      "tx_hash": "0xijkl9012345678901234...",
+      "index": 0
     }
   ]
 }
@@ -306,7 +319,8 @@ Responds when all requested transactions are available. `results` field contains
         "tx_execution_id": {
           "block_number": 1000,
           "iteration_id": 1,
-          "tx_hash": "0xabcd1234567890abcdef..."
+          "tx_hash": "0xabcd1234567890abcdef...",
+          "index": 0
         },
         "status": "success",
         "gas_used": 21000,
@@ -316,7 +330,8 @@ Responds when all requested transactions are available. `results` field contains
         "tx_execution_id": {
           "block_number": 1000,
           "iteration_id": 1,
-          "tx_hash": "0xefgh5678901234567890..."
+          "tx_hash": "0xefgh5678901234567890...",
+          "index": 0
         },
         "status": "assertion_failed",
         "gas_used": 18500,
@@ -326,7 +341,8 @@ Responds when all requested transactions are available. `results` field contains
         "tx_execution_id": {
           "block_number": 1000,
           "iteration_id": 1,
-          "tx_hash": "0xijkl9012345678901234..."
+          "tx_hash": "0xijkl9012345678901234...",
+          "index": 0
         },
         "status": "failed",
         "gas_used": null,
@@ -352,7 +368,8 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
   "params": {
     "block_number": 1000,
     "iteration_id": 1,
-    "tx_hash": "0xabcd1234567890abcdef..."
+    "tx_hash": "0xabcd1234567890abcdef...",
+    "index": 0
   }
 }
 ```
@@ -368,7 +385,8 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
       "tx_execution_id": {
         "block_number": 1000,
         "iteration_id": 1,
-        "tx_hash": "0xabcd1234567890abcdef..."
+        "tx_hash": "0xabcd1234567890abcdef...",
+        "index": 0
       },
       "status": "success",
       "gas_used": 21000,
@@ -389,7 +407,8 @@ Same as `getTransactions`, but only works for one tx hash and returns a single r
       {
         "block_number": 1000,
         "iteration_id": 1,
-        "tx_hash": "0xabcd1234567890abcdef..."
+        "tx_hash": "0xabcd1234567890abcdef...",
+        "index": 0
       }
     ]
   }

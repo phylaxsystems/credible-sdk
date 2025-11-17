@@ -326,7 +326,8 @@ mod tests {
                 {
                     "block_number": tx_execution_id.block_number,
                     "iteration_id": tx_execution_id.iteration_id,
-                    "tx_hash": tx_execution_id.tx_hash.to_string()
+                    "tx_hash": tx_execution_id.tx_hash.to_string(),
+                    "index": 0
                 }
             ],
             "id": 1
@@ -405,7 +406,8 @@ mod tests {
                 {
                     "block_number": 0u64,
                     "iteration_id": 0u64,
-                    "tx_hash": missing_hash.to_string()
+                    "tx_hash": missing_hash.to_string(),
+                    "index": 0
                 }
             ],
             "id": 2

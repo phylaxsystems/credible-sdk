@@ -169,12 +169,21 @@ impl LocalInstanceMockDriver {
             .override_n_transactions
             .unwrap_or(iteration_hashes.len() as u64);
 
-        let last_tx_hash = match &self.override_last_tx_hash {
-            Some(value) => *value,
-            None => iteration_hashes.last().copied(),
-        };
+        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
 
         (n_transactions, last_tx_hash)
+    }
+
+    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
+        if let Some(value) = &self.override_last_tx_hash {
+            *value
+        } else {
+            let iteration_hashes: &[TxHash] = self
+                .block_tx_hashes_by_iteration
+                .get(&iteration_id)
+                .map_or(&[], |v| v.as_slice());
+            iteration_hashes.last().copied()
+        }
     }
 }
 
@@ -418,13 +427,14 @@ impl TestTransport for LocalInstanceMockDriver {
         &mut self,
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
-        prev_tx_hash: Option<TxHash>,
     ) -> Result<(), String> {
         let iteration_id = tx_execution_id.iteration_id;
         self.block_tx_hashes_by_iteration
             .entry(iteration_id)
             .or_default()
             .push(tx_execution_id.tx_hash);
+
+        let prev_tx_hash = self.get_last_tx_hash(iteration_id);
 
         info!(target: "test_transport", "LocalInstance sending transaction: {:?}", tx_execution_id);
         let queue_tx = QueueTransaction {
@@ -512,12 +522,22 @@ impl LocalInstanceHttpDriver {
             .override_n_transactions
             .unwrap_or(iteration_hashes.len() as u64);
 
-        let last_tx_hash = match &self.override_last_tx_hash {
-            Some(value) => *value,
-            None => iteration_hashes.last().copied(),
-        };
+        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
 
         (n_transactions, last_tx_hash)
+    }
+
+    // FIXME: Avoid code repetition
+    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
+        if let Some(value) = &self.override_last_tx_hash {
+            *value
+        } else {
+            let iteration_hashes: &[TxHash] = self
+                .block_tx_hashes_by_iteration
+                .get(&iteration_id)
+                .map_or(&[], |v| v.as_slice());
+            iteration_hashes.last().copied()
+        }
     }
 
     fn block_env_to_json(blockenv: &BlockEnv) -> serde_json::Value {
@@ -697,7 +717,6 @@ impl TestTransport for LocalInstanceHttpDriver {
         &mut self,
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
-        prev_tx_hash: Option<TxHash>,
     ) -> Result<(), String> {
         debug!(target: "LocalInstanceHttpDriver", "Sending transaction: {:?}", tx_execution_id);
 
@@ -707,9 +726,12 @@ impl TestTransport for LocalInstanceHttpDriver {
             .or_default()
             .push(tx_execution_id.tx_hash);
 
+        let prev_tx_hash = self.get_last_tx_hash(iteration_id);
+
         let transaction = Transaction {
             tx_execution_id,
             tx_env,
+            prev_tx_hash,
         };
 
         let request = json!({
@@ -912,12 +934,22 @@ impl LocalInstanceGrpcDriver {
             .override_n_transactions
             .unwrap_or(iteration_hashes.len() as u64);
 
-        let last_tx_hash = match &self.override_last_tx_hash {
-            Some(value) => *value,
-            None => iteration_hashes.last().copied(),
-        };
+        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
 
         (n_transactions, last_tx_hash)
+    }
+
+    // FIXME: Avoid code repetition
+    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
+        if let Some(value) = &self.override_last_tx_hash {
+            *value
+        } else {
+            let iteration_hashes: &[TxHash] = self
+                .block_tx_hashes_by_iteration
+                .get(&iteration_id)
+                .map_or(&[], |v| v.as_slice());
+            iteration_hashes.last().copied()
+        }
     }
 
     async fn create(
@@ -1073,7 +1105,6 @@ impl TestTransport for LocalInstanceGrpcDriver {
         &mut self,
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
-        prev_tx_hash: Option<TxHash>,
     ) -> Result<(), String> {
         debug!(target: "LocalInstanceGrpcDriver", "Sending transaction: {:?}", tx_execution_id);
 
@@ -1092,6 +1123,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 block_number: tx_execution_id.block_number,
                 iteration_id: tx_execution_id.iteration_id,
                 tx_hash: format!("{:#x}", tx_execution_id.tx_hash),
+                index: tx_execution_id.index,
             }),
             tx_env: Some(GrpcTransactionEnv {
                 tx_type: 0, // Default to legacy transaction type
@@ -1149,6 +1181,9 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 gas_priority_fee: tx_env.gas_priority_fee.map(|fee| fee.to_string()),
                 max_fee_per_blob_gas: tx_env.max_fee_per_blob_gas.to_string(),
             }),
+            prev_tx_hash: self
+                .get_last_tx_hash(iteration_id)
+                .map(|h| format!("{h:#x}")),
         };
 
         let request = SendTransactionsRequest {
@@ -1294,6 +1329,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 block_number: tx_execution_id.block_number,
                 iteration_id: tx_execution_id.iteration_id,
                 tx_hash: format!("{:#x}", tx_execution_id.tx_hash),
+                index: tx_execution_id.index,
             }),
         };
 

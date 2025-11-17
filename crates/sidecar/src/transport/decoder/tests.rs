@@ -82,10 +82,61 @@ fn create_test_transaction_json_with_exec_id(
         "tx_execution_id": {
             "block_number": block_number,
             "iteration_id": iteration_id,
-            "tx_hash": hash
+            "tx_hash": hash,
+            "index": 0
         },
         "tx_env": tx_env
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_test_transaction_json_full(
+    hash: &str,
+    caller: &str,
+    to: Option<&str>,
+    value: &str,
+    data: &str,
+    gas_limit: u64,
+    gas_price: u128,
+    nonce: u64,
+    chain_id: u64,
+    block_number: u64,
+    iteration_id: u64,
+    index: u64,
+    prev_tx_hash: Option<&str>,
+) -> serde_json::Value {
+    let tx_env = json!({
+        "tx_type": 0,
+        "caller": caller,
+        "gas_limit": gas_limit,
+        "gas_price": gas_price,
+        "kind": to,
+        "value": value,
+        "data": data,
+        "nonce": nonce,
+        "chain_id": chain_id,
+        "access_list": [],
+        "gas_priority_fee": null,
+        "blob_hashes": [],
+        "max_fee_per_blob_gas": 0,
+        "authorization_list": []
+    });
+
+    let mut transaction = json!({
+        "tx_execution_id": {
+            "block_number": block_number,
+            "iteration_id": iteration_id,
+            "tx_hash": hash,
+            "index": index
+        },
+        "tx_env": tx_env
+    });
+
+    if let Some(prev_hash) = prev_tx_hash {
+        transaction["prev_tx_hash"] = json!(prev_hash);
+    }
+
+    transaction
 }
 
 fn create_test_request_json(method: &str, transactions: &[serde_json::Value]) -> JsonRpcRequest {
@@ -331,6 +382,333 @@ fn test_calldata_format_handling() {
     }
 }
 
+#[test]
+fn test_transaction_with_custom_index() {
+    let transaction = create_test_transaction_json_full(
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        "0x1234567890123456789012345678901234567890",
+        Some("0x9876543210987654321098765432109876543210"),
+        "1000000000000000000",
+        "0x",
+        21000,
+        20000000000,
+        0,
+        1,
+        1,
+        1,
+        5,
+        None,
+    );
+
+    let request = create_test_request_json("sendTransactions", &[transaction]);
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().len(), 1);
+}
+
+#[test]
+fn test_transaction_with_prev_tx_hash() {
+    let transaction = create_test_transaction_json_full(
+        "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "0x1234567890123456789012345678901234567890",
+        Some("0x9876543210987654321098765432109876543210"),
+        "1000000000000000000",
+        "0x",
+        21000,
+        20000000000,
+        0,
+        1,
+        1,
+        1,
+        0,
+        Some("0x1111111111111111111111111111111111111111111111111111111111111111"),
+    );
+
+    let request = create_test_request_json("sendTransactions", &[transaction]);
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().len(), 1);
+}
+
+#[test]
+fn test_transaction_with_both_index_and_prev_tx_hash() {
+    let transaction = create_test_transaction_json_full(
+        "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "0x1234567890123456789012345678901234567890",
+        Some("0x9876543210987654321098765432109876543210"),
+        "1000000000000000000",
+        "0x",
+        21000,
+        20000000000,
+        0,
+        1,
+        1,
+        1,
+        5,
+        Some("0x2222222222222222222222222222222222222222222222222222222222222222"),
+    );
+
+    let request = create_test_request_json("sendTransactions", &[transaction]);
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().len(), 1);
+}
+
+#[test]
+fn test_multiple_transactions_with_index_sequence() {
+    let transactions = vec![
+        create_test_transaction_json_full(
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "0x1111111111111111111111111111111111111111",
+            Some("0x2222222222222222222222222222222222222222"),
+            "1000000000000000000",
+            "0x",
+            21000,
+            20000000000,
+            0,
+            1,
+            100,
+            1,
+            0,
+            None,
+        ),
+        create_test_transaction_json_full(
+            "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "0x3333333333333333333333333333333333333333",
+            Some("0x4444444444444444444444444444444444444444"),
+            "2000000000000000000",
+            "0xa9059cbb",
+            25000,
+            22000000000,
+            1,
+            1,
+            100,
+            1,
+            1,
+            Some("0x1111111111111111111111111111111111111111111111111111111111111111"),
+        ),
+        create_test_transaction_json_full(
+            "0x3333333333333333333333333333333333333333333333333333333333333333",
+            "0x5555555555555555555555555555555555555555",
+            Some("0x6666666666666666666666666666666666666666"),
+            "3000000000000000000",
+            "0x",
+            21000,
+            23000000000,
+            2,
+            1,
+            100,
+            1,
+            2,
+            Some("0x2222222222222222222222222222222222222222222222222222222222222222"),
+        ),
+    ];
+
+    let request = create_test_request_json("sendTransactions", &transactions);
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().len(), 3);
+}
+
+#[test]
+fn test_index_boundary_values() {
+    let test_cases = vec![(0u64, "zero"), (1u64, "one"), (u64::MAX, "max")];
+
+    for (index, name) in test_cases {
+        let transaction = create_test_transaction_json_full(
+            "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "0x1234567890123456789012345678901234567890",
+            Some("0x9876543210987654321098765432109876543210"),
+            "1000000000000000000",
+            "0x",
+            21000,
+            20000000000,
+            0,
+            1,
+            1,
+            1,
+            index,
+            None,
+        );
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_ok(), "Failed for index value: {name}");
+        assert_eq!(result.unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn test_prev_tx_hash_format_variations() {
+    let test_cases = vec![
+        (
+            "with_prefix",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ),
+        (
+            "without_prefix",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        ),
+        (
+            "uppercase",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ),
+    ];
+
+    for (name, hash) in test_cases {
+        let transaction = create_test_transaction_json_full(
+            "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "0x1234567890123456789012345678901234567890",
+            Some("0x9876543210987654321098765432109876543210"),
+            "1000000000000000000",
+            "0x",
+            21000,
+            20000000000,
+            0,
+            1,
+            1,
+            1,
+            0,
+            Some(hash),
+        );
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_ok(), "Failed for case: {name}");
+    }
+}
+
+#[test]
+fn test_invalid_prev_tx_hash_format() {
+    let test_cases = vec![
+        ("invalid_chars", "not_a_valid_hash"),
+        ("wrong_length", "0x1234"),
+        (
+            "malformed_hex",
+            "0xgg11111111111111111111111111111111111111111111111111111111111111",
+        ),
+    ];
+
+    for (name, invalid_hash) in test_cases {
+        let transaction = create_test_transaction_json_full(
+            "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "0x1234567890123456789012345678901234567890",
+            Some("0x9876543210987654321098765432109876543210"),
+            "1000000000000000000",
+            "0x",
+            21000,
+            20000000000,
+            0,
+            1,
+            1,
+            1,
+            0,
+            Some(invalid_hash),
+        );
+
+        let request = create_test_request_json("sendTransactions", &[transaction]);
+        let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+        assert!(result.is_err(), "Should fail for case: {name}");
+    }
+}
+
+#[test]
+fn test_invalid_index_type() {
+    let transaction = json!({
+        "tx_execution_id": {
+            "block_number": 1,
+            "iteration_id": 1,
+            "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "index": "not_a_number"
+        },
+        "tx_env": {
+            "caller": "0x1234567890123456789012345678901234567890",
+            "kind": "0x9876543210987654321098765432109876543210",
+            "value": "1000000000000000000",
+            "data": "0x",
+            "gas_limit": 21000,
+            "gas_price": 20000000000_u64,
+            "nonce": 0,
+            "chain_id": 1,
+            "tx_type": 0,
+            "access_list": [],
+            "gas_priority_fee": null,
+            "blob_hashes": [],
+            "max_fee_per_blob_gas": 0,
+            "authorization_list": []
+        }
+    });
+
+    let request = create_test_request_json("sendTransactions", &[transaction]);
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_negative_index() {
+    let transaction = json!({
+        "tx_execution_id": {
+            "block_number": 1,
+            "iteration_id": 1,
+            "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "index": -1
+        },
+        "tx_env": {
+            "caller": "0x1234567890123456789012345678901234567890",
+            "kind": "0x9876543210987654321098765432109876543210",
+            "value": "1000000000000000000",
+            "data": "0x",
+            "gas_limit": 21000,
+            "gas_price": 20000000000_u64,
+            "nonce": 0,
+            "chain_id": 1,
+            "tx_type": 0,
+            "access_list": [],
+            "gas_priority_fee": null,
+            "blob_hashes": [],
+            "max_fee_per_blob_gas": 0,
+            "authorization_list": []
+        }
+    });
+
+    let request = create_test_request_json("sendTransactions", &[transaction]);
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_prev_tx_hash_empty_string() {
+    let transaction = create_test_transaction_json_full(
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        "0x1234567890123456789012345678901234567890",
+        Some("0x9876543210987654321098765432109876543210"),
+        "1000000000000000000",
+        "0x",
+        21000,
+        20000000000,
+        0,
+        1,
+        1,
+        1,
+        0,
+        Some(""),
+    );
+
+    let request = create_test_request_json("sendTransactions", &[transaction]);
+    let result = HttpTransactionDecoder::to_tx_queue_contents(&request);
+
+    assert!(result.is_err());
+}
+
 // ============================================================================
 // Transaction Error Tests
 // ============================================================================
@@ -427,7 +805,8 @@ fn test_invalid_transaction_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "invalid_address",
@@ -453,7 +832,8 @@ fn test_invalid_transaction_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "0x1234567890123456789012345678901234567890",
@@ -479,7 +859,8 @@ fn test_invalid_transaction_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "0x1234567890123456789012345678901234567890",
@@ -505,7 +886,8 @@ fn test_invalid_transaction_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "0x1234567890123456789012345678901234567890",
@@ -531,7 +913,8 @@ fn test_invalid_transaction_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "0x1234567890123456789012345678901234567890",
@@ -557,7 +940,8 @@ fn test_invalid_transaction_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "0x1234567890123456789012345678901234567890",
@@ -583,7 +967,8 @@ fn test_invalid_transaction_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "0x1234567890123456789012345678901234567890",
@@ -609,7 +994,8 @@ fn test_invalid_transaction_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "0x1234567890123456789012345678901234567890",
@@ -635,7 +1021,8 @@ fn test_invalid_transaction_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "0x1234567890123456789012345678901234567890",
@@ -661,7 +1048,8 @@ fn test_invalid_transaction_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "0x1234567890123456789012345678901234567890",
@@ -699,7 +1087,8 @@ fn test_missing_transaction_structure_fields() {
                 "tx_execution_id": {
                     "block_number": 1,
                     "iteration_id": 1,
-                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                    "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                    "index": 0
                 }
             }),
             HttpDecoderError::MissingTxEnv,
@@ -733,7 +1122,8 @@ fn test_missing_transaction_structure_fields() {
             json!({
                 "tx_execution_id": {
                     "block_number": 1,
-                    "iteration_id": 1
+                    "iteration_id": 1,
+                    "index": 0
                 },
                 "tx_env": {
                     "caller": "0x1234567890123456789012345678901234567890",
@@ -772,7 +1162,8 @@ fn test_invalid_hash_in_transactions_array() {
         "tx_execution_id": {
             "block_number": 1,
             "iteration_id": 1,
-            "tx_hash": "not_64_chars"
+            "tx_hash": "not_64_chars",
+            "index": 0
         },
         "tx_env": {
             "caller": "0x1234567890123456789012345678901234567890",
@@ -821,7 +1212,8 @@ fn test_mixed_valid_invalid_transactions() {
             "tx_execution_id": {
                 "block_number": 1,
                 "iteration_id": 1,
-                "tx_hash": "invalid_hash"
+                "tx_hash": "invalid_hash",
+                "index": 0
             },
             "tx_env": {
                 "caller": "0x3333333333333333333333333333333333333333",
@@ -893,7 +1285,8 @@ fn test_reorg_valid() {
         params: Some(json!({
             "block_number": 100u64,
             "iteration_id": 1u64,
-            "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            "index": 0
         })),
         id: Some(json!(1)),
     };
@@ -948,7 +1341,8 @@ fn test_reorg_hash_format_variations() {
             params: Some(json!({
                 "block_number": 100u64,
                 "iteration_id": 1u64,
-                "tx_hash": hash
+                "tx_hash": hash,
+                "index": 0
             })),
             id: Some(json!(1)),
         };
@@ -979,21 +1373,24 @@ fn test_reorg_missing_fields() {
             "missing_hash",
             json!({
                 "block_number": 100u64,
-                "iteration_id": 1u64
+                "iteration_id": 1u64,
+                "index": 0
             }),
         ),
         (
             "missing_block_number",
             json!({
                 "iteration_id": 1u64,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "index": 0
             }),
         ),
         (
             "missing_iteration_id",
             json!({
                 "block_number": 100u64,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "index": 0
             }),
         ),
     ];
@@ -1030,7 +1427,8 @@ fn test_reorg_invalid_hash_formats() {
             params: Some(json!({
                 "block_number": 100u64,
                 "iteration_id": 1u64,
-                "tx_hash": hash
+                "tx_hash": hash,
+                "index": 0
             })),
             id: Some(json!(1)),
         };
@@ -1059,7 +1457,8 @@ fn test_reorg_invalid_hash_types() {
             params: Some(json!({
                 "block_number": 100u64,
                 "iteration_id": 1u64,
-                "tx_hash": hash_value
+                "tx_hash": hash_value,
+                "index": 0
             })),
             id: Some(json!(1)),
         };
@@ -1088,7 +1487,8 @@ fn test_reorg_with_various_block_numbers() {
             params: Some(json!({
                 "block_number": block_number,
                 "iteration_id": 1u64,
-                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "index": 0
             })),
             id: Some(json!(1)),
         };
@@ -1650,7 +2050,8 @@ fn test_send_events_invalid_transaction() {
         "tx_execution_id": {
             "block_number": 1,
             "iteration_id": 1,
-            "tx_hash": "invalid_hash"
+            "tx_hash": "invalid_hash",
+            "index": 0
         },
         "tx_env": {
             "caller": "0x1234567890123456789012345678901234567890",

@@ -51,13 +51,12 @@ pub struct BlockExecutionId {
 }
 
 impl TxExecutionId {
-    pub const fn new(block_number: u64, iteration_id: u64, tx_hash: TxHash) -> Self {
+    pub const fn new(block_number: u64, iteration_id: u64, tx_hash: TxHash, index: u64) -> Self {
         Self {
             block_number,
             iteration_id,
             tx_hash,
-            // FIXME: Propagate properly from the transport layer
-            index: 0,
+            index,
         }
     }
 
@@ -68,8 +67,9 @@ impl TxExecutionId {
         }
     }
 
+    #[cfg(test)]
     pub fn from_hash(tx_hash: TxHash) -> Self {
-        Self::new(0, 0, tx_hash)
+        Self::new(0, 0, tx_hash, 0)
     }
 
     /// Return the transaction hash formatted with `0x` prefix.
@@ -121,10 +121,11 @@ impl Serialize for TxExecutionId {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("TxExecutionId", 3)?;
+        let mut state = serializer.serialize_struct("TxExecutionId", 4)?;
         state.serialize_field("block_number", &self.block_number)?;
         state.serialize_field("iteration_id", &self.iteration_id)?;
         state.serialize_field("tx_hash", &self.tx_hash_hex())?;
+        state.serialize_field("index", &self.index)?;
         state.end()
     }
 }
@@ -140,6 +141,7 @@ impl<'de> Deserialize<'de> for TxExecutionId {
             BlockNumber,
             IterationId,
             TxHash,
+            Index,
         }
 
         struct TxExecutionIdVisitor;
@@ -158,6 +160,7 @@ impl<'de> Deserialize<'de> for TxExecutionId {
                 let mut block_number = None;
                 let mut iteration_id = None;
                 let mut tx_hash = None;
+                let mut index = None;
 
                 while let Some(key) = map.next_key()? {
                     match key {
@@ -186,6 +189,15 @@ impl<'de> Deserialize<'de> for TxExecutionId {
                                 .map_err(|e| de::Error::custom(format!("invalid tx_hash: {e}")))?;
                             tx_hash = Some(parsed_hash);
                         }
+                        Field::Index => {
+                            if index.is_some() {
+                                return Err(de::Error::duplicate_field("index"));
+                            }
+                            index =
+                                Some(map.next_value().map_err(|e| {
+                                    de::Error::custom(format!("invalid index: {e}"))
+                                })?);
+                        }
                     }
                 }
 
@@ -194,13 +206,13 @@ impl<'de> Deserialize<'de> for TxExecutionId {
                 let iteration_id =
                     iteration_id.ok_or_else(|| de::Error::missing_field("iteration_id"))?;
                 let tx_hash = tx_hash.ok_or_else(|| de::Error::missing_field("tx_hash"))?;
+                let index = index.ok_or_else(|| de::Error::missing_field("index"))?;
 
                 Ok(TxExecutionId {
                     block_number,
                     iteration_id,
                     tx_hash,
-                    // FIXME: Propagate properly from the transport layer
-                    index: 0,
+                    index,
                 })
             }
         }
@@ -232,7 +244,8 @@ mod tests {
         let json = r#"{
             "block_number": 1,
             "iteration_id": 2,
-            "tx_hash": "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+            "tx_hash": "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+            "index": 3
         }"#;
 
         let parsed: TxExecutionId = serde_json::from_str(json).expect("should parse");
@@ -250,7 +263,8 @@ mod tests {
         let json = r#"{
             "block_number": 3,
             "iteration_id": 4,
-            "tx_hash": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+            "tx_hash": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+            "index": 3
         }"#;
 
         let parsed: TxExecutionId = serde_json::from_str(json).expect("should parse");

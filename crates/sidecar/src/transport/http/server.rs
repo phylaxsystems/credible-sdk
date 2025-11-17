@@ -28,7 +28,10 @@ use crate::{
         },
     },
 };
-use alloy::rpc::types::error::EthRpcErrorCode;
+use alloy::{
+    primitives::TxHash,
+    rpc::types::error::EthRpcErrorCode,
+};
 use assertion_executor::primitives::ExecutionResult;
 use axum::{
     extract::{
@@ -83,6 +86,7 @@ pub(in crate::transport) const METHOD_GET_TRANSACTION: &str = "getTransaction";
 pub struct Transaction {
     pub tx_execution_id: TxExecutionId,
     pub tx_env: TxEnv,
+    pub prev_tx_hash: Option<TxHash>,
 }
 
 impl<'de> Deserialize<'de> for Transaction {
@@ -95,6 +99,7 @@ impl<'de> Deserialize<'de> for Transaction {
         enum Field {
             TxExecutionId,
             TxEnv,
+            PrevTxHash,
         }
 
         struct TransactionVisitor;
@@ -112,6 +117,7 @@ impl<'de> Deserialize<'de> for Transaction {
             {
                 let mut tx_execution_id = None;
                 let mut tx_env = None;
+                let mut prev_tx_hash = None;
 
                 while let Some(key) = map.next_key()? {
                     match key {
@@ -132,6 +138,14 @@ impl<'de> Deserialize<'de> for Transaction {
                                     de::Error::custom(format!("invalid tx_env: {e}"))
                                 })?);
                         }
+                        Field::PrevTxHash => {
+                            if prev_tx_hash.is_some() {
+                                return Err(de::Error::duplicate_field("prev_tx_hash"));
+                            }
+                            prev_tx_hash = Some(map.next_value().map_err(|e| {
+                                de::Error::custom(format!("invalid prev_tx_hash: {e}"))
+                            })?);
+                        }
                     }
                 }
 
@@ -142,6 +156,7 @@ impl<'de> Deserialize<'de> for Transaction {
                 Ok(Transaction {
                     tx_execution_id,
                     tx_env,
+                    prev_tx_hash,
                 })
             }
         }

@@ -65,6 +65,7 @@ Every transaction in the sidecar is uniquely identified by a `TxExecutionId`:
 - `block_number`: The block number this transaction belongs to
 - `iteration_id`: An arbitrary identifier for this block creation attempt (chosen by the sequencer, never 0)
 - `tx_hash`: The transaction hash (32-byte hex string)
+- `index`: The index of the transaction in the block
 
 **Purpose**: TxExecutionId allows tracking transactions across multiple block creation attempts by the sequencer. When a
 sequencer creates multiple candidate blocks (iterations), only one will ultimately be selected. The `iteration_id`
@@ -83,6 +84,7 @@ When sending transactions via `sendTransactions`, each transaction consists of:
 
 - `tx_execution_id`: The execution identifier (TxExecutionId)
 - `tx_env`: The transaction environment data (TxEnv)
+- `prev_tx_hash`: The hash of the previous transaction in the batch, or null for the first transaction
 
 ## Long-Polling Semantics
 
@@ -127,21 +129,20 @@ Both transports expose latency histograms so operators can watch request health 
 creates an `RpcRequestDuration` guard when the request starts and the guard records a value in
 `sidecar_rpc_duration_*` when it drops:
 
-| Transport | Metric Name | Description |
-|-----------|-------------|-------------|
-| HTTP      | `sidecar_rpc_duration_sendTransactions` | JSON-RPC `sendTransactions` batches |
-| HTTP      | `sidecar_rpc_duration_sendEvents` | JSON-RPC `sendEvents` batches |
-| HTTP      | `sidecar_rpc_duration_reorg` | JSON-RPC `reorg` requests |
-| HTTP      | `sidecar_rpc_duration_getTransactions` | JSON-RPC `getTransactions` long-polling calls |
-| HTTP      | `sidecar_rpc_duration_getTransaction` | JSON-RPC `getTransaction` calls |
-| Shared    | `sidecar_get_transaction_wait_duration` | Time spent waiting for a transaction to be received while getTransaction |
-| gRPC      | `sidecar_rpc_duration_SendEvents` | `SendEvents` streaming batches |
-| gRPC      | `sidecar_rpc_duration_SendTransactions` | `SendTransactions` batches |
-| gRPC      | `sidecar_rpc_duration_Reorg` | `Reorg` notifications |
-| gRPC      | `sidecar_rpc_duration_GetTransactions` | `GetTransactions` RPC |
-| gRPC      | `sidecar_rpc_duration_GetTransaction` | `GetTransaction` RPC |
-| Shared    | `sidecar_fetch_transaction_result_duration` | Fetch + serialization latency for transaction results |
-
+| Transport | Metric Name                                 | Description                                                              |
+|-----------|---------------------------------------------|--------------------------------------------------------------------------|
+| HTTP      | `sidecar_rpc_duration_sendTransactions`     | JSON-RPC `sendTransactions` batches                                      |
+| HTTP      | `sidecar_rpc_duration_sendEvents`           | JSON-RPC `sendEvents` batches                                            |
+| HTTP      | `sidecar_rpc_duration_reorg`                | JSON-RPC `reorg` requests                                                |
+| HTTP      | `sidecar_rpc_duration_getTransactions`      | JSON-RPC `getTransactions` long-polling calls                            |
+| HTTP      | `sidecar_rpc_duration_getTransaction`       | JSON-RPC `getTransaction` calls                                          |
+| Shared    | `sidecar_get_transaction_wait_duration`     | Time spent waiting for a transaction to be received while getTransaction |
+| gRPC      | `sidecar_rpc_duration_SendEvents`           | `SendEvents` streaming batches                                           |
+| gRPC      | `sidecar_rpc_duration_SendTransactions`     | `SendTransactions` batches                                               |
+| gRPC      | `sidecar_rpc_duration_Reorg`                | `Reorg` notifications                                                    |
+| gRPC      | `sidecar_rpc_duration_GetTransactions`      | `GetTransactions` RPC                                                    |
+| gRPC      | `sidecar_rpc_duration_GetTransaction`       | `GetTransaction` RPC                                                     |
+| Shared    | `sidecar_fetch_transaction_result_duration` | Fetch + serialization latency for transaction results                    |
 
 ## Transaction Types
 
