@@ -20,7 +20,9 @@ The http transport exposes the following metrics:
 - `sidecar_rpc_duration_SendTransactions`
 - `sidecar_rpc_duration_Reorg`
 - `sidecar_rpc_duration_GetTransactions`
-- `sidecar_rpc_duration_GetTransaction` 
+- `sidecar_rpc_duration_GetTransaction`
+- `sidecar_get_transaction_wait_duration` (seconds spent waiting for a tx to be accepted before returning)
+- `sidecar_fetch_transaction_result_duration` (shared histogram for fetching + encoding result payloads)
 
 ## Endpoint
 

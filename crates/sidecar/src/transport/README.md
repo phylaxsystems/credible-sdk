@@ -134,11 +134,13 @@ creates an `RpcRequestDuration` guard when the request starts and the guard reco
 | HTTP      | `sidecar_rpc_duration_reorg` | JSON-RPC `reorg` requests |
 | HTTP      | `sidecar_rpc_duration_getTransactions` | JSON-RPC `getTransactions` long-polling calls |
 | HTTP      | `sidecar_rpc_duration_getTransaction` | JSON-RPC `getTransaction` calls |
+| Shared    | `sidecar_get_transaction_wait_duration` | Time spent waiting for transaction results (HTTP long-poll + shared pending wait helper) |
 | gRPC      | `sidecar_rpc_duration_SendEvents` | `SendEvents` streaming batches |
 | gRPC      | `sidecar_rpc_duration_SendTransactions` | `SendTransactions` batches |
 | gRPC      | `sidecar_rpc_duration_Reorg` | `Reorg` notifications |
 | gRPC      | `sidecar_rpc_duration_GetTransactions` | `GetTransactions` RPC |
 | gRPC      | `sidecar_rpc_duration_GetTransaction` | `GetTransaction` RPC |
+| Shared    | `sidecar_fetch_transaction_result_duration` | Fetch + serialization latency for transaction results |
 
 
 ## Transaction Types

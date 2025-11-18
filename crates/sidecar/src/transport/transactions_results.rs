@@ -183,8 +183,7 @@ where
             let wait_result =
                 tokio::time::timeout(Duration::from_millis(TRANSACTION_RECEIVE_WAIT), rx.recv())
                     .await;
-            histogram!("sidecar_transaction_results_wait_duration")
-                .record(wait_started_at.elapsed());
+            histogram!("sidecar_get_transaction_wait_duration").record(wait_started_at.elapsed());
 
             (key, wait_result)
         }
