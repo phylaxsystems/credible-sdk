@@ -57,6 +57,9 @@ async fn main() -> Result<()> {
         CircularBufferConfig::new(args.state_depth)?,
     )
     .context("failed to initialize redis client")?;
+    redis
+        .ensure_dump_index_metadata()
+        .context("failed to ensure redis namespace index metadata")?;
     let genesis_state =
         if let Some(chain_id) = args.chain_id {
             Some(crate::genesis::load_embedded(chain_id).with_context(|| {

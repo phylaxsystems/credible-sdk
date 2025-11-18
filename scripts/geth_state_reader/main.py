@@ -129,14 +129,47 @@ class JsonSink:
 
 
 class RedisSink:
-    def __init__(self, url: str, namespace: str, pipeline_size: int) -> None:
-        self._namespace = namespace.rstrip(":")
+    def __init__(
+        self,
+        url: str,
+        namespace: str,
+        pipeline_size: int,
+        buffer_size: int,
+        block_number: int,
+    ) -> None:
+        if block_number is None:
+            raise ValueError("--block-number is required when writing to Redis")
+        if buffer_size <= 0:
+            raise ValueError("--redis-buffer-size must be positive")
+
+        self._base_namespace = namespace.rstrip(":")
+        self._buffer_size = buffer_size
+        self._block_number = block_number
+        namespace_idx = block_number % buffer_size
+        self._namespace = f"{self._base_namespace}:{namespace_idx}"
         self._client = redis.Redis.from_url(url)
         self._pipeline_size = max(1, pipeline_size)
         self._pipeline = (
             self._client.pipeline(transaction=False) if self._pipeline_size > 1 else None
         )
         self._pending = 0
+        self._clear_namespace()
+
+    def _clear_namespace(self) -> None:
+        patterns = [
+            f"{self._namespace}:account:*",
+            f"{self._namespace}:storage:*",
+            f"{self._namespace}:code:*",
+        ]
+        for pattern in patterns:
+            cursor = 0
+            while True:
+                cursor, keys = self._client.scan(cursor=cursor, match=pattern, count=1000)
+                if keys:
+                    self._client.delete(*keys)
+                if cursor == 0:
+                    break
+        self._client.delete(f"{self._namespace}:block")
 
     def handle(self, account: AccountRecord) -> None:
         address_hex = _strip_hex_prefix(account.address_hash)
@@ -169,19 +202,22 @@ class RedisSink:
             self._pending = 0
 
         meta_pipe = self._client.pipeline(transaction=False)
-        if metadata.block_number is not None:
-            block_number_str = str(metadata.block_number)
-            meta_pipe.set(f"{self._namespace}:current_block", block_number_str)
-            if metadata.block_hash:
-                meta_pipe.set(
-                    f"{self._namespace}:block_hash:{metadata.block_number}",
-                    metadata.block_hash.lower(),
-                )
-            if metadata.state_root:
-                meta_pipe.set(
-                    f"{self._namespace}:state_root:{metadata.block_number}",
-                    metadata.state_root.lower(),
-                )
+        namespace_block_key = f"{self._namespace}:block"
+        meta_pipe.set(namespace_block_key, str(self._block_number))
+
+        block_hash_key = f"{self._base_namespace}:block_hash:{self._block_number}"
+        state_root_key = f"{self._base_namespace}:state_root:{self._block_number}"
+        latest_block_key = f"{self._base_namespace}:meta:latest_block"
+        indices_key = f"{self._base_namespace}:state_dump_indices"
+
+        meta_pipe.set(latest_block_key, str(self._block_number))
+        meta_pipe.set(indices_key, str(self._buffer_size))
+
+        if metadata.block_hash:
+            meta_pipe.set(block_hash_key, metadata.block_hash.lower())
+        if metadata.state_root:
+            meta_pipe.set(state_root_key, metadata.state_root.lower())
+
         meta_pipe.execute()
 
 
@@ -522,6 +558,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Number of accounts to buffer before flushing Redis pipelines (default: 1).",
     )
     parser.add_argument(
+        "--redis-buffer-size",
+        type=int,
+        default=3,
+        help="Number of circular buffer namespaces to rotate (default: 3).",
+    )
+    parser.add_argument(
         "--json-output",
         help="When set, write newline-delimited JSON to this file.",
     )
@@ -546,13 +588,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("Specify either --block-number or --block-hash, not both.", file=sys.stderr)
         return 2
 
+    if args.redis_url and args.block_number is None:
+        print("--block-number is required when writing to Redis.", file=sys.stderr)
+        return 2
+
+    if args.redis_buffer_size <= 0:
+        print("--redis-buffer-size must be positive.", file=sys.stderr)
+        return 2
+
     sinks: List[object] = []
 
     if args.json_output_enabled or args.json_output:
         sinks.append(JsonSink(args.json_output))
 
     if args.redis_url:
-        sinks.append(RedisSink(args.redis_url, args.redis_namespace, args.redis_pipeline_size))
+        assert args.block_number is not None  # for type checkers
+        sinks.append(
+            RedisSink(
+                args.redis_url,
+                args.redis_namespace,
+                args.redis_pipeline_size,
+                args.redis_buffer_size,
+                args.block_number,
+            )
+        )
 
     if not sinks:
         print("Nothing to do: enable JSON output and/or provide --redis-url.", file=sys.stderr)
@@ -578,6 +637,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         dump_backend=args.geth_dump_backend,
         verbose=args.verbose,
     )
+
+    if metadata.block_number is None:
+        metadata.block_number = args.block_number
+
+    if args.block_number is not None and metadata.block_number is not None:
+        if metadata.block_number != args.block_number:
+            print(
+                "Mismatch between geth dump block number and --block-number.",
+                file=sys.stderr,
+            )
+            return 1
 
     for sink in sinks:
         sink.finalize(metadata)
