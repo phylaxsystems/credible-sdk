@@ -25,6 +25,8 @@ struct Project {
     project_description: Option<String>,
     profile_image_url: Option<String>,
     project_networks: Vec<String>,
+    #[serde(default)]
+    chain_names: Vec<String>,
     project_manager: String,
     created_at: String,
     updated_at: String,
@@ -176,14 +178,26 @@ impl DappSubmitArgs {
 
         let display_name = |project: &Project| {
             if project.project_networks.is_empty() {
-                project.project_name.clone()
-            } else {
-                format!(
-                    "{} ({})",
-                    project.project_name,
-                    project.project_networks.join(", ")
-                )
+                return project.project_name.clone();
             }
+
+            let networks_with_names: Vec<String> = project
+                .project_networks
+                .iter()
+                .enumerate()
+                .map(|(idx, chain_id)| {
+                    project
+                        .chain_names
+                        .get(idx)
+                        .map_or_else(|| chain_id.clone(), |name| format!("{name} - {chain_id}"))
+                })
+                .collect();
+
+            format!(
+                "{} ({})",
+                project.project_name,
+                networks_with_names.join(", ")
+            )
         };
 
         let project_display_names: Vec<String> = projects.iter().map(display_name).collect();
