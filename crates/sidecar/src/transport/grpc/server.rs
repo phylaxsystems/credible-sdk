@@ -63,6 +63,7 @@ use assertion_executor::primitives::{
     TxKind,
     U256,
 };
+use metrics::histogram;
 use revm::{
     context::{
         BlockEnv as RevmBlockEnv,
@@ -89,6 +90,7 @@ use std::{
             Ordering,
         },
     },
+    time::Instant,
 };
 use tonic::{
     Request,
@@ -179,6 +181,7 @@ impl GrpcService {
         &self,
         tx_execution_id: TxExecutionId,
     ) -> Result<PbTransactionResult, Status> {
+        let fetch_started_at = Instant::now();
         let result = match self
             .transactions_results
             .request_transaction_result(&tx_execution_id)
@@ -192,7 +195,10 @@ impl GrpcService {
             }
         };
 
-        Ok(into_pb_transaction_result(tx_execution_id, &result))
+        let pb_result = into_pb_transaction_result(tx_execution_id, &result);
+        histogram!("sidecar_fetch_transaction_result_duration").record(fetch_started_at.elapsed());
+
+        Ok(pb_result)
     }
 
     async fn collect_transaction_results<'a, I>(
