@@ -122,7 +122,7 @@ fn test_reorg_returns_transaction() {
         } => {
             assert_eq!(block_number, 100);
             assert_eq!(iteration_id, 5);
-            assert_eq!(index, 2);
+            assert_eq!(index, 1);
             assert_eq!(tx_hash, test_hash(1));
         }
         _ => panic!("Expected Transaction"),
@@ -312,7 +312,7 @@ fn test_recursive_chain_from_reorg_to_new_iteration() {
     // First should be transaction at index 2
     match &chain[0] {
         EventMetadata::Transaction { index, .. } => {
-            assert_eq!(*index, 2);
+            assert_eq!(*index, 1);
         }
         _ => panic!("Expected Transaction at position 0"),
     }

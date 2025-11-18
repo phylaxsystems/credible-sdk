@@ -9,6 +9,147 @@ use std::hash::{
     Hasher,
 };
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum CompleteEventMetadata {
+    NewIteration {
+        block_number: u64,
+        iteration_id: u64,
+    },
+    Transaction {
+        block_number: u64,
+        iteration_id: u64,
+        index: u64,
+        tx_hash: TxHash,
+        prev_tx_hash: Option<TxHash>,
+    },
+    Reorg {
+        block_number: u64,
+        iteration_id: u64,
+        tx_hash: TxHash,
+        index: u64,
+    },
+    CommitHead {
+        block_number: u64,
+        selected_iteration_id: u64,
+        n_transactions: u64,
+        prev_tx_hash: Option<TxHash>,
+    },
+}
+
+impl From<EventMetadata> for CompleteEventMetadata {
+    fn from(value: EventMetadata) -> Self {
+        match value {
+            EventMetadata::NewIteration {
+                block_number,
+                iteration_id,
+            } => {
+                Self::NewIteration {
+                    block_number,
+                    iteration_id,
+                }
+            }
+            EventMetadata::Transaction {
+                block_number,
+                iteration_id,
+                index,
+                tx_hash,
+                prev_tx_hash,
+            } => {
+                Self::Transaction {
+                    block_number,
+                    iteration_id,
+                    index,
+                    tx_hash,
+                    prev_tx_hash,
+                }
+            }
+            EventMetadata::Reorg {
+                block_number,
+                iteration_id,
+                tx_hash,
+                index,
+            } => {
+                Self::Reorg {
+                    block_number,
+                    iteration_id,
+                    tx_hash,
+                    index,
+                }
+            }
+            EventMetadata::CommitHead {
+                block_number,
+                selected_iteration_id,
+                n_transactions,
+                prev_tx_hash,
+            } => {
+                Self::CommitHead {
+                    block_number,
+                    selected_iteration_id,
+                    n_transactions,
+                    prev_tx_hash,
+                }
+            }
+        }
+    }
+}
+
+impl From<&CompleteEventMetadata> for EventMetadata {
+    fn from(value: &CompleteEventMetadata) -> Self {
+        match value {
+            CompleteEventMetadata::NewIteration {
+                block_number,
+                iteration_id,
+            } => {
+                Self::NewIteration {
+                    block_number: *block_number,
+                    iteration_id: *iteration_id,
+                }
+            }
+            CompleteEventMetadata::CommitHead {
+                block_number,
+                selected_iteration_id,
+                n_transactions,
+                prev_tx_hash,
+            } => {
+                Self::CommitHead {
+                    block_number: *block_number,
+                    selected_iteration_id: *selected_iteration_id,
+                    n_transactions: *n_transactions,
+                    prev_tx_hash: *prev_tx_hash,
+                }
+            }
+            CompleteEventMetadata::Reorg {
+                tx_hash,
+                block_number,
+                iteration_id,
+                index,
+            } => {
+                Self::Reorg {
+                    tx_hash: *tx_hash,
+                    block_number: *block_number,
+                    iteration_id: *iteration_id,
+                    index: *index,
+                }
+            }
+            CompleteEventMetadata::Transaction {
+                tx_hash,
+                block_number,
+                iteration_id,
+                index,
+                prev_tx_hash,
+            } => {
+                Self::Transaction {
+                    tx_hash: *tx_hash,
+                    block_number: *block_number,
+                    iteration_id: *iteration_id,
+                    index: *index,
+                    prev_tx_hash: *prev_tx_hash,
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum EventMetadata {
     NewIteration {
@@ -37,6 +178,22 @@ pub enum EventMetadata {
 }
 
 impl EventMetadata {
+    pub fn prev_tx_hash(&self) -> Option<TxHash> {
+        match self {
+            Self::Transaction { prev_tx_hash, .. } | Self::CommitHead { prev_tx_hash, .. } => {
+                *prev_tx_hash
+            }
+            _ => None,
+        }
+    }
+
+    pub fn tx_hash(&self) -> Option<TxHash> {
+        match self {
+            Self::Transaction { tx_hash, .. } | Self::Reorg { tx_hash, .. } => Some(*tx_hash),
+            _ => None,
+        }
+    }
+
     pub fn block_number(&self) -> u64 {
         match self {
             Self::NewIteration { block_number, .. }
@@ -56,6 +213,10 @@ impl EventMetadata {
 
     pub fn is_commit_head(&self) -> bool {
         matches!(self, Self::CommitHead { .. })
+    }
+
+    pub fn is_transaction(&self) -> bool {
+        matches!(self, Self::Transaction { .. })
     }
 
     /// Calculates what should be the previous / expected event for a current event.
@@ -92,13 +253,20 @@ impl EventMetadata {
                 index,
                 iteration_id,
             } => {
-                Some(EventMetadata::Transaction {
-                    block_number: *block_number,
-                    iteration_id: *iteration_id,
-                    tx_hash: *tx_hash,
-                    index: *index,
-                    prev_tx_hash: None,
-                })
+                if *index == 0 {
+                    Some(EventMetadata::NewIteration {
+                        block_number: *block_number,
+                        iteration_id: *iteration_id,
+                    })
+                } else {
+                    Some(EventMetadata::Transaction {
+                        block_number: *block_number,
+                        iteration_id: *iteration_id,
+                        tx_hash: *tx_hash,
+                        index: (*index).saturating_sub(1),
+                        prev_tx_hash: None,
+                    })
+                }
             }
             EventMetadata::CommitHead {
                 block_number,

@@ -11,7 +11,10 @@ use crate::{
             TxQueueContents,
         },
     },
-    event_sequencing::event_metadata::EventMetadata,
+    event_sequencing::event_metadata::{
+        CompleteEventMetadata,
+        EventMetadata,
+    },
     utils::ErrorRecoverability,
 };
 use alloy::primitives::TxHash;
@@ -56,7 +59,7 @@ struct Context {
     /// Sent events per iteration
     sent_events: HashMap<u64, VecDeque<EventMetadata>>,
     /// Keep track of pending events which haven't been sent yet to the engine
-    dependency_graph: HashMap<EventMetadata, HashMap<EventMetadata, TxQueueContents>>,
+    dependency_graph: HashMap<EventMetadata, HashMap<CompleteEventMetadata, TxQueueContents>>,
 }
 
 impl EventSequencing {
@@ -110,7 +113,7 @@ impl EventSequencing {
         let event_block_number = event.block_number();
 
         // Ignore events older than or equal to the current head
-        if self.current_head >= event_block_number {
+        if self.current_head >= event_block_number && self.first_commit_head_received {
             error!(
                 target = "event_sequencing",
                 event_block_number,
@@ -155,12 +158,15 @@ impl EventSequencing {
         let Some(previous_sent_event) = context
             .sent_events
             .get_mut(&event_iteration_id)
-            .and_then(VecDeque::pop_back)
+            .and_then(|v| v.back())
+            .cloned()
         else {
-            // If we do not have a previously sent event in the iteration, but the event is a
-            // new iteration, send the event
+            // If we do not have a previously sent event in the iteration...
             if event_metadata.is_new_iteration() {
                 self.send_event_recursive(event, &event_metadata)?;
+            } else if let Some(previous_event) = event_metadata.calculate_previous_event() {
+                // Transaction arrived before NewIteration - queue it!
+                self.add_to_dependency_graph(block_number, previous_event, event_metadata, event)?;
             }
             return Ok(());
         };
@@ -203,13 +209,32 @@ impl EventSequencing {
         event_iteration_id: u64,
         block_number: u64,
     ) -> Result<(), EventSequencingError> {
-        if *previous_sent_event == previous_event {
+        if *previous_sent_event == previous_event
+            && Self::check_previous_send_event_against_current_event(
+                previous_sent_event,
+                &event_metadata,
+            )
+        {
             self.send_event_recursive(event, &event_metadata)?;
         } else {
             // Queue the event as a dependency
             self.add_to_dependency_graph(block_number, previous_event, event_metadata, event)?;
         }
         Ok(())
+    }
+
+    /// Checks if a previous sent event is valid against the current event.
+    fn check_previous_send_event_against_current_event(
+        previous_sent_event: &EventMetadata,
+        current_event: &EventMetadata,
+    ) -> bool {
+        if current_event.is_transaction() && previous_sent_event.is_transaction() {
+            previous_sent_event.tx_hash() == current_event.prev_tx_hash()
+        } else if current_event.is_transaction() && previous_sent_event.is_new_iteration() {
+            current_event.prev_tx_hash().is_none()
+        } else {
+            true
+        }
     }
 
     /// Handles events in a future execution context by adding them to the dependency graph.
@@ -242,7 +267,7 @@ impl EventSequencing {
                 // Check and remove cancelling events in one pass
                 let mut found_cancel = false;
                 dependents.retain(|existing, _| {
-                    if !found_cancel && event_metadata.cancel_each_other(existing) {
+                    if event_metadata.cancel_each_other(&existing.into()) {
                         found_cancel = true;
                         false // Remove this one
                     } else {
@@ -252,11 +277,11 @@ impl EventSequencing {
 
                 // Only insert if no cancellation occurred
                 if !found_cancel {
-                    dependents.insert(event_metadata, event);
+                    dependents.insert(event_metadata.into(), event);
                 }
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(HashMap::from([(event_metadata, event)]));
+                entry.insert(HashMap::from([(event_metadata.into(), event)]));
             }
         }
 
@@ -280,7 +305,7 @@ impl EventSequencing {
         let context = self.get_context_mut(block_number, "send_event_recursive")?;
 
         // Perform reorg validation inline to avoid borrow issues
-        let should_send = if let TxQueueContents::Reorg(_tx_execution_id, _) = &event {
+        let should_send = if event_metadata.is_reorg() {
             let queue = context.sent_events.entry(iteration_id).or_default();
             if let Some(last_sent_event) = queue.pop_back() {
                 if last_sent_event.cancel_each_other(event_metadata) {
@@ -336,10 +361,22 @@ impl EventSequencing {
         let mut commit_head_found = false;
         // Recursively process all dependent events
         for (dependent_metadata, dependent_event) in dependent_events {
-            if self.send_event_recursive(dependent_event, &dependent_metadata)? {
+            // Validate prev_tx_hash if present
+            if let (
+                EventMetadata::Transaction {
+                    tx_hash: sent_hash, ..
+                },
+                TxQueueContents::Tx(queue, _),
+            ) = (event_metadata, &dependent_event)
+                && let Some(prev_hash) = queue.prev_tx_hash
+                && prev_hash != *sent_hash
+            {
+                // Skip this dependent - its prev_tx_hash doesn't match
+                continue;
+            }
+
+            if self.send_event_recursive(dependent_event, &(&dependent_metadata).into())? {
                 commit_head_found = true;
-                // If the inside branch executed contains a commit head, we do not need to process
-                // any more events for the given block
                 break;
             }
         }
@@ -408,7 +445,7 @@ impl EventSequencing {
                 block = next_block,
                 "Starting next block processing with queued event"
             );
-            self.send_event_recursive(event.clone(), &meta)?;
+            self.send_event_recursive(event.clone(), &(&meta).into())?;
         }
 
         Ok(())

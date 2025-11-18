@@ -12,10 +12,18 @@ use crate::{
     execution_ids::TxExecutionId,
 };
 use alloy::primitives::TxHash;
+use assertion_executor::primitives::{
+    Bytes,
+    U256,
+};
 use crossbeam::channel;
-use revm::context::{
-    BlockEnv,
-    TxEnv,
+use revm::{
+    context::{
+        BlockEnv,
+        TxEnv,
+        tx::TxEnvBuilder,
+    },
+    primitives::TxKind,
 };
 use std::sync::{
     Arc,
@@ -109,7 +117,7 @@ fn build_dependency_graph_from_events(
             let next_meta = EventMetadata::from(&sorted_events[i + 1]);
             ctx.dependency_graph.insert(
                 current_meta,
-                HashMap::from([(next_meta, sorted_events[i + 1].clone())]),
+                HashMap::from([(next_meta.into(), sorted_events[i + 1].clone())]),
             );
         }
 
@@ -151,7 +159,7 @@ fn build_dependency_graph_from_events(
                     .dependency_graph
                     .insert(
                         last_meta,
-                        HashMap::from([(first_next_meta, first_next_event.clone())]),
+                        HashMap::from([(first_next_meta.into(), first_next_event.clone())]),
                     );
             }
         }
@@ -179,7 +187,13 @@ fn create_new_iteration(block: u64, iteration: u64) -> TxQueueContents {
     )
 }
 
-fn create_transaction(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -> TxQueueContents {
+fn create_transaction(
+    block: u64,
+    iteration: u64,
+    index: u64,
+    tx_hash: TxHash,
+    prev_tx_hash: Option<TxHash>,
+) -> TxQueueContents {
     let tx_execution_id = TxExecutionId {
         block_number: block,
         iteration_id: iteration,
@@ -191,7 +205,7 @@ fn create_transaction(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -
         QueueTransaction {
             tx_execution_id,
             tx_env: TxEnv::default(),
-            prev_tx_hash: None,
+            prev_tx_hash,
         },
         tracing::Span::none(),
     )
@@ -224,7 +238,7 @@ fn create_commit_head(
 fn test_send_event_recursive_no_dependencies() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
-    let event = create_transaction(100, 1, 0, TxHash::random());
+    let event = create_transaction(100, 1, 0, TxHash::random(), None);
     let event_metadata = EventMetadata::from(&event);
 
     sequencing.context.entry(100).or_default();
@@ -243,8 +257,8 @@ fn test_send_event_recursive_no_dependencies() {
 fn test_send_event_recursive_single_dependency() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
-    let event1 = create_transaction(100, 1, 0, TxHash::random());
-    let event2 = create_transaction(100, 1, 1, TxHash::random());
+    let event1 = create_transaction(100, 1, 0, TxHash::random(), None);
+    let event2 = create_transaction(100, 1, 1, TxHash::random(), None);
 
     let event1_metadata = EventMetadata::from(&event1);
     let event2_metadata = EventMetadata::from(&event2);
@@ -257,7 +271,7 @@ fn test_send_event_recursive_single_dependency() {
         .dependency_graph
         .insert(
             event1_metadata.clone(),
-            HashMap::from([(event2_metadata.clone(), event2.clone())]),
+            HashMap::from([(CompleteEventMetadata::from(event2_metadata), event2.clone())]),
         );
 
     sequencing
@@ -279,10 +293,10 @@ fn test_send_event_recursive_single_dependency() {
 fn test_send_event_recursive_multiple_dependencies() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
-    let event1 = create_transaction(100, 1, 0, TxHash::random());
-    let event2 = create_transaction(100, 1, 1, TxHash::random());
-    let event3 = create_transaction(100, 1, 2, TxHash::random());
-    let event4 = create_transaction(100, 1, 3, TxHash::random());
+    let event1 = create_transaction(100, 1, 0, TxHash::random(), None);
+    let event2 = create_transaction(100, 1, 1, TxHash::random(), None);
+    let event3 = create_transaction(100, 1, 2, TxHash::random(), None);
+    let event4 = create_transaction(100, 1, 3, TxHash::random(), None);
 
     let event1_metadata = EventMetadata::from(&event1);
     let event2_metadata = EventMetadata::from(&event2);
@@ -298,9 +312,9 @@ fn test_send_event_recursive_multiple_dependencies() {
         .insert(
             event1_metadata.clone(),
             HashMap::from([
-                (event2_metadata, event2.clone()),
-                (event3_metadata, event3.clone()),
-                (event4_metadata, event4.clone()),
+                (event2_metadata.into(), event2.clone()),
+                (event3_metadata.into(), event3.clone()),
+                (event4_metadata.into(), event4.clone()),
             ]),
         );
 
@@ -318,9 +332,9 @@ fn test_send_event_recursive_multiple_dependencies() {
 fn test_send_event_recursive_chain_of_dependencies() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
-    let event1 = create_transaction(100, 1, 0, TxHash::random());
-    let event2 = create_transaction(100, 1, 1, TxHash::random());
-    let event3 = create_transaction(100, 1, 2, TxHash::random());
+    let event1 = create_transaction(100, 1, 0, TxHash::random(), None);
+    let event2 = create_transaction(100, 1, 1, TxHash::random(), None);
+    let event3 = create_transaction(100, 1, 2, TxHash::random(), None);
 
     let event1_metadata = EventMetadata::from(&event1);
     let event2_metadata = EventMetadata::from(&event2);
@@ -330,11 +344,14 @@ fn test_send_event_recursive_chain_of_dependencies() {
     let ctx = sequencing.context.entry(100).or_default();
     ctx.dependency_graph.insert(
         event1_metadata.clone(),
-        HashMap::from([(event2_metadata.clone(), event2.clone())]),
+        HashMap::from([(
+            CompleteEventMetadata::from(event2_metadata.clone()),
+            event2.clone(),
+        )]),
     );
     ctx.dependency_graph.insert(
         event2_metadata.clone(),
-        HashMap::from([(event3_metadata, event3.clone())]),
+        HashMap::from([(CompleteEventMetadata::from(event3_metadata), event3.clone())]),
     );
 
     sequencing
@@ -358,9 +375,9 @@ fn test_send_event_recursive_block_transition() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
     // Event in block 100
-    let event1 = create_transaction(100, 1, 0, TxHash::random());
+    let event1 = create_transaction(100, 1, 0, TxHash::random(), None);
     // Dependent event in block 101
-    let event2 = create_transaction(101, 1, 0, TxHash::random());
+    let event2 = create_transaction(101, 1, 0, TxHash::random(), None);
 
     let event1_metadata = EventMetadata::from(&event1);
     let event2_metadata = EventMetadata::from(&event2);
@@ -373,7 +390,7 @@ fn test_send_event_recursive_block_transition() {
         .dependency_graph
         .insert(
             event1_metadata.clone(),
-            HashMap::from([(event2_metadata, event2)]),
+            HashMap::from([(CompleteEventMetadata::from(event2_metadata), event2)]),
         );
 
     // Create context for block 101 as well
@@ -413,10 +430,10 @@ fn test_send_event_recursive_block_transition() {
 fn test_send_event_recursive_multiple_block_transitions() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
-    let event_b100 = create_transaction(100, 1, 0, TxHash::random());
-    let event_b101 = create_transaction(101, 1, 0, TxHash::random());
-    let event_b102 = create_transaction(102, 1, 0, TxHash::random());
-    let event_b103 = create_transaction(103, 1, 0, TxHash::random());
+    let event_b100 = create_transaction(100, 1, 0, TxHash::random(), None);
+    let event_b101 = create_transaction(101, 1, 0, TxHash::random(), None);
+    let event_b102 = create_transaction(102, 1, 0, TxHash::random(), None);
+    let event_b103 = create_transaction(103, 1, 0, TxHash::random(), None);
 
     let meta_b100 = EventMetadata::from(&event_b100);
     let meta_b101 = EventMetadata::from(&event_b101);
@@ -431,7 +448,10 @@ fn test_send_event_recursive_multiple_block_transitions() {
         .dependency_graph
         .insert(
             meta_b100.clone(),
-            HashMap::from([(meta_b101.clone(), event_b101.clone())]),
+            HashMap::from([(
+                CompleteEventMetadata::from(meta_b101.clone()),
+                event_b101.clone(),
+            )]),
         );
     sequencing
         .context
@@ -440,7 +460,10 @@ fn test_send_event_recursive_multiple_block_transitions() {
         .dependency_graph
         .insert(
             meta_b101.clone(),
-            HashMap::from([(meta_b102.clone(), event_b102.clone())]),
+            HashMap::from([(
+                CompleteEventMetadata::from(meta_b102.clone()),
+                event_b102.clone(),
+            )]),
         );
     sequencing
         .context
@@ -449,7 +472,7 @@ fn test_send_event_recursive_multiple_block_transitions() {
         .dependency_graph
         .insert(
             meta_b102.clone(),
-            HashMap::from([(meta_b103.clone(), event_b103.clone())]),
+            HashMap::from([(CompleteEventMetadata::from(meta_b103), event_b103.clone())]),
         );
     sequencing.context.entry(103).or_default();
 
@@ -469,7 +492,7 @@ fn test_send_event_recursive_with_reorg() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
     let tx_hash = TxHash::random();
-    let tx_event = create_transaction(100, 1, 5, tx_hash);
+    let tx_event = create_transaction(100, 1, 5, tx_hash, None);
 
     // First send a transaction to populate sent_events
     let tx_metadata = EventMetadata::from(&tx_event);
@@ -504,9 +527,9 @@ fn test_send_event_recursive_reorg_with_dependencies() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
     let tx_hash = TxHash::random();
-    let tx_event = create_transaction(100, 1, 5, tx_hash);
+    let tx_event = create_transaction(100, 1, 5, tx_hash, None);
     let reorg_event = create_reorg(100, 1, 5, tx_hash);
-    let dependent_event = create_transaction(100, 1, 6, TxHash::random());
+    let dependent_event = create_transaction(100, 1, 6, TxHash::random(), None);
     let dependent_event_meta = EventMetadata::from(&dependent_event);
 
     // Set up: reorg has a dependent event
@@ -518,7 +541,7 @@ fn test_send_event_recursive_reorg_with_dependencies() {
         .dependency_graph
         .insert(
             reorg_metadata.clone(),
-            HashMap::from([(dependent_event_meta, dependent_event)]),
+            HashMap::from([(dependent_event_meta.into(), dependent_event)]),
         );
 
     // Add the original transaction to sent_events
@@ -549,11 +572,11 @@ fn test_send_event_recursive_tree_of_dependencies() {
     //     |        |
     //   event4   event5
 
-    let event1 = create_transaction(100, 1, 0, TxHash::random());
-    let event2 = create_transaction(100, 2, 1, TxHash::random());
-    let event3 = create_transaction(100, 1, 1, TxHash::random());
-    let event4 = create_transaction(100, 2, 2, TxHash::random());
-    let event5 = create_transaction(100, 1, 2, TxHash::random());
+    let event1 = create_transaction(100, 1, 0, TxHash::random(), None);
+    let event2 = create_transaction(100, 2, 1, TxHash::random(), None);
+    let event3 = create_transaction(100, 1, 1, TxHash::random(), None);
+    let event4 = create_transaction(100, 2, 2, TxHash::random(), None);
+    let event5 = create_transaction(100, 1, 2, TxHash::random(), None);
 
     let meta1 = EventMetadata::from(&event1);
     let meta2 = EventMetadata::from(&event2);
@@ -565,14 +588,18 @@ fn test_send_event_recursive_tree_of_dependencies() {
     ctx.dependency_graph.insert(
         meta1.clone(),
         HashMap::from([
-            (meta2.clone(), event2.clone()),
-            (meta3.clone(), event3.clone()),
+            (CompleteEventMetadata::from(meta2.clone()), event2.clone()),
+            (CompleteEventMetadata::from(meta3.clone()), event3.clone()),
         ]),
     );
-    ctx.dependency_graph
-        .insert(meta2.clone(), HashMap::from([(meta4.clone(), event4)]));
-    ctx.dependency_graph
-        .insert(meta3.clone(), HashMap::from([(meta5, event5)]));
+    ctx.dependency_graph.insert(
+        meta2.clone(),
+        HashMap::from([(CompleteEventMetadata::from(meta4.clone()), event4)]),
+    );
+    ctx.dependency_graph.insert(
+        meta3.clone(),
+        HashMap::from([(CompleteEventMetadata::from(meta5), event5)]),
+    );
 
     sequencing.send_event_recursive(event1, &meta1).unwrap();
 
@@ -584,7 +611,7 @@ fn test_send_event_recursive_tree_of_dependencies() {
 fn test_send_event_recursive_empty_dependency_graph() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
-    let event = create_transaction(100, 1, 0, TxHash::random());
+    let event = create_transaction(100, 1, 0, TxHash::random(), None);
     let event_metadata = EventMetadata::from(&event);
 
     // Explicitly create empty context
@@ -602,9 +629,9 @@ fn test_send_event_recursive_cross_iteration_dependencies() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
     // Event in iteration 1
-    let event1 = create_transaction(100, 1, 0, TxHash::random());
+    let event1 = create_transaction(100, 1, 0, TxHash::random(), None);
     // Dependent in iteration 2 (same block)
-    let event2 = create_transaction(100, 2, 0, TxHash::random());
+    let event2 = create_transaction(100, 2, 0, TxHash::random(), None);
 
     let meta1 = EventMetadata::from(&event1);
     let meta2 = EventMetadata::from(&event2);
@@ -614,7 +641,10 @@ fn test_send_event_recursive_cross_iteration_dependencies() {
         .entry(100)
         .or_default()
         .dependency_graph
-        .insert(meta1.clone(), HashMap::from([(meta2, event2)]));
+        .insert(
+            meta1.clone(),
+            HashMap::from([(CompleteEventMetadata::from(meta2), event2)]),
+        );
 
     sequencing.send_event_recursive(event1, &meta1).unwrap();
 
@@ -643,7 +673,7 @@ fn test_send_event_recursive_commit_head_with_dependencies() {
         .dependency_graph
         .insert(
             commit_meta.clone(),
-            HashMap::from([(dependent_meta, dependent)]),
+            HashMap::from([(CompleteEventMetadata::from(dependent_meta), dependent)]),
         );
 
     sequencing.context.entry(101).or_default();
@@ -662,8 +692,8 @@ fn test_send_event_recursive_commit_head_with_dependencies() {
 fn test_send_event_recursive_preserves_sent_events_queue() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
-    let event1 = create_transaction(100, 1, 0, TxHash::random());
-    let event2 = create_transaction(100, 1, 1, TxHash::random());
+    let event1 = create_transaction(100, 1, 0, TxHash::random(), None);
+    let event2 = create_transaction(100, 1, 1, TxHash::random(), None);
 
     let meta1 = EventMetadata::from(&event1);
     let meta2 = EventMetadata::from(&event2);
@@ -675,7 +705,7 @@ fn test_send_event_recursive_preserves_sent_events_queue() {
         .dependency_graph
         .insert(
             meta1.clone(),
-            HashMap::from([(meta2.clone(), event2.clone())]),
+            HashMap::from([(CompleteEventMetadata::from(meta2.clone()), event2.clone())]),
         );
 
     sequencing.send_event_recursive(event1, &meta1).unwrap();
@@ -694,7 +724,7 @@ fn test_send_event_recursive_handles_missing_context_gracefully() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
     // No context pre-created for block 100
-    let event = create_transaction(100, 1, 0, TxHash::random());
+    let event = create_transaction(100, 1, 0, TxHash::random(), None);
     let event_metadata = EventMetadata::from(&event);
 
     // This will fail because context doesn't exist - that's expected behavior
@@ -717,7 +747,7 @@ fn test_send_event_recursive_deep_chain() {
     let mut events = Vec::new();
     let mut metas = Vec::new();
     for i in 0..10 {
-        let event = create_transaction(100, 1, i, TxHash::random());
+        let event = create_transaction(100, 1, i, TxHash::random(), None);
         let meta = EventMetadata::from(&event);
         metas.push(meta);
         events.push(event);
@@ -732,7 +762,10 @@ fn test_send_event_recursive_deep_chain() {
             .dependency_graph
             .insert(
                 metas[i].clone(),
-                HashMap::from([(metas[i + 1].clone(), events[i + 1].clone())]),
+                HashMap::from([(
+                    CompleteEventMetadata::from(metas[i + 1].clone()),
+                    events[i + 1].clone(),
+                )]),
             );
     }
 
@@ -748,15 +781,15 @@ fn test_send_event_recursive_deep_chain() {
 fn test_send_event_recursive_wide_dependencies() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
-    let root = create_transaction(100, 1, 0, TxHash::random());
+    let root = create_transaction(100, 1, 0, TxHash::random(), None);
     let root_meta = EventMetadata::from(&root);
 
     // Create 20 dependent events
     let mut dependents = HashMap::new();
     for i in 1..21 {
-        let tx = create_transaction(100, 1, i, TxHash::random());
+        let tx = create_transaction(100, 1, i, TxHash::random(), None);
         let tx_meta = EventMetadata::from(&tx);
-        dependents.insert(tx_meta, tx);
+        dependents.insert(CompleteEventMetadata::from(tx_meta), tx);
     }
 
     sequencing
@@ -777,7 +810,7 @@ fn test_send_event_recursive_new_iteration_start() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
     let new_iter = create_new_iteration(100, 1);
-    let tx1 = create_transaction(100, 1, 0, TxHash::random());
+    let tx1 = create_transaction(100, 1, 0, TxHash::random(), None);
 
     let new_iter_meta = EventMetadata::from(&new_iter);
     let tx1_meta = EventMetadata::from(&tx1);
@@ -787,7 +820,10 @@ fn test_send_event_recursive_new_iteration_start() {
         .entry(100)
         .or_default()
         .dependency_graph
-        .insert(new_iter_meta.clone(), HashMap::from([(tx1_meta, tx1)]));
+        .insert(
+            new_iter_meta.clone(),
+            HashMap::from([(tx1_meta.into(), tx1)]),
+        );
 
     sequencing
         .send_event_recursive(new_iter, &new_iter_meta)
@@ -803,7 +839,7 @@ fn test_send_event_recursive_commit_head_to_new_iteration_to_transaction() {
     // Simulate: CommitHead(block 99) -> NewIteration(block 100) -> Transaction(block 100)
     let commit = create_commit_head(99, 1, 10, Some(TxHash::random()));
     let new_iter = create_new_iteration(100, 1);
-    let tx = create_transaction(100, 1, 0, TxHash::random());
+    let tx = create_transaction(100, 1, 0, TxHash::random(), None);
 
     let commit_meta = EventMetadata::from(&commit);
     let new_iter_meta = EventMetadata::from(&new_iter);
@@ -817,7 +853,10 @@ fn test_send_event_recursive_commit_head_to_new_iteration_to_transaction() {
         .dependency_graph
         .insert(
             commit_meta.clone(),
-            HashMap::from([(new_iter_meta.clone(), new_iter.clone())]),
+            HashMap::from([(
+                CompleteEventMetadata::from(new_iter_meta.clone()),
+                new_iter.clone(),
+            )]),
         );
 
     sequencing
@@ -825,7 +864,10 @@ fn test_send_event_recursive_commit_head_to_new_iteration_to_transaction() {
         .entry(100)
         .or_default()
         .dependency_graph
-        .insert(new_iter_meta.clone(), HashMap::from([(tx_meta, tx)]));
+        .insert(
+            new_iter_meta.clone(),
+            HashMap::from([(CompleteEventMetadata::from(tx_meta), tx)]),
+        );
 
     // Process from the root (commit)
     sequencing
@@ -856,9 +898,9 @@ fn test_send_event_recursive_complex_multi_block_tree() {
 
     let commit99 = create_commit_head(99, 1, 5, Some(TxHash::random()));
     let new_iter100 = create_new_iteration(100, 1);
-    let tx1 = create_transaction(100, 1, 0, TxHash::random());
-    let tx2 = create_transaction(100, 1, 1, TxHash::random());
-    let tx3 = create_transaction(100, 1, 2, TxHash::random());
+    let tx1 = create_transaction(100, 1, 0, TxHash::random(), None);
+    let tx2 = create_transaction(100, 1, 1, TxHash::random(), None);
+    let tx3 = create_transaction(100, 1, 2, TxHash::random(), None);
     let commit100 = create_commit_head(100, 1, 3, Some(TxHash::random()));
     let new_iter101 = create_new_iteration(101, 1);
 
@@ -877,7 +919,10 @@ fn test_send_event_recursive_complex_multi_block_tree() {
         .dependency_graph
         .insert(
             meta_commit99.clone(),
-            HashMap::from([(meta_new_iter100.clone(), new_iter100.clone())]),
+            HashMap::from([(
+                CompleteEventMetadata::from(meta_new_iter100.clone()),
+                new_iter100.clone(),
+            )]),
         );
 
     sequencing
@@ -888,22 +933,29 @@ fn test_send_event_recursive_complex_multi_block_tree() {
         .insert(
             meta_new_iter100.clone(),
             HashMap::from([
-                (meta_tx1.clone(), tx1.clone()),
-                (meta_tx2.clone(), tx2.clone()),
+                (CompleteEventMetadata::from(meta_tx1.clone()), tx1.clone()),
+                (CompleteEventMetadata::from(meta_tx2.clone()), tx2.clone()),
             ]),
         );
 
     let ctx100 = sequencing.context.entry(100).or_default();
-    ctx100
-        .dependency_graph
-        .insert(meta_tx1.clone(), HashMap::from([(meta_tx3, tx3.clone())]));
+    ctx100.dependency_graph.insert(
+        meta_tx1.clone(),
+        HashMap::from([(CompleteEventMetadata::from(meta_tx3), tx3.clone())]),
+    );
     ctx100.dependency_graph.insert(
         meta_tx2.clone(),
-        HashMap::from([(meta_commit100.clone(), commit100.clone())]),
+        HashMap::from([(
+            CompleteEventMetadata::from(meta_commit100.clone()),
+            commit100.clone(),
+        )]),
     );
     ctx100.dependency_graph.insert(
         meta_commit100.clone(),
-        HashMap::from([(meta_new_iter101, new_iter101.clone())]),
+        HashMap::from([(
+            CompleteEventMetadata::from(meta_new_iter101),
+            new_iter101.clone(),
+        )]),
     );
 
     sequencing.context.entry(101).or_default();
@@ -939,7 +991,7 @@ fn test_send_event_recursive_reorg_doesnt_cancel_wrong_tx() {
     let tx_hash1 = TxHash::random();
     let tx_hash2 = TxHash::random();
 
-    let tx = create_transaction(100, 1, 5, tx_hash1);
+    let tx = create_transaction(100, 1, 5, tx_hash1, None);
     let reorg = create_reorg(100, 1, 5, tx_hash2); // Different hash!
 
     // Add transaction to sent_events
@@ -997,10 +1049,10 @@ fn test_deterministic_event_ordering_with_shuffle() {
 
     let prev_commit = create_commit_head(block_num - 1, iter_id, 4, Some(TxHash::random()));
     let new_iter = create_new_iteration(block_num, iter_id);
-    let tx0 = create_transaction(block_num, iter_id, 0, TxHash::random());
-    let tx1 = create_transaction(block_num, iter_id, 1, TxHash::random());
-    let tx2 = create_transaction(block_num, iter_id, 2, TxHash::random());
-    let tx3 = create_transaction(block_num, iter_id, 3, TxHash::random());
+    let tx0 = create_transaction(block_num, iter_id, 0, TxHash::random(), None);
+    let tx1 = create_transaction(block_num, iter_id, 1, TxHash::random(), None);
+    let tx2 = create_transaction(block_num, iter_id, 2, TxHash::random(), None);
+    let tx3 = create_transaction(block_num, iter_id, 3, TxHash::random(), None);
     let commit = create_commit_head(block_num, iter_id, 4, Some(TxHash::random()));
 
     let events = vec![
@@ -1062,10 +1114,10 @@ fn test_deterministic_ordering_with_reorg_shuffle() {
     let tx_hash_to_reorg = TxHash::random();
 
     let new_iter = create_new_iteration(block_num, iter_id);
-    let tx0 = create_transaction(block_num, iter_id, 0, TxHash::random());
-    let tx1 = create_transaction(block_num, iter_id, 1, tx_hash_to_reorg);
+    let tx0 = create_transaction(block_num, iter_id, 0, TxHash::random(), None);
+    let tx1 = create_transaction(block_num, iter_id, 1, tx_hash_to_reorg, None);
     let reorg1 = create_reorg(block_num, iter_id, 1, tx_hash_to_reorg);
-    let tx2 = create_transaction(block_num, iter_id, 1, TxHash::random());
+    let tx2 = create_transaction(block_num, iter_id, 1, TxHash::random(), None);
     let commit = create_commit_head(block_num, iter_id, 2, Some(TxHash::random()));
 
     let events = vec![
@@ -1097,22 +1149,25 @@ fn test_deterministic_ordering_with_reorg_shuffle() {
         // And also: tx0 -> tx2 -> commit (after reorg)
         ctx.dependency_graph.insert(
             new_iter_meta.clone(),
-            HashMap::from([(tx0_meta.clone(), tx0.clone())]),
+            HashMap::from([(CompleteEventMetadata::from(tx0_meta.clone()), tx0.clone())]),
         );
         ctx.dependency_graph.insert(
             tx0_meta.clone(),
             HashMap::from([
-                (tx1_meta.clone(), tx1.clone()),
-                (tx2_meta.clone(), tx2.clone()),
+                (CompleteEventMetadata::from(tx1_meta.clone()), tx1.clone()),
+                (CompleteEventMetadata::from(tx2_meta.clone()), tx2.clone()),
             ]),
         );
         ctx.dependency_graph.insert(
             tx1_meta.clone(),
-            HashMap::from([(reorg1_meta.clone(), reorg1.clone())]),
+            HashMap::from([(
+                CompleteEventMetadata::from(reorg1_meta.clone()),
+                reorg1.clone(),
+            )]),
         );
         ctx.dependency_graph.insert(
             tx2_meta.clone(),
-            HashMap::from([(commit_meta, commit.clone())]),
+            HashMap::from([(CompleteEventMetadata::from(commit_meta), commit.clone())]),
         );
 
         sequencing
@@ -1144,11 +1199,11 @@ fn test_deterministic_ordering_multi_iteration_shuffle() {
 
     // Create events for two iterations in the same block
     let new_iter1 = create_new_iteration(block_num, 1);
-    let tx1_0 = create_transaction(block_num, 1, 0, TxHash::random());
-    let tx1_1 = create_transaction(block_num, 1, 1, TxHash::random());
+    let tx1_0 = create_transaction(block_num, 1, 0, TxHash::random(), None);
+    let tx1_1 = create_transaction(block_num, 1, 1, TxHash::random(), None);
 
     let new_iter2 = create_new_iteration(block_num, 2);
-    let tx2_0 = create_transaction(block_num, 2, 0, TxHash::random());
+    let tx2_0 = create_transaction(block_num, 2, 0, TxHash::random(), None);
     let commit2 = create_commit_head(block_num, 2, 1, Some(TxHash::random()));
 
     let events = vec![
@@ -1177,10 +1232,15 @@ fn test_deterministic_ordering_multi_iteration_shuffle() {
 
         ctx.dependency_graph.insert(
             new_iter1_meta.clone(),
-            HashMap::from([(tx1_0_meta.clone(), tx1_0.clone())]),
+            HashMap::from([(
+                CompleteEventMetadata::from(tx1_0_meta.clone()),
+                tx1_0.clone(),
+            )]),
         );
-        ctx.dependency_graph
-            .insert(tx1_0_meta, HashMap::from([(tx1_1_meta, tx1_1.clone())]));
+        ctx.dependency_graph.insert(
+            tx1_0_meta,
+            HashMap::from([(CompleteEventMetadata::from(tx1_1_meta), tx1_1.clone())]),
+        );
 
         // Chain for iteration 2: new_iter2 -> tx2_0 -> commit2
         let new_iter2_meta = EventMetadata::from(&new_iter2);
@@ -1189,10 +1249,15 @@ fn test_deterministic_ordering_multi_iteration_shuffle() {
 
         ctx.dependency_graph.insert(
             new_iter2_meta.clone(),
-            HashMap::from([(tx2_0_meta.clone(), tx2_0.clone())]),
+            HashMap::from([(
+                CompleteEventMetadata::from(tx2_0_meta.clone()),
+                tx2_0.clone(),
+            )]),
         );
-        ctx.dependency_graph
-            .insert(tx2_0_meta, HashMap::from([(commit2_meta, commit2.clone())]));
+        ctx.dependency_graph.insert(
+            tx2_0_meta,
+            HashMap::from([(CompleteEventMetadata::from(commit2_meta), commit2.clone())]),
+        );
 
         // Process iteration 1
         sequencing
@@ -1244,10 +1309,10 @@ fn test_deterministic_ordering_cross_block_shuffle() {
     // Events spanning multiple blocks
     let commit99 = create_commit_head(99, 1, 5, Some(TxHash::random()));
     let new_iter100 = create_new_iteration(100, 1);
-    let tx100 = create_transaction(100, 1, 0, TxHash::random());
+    let tx100 = create_transaction(100, 1, 0, TxHash::random(), None);
     let commit100 = create_commit_head(100, 1, 1, Some(TxHash::random()));
     let new_iter101 = create_new_iteration(101, 1);
-    let tx101 = create_transaction(101, 1, 0, TxHash::random());
+    let tx101 = create_transaction(101, 1, 0, TxHash::random(), None);
 
     let events = vec![
         commit99.clone(),
@@ -1324,7 +1389,7 @@ fn test_sending_old_commit_head() {
         .process_event(create_new_iteration(10, 1))
         .unwrap();
     sequencing
-        .process_event(create_transaction(10, 1, 0, TxHash::random()))
+        .process_event(create_transaction(10, 1, 0, TxHash::random(), None))
         .unwrap();
     sequencing
         .process_event(create_commit_head(10, 1, 1, Some(TxHash::random())))
@@ -1358,7 +1423,7 @@ fn test_events_process_at_current_head_plus_one() {
         .process_event(create_new_iteration(1, 1))
         .unwrap();
     sequencing
-        .process_event(create_transaction(1, 1, 0, TxHash::random()))
+        .process_event(create_transaction(1, 1, 0, TxHash::random(), None))
         .unwrap();
     sequencing
         .process_event(create_commit_head(1, 1, 1, Some(TxHash::random())))
@@ -1387,7 +1452,7 @@ fn test_cascading_blocks() {
             .process_event(create_new_iteration(block, 1))
             .unwrap();
         sequencing
-            .process_event(create_transaction(block, 1, 0, TxHash::random()))
+            .process_event(create_transaction(block, 1, 0, TxHash::random(), None))
             .unwrap();
         sequencing
             .process_event(create_commit_head(block, 1, 1, Some(TxHash::random())))
@@ -1416,7 +1481,7 @@ fn test_future_blocks_queued() {
         .process_event(create_new_iteration(10, 1))
         .unwrap();
     sequencing
-        .process_event(create_transaction(10, 1, 0, TxHash::random()))
+        .process_event(create_transaction(10, 1, 0, TxHash::random(), None))
         .unwrap();
 
     // Nothing sent (block 10 is the future)
@@ -1454,7 +1519,7 @@ fn test_disconnect_reconnect() {
         .process_event(create_new_iteration(150, 1))
         .unwrap();
     sequencing
-        .process_event(create_transaction(150, 1, 0, TxHash::random()))
+        .process_event(create_transaction(150, 1, 0, TxHash::random(), None))
         .unwrap();
 
     // Nothing sent (block 150 is the future)
@@ -1499,7 +1564,7 @@ fn test_gap_stops_cascade() {
         .process_event(create_new_iteration(10, 1))
         .unwrap();
     sequencing
-        .process_event(create_transaction(10, 1, 0, TxHash::random()))
+        .process_event(create_transaction(10, 1, 0, TxHash::random(), None))
         .unwrap();
 
     // Nothing sent (block 10 is the future with gap)
@@ -1513,4 +1578,2878 @@ fn test_gap_stops_cascade() {
     // CommitHead(9) + block 10 = 4 events
     assert_eq!(engine_recv.len(), 3);
     assert_eq!(sequencing.current_head, 9);
+}
+
+#[test]
+fn test_multiple_gaps_with_queued_events() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Start at block 1
+    sequencing
+        .process_event(create_commit_head(1, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 1);
+    engine_recv.try_iter().for_each(drop);
+
+    // Queue events for blocks 10, 20, 30 (multiple gaps)
+    for block in [10u64, 20, 30] {
+        sequencing
+            .process_event(create_new_iteration(block, 1))
+            .unwrap();
+        sequencing
+            .process_event(create_transaction(block, 1, 0, TxHash::random(), None))
+            .unwrap();
+    }
+
+    // Nothing sent yet (all future blocks)
+    assert_eq!(engine_recv.len(), 0);
+
+    // Fill first gap with CommitHead(9)
+    sequencing
+        .process_event(create_commit_head(9, 1, 0, None))
+        .unwrap();
+
+    // CommitHead(9) + block 10 events = 3 events
+    assert_eq!(engine_recv.len(), 3);
+    assert_eq!(sequencing.current_head, 9);
+    engine_recv.try_iter().for_each(drop);
+
+    // Process block 10's commit to trigger the next gap
+    sequencing
+        .process_event(create_commit_head(10, 1, 1, Some(TxHash::random())))
+        .unwrap();
+
+    assert_eq!(engine_recv.len(), 1);
+    assert_eq!(sequencing.current_head, 10);
+    engine_recv.try_iter().for_each(drop);
+
+    // Fill second gap with CommitHead(19)
+    sequencing
+        .process_event(create_commit_head(19, 1, 0, None))
+        .unwrap();
+
+    // CommitHead(19) + block 20 events = 3 events
+    assert_eq!(engine_recv.len(), 3);
+    assert_eq!(sequencing.current_head, 19);
+    engine_recv.try_iter().for_each(drop);
+
+    // Fill second gap with CommitHead(29)
+    sequencing
+        .process_event(create_commit_head(29, 1, 1, Some(TxHash::random())))
+        .unwrap();
+
+    // CommitHead(29) + block 30 events = 3 events
+    assert_eq!(engine_recv.len(), 3);
+    assert_eq!(sequencing.current_head, 29);
+}
+
+#[test]
+fn test_partial_block_queued_then_gap_filled_invalid_prev_hash() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Start at block 1
+    sequencing
+        .process_event(create_commit_head(1, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 1);
+    engine_recv.try_iter().for_each(drop);
+
+    // Queue only NewIteration and first transaction for block 10 (incomplete)
+    sequencing
+        .process_event(create_new_iteration(10, 1))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(10, 1, 0, TxHash::random(), None))
+        .unwrap();
+
+    // Nothing sent (future block)
+    assert_eq!(engine_recv.len(), 0);
+
+    // Fill gap with CommitHead(9)
+    sequencing
+        .process_event(create_commit_head(9, 1, 0, None))
+        .unwrap();
+
+    // CommitHead(9) + NewIteration(10) + Tx(10,0) = 3 events
+    assert_eq!(engine_recv.len(), 3);
+    assert_eq!(sequencing.current_head, 9);
+    engine_recv.try_iter().for_each(drop);
+
+    // Now send more transactions for block 10
+    sequencing
+        .process_event(create_transaction(10, 1, 1, TxHash::random(), None))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(10, 1, 2, TxHash::random(), None))
+        .unwrap();
+
+    // These should not be sent as the prev hash is invalid
+    assert_eq!(engine_recv.len(), 0);
+}
+
+#[test]
+fn test_partial_block_queued_then_gap_filled_valid_prev_hash() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Start at block 1
+    sequencing
+        .process_event(create_commit_head(1, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 1);
+    engine_recv.try_iter().for_each(drop);
+
+    // Queue only NewIteration and first transaction for block 10 (incomplete)
+    sequencing
+        .process_event(create_new_iteration(10, 1))
+        .unwrap();
+    let tx1_hash = TxHash::random();
+    sequencing
+        .process_event(create_transaction(10, 1, 0, tx1_hash, None))
+        .unwrap();
+
+    // Nothing sent (future block)
+    assert_eq!(engine_recv.len(), 0);
+
+    // Fill gap with CommitHead(9)
+    sequencing
+        .process_event(create_commit_head(9, 1, 0, None))
+        .unwrap();
+
+    // CommitHead(9) + NewIteration(10) + Tx(10,0) = 3 events
+    assert_eq!(engine_recv.len(), 3);
+    assert_eq!(sequencing.current_head, 9);
+    engine_recv.try_iter().for_each(drop);
+
+    // Now send more transactions for block 10
+    let tx2_hash = TxHash::random();
+    sequencing
+        .process_event(create_transaction(10, 1, 1, tx2_hash, Some(tx1_hash)))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(
+            10,
+            1,
+            2,
+            TxHash::random(),
+            Some(tx2_hash),
+        ))
+        .unwrap();
+
+    // These should be sent immediately since block 10 is now current
+    assert_eq!(engine_recv.len(), 2);
+}
+
+#[test]
+fn test_reorg_in_future_block() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Start at block 1
+    sequencing
+        .process_event(create_commit_head(1, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 1);
+    engine_recv.try_iter().for_each(drop);
+
+    // Queue events for block 10 including a reorg
+    let tx_hash = TxHash::random();
+    sequencing
+        .process_event(create_new_iteration(10, 1))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(10, 1, 0, TxHash::random(), None))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(10, 1, 1, tx_hash, None))
+        .unwrap();
+    sequencing
+        .process_event(create_reorg(10, 1, 1, tx_hash))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(10, 1, 1, TxHash::random(), None))
+        .unwrap();
+
+    // Nothing sent (future block)
+    assert_eq!(engine_recv.len(), 0);
+
+    // Fill gap
+    sequencing
+        .process_event(create_commit_head(9, 1, 0, None))
+        .unwrap();
+
+    // Should process all events including reorg cancellation
+    // CommitHead(9) + NewIteration(10) + Tx(0) + Tx(1) = 4 events (reorg cancels)
+    assert_eq!(engine_recv.len(), 4);
+}
+
+#[test]
+fn test_old_events_after_gap_jump() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Jump to block 50
+    sequencing
+        .process_event(create_commit_head(50, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 50);
+    engine_recv.try_iter().for_each(drop);
+
+    // Try to send events for old blocks (30, 40)
+    sequencing
+        .process_event(create_new_iteration(30, 1))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(30, 1, 0, TxHash::random(), None))
+        .unwrap();
+    sequencing
+        .process_event(create_new_iteration(40, 1))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(40, 1, 0, TxHash::random(), None))
+        .unwrap();
+
+    // Nothing should be sent (all old blocks)
+    assert_eq!(engine_recv.len(), 0);
+
+    // current_head should remain at 50
+    assert_eq!(sequencing.current_head, 50);
+}
+
+#[test]
+fn test_old_commit_head_ignored() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Start at block 1
+    sequencing
+        .process_event(create_commit_head(1, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 1);
+    engine_recv.try_iter().for_each(drop);
+
+    // Advance to block 9
+    sequencing
+        .process_event(create_commit_head(9, 1, 0, None))
+        .unwrap();
+
+    assert_eq!(engine_recv.len(), 1);
+    assert_eq!(sequencing.current_head, 9);
+    engine_recv.try_iter().for_each(drop);
+
+    // Send CommitHead(5) - should be ignored (old)
+    sequencing
+        .process_event(create_commit_head(5, 1, 0, None))
+        .unwrap();
+
+    assert_eq!(engine_recv.len(), 0);
+    assert_eq!(sequencing.current_head, 9);
+}
+
+#[test]
+fn test_multiple_iterations_in_future_block() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Start at block 1
+    sequencing
+        .process_event(create_commit_head(1, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 1);
+    engine_recv.try_iter().for_each(drop);
+
+    // Queue two iterations for block 10
+    // Iteration 1
+    sequencing
+        .process_event(create_new_iteration(10, 1))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(10, 1, 0, TxHash::random(), None))
+        .unwrap();
+
+    // Iteration 2
+    sequencing
+        .process_event(create_new_iteration(10, 2))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(10, 2, 0, TxHash::random(), None))
+        .unwrap();
+
+    // Nothing sent (future block)
+    assert_eq!(engine_recv.len(), 0);
+
+    // Fill gap
+    sequencing
+        .process_event(create_commit_head(9, 1, 0, None))
+        .unwrap();
+
+    // Both iterations should process
+    // CommitHead(9) + Iter1 events + Iter2 events
+    assert_eq!(engine_recv.len(), 5);
+    assert_eq!(sequencing.current_head, 9);
+}
+
+#[test]
+fn test_interleaved_gap_filling() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Start at block 1
+    sequencing
+        .process_event(create_commit_head(1, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 1);
+    engine_recv.try_iter().for_each(drop);
+
+    // Queue events for blocks 10, 15, 20 in mixed order
+    sequencing
+        .process_event(create_new_iteration(15, 1))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(15, 1, 0, TxHash::random(), None))
+        .unwrap();
+
+    sequencing
+        .process_event(create_new_iteration(10, 1))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(10, 1, 0, TxHash::random(), None))
+        .unwrap();
+
+    sequencing
+        .process_event(create_new_iteration(20, 1))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(20, 1, 0, TxHash::random(), None))
+        .unwrap();
+
+    // Fill the gap to block 10
+    sequencing
+        .process_event(create_commit_head(9, 1, 0, None))
+        .unwrap();
+
+    // Only block 10 should process
+    assert_eq!(engine_recv.len(), 3);
+    engine_recv.try_iter().for_each(drop);
+
+    // Fill gap to block 15
+    sequencing
+        .process_event(create_commit_head(14, 1, 0, None))
+        .unwrap();
+
+    // Block 15 should process
+    assert_eq!(engine_recv.len(), 3);
+}
+
+#[test]
+fn test_gap_with_only_commit_heads() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Start at block 1
+    sequencing
+        .process_event(create_commit_head(1, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 1);
+    engine_recv.try_iter().for_each(drop);
+
+    // Queue only commit heads for future blocks (no transactions)
+    sequencing
+        .process_event(create_commit_head(10, 1, 0, None))
+        .unwrap();
+    assert_eq!(engine_recv.len(), 1);
+    assert_eq!(sequencing.current_head, 10);
+    engine_recv.try_iter().for_each(drop);
+
+    sequencing
+        .process_event(create_commit_head(20, 1, 0, None))
+        .unwrap();
+    assert_eq!(engine_recv.len(), 1);
+    assert_eq!(sequencing.current_head, 20);
+}
+
+#[test]
+fn test_alternating_future_and_current_events() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Start at block 1
+    sequencing
+        .process_event(create_commit_head(1, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 1);
+    engine_recv.try_iter().for_each(drop);
+
+    // Alternate between the current block (2) and future block (10)
+    sequencing
+        .process_event(create_new_iteration(2, 1))
+        .unwrap();
+    sequencing
+        .process_event(create_new_iteration(10, 1))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(2, 1, 0, TxHash::random(), None))
+        .unwrap();
+    sequencing
+        .process_event(create_transaction(10, 1, 0, TxHash::random(), None))
+        .unwrap();
+
+    // Only block 2 events should be sent (2 events)
+    assert_eq!(engine_recv.len(), 2);
+    engine_recv.try_iter().for_each(drop);
+
+    // Commit block 2
+    sequencing
+        .process_event(create_commit_head(2, 1, 1, Some(TxHash::random())))
+        .unwrap();
+    assert_eq!(sequencing.current_head, 2);
+    engine_recv.try_iter().for_each(drop);
+
+    // Fill the gap to trigger block 10
+    sequencing
+        .process_event(create_commit_head(9, 1, 0, None))
+        .unwrap();
+
+    // Block 10 events should now be sent
+    assert_eq!(engine_recv.len(), 3);
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_mixed_iteration_reorg_operations(mut instance: LocalInstance<_>) {
+    instance.new_block().await.unwrap();
+
+    // Iteration 1
+    instance.set_current_iteration_id(1);
+    let tx1 = instance
+        .send_successful_create_tx_dry(U256::ZERO, Bytes::default())
+        .await
+        .unwrap();
+
+    // Iteration 2
+    instance.set_current_iteration_id(2);
+    instance.new_iteration(2).await.unwrap();
+    let tx2 = instance
+        .send_successful_create_tx_dry(U256::ZERO, Bytes::default())
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Reorg in iteration 2
+    instance.send_reorg(tx2).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send replacement in iteration 2
+    instance
+        .send_successful_create_tx_dry(U256::ZERO, Bytes::default())
+        .await
+        .unwrap();
+
+    // Commit with iteration 2
+    instance.set_current_iteration_id(2);
+    instance.new_block().await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_large_block_number_jump(mut instance: LocalInstance<_>) {
+    // Process the first few blocks normally
+    for _ in 0..3 {
+        instance.new_block().await.unwrap();
+        instance
+            .wait_for_processing(Duration::from_millis(10))
+            .await;
+    }
+
+    // Simulate a large jump (like reconnecting after being offline)
+    // Set the internal block number to simulate a gap
+    let start_block = instance.block_number;
+    instance.block_number = start_block + 100;
+
+    // Continue processing - the system should handle the gap
+    instance.new_block().await.unwrap();
+    instance
+        .send_successful_create_tx_dry(U256::ZERO, Bytes::default())
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // Verify we're at the new block
+    assert!(instance.block_number >= start_block + 100);
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_future_block_transaction_queuing(mut instance: LocalInstance<_>) {
+    // MUST send CommitHead FIRST to initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Now send NewIteration for block 1 (current_head + 1 = 0 + 1 = 1)
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send NewIteration for FUTURE block 10 (will be queued)
+    let future_block_env = BlockEnv {
+        number: 10,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, future_block_env)
+        .await
+        .unwrap();
+
+    // Send transaction for future block 10 (should be queued, not executed)
+    let tx_hash = TxHash::random();
+    let tx_execution_id = TxExecutionId {
+        block_number: 10,
+        iteration_id: 1,
+        tx_hash,
+        index: 0,
+    };
+
+    let tx_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance.transport.set_last_tx_hash(None);
+
+    instance
+        .transport
+        .send_transaction(tx_execution_id, tx_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    // Verify that the transaction is NOT processed yet (queued for future block)
+    assert!(
+        instance.get_transaction_result(&tx_execution_id).is_none(),
+        "Transaction for future block should not be processed yet"
+    );
+
+    // Advance through blocks 1-8
+    for block in 1..9 {
+        // Send NewIteration for the next block
+        let next_block_env = BlockEnv {
+            number: block,
+            gas_limit: 50_000_000,
+            ..Default::default()
+        };
+        instance
+            .transport
+            .new_iteration(1, next_block_env)
+            .await
+            .unwrap();
+
+        // Commit current block
+        instance.transport.new_block(block, 1, 0).await.unwrap();
+        instance.wait_for_processing(Duration::from_millis(5)).await;
+    }
+
+    assert!(
+        instance.get_transaction_result(&tx_execution_id).is_none(),
+        "Transaction for future block should not be processed yet"
+    );
+
+    // Send NewIteration for the next block
+    let next_block_env = BlockEnv {
+        number: 9,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, next_block_env)
+        .await
+        .unwrap();
+
+    instance.transport.new_block(9, 1, 0).await.unwrap();
+    instance.wait_for_processing(Duration::from_millis(5)).await;
+
+    // Now the transaction should be processed!
+    let result = instance
+        .wait_for_transaction_processed(&tx_execution_id)
+        .await;
+    assert!(
+        result.is_ok(),
+        "Transaction should be processed after reaching block 10: {result:?}",
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_future_block_out_of_order_transactions(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Create 3 transactions for FUTURE block 5 (DON'T send NewIteration yet)
+    let tx1_hash = TxHash::random();
+    let tx2_hash = TxHash::random();
+    let tx3_hash = TxHash::random();
+
+    let tx1_id = TxExecutionId {
+        block_number: 5,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+    let tx2_id = TxExecutionId {
+        block_number: 5,
+        iteration_id: 1,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+    let tx3_id = TxExecutionId {
+        block_number: 5,
+        iteration_id: 1,
+        tx_hash: tx3_hash,
+        index: 2,
+    };
+
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+
+    let tx2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+
+    let tx3_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(2)
+        .build()
+        .unwrap();
+
+    // Send transactions OUT OF ORDER: tx2, tx3, tx1 (for future block 5)
+    instance
+        .transport
+        .send_transaction(tx2_id, tx2_env)
+        .await
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx3_id, tx3_env)
+        .await
+        .unwrap();
+    instance.transport.set_last_tx_hash(None);
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    // Verify NONE are processed yet (all queued for future block)
+    assert!(instance.get_transaction_result(&tx1_id).is_none());
+    assert!(instance.get_transaction_result(&tx2_id).is_none());
+    assert!(instance.get_transaction_result(&tx3_id).is_none());
+
+    // Advance through blocks 1-5, sending NewIteration as we go
+    for block in 1..=5 {
+        let next_block_env = BlockEnv {
+            number: block,
+            gas_limit: 50_000_000,
+            ..Default::default()
+        };
+        instance
+            .transport
+            .new_iteration(1, next_block_env)
+            .await
+            .unwrap();
+        instance
+            .wait_for_processing(Duration::from_millis(10))
+            .await;
+
+        if block < 5 {
+            // Commit blocks 1-4
+            instance.transport.new_block(block, 1, 0).await.unwrap();
+            instance.wait_for_processing(Duration::from_millis(5)).await;
+
+            // Transactions should still not be processed
+            assert!(instance.get_transaction_result(&tx1_id).is_none());
+            assert!(instance.get_transaction_result(&tx2_id).is_none());
+            assert!(instance.get_transaction_result(&tx3_id).is_none());
+        }
+    }
+
+    // After sending NewIteration(5), transactions should be processed IN ORDER
+    instance
+        .wait_for_transaction_processed(&tx1_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx2_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx3_id)
+        .await
+        .unwrap();
+
+    assert!(instance.get_transaction_result(&tx1_id).is_some());
+    assert!(instance.get_transaction_result(&tx2_id).is_some());
+    assert!(instance.get_transaction_result(&tx3_id).is_some());
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_multiple_future_blocks_interleaved(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Create transactions for future blocks 3, 5, 7 (NO NewIterations yet)
+    let tx3_hash = TxHash::random();
+    let tx5_hash = TxHash::random();
+    let tx7_hash = TxHash::random();
+
+    let tx3_id = TxExecutionId {
+        block_number: 3,
+        iteration_id: 1,
+        tx_hash: tx3_hash,
+        index: 0,
+    };
+    let tx5_id = TxExecutionId {
+        block_number: 5,
+        iteration_id: 1,
+        tx_hash: tx5_hash,
+        index: 0,
+    };
+    let tx7_id = TxExecutionId {
+        block_number: 7,
+        iteration_id: 1,
+        tx_hash: tx7_hash,
+        index: 0,
+    };
+
+    // Send transactions INTERLEAVED: tx7, tx3, tx5 (all for different blocks)
+    let tx7_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx7_id, tx7_env)
+        .await
+        .unwrap();
+
+    instance.transport.set_last_tx_hash(None);
+    let tx3_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx3_id, tx3_env)
+        .await
+        .unwrap();
+
+    instance.transport.set_last_tx_hash(None);
+    let tx5_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx5_id, tx5_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    // Verify all are queued
+    assert!(instance.get_transaction_result(&tx3_id).is_none());
+    assert!(instance.get_transaction_result(&tx5_id).is_none());
+    assert!(instance.get_transaction_result(&tx7_id).is_none());
+
+    // Advance through blocks 1-7, sending NewIteration as each becomes current
+    for block in 1..=7 {
+        let next_block_env = BlockEnv {
+            number: block,
+            gas_limit: 50_000_000,
+            ..Default::default()
+        };
+        instance
+            .transport
+            .new_iteration(1, next_block_env)
+            .await
+            .unwrap();
+        instance
+            .wait_for_processing(Duration::from_millis(10))
+            .await;
+
+        // Commit the block (except the last one which we check separately)
+        if block < 7 {
+            instance.transport.new_block(block, 1, 0).await.unwrap();
+            instance
+                .wait_for_processing(Duration::from_millis(10))
+                .await;
+        }
+
+        // Check which transactions should be processed by now
+        match block {
+            1..=2 => {
+                assert!(instance.get_transaction_result(&tx3_id).is_none());
+                assert!(instance.get_transaction_result(&tx5_id).is_none());
+                assert!(instance.get_transaction_result(&tx7_id).is_none());
+            }
+            3 => {
+                // After NewIteration(3), tx3 should be processed
+                instance
+                    .wait_for_transaction_processed(&tx3_id)
+                    .await
+                    .unwrap();
+                assert!(instance.get_transaction_result(&tx3_id).is_some());
+                assert!(instance.get_transaction_result(&tx5_id).is_none());
+                assert!(instance.get_transaction_result(&tx7_id).is_none());
+            }
+            4 => {
+                assert!(instance.get_transaction_result(&tx3_id).is_some());
+                assert!(instance.get_transaction_result(&tx5_id).is_none());
+                assert!(instance.get_transaction_result(&tx7_id).is_none());
+            }
+            5 => {
+                // After NewIteration(5), tx5 should be processed
+                instance
+                    .wait_for_transaction_processed(&tx5_id)
+                    .await
+                    .unwrap();
+                assert!(instance.get_transaction_result(&tx3_id).is_some());
+                assert!(instance.get_transaction_result(&tx5_id).is_some());
+                assert!(instance.get_transaction_result(&tx7_id).is_none());
+            }
+            6 => {
+                assert!(instance.get_transaction_result(&tx3_id).is_some());
+                assert!(instance.get_transaction_result(&tx5_id).is_some());
+                assert!(instance.get_transaction_result(&tx7_id).is_none());
+            }
+            7 => {
+                // After NewIteration(7), tx7 should be processed
+                instance
+                    .wait_for_transaction_processed(&tx7_id)
+                    .await
+                    .unwrap();
+                assert!(instance.get_transaction_result(&tx3_id).is_some());
+                assert!(instance.get_transaction_result(&tx5_id).is_some());
+                assert!(instance.get_transaction_result(&tx7_id).is_some());
+            }
+            _ => {}
+        }
+    }
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_partial_transaction_chain_backwards(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Create a chain of 4 transactions
+    let tx_hashes: Vec<TxHash> = (0..4).map(|_| TxHash::random()).collect();
+    let tx_ids: Vec<TxExecutionId> = tx_hashes
+        .iter()
+        .enumerate()
+        .map(|(i, &hash)| {
+            TxExecutionId {
+                block_number: 4,
+                iteration_id: 1,
+                tx_hash: hash,
+                index: i as u64,
+            }
+        })
+        .collect();
+
+    // Send in this order: tx1, tx3, tx2, tx0
+    // tx1 with prev = None
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx_ids[1], tx1_env)
+        .await
+        .unwrap();
+
+    // tx3 with prev = tx1 (automatic)
+    let tx3_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(3)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx_ids[3], tx3_env)
+        .await
+        .unwrap();
+
+    // tx2 with prev = tx1 (override to tx1)
+    instance.transport.set_last_tx_hash(Some(tx_hashes[1]));
+    let tx2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(2)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx_ids[2], tx2_env)
+        .await
+        .unwrap();
+
+    // tx0 with prev = None
+    instance.transport.set_last_tx_hash(None);
+    let tx0_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx_ids[0], tx0_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    // Verify all are queued
+    for tx_id in &tx_ids {
+        assert!(instance.get_transaction_result(tx_id).is_none());
+    }
+
+    // Advance to block 4
+    for block in 1..4 {
+        let next_block_env = BlockEnv {
+            number: block,
+            gas_limit: 50_000_000,
+            ..Default::default()
+        };
+        instance
+            .transport
+            .new_iteration(1, next_block_env)
+            .await
+            .unwrap();
+        instance.transport.new_block(block, 1, 0).await.unwrap();
+        instance.wait_for_processing(Duration::from_millis(5)).await;
+    }
+
+    // Verify all are queued
+    for tx_id in &tx_ids {
+        assert!(instance.get_transaction_result(tx_id).is_none());
+    }
+
+    // Send NewIteration(4) to trigger processing
+    let block4_env = BlockEnv {
+        number: 4,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block4_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // All should be processed
+    for tx_id in &tx_ids {
+        instance
+            .wait_for_transaction_processed(tx_id)
+            .await
+            .unwrap();
+        assert!(instance.get_transaction_result(tx_id).is_some());
+    }
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_mixed_order_iterations(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Start with block 1 normally
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+
+    // Send a transaction for block 1 (immediate processing)
+    let tx1_hash = TxHash::random();
+    let tx1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // tx1 should be processed immediately
+    instance
+        .wait_for_transaction_processed(&tx1_id)
+        .await
+        .unwrap();
+    assert!(instance.get_transaction_result(&tx1_id).is_some());
+
+    // Now send future block 5 with transactions (will be queued)
+    let block5_env = BlockEnv {
+        number: 5,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block5_env.clone())
+        .await
+        .unwrap();
+
+    let tx5_hash = TxHash::random();
+    let tx5_id = TxExecutionId {
+        block_number: 5,
+        iteration_id: 1,
+        tx_hash: tx5_hash,
+        index: 0,
+    };
+
+    let tx5_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx5_id, tx5_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // tx5 should NOT be processed yet
+    assert!(instance.get_transaction_result(&tx5_id).is_none());
+
+    // Commit block 1 and advance through blocks 2-4
+    instance.transport.new_block(1, 1, 1).await.unwrap();
+    instance.wait_for_processing(Duration::from_millis(5)).await;
+
+    for block in 2..5 {
+        let next_block_env = BlockEnv {
+            number: block,
+            gas_limit: 50_000_000,
+            ..Default::default()
+        };
+        instance
+            .transport
+            .new_iteration(1, next_block_env)
+            .await
+            .unwrap();
+        instance.transport.new_block(block, 1, 0).await.unwrap();
+        instance.wait_for_processing(Duration::from_millis(5)).await;
+    }
+
+    // Resend NewIteration(5) to trigger processing
+    instance
+        .transport
+        .new_iteration(1, block5_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // Now tx5 should be processed
+    instance
+        .wait_for_transaction_processed(&tx5_id)
+        .await
+        .unwrap();
+    assert!(instance.get_transaction_result(&tx5_id).is_some());
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_future_block_reorg_basic(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send transaction for FUTURE block 5
+    let tx_hash = TxHash::random();
+    let tx_id = TxExecutionId {
+        block_number: 5,
+        iteration_id: 1,
+        tx_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx_id, tx_env)
+        .await
+        .unwrap();
+
+    // Send reorg for the same transaction (should be queued)
+    instance.transport.reorg(tx_id).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    // Transaction should not be processed yet (future block)
+    assert!(instance.get_transaction_result(&tx_id).is_none());
+
+    // Advance through blocks to reach block 5
+    for block in 1..=5 {
+        let next_block_env = BlockEnv {
+            number: block,
+            gas_limit: 50_000_000,
+            ..Default::default()
+        };
+        instance
+            .transport
+            .new_iteration(1, next_block_env)
+            .await
+            .unwrap();
+        instance
+            .wait_for_processing(Duration::from_millis(10))
+            .await;
+
+        if block < 5 {
+            instance.transport.new_block(block, 1, 0).await.unwrap();
+            instance.wait_for_processing(Duration::from_millis(5)).await;
+        }
+    }
+
+    // After NewIteration(5), transaction and reorg should cancel each other
+    // So no transaction result should exist
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        instance.get_transaction_result(&tx_id).is_none(),
+        "Transaction should be cancelled by reorg"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_future_block_reorg_with_one_replacement(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send first transaction for future block 4
+    let tx1_hash = TxHash::random();
+    let tx1_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+
+    // Send reorg for first transaction
+    instance.transport.reorg(tx1_id).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send replacement transaction with same index but different hash
+    let tx2_hash = TxHash::random();
+    let tx2_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx2_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_id, tx2_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    // Neither should be processed yet
+    assert!(instance.get_transaction_result(&tx1_id).is_none());
+    assert!(instance.get_transaction_result(&tx2_id).is_none());
+
+    // Advance to block 4
+    for block in 1..4 {
+        instance.transport.set_last_tx_hash(None);
+        instance.transport.set_n_transactions(0);
+        instance.transport.new_block(block, 1, 0).await.unwrap();
+    }
+
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 4,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // After NewIteration(4):
+    // - tx1 should be cancelled by reorg
+    // - tx2 (replacement) should be processed
+    instance
+        .wait_for_transaction_processed(&tx2_id)
+        .await
+        .unwrap();
+    assert!(
+        instance.get_transaction_result(&tx1_id).is_none(),
+        "Original transaction should not be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_id).is_some(),
+        "Replacement transaction should be processed"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_future_block_reorg_with_replacement_and_redundant_reorgs(
+    mut instance: LocalInstance<_>,
+) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // First transaction for future block 4
+    let tx1_hash = TxHash::random();
+    let tx1_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+
+    // Second transaction never sent for future block 4
+    let tx2_hash = TxHash::random();
+    let tx2_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+
+    // Send first the reorg for first transaction
+    instance.transport.reorg(tx1_id).await.unwrap();
+    // Send the reorg for a second transaction which is never sent
+    instance.transport.reorg(tx2_id).await.unwrap();
+
+    // Send the transaction to be replaced
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    // Send replacement transaction with same index but different hash
+    let tx3_hash = TxHash::random();
+    let tx3_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx3_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx3_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx3_id, tx3_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    // Neither should be processed yet
+    assert!(instance.get_transaction_result(&tx1_id).is_none());
+    assert!(instance.get_transaction_result(&tx2_id).is_none());
+    assert!(instance.get_transaction_result(&tx3_id).is_none());
+
+    // Advance to block 4
+    for block in 1..4 {
+        instance.transport.set_last_tx_hash(None);
+        instance.transport.set_n_transactions(0);
+        instance.transport.new_block(block, 1, 0).await.unwrap();
+    }
+
+    let next_block_env = BlockEnv {
+        number: 4,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, next_block_env)
+        .await
+        .unwrap();
+
+    // After NewIteration(4):
+    // - tx1 should be cancelled by reorg
+    // - reorg tx2 sould be ignored
+    // - tx3 (replacement) should be processed
+    instance
+        .wait_for_transaction_processed(&tx3_id)
+        .await
+        .unwrap();
+    assert!(
+        instance.get_transaction_result(&tx1_id).is_none(),
+        "Original transaction should not be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx3_id).is_some(),
+        "Replacement transaction should be processed"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_old_reorg_for_current_block_same_hash(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send tx1
+    let tx1_hash = TxHash::random();
+    let tx1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    // Send tx2 (depends on tx1)
+    let tx2_hash = TxHash::random();
+    let tx2_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+
+    instance.transport.set_last_tx_hash(Some(tx1_hash));
+    let tx2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_id, tx2_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // Both should be processed
+    instance
+        .wait_for_transaction_processed(&tx1_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx2_id)
+        .await
+        .unwrap();
+    assert!(instance.get_transaction_result(&tx1_id).is_some());
+    assert!(instance.get_transaction_result(&tx2_id).is_some());
+
+    // Send old reorg for tx1 (should be ignored)
+    instance.transport.reorg(tx1_id).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // Both transactions should still be processed (reorg ignored)
+    assert!(
+        instance.get_transaction_result(&tx1_id).is_some(),
+        "tx1 should still be processed (old reorg ignored)"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_id).is_some(),
+        "tx2 should still be processed (old reorg ignored)"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_old_reorg_for_current_block_different_hash(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send tx1
+    let tx1_hash = TxHash::random();
+    let tx1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    // Send tx2 (depends on tx1)
+    let tx2_hash = TxHash::random();
+    let tx2_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+
+    instance.transport.set_last_tx_hash(Some(tx1_hash));
+    let tx2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_id, tx2_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // Both should be processed
+    instance
+        .wait_for_transaction_processed(&tx1_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx2_id)
+        .await
+        .unwrap();
+
+    // Send old reorg for tx1 with different hash (should be ignored)
+    let tx1_different_hash = TxHash::random();
+    let tx1_different_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_different_hash,
+        index: 0,
+    };
+    instance.transport.reorg(tx1_different_id).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // Original transactions should still be processed
+    assert!(
+        instance.get_transaction_result(&tx1_id).is_some(),
+        "tx1 should still be processed (old reorg with different hash ignored)"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_id).is_some(),
+        "tx2 should still be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx1_different_id).is_none(),
+        "Different hash transaction should not exist"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_old_reorg_for_future_block_breaks_chain(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send a chain of transactions for future block 3: tx1 -> tx2 -> tx3
+    let tx_hashes: Vec<TxHash> = (0..3).map(|_| TxHash::random()).collect();
+    let tx_ids: Vec<TxExecutionId> = tx_hashes
+        .iter()
+        .enumerate()
+        .map(|(i, &hash)| {
+            TxExecutionId {
+                block_number: 3,
+                iteration_id: 1,
+                tx_hash: hash,
+                index: i as u64,
+            }
+        })
+        .collect();
+
+    // Send tx1
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx_ids[0], tx1_env)
+        .await
+        .unwrap();
+
+    // Send tx2 (depends on tx1)
+    let tx2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx_ids[1], tx2_env)
+        .await
+        .unwrap();
+
+    // Send tx3 (depends on tx2)
+    let tx3_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(2)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx_ids[2], tx3_env)
+        .await
+        .unwrap();
+
+    // Send reorg for tx2 (breaks the chain)
+    instance.transport.reorg(tx_ids[1]).await.unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    // All should be queued (future block)
+    for tx_id in &tx_ids {
+        assert!(instance.get_transaction_result(tx_id).is_none());
+    }
+
+    // Advance to block 3
+    for block in 1..=3 {
+        let next_block_env = BlockEnv {
+            number: block,
+            gas_limit: 50_000_000,
+            ..Default::default()
+        };
+        instance
+            .transport
+            .new_iteration(1, next_block_env)
+            .await
+            .unwrap();
+        instance
+            .wait_for_processing(Duration::from_millis(10))
+            .await;
+
+        if block < 3 {
+            instance.transport.new_block(block, 1, 0).await.unwrap();
+            instance.wait_for_processing(Duration::from_millis(5)).await;
+        }
+    }
+
+    // After NewIteration(3):
+    // - tx1 should be processed (no dependency issues)
+    // - tx2 should be cancelled by reorg
+    // - tx3 should NOT be processed (depends on cancelled tx2)
+    instance
+        .wait_for_transaction_processed(&tx_ids[0])
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    assert!(
+        instance.get_transaction_result(&tx_ids[0]).is_some(),
+        "tx1 should be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx_ids[1]).is_none(),
+        "tx2 should be cancelled by reorg"
+    );
+    assert!(
+        instance.get_transaction_result(&tx_ids[2]).is_none(),
+        "tx3 should not be processed (depends on cancelled tx2)"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_old_reorg_future_block_with_replacement_when_current(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(2, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send the first chain for future block 3: tx1 -> tx2 -> tx3
+    let tx1_hash = TxHash::random();
+    let tx2_hash_old = TxHash::random();
+    let tx3_hash = TxHash::random();
+
+    let tx1_id = TxExecutionId {
+        block_number: 3,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+    let tx2_id_old = TxExecutionId {
+        block_number: 3,
+        iteration_id: 1,
+        tx_hash: tx2_hash_old,
+        index: 1,
+    };
+    let tx3_id = TxExecutionId {
+        block_number: 3,
+        iteration_id: 1,
+        tx_hash: tx3_hash,
+        index: 2,
+    };
+
+    // Send tx1
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    // Send tx2 (old version, will be reorged)
+    instance.transport.set_last_tx_hash(Some(tx1_hash));
+    let tx2_env_old = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_id_old, tx2_env_old)
+        .await
+        .unwrap();
+
+    // Send tx3 (depends on old tx2)
+    instance.transport.set_last_tx_hash(Some(tx2_hash_old));
+    let tx3_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(2)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx3_id, tx3_env)
+        .await
+        .unwrap();
+
+    // Send reorg for old tx2
+    instance.transport.reorg(tx2_id_old).await.unwrap();
+
+    // Send new tx2 (replacement with different hash)
+    let tx2_hash_new = TxHash::random();
+    let tx2_id_new = TxExecutionId {
+        block_number: 3,
+        iteration_id: 1,
+        tx_hash: tx2_hash_new,
+        index: 1,
+    };
+
+    instance.transport.set_last_tx_hash(Some(tx1_hash));
+    let tx2_env_new = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_id_new, tx2_env_new)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    let block_env = BlockEnv {
+        number: 3,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // After NewIteration(3):
+    // - tx1 should be processed
+    // - old tx2 should be cancelled by reorg
+    // - new tx2 should be processed
+    // - tx3 should NOT be processed (its prev_hash points to old tx2)
+    instance
+        .wait_for_transaction_processed(&tx1_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx2_id_new)
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    assert!(
+        instance.get_transaction_result(&tx1_id).is_some(),
+        "tx1 should be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_id_old).is_none(),
+        "old tx2 should be cancelled by reorg"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_id_new).is_some(),
+        "new tx2 should be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx3_id).is_none(),
+        "tx3 should not be processed (prev_hash points to reorged tx2)"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_old_reorg_future_block_two_chains(mut instance: LocalInstance<_>) {
+    // Initialize
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // First chain: tx1.1 -> tx1.2 -> tx1.3 (all for future block 4)
+    let tx1_1_hash = TxHash::random();
+    let tx1_2_hash = TxHash::random();
+    let tx1_3_hash = TxHash::random();
+
+    let tx1_1_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx1_1_hash,
+        index: 0,
+    };
+    let tx1_2_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx1_2_hash,
+        index: 1,
+    };
+    let tx1_3_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx1_3_hash,
+        index: 2,
+    };
+
+    // Send the first chain
+    instance.transport.set_last_tx_hash(None);
+    let tx1_1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_1_id, tx1_1_env)
+        .await
+        .unwrap();
+
+    instance.transport.set_last_tx_hash(Some(tx1_1_id.tx_hash));
+    let tx1_2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_2_id, tx1_2_env)
+        .await
+        .unwrap();
+
+    instance.transport.set_last_tx_hash(Some(tx1_2_id.tx_hash));
+    let tx1_3_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(2)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_3_id, tx1_3_env)
+        .await
+        .unwrap();
+
+    // Second chain (replacement): tx2.2 -> tx2.3 -> tx2.4
+    // tx2.2 replaces tx1.2, tx2.3 replaces tx1.3, tx2.4 is new
+    let tx2_2_hash = TxHash::random();
+    let tx2_3_hash = TxHash::random();
+    let tx2_4_hash = TxHash::random();
+
+    let tx2_2_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx2_2_hash,
+        index: 1,
+    };
+    let tx2_3_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx2_3_hash,
+        index: 2,
+    };
+    let tx2_4_id = TxExecutionId {
+        block_number: 4,
+        iteration_id: 1,
+        tx_hash: tx2_4_hash,
+        index: 3,
+    };
+
+    // Send replacement chain (starts from tx1.1)
+    instance.transport.set_last_tx_hash(Some(tx1_1_hash));
+    let tx2_2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_2_id, tx2_2_env)
+        .await
+        .unwrap();
+
+    instance.transport.set_last_tx_hash(Some(tx2_2_hash));
+    let tx2_3_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(2)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_3_id, tx2_3_env)
+        .await
+        .unwrap();
+
+    instance.transport.set_last_tx_hash(Some(tx2_3_hash));
+    let tx2_4_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(3)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_4_id, tx2_4_env)
+        .await
+        .unwrap();
+
+    // Send reorg for tx1.2 (invalidates the first chain from tx1.2 onwards)
+    instance.transport.reorg(tx1_2_id).await.unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    instance.transport.reorg(tx1_3_id).await.unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    // All should be queued (future block)
+    assert!(instance.get_transaction_result(&tx1_1_id).is_none());
+    assert!(instance.get_transaction_result(&tx1_2_id).is_none());
+    assert!(instance.get_transaction_result(&tx1_3_id).is_none());
+    assert!(instance.get_transaction_result(&tx2_2_id).is_none());
+    assert!(instance.get_transaction_result(&tx2_3_id).is_none());
+    assert!(instance.get_transaction_result(&tx2_4_id).is_none());
+
+    // Advance to block 4
+    for block in 1..4 {
+        let next_block_env = BlockEnv {
+            number: block,
+            gas_limit: 50_000_000,
+            ..Default::default()
+        };
+        instance.transport.new_block(block, 1, 0).await.unwrap();
+    }
+
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send new iteration
+    let next_block_env = BlockEnv {
+        number: 4,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, next_block_env)
+        .await
+        .unwrap();
+
+    // After NewIteration(4):
+    // Processed: tx1.1 (no dependency issues), tx2.2, tx2.3, tx2.4 (valid chain)
+    // Not processed: tx1.2 (reorged), tx1.3 (depends on reorged tx1.2)
+    instance
+        .wait_for_transaction_processed(&tx1_1_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx2_2_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx2_3_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx2_4_id)
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    assert!(
+        instance.get_transaction_result(&tx1_1_id).is_some(),
+        "tx1.1 should be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx1_2_id).is_none(),
+        "tx1.2 should be cancelled by reorg"
+    );
+    assert!(
+        instance.get_transaction_result(&tx1_3_id).is_none(),
+        "tx1.3 should not be processed (depends on reorged tx1.2)"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_2_id).is_some(),
+        "tx2.2 should be processed (replacement)"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_3_id).is_some(),
+        "tx2.3 should be processed (replacement)"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_4_id).is_some(),
+        "tx2.4 should be processed (new transaction)"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_non_sequential_prev_tx_hash_skips_transaction(mut instance: LocalInstance<_>) {
+    // Test that tx3 can depend on tx1, effectively making tx2 independent
+    // tx1 (index 0, prev_tx_hash = None)
+    // tx2 (index 1, prev_tx_hash = None)
+    // tx3 (index 1, prev_tx_hash = tx1) - skips tx2
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let tx1_hash = TxHash::random();
+    let tx2_hash = TxHash::random();
+    let tx3_hash = TxHash::random();
+
+    let tx1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+    let tx2_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+    let tx3_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx3_hash,
+        index: 1,
+    };
+
+    // Send tx1
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    // Send tx2 (independent, prev_tx_hash = None)
+    instance.transport.set_last_tx_hash(None);
+    let tx2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_id, tx2_env)
+        .await
+        .unwrap();
+
+    // Send tx3 (depends on tx1, skipping tx2)
+    instance.transport.set_last_tx_hash(Some(tx1_hash));
+    let tx3_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(2)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx3_id, tx3_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    instance
+        .wait_for_transaction_processed(&tx1_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx3_id)
+        .await
+        .unwrap();
+
+    assert!(
+        instance.get_transaction_result(&tx1_id).is_some(),
+        "tx1 should be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_id).is_none(),
+        "tx2 should not be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx3_id).is_some(),
+        "tx3 should be processed (depends on tx1)"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_invalid_prev_tx_hash_skips_transaction(mut instance: LocalInstance<_>) {
+    // Test that a transaction with wrong prev_tx_hash is never processed
+    // tx0 (index 0, prev_tx_hash = None)
+    // tx1 (index 1, prev_tx_hash = wrong_hash) - should be skipped
+    // tx2 (index 2, prev_tx_hash = tx0) - should process
+
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let tx0_hash = TxHash::random();
+    let tx1_hash = TxHash::random();
+    let tx2_hash = TxHash::random();
+    let wrong_hash = TxHash::random();
+
+    let tx0_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx0_hash,
+        index: 0,
+    };
+    let tx1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 1,
+    };
+    let tx2_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+
+    // Send tx0
+    instance.transport.set_last_tx_hash(None);
+    let tx0_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx0_id, tx0_env)
+        .await
+        .unwrap();
+
+    // Send tx1 with WRONG prev_tx_hash
+    instance.transport.set_last_tx_hash(Some(wrong_hash));
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    // Send tx2 with the correct prev_tx_hash pointing to tx0
+    instance.transport.set_last_tx_hash(Some(tx0_hash));
+    let tx2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(2)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_id, tx2_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    instance
+        .wait_for_transaction_processed(&tx0_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx2_id)
+        .await
+        .unwrap();
+
+    assert!(
+        instance.get_transaction_result(&tx0_id).is_some(),
+        "tx0 should be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx1_id).is_none(),
+        "tx1 should not be processed (wrong prev_tx_hash)"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_id).is_some(),
+        "tx2 should be processed (depends on tx0)"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_chain_with_invalid_middle_link(mut instance: LocalInstance<_>) {
+    // Test chain tx0 -> tx1 -> tx2, but tx2 has wrong prev_tx_hash
+    // tx0 (index 0, prev_tx_hash = None)
+    // tx1 (index 1, prev_tx_hash = tx0)
+    // tx2 (index 2, prev_tx_hash = tx0) - WRONG, should be tx1
+
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let tx0_hash = TxHash::random();
+    let tx1_hash = TxHash::random();
+    let tx2_hash = TxHash::random();
+
+    let tx0_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx0_hash,
+        index: 0,
+    };
+    let tx1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 1,
+    };
+    let tx2_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx2_hash,
+        index: 2,
+    };
+
+    // Send all out of order
+    instance.transport.set_last_tx_hash(Some(tx0_hash));
+    let tx2_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(2)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx2_id, tx2_env)
+        .await
+        .unwrap();
+
+    instance.transport.set_last_tx_hash(Some(tx0_hash));
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    instance.transport.set_last_tx_hash(None);
+    let tx0_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx0_id, tx0_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    instance
+        .wait_for_transaction_processed(&tx0_id)
+        .await
+        .unwrap();
+    instance
+        .wait_for_transaction_processed(&tx1_id)
+        .await
+        .unwrap();
+
+    assert!(
+        instance.get_transaction_result(&tx0_id).is_some(),
+        "tx0 should be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx1_id).is_some(),
+        "tx1 should be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_id).is_none(),
+        "tx2 should not be processed (wrong prev_tx_hash)"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_dependency_arrives_with_wrong_hash(mut instance: LocalInstance<_>) {
+    // tx1 (index 1) arrives first, expecting dependency with specific hash
+    // tx0 (index 0) arrives with different hash
+    // tx1 should never be processed
+
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    let expected_tx0_hash = TxHash::random();
+    let actual_tx0_hash = TxHash::random();
+    let tx1_hash = TxHash::random();
+
+    let tx0_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: actual_tx0_hash,
+        index: 0,
+    };
+    let tx1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 1,
+    };
+
+    // Send tx1 first, expecting a specific prev_tx_hash
+    instance.transport.set_last_tx_hash(Some(expected_tx0_hash));
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(1)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    // Now send tx0 with a different hash
+    instance.transport.set_last_tx_hash(None);
+    let tx0_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx0_id, tx0_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(30))
+        .await;
+
+    instance
+        .wait_for_transaction_processed(&tx0_id)
+        .await
+        .unwrap();
+
+    assert!(
+        instance.get_transaction_result(&tx0_id).is_some(),
+        "tx0 should be processed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx1_id).is_none(),
+        "tx1 should not be processed (expected different prev_tx_hash)"
+    );
 }
