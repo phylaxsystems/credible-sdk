@@ -6,7 +6,8 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Optional
+import re
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import redis
 
@@ -131,8 +132,10 @@ class RedisSink:
     def __init__(self, url: str, namespace: str, pipeline_size: int) -> None:
         self._namespace = namespace.rstrip(":")
         self._client = redis.Redis.from_url(url)
-        self._pipeline = self._client.pipeline(transaction=False)
         self._pipeline_size = max(1, pipeline_size)
+        self._pipeline = (
+            self._client.pipeline(transaction=False) if self._pipeline_size > 1 else None
+        )
         self._pending = 0
 
     def handle(self, account: AccountRecord) -> None:
@@ -143,23 +146,25 @@ class RedisSink:
             "nonce": str(account.nonce),
             "code_hash": account.code_hash.lower(),
         }
-        self._pipeline.hset(account_key, mapping=mapping)
+        target = self._pipeline or self._client
+        target.hset(account_key, mapping=mapping)
 
         if account.storage:
             storage_key = f"{self._namespace}:storage:{address_hex}"
-            self._pipeline.hset(storage_key, mapping=account.storage)
+            target.hset(storage_key, mapping=account.storage)
 
         if account.code and account.code_hash:
             code_key = f"{self._namespace}:code:{_strip_hex_prefix(account.code_hash)}"
-            self._pipeline.set(code_key, account.code.lower())
+            target.set(code_key, account.code.lower())
 
-        self._pending += 1
-        if self._pending >= self._pipeline_size:
-            self._pipeline.execute()
-            self._pending = 0
+        if self._pipeline is not None:
+            self._pending += 1
+            if self._pending >= self._pipeline_size:
+                self._pipeline.execute()
+                self._pending = 0
 
     def finalize(self, metadata: DumpMetadata) -> None:
-        if self._pending:
+        if self._pipeline is not None and self._pending:
             self._pipeline.execute()
             self._pending = 0
 
@@ -351,6 +356,58 @@ def _should_retry_trie(stderr_text: str) -> bool:
     return "missing trie node" in lowered or "state is not available" in lowered
 
 
+def _parse_snapshot_head_mismatch(stderr_text: str) -> Optional[Tuple[str, str]]:
+    match = re.search(
+        r"head doesn't match snapshot: have (0x[a-f0-9]+), want (0x[a-f0-9]+)",
+        stderr_text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    have_raw, want_raw = match.groups()
+    have = _normalize_hex(have_raw, pad_to=32)
+    want = _normalize_hex(want_raw, pad_to=32)
+    if have and want:
+        return have, want
+    return None
+
+
+def _parse_missing_trie_node(stderr_text: str) -> Optional[str]:
+    match = re.search(r"missing trie node ([0-9a-fx]+)", stderr_text, flags=re.IGNORECASE)
+    if match:
+        return _normalize_hex(match.group(1), pad_to=32)
+    match = re.search(r"state (0x[a-f0-9]+) is not available", stderr_text, flags=re.IGNORECASE)
+    if match:
+        return _normalize_hex(match.group(1), pad_to=32)
+    return None
+
+
+def _maybe_raise_pruned_state_error(errors: List[GethDumpError], block_argument: Optional[str]) -> None:
+    snapshot_error = next((err for err in errors if err.command == "snapshot dump"), None)
+    trie_error = next((err for err in errors if err.command == "dump"), None)
+    if not snapshot_error or not trie_error:
+        return
+
+    mismatch = _parse_snapshot_head_mismatch(snapshot_error.stderr)
+    missing_node = _parse_missing_trie_node(trie_error.stderr)
+    if not mismatch or not missing_node:
+        return
+
+    head_root, requested_root = mismatch
+    if requested_root != missing_node:
+        return
+
+    block_label = block_argument or "the requested block"
+    raise RuntimeError(
+        "Geth pruned the historical state needed for "
+        f"{block_label}: snapshot data only exists for head root {head_root}, "
+        f"while the requested block requires state root {requested_root} "
+        f"and the trie backend reported missing node {missing_node}. "
+        "Re-sync the datadir with --gcmode=archive or select a block within the "
+        "snapshot horizon (typically HEAD-127 or newer)."
+    )
+
+
 def run_geth_dump(
     *,
     geth_bin: str,
@@ -403,6 +460,7 @@ def run_geth_dump(
                 continue
             raise
 
+    _maybe_raise_pruned_state_error(errors, block_argument)
     error_messages = "\n---\n".join(str(err) for err in errors)
     raise RuntimeError(f"All geth dump attempts failed:\n{error_messages}")
 
@@ -460,8 +518,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--redis-pipeline-size",
         type=int,
-        default=1000,
-        help="Number of commands to batch per Redis execute call.",
+        default=1,
+        help="Number of accounts to buffer before flushing Redis pipelines (default: 1).",
     )
     parser.add_argument(
         "--json-output",

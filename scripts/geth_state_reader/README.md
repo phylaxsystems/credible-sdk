@@ -38,11 +38,22 @@ Flags:
 - `--limit`: max account count to process (0 or omitted for all).
 - `--redis-url`: Redis connection URL (required to write state).
 - `--redis-namespace`: Redis namespace prefix (defaults to `state`).
-- `--redis-pipeline-size`: number of commands per pipeline flush (default 1000).
+- `--redis-pipeline-size`: number of accounts to buffer before flushing Redis pipelines (defaults to 1 for immediate writes).
 - `--json-output` + `--json-output-enabled`: enable newline-delimited JSON mirroring.
 - `--geth-dump-backend`: choose between `snapshot`, `trie`, or `auto` (default) for the
   backing `geth` command. `snapshot` avoids `missing trie node` errors on the modern
   path database scheme.
+
+### Pruned datadirs / missing historical state
+
+When both `geth snapshot dump` and `geth dump` report errors similar to
+`head doesn't match snapshot ...` and `missing trie node ... is not available`, the
+datadir no longer contains the historical state needed for the requested block
+(Geth keeps snapshots only for roughly `HEAD-127` unless it is synced with
+`--gcmode=archive`). The script now detects this pattern and emits an actionable
+error indicating which state roots are available. If you hit this failure,
+either re-sync the datadir as an archive node or choose a block that is still
+covered by the snapshot horizon.
 
 ## Verification
 
