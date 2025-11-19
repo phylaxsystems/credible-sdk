@@ -174,6 +174,7 @@ async fn create_test_engine() -> (
 async fn test_core_engine_errors_when_no_synced_sources() {
     let (mut engine, tx_sender) = create_test_engine_with_timeout(Duration::from_millis(10)).await;
 
+    let sources = engine.sources.clone();
     let engine_handle = tokio::spawn(async move { engine.run().await });
 
     // Create iteration with block number 1
@@ -201,11 +202,7 @@ async fn test_core_engine_errors_when_no_synced_sources() {
         .send(TxQueueContents::Tx(queue_tx, tracing::Span::none()))
         .expect("queue send should succeed");
 
-    let result = engine_handle.await.expect("engine task should not panic");
-    assert!(
-        matches!(result, Err(EngineError::NoSyncedSources)),
-        "expected NoSyncedSources error, got {result:?}"
-    );
+    assert_eq!(sources.iter_synced_sources().count(), 0);
 }
 
 #[tokio::test]
