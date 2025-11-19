@@ -1,5 +1,6 @@
 use dashmap::DashMap;
 use futures::future;
+use metrics::histogram;
 use std::{
     sync::Mutex,
     time::Duration,
@@ -8,6 +9,7 @@ use thiserror::Error;
 use tokio::{
     sync::broadcast,
     task::JoinHandle,
+    time::Instant,
 };
 
 use crate::{
@@ -177,9 +179,11 @@ where
 {
     let wait_futures = pending.into_iter().map(|(key, mut rx)| {
         async move {
+            let wait_started_at = Instant::now();
             let wait_result =
                 tokio::time::timeout(Duration::from_millis(TRANSACTION_RECEIVE_WAIT), rx.recv())
                     .await;
+            histogram!("sidecar_get_transaction_wait_duration").record(wait_started_at.elapsed());
 
             (key, wait_result)
         }

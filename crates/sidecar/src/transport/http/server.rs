@@ -38,6 +38,7 @@ use axum::{
     http::StatusCode,
     response::Json as ResponseJson,
 };
+use metrics::histogram;
 use revm::context::TxEnv;
 use serde::{
     Deserialize,
@@ -59,7 +60,10 @@ use std::{
             Ordering,
         },
     },
-    time::Duration,
+    time::{
+        Duration,
+        Instant,
+    },
 };
 use tracing::{
     debug,
@@ -633,9 +637,11 @@ async fn handle_get_transaction(
     match state.transactions_results.is_tx_received(&tx_execution_id) {
         AcceptedState::Yes => {}
         AcceptedState::NotYet(mut rx) => {
+            let wait_started_at = Instant::now();
             let wait_result =
                 tokio::time::timeout(Duration::from_millis(TRANSACTION_RECEIVE_WAIT), rx.recv())
                     .await;
+            histogram!("sidecar_get_transaction_wait_duration").record(wait_started_at.elapsed());
 
             match wait_result {
                 Ok(Ok(true)) => {}
@@ -669,6 +675,7 @@ async fn resolve_transaction_result(
     request: &JsonRpcRequest,
     tx_execution_id: TxExecutionId,
 ) -> Result<TransactionResultResponse, JsonRpcResponse> {
+    let fetch_started_at = Instant::now();
     let result = match state
         .transactions_results
         .request_transaction_result(&tx_execution_id)
@@ -690,7 +697,10 @@ async fn resolve_transaction_result(
         }
     };
 
-    Ok(into_transaction_result_response(tx_execution_id, &result))
+    let response = into_transaction_result_response(tx_execution_id, &result);
+    histogram!("sidecar_fetch_transaction_result_duration").record(fetch_started_at.elapsed());
+
+    Ok(response)
 }
 
 /// Helper function to determine transaction status and error message
