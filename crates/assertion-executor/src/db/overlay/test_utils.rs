@@ -30,10 +30,7 @@ use std::{
 
 impl<Db> OverlayDb<Db> {
     pub fn new_test() -> OverlayDb<InMemoryDB> {
-        OverlayDb {
-            underlying_db: Some(Arc::new(InMemoryDB::default())),
-            overlay: Arc::new(DashMap::new()),
-        }
+        OverlayDb::default()
     }
 }
 

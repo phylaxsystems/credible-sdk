@@ -6,8 +6,7 @@ use crate::{
         NotFoundError,
         overlay::{
             ForkDb,
-            TableKey,
-            TableValue,
+            OverlayState,
         },
     },
     primitives::{
@@ -39,7 +38,7 @@ use metrics::counter;
 /// is holding a refrance that is not valid anymore. There are no protections for this.
 pub struct ActiveOverlay<Db> {
     active_db: Arc<UnsafeCell<Db>>,
-    overlay: Arc<DashMap<TableKey, TableValue>>,
+    state: Arc<OverlayState>,
 }
 
 unsafe impl<Db> Send for ActiveOverlay<Db> {}
@@ -49,28 +48,20 @@ impl<Db> Clone for ActiveOverlay<Db> {
     fn clone(&self) -> Self {
         Self {
             active_db: self.active_db.clone(),
-            overlay: self.overlay.clone(),
+            state: self.state.clone(),
         }
     }
 }
 
 impl<Db> ActiveOverlay<Db> {
     /// Creates a new `ActiveOverlay` given a `revm::DatabaseRef` and an `OverlayDb` cache.
-    pub fn new(
-        active_db: Arc<UnsafeCell<Db>>,
-        overlay: Arc<DashMap<TableKey, TableValue>>,
-    ) -> Self {
-        Self { active_db, overlay }
+    pub fn new(active_db: Arc<UnsafeCell<Db>>, state: Arc<OverlayState>) -> Self {
+        Self { active_db, state }
     }
 
     /// Creates a new `forkdb` from the current overlay.
     pub fn fork(&self) -> ForkDb<ActiveOverlay<Db>> {
         ForkDb::new(self.clone())
-    }
-
-    // Helper for tests to check cache presence
-    pub fn is_cached(&self, key: &TableKey) -> bool {
-        self.overlay.get(key).is_some()
     }
 }
 
@@ -81,16 +72,13 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
         &self,
         address: Address,
     ) -> Result<Option<AccountInfo>, <Self as DatabaseRef>::Error> {
-        let key = TableKey::Basic(address);
-        if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
+        //  Check cache
+        if let Some(entry) = self.state.accounts.get(&address) {
             counter!("assex_active_overlay_db_basic_ref_hits").increment(1);
-            let result = Some(value.as_basic().unwrap().clone());
-            return Ok(result);
+            return Ok(Some(entry.clone()));
         }
 
-        // Not in cache, query mandatory underlying DB
-        // Map potential underlying DB error to NotFoundError
+        // Query underlying DB (Unsafe Mutable Access)
         let result = unsafe {
             self.active_db
                 .as_mut_unchecked()
@@ -99,21 +87,24 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
         };
 
         if let Some(account_info) = result.as_ref() {
-            // Found in DB, cache it
-            self.overlay
-                .insert(key, TableValue::Basic(account_info.clone()));
+            // Cache the account
+            self.state.accounts.insert(address, account_info.clone());
+
+            // Cache code hash if present
+            if let Some(code) = &account_info.code {
+                self.state
+                    .contracts
+                    .insert(account_info.code_hash, code.clone());
+            }
         }
 
         Ok(result)
     }
 
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, <Self as DatabaseRef>::Error> {
-        let key = TableKey::CodeByHash(code_hash);
-        if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
+        if let Some(entry) = self.state.contracts.get(&code_hash) {
             counter!("assex_active_overlay_db_code_by_hash_ref_hits").increment(1);
-            let bytecode = value.as_code_by_hash().cloned().unwrap(); // unwrap safe, Clone Bytecode
-            return Ok(bytecode);
+            return Ok(entry.clone());
         }
 
         // Not in cache, query mandatory underlying DB
@@ -124,9 +115,9 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
                 .code_by_hash(code_hash)
                 .map_err(|_| NotFoundError)?
         };
+
         // Found in DB, cache it
-        self.overlay
-            .insert(key, TableValue::CodeByHash(bytecode.clone()));
+        self.state.contracts.insert(code_hash, bytecode.clone());
         Ok(bytecode)
     }
 
@@ -135,45 +126,41 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
         address: Address,
         slot: U256,
     ) -> Result<U256, <Self as DatabaseRef>::Error> {
-        let key = TableKey::Storage(address, slot);
-        if let Some(value) = self.overlay.get(&key) {
-            // Found in cache, convert B256 back to U256
+        // Check cache using tuple key (Address, U256)
+        if let Some(value) = self.state.storage.get(&(address, slot)) {
             counter!("assex_active_overlay_db_storage_ref_hits").increment(1);
-            let value_u256: U256 = (*value.as_storage().unwrap()).into();
-            return Ok(value_u256); // unwrap safe
+            // Convert B256 back to U256
+            return Ok((*value).into());
         }
 
-        // Not in cache, query mandatory underlying DB
         let value_u256 = unsafe {
             self.active_db
                 .as_mut_unchecked()
                 .storage(address, slot)
                 .map_err(|_| NotFoundError)?
         };
-        // Found in DB (even if zero), cache it as B256
+
+        // Compress U256 -> B256 for storage
         let value_b256: B256 = value_u256.to_be_bytes().into();
-        self.overlay.insert(key, TableValue::Storage(value_b256));
-        Ok(value_u256) // Return the U256 value
+        self.state.storage.insert((address, slot), value_b256);
+
+        Ok(value_u256)
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, <Self as DatabaseRef>::Error> {
-        let key = TableKey::BlockHash(number);
-        if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
+        if let Some(entry) = self.state.block_hashes.get(&number) {
             counter!("assex_active_overlay_db_block_hash_ref_hits").increment(1);
-            let block_hash = *value.as_block_hash().unwrap();
-            return Ok(block_hash); // unwrap safe
+            return Ok(*entry);
         }
 
-        // Not in cache, query mandatory underlying DB
         let block_hash = unsafe {
             self.active_db
                 .as_mut_unchecked()
                 .block_hash(number)
                 .map_err(|_| NotFoundError)?
         };
-        // Found in DB, cache it
-        self.overlay.insert(key, TableValue::BlockHash(block_hash));
+
+        self.state.block_hashes.insert(number, block_hash);
         Ok(block_hash)
     }
 }
@@ -200,30 +187,24 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
 impl<Db> DatabaseCommit for ActiveOverlay<Db> {
     fn commit(&mut self, changes: EvmState) {
         for (address, account) in changes {
-            // Skip untouched accounts
             if !account.is_touched() {
                 continue;
             }
 
-            // Update account info in shared cache
-            // This will be visible to the parent OverlayDb and other ActiveOverlays
-            let key = TableKey::Basic(address);
-            self.overlay
-                .insert(key, TableValue::Basic(account.info.clone()));
+            // 1. Commit Basic Info
+            self.state.accounts.insert(address, account.info.clone());
 
-            // Update codebyhash if the account has code
+            // 2. Commit Code
             if let Some(code) = &account.info.code {
-                let code_key = TableKey::CodeByHash(account.info.code_hash);
-                self.overlay
-                    .insert(code_key, TableValue::CodeByHash(code.clone()));
+                self.state
+                    .contracts
+                    .insert(account.info.code_hash, code.clone());
             }
 
-            // Update storage slots in shared cache
+            // 3. Commit Storage (converting to B256)
             for (slot, storage_slot) in account.storage {
-                let storage_key = TableKey::Storage(address, slot);
                 let value_b256: B256 = storage_slot.present_value().to_be_bytes().into();
-                self.overlay
-                    .insert(storage_key, TableValue::Storage(value_b256));
+                self.state.storage.insert((address, slot), value_b256);
             }
         }
     }
@@ -233,97 +214,19 @@ impl<Db: Database> Database for ActiveOverlay<Db> {
     type Error = NotFoundError;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        let key = TableKey::Basic(address);
-        if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
-            let account_info = value.as_basic().unwrap();
-            return Ok(Some(account_info.clone()));
-        }
-
-        // Not in cache, query mandatory underlying DB
-        // Map potential underlying DB error to NotFoundError
-        unsafe {
-            match self
-                .active_db
-                .as_mut_unchecked()
-                .basic(address)
-                .map_err(|_| NotFoundError)?
-            {
-                Some(account_info) => {
-                    // Found in DB, cache it
-                    self.overlay
-                        .insert(key, TableValue::Basic(account_info.clone()));
-                    Ok(Some(account_info)) // Return the found info
-                }
-                None => {
-                    // Not found in DB, do not cache absence
-                    Ok(None)
-                }
-            }
-        }
+       DatabaseRef::basic_ref(self, address)
     }
 
     fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        let key = TableKey::CodeByHash(code_hash);
-        if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
-            return Ok(value.as_code_by_hash().cloned().unwrap()); // unwrap safe, Clone Bytecode
-        }
-
-        // Not in cache, query mandatory underlying DB
-        // Map error if needed
-        unsafe {
-            let bytecode = self
-                .active_db
-                .as_mut_unchecked()
-                .code_by_hash(code_hash)
-                .map_err(|_| NotFoundError)?;
-            // Found in DB, cache it
-            self.overlay
-                .insert(key, TableValue::CodeByHash(bytecode.clone()));
-            Ok(bytecode)
-        }
+        DatabaseRef::code_by_hash_ref(self, code_hash)
     }
 
     fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        let key = TableKey::Storage(address, index);
-        if let Some(value) = self.overlay.get(&key) {
-            // Found in cache, convert B256 back to U256
-            return Ok((*value.as_storage().unwrap()).into()); // unwrap safe
-        }
-
-        // Not in cache, query mandatory underlying DB
-        unsafe {
-            let value_u256 = self
-                .active_db
-                .as_mut_unchecked()
-                .storage(address, index)
-                .map_err(|_| NotFoundError)?;
-            // Found in DB (even if zero), cache it as B256
-            let value_b256: B256 = value_u256.to_be_bytes().into();
-            self.overlay.insert(key, TableValue::Storage(value_b256));
-            Ok(value_u256) // Return the U256 value
-        }
+        DatabaseRef::storage_ref(self, address, index)
     }
 
     fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
-        let key = TableKey::BlockHash(number);
-        if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
-            return Ok(*value.as_block_hash().unwrap()); // unwrap safe
-        }
-
-        // Not in cache, query mandatory underlying DB
-        unsafe {
-            let block_hash = self
-                .active_db
-                .as_mut_unchecked()
-                .block_hash(number)
-                .map_err(|_| NotFoundError)?;
-            // Found in DB, cache it
-            self.overlay.insert(key, TableValue::BlockHash(block_hash));
-            Ok(block_hash)
-        }
+        DatabaseRef::block_hash_ref(self, number)
     }
 }
 

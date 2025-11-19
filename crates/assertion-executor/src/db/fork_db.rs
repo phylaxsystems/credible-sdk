@@ -205,10 +205,6 @@ impl<ExtDb> ForkDb<ExtDb> {
 #[cfg(test)]
 mod fork_db_tests {
     use super::*;
-    use crate::db::overlay::{
-        TableKey,
-        TableValue,
-    };
     use revm::database::{
         CacheDB,
         EmptyDBTyped,
@@ -263,9 +259,9 @@ mod fork_db_tests {
             ..Default::default()
         };
 
-        overlay_db.overlay.insert(
-            TableKey::Basic(Address::ZERO),
-            TableValue::Basic(account_info),
+        overlay_db.state.accounts.insert(
+            Address::ZERO,
+            account_info,
         );
 
         block_changes.state_changes = evm_state.clone();
@@ -327,13 +323,13 @@ mod fork_db_tests {
                 status: AccountStatus::Touched,
             },
         );
-        overlay_db.overlay.insert(
-            TableKey::Basic(Address::ZERO),
-            TableValue::Basic(AccountInfo::default()),
+        overlay_db.state.accounts.insert(
+            Address::ZERO,
+            AccountInfo::default(),
         );
-        overlay_db.overlay.insert(
-            TableKey::Storage(Address::ZERO, uint!(0_U256)),
-            TableValue::Storage(uint!(1_U256).into()),
+        overlay_db.state.storage.insert(
+            (Address::ZERO, uint!(0_U256)),
+            uint!(1_U256).into(),
         );
 
         let mut fork_db = overlay_db.fork();
@@ -403,14 +399,14 @@ mod fork_db_tests {
             ..Default::default()
         };
 
-        overlay_db.overlay.insert(
-            TableKey::Basic(Address::ZERO),
-            TableValue::Basic(account_info),
+        overlay_db.state.accounts.insert(
+            Address::ZERO,
+            account_info,
         );
 
-        overlay_db.overlay.insert(
-            TableKey::CodeByHash(bytecode.hash_slow()),
-            TableValue::CodeByHash(bytecode.clone()),
+        overlay_db.state.contracts.insert(
+            bytecode.hash_slow(),
+            bytecode.clone(),
         );
 
         assert_eq!(overlay_db.code_by_hash_ref(code_hash).unwrap(), bytecode);
@@ -445,8 +441,8 @@ mod fork_db_tests {
         let overlay_db = OverlayDb::<CacheDB<EmptyDBTyped<Infallible>>>::new_test();
 
         overlay_db
-            .overlay
-            .insert(TableKey::BlockHash(0), TableValue::BlockHash(KECCAK_EMPTY));
+            .state.block_hashes
+            .insert(0, KECCAK_EMPTY);
 
         assert_eq!(overlay_db.block_hash_ref(0), Ok(KECCAK_EMPTY));
     }
@@ -475,13 +471,13 @@ mod fork_db_tests {
                 status: AccountStatus::Touched,
             },
         );
-        overlay_db.overlay.insert(
-            TableKey::Basic(Address::ZERO),
-            TableValue::Basic(AccountInfo::default()),
+        overlay_db.state.accounts.insert(
+            Address::ZERO,
+            AccountInfo::default(),
         );
-        overlay_db.overlay.insert(
-            TableKey::Storage(Address::ZERO, uint!(0_U256)),
-            TableValue::Storage(uint!(1_U256).into()),
+        overlay_db.state.storage.insert(
+            (Address::ZERO, uint!(0_U256)),
+            uint!(1_U256).into(),
         );
 
         let mut fork_db = overlay_db.fork();
