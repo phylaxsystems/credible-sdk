@@ -73,6 +73,12 @@ pub enum StateError {
     #[error("Integer conversion error")]
     IntConversion(#[source] std::num::TryFromIntError),
 
+    /// Conflicting namespace rotation size in Redis metadata
+    #[error(
+        "State dump index count mismatch: redis configured for {existing} indices but requested {requested}"
+    )]
+    StateDumpIndexMismatch { existing: usize, requested: usize },
+
     /// Account not found
     #[error("Account {0} not found at block {1}")]
     AccountNotFound(Address, u64),

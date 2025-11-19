@@ -9,6 +9,7 @@ use crate::{
         encode_b256,
         encode_bytes,
         encode_u256,
+        ensure_state_dump_indices,
         error::{
             StateError,
             StateResult,
@@ -62,6 +63,16 @@ impl StateWriter {
 
         self.client.with_connection(move |conn| {
             commit_block_atomic(conn, &base_namespace, buffer_size, &update)
+        })
+    }
+
+    /// Ensure the Redis metadata matches the configured namespace rotation size.
+    pub fn ensure_dump_index_metadata(&self) -> StateResult<()> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        self.client.with_connection(move |conn| {
+            ensure_state_dump_indices(conn, &base_namespace, buffer_size)
         })
     }
 }
@@ -213,7 +224,7 @@ where
         pipe.del(&old_diff_key);
     }
 
-    update_metadata_in_pipe(&mut pipe, base_namespace, block_number);
+    update_metadata_in_pipe(&mut pipe, base_namespace, block_number, buffer_size);
 
     // Execute the atomic transaction
     pipe.query::<()>(conn)?;

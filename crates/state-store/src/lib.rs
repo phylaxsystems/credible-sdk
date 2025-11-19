@@ -56,6 +56,7 @@
 //!
 //! Shared across namespaces:
 //! - `{base_namespace}:meta:latest_block` - The most recent block number written to the system
+//! - `{base_namespace}:state_dump_indices` - Size of the namespace rotation buffer
 //! - `{base_namespace}:block_hash:{block_number}` - Block hash for each block (kept for last `buffer_size` blocks)
 //! - `{base_namespace}:state_root:{block_number}` - State root for each block (kept for last `buffer_size` blocks)
 //! - `{base_namespace}:diff:{block_number}` - Serialized state diff (kept for last `buffer_size` blocks)

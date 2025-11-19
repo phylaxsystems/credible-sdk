@@ -630,7 +630,7 @@ mod tests {
             let account_key = format!("state:account:{}", hex::encode(address));
             let commands = vec![
                 MockCmd::new(
-                    redis::cmd("GET").arg("state:current_block"),
+                    redis::cmd("GET").arg("state:meta:latest_block"),
                     Ok::<_, RedisError>("1"),
                 ),
                 MockCmd::new(
@@ -643,7 +643,7 @@ mod tests {
 
         fn for_unsynced() -> (Self, Arc<AtomicUsize>) {
             let commands = vec![MockCmd::new(
-                redis::cmd("GET").arg("state:current_block"),
+                redis::cmd("GET").arg("state:meta:latest_block"),
                 Ok::<_, RedisError>("5"),
             )];
             Self::with_commands(commands)

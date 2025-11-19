@@ -15,11 +15,14 @@ in the sidecar by calling into it.
 The redis state is represented as follows:
 
 ```
-state:account:{address}     → {balance, nonce, code_hash}
-state:storage:{address}     → {slot1: value1, slot2: value2, ...}
-state:code:{code_hash}      → hex-encoded bytecode
-state:current_block         → latest synced block number
-state:block_hash:{number}   → block hash
+state:account:{address}       → {balance, nonce, code_hash}
+state:storage:{address}       → {slot1: value1, slot2: value2, ...}
+state:code:{code_hash}        → hex-encoded bytecode
+state:{idx}:block             → marker identifying which block the namespace stores
+state:meta:latest_block       → latest synced block number
+state:state_dump_indices      → number of namespaces in the circular buffer
+state:block_hash:{number}     → block hash
+state:state_root:{number}     → state root
 ```
 
 ## Using and configuring the `state-worker`
@@ -28,5 +31,5 @@ The state worker requires `--ws-url` for the Ethereum WebSocket endpoint and `--
 database. Optional flags include:
 
 - `--redis-namespace` to change the key namespace (defaults to `state`).
-- `--start-block` to override the resume position derived from `state:current_block`.
+- `--start-block` to override the resume position derived from `state:meta:latest_block`.
 - `--trace-timeout-secs` to tune the timeout for `debug_traceBlockBy*` calls (default 30 seconds).

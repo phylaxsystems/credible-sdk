@@ -76,6 +76,9 @@ pub mod keys {
 
     /// Key for storing the latest block number globally
     pub const LATEST_BLOCK: &str = "meta:latest_block";
+
+    /// Key for recording the configured namespace rotation length
+    pub const STATE_DUMP_INDICES: &str = "state_dump_indices";
 }
 
 /// Configuration for the circular buffer of states in Redis.
@@ -200,6 +203,16 @@ pub fn get_latest_block_metadata_key(base_namespace: &str) -> String {
     )
 }
 
+/// Get the key storing the configured circular buffer length for dumps.
+pub fn get_state_dump_indices_key(base_namespace: &str) -> String {
+    format!(
+        "{}{}{}",
+        base_namespace,
+        keys::SEPARATOR,
+        keys::STATE_DUMP_INDICES
+    )
+}
+
 /// Read the latest block number from top-level metadata (O(1) operation).
 /// Falls back to scanning all namespaces if metadata is not available.
 pub fn read_latest_block_number<C>(conn: &mut C, base_namespace: &str) -> StateResult<Option<u64>>
@@ -224,10 +237,47 @@ pub fn update_metadata_in_pipe(
     pipe: &mut redis::Pipeline,
     base_namespace: &str,
     block_number: u64,
+    buffer_size: usize,
 ) {
     // Update latest block
     let latest_key = get_latest_block_metadata_key(base_namespace);
     pipe.set(&latest_key, block_number.to_string());
+
+    // Record the configured namespace rotation length for external tooling.
+    let indices_key = get_state_dump_indices_key(base_namespace);
+    pipe.set(&indices_key, buffer_size.to_string());
+}
+
+/// Ensure the state dump indices metadata matches the configured buffer size.
+pub fn ensure_state_dump_indices<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    buffer_size: usize,
+) -> StateResult<()>
+where
+    C: redis::ConnectionLike,
+{
+    let key = get_state_dump_indices_key(base_namespace);
+    let value: Option<String> = redis::cmd("GET").arg(&key).query(conn)?;
+
+    if let Some(existing) = value {
+        let parsed = existing
+            .parse::<usize>()
+            .map_err(|e| StateError::ParseInt(existing.clone(), e))?;
+        if parsed != buffer_size {
+            return Err(StateError::StateDumpIndexMismatch {
+                existing: parsed,
+                requested: buffer_size,
+            });
+        }
+    } else {
+        redis::cmd("SET")
+            .arg(&key)
+            .arg(buffer_size.to_string())
+            .query::<()>(&mut *conn)?;
+    }
+
+    Ok(())
 }
 
 /// Read the current block number stored in a namespace.
