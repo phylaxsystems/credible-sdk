@@ -35,7 +35,7 @@ name` resource key according to the OTEL conventions.
 The transports emit a few histograms so operators can distinguish between a slow client wait and slow engine fetch:
 
 - `sidecar_get_transaction_wait_duration` - Emitted when either transport waits for a tx to arrive (HTTP long-poll path and the shared pending receiver helper)
-- `sidecar_fetch_transaction_result_duration` - HTTP/gRPC: time spent fetching and encoding a transaction result
+- `sidecar_fetch_transaction_result_duration` - HTTP/gRPC: time spent waiting on the result after the transaction has been queued for being processed by the core engine
 
 All durations are reported in seconds to the configured metrics backend.
 
