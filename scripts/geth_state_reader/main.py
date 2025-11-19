@@ -49,28 +49,37 @@ def _strip_hex_prefix(value: str) -> str:
     return value[2:] if value.startswith(("0x", "0X")) else value
 
 
-def _parse_storage(raw: object) -> Dict[str, str]:
-    storage: Dict[str, str] = {}
+def _iter_storage_entries(raw: object) -> Iterable[Tuple[str, str]]:
     if not raw:
-        return storage
+        return
 
-    def insert(slot_key: Optional[str], slot_value: Optional[str]) -> None:
+    def normalize(slot_key: Optional[str], slot_value: Optional[str]) -> Optional[Tuple[str, str]]:
         key_hex = _normalize_hex(slot_key, pad_to=32)
         value_hex = _normalize_hex(slot_value, pad_to=32)
         if key_hex is None or value_hex is None:
-            return
-        storage[key_hex] = value_hex
+            return None
+        return key_hex, value_hex
 
     if isinstance(raw, dict):
         for hashed_slot, value in raw.items():
             if isinstance(value, dict):
-                insert(value.get("key") or hashed_slot, value.get("value"))
+                normalized = normalize(value.get("key") or hashed_slot, value.get("value"))
             else:
-                insert(hashed_slot, value)
+                normalized = normalize(hashed_slot, value)
+            if normalized:
+                yield normalized
     elif isinstance(raw, list):
         for entry in raw:
             if isinstance(entry, dict):
-                insert(entry.get("key") or entry.get("hash"), entry.get("value"))
+                normalized = normalize(entry.get("key") or entry.get("hash"), entry.get("value"))
+                if normalized:
+                    yield normalized
+
+
+def _parse_storage(raw: object) -> Dict[str, str]:
+    storage: Dict[str, str] = {}
+    for slot_key, slot_value in _iter_storage_entries(raw):
+        storage[slot_key] = slot_value
     return storage
 
 
@@ -81,7 +90,8 @@ class AccountRecord:
     nonce: int
     code_hash: str
     code: Optional[str]
-    storage: Dict[str, str]
+    storage: Optional[Dict[str, str]]
+    raw_storage: Optional[object] = None
 
     def as_dict(self) -> Dict[str, object]:
         payload = {
@@ -114,6 +124,8 @@ class GethDumpError(RuntimeError):
 
 
 class JsonSink:
+    requires_storage_dict = True
+
     def __init__(self, path: Optional[str]):
         self._path = path
         self._stream = open(path, "w") if path else sys.stdout
@@ -129,6 +141,8 @@ class JsonSink:
 
 
 class RedisSink:
+    requires_storage_dict = False
+
     def __init__(
         self,
         url: str,
@@ -182,9 +196,14 @@ class RedisSink:
         target = self._pipeline or self._client
         target.hset(account_key, mapping=mapping)
 
+        storage_key = f"{self._namespace}:storage:{address_hex}"
         if account.storage:
-            storage_key = f"{self._namespace}:storage:{address_hex}"
             target.hset(storage_key, mapping=account.storage)
+        elif account.raw_storage is not None:
+            for slot_key, slot_value in _iter_storage_entries(account.raw_storage):
+                target.hset(storage_key, slot_key, slot_value)
+            # raw storage entries have been consumed; release references.
+            account.raw_storage = None
 
         if account.code and account.code_hash:
             code_key = f"{self._namespace}:code:{_strip_hex_prefix(account.code_hash)}"
@@ -234,7 +253,7 @@ def _spawn_reader(stream, collector: List[str]) -> threading.Thread:
     return thread
 
 
-def _parse_account(entry: Dict[str, object]) -> AccountRecord:
+def _parse_account(entry: Dict[str, object], *, materialize_storage: bool) -> AccountRecord:
     address_hash = _normalize_hex(entry["key"], pad_to=32)
     if address_hash is None:
         raise ValueError("Account entry missing hashed address")
@@ -244,7 +263,13 @@ def _parse_account(entry: Dict[str, object]) -> AccountRecord:
     if code == "0x":
         code = None
 
-    storage = _parse_storage(entry.get("storage"))
+    storage_payload = entry.pop("storage", None)
+    storage: Optional[Dict[str, str]] = None
+    raw_storage: Optional[object] = None
+    if materialize_storage:
+        storage = _parse_storage(storage_payload)
+    else:
+        raw_storage = storage_payload
 
     return AccountRecord(
         address_hash=address_hash,
@@ -253,6 +278,7 @@ def _parse_account(entry: Dict[str, object]) -> AccountRecord:
         code_hash=code_hash,
         code=code,
         storage=storage,
+        raw_storage=raw_storage,
     )
 
 
@@ -308,6 +334,7 @@ def _invoke_geth_dump(
     start_key: Optional[str],
     limit: Optional[int],
     on_account: Callable[[AccountRecord], None],
+    materialize_storage: bool,
 ) -> DumpMetadata:
     cmd = _build_dump_command(
         mode=mode,
@@ -350,7 +377,7 @@ def _invoke_geth_dump(
         if "key" not in payload:
             continue
 
-        account = _parse_account(payload)
+        account = _parse_account(payload, materialize_storage=materialize_storage)
         on_account(account)
         metadata.total_accounts += 1
 
@@ -452,6 +479,7 @@ def run_geth_dump(
     start_key: Optional[str],
     limit: Optional[int],
     on_account: Callable[[AccountRecord], None],
+    materialize_storage: bool,
     dump_backend: str,
     verbose: bool,
 ) -> DumpMetadata:
@@ -475,6 +503,7 @@ def run_geth_dump(
                 start_key=start_key,
                 limit=limit,
                 on_account=on_account,
+                materialize_storage=materialize_storage,
             )
         except GethDumpError as exc:
             errors.append(exc)
@@ -627,6 +656,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif args.block_number is not None:
         block_argument = str(args.block_number)
 
+    materialize_storage = any(
+        getattr(sink, "requires_storage_dict", False) for sink in sinks
+    )
+
     metadata = run_geth_dump(
         geth_bin=args.geth_bin,
         datadir=args.datadir,
@@ -634,6 +667,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         start_key=args.start_key,
         limit=args.limit,
         on_account=dispatch,
+        materialize_storage=materialize_storage,
         dump_backend=args.geth_dump_backend,
         verbose=args.verbose,
     )
