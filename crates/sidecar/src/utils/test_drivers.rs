@@ -15,9 +15,11 @@ use crate::{
         CommitHead,
         NewIteration,
         QueueTransaction,
+        TransactionQueueReceiver,
         TransactionQueueSender,
         TxQueueContents,
     },
+    event_sequencing::EventSequencing,
     execution_ids::TxExecutionId,
     transport::{
         Transport,
@@ -247,11 +249,13 @@ impl CommonSetup {
         })
     }
 
-    /// Spawn the engine task with the provided receiver
-    async fn spawn_engine(
+    /// Spawn the engine task and event sequencing with the provided receivers
+    async fn spawn_engine_with_sequencing(
         &self,
-        engine_rx: channel::Receiver<TxQueueContents>,
-    ) -> tokio::task::JoinHandle<()> {
+        transport_rx: TransactionQueueReceiver,
+    ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+        let (event_sequencing_tx_sender, core_engine_tx_receiver) = channel::unbounded();
+
         let state = OverlayDb::new(Some(self.underlying_db.clone()));
         let assertion_executor =
             AssertionExecutor::new(ExecutorConfig::default(), (*self.assertion_store).clone());
@@ -259,7 +263,7 @@ impl CommonSetup {
         let mut engine = CoreEngine::new(
             state,
             self.sources.clone(),
-            engine_rx,
+            core_engine_tx_receiver,
             assertion_executor,
             self.state_results.clone(),
             10,
@@ -271,7 +275,7 @@ impl CommonSetup {
         )
         .await;
 
-        tokio::spawn(async move {
+        let engine_handle = tokio::spawn(async move {
             info!(target: "test_driver", "Engine task started, waiting for items...");
             info!(target: "test_driver", "Engine about to call run()");
             let result = engine.run().await;
@@ -280,7 +284,22 @@ impl CommonSetup {
                 Err(e) => error!(target: "test_driver", "Engine run() failed: {:?}", e),
             }
             info!(target: "test_driver", "Engine task completed");
-        })
+        });
+
+        // Spawn event sequencing task
+        let mut event_sequencing = EventSequencing::new(transport_rx, event_sequencing_tx_sender);
+
+        let sequencing_handle = tokio::spawn(async move {
+            info!(target: "test_driver", "Event sequencing task started");
+            let result = event_sequencing.run().await;
+            match result {
+                Ok(()) => info!(target: "test_driver", "Event sequencing completed successfully"),
+                Err(e) => error!(target: "test_driver", "Event sequencing failed: {:?}", e),
+            }
+            info!(target: "test_driver", "Event sequencing task completed");
+        });
+
+        (engine_handle, sequencing_handle)
     }
 }
 
@@ -293,16 +312,18 @@ impl LocalInstanceMockDriver {
 
         let setup = CommonSetup::new(Some(assertion_store)).await?;
 
-        // Create channels for communication
-        let (engine_tx, engine_rx) = channel::unbounded();
+        // Create channels for transport -> event_sequencing -> engine
+        let (transport_tx_sender, event_sequencing_tx_receiver) = channel::unbounded();
         let (mock_tx, mock_rx) = channel::unbounded();
 
-        // Spawn the engine task
-        let engine_handle = setup.spawn_engine(engine_rx).await;
+        // Spawn engine and event sequencing
+        let (engine_handle, sequencing_handle) = setup
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .await;
 
         // Create mock transport with the channels
         let transport =
-            MockTransport::with_receiver(engine_tx, mock_rx, setup.state_results.clone());
+            MockTransport::with_receiver(transport_tx_sender, mock_rx, setup.state_results.clone());
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
@@ -345,16 +366,18 @@ impl TestTransport for LocalInstanceMockDriver {
 
         let setup = CommonSetup::new(None).await?;
 
-        // Create channels for communication
-        let (engine_tx, engine_rx) = channel::unbounded();
+        // Create channels for transport -> event_sequencing -> engine
+        let (transport_tx_sender, event_sequencing_tx_receiver) = channel::unbounded();
         let (mock_tx, mock_rx) = channel::unbounded();
 
-        // Spawn the engine task
-        let engine_handle = setup.spawn_engine(engine_rx).await;
+        // Spawn engine and event sequencing
+        let (engine_handle, sequencing_handle) = setup
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .await;
 
         // Create mock transport with the channels
         let transport =
-            MockTransport::with_receiver(engine_tx, mock_rx, setup.state_results.clone());
+            MockTransport::with_receiver(transport_tx_sender, mock_rx, setup.state_results.clone());
 
         // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
@@ -429,12 +452,12 @@ impl TestTransport for LocalInstanceMockDriver {
         tx_env: TxEnv,
     ) -> Result<(), String> {
         let iteration_id = tx_execution_id.iteration_id;
+        let prev_tx_hash = self.get_last_tx_hash(iteration_id);
+
         self.block_tx_hashes_by_iteration
             .entry(iteration_id)
             .or_default()
             .push(tx_execution_id.tx_hash);
-
-        let prev_tx_hash = self.get_last_tx_hash(iteration_id);
 
         info!(target: "test_transport", "LocalInstance sending transaction: {:?}", tx_execution_id);
         let queue_tx = QueueTransaction {
@@ -610,8 +633,13 @@ impl LocalInstanceHttpDriver {
 
         let setup = CommonSetup::new(assertion_store).await?;
 
-        let (engine_tx, engine_rx) = channel::unbounded();
-        let engine_handle = setup.spawn_engine(engine_rx).await;
+        // Create channels for transport -> event_sequencing -> engine
+        let (transport_tx_sender, event_sequencing_tx_receiver) = channel::unbounded();
+
+        // Spawn engine and event sequencing
+        let (engine_handle, sequencing_handle) = setup
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -623,7 +651,8 @@ impl LocalInstanceHttpDriver {
         drop(listener);
 
         let config = HttpTransportConfig { bind_addr: address };
-        let transport = HttpTransport::new(config, engine_tx, setup.state_results.clone()).unwrap();
+        let transport =
+            HttpTransport::new(config, transport_tx_sender, setup.state_results.clone()).unwrap();
 
         let transport_handle = tokio::spawn(async move {
             info!(target: "LocalInstanceHttpDriver", "Transport task started");
@@ -721,12 +750,11 @@ impl TestTransport for LocalInstanceHttpDriver {
         debug!(target: "LocalInstanceHttpDriver", "Sending transaction: {:?}", tx_execution_id);
 
         let iteration_id = tx_execution_id.iteration_id;
+        let prev_tx_hash = self.get_last_tx_hash(iteration_id);
         self.block_tx_hashes_by_iteration
             .entry(iteration_id)
             .or_default()
             .push(tx_execution_id.tx_hash);
-
-        let prev_tx_hash = self.get_last_tx_hash(iteration_id);
 
         let transaction = Transaction {
             tx_execution_id,
@@ -959,8 +987,13 @@ impl LocalInstanceGrpcDriver {
 
         let setup = CommonSetup::new(assertion_store).await?;
 
-        let (engine_tx, engine_rx) = channel::unbounded();
-        let engine_handle = setup.spawn_engine(engine_rx).await;
+        // Create channels for transport -> event_sequencing -> engine
+        let (transport_tx_sender, event_sequencing_tx_receiver) = channel::unbounded();
+
+        // Spawn engine and event sequencing
+        let (engine_handle, sequencing_handle) = setup
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -972,7 +1005,8 @@ impl LocalInstanceGrpcDriver {
         drop(listener);
 
         let config = GrpcTransportConfig { bind_addr: address };
-        let transport = GrpcTransport::new(config, engine_tx, setup.state_results.clone()).unwrap();
+        let transport =
+            GrpcTransport::new(config, transport_tx_sender, setup.state_results.clone()).unwrap();
 
         let transport_handle = tokio::spawn(async move {
             info!(target: "LocalInstanceGrpcDriver", "Transport task started");
@@ -1113,6 +1147,9 @@ impl TestTransport for LocalInstanceGrpcDriver {
         }
 
         let iteration_id = tx_execution_id.iteration_id;
+        let prev_tx_hash = self
+            .get_last_tx_hash(iteration_id)
+            .map(|h| format!("{h:#x}"));
         self.block_tx_hashes_by_iteration
             .entry(iteration_id)
             .or_default()
@@ -1181,9 +1218,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 gas_priority_fee: tx_env.gas_priority_fee.map(|fee| fee.to_string()),
                 max_fee_per_blob_gas: tx_env.max_fee_per_blob_gas.to_string(),
             }),
-            prev_tx_hash: self
-                .get_last_tx_hash(iteration_id)
-                .map(|h| format!("{h:#x}")),
+            prev_tx_hash,
         };
 
         let request = SendTransactionsRequest {

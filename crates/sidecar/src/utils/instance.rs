@@ -164,7 +164,7 @@ pub struct LocalInstance<T: TestTransport> {
     /// Engine task handle
     engine_handle: Option<JoinHandle<()>>,
     /// Current block number
-    block_number: u64,
+    pub block_number: u64,
     /// Shared transaction results from engine
     transaction_results: Arc<crate::TransactionsState>,
     /// Default account for transactions
@@ -254,6 +254,10 @@ impl<T: TestTransport> LocalInstance<T> {
             self.transport
                 .send_transaction(tx_execution_id, tx_env)
                 .await?;
+            self.iteration_tx_map
+                .entry(self.iteration_id)
+                .and_modify(|x| *x += 1)
+                .or_insert(1);
         }
 
         Ok(())
@@ -386,12 +390,12 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Builds a `TxExecutionId` with the block hash and instance
     /// currently in use by the `LocalInstance`.
     fn build_tx_id(&self, tx_hash: B256) -> TxExecutionId {
-        let index = self.iteration_tx_map.get(&self.iteration_id).iter().count();
+        let index = *self.iteration_tx_map.get(&self.iteration_id).unwrap_or(&0);
         TxExecutionId {
             block_number: self.block_number,
             iteration_id: self.iteration_id,
             tx_hash,
-            index: u64::try_from(index).unwrap(),
+            index,
         }
     }
 
@@ -550,6 +554,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
 
         Ok(tx_execution_id)
     }
@@ -613,6 +621,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
 
         // Wait for processing
         self.wait_for_processing(Duration::from_millis(5)).await;
@@ -665,6 +677,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
 
         Ok((caller, tx_execution_id))
     }
@@ -698,6 +714,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
 
         Ok(tx_execution_id)
     }
@@ -731,6 +751,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
 
         Ok(tx_execution_id)
     }
@@ -773,6 +797,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
 
         Ok(tx_execution_id)
     }
@@ -833,6 +861,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
         let _ = self.wait_for_transaction_processed(&tx_id_eip2930).await?;
 
         // type2, eip-1559
@@ -873,6 +905,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
         let _ = self.wait_for_transaction_processed(&tx_id_eip1559).await?;
 
         // type3, eip-4844
@@ -909,6 +945,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
         let _ = self.wait_for_transaction_processed(&tx_id_eip4844).await?;
 
         // type4, eip-7702
@@ -946,6 +986,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
         let _ = self
             .wait_for_transaction_processed(&tx_execution_id)
             .await?;
@@ -1097,15 +1141,20 @@ impl<T: TestTransport> LocalInstance<T> {
         self.block_number += 1;
 
         let basefee = 10u64;
+        let caller = counter_call().caller; // Get the caller address
+        let block_exec_id = BlockExecutionId {
+            block_number: self.block_number,
+            iteration_id: self.iteration_id,
+        };
 
         // Create the first transaction (should pass)
         let mut tx_pass = counter_call();
-        tx_pass.nonce = 0;
+        tx_pass.nonce = self.next_nonce(caller, block_exec_id);
         tx_pass.gas_price = basefee.into();
 
         // Create the second transaction (should fail assertion)
         let mut tx_fail = counter_call();
-        tx_fail.nonce = 1;
+        tx_fail.nonce = self.next_nonce(caller, block_exec_id);
         tx_fail.gas_price = basefee.into();
 
         // Generate unique transaction hashes
@@ -1118,6 +1167,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.transport
             .send_transaction(tx_execution_id_pass, tx_pass)
             .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
 
         // FIXME: Propagate correctly the prev tx hash
         // Send the failing transaction second

@@ -142,9 +142,9 @@ impl<'de> Deserialize<'de> for Transaction {
                             if prev_tx_hash.is_some() {
                                 return Err(de::Error::duplicate_field("prev_tx_hash"));
                             }
-                            prev_tx_hash = Some(map.next_value().map_err(|e| {
+                            prev_tx_hash = map.next_value().map_err(|e| {
                                 de::Error::custom(format!("invalid prev_tx_hash: {e}"))
-                            })?);
+                            })?;
                         }
                     }
                 }
