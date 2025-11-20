@@ -23,6 +23,10 @@ message BasicAck {
   string message = 2;
 }
 
+message PingRequest {}
+
+message PongResponse {}
+
 // Access list item for EIP-2930
 message AccessListItem {
   string address = 1;      // 20-byte address as hex string
@@ -141,4 +145,5 @@ service SidecarTransport {
   rpc Reorg(ReorgRequest) returns (BasicAck);
   rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
   rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
+  rpc Ping(PingRequest) returns (PongResponse);
 }

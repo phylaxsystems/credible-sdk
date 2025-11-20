@@ -14,6 +14,8 @@ use super::pb::{
     GetTransactionsRequest,
     GetTransactionsResponse,
     NewIteration as PbNewIteration,
+    PingRequest,
+    PongResponse,
     ReorgRequest,
     SendEvents as PbSendEvents,
     SendTransactionsRequest,
@@ -488,6 +490,15 @@ impl SidecarTransport for GrpcService {
             }))
         }
     }
+
+    /// Handle gRPC Ping request.
+    #[instrument(name = "grpc_server::Ping", skip(self, _request), level = "debug")]
+    async fn ping(
+        &self,
+        _request: Request<PingRequest>,
+    ) -> Result<Response<PongResponse>, Status> {
+        Ok(Response::new(PongResponse {}))
+    }
 }
 
 fn into_pb_transaction_result(
@@ -841,4 +852,147 @@ fn convert_pb_blob_excess_gas_and_price(
         excess_blob_gas: blob.excess_blob_gas,
         blob_gasprice,
     })
+}
+
+/// Mock gRPC service that returns immediate successful responses for testing.
+///
+/// This service implements the SidecarTransport trait but bypasses the actual
+/// transaction queue and execution engine, returning successful responses immediately.
+#[derive(Clone, Default)]
+pub struct MockGrpcService {
+    commit_head_seen: Arc<AtomicBool>,
+}
+
+impl MockGrpcService {
+    pub fn new() -> Self {
+        Self {
+            commit_head_seen: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn create_successful_transaction_result(
+        tx_execution_id: &PbTxExecutionId,
+    ) -> PbTransactionResult {
+        PbTransactionResult {
+            tx_execution_id: Some(tx_execution_id.clone()),
+            status: "success".into(),
+            gas_used: 21000, // Mock gas usage
+            error: String::new(),
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl SidecarTransport for MockGrpcService {
+    /// Handle gRPC request for batched iteration events.
+    /// Returns immediate success without processing.
+    #[instrument(name = "mock_grpc_server::SendEvents", skip(self, request), level = "debug")]
+    async fn send_events(
+        &self,
+        request: Request<PbSendEvents>,
+    ) -> Result<Response<BasicAck>, Status> {
+        let payload = request.into_inner();
+        if payload.events.is_empty() {
+            return Err(Status::invalid_argument("events must not be empty"));
+        }
+
+        Ok(Response::new(BasicAck {
+            accepted: true,
+            message: "events processed (mock)".into(),
+        }))
+    }
+
+    /// Handle gRPC request for `SendTransactions`.
+    /// Returns immediate success without processing.
+    #[instrument(
+        name = "mock_grpc_server::SendTransactions",
+        skip(self, request),
+        level = "debug"
+    )]
+    async fn send_transactions(
+        &self,
+        request: Request<SendTransactionsRequest>,
+    ) -> Result<Response<SendTransactionsResponse>, Status> {
+        let req = request.into_inner();
+        let total = req.transactions.len() as u64;
+
+        Ok(Response::new(SendTransactionsResponse {
+            accepted_count: total,
+            request_count: total,
+            message: "All transactions accepted (mock)".into(),
+        }))
+    }
+
+    /// Handle gRPC request for `Reorg` messages.
+    /// Returns immediate success without processing.
+    #[instrument(name = "mock_grpc_server::Reorg", skip(self, request), level = "debug")]
+    async fn reorg(&self, request: Request<ReorgRequest>) -> Result<Response<BasicAck>, Status> {
+        let payload = request.into_inner();
+        if payload.tx_execution_id.is_none() {
+            return Err(Status::invalid_argument("missing tx_execution_id"));
+        }
+
+        Ok(Response::new(BasicAck {
+            accepted: true,
+            message: "reorg accepted (mock)".into(),
+        }))
+    }
+
+    /// Handle gRPC request for `GetTransactions` messages.
+    /// Returns immediate successful results for all requested transactions.
+    #[instrument(
+        name = "mock_grpc_server::GetTransactions",
+        skip(self, request),
+        level = "debug"
+    )]
+    async fn get_transactions(
+        &self,
+        request: Request<GetTransactionsRequest>,
+    ) -> Result<Response<GetTransactionsResponse>, Status> {
+        let payload = request.into_inner();
+        let results: Vec<PbTransactionResult> = payload
+            .tx_execution_id
+            .iter()
+            .map(Self::create_successful_transaction_result)
+            .collect();
+
+        Ok(Response::new(GetTransactionsResponse {
+            results,
+            not_found: Vec::new(),
+        }))
+    }
+
+    /// Handle gRPC request for `GetTransaction` messages.
+    /// Returns immediate successful result for the requested transaction.
+    #[instrument(
+        name = "mock_grpc_server::GetTransaction",
+        skip(self, request),
+        level = "debug"
+    )]
+    async fn get_transaction(
+        &self,
+        request: Request<GetTransactionRequest>,
+    ) -> Result<Response<GetTransactionResponse>, Status> {
+        let payload = request.into_inner();
+
+        let Some(pb_tx_execution_id) = payload.tx_execution_id else {
+            return Err(Status::invalid_argument("missing tx_execution_id"));
+        };
+
+        let result = Self::create_successful_transaction_result(&pb_tx_execution_id);
+
+        Ok(Response::new(GetTransactionResponse {
+            outcome: Some(GetTransactionOutcome::Result(result)),
+        }))
+    }
+
+    /// Handle gRPC Ping request.
+    /// Returns immediate pong response.
+    #[instrument(name = "mock_grpc_server::Ping", skip(self, _request), level = "debug")]
+    async fn ping(
+        &self,
+        _request: Request<PingRequest>,
+    ) -> Result<Response<PongResponse>, Status> {
+        Ok(Response::new(PongResponse {}))
+    }
 }

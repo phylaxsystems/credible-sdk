@@ -146,8 +146,10 @@ impl Transport for GrpcTransport {
 
         let incoming = TcpListenerStream::new(listener);
 
-        let service =
-            server::GrpcService::new(self.tx_sender.clone(), self.transactions_results.clone());
+        // let service =
+        //     server::GrpcService::new(self.tx_sender.clone(), self.transactions_results.clone());
+
+        let service = server::MockGrpcService::new();
 
         info!(bind_addr = %self.bind_addr, "gRPC transport server starting");
 
@@ -157,6 +159,11 @@ impl Transport for GrpcTransport {
             .tcp_keepalive(Some(TCP_KEEPALIVE))
             .http2_keepalive_interval(Some(HTTP2_KEEPALIVE_INTERVAL))
             .http2_keepalive_timeout(Some(HTTP2_KEEPALIVE_TIMEOUT))
+            .http2_adaptive_window(Some(true))
+            .max_concurrent_streams(Some(1000))
+            .initial_stream_window_size(Some(1024 * 1024))
+            .initial_connection_window_size(Some(10 * 1024 * 1024))
+            .max_frame_size(Some(16384))
             .add_service(pb::sidecar_transport_server::SidecarTransportServer::new(
                 service,
             ))
