@@ -145,3 +145,10 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 incremental = false
+
+# Maxperf profile for absolute maximum performance
+# Only use for builds that are going to get used by end users
+[profile.debug-perf]
+inherits = "release"
+debug = true
+strip = "none"
