@@ -113,6 +113,7 @@ fn parse_pb_tx_execution_id(pb: &PbTxExecutionId) -> Result<TxExecutionId, Statu
         pb.block_number,
         pb.iteration_id,
         tx_hash,
+        pb.index,
     ))
 }
 
@@ -121,6 +122,7 @@ fn into_pb_tx_execution_id(tx_execution_id: TxExecutionId) -> PbTxExecutionId {
         block_number: tx_execution_id.block_number,
         iteration_id: tx_execution_id.iteration_id,
         tx_hash: tx_execution_id.tx_hash_hex(),
+        index: tx_execution_id.index,
     }
 }
 
@@ -131,6 +133,7 @@ fn parse_pb_tx_execution_id_http(pb: &PbTxExecutionId) -> Result<TxExecutionId, 
         pb.block_number,
         pb.iteration_id,
         tx_hash,
+        pb.index,
     ))
 }
 
@@ -555,13 +558,20 @@ pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError>
         return Err(HttpDecoderError::MissingTxExecutionId);
     };
     let tx_execution_id = parse_pb_tx_execution_id_http(pb_tx_execution_id)?;
+    let prev_tx_hash = t
+        .prev_tx_hash
+        .as_ref()
+        .map(|prev_tx_hash| {
+            TxHash::from_str(prev_tx_hash)
+                .map_err(|_| HttpDecoderError::InvalidHash(prev_tx_hash.clone()))
+        })
+        .transpose()?;
 
     Ok(TxQueueContents::Tx(
         QueueTransaction {
             tx_execution_id,
             tx_env,
-            // FIXME: Propagate properly from the transport layer
-            prev_tx_hash: None,
+            prev_tx_hash,
         },
         tracing::Span::current(),
     ))

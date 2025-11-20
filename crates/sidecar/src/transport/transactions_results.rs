@@ -221,7 +221,7 @@ mod tests {
         let transactions_state = TransactionsState::new();
         let query_results = QueryTransactionsResults::new(transactions_state);
 
-        let tx_execution_id = TxExecutionId::new(1, 0, B256::from([3u8; 32]));
+        let tx_execution_id = TxExecutionId::new(1, 0, B256::from([3u8; 32]), 0);
 
         let receiver = match query_results.is_tx_received(&tx_execution_id) {
             AcceptedState::NotYet(rx) => rx,

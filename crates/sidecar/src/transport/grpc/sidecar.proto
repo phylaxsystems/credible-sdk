@@ -60,6 +60,7 @@ message TransactionEnv {
 message Transaction {
   TxExecutionId tx_execution_id = 1; // TX execution ID
   TransactionEnv tx_env = 2;         // transaction env
+  optional string prev_tx_hash = 3;  // Previous TX hash
 }
 
 message SendTransactionsRequest {
@@ -107,6 +108,7 @@ message TxExecutionId {
   uint64 block_number = 1; // Block number
   uint64 iteration_id = 2; // Iteration Id
   string tx_hash = 3;      // 0x-prefixed hash string
+  uint64 index = 4;        // TX index
 }
 
 message CommitHead {

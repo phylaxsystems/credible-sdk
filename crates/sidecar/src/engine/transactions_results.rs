@@ -122,7 +122,7 @@ mod tests {
     // Helper to create a test TxExecutionId
     fn create_test_tx_execution_id(byte: u8) -> TxExecutionId {
         let tx_hash = revm::primitives::alloy_primitives::TxHash::from([byte; 32]);
-        TxExecutionId::new(u64::from(byte), 0, tx_hash)
+        TxExecutionId::new(u64::from(byte), 0, tx_hash, 0)
     }
 
     #[test]

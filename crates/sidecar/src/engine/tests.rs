@@ -186,7 +186,7 @@ async fn test_core_engine_errors_when_no_synced_sources() {
     };
 
     let queue_tx = queue::QueueTransaction {
-        tx_execution_id: TxExecutionId::new(1, 0, B256::from([0x11; 32])),
+        tx_execution_id: TxExecutionId::new(1, 0, B256::from([0x11; 32]), 0),
         tx_env: TxEnv::default(),
         prev_tx_hash: None,
     };
@@ -252,7 +252,7 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     );
 
     // Send transaction for the mismatched block
-    let tx_execution_id = TxExecutionId::new(mismatched_block_number, 0, B256::from([0x42; 32]));
+    let tx_execution_id = TxExecutionId::new(mismatched_block_number, 0, B256::from([0x42; 32]), 0);
     let queue_transaction = queue::QueueTransaction {
         tx_execution_id,
         tx_env: TxEnv::default(),

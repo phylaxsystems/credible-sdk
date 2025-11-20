@@ -24,6 +24,7 @@
 #![doc = include_str!("./sidecar.proto")]
 //! ```
 
+#![allow(clippy::large_enum_variant)]
 use crate::{
     engine::queue::TransactionQueueSender,
     transactions_state::TransactionsState,
@@ -223,6 +224,7 @@ mod tests {
                     block_number: tx_execution_id.block_number,
                     iteration_id: tx_execution_id.iteration_id,
                     tx_hash: tx_execution_id.tx_hash.to_string(),
+                    index: tx_execution_id.index,
                 }),
             })
             .await
@@ -277,6 +279,7 @@ mod tests {
                     block_number: 0,
                     iteration_id: 1,
                     tx_hash: missing_hash.to_string(),
+                    index: 0,
                 }),
             })
             .await
