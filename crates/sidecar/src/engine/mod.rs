@@ -316,8 +316,8 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     #[allow(clippy::too_many_arguments)]
     #[instrument(name = "engine::new", skip_all, level = "debug")]
     pub async fn new(
-        state: OverlayDb<DB>,
-        cache: Arc<Sources>,
+        cache: OverlayDb<DB>,
+        sources: Arc<Sources>,
         tx_receiver: TransactionQueueReceiver,
         assertion_executor: AssertionExecutor,
         state_results: Arc<TransactionsState>,
@@ -344,10 +344,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             (processed_transactions, handle)
         };
         Self {
-            cache: state,
+            cache,
             current_block_iterations: HashMap::new(),
             current_head: 0,
-            sources: cache.clone(),
+            sources: sources.clone(),
             tx_receiver,
             assertion_executor,
             transaction_results: TransactionsResults::new(
@@ -357,7 +357,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             block_metrics: BlockMetrics::new(),
             state_sources_sync_timeout,
             check_sources_available: true,
-            sources_monitoring: monitoring::sources::Sources::new(cache, source_monitoring_period),
+            sources_monitoring: monitoring::sources::Sources::new(
+                sources,
+                source_monitoring_period,
+            ),
             overlay_cache_invalidation_every_block,
             #[cfg(feature = "cache_validation")]
             processed_transactions,
@@ -751,10 +754,11 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             // Track event processing time
             let event_start = Instant::now();
 
-            match event {
+            // Process event and handle errors appropriately
+            let result = match event {
                 TxQueueContents::NewIteration(new_iteration, current_span) => {
                     let _guard = current_span.enter();
-                    self.process_iteration(&new_iteration)?;
+                    self.process_iteration(&new_iteration)
                 }
                 TxQueueContents::CommitHead(commit_head, current_span) => {
                     let _guard = current_span.enter();
@@ -762,16 +766,47 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         &commit_head,
                         &mut processed_blocks,
                         &mut block_processing_time,
-                    )?;
+                    )
                 }
                 TxQueueContents::Tx(queue_transaction, current_span) => {
                     let _guard = current_span.enter();
-                    self.verify_state_sources_synced_for_tx().await?;
-                    self.process_transaction_event(queue_transaction)?;
+                    // Await the async verification before processing
+                    match self.verify_state_sources_synced_for_tx().await {
+                        Ok(()) => self.process_transaction_event(queue_transaction),
+                        Err(e) => Err(e),
+                    }
                 }
                 TxQueueContents::Reorg(tx_execution_id, current_span) => {
                     let _guard = current_span.enter();
-                    self.execute_reorg(tx_execution_id)?;
+                    self.execute_reorg(tx_execution_id)
+                }
+            };
+
+            // Handle the result of event processing
+            if let Err(error) = result {
+                let recoverability = ErrorRecoverability::from(&error);
+
+                match recoverability {
+                    ErrorRecoverability::Recoverable => {
+                        // Log the error and continue processing
+                        warn!(
+                            target = "engine",
+                            error = ?error,
+                            "Recoverable error occurred during event processing, continuing"
+                        );
+                        // Invalid the cache and reset the latest unprocessed block
+                        self.cache.invalidate_all();
+                        self.sources
+                            .reset_latest_unprocessed_block(self.current_head);
+                    }
+                    ErrorRecoverability::Unrecoverable => {
+                        // Log the critical error and break the loop
+                        critical!(
+                            error = ?error,
+                            "Unrecoverable error occurred, stopping engine"
+                        );
+                        return Err(error);
+                    }
                 }
             }
 

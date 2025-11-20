@@ -181,15 +181,7 @@ async fn main() -> anyhow::Result<()> {
             () = wait_for_sigterm() => {
                 tracing::info!("Received SIGTERM, shutting down...");
             }
-            result = engine.run() => {
-                if let Err(e) = result {
-                    if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = ?e, "Engine exited");
-                    } else {
-                        critical!(error = ?e, "Engine exited");
-                    }
-                }
-            }
+            _ = engine.run() => {}
             result = transport.run() => {
                 if let Err(e) = result {
                     if ErrorRecoverability::from(&e).is_recoverable() {
