@@ -19,7 +19,6 @@ use alloy_primitives::KECCAK256_EMPTY;
 use revm::database::InMemoryDB;
 
 use super::OverlayDb;
-use dashmap::DashMap;
 use std::{
     collections::HashMap,
     sync::{

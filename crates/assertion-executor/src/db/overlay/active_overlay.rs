@@ -18,7 +18,6 @@ use crate::{
         U256,
     },
 };
-use dashmap::DashMap;
 
 use std::{
     cell::UnsafeCell,
@@ -214,7 +213,7 @@ impl<Db: Database> Database for ActiveOverlay<Db> {
     type Error = NotFoundError;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-       DatabaseRef::basic_ref(self, address)
+        DatabaseRef::basic_ref(self, address)
     }
 
     fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
@@ -244,10 +243,7 @@ mod active_overlay_tests {
         bytes,
     };
 
-    use crate::{
-        db::overlay::TableKey,
-        primitives::Bytecode,
-    };
+    use crate::primitives::Bytecode;
 
     use std::collections::HashMap;
 
@@ -258,40 +254,46 @@ mod active_overlay_tests {
         };
     }
 
+    // Helper to compute total entries in an OverlayState (sums all segregated maps).
+    fn total_cache_count(state: &OverlayState) -> usize {
+        state.accounts.len() + state.contracts.len() + state.storage.len() + state.block_hashes.len()
+    }
+
     // Test basic account fetching with cache interaction
     #[test]
     fn test_active_basic_hit_miss() {
         let addr1 = address!("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1");
         let info1 = mock_account_info(U256::from(100), 1, None);
-        let key1 = TableKey::Basic(addr1);
 
         let mut mock_db = MockDb::new();
         mock_db.insert_account(addr1, info1.clone());
         #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
 
-        // Create a cache instance (e.g., count-based)
-        let overlay_cache = Arc::new(DashMap::new());
+        // REFACTOR: Use Segregated State instead of DashMap
+        let overlay_state = Arc::new(OverlayState::default());
 
         // Create the ActiveOverlay
-        let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache);
+        let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_state.clone());
 
         // 1. Initial state: Cache is empty
-        assert!(!active_overlay.is_cached(&key1));
-        assert_eq!(get_mock_db_field!(mock_db_arc, get_basic_calls), 0); // Use helper
+        // REFACTOR: Check specific map directly
+        assert!(!overlay_state.accounts.contains_key(&addr1));
+        assert_eq!(get_mock_db_field!(mock_db_arc, get_basic_calls), 0);
 
         // 2. First read (cache miss): Fetches from underlying DB
         let result = active_overlay.basic_ref(addr1).unwrap();
         assert_eq!(result, Some(info1.clone()));
         assert_eq!(
-            get_mock_db_field!(mock_db_arc, get_basic_calls), // Use helper
+            get_mock_db_field!(mock_db_arc, get_basic_calls),
             1,
             "Underlying DB should be called on miss"
         );
 
-        // 3. Check cache population (needs tasks to run)
+        // 3. Check cache population
+        // REFACTOR: Direct map check
         assert!(
-            active_overlay.is_cached(&key1),
+            overlay_state.accounts.contains_key(&addr1),
             "Data should be cached after miss"
         );
 
@@ -299,24 +301,26 @@ mod active_overlay_tests {
         let result2 = active_overlay.basic_ref(addr1).unwrap();
         assert_eq!(result2, Some(info1.clone()));
         assert_eq!(
-            get_mock_db_field!(mock_db_arc, get_basic_calls), // Use helper
+            get_mock_db_field!(mock_db_arc, get_basic_calls),
             1,
             "Underlying DB should NOT be called on hit"
         );
 
         // 5. Read non-existent account
         let addr2 = address!("a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2");
-        let key2 = TableKey::Basic(addr2);
-        assert!(!active_overlay.is_cached(&key2));
+
+        assert!(!overlay_state.accounts.contains_key(&addr2));
+
         let result3 = active_overlay.basic_ref(addr2).unwrap();
         assert_eq!(result3, None);
         assert_eq!(
-            get_mock_db_field!(mock_db_arc, get_basic_calls), // Use helper
+            get_mock_db_field!(mock_db_arc, get_basic_calls),
             2,
             "Underlying DB should be called for non-existent acc"
         );
+
         // Absence is NOT cached
-        assert!(!active_overlay.is_cached(&key2));
+        assert!(!overlay_state.accounts.contains_key(&addr2));
     }
 
     // Test storage fetching with cache interaction
@@ -325,44 +329,52 @@ mod active_overlay_tests {
         let addr1 = address!("b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1");
         let slot1 = U256::from(1);
         let value1 = U256::from(98765);
-        let key1 = TableKey::Storage(addr1, slot1);
 
-        let slot2 = U256::from(2); // Non-existent slot -> defaults to 0
-        let key2 = TableKey::Storage(addr1, slot2);
+        // REFACTOR: Use Tuple Key (Address, U256)
+        let key1 = (addr1, slot1);
+
+        let slot2 = U256::from(2);
+        let key2 = (addr1, slot2);
 
         let mut mock_db = MockDb::new();
         mock_db.insert_storage(addr1, slot1, value1);
         #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
-        let overlay_cache = Arc::new(DashMap::new());
-        let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache);
+
+        // REFACTOR: Use Segregated State
+        let overlay_state = Arc::new(OverlayState::default());
+        let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_state.clone());
 
         // 1. Initial state
-        assert!(!active_overlay.is_cached(&key1));
+        // Check shared state directly
+        assert!(!overlay_state.storage.contains_key(&key1));
         assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 0);
 
         // 2. First read (miss)
         let result = active_overlay.storage_ref(addr1, slot1).unwrap();
         assert_eq!(result, value1);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 1);
-        assert!(active_overlay.is_cached(&key1));
+
+        // Check if populated in segregated map
+        assert!(overlay_state.storage.contains_key(&key1));
 
         // 3. Second read (hit)
         let result2 = active_overlay.storage_ref(addr1, slot1).unwrap();
         assert_eq!(result2, value1);
-        assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 1); // No new call
+        assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 1);
 
         // 4. Read non-existent slot (miss) -> should return U256::ZERO
         let result3 = active_overlay.storage_ref(addr1, slot2).unwrap();
         assert_eq!(result3, U256::ZERO);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 2);
-        // Zero value IS cached
-        assert!(active_overlay.is_cached(&key2));
+
+        // Zero value IS cached in storage map
+        assert!(overlay_state.storage.contains_key(&key2));
 
         // 5. Read non-existent slot again (hit)
         let result4 = active_overlay.storage_ref(addr1, slot2).unwrap();
         assert_eq!(result4, U256::ZERO);
-        assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 2); // No new call
+        assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 2);
     }
 
     // Test code fetching with cache interaction
@@ -371,7 +383,7 @@ mod active_overlay_tests {
         let code1_bytes = bytes!("30106000f3");
         let code1 = Bytecode::new_legacy(code1_bytes.clone());
         let hash1 = code1.hash_slow();
-        let key1 = TableKey::CodeByHash(hash1);
+        // REFACTOR: No TableKey, use hash directly
 
         // Need an account associated with the code in the mock DB
         let addr1 = address!("c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1");
@@ -379,36 +391,40 @@ mod active_overlay_tests {
 
         let hash_non_existent =
             b256!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
-        let key_non_existent = TableKey::CodeByHash(hash_non_existent);
 
         let mut mock_db = MockDb::new();
         mock_db.insert_account(addr1, info1);
         #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
-        let overlay_cache = Arc::new(DashMap::new());
-        let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache);
+
+        // REFACTOR: Use Segregated State
+        let overlay_state = Arc::new(OverlayState::default());
+        let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_state.clone());
 
         // 1. Initial state
-        assert!(!active_overlay.is_cached(&key1));
+        assert!(!overlay_state.contracts.contains_key(&hash1));
         assert_eq!(get_mock_db_field!(mock_db_arc, get_code_calls), 0);
 
         // 2. First read (miss)
         let result = active_overlay.code_by_hash_ref(hash1).unwrap();
         assert_eq!(result.original_bytes(), code1_bytes);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_code_calls), 1);
-        assert!(active_overlay.is_cached(&key1));
+
+        // Check contracts map
+        assert!(overlay_state.contracts.contains_key(&hash1));
 
         // 3. Second read (hit)
         let result2 = active_overlay.code_by_hash_ref(hash1).unwrap();
         assert_eq!(result2.original_bytes(), code1_bytes);
-        assert_eq!(get_mock_db_field!(mock_db_arc, get_code_calls), 1); // No new call
+        assert_eq!(get_mock_db_field!(mock_db_arc, get_code_calls), 1);
 
         // 4. Read non-existent code (miss) -> Expect Error
         let result3 = active_overlay.code_by_hash_ref(hash_non_existent);
         assert!(result3.is_err());
         assert_eq!(get_mock_db_field!(mock_db_arc, get_code_calls), 2);
+
         // Error/absence not cached
-        assert!(!active_overlay.is_cached(&key_non_existent));
+        assert!(!overlay_state.contracts.contains_key(&hash_non_existent));
     }
 
     // Test block hash fetching with cache interaction
@@ -416,39 +432,43 @@ mod active_overlay_tests {
     fn test_active_block_hash_hit_miss() {
         let num1: u64 = 200;
         let hash1 = b256!("d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1");
-        let key1 = TableKey::BlockHash(num1);
+        // REFACTOR: No TableKey
 
         let num_non_existent: u64 = 201;
-        let key_non_existent = TableKey::BlockHash(num_non_existent);
 
         let mut mock_db = MockDb::new();
         mock_db.insert_block_hash(num1, hash1);
         #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
-        let overlay_cache = Arc::new(DashMap::new());
-        let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache);
+
+        // REFACTOR: Use Segregated State
+        let overlay_state = Arc::new(OverlayState::default());
+        let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_state.clone());
 
         // 1. Initial state
-        assert!(!active_overlay.is_cached(&key1));
+        assert!(!overlay_state.block_hashes.contains_key(&num1));
         assert_eq!(get_mock_db_field!(mock_db_arc, get_block_hash_calls), 0);
 
         // 2. First read (miss)
         let result = active_overlay.block_hash_ref(num1).unwrap();
         assert_eq!(result, hash1);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_block_hash_calls), 1);
-        assert!(active_overlay.is_cached(&key1));
+
+        // Check block_hashes map
+        assert!(overlay_state.block_hashes.contains_key(&num1));
 
         // 3. Second read (hit)
         let result2 = active_overlay.block_hash_ref(num1).unwrap();
         assert_eq!(result2, hash1);
-        assert_eq!(get_mock_db_field!(mock_db_arc, get_block_hash_calls), 1); // No new call
+        assert_eq!(get_mock_db_field!(mock_db_arc, get_block_hash_calls), 1);
 
         // 4. Read non-existent block hash (miss) -> Expect Error
         let result3 = active_overlay.block_hash_ref(num_non_existent);
         assert!(result3.is_err());
         assert_eq!(get_mock_db_field!(mock_db_arc, get_block_hash_calls), 2);
+
         // Error/absence not cached
-        assert!(!active_overlay.is_cached(&key_non_existent));
+        assert!(!overlay_state.block_hashes.contains_key(&num_non_existent));
     }
 
     // Test interaction with a shared cache
@@ -456,11 +476,9 @@ mod active_overlay_tests {
     fn test_active_shared_cache() {
         let addr1 = address!("e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1");
         let info1 = mock_account_info(U256::from(500), 5, None);
-        let key1 = TableKey::Basic(addr1);
 
         let addr2 = address!("e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2");
         let info2 = mock_account_info(U256::from(600), 6, None);
-        let key2 = TableKey::Basic(addr2);
 
         // Underlying DB 1
         let mut mock_db1 = MockDb::new();
@@ -474,52 +492,47 @@ mod active_overlay_tests {
         #[allow(clippy::arc_with_non_send_sync)]
         let mock_db2_arc = Arc::new(UnsafeCell::new(mock_db2));
 
-        // THE shared cache instance
-        let shared_cache = Arc::new(DashMap::new());
+        // THE shared cache instance (Segregated State)
+        let shared_state = Arc::new(OverlayState::default());
 
-        // Create two ActiveOverlays using DIFFERENT DBs but the SAME cache
-        // Pass the correctly wrapped Arcs
-        let active_overlay1 = ActiveOverlay::new(mock_db1_arc.clone(), shared_cache.clone());
-        let active_overlay2 = ActiveOverlay::new(mock_db2_arc.clone(), shared_cache.clone());
+        // Create two ActiveOverlays using DIFFERENT DBs but the SAME cache state
+        let active_overlay1 = ActiveOverlay::new(mock_db1_arc.clone(), shared_state.clone());
+        let active_overlay2 = ActiveOverlay::new(mock_db2_arc.clone(), shared_state.clone());
 
         // Sanity check: initially empty
-        assert!(!active_overlay1.is_cached(&key1));
-        assert!(!active_overlay2.is_cached(&key2));
+        assert!(!shared_state.accounts.contains_key(&addr1));
+        assert!(!shared_state.accounts.contains_key(&addr2));
 
         // 1. Read addr1 via overlay1 (miss -> cache)
-        let res1 = active_overlay1.basic_ref(addr1).unwrap(); // Should work now
+        let res1 = active_overlay1.basic_ref(addr1).unwrap();
         assert_eq!(res1, Some(info1.clone()));
         assert_eq!(get_mock_db_field!(mock_db1_arc, get_basic_calls), 1);
         assert_eq!(get_mock_db_field!(mock_db2_arc, get_basic_calls), 0);
-        assert!(
-            shared_cache.get(&key1).is_some(),
-            "Cache should contain key1"
-        );
+
+        assert!(shared_state.accounts.contains_key(&addr1));
 
         // 2. Read addr2 via overlay2 (miss -> cache)
-        let res2 = active_overlay2.basic_ref(addr2).unwrap(); // Should work now
+        let res2 = active_overlay2.basic_ref(addr2).unwrap();
         assert_eq!(res2, Some(info2.clone()));
         assert_eq!(get_mock_db_field!(mock_db1_arc, get_basic_calls), 1);
         assert_eq!(get_mock_db_field!(mock_db2_arc, get_basic_calls), 1);
-        assert!(
-            shared_cache.get(&key2).is_some(),
-            "Cache should contain key2"
-        );
-        assert_eq!(shared_cache.iter().count(), 2);
+
+        assert!(shared_state.accounts.contains_key(&addr2));
+        assert_eq!(shared_state.accounts.len(), 2);
 
         // 3. Read addr1 via overlay2 (HIT in SHARED cache, even though DB2 doesn't have it)
-        let res3 = active_overlay2.basic_ref(addr1).unwrap(); // Should work now
-        assert_eq!(res3, Some(info1.clone())); // Got value from cache populated by overlay1
+        let res3 = active_overlay2.basic_ref(addr1).unwrap();
+        assert_eq!(res3, Some(info1.clone()));
         assert_eq!(get_mock_db_field!(mock_db1_arc, get_basic_calls), 1); // No new DB calls
         assert_eq!(get_mock_db_field!(mock_db2_arc, get_basic_calls), 1); // No new DB calls
 
         // 4. Read addr2 via overlay1 (HIT in SHARED cache)
-        let res4 = active_overlay1.basic_ref(addr2).unwrap(); // Should work now
-        assert_eq!(res4, Some(info2.clone())); // Got value from cache populated by overlay2
+        let res4 = active_overlay1.basic_ref(addr2).unwrap();
+        assert_eq!(res4, Some(info2.clone()));
         assert_eq!(get_mock_db_field!(mock_db1_arc, get_basic_calls), 1); // No new DB calls
         assert_eq!(get_mock_db_field!(mock_db2_arc, get_basic_calls), 1); // No new DB calls
 
-        assert_eq!(shared_cache.iter().count(), 2);
+        assert_eq!(shared_state.accounts.len(), 2);
     }
 
     // Test DatabaseCommit implementation
@@ -545,11 +558,10 @@ mod active_overlay_tests {
         #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
 
-        // Create a cache
-        let cache = Arc::new(DashMap::new());
+        let overlay_state = Arc::new(OverlayState::default());
 
         // Create the active overlay
-        let mut active_overlay = ActiveOverlay::new(mock_db_arc.clone(), cache.clone());
+        let mut active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_state.clone());
 
         // Create accounts with different states
         let account1 = Account {
@@ -593,27 +605,28 @@ mod active_overlay_tests {
             status: AccountStatus::default(), // Not touched
         };
 
+        // Initial cache should be empty
+        assert_eq!(total_cache_count(&*overlay_state), 0);
         let addr3 = address!("0000000000000000000000000000000000000003");
-
         let evm_state: EvmState =
             HashMap::from_iter([(addr1, account1), (addr2, account2), (addr3, account3)]);
 
         // Initial cache should be empty
-        assert_eq!(cache.iter().count(), 0);
+        assert_eq!(total_cache_count(&*overlay_state), 0);
 
         // Commit the state changes
         active_overlay.commit(evm_state);
 
-        // Verify account1's data was committed
-        assert!(active_overlay.is_cached(&TableKey::Basic(addr1)));
+        // Verify account1's data was committed to 'accounts' map
+        assert!(overlay_state.accounts.contains_key(&addr1));
         assert_eq!(
             active_overlay.basic_ref(addr1).unwrap().unwrap().balance,
             U256::from(1500)
         );
         assert_eq!(active_overlay.basic_ref(addr1).unwrap().unwrap().nonce, 3);
 
-        // Verify code was committed
-        assert!(active_overlay.is_cached(&TableKey::CodeByHash(code_hash)));
+        // Verify code was committed to 'contracts' map
+        assert!(overlay_state.contracts.contains_key(&code_hash));
         assert_eq!(
             active_overlay
                 .code_by_hash_ref(code_hash)
@@ -622,9 +635,10 @@ mod active_overlay_tests {
             code_bytes
         );
 
-        // Verify storage was committed
-        assert!(active_overlay.is_cached(&TableKey::Storage(addr1, U256::from(5))));
-        assert!(active_overlay.is_cached(&TableKey::Storage(addr1, U256::from(6))));
+        // Verify storage was committed to 'storage' map (Tuple Key)
+        assert!(overlay_state.storage.contains_key(&(addr1, U256::from(5))));
+        assert!(overlay_state.storage.contains_key(&(addr1, U256::from(6))));
+        
         assert_eq!(
             active_overlay.storage_ref(addr1, U256::from(5)).unwrap(),
             U256::from(500)
@@ -635,30 +649,31 @@ mod active_overlay_tests {
         );
 
         // Verify account2's data was committed
-        assert!(active_overlay.is_cached(&TableKey::Basic(addr2)));
+        assert!(overlay_state.accounts.contains_key(&addr2));
         assert_eq!(
             active_overlay.basic_ref(addr2).unwrap().unwrap().balance,
             U256::from(2500)
         );
-        assert!(active_overlay.is_cached(&TableKey::Storage(addr2, U256::from(20))));
+        assert!(overlay_state.storage.contains_key(&(addr2, U256::from(20))));
         assert_eq!(
             active_overlay.storage_ref(addr2, U256::from(20)).unwrap(),
             U256::from(2000)
         );
 
         // Verify account3 (untouched) was NOT committed
-        assert!(!active_overlay.is_cached(&TableKey::Basic(addr3)));
+        assert!(!overlay_state.accounts.contains_key(&addr3));
 
-        // Verify no underlying DB calls were made
-        assert_eq!(get_mock_db_field!(mock_db_arc, get_basic_calls), 0);
-        assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 0);
+        // Verify correct number of cache entries 
+        // (2 accounts + 1 code + 3 storage slots) = 6
+        assert_eq!(total_cache_count(&*overlay_state), 6);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_code_calls), 0);
 
-        // Verify correct number of cache entries (2 accounts + 1 code + 3 storage slots)
-        assert_eq!(cache.iter().count(), 6);
+        // Verify correct number of cache entries 
+        // (2 accounts + 1 code + 3 storage slots) = 6
+        assert_eq!(total_cache_count(&*overlay_state), 6);
     }
 
-    // Test DatabaseCommit with shared cache across multiple overlays
+// Test DatabaseCommit with shared cache across multiple overlays
     #[test]
     fn test_active_database_commit_shared_cache() {
         use crate::primitives::{
@@ -679,12 +694,12 @@ mod active_overlay_tests {
         #[allow(clippy::arc_with_non_send_sync)]
         let mock_db2_arc = Arc::new(UnsafeCell::new(mock_db2));
 
-        // Create a shared cache
-        let shared_cache = Arc::new(DashMap::new());
+        // REFACTOR: Create a shared OverlayState
+        let shared_state = Arc::new(OverlayState::default());
 
-        // Create two active overlays sharing the same cache
-        let mut active_overlay1 = ActiveOverlay::new(mock_db1_arc.clone(), shared_cache.clone());
-        let mut active_overlay2 = ActiveOverlay::new(mock_db2_arc.clone(), shared_cache.clone());
+        // Create two active overlays sharing the same state
+        let mut active_overlay1 = ActiveOverlay::new(mock_db1_arc.clone(), shared_state.clone());
+        let mut active_overlay2 = ActiveOverlay::new(mock_db2_arc.clone(), shared_state.clone());
 
         // Create state for overlay1
         let account1 = Account {
@@ -742,7 +757,7 @@ mod active_overlay_tests {
             U256::from(2000)
         );
 
-        // Storage should also be shared
+        // Storage should also be shared (checking via cache hit)
         assert_eq!(
             active_overlay1.storage_ref(addr1, U256::from(1)).unwrap(),
             U256::from(100)
@@ -759,12 +774,12 @@ mod active_overlay_tests {
             active_overlay2.storage_ref(addr2, U256::from(2)).unwrap(),
             U256::from(200)
         );
-
-        // Verify no underlying DB calls were made
+        // Verify correct number of cache entries (2 accounts + 2 storage slots)
+        assert_eq!(total_cache_count(&*shared_state), 4);
         assert_eq!(get_mock_db_field!(mock_db1_arc, get_basic_calls), 0);
         assert_eq!(get_mock_db_field!(mock_db2_arc, get_basic_calls), 0);
 
         // Verify correct number of cache entries (2 accounts + 2 storage slots)
-        assert_eq!(shared_cache.iter().count(), 4);
+        assert_eq!(total_cache_count(&*shared_state), 4);
     }
 }

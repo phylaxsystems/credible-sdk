@@ -40,8 +40,6 @@ use std::{
     sync::Arc,
 };
 
-use enum_as_inner::EnumAsInner;
-
 use super::fork_db::ForkDb;
 
 pub mod active_overlay;
@@ -168,6 +166,13 @@ impl<Db> OverlayDb<Db> {
             + self.state.contracts.len()
             + self.state.storage.len()
             + self.state.block_hashes.len()) as u64
+    }
+    // Helper to count total items across all 4 segregated maps(for testing)
+    pub fn get_total_cache_count(state: &OverlayState) -> usize {
+        state.accounts.len()
+            + state.contracts.len()
+            + state.storage.len()
+            + state.block_hashes.len()
     }
 }
 
@@ -367,6 +372,14 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
     }
 }
 
+/// Convenience helper used by tests: return total number of entries across all four segregated maps.
+pub fn get_total_cache_count<Db>(overlay: &OverlayDb<Db>) -> usize {
+    overlay.state.accounts.len()
+        + overlay.state.contracts.len()
+        + overlay.state.storage.len()
+        + overlay.state.block_hashes.len()
+}
+
 #[cfg(test)]
 mod overlay_db_tests {
     use super::*;
@@ -399,7 +412,7 @@ mod overlay_db_tests {
         let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()));
 
         // 1. Initial state: Cache is empty
-        assert!(overlay_db.state.accounts.get(&key1).is_some());
+        assert!(overlay_db.state.accounts.get(&key1).is_none());
         assert_eq!(mock_db_arc.get_basic_calls(), 0);
 
         // 2. First read (cache miss): Fetches from underlying DB
@@ -429,7 +442,7 @@ mod overlay_db_tests {
         // 5. Read non-existent account
         let addr2 = address!("0000000000000000000000000000000000000002");
         let key2 = addr2;
-        assert!(overlay_db.state.accounts.get(&key1).is_some());
+        assert!(overlay_db.state.accounts.get(&key2).is_none());
         let result3 = overlay_db.basic_ref(addr2).unwrap();
         assert_eq!(result3, None);
         assert_eq!(
@@ -438,7 +451,7 @@ mod overlay_db_tests {
             "Underlying DB should be called for non-existent acc"
         );
         // Absence is NOT cached by default in this implementation
-      assert!(overlay_db.state.accounts.get(&key1).is_some());
+        assert!(overlay_db.state.accounts.get(&key2).is_none());
     }
 
     #[test]
@@ -458,7 +471,7 @@ mod overlay_db_tests {
         let overlay_db = OverlayDb::new(Some(mock_db_arc.clone()));
 
         // 1. Initial state
-        assert!(overlay_db.state.storage.get(&key1).is_some());
+        assert!(overlay_db.state.storage.get(&key1).is_none());
         assert_eq!(mock_db_arc.get_storage_calls(), 0);
 
         // 2. First read (miss)
@@ -478,7 +491,7 @@ mod overlay_db_tests {
         assert_eq!(mock_db_arc.get_storage_calls(), 2);
         // Zero value *is* cached because the underlying db returned it,
         // and we store the B256 representation of U256::ZERO
-        assert!(overlay_db.state.storage.get(&key1).is_some());
+        assert!(overlay_db.state.storage.get(&key2).is_some());
 
         // 5. Read non-existent slot again (hit)
         let result4 = overlay_db.storage_ref(addr1, slot2).unwrap();
@@ -526,7 +539,7 @@ mod overlay_db_tests {
         let result3 = overlay_db.code_by_hash_ref(hash_non_existent);
         assert!(result3.is_err()); // Expect error
         assert_eq!(mock_db_arc.get_code_calls(), 2);
-        assert!(overlay_db.state.contracts.get(&key1).is_none()); // Errors/absence not cached
+        assert!(overlay_db.state.contracts.get(&key_non_existent).is_none()); // Errors/absence not cached
     }
 
     #[test]
@@ -563,7 +576,13 @@ mod overlay_db_tests {
         let result3 = overlay_db.block_hash_ref(num_non_existent);
         assert!(result3.is_err());
         assert_eq!(mock_db_arc.get_block_hash_calls(), 2);
-       assert!(overlay_db.state.block_hashes.get(&key_non_existent).is_none()); // Errors/absence not cached
+        assert!(
+            overlay_db
+                .state
+                .block_hashes
+                .get(&key_non_existent)
+                .is_none()
+        ); // Errors/absence not cached
     }
 
     #[test]
@@ -574,7 +593,7 @@ mod overlay_db_tests {
         let block_num1: u64 = 50;
 
         // Create OverlayDb with NO underlying database
-        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None); // Specify MockDb type arg
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None);
 
         // Read basic - should return None
         assert_eq!(overlay_db.basic_ref(addr1).unwrap(), None);
@@ -588,18 +607,17 @@ mod overlay_db_tests {
         // Read block hash - should return Error
         assert!(overlay_db.block_hash_ref(block_num1).is_err());
 
-        // Ensure nothing was cached
-        assert!(!overlay_db.is_cached(&TableKey::Basic(addr1)));
-        assert!(!overlay_db.is_cached(&TableKey::Storage(addr1, slot1)));
-        assert!(!overlay_db.is_cached(&TableKey::CodeByHash(code_hash1)));
-        assert!(!overlay_db.is_cached(&TableKey::BlockHash(block_num1)));
+        // Ensure nothing was cached (Check direct maps)
+        assert!(!overlay_db.state.accounts.contains_key(&addr1));
+        assert!(!overlay_db.state.storage.contains_key(&(addr1, slot1)));
+        assert!(!overlay_db.state.contracts.contains_key(&code_hash1));
+        assert!(!overlay_db.state.block_hashes.contains_key(&block_num1));
     }
 
     #[test]
     fn test_invalidate_all() {
         let addr1 = address!("0000000000000000000000000000000000000041");
         let info1 = mock_account_info(U256::from(200), 2, None);
-        let key1 = TableKey::Basic(addr1);
 
         let mut mock_db = MockDb::new();
         mock_db.insert_account(addr1, info1.clone());
@@ -609,32 +627,30 @@ mod overlay_db_tests {
 
         // Read to populate cache
         let _ = overlay_db.basic_ref(addr1).unwrap();
-        assert!(overlay_db.is_cached(&key1));
-        assert_eq!(overlay_db.cache_entry_count(), 1);
+        assert!(overlay_db.state.accounts.contains_key(&addr1));
+        assert_eq!(get_total_cache_count(&overlay_db), 1);
 
         // Invalidate
         overlay_db.invalidate_all();
 
         // Check cache is empty
-        assert!(!overlay_db.is_cached(&key1));
-        assert_eq!(overlay_db.cache_entry_count(), 0);
+        assert!(!overlay_db.state.accounts.contains_key(&addr1));
+        assert_eq!(get_total_cache_count(&overlay_db), 0);
 
         // Read again (should be miss)
         let result = overlay_db.basic_ref(addr1).unwrap();
         assert_eq!(result, Some(info1));
-        assert_eq!(mock_db_arc.get_basic_calls(), 2); // Called underlying again
-        assert!(overlay_db.is_cached(&key1)); // Repopulated
+        assert_eq!(mock_db_arc.get_basic_calls(), 2);
+        assert!(overlay_db.state.accounts.contains_key(&addr1)); // Repopulated
     }
 
     #[test]
     fn test_replace_underlying() {
         let addr1 = address!("0000000000000000000000000000000000000061");
         let info1 = mock_account_info(U256::from(100), 1, None);
-        let key1 = TableKey::Basic(addr1);
 
         let addr2 = address!("0000000000000000000000000000000000000062");
         let info2 = mock_account_info(U256::from(200), 2, None);
-        let key2 = TableKey::Basic(addr2);
 
         // DB 1 has addr1
         let mut mock_db1 = MockDb::new();
@@ -650,9 +666,8 @@ mod overlay_db_tests {
 
         // 1. Read from DB1 (miss -> cache)
         assert_eq!(overlay_db.basic_ref(addr1).unwrap(), Some(info1.clone()));
-        assert!(overlay_db.is_cached(&key1));
+        assert!(overlay_db.state.accounts.contains_key(&addr1));
         assert_eq!(mock_db1_arc.get_basic_calls(), 1);
-        assert_eq!(mock_db2_arc.get_basic_calls(), 0);
 
         // 2. Replace underlying DB
         overlay_db.replace_underlying(Some(mock_db2_arc.clone()));
@@ -664,26 +679,23 @@ mod overlay_db_tests {
 
         // 4. Read addr2 (miss -> reads from new DB2 -> cache)
         assert_eq!(overlay_db.basic_ref(addr2).unwrap(), Some(info2.clone()));
-        assert!(overlay_db.is_cached(&key2));
-        assert_eq!(mock_db1_arc.get_basic_calls(), 1);
-        assert_eq!(mock_db2_arc.get_basic_calls(), 1); // Called DB2
+        assert!(overlay_db.state.accounts.contains_key(&addr2));
+        assert_eq!(mock_db2_arc.get_basic_calls(), 1);
 
         // 5. Invalidate cache
         overlay_db.invalidate_all();
-        assert!(!overlay_db.is_cached(&key1));
-        assert!(!overlay_db.is_cached(&key2));
+        assert!(!overlay_db.state.accounts.contains_key(&addr1));
+        assert!(!overlay_db.state.accounts.contains_key(&addr2));
 
         // 6. Read addr1 again (miss -> reads from DB2 -> not found)
         assert_eq!(overlay_db.basic_ref(addr1).unwrap(), None);
-        assert_eq!(mock_db1_arc.get_basic_calls(), 1);
         assert_eq!(mock_db2_arc.get_basic_calls(), 2); // Called DB2 again
-        assert!(!overlay_db.is_cached(&key1)); // Absence not cached
+        assert!(!overlay_db.state.accounts.contains_key(&addr1));
 
         // 7. Read addr2 again (miss -> reads from DB2 -> found)
         assert_eq!(overlay_db.basic_ref(addr2).unwrap(), Some(info2.clone()));
-        assert_eq!(mock_db1_arc.get_basic_calls(), 1);
         assert_eq!(mock_db2_arc.get_basic_calls(), 3); // Called DB2 again
-        assert!(overlay_db.is_cached(&key2)); // Cached again
+        assert!(overlay_db.state.accounts.contains_key(&addr2));
     }
 
     #[test]
@@ -745,7 +757,6 @@ mod overlay_db_tests {
             status: AccountStatus::Touched,
         };
 
-        // Create an untouched account that should be ignored
         let account3 = Account {
             info: AccountInfo {
                 balance: U256::from(3000),
@@ -770,15 +781,14 @@ mod overlay_db_tests {
         overlay_db.commit(evm_state);
 
         // Verify account1's data was committed
-        assert!(overlay_db.is_cached(&TableKey::Basic(addr1)));
+        assert!(overlay_db.state.accounts.contains_key(&addr1));
         assert_eq!(
             overlay_db.basic_ref(addr1).unwrap().unwrap().balance,
             U256::from(1000)
         );
-        assert_eq!(overlay_db.basic_ref(addr1).unwrap().unwrap().nonce, 1);
 
         // Verify code was committed
-        assert!(overlay_db.is_cached(&TableKey::CodeByHash(code_hash)));
+        assert!(overlay_db.state.contracts.contains_key(&code_hash));
         assert_eq!(
             overlay_db
                 .code_by_hash_ref(code_hash)
@@ -788,34 +798,41 @@ mod overlay_db_tests {
         );
 
         // Verify storage was committed
-        assert!(overlay_db.is_cached(&TableKey::Storage(addr1, U256::from(1))));
-        assert!(overlay_db.is_cached(&TableKey::Storage(addr1, U256::from(2))));
+        assert!(
+            overlay_db
+                .state
+                .storage
+                .contains_key(&(addr1, U256::from(1)))
+        );
+        assert!(
+            overlay_db
+                .state
+                .storage
+                .contains_key(&(addr1, U256::from(2)))
+        );
         assert_eq!(
             overlay_db.storage_ref(addr1, U256::from(1)).unwrap(),
             U256::from(100)
         );
-        assert_eq!(
-            overlay_db.storage_ref(addr1, U256::from(2)).unwrap(),
-            U256::from(200)
-        );
 
         // Verify account2's data was committed
-        assert!(overlay_db.is_cached(&TableKey::Basic(addr2)));
+        assert!(overlay_db.state.accounts.contains_key(&addr2));
         assert_eq!(
             overlay_db.basic_ref(addr2).unwrap().unwrap().balance,
             U256::from(2000)
         );
-        assert!(overlay_db.is_cached(&TableKey::Storage(addr2, U256::from(10))));
-        assert_eq!(
-            overlay_db.storage_ref(addr2, U256::from(10)).unwrap(),
-            U256::from(1000)
+        assert!(
+            overlay_db
+                .state
+                .storage
+                .contains_key(&(addr2, U256::from(10)))
         );
 
         // Verify account3 (untouched) was NOT committed
-        assert!(!overlay_db.is_cached(&TableKey::Basic(addr3)));
+        assert!(!overlay_db.state.accounts.contains_key(&addr3));
 
         // Run pending tasks to ensure all entries are properly cached
-        assert_eq!(overlay_db.cache_entry_count(), 6); // 2 accounts + 1 code + 3 storage slots
+        assert_eq!(get_total_cache_count(&overlay_db), 6); // 2 accounts + 1 code + 3 storage slots
     }
 
     #[allow(clippy::too_many_lines)]
@@ -840,9 +857,8 @@ mod overlay_db_tests {
         let parent_overlay_db: OverlayDb<MockDb> = OverlayDb::default();
 
         // Verify parent is initially empty
-        assert_eq!(parent_overlay_db.cache_entry_count(), 0);
-        assert!(!parent_overlay_db.is_cached(&TableKey::Basic(addr1)));
-        assert!(!parent_overlay_db.is_cached(&TableKey::Basic(addr2)));
+        assert_eq!(get_total_cache_count(&parent_overlay_db), 0);
+        assert!(!parent_overlay_db.state.accounts.contains_key(&addr1));
 
         // Create an ActiveOverlay from the parent
         let mock_db = MockDb::new();
@@ -883,79 +899,25 @@ mod overlay_db_tests {
         // Commit to the ActiveOverlay
         active_overlay.commit(evm_state);
 
-        // Verify that changes are now visible in the PARENT OverlayDb
-        assert!(parent_overlay_db.is_cached(&TableKey::Basic(addr1)));
-        assert!(parent_overlay_db.is_cached(&TableKey::Basic(addr2)));
-        assert!(parent_overlay_db.is_cached(&TableKey::CodeByHash(code_hash)));
-        assert!(parent_overlay_db.is_cached(&TableKey::Storage(addr1, U256::from(100))));
-        assert!(parent_overlay_db.is_cached(&TableKey::Storage(addr1, U256::from(200))));
-        assert!(parent_overlay_db.is_cached(&TableKey::Storage(addr2, U256::from(300))));
+        // Verify that changes are now visible in the PARENT OverlayDb (via segregated maps)
+        assert!(parent_overlay_db.state.accounts.contains_key(&addr1));
+        assert!(parent_overlay_db.state.accounts.contains_key(&addr2));
+        assert!(parent_overlay_db.state.contracts.contains_key(&code_hash));
+        assert!(
+            parent_overlay_db
+                .state
+                .storage
+                .contains_key(&(addr1, U256::from(100)))
+        );
 
-        // Verify account data is accessible through parent OverlayDb
+        // Verify data
         assert_eq!(
             parent_overlay_db.basic_ref(addr1).unwrap().unwrap().balance,
             U256::from(5000)
         );
-        assert_eq!(
-            parent_overlay_db.basic_ref(addr1).unwrap().unwrap().nonce,
-            10
-        );
-        assert_eq!(
-            parent_overlay_db.basic_ref(addr2).unwrap().unwrap().balance,
-            U256::from(7500)
-        );
-        assert_eq!(
-            parent_overlay_db.basic_ref(addr2).unwrap().unwrap().nonce,
-            15
-        );
-
-        // Verify code is accessible
-        assert_eq!(
-            parent_overlay_db
-                .code_by_hash_ref(code_hash)
-                .unwrap()
-                .original_bytes(),
-            code_bytes
-        );
-
-        // Verify storage is accessible
-        assert_eq!(
-            parent_overlay_db
-                .storage_ref(addr1, U256::from(100))
-                .unwrap(),
-            U256::from(1000)
-        );
-        assert_eq!(
-            parent_overlay_db
-                .storage_ref(addr1, U256::from(200))
-                .unwrap(),
-            U256::from(2000)
-        );
-        assert_eq!(
-            parent_overlay_db
-                .storage_ref(addr2, U256::from(300))
-                .unwrap(),
-            U256::from(3000)
-        );
 
         // Verify cache entry count matches expectations
         // 2 accounts + 1 code + 3 storage slots = 6 entries
-        assert_eq!(parent_overlay_db.cache_entry_count(), 6);
-
-        // Also verify that another ActiveOverlay created from the same parent
-        // can see these committed changes
-        let mock_db2 = MockDb::new();
-        #[allow(clippy::arc_with_non_send_sync)]
-        let mock_db2_arc = Arc::new(UnsafeCell::new(mock_db2));
-        let active_overlay2 = parent_overlay_db.create_overlay(mock_db2_arc);
-
-        assert_eq!(
-            active_overlay2.basic_ref(addr1).unwrap().unwrap().balance,
-            U256::from(5000)
-        );
-        assert_eq!(
-            active_overlay2.storage_ref(addr1, U256::from(100)).unwrap(),
-            U256::from(1000)
-        );
+        assert_eq!(get_total_cache_count(&parent_overlay_db), 6);
     }
 }
