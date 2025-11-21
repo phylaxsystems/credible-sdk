@@ -223,12 +223,12 @@ impl DatabaseRef for Sources {
             address = %address,
             "Function call",
         );
-        self.metrics.increase_basic_ref_counter();
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();
             match source.basic_ref(address) {
                 Ok(Some(account)) => {
+                    self.metrics.increase_basic_ref_counter(&source.name());
                     self.metrics
                         .basic_ref_duration(&source.name(), source_instant.elapsed());
                     self.metrics
@@ -277,12 +277,12 @@ impl DatabaseRef for Sources {
             number = number,
             "Function call",
         );
-        self.metrics.increase_block_hash_ref_counter();
         let total_operation_instant = Instant::now();
         let result = self
             .iter_synced_sources()
             .find_map(|source| {
                 let source_instant = Instant::now();
+                self.metrics.increase_block_hash_ref_counter(&source.name());
                 let res = source.block_hash_ref(number);
                 if let Err(e) = res.as_ref() {
                     error!(
@@ -308,12 +308,13 @@ impl DatabaseRef for Sources {
             code_hash = %code_hash,
             "Function call",
         );
-        self.metrics.increase_code_by_hash_ref_counter();
         let total_operation_instant = Instant::now();
         let result = self
             .iter_synced_sources()
             .find_map(|source| {
                 let source_instant = Instant::now();
+                self.metrics
+                    .increase_code_by_hash_ref_counter(&source.name());
                 let res = source.code_by_hash_ref(code_hash);
                 if let Err(e) = res.as_ref() {
                     error!(
@@ -344,10 +345,11 @@ impl DatabaseRef for Sources {
             index = %format_args!("{:#x}", index),
             "Function call",
         );
-        self.metrics.increase_storage_ref_counter_counter();
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();
+            self.metrics
+                .increase_storage_ref_counter_counter(&source.name());
             match source.storage_ref(address, index) {
                 Ok(value) => {
                     self.metrics
