@@ -159,7 +159,7 @@ impl Transport for GrpcTransport {
             .add_service(pb::sidecar_transport_server::SidecarTransportServer::new(
                 service,
             ))
-            .serve(self.bind_addr)
+            .serve_with_shutdown(self.bind_addr, async move { shutdown.cancelled().await })
             .await
             .map_err(|e| {
                 error!(error = ?e, "gRPC server failed");
