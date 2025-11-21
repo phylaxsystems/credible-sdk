@@ -7,7 +7,6 @@ mod genesis_data;
 #[cfg(test)]
 mod integration_tests;
 mod macros;
-// mod redis;
 mod state;
 mod worker;
 
@@ -35,7 +34,10 @@ use anyhow::{
 };
 use clap::Parser;
 use state_store::StateWriter;
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::broadcast;
 
 #[tokio::main]
@@ -83,7 +85,13 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Create shutdown channel
+    // Create the trace provider based on config
+    let trace_provider = state::create_trace_provider(
+        args.provider_type,
+        provider.clone(),
+        Duration::from_secs(30), // default timeout
+    );
+
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
     // Spawn signal handler
@@ -97,9 +105,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut worker = StateWorker::new(provider, redis, genesis_state);
+    let mut worker = StateWorker::new(provider, trace_provider, redis, genesis_state);
 
-    // Run worker with shutdown signal
     match worker.run(args.start_block, shutdown_rx).await {
         Ok(()) => {
             info!("State worker shutdown gracefully");
