@@ -21,8 +21,21 @@ use std::sync::Arc;
 struct DatabaseTypes {
     basic: DashMap<Address, AccountInfo>,
     code_by_hash: DashMap<B256, Bytecode>,
-    storage: DashMap<(Address, U256), B256>,
+    storage: DashMap<Address, StorageEntry>,
     block_hash: DashMap<u64, B256>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StorageEntry {
+    map: DashMap<U256, B256>,
+    dont_read_from_inner_db: bool,
+}
+
+impl StorageEntry {
+    fn mark_selfdestructed(&mut self) {
+        self.dont_read_from_inner_db = true;
+        self.map.clear();
+    }
 }
 
 impl DatabaseTypes {
@@ -38,8 +51,14 @@ impl DatabaseTypes {
 
     fn get_storage(&self, address: Address, slot: U256) -> Option<B256> {
         self.storage
-            .get(&(address, slot))
-            .map(|guard| *guard.value())
+            .get(&address)
+            .and_then(|entry| entry.map.get(&slot).map(|guard| *guard.value()))
+    }
+
+    fn is_selfdestructed(&self, address: Address) -> bool {
+        self.storage
+            .get(&address)
+            .is_some_and(|entry| entry.dont_read_from_inner_db)
     }
 
     fn get_block_hash(&self, number: u64) -> Option<B256> {
@@ -55,7 +74,23 @@ impl DatabaseTypes {
     }
 
     fn insert_storage(&mut self, address: Address, slot: U256, value: B256) {
-        self.storage.insert((address, slot), value);
+        let entry = if let Some(entry) = self.storage.get_mut(&address) {
+            entry
+        } else {
+            self.storage.insert(address, StorageEntry::default());
+            self.storage.get_mut(&address).expect("entry must exist")
+        };
+        entry.map.insert(slot, value);
+    }
+
+    fn insert_selfdestructed(&mut self, address: Address) {
+        let mut entry = if let Some(entry) = self.storage.get_mut(&address) {
+            entry
+        } else {
+            self.storage.insert(address, StorageEntry::default());
+            self.storage.get_mut(&address).expect("entry must exist")
+        };
+        entry.mark_selfdestructed();
     }
 
     #[allow(dead_code)]
@@ -64,17 +99,38 @@ impl DatabaseTypes {
     }
 
     fn apply_delta(&mut self, delta: &DatabaseTypes) {
-        for entry in delta.basic.iter() {
+        for entry in &delta.basic {
             self.basic.insert(*entry.key(), entry.value().clone());
         }
-        for entry in delta.code_by_hash.iter() {
+        for entry in &delta.code_by_hash {
             self.code_by_hash
                 .insert(*entry.key(), entry.value().clone());
         }
-        for entry in delta.storage.iter() {
-            self.storage.insert(*entry.key(), *entry.value());
+        for entry in &delta.storage {
+            let address = *entry.key();
+            let delta_entry = entry.value();
+
+            let mut storage_entry = if let Some(entry) = self.storage.get_mut(&address) {
+                entry
+            } else {
+                self.storage.insert(address, StorageEntry::default());
+                self.storage.get_mut(&address).expect("entry must exist")
+            };
+
+            let storage_entry = storage_entry.value_mut();
+            storage_entry.dont_read_from_inner_db |= delta_entry.dont_read_from_inner_db;
+
+            if delta_entry.dont_read_from_inner_db {
+                storage_entry.map.clear();
+            }
+
+            for storage_kv in &delta_entry.map {
+                storage_entry
+                    .map
+                    .insert(*storage_kv.key(), *storage_kv.value());
+            }
         }
-        for entry in delta.block_hash.iter() {
+        for entry in &delta.block_hash {
             self.block_hash.insert(*entry.key(), *entry.value());
         }
     }
@@ -125,6 +181,10 @@ impl<Db> VersionDb<Db> {
                 continue;
             }
 
+            if account.is_selfdestructed() {
+                delta.insert_selfdestructed(address);
+            }
+
             delta.insert_basic(address, account.info.clone());
 
             if let Some(code) = account.info.code.take() {
@@ -168,6 +228,14 @@ impl<Db: DatabaseRef> DatabaseRef for VersionDb<Db> {
         address: Address,
         slot: U256,
     ) -> Result<U256, <Self as DatabaseRef>::Error> {
+        if self.state.is_selfdestructed(address) {
+            if let Some(raw_value) = self.state.get_storage(address, slot) {
+                let value_u256: U256 = raw_value.into();
+                return Ok(value_u256);
+            }
+            return Ok(U256::ZERO);
+        }
+
         if let Some(raw_value) = self.state.get_storage(address, slot) {
             let value_u256: U256 = raw_value.into();
             return Ok(value_u256);
@@ -264,6 +332,7 @@ mod tests {
         primitives::{
             Account,
             AccountStatus,
+            Bytecode,
             EvmStorage,
             EvmStorageSlot,
             U256,
@@ -302,6 +371,20 @@ mod tests {
                 .state
                 .basic
                 .contains_key(&address!("0000000000000000000000000000000000000001"))
+        );
+    }
+
+    #[test]
+    fn rollback_to_invalid_depth_errors() {
+        let mut version_db = VersionDb::new(MockDb::new());
+
+        let err = version_db.rollback_to(1).unwrap_err();
+        assert_eq!(
+            err,
+            VersionDbError::InvalidDepth {
+                attempted: 1,
+                max_depth: 0
+            }
         );
     }
 
@@ -353,6 +436,174 @@ mod tests {
             uint!(10_U256)
         );
         assert_eq!(version_db.depth(), 1);
+    }
+
+    #[test]
+    fn selfdestructed_accounts_clear_storage_and_skip_inner_db() {
+        let mut inner = MockDb::new();
+        let address = address!("0000000000000000000000000000000000000001");
+        let slot = U256::from(1);
+
+        inner.insert_account(address, mock_account_info(uint!(1_U256), 0, None));
+        inner.insert_storage(address, slot, uint!(5_U256));
+
+        let mut version_db = VersionDb::new(inner);
+
+        assert_eq!(
+            version_db.storage_ref(address, slot).unwrap(),
+            uint!(5_U256)
+        );
+        let storage_calls_after_first_read = version_db.inner_db.get_storage_calls();
+
+        let mut changes = EvmState::default();
+        changes.insert(
+            address,
+            Account {
+                info: AccountInfo::default(),
+                storage: EvmStorage::default(),
+                status: AccountStatus::SelfDestructed | AccountStatus::Touched,
+            },
+        );
+        version_db.commit(changes);
+
+        assert_eq!(version_db.storage_ref(address, slot).unwrap(), U256::ZERO);
+        assert_eq!(
+            version_db.inner_db.get_storage_calls(),
+            storage_calls_after_first_read
+        );
+
+        version_db.rollback_to(0).unwrap();
+        assert_eq!(
+            version_db.storage_ref(address, slot).unwrap(),
+            uint!(5_U256)
+        );
+        assert!(version_db.inner_db.get_storage_calls() > storage_calls_after_first_read);
+    }
+
+    #[test]
+    fn recreated_account_after_selfdestruct_does_not_fallback_to_inner_db() {
+        let mut inner = MockDb::new();
+        let address = address!("0000000000000000000000000000000000000001");
+        let slot = U256::from(1);
+
+        inner.insert_account(address, mock_account_info(uint!(1_U256), 0, None));
+        inner.insert_storage(address, slot, uint!(5_U256));
+
+        let mut version_db = VersionDb::new(inner);
+
+        let mut initial_changes = EvmState::default();
+        initial_changes.insert(
+            address,
+            Account {
+                info: AccountInfo::default(),
+                storage: EvmStorage::default(),
+                status: AccountStatus::SelfDestructed | AccountStatus::Touched,
+            },
+        );
+        version_db.commit(initial_changes);
+
+        let storage_calls_after_selfdestruct = version_db.inner_db.get_storage_calls();
+
+        let mut recreation_storage = EvmStorage::default();
+        recreation_storage.insert(
+            slot,
+            EvmStorageSlot {
+                present_value: uint!(9_U256),
+                ..Default::default()
+            },
+        );
+        let mut recreation_state = EvmState::default();
+        recreation_state.insert(
+            address,
+            Account {
+                info: mock_account_info(uint!(2_U256), 1, None),
+                storage: recreation_storage,
+                status: AccountStatus::Touched,
+            },
+        );
+
+        version_db.commit(recreation_state);
+
+        assert_eq!(
+            version_db.storage_ref(address, slot).unwrap(),
+            uint!(9_U256)
+        );
+        assert_eq!(
+            version_db.inner_db.get_storage_calls(),
+            storage_calls_after_selfdestruct
+        );
+    }
+
+    #[test]
+    fn rollback_restores_prior_code_and_storage_per_depth() {
+        let mut version_db = VersionDb::new(MockDb::new());
+        let address = address!("0000000000000000000000000000000000000003");
+        let slot = U256::from(1);
+
+        let code_one = Bytecode::new_raw(vec![1u8, 2, 3].into());
+        let code_two = Bytecode::new_raw(vec![4u8, 5, 6].into());
+
+        let mut first_storage = EvmStorage::default();
+        first_storage.insert(
+            slot,
+            EvmStorageSlot {
+                present_value: uint!(11_U256),
+                ..Default::default()
+            },
+        );
+        let mut first = EvmState::default();
+        first.insert(
+            address,
+            Account {
+                info: mock_account_info(uint!(1_U256), 0, Some(code_one.clone())),
+                storage: first_storage,
+                status: AccountStatus::Touched,
+            },
+        );
+        version_db.commit(first);
+
+        let mut second_storage = EvmStorage::default();
+        second_storage.insert(
+            slot,
+            EvmStorageSlot {
+                present_value: uint!(22_U256),
+                ..Default::default()
+            },
+        );
+        let mut second = EvmState::default();
+        second.insert(
+            address,
+            Account {
+                info: mock_account_info(uint!(2_U256), 1, Some(code_two.clone())),
+                storage: second_storage,
+                status: AccountStatus::Touched,
+            },
+        );
+        version_db.commit(second);
+
+        let code_one_hash = code_one.hash_slow();
+        let code_two_hash = code_two.hash_slow();
+
+        assert_eq!(
+            version_db.storage_ref(address, slot).unwrap(),
+            uint!(22_U256)
+        );
+        assert_eq!(
+            version_db.code_by_hash_ref(code_two_hash).unwrap(),
+            code_two
+        );
+
+        version_db.rollback_to(1).unwrap();
+
+        assert_eq!(
+            version_db.storage_ref(address, slot).unwrap(),
+            uint!(11_U256)
+        );
+        assert_eq!(
+            version_db.code_by_hash_ref(code_one_hash).unwrap(),
+            code_one
+        );
+        assert!(version_db.code_by_hash_ref(code_two_hash).is_err());
     }
 
     #[test]
