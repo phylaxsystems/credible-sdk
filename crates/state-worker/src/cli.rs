@@ -31,4 +31,8 @@ pub struct Args {
     /// Optional state depth (how many blocks behind head Redis will have the data from)
     #[arg(long, env = "STATE_WORKER_STATE_DEPTH", default_value = "3")]
     pub state_depth: usize,
+
+    /// Optional file to read genesis state from. If specified, overrides the embedded genesis snapshot.
+    #[arg(long, env = "STATE_WORKER_FILE_TO_GENESIS")]
+    pub file_to_genesis: Option<String>,
 }

@@ -60,15 +60,28 @@ async fn main() -> Result<()> {
     redis
         .ensure_dump_index_metadata()
         .context("failed to ensure redis namespace index metadata")?;
-    let genesis_state =
-        if let Some(chain_id) = args.chain_id {
-            Some(crate::genesis::load_embedded(chain_id).with_context(|| {
+    let genesis_state = if let Some(file_path) = &args.file_to_genesis {
+        // Load genesis from file (overrides embedded genesis)
+        info!("Loading genesis from file: {}", file_path);
+        let contents = std::fs::read_to_string(file_path)
+            .inspect_err(
+                |e| warn!(error = ?e, file_path = file_path, "Failed to read genesis file"),
+            )
+            .with_context(|| format!("failed to read genesis file: {file_path}"))?;
+        Some(genesis::parse_from_str(&contents)
+                .inspect_err(|e| warn!(error = ?e, file_path = file_path, "Failed to parse genesis from file"))
+                .with_context(|| format!("failed to parse genesis from file: {file_path}"))?)
+    } else if let Some(chain_id) = args.chain_id {
+        // Fall back to embedded genesis
+        Some(
+            genesis::load_embedded(chain_id).with_context(|| {
                 format!("failed to load embedded genesis for chain id {chain_id}")
-            })?)
-        } else {
-            warn!("Chain Id not specified, not loading genesis block!");
-            None
-        };
+            })?,
+        )
+    } else {
+        warn!("Chain Id not specified, not loading genesis block!");
+        None
+    };
 
     // Create shutdown channel
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
