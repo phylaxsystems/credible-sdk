@@ -23,6 +23,7 @@ use sidecar::{
     },
     health::HealthServer,
     transport::Transport,
+    with_panic_recovery,
 };
 use std::{
     net::SocketAddr,
@@ -95,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
 
     let _guard = rust_tracing::trace();
 
-    let config = Config::load()?;
+    let config = Arc::new(Config::load()?);
 
     info!("Starting sidecar with config: {config:?}");
 
@@ -109,118 +110,135 @@ async fn main() -> anyhow::Result<()> {
     let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
 
     loop {
-        let mut sources: Vec<Arc<dyn Source>> = vec![];
-        if let Some(sequencer_url) = &config.state.sequencer_url
-            && let Ok(sequencer) = Sequencer::try_new(sequencer_url).await
-        {
-            sources.push(Arc::new(sequencer));
-        }
-        if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
-            &config.state.eth_rpc_source_ws_url,
-            &config.state.eth_rpc_source_http_url,
-        ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
-            eth_rpc_source_ws_url.as_str(),
-            eth_rpc_source_http_url.as_str(),
-        )
+        let config = config.clone();
+        let assertion_store = assertion_store.clone();
+        let executor_config = executor_config.clone();
+        let assertion_executor = assertion_executor.clone();
+        let engine_state_results = engine_state_results.clone();
+
+        if let Ok(true) = with_panic_recovery!(async move {
+            let mut sources: Vec<Arc<dyn Source>> = vec![];
+            if let Some(sequencer_url) = &config.state.sequencer_url
+                && let Ok(sequencer) = Sequencer::try_new(sequencer_url).await
+            {
+                sources.push(Arc::new(sequencer));
+            }
+            if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
+                &config.state.eth_rpc_source_ws_url,
+                &config.state.eth_rpc_source_http_url,
+            ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
+                eth_rpc_source_ws_url.as_str(),
+                eth_rpc_source_http_url.as_str(),
+            )
+            .await
+            {
+                sources.push(eth_rpc_source);
+            }
+            if let (Some(redis_url), Some(redis_namespace), Some(redis_depth)) = (
+                config.state.redis_url.as_ref(),
+                config.state.redis_namespace.as_ref(),
+                config.state.redis_depth,
+            ) && let Ok(redis_client) = StateReader::new(
+                redis_url,
+                redis_namespace,
+                CircularBufferConfig::new(redis_depth)?,
+            ) {
+                let redis_source = Arc::new(RedisSource::new(redis_client));
+                sources.push(redis_source);
+            }
+
+            // The cache is flushed on restart
+            let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
+            let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
+
+            let (transport_tx_sender, event_sequencing_tx_receiver) = unbounded();
+            let (event_sequencing_tx_sender, core_engine_tx_receiver) = unbounded();
+            let mut transport = create_transport_from_args(
+                &config,
+                transport_tx_sender,
+                engine_state_results.clone(),
+            )?;
+
+            let mut event_sequencing =
+                EventSequencing::new(event_sequencing_tx_receiver, event_sequencing_tx_sender);
+            let mut health_server = HealthServer::new(health_bind_addr);
+
+            let mut engine = CoreEngine::new(
+                cache,
+                state,
+                core_engine_tx_receiver,
+                assertion_executor.clone(),
+                engine_state_results.clone(),
+                config.credible.transaction_results_max_capacity,
+                Duration::from_millis(config.state.sources_sync_timeout_ms),
+                Duration::from_millis(config.state.sources_monitoring_period_ms),
+                config
+                    .credible
+                    .overlay_cache_invalidation_every_block
+                    .unwrap_or(false),
+                #[cfg(feature = "cache_validation")]
+                Some(&config.credible.cache_checker_ws_url),
+            )
+            .await;
+
+            let indexer_cfg =
+                init_indexer_config(&config, assertion_store.clone(), &executor_config).await?;
+
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Received Ctrl+C, shutting down...");
+                    return Ok::<bool, anyhow::Error>(true); // Signal to break outer loop
+                }
+                () = wait_for_sigterm() => {
+                    tracing::info!("Received SIGTERM, shutting down...");
+                    return Ok(true); // Signal to break outer loop
+                }
+                _ = engine.run() => {}
+                result = transport.run() => {
+                    if let Err(e) = result {
+                        if ErrorRecoverability::from(&e).is_recoverable() {
+                            tracing::error!(error = ?e, "Transport exited");
+                        } else {
+                            critical!(error = ?e, "Transport exited");
+                        }
+                    }
+                }
+                result = event_sequencing.run() => {
+                    if let Err(e) = result {
+                        if ErrorRecoverability::from(&e).is_recoverable() {
+                            tracing::error!(error = ?e, "Event sequencing exited");
+                        } else {
+                            critical!(error = ?e, "Event sequencing exited");
+                        }
+                    }
+                }
+                result = health_server.run() => {
+                    if let Err(e) = result {
+                        critical!(error = ?e, "Health server exited");
+                    }
+                }
+                result = indexer::run_indexer(indexer_cfg) => {
+                    if let Err(e) = result {
+                        if ErrorRecoverability::from(&e).is_recoverable() {
+                            tracing::error!(error = ?e, "Indexer exited");
+                        } else {
+                            critical!(error = ?e, "Indexer exited");
+                        }
+                    }
+                }
+            }
+            transport.stop();
+            health_server.stop();
+            drop(transport);
+            drop(health_server);
+            drop(engine);
+            tracing::warn!("Sidecar restarted.");
+            Ok::<bool, anyhow::Error>(false) // Continue loop
+        })
         .await
         {
-            sources.push(eth_rpc_source);
+            break;
         }
-        if let (Some(redis_url), Some(redis_namespace), Some(redis_depth)) = (
-            config.state.redis_url.as_ref(),
-            config.state.redis_namespace.as_ref(),
-            config.state.redis_depth,
-        ) && let Ok(redis_client) = StateReader::new(
-            redis_url,
-            redis_namespace,
-            CircularBufferConfig::new(redis_depth)?,
-        ) {
-            let redis_source = Arc::new(RedisSource::new(redis_client));
-            sources.push(redis_source);
-        }
-
-        // The cache is flushed on restart
-        let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
-        let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
-
-        let (transport_tx_sender, event_sequencing_tx_receiver) = unbounded();
-        let (event_sequencing_tx_sender, core_engine_tx_receiver) = unbounded();
-        let mut transport =
-            create_transport_from_args(&config, transport_tx_sender, engine_state_results.clone())?;
-
-        let mut event_sequencing =
-            EventSequencing::new(event_sequencing_tx_receiver, event_sequencing_tx_sender);
-        let mut health_server = HealthServer::new(health_bind_addr);
-
-        let mut engine = CoreEngine::new(
-            cache,
-            state,
-            core_engine_tx_receiver,
-            assertion_executor.clone(),
-            engine_state_results.clone(),
-            config.credible.transaction_results_max_capacity,
-            Duration::from_millis(config.state.sources_sync_timeout_ms),
-            Duration::from_millis(config.state.sources_monitoring_period_ms),
-            config
-                .credible
-                .overlay_cache_invalidation_every_block
-                .unwrap_or(false),
-            #[cfg(feature = "cache_validation")]
-            Some(&config.credible.cache_checker_ws_url),
-        )
-        .await;
-
-        let indexer_cfg =
-            init_indexer_config(&config, assertion_store.clone(), &executor_config).await?;
-
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("Received Ctrl+C, shutting down...");
-                break;
-            }
-            () = wait_for_sigterm() => {
-                tracing::info!("Received SIGTERM, shutting down...");
-            }
-            _ = engine.run() => {}
-            result = transport.run() => {
-                if let Err(e) = result {
-                    if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = ?e, "Transport exited");
-                    } else {
-                        critical!(error = ?e, "Transport exited");
-                    }
-                }
-            }
-            result = event_sequencing.run() => {
-                if let Err(e) = result {
-                    if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = ?e, "Event sequencing exited");
-                    } else {
-                        critical!(error = ?e, "Event sequencing exited");
-                    }
-                }
-            }
-            result = health_server.run() => {
-                if let Err(e) = result {
-                    critical!(error = ?e, "Health server exited");
-                }
-            }
-            result = indexer::run_indexer(indexer_cfg) => {
-                if let Err(e) = result {
-                    if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = ?e, "Indexer exited");
-                    } else {
-                        critical!(error = ?e, "Indexer exited");
-                    }
-                }
-            }
-        }
-        transport.stop();
-        health_server.stop();
-        drop(transport);
-        drop(health_server);
-        drop(engine);
-        tracing::warn!("Sidecar restarted.");
     }
 
     tracing::info!("Sidecar shutdown complete.");
