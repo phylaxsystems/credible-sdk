@@ -56,7 +56,7 @@ pub const TCP_KEEPALIVE: Duration = Duration::from_secs(60);
 pub const HTTP2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 pub const HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(90);
 pub const MAX_CONCURRENT_CONNECTIONS: u32 = 1000;
-pub const INITIAL_STREAM_WINDOW: u32 = 1024 * 1024;  // 1MB
+pub const INITIAL_STREAM_WINDOW: u32 = 1024 * 1024; // 1MB
 pub const INITIAL_CONNECTION_WINDOW: u32 = 10 * 1024 * 1024; // 10MB
 pub const MAX_FRAME_SIZE: u32 = 16384;
 
