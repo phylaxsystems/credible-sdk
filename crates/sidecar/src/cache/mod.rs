@@ -228,7 +228,8 @@ impl DatabaseRef for Sources {
             let source_instant = Instant::now();
             match source.basic_ref(address) {
                 Ok(Some(account)) => {
-                    self.metrics.increase_basic_ref_counter(&source.name());
+                    self.metrics.increase_basic_ref_success(&source.name());
+                    self.metrics.record_basic_ref_serving_source(&source.name());
                     self.metrics
                         .basic_ref_duration(&source.name(), source_instant.elapsed());
                     self.metrics
@@ -236,6 +237,12 @@ impl DatabaseRef for Sources {
                     return Ok(Some(account));
                 }
                 Ok(None) => {
+                    self.metrics.increase_basic_ref_success(&source.name());
+                    self.metrics.record_basic_ref_serving_source(&source.name());
+                    self.metrics
+                        .basic_ref_duration(&source.name(), source_instant.elapsed());
+                    self.metrics
+                        .total_basic_ref_duration(total_operation_instant.elapsed());
                     debug!(
                         target = "cache::basic_ref",
                         name = %source.name(),
@@ -245,6 +252,7 @@ impl DatabaseRef for Sources {
                     return Ok(None);
                 }
                 Err(SourceError::CacheMiss) => {
+                    self.metrics.increase_basic_ref_failure(&source.name());
                     debug!(
                         target = "cache::basic_ref",
                         name = %source.name(),
@@ -253,6 +261,7 @@ impl DatabaseRef for Sources {
                     );
                 }
                 Err(e) => {
+                    self.metrics.increase_basic_ref_failure(&source.name());
                     error!(
                         target = "cache::basic_ref",
                         name = %source.name(),
@@ -282,16 +291,26 @@ impl DatabaseRef for Sources {
             .iter_synced_sources()
             .find_map(|source| {
                 let source_instant = Instant::now();
-                self.metrics.increase_block_hash_ref_counter(&source.name());
                 let res = source.block_hash_ref(number);
-                if let Err(e) = res.as_ref() {
-                    error!(
-                        target = "cache::block_hash_ref",
-                        name = %source.name(),
-                        number = number,
-                        error = ?e,
-                        "Failed to fetch block hash from cache source");
+
+                match res.as_ref() {
+                    Ok(hash) => {
+                        self.metrics.increase_block_hash_ref_success(&source.name());
+                        self.metrics
+                            .record_block_hash_ref_serving_source(&source.name());
+                    }
+                    Err(e) => {
+                        self.metrics.increase_block_hash_ref_failure(&source.name());
+                        error!(
+                            target = "cache::block_hash_ref",
+                            name = %source.name(),
+                            number = number,
+                            error = ?e,
+                            "Failed to fetch block hash from cache source"
+                        );
+                    }
                 }
+
                 self.metrics
                     .block_hash_ref_duration(&source.name(), source_instant.elapsed());
                 res.ok()
@@ -313,17 +332,28 @@ impl DatabaseRef for Sources {
             .iter_synced_sources()
             .find_map(|source| {
                 let source_instant = Instant::now();
-                self.metrics
-                    .increase_code_by_hash_ref_counter(&source.name());
                 let res = source.code_by_hash_ref(code_hash);
-                if let Err(e) = res.as_ref() {
-                    error!(
-                        target = "cache::code_by_hash_ref",
-                        name = %source.name(),
-                        code_hash = %code_hash,
-                        error = ?e,
-                        "Failed to fetch code by hash from cache source");
+
+                match res.as_ref() {
+                    Ok(bytecode) => {
+                        self.metrics
+                            .increase_code_by_hash_ref_success(&source.name());
+                        self.metrics
+                            .record_code_by_hash_ref_serving_source(&source.name());
+                    }
+                    Err(e) => {
+                        self.metrics
+                            .increase_code_by_hash_ref_failure(&source.name());
+                        error!(
+                            target = "cache::code_by_hash_ref",
+                            name = %source.name(),
+                            code_hash = %code_hash,
+                            error = ?e,
+                            "Failed to fetch code by hash from cache source"
+                        );
+                    }
                 }
+
                 self.metrics
                     .code_by_hash_ref_duration(&source.name(), source_instant.elapsed());
                 res.ok()
@@ -348,10 +378,11 @@ impl DatabaseRef for Sources {
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();
-            self.metrics
-                .increase_storage_ref_counter_counter(&source.name());
             match source.storage_ref(address, index) {
                 Ok(value) => {
+                    self.metrics.increase_storage_ref_success(&source.name());
+                    self.metrics
+                        .record_storage_ref_serving_source(&source.name());
                     self.metrics
                         .storage_ref_duration(&source.name(), source_instant.elapsed());
                     self.metrics
@@ -359,6 +390,7 @@ impl DatabaseRef for Sources {
                     return Ok(value);
                 }
                 Err(SourceError::CacheMiss) => {
+                    self.metrics.increase_storage_ref_failure(&source.name());
                     debug!(
                         target = "cache::storage_ref",
                         name = %source.name(),
@@ -368,6 +400,7 @@ impl DatabaseRef for Sources {
                     );
                 }
                 Err(e) => {
+                    self.metrics.increase_storage_ref_failure(&source.name());
                     error!(
                         target = "cache::storage_ref",
                         name = %source.name(),
