@@ -125,6 +125,13 @@ impl EventSequencing {
 
         // Create EventMetadata once
         let event_metadata = EventMetadata::from(&event);
+        info!(
+            target = "event_sequencing",
+            event_block_number,
+            current_head = self.current_head,
+            event_metadata = ?event_metadata,
+            "Event received"
+        );
 
         self.context.entry(event_block_number).or_default();
 
@@ -258,6 +265,13 @@ impl EventSequencing {
         event_metadata: EventMetadata,
         event: TxQueueContents,
     ) -> Result<(), EventSequencingError> {
+        info!(
+            target = "event_sequencing",
+            current_head = self.current_head,
+            event_metadata = ?event_metadata,
+            "Event added to the dependency graph"
+        );
+
         let context = self.get_context_mut(block_number, "add_to_dependency_graph")?;
 
         match context.dependency_graph.entry(previous_event) {
@@ -332,6 +346,11 @@ impl EventSequencing {
 
         // Send event
         if should_send {
+            info!(
+                target = "event_sequencing",
+                event_metadata = ?event_metadata,
+                "Event sent to the core engine"
+            );
             tx_sender.send(event).map_err(|e| {
                 error!(
                     target = "event_sequencing",

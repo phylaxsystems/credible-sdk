@@ -100,6 +100,7 @@ use tonic::{
 use tracing::{
     Span,
     debug,
+    info,
     instrument,
     warn,
 };
@@ -444,6 +445,12 @@ impl SidecarTransport for GrpcService {
         self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();
+        info!(
+            target = "transport::grpc",
+            method = "GetTransactions",
+            tx_execution_id = ?payload.tx_execution_id,
+            "GetTransactions received"
+        );
         let (results, not_found) = self
             .collect_transaction_results(payload.tx_execution_id.iter())
             .await?;
@@ -469,6 +476,12 @@ impl SidecarTransport for GrpcService {
         self.ensure_commit_head_seen()?;
 
         let payload = request.into_inner();
+        info!(
+            target = "transport::grpc",
+            method = "GetTransaction",
+            tx_execution_id = ?payload.tx_execution_id,
+            "GetTransaction received"
+        );
 
         let Some(pb_tx_execution_id) = payload.tx_execution_id else {
             return Err(Status::invalid_argument("missing tx_execution_id"));
