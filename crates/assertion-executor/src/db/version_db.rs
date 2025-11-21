@@ -14,32 +14,36 @@ use crate::{
         U256,
     },
 };
-use alloy_primitives::map::HashMap;
+use dashmap::DashMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Default)]
 struct DatabaseTypes {
-    basic: HashMap<Address, AccountInfo>,
-    code_by_hash: HashMap<B256, Bytecode>,
-    storage: HashMap<(Address, U256), B256>,
-    block_hash: HashMap<u64, B256>,
+    basic: DashMap<Address, AccountInfo>,
+    code_by_hash: DashMap<B256, Bytecode>,
+    storage: DashMap<(Address, U256), B256>,
+    block_hash: DashMap<u64, B256>,
 }
 
 impl DatabaseTypes {
-    fn get_basic(&self, address: Address) -> Option<&AccountInfo> {
-        self.basic.get(&address)
+    fn get_basic(&self, address: Address) -> Option<AccountInfo> {
+        self.basic.get(&address).map(|guard| guard.value().clone())
     }
 
-    fn get_code(&self, code_hash: &B256) -> Option<&Bytecode> {
-        self.code_by_hash.get(code_hash)
+    fn get_code(&self, code_hash: &B256) -> Option<Bytecode> {
+        self.code_by_hash
+            .get(code_hash)
+            .map(|guard| guard.value().clone())
     }
 
     fn get_storage(&self, address: Address, slot: U256) -> Option<B256> {
-        self.storage.get(&(address, slot)).copied()
+        self.storage
+            .get(&(address, slot))
+            .map(|guard| *guard.value())
     }
 
     fn get_block_hash(&self, number: u64) -> Option<B256> {
-        self.block_hash.get(&number).copied()
+        self.block_hash.get(&number).map(|guard| *guard.value())
     }
 
     fn insert_basic(&mut self, address: Address, info: AccountInfo) {
@@ -60,10 +64,19 @@ impl DatabaseTypes {
     }
 
     fn apply_delta(&mut self, delta: &DatabaseTypes) {
-        self.basic.extend(delta.basic.clone());
-        self.code_by_hash.extend(delta.code_by_hash.clone());
-        self.storage.extend(delta.storage.clone());
-        self.block_hash.extend(delta.block_hash.clone());
+        for entry in delta.basic.iter() {
+            self.basic.insert(*entry.key(), entry.value().clone());
+        }
+        for entry in delta.code_by_hash.iter() {
+            self.code_by_hash
+                .insert(*entry.key(), entry.value().clone());
+        }
+        for entry in delta.storage.iter() {
+            self.storage.insert(*entry.key(), *entry.value());
+        }
+        for entry in delta.block_hash.iter() {
+            self.block_hash.insert(*entry.key(), *entry.value());
+        }
     }
 }
 
@@ -136,7 +149,7 @@ impl<Db: DatabaseRef> DatabaseRef for VersionDb<Db> {
         address: Address,
     ) -> Result<Option<AccountInfo>, <Self as DatabaseRef>::Error> {
         if let Some(account_info) = self.state.get_basic(address) {
-            return Ok(Some(account_info.clone()));
+            return Ok(Some(account_info));
         }
 
         self.inner_db.basic_ref(address)
@@ -144,7 +157,7 @@ impl<Db: DatabaseRef> DatabaseRef for VersionDb<Db> {
 
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, <Self as DatabaseRef>::Error> {
         if let Some(code) = self.state.get_code(&code_hash) {
-            return Ok(code.clone());
+            return Ok(code);
         }
 
         self.inner_db.code_by_hash_ref(code_hash)
