@@ -232,38 +232,112 @@ impl StateMetrics {
         gauge!("sidecar_cache_latest_head").set(block_number as f64);
     }
 
-    /// Track the number of times the `basic_ref` was called
-    /// (`sidecar_cache_basic_ref_counter`)
+    /// Track the number of times the `basic_ref` was called successfully
+    /// (`sidecar_cache_basic_ref_success_counter`)
     ///
     /// Committed as a `Counter`.
-    pub fn increase_basic_ref_counter(&self, source: &impl ToString) {
-        counter!("sidecar_cache_basic_ref_counter", "source" => source.to_string()).increment(1);
-    }
-
-    /// Track the number of times the `code_by_hash_ref` was called
-    /// (`sidecar_cache_code_by_hash_ref_counter`)
-    ///
-    /// Committed as a `Counter`.
-    pub fn increase_code_by_hash_ref_counter(&self, source: &impl ToString) {
-        counter!("sidecar_cache_code_by_hash_ref_counter", "source" => source.to_string())
+    pub fn increase_basic_ref_success(&self, source: &impl ToString) {
+        counter!("sidecar_cache_basic_ref_success_counter", "source" => source.to_string())
             .increment(1);
     }
 
-    /// Track the number of times the `block_hash_ref` was called
-    /// (`sidecar_cache_block_hash_ref_counter`)
+    /// Track the number of times the `code_by_hash_ref` was called successfully
+    /// (`sidecar_cache_code_by_hash_ref_success_counter`)
     ///
     /// Committed as a `Counter`.
-    pub fn increase_block_hash_ref_counter(&self, source: &impl ToString) {
-        counter!("sidecar_cache_block_hash_ref_counter", "source" => source.to_string())
+    pub fn increase_code_by_hash_ref_success(&self, source: &impl ToString) {
+        counter!("sidecar_cache_code_by_hash_ref_success_counter", "source" => source.to_string())
             .increment(1);
     }
 
-    /// Track the number of times the `storage_ref` was called
-    /// (`sidecar_cache_storage_ref_counter`)
+    /// Track the number of times the `block_hash_ref` was called successfully
+    /// (`sidecar_cache_block_hash_ref_success_counter`)
     ///
     /// Committed as a `Counter`.
-    pub fn increase_storage_ref_counter_counter(&self, source: &impl ToString) {
-        counter!("sidecar_cache_storage_ref_counter", "source" => source.to_string()).increment(1);
+    pub fn increase_block_hash_ref_success(&self, source: &impl ToString) {
+        counter!("sidecar_cache_block_hash_ref_success_counter", "source" => source.to_string())
+            .increment(1);
+    }
+
+    /// Track the number of times the `storage_ref` was called successfully
+    /// (`sidecar_cache_storage_ref_success_counter`)
+    ///
+    /// Committed as a `Counter`.
+    pub fn increase_storage_ref_success(&self, source: &impl ToString) {
+        counter!("sidecar_cache_storage_ref_success_counter", "source" => source.to_string())
+            .increment(1);
+    }
+
+    /// Track `basic_ref` failures per source
+    /// (`sidecar_cache_basic_ref_failure_counter`)
+    ///
+    /// Committed as a `Counter`.
+    pub fn increase_basic_ref_failure(&self, source: &impl ToString) {
+        counter!("sidecar_cache_basic_ref_failure_counter", "source" => source.to_string())
+            .increment(1);
+    }
+
+    /// Track `storage_ref` failures per source
+    /// (`sidecar_cache_storage_ref_failure_counter`)
+    ///
+    /// Committed as a `Counter`.
+    pub fn increase_storage_ref_failure(&self, source: &impl ToString) {
+        counter!("sidecar_cache_storage_ref_failure_counter", "source" => source.to_string())
+            .increment(1);
+    }
+
+    /// Track `block_hash_ref` failures per source
+    /// (`sidecar_cache_block_hash_ref_failure_counter`)
+    ///
+    /// Committed as a `Counter`.
+    pub fn increase_block_hash_ref_failure(&self, source: &impl ToString) {
+        counter!("sidecar_cache_block_hash_ref_failure_counter", "source" => source.to_string())
+            .increment(1);
+    }
+
+    /// Track `code_by_hash_ref` failures per source
+    /// (`sidecar_cache_code_by_hash_ref_failure_counter`)
+    ///
+    /// Committed as a `Counter`.
+    pub fn increase_code_by_hash_ref_failure(&self, source: &impl ToString) {
+        counter!("sidecar_cache_code_by_hash_ref_failure_counter", "source" => source.to_string())
+            .increment(1);
+    }
+
+    /// Track which source ultimately served the `basic_ref` request
+    /// (`sidecar_cache_basic_ref_serving_source_counter`)
+    ///
+    /// Committed as a `Counter`.
+    pub fn record_basic_ref_serving_source(&self, source: &impl ToString) {
+        counter!("sidecar_cache_basic_ref_serving_source_counter", "source" => source.to_string())
+            .increment(1);
+    }
+
+    /// Track which source ultimately served the `storage_ref` request
+    /// (`sidecar_cache_storage_ref_serving_source_counter`)
+    ///
+    /// Committed as a `Counter`.
+    pub fn record_storage_ref_serving_source(&self, source: &impl ToString) {
+        counter!("sidecar_cache_storage_ref_serving_source_counter", "source" => source.to_string())
+            .increment(1);
+    }
+
+    /// Track which source ultimately served the `block_hash_ref` request
+    /// (`sidecar_cache_block_hash_ref_serving_source_counter`)
+    ///
+    /// Committed as a `Counter`.
+    pub fn record_block_hash_ref_serving_source(&self, source: &impl ToString) {
+        counter!("sidecar_cache_block_hash_ref_serving_source_counter", "source" => source.to_string())
+            .increment(1);
+    }
+
+    /// Track which source ultimately served the `code_by_hash_ref` request
+    /// (`sidecar_cache_code_by_hash_ref_serving_source_counter`)
+    ///
+    /// Committed as a `Counter`.
+    pub fn record_code_by_hash_ref_serving_source(&self, source: &impl ToString) {
+        counter!("sidecar_cache_code_by_hash_ref_serving_source_counter", "source" => source.to_string())
+            .increment(1);
     }
 
     /// Track the number of times the required last unprocessed block was reset
