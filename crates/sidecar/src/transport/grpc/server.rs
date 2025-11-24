@@ -374,6 +374,13 @@ impl SidecarTransport for GrpcService {
         self.ensure_commit_head_seen()?;
 
         let req = request.into_inner();
+        debug!(
+            target = "transport::grpc",
+            method = "SendTransactions",
+            req = ?req,
+            "SendTransactions received"
+        );
+
         let total = req.transactions.len() as u64;
         let mut accepted: u64 = 0;
 
