@@ -2,6 +2,7 @@ use dashmap::DashMap;
 use futures::future;
 use metrics::histogram;
 use std::{
+    fmt::Debug,
     sync::Mutex,
     time::Duration,
 };
@@ -21,6 +22,7 @@ use crate::{
     },
 };
 use std::sync::Arc;
+use tracing::debug;
 
 /// How much we wait for txs to be received
 pub const TRANSACTION_RECEIVE_WAIT: u64 = 250;
@@ -175,15 +177,28 @@ type PendingTxWaitOutcome =
 pub async fn wait_for_pending_transactions<I, K>(pending: I) -> Vec<(K, PendingTxWaitOutcome)>
 where
     I: IntoIterator<Item = (K, broadcast::Receiver<bool>)>,
-    K: Send,
+    K: Send + Debug,
 {
     let wait_futures = pending.into_iter().map(|(key, mut rx)| {
         async move {
+            debug!(
+                target = "transport::grpc",
+                method = "GetTransaction",
+                key = ?key,
+                "Waiting for the transaction to be received"
+            );
             let wait_started_at = Instant::now();
             let wait_result =
                 tokio::time::timeout(Duration::from_millis(TRANSACTION_RECEIVE_WAIT), rx.recv())
                     .await;
             histogram!("sidecar_get_transaction_wait_duration").record(wait_started_at.elapsed());
+
+            debug!(
+                target = "transport::grpc",
+                method = "GetTransaction",
+                key = ?key,
+                "Transaction received"
+            );
 
             (key, wait_result)
         }
