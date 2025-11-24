@@ -41,7 +41,6 @@ use sidecar::{
         sources::{
             Source,
             eth_rpc_source::EthRpcSource,
-            sequencer::Sequencer,
         },
     },
     critical,
@@ -118,11 +117,6 @@ async fn main() -> anyhow::Result<()> {
 
         if let Ok(true) = with_panic_recovery!(async move {
             let mut sources: Vec<Arc<dyn Source>> = vec![];
-            if let Some(sequencer_url) = &config.state.sequencer_url
-                && let Ok(sequencer) = Sequencer::try_new(sequencer_url).await
-            {
-                sources.push(Arc::new(sequencer));
-            }
             if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
                 &config.state.eth_rpc_source_ws_url,
                 &config.state.eth_rpc_source_http_url,

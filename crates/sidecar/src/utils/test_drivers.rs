@@ -9,7 +9,6 @@ use crate::{
     cache::sources::{
         Source,
         eth_rpc_source::EthRpcSource,
-        sequencer::Sequencer,
     },
     engine::queue::{
         CommitHead,
@@ -211,18 +210,13 @@ impl CommonSetup {
         let eth_rpc_source_http_mock = DualProtocolMockServer::new()
             .await
             .expect("Failed to create eth rpc source mock");
-        let mock_sequencer_db: Arc<dyn Source> = Arc::new(
-            Sequencer::try_new(&sequencer_http_mock.http_url())
-                .await
-                .expect("Failed to create sequencer mock"),
-        );
         let eth_rpc_source_db: Arc<dyn Source> = EthRpcSource::try_build(
             eth_rpc_source_http_mock.ws_url(),
             eth_rpc_source_http_mock.http_url(),
         )
         .await
         .expect("Failed to create eth rpc source mock");
-        let sources = vec![eth_rpc_source_db, mock_sequencer_db];
+        let sources = vec![eth_rpc_source_db];
         let cache = Arc::new(Sources::new(sources.clone(), 10));
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);

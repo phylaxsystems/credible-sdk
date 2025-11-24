@@ -150,8 +150,6 @@ pub struct TransportConfig {
 /// State configuration from file
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StateConfig {
-    /// Sequencer bind address and port
-    pub sequencer_url: Option<String>,
     /// Eth RPC source websocket bind address and port
     pub eth_rpc_source_ws_url: Option<String>,
     /// Eth RCP source HTTP bind address and port
@@ -259,10 +257,6 @@ mod tests {
         assert_eq!(config.transport.bind_addr, "127.0.0.1:3000");
 
         // Verify state config
-        assert_eq!(
-            config.state.sequencer_url,
-            Some("http://localhost:8547".to_string())
-        );
         assert_eq!(
             config.state.eth_rpc_source_ws_url,
             Some("ws://localhost:8548".to_string())
@@ -461,7 +455,6 @@ mod tests {
 
         let config = Config::from_file(temp_file.path()).unwrap();
 
-        assert_eq!(config.state.sequencer_url, None);
         assert_eq!(config.state.eth_rpc_source_ws_url, None);
         assert_eq!(config.state.redis_url, None);
     }

@@ -4,7 +4,7 @@ services:
     container_name: l2-genesis-initialization
     environment:
       CREATE_EMPTY_BLOCKS: ${CREATE_EMPTY_BLOCKS:-false}
-    entrypoint: ["sh", "/initialization/init.sh"]
+    entrypoint: [ "sh", "/initialization/init.sh" ]
     volumes:
       - ./config/l2-genesis-initialization/:/initialization:rw
       - ./config/coordinator/coordinator-config-v2.toml:/coordinator/coordinator-config-v2.toml:ro
@@ -24,7 +24,7 @@ services:
       - "30301:30301"
       - "30305:30303"
     healthcheck:
-      test: ["CMD-SHELL", "bash -c \"[ -f /tmp/pid ]\""]
+      test: [ "CMD-SHELL", "bash -c \"[ -f /tmp/pid ]\"" ]
       interval: 1s
       timeout: 1s
       retries: 120
@@ -59,7 +59,7 @@ services:
     depends_on:
       sequencer:
         condition: service_healthy
-    command: ["java", "-Dlog4j2.configurationFile=configs/log4j.xml", "-jar", "maru.jar", "--maru-genesis-file", "/initialization/genesis-maru.json", "--config", "configs/config.toml"]
+    command: [ "java", "-Dlog4j2.configurationFile=configs/log4j.xml", "-jar", "maru.jar", "--maru-genesis-file", "/initialization/genesis-maru.json", "--config", "configs/config.toml" ]
     volumes:
       - ./config/maru/sequencer.config.toml:/opt/consensys/maru/configs/config.toml:ro
       - ./config/maru/log4j.xml:/opt/consensys/maru/configs/log4j.xml:ro
@@ -126,7 +126,6 @@ services:
       - "--credible.assertion-gas-limit=3000000"
       - "--credible.block-tag=latest"
       - "--credible.indexer-rpc-url=ws://sequencer:8546"
-      - "--state.sequencer-url=http://sequencer:8545"
       - "--state.besu-client-ws-url=ws://sequencer:8546"
     environment:
       - RUST_LOG=debug
@@ -150,7 +149,7 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector:0.99.0
     container_name: otel-collector
-    command: ["--config=/etc/otelcol/config.yaml"]
+    command: [ "--config=/etc/otelcol/config.yaml" ]
     depends_on:
       tempo:
         condition: service_started
@@ -165,7 +164,7 @@ services:
   tempo:
     image: grafana/tempo:2.4.1
     container_name: tempo
-    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    command: [ "-config.file=/etc/tempo/tempo.yaml" ]
     volumes:
       - ./config/observability/tempo-config.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
@@ -178,7 +177,7 @@ services:
   loki:
     image: grafana/loki:2.9.7
     container_name: loki
-    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    command: [ "-config.file=/etc/loki/loki-config.yaml" ]
     volumes:
       - ./config/observability/loki-config.yaml:/etc/loki/loki-config.yaml:ro
       - loki-data:/var/loki
@@ -190,7 +189,7 @@ services:
   promtail:
     image: grafana/promtail:2.9.7
     container_name: promtail
-    command: ["--config.file=/etc/promtail/promtail-config.yaml"]
+    command: [ "--config.file=/etc/promtail/promtail-config.yaml" ]
     depends_on:
       - loki
     volumes:

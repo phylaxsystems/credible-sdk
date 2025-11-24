@@ -437,7 +437,7 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Generate a random transaction hash
-    pub fn generate_random_tx_hash() -> B256 {
+    pub fn generate_random_tx_hash(&self) -> B256 {
         let mut rng = rand::rng();
         let mut hash_bytes = [0u8; 32];
         rng.fill(&mut hash_bytes);
@@ -539,7 +539,7 @@ impl<T: TestTransport> LocalInstance<T> {
         self.block_number += 1;
 
         // Generate transaction hash
-        let tx_hash = Self::generate_random_tx_hash();
+        let tx_hash = self.generate_random_tx_hash();
 
         let tx_execution_id = self.build_tx_id(tx_hash);
 
@@ -596,7 +596,7 @@ impl<T: TestTransport> LocalInstance<T> {
         data: Bytes,
     ) -> Result<TxExecutionId, String> {
         // Generate transaction hash
-        let tx_hash = Self::generate_random_tx_hash();
+        let tx_hash = self.generate_random_tx_hash();
         let tx_execution_id = self.build_tx_id(tx_hash);
 
         let nonce = self.next_nonce(
@@ -654,7 +654,7 @@ impl<T: TestTransport> LocalInstance<T> {
         self.block_number += 1;
 
         // Generate transaction hash
-        let tx_hash = Self::generate_random_tx_hash();
+        let tx_hash = self.generate_random_tx_hash();
 
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
@@ -688,7 +688,7 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Send a reverting CREATE transaction using the default account
     pub async fn send_reverting_create_tx(&mut self) -> Result<TxExecutionId, String> {
         // Generate transaction hash
-        let tx_hash = Self::generate_random_tx_hash();
+        let tx_hash = self.generate_random_tx_hash();
 
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
@@ -728,7 +728,7 @@ impl<T: TestTransport> LocalInstance<T> {
         value: U256,
         data: Bytes,
     ) -> Result<TxExecutionId, String> {
-        let tx_hash = Self::generate_random_tx_hash();
+        let tx_hash = self.generate_random_tx_hash();
         let tx_execution_id = self.build_tx_id(tx_hash);
 
         let nonce = self.next_nonce(
@@ -771,7 +771,7 @@ impl<T: TestTransport> LocalInstance<T> {
         self.block_number += 1;
 
         // Generate transaction hash
-        let tx_hash = Self::generate_random_tx_hash();
+        let tx_hash = self.generate_random_tx_hash();
 
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
@@ -826,7 +826,7 @@ impl<T: TestTransport> LocalInstance<T> {
         self.block_number += 1;
 
         // Generate transaction hash
-        let tx_hash = Self::generate_random_tx_hash();
+        let tx_hash = self.generate_random_tx_hash();
 
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
@@ -876,7 +876,7 @@ impl<T: TestTransport> LocalInstance<T> {
         self.block_number += 1;
 
         // Generate transaction hash
-        let tx_hash = Self::generate_random_tx_hash();
+        let tx_hash = self.generate_random_tx_hash();
 
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
@@ -915,7 +915,7 @@ impl<T: TestTransport> LocalInstance<T> {
         self.send_block(self.block_number).await?;
         self.block_number += 1;
 
-        let tx_hash = Self::generate_random_tx_hash();
+        let tx_hash = self.generate_random_tx_hash();
         let tx_execution_id = self.build_tx_id(tx_hash);
 
         let nonce = self.next_nonce(
@@ -966,7 +966,7 @@ impl<T: TestTransport> LocalInstance<T> {
             RecoveredAuthority::Valid(Address::default()),
         );
         let caller = Address::from([1u8; 20]);
-        let tx_hash = Self::generate_random_tx_hash();
+        let tx_hash = self.generate_random_tx_hash();
         let tx_execution_id = self.build_tx_id(tx_hash);
         let nonce = self.next_nonce(caller, tx_execution_id.as_block_execution_id());
         let tx_env = TxEnvBuilder::new()
@@ -1158,8 +1158,8 @@ impl<T: TestTransport> LocalInstance<T> {
         tx_fail.gas_price = basefee.into();
 
         // Generate unique transaction hashes
-        let hash_pass = Self::generate_random_tx_hash();
-        let hash_fail = Self::generate_random_tx_hash();
+        let hash_pass = self.generate_random_tx_hash();
+        let hash_fail = self.generate_random_tx_hash();
 
         // FIXME: Propagate correctly the prev tx hash
         // Send the passing transaction first
