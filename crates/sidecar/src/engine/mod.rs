@@ -149,6 +149,12 @@ impl LastExecutedTx {
         }
     }
 
+    fn take_current_state(&mut self) -> Option<EvmState> {
+        self.execution_results
+            .back_mut()
+            .and_then(|(_, state)| state.take())
+    }
+
     fn push(&mut self, tx_execution_id: TxExecutionId, state: Option<EvmState>) {
         if self.execution_results.len() == 2 {
             self.execution_results.pop_front();
@@ -1054,10 +1060,10 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             return Ok(());
         };
 
-        if let Some((_, state)) = current_block_iteration.last_executed_tx.current() {
-            let changes = state.clone().ok_or(EngineError::NothingToCommit)?;
-
-            // Commit to the current block fork
+        if let Some(changes) = current_block_iteration
+            .last_executed_tx
+            .take_current_state()
+        {
             current_block_iteration.fork_db.commit(changes);
         }
         current_block_iteration.last_executed_tx = LastExecutedTx::new();
