@@ -361,11 +361,13 @@ impl EventSequencing {
             })?;
 
             // Record the send event
-            context
-                .sent_events
-                .entry(iteration_id)
-                .or_default()
-                .push_back(event_metadata.clone());
+            if !event_metadata.is_reorg() {
+                context
+                    .sent_events
+                    .entry(iteration_id)
+                    .or_default()
+                    .push_back(event_metadata.clone());
+            }
         }
 
         // Extract any events that were waiting for this event to complete
