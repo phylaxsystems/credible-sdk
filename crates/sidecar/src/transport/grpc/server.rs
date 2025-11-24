@@ -500,11 +500,23 @@ impl SidecarTransport for GrpcService {
             .await?;
 
         if let Some(result) = results.pop() {
+            debug!(
+                target = "transport::grpc",
+                method = "GetTransaction",
+                tx_execution_id = ?pb_tx_execution_id,
+                "Sending transaction result"
+            );
             Ok(Response::new(GetTransactionResponse {
                 outcome: Some(GetTransactionOutcome::Result(result)),
             }))
         } else {
             let not_found_hash = not_found.pop().unwrap_or(hash_value);
+            debug!(
+                target = "transport::grpc",
+                method = "GetTransaction",
+                tx_execution_id = ?pb_tx_execution_id,
+                "Transaction not found"
+            );
             Ok(Response::new(GetTransactionResponse {
                 outcome: Some(GetTransactionOutcome::NotFound(not_found_hash)),
             }))
