@@ -371,10 +371,26 @@ impl EventSequencing {
         }
 
         // Extract any events that were waiting for this event to complete
-        let dependent_events = context
+        let mut dependent_events = context
             .dependency_graph
             .remove(event_metadata)
             .unwrap_or_default();
+
+        // Special handling for reorgs: after removing the cancelled TX, check if there are
+        // events waiting for the new last event in sent_events
+        if event_metadata.is_reorg()
+            && should_send
+            && let Some(new_last_event) = context
+                .sent_events
+                .get(&iteration_id)
+                .and_then(|queue| queue.back())
+                .cloned()
+        {
+            // Get any events that were waiting for the new last event
+            if let Some(waiting_events) = context.dependency_graph.remove(&new_last_event) {
+                dependent_events.extend(waiting_events);
+            }
+        }
 
         // Drop the mutable borrow before recursing
         let _ = context;
