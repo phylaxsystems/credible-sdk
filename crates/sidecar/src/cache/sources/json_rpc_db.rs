@@ -30,7 +30,6 @@ use std::sync::{
         Ordering,
     },
 };
-use tracing::Span;
 
 impl DBErrorMarker for JsonRpcDbError {}
 
@@ -39,6 +38,7 @@ impl DBErrorMarker for JsonRpcDbError {}
 pub struct JsonRpcDb {
     provider: Arc<RootProvider>,
     target_block: AtomicU64,
+    handle: tokio::runtime::Handle,
 }
 
 impl JsonRpcDb {
@@ -52,6 +52,7 @@ impl JsonRpcDb {
         Ok(Self {
             provider: Arc::new(provider.root().clone()),
             target_block: AtomicU64::new(0),
+            handle: tokio::runtime::Handle::current(),
         })
     }
 
@@ -59,6 +60,7 @@ impl JsonRpcDb {
         Self {
             provider,
             target_block: AtomicU64::new(0),
+            handle: tokio::runtime::Handle::current(),
         }
     }
 
@@ -77,94 +79,100 @@ impl DatabaseRef for JsonRpcDb {
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let provider = self.provider.clone();
         let target_block = self.target_block();
-        let future = async move {
-            // Get balance, nonce, and code in parallel for efficiency
-            let (balance_result, nonce_result, code_result) = tokio::join!(
-                provider.get_balance(address).number(target_block),
-                provider.get_transaction_count(address).number(target_block),
-                provider.get_code_at(address).number(target_block)
-            );
+        let handle = self.handle.clone();
+        let span = tracing::Span::current();
 
-            let balance = balance_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
-            let nonce = nonce_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
-            let code = code_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
-
-            let code_hash = if code.is_empty() {
-                revm::primitives::KECCAK_EMPTY
-            } else {
-                revm::primitives::keccak256(&code)
-            };
-
-            let account_info = AccountInfo {
-                balance,
-                nonce,
-                code_hash,
-                code: if code.is_empty() {
-                    None
-                } else {
-                    let bytecode = Bytecode::new_raw(code);
-                    Some(bytecode)
-                },
-            };
-
-            Ok(Some(account_info))
-        };
-        let handle = tokio::runtime::Handle::current();
-        let span = Span::current();
         std::thread::scope(|s| {
-            s.spawn(move || span.in_scope(|| handle.block_on(future)))
-                .join()
-                .map_err(|_| JsonRpcDbError::Runtime)?
+            s.spawn(move || {
+                span.in_scope(|| {
+                    handle.block_on(async move {
+                        let (balance_result, nonce_result, code_result) = tokio::join!(
+                            provider.get_balance(address).number(target_block),
+                            provider.get_transaction_count(address).number(target_block),
+                            provider.get_code_at(address).number(target_block)
+                        );
+
+                        let balance =
+                            balance_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
+                        let nonce =
+                            nonce_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
+                        let code =
+                            code_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
+
+                        let code_hash = if code.is_empty() {
+                            revm::primitives::KECCAK_EMPTY
+                        } else {
+                            revm::primitives::keccak256(&code)
+                        };
+
+                        let account_info = AccountInfo {
+                            balance,
+                            nonce,
+                            code_hash,
+                            code: if code.is_empty() {
+                                None
+                            } else {
+                                Some(Bytecode::new_raw(code))
+                            },
+                        };
+
+                        Ok(Some(account_info))
+                    })
+                })
+            })
+            .join()
+            .map_err(|_| JsonRpcDbError::Runtime)?
         })
     }
 
     fn code_by_hash_ref(&self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-        // If not in cache, we can't retrieve it via standard JSON-RPC
-        // This should not happen if basic_ref is always called before code_by_hash_ref
-        // NOTE: Since this will be part of the OverlayDB, it is guaranteed to be in the cache of the OverlayDB
         Err(JsonRpcDbError::CodeByHashNotFound)
     }
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
         let provider = self.provider.clone();
         let target_block = self.target_block();
+        let handle = self.handle.clone();
+        let span = tracing::Span::current();
 
-        let future = async move {
-            let value = provider
-                .get_storage_at(address, index)
-                .block_id(BlockId::number(target_block))
-                .await
-                .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
-
-            Ok(value)
-        };
-        let handle = tokio::runtime::Handle::current();
-        let span = Span::current();
         std::thread::scope(|s| {
-            s.spawn(move || span.in_scope(|| handle.block_on(future)))
-                .join()
-                .map_err(|_| JsonRpcDbError::Runtime)?
+            s.spawn(move || {
+                span.in_scope(|| {
+                    handle.block_on(async move {
+                        provider
+                            .get_storage_at(address, index)
+                            .block_id(BlockId::number(target_block))
+                            .await
+                            .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))
+                    })
+                })
+            })
+            .join()
+            .map_err(|_| JsonRpcDbError::Runtime)?
         })
     }
 
     fn block_hash_ref(&self, block_number: u64) -> Result<B256, Self::Error> {
         let provider = self.provider.clone();
+        let handle = self.handle.clone();
+        let span = tracing::Span::current();
 
-        let future = async move {
-            let block = provider
-                .get_block_by_number(block_number.into())
-                .await
-                .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?
-                .ok_or(JsonRpcDbError::BlockNotFound)?;
-
-            Ok(block.header.hash)
-        };
-        let handle = tokio::runtime::Handle::current();
-        let span = Span::current();
         std::thread::scope(|s| {
-            s.spawn(move || span.in_scope(|| handle.block_on(future)))
-                .join()
-                .map_err(|_| JsonRpcDbError::Runtime)?
+            s.spawn(move || {
+                span.in_scope(|| {
+                    handle.block_on(async move {
+                        let block = provider
+                            .get_block_by_number(block_number.into())
+                            .await
+                            .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?
+                            .ok_or(JsonRpcDbError::BlockNotFound)?;
+
+                        Ok(block.header.hash)
+                    })
+                })
+            })
+            .join()
+            .map_err(|_| JsonRpcDbError::Runtime)?
         })
     }
 }
