@@ -225,6 +225,12 @@ impl GrpcService {
                     match self.transactions_results.is_tx_received(&tx_execution_id) {
                         AcceptedState::Yes => ready_ids.push(tx_execution_id),
                         AcceptedState::NotYet(rx) => {
+                            info!(
+                                target = "transport::grpc",
+                                method = "GetTransactions",
+                                tx_execution_id = ?tx_execution_id,
+                                "Transaction not yet received, waiting for it"
+                            );
                             waiters
                                 .push(((tx_execution_id, pb_tx_execution_id.tx_hash.clone()), rx));
                         }
