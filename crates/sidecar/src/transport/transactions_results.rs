@@ -88,7 +88,13 @@ impl QueryTransactionsResults {
         let TxQueueContents::Tx(tx, _) = tx_queue_contents else {
             return Ok(());
         };
+
         if let Some(sender) = self.pending_receives.get(&tx.tx_execution_id) {
+            debug!(
+                target = "transport::grpc",
+                method = "AddAcceptedTx",
+                tx_execution_id = ?tx.tx_execution_id
+            );
             sender.send(true).map(|_| ()).map_err(|source| {
                 QueryTransactionsResultsError::NotifyFailed {
                     tx_execution_id: tx.tx_execution_id,
@@ -136,10 +142,6 @@ impl QueryTransactionsResults {
     ///
     /// This will return `true` once we see it.
     pub fn is_tx_received(&self, tx_execution_id: &TxExecutionId) -> AcceptedState {
-        if self.transactions_state.is_tx_received(tx_execution_id) {
-            return AcceptedState::Yes;
-        }
-
         let entry = self
             .pending_receives
             .entry(*tx_execution_id)
@@ -148,7 +150,13 @@ impl QueryTransactionsResults {
                 tx
             });
 
-        AcceptedState::NotYet(entry.value().subscribe())
+        let receiver = entry.value().subscribe();
+
+        if self.transactions_state.is_tx_received(tx_execution_id) {
+            return AcceptedState::Yes;
+        }
+
+        AcceptedState::NotYet(receiver)
     }
 
     pub fn request_transaction_result(
