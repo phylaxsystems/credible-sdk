@@ -19,7 +19,7 @@
   "transport": {
     "protocol": "grpc",
     "bind_addr": "0.0.0.0:50051",
-    "health_bind_addr": "0.0.0.0:8080"
+    "health_bind_addr": "0.0.0.0:9547"
   },
   "state": {
     "sequencer_url": "http://127.0.0.1:8545",

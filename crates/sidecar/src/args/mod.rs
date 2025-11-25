@@ -23,7 +23,7 @@ use std::{
 const DEFAULT_CONFIG: &str = include_str!("../../default_config.json");
 
 fn default_health_bind_addr() -> String {
-    "0.0.0.0:8080".to_string()
+    "0.0.0.0:9547".to_string()
 }
 
 /// Configuration loaded from JSON file

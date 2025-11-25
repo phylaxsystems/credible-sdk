@@ -288,7 +288,7 @@ The configuration file is a JSON file with the following schema:
           "pattern": "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|[a-zA-Z0-9.-]+):[0-9]{1,5}$",
           "examples": [
             "127.0.0.1:3001",
-            "0.0.0.0:8080"
+            "0.0.0.0:9547"
           ]
         }
       },
@@ -425,7 +425,7 @@ The default configuration can be found in [default_config.json](default_config.j
   "transport": {
     "protocol": "grpc",
     "bind_addr": "0.0.0.0:50051",
-    "health_bind_addr": "0.0.0.0:8080"
+    "health_bind_addr": "0.0.0.0:9547"
   },
   "state": {
     "sequencer_url": "http://127.0.0.1:8545",
@@ -455,6 +455,9 @@ RUST_LOG=debug \
 cargo run --locked --release -p sidecar -- --config-file-path crates/sidecar/default_config.json
 
 docker compose -f docker/maru-besu-sidecar/docker-compose.yml up -d --scale credible-sidecar=0
+
+# bring it down
+docker compose -f docker/maru-besu-sidecar/docker-compose.yml down -v
 ```
 
 Alternatively, you can run a sidecar locally with all services needed to get it running + an observability stack via:

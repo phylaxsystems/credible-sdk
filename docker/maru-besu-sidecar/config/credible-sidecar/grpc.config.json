@@ -17,8 +17,8 @@
     "transaction_results_max_capacity": 1000
   },
   "transport": {
-    "protocol": "http",
-    "bind_addr": "0.0.0.0:9546",
+    "protocol": "grpc",
+    "bind_addr": "0.0.0.0:50051",
     "health_bind_addr": "0.0.0.0:9547"
   },
   "state": {

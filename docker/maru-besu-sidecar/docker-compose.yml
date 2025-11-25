@@ -37,7 +37,7 @@ services:
       - --node-private-key-file=/var/lib/besu/key
       - --plugin-linea-node-type=SEQUENCER
     volumes:
-      - ./config/linea-besu-sequencer/sequencer.config.toml:/var/lib/besu/sequencer.config.toml:ro
+      - ./config/linea-besu-sequencer/sequencer-credible-grpc.config.toml:/var/lib/besu/sequencer.config.toml:ro
       - ./config/linea-besu-sequencer/deny-list.txt:/var/lib/besu/deny-list.txt:ro
       - ./config/linea-besu-sequencer/key:/var/lib/besu/key:ro
       - ./config/linea-besu-sequencer/log4j.xml:/var/lib/besu/log4j.xml:ro
@@ -125,7 +125,7 @@ services:
       - OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
       - TRACING_METRICS_PORT=9000
     ports:
-      - "9546:9546"
+      - "50051:50051"
       - "9013:9000"
     restart: unless-stopped
     volumes:
