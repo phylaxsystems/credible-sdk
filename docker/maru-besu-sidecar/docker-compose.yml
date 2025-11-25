@@ -10,7 +10,7 @@ services:
       - ./config/coordinator/coordinator-config-v2.toml:/coordinator/coordinator-config-v2.toml:ro
 
   sequencer:
-    image: ghcr.io/phylaxsystems/linea-monorepo/linea-besu-package:18f4b20a116b33982b88f7f240ca3a71ea042954
+    image: ghcr.io/phylaxsystems/linea-monorepo/linea-besu-package:96de27998e34ff7ed0b71007ed37a67f437740aa
     container_name: sequencer
     hostname: sequencer
     depends_on:
