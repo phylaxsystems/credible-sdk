@@ -41,3 +41,11 @@ scrape_configs:
           action_on_failure: 'skip'
       - output:
           source: msg
+
+  - job_name: credible-sidecar-host
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: credible-sidecar-host
+          container: credible-sidecar-host
+          __path__: /tmp/credible-sidecar-host.log
