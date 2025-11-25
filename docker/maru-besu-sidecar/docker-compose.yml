@@ -35,9 +35,6 @@ services:
     command:
       - --config-file=/var/lib/besu/sequencer-credible-grpc.config.toml
       - --node-private-key-file=/var/lib/besu/key
-      - --plugin-linea-l1-polling-interval=PT12S
-      - --plugin-linea-l1-smart-contract-address=0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9
-      - --plugin-linea-l1-rpc-endpoint=http://l1-el-node:8545
       - --plugin-linea-rejected-tx-endpoint=http://transaction-exclusion-api:8080
       - --plugin-linea-node-type=SEQUENCER
     volumes:

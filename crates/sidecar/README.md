@@ -446,6 +446,17 @@ The sidecar is a binary in the credible-sdk workspace, you can run it from the c
 
 ```cargo run -p sidecar```
 
+And with logging + default config + sequencer:
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf \
+RUST_LOG=debug \
+cargo run --locked --release -p sidecar -- --config-file-path crates/sidecar/default_config.json
+
+docker compose -f docker/maru-besu-sidecar/docker-compose.yml up -d --scale credible-sidecar=0
+```
+
 Alternatively, you can run a sidecar locally with all services needed to get it running + an observability stack via:
 
 ```make run-sidecar-host```

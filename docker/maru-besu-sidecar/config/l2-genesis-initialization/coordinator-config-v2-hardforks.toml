@@ -51,7 +51,7 @@ deadline = "PT1M"
 coordinator-polling-interval = "PT2S"
 deadline-check-interval = "PT8S"
 target-end-blocks = [4]
-timestamp-based-hard-forks = [1760024636000, 1760024676000]
+timestamp-based-hard-forks = [1764072629000, 1764072669000]
 
 [prover]
 version = "v3.0.0"
