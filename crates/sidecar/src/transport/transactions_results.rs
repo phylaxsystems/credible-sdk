@@ -16,6 +16,7 @@ use tokio::{
 use crate::{
     engine::queue::TxQueueContents,
     execution_ids::TxExecutionId,
+    metrics::TransportTransactionsResultMetrics,
     transactions_state::{
         RequestTransactionResult,
         TransactionsState,
@@ -47,6 +48,7 @@ pub struct QueryTransactionsResults {
     transactions_state: Arc<TransactionsState>,
     pending_receives: Arc<DashMap<TxExecutionId, broadcast::Sender<bool>>>,
     bg_task_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    metrics: TransportTransactionsResultMetrics,
 }
 
 pub type QueryTransactionsResultsResult<T = ()> = Result<T, QueryTransactionsResultsError>;
@@ -67,6 +69,7 @@ impl QueryTransactionsResults {
             transactions_state,
             pending_receives: Arc::new(DashMap::new()),
             bg_task_handle: Arc::new(Mutex::new(None)),
+            metrics: TransportTransactionsResultMetrics::default(),
         };
 
         this.spawn_cleanup_task();
@@ -80,6 +83,9 @@ impl QueryTransactionsResults {
         &self,
         tx_queue_contents: &TxQueueContents,
     ) -> QueryTransactionsResultsResult {
+        self.metrics
+            .set_transport_pending_receives_length(self.pending_receives.len());
+
         let TxQueueContents::Tx(tx, _) = tx_queue_contents else {
             self.transactions_state.add_accepted_tx(tx_queue_contents);
             return Ok(());

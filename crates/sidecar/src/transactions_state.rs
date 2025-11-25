@@ -62,6 +62,14 @@ impl TransactionsState {
         }
     }
 
+    pub fn get_all_lengths(&self) -> (usize, usize, usize) {
+        (
+            self.accepted_txs.len(),
+            self.transaction_results_pending_requests.len(),
+            self.transaction_results.len(),
+        )
+    }
+
     /// The transaction is processed if it is either accepted or it was already processed by the engine.
     pub fn is_tx_received(&self, tx_execution_id: &TxExecutionId) -> bool {
         self.accepted_txs.contains(tx_execution_id)

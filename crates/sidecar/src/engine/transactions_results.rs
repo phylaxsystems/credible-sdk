@@ -1,6 +1,7 @@
 use crate::{
     engine::TransactionResult,
     execution_ids::TxExecutionId,
+    metrics::EngineTransactionsResultMetrics,
     transactions_state::TransactionsState,
 };
 use hashlink::LinkedHashMap;
@@ -18,6 +19,7 @@ pub struct TransactionsResults {
     /// Value is () since we only need the key ordering.
     transactions: LinkedHashMap<TxExecutionId, ()>,
     max_capacity: usize,
+    metrics: EngineTransactionsResultMetrics,
 }
 
 impl TransactionsResults {
@@ -30,6 +32,7 @@ impl TransactionsResults {
             transactions: LinkedHashMap::with_capacity(max_capacity),
             max_capacity,
             transactions_state,
+            metrics: EngineTransactionsResultMetrics::default(),
         }
     }
 
@@ -53,7 +56,19 @@ impl TransactionsResults {
         }
 
         // New transaction
-        if self.transactions.len() >= self.max_capacity {
+        let transactions_len = self.transactions.len();
+        let (accepted_txs_len, transaction_results_pending_requests_len, transaction_results_len) =
+            self.transactions_state.get_all_lengths();
+        self.metrics.set_engine_transaction_length(transactions_len);
+        self.metrics
+            .set_engine_transactions_state_accepted_txs_length(accepted_txs_len);
+        self.metrics
+            .set_engine_transactions_state_transaction_results_pending_requests_length(
+                transaction_results_pending_requests_len,
+            );
+        self.metrics
+            .set_engine_transactions_state_transaction_results_length(transaction_results_len);
+        if transactions_len >= self.max_capacity {
             // Remove oldest (front)
             if let Some((old_tx_id, ())) = self.transactions.pop_front() {
                 self.transactions_state
@@ -61,7 +76,7 @@ impl TransactionsResults {
             }
         }
 
-        // Insert new transaction
+        // Insert a new transaction
         self.transactions.insert(tx_execution_id, ());
         self.transactions_state
             .add_transaction_result(tx_execution_id, result);
