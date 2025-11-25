@@ -17,6 +17,12 @@
             additivity="false">
       <AppenderRef ref="Console"/>
     </Logger>
+    <Logger name="maru.finalization.LineaFinalizationProvider" level="ERROR" additivity="false">
+      <AppenderRef ref="Console"/>
+    </Logger>
+    <Logger name="linea.contract.l1" level="ERROR" additivity="false">
+      <AppenderRef ref="Console"/>
+    </Logger>
     <Logger name="tech.pegasys.teku" level="INFO" additivity="false">
       <AppenderRef ref="Console"/>
     </Logger>

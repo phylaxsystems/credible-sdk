@@ -1,0 +1,34 @@
+{
+  "chain": {
+    "spec_id": "CANCUN",
+    "chain_id": 1337
+  },
+  "credible": {
+    "assertion_gas_limit": 3000000,
+    "cache_capacity_bytes": 256000000,
+    "flush_every_ms": 5000,
+    "assertion_da_rpc_url": "http://assertion-da:5001",
+    "indexer_rpc_url": "ws://sequencer:8546",
+    "indexer_db_path": "/var/lib/credible/indexer_database",
+    "assertion_store_db_path": "/var/lib/credible/assertion_store_database",
+    "block_tag": "latest",
+    "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
+    "state_oracle_deployment_block": 0,
+    "transaction_results_max_capacity": 1000
+  },
+  "transport": {
+    "protocol": "http",
+    "bind_addr": "0.0.0.0:9546",
+    "health_bind_addr": "0.0.0.0:9547"
+  },
+  "state": {
+    "sequencer_url": "http://sequencer:8545",
+    "eth_rpc_source_ws_url": "ws://sequencer:8546",
+    "eth_rpc_source_http_url": "http://sequencer:8545",
+    "redis_namespace": "sidecar",
+    "redis_depth": 3,
+    "minimum_state_diff": 100,
+    "sources_sync_timeout_ms": 1000,
+    "sources_monitoring_period_ms": 500
+  }
+}

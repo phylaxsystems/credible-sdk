@@ -5,6 +5,7 @@ contract-address = "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9"
 l1-eth-api = { endpoint = "http://sequencer:8545" }
 l2-eth-api-endpoint = { endpoint = "http://sequencer:8545" }
 l1-polling-interval = "1 seconds"
+finalization-provider-enabled = false
 
 [defaults]
 l2-eth-endpoint = { endpoint = "http://sequencer:8545" }
@@ -33,11 +34,6 @@ ban-period = "30 seconds"
 [payload-validator]
 engine-api-endpoint = { endpoint = "http://sequencer:8550" }
 eth-api-endpoint = { endpoint = "http://sequencer:8545" }
-
-[follower-engine-apis]
-follower-besu = { endpoint = "http://l2-node-besu:8550" }
-follower-tracer = { endpoint = "http://traces-node:8550" }
-follower-shomei = { endpoint = "http://zkbesu-shomei:8550" }
 
 [observability]
 port = 9090

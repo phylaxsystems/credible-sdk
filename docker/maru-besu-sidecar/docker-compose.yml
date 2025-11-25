@@ -10,7 +10,7 @@ services:
       - ./config/coordinator/coordinator-config-v2.toml:/coordinator/coordinator-config-v2.toml:ro
 
   sequencer:
-    image: ghcr.io/phylaxsystems/linea-monorepo/linea-besu-package:96de27998e34ff7ed0b71007ed37a67f437740aa
+    image: ghcr.io/phylaxsystems/linea-monorepo/linea-besu-package:18f4b20a116b33982b88f7f240ca3a71ea042954
     container_name: sequencer
     hostname: sequencer
     depends_on:
@@ -33,12 +33,11 @@ services:
       LOG4J_CONFIGURATION_FILE: /var/lib/besu/log4j.xml
     entrypoint: besu-untuned
     command:
-      - --config-file=/var/lib/besu/sequencer-credible-grpc.config.toml
+      - --config-file=/var/lib/besu/sequencer.config.toml
       - --node-private-key-file=/var/lib/besu/key
-      - --plugin-linea-rejected-tx-endpoint=http://transaction-exclusion-api:8080
       - --plugin-linea-node-type=SEQUENCER
     volumes:
-      - ./config/linea-besu-sequencer/sequencer-credible-grpc.config.toml:/var/lib/besu/sequencer-credible-grpc.config.toml:ro
+      - ./config/linea-besu-sequencer/sequencer.config.toml:/var/lib/besu/sequencer.config.toml:ro
       - ./config/linea-besu-sequencer/deny-list.txt:/var/lib/besu/deny-list.txt:ro
       - ./config/linea-besu-sequencer/key:/var/lib/besu/key:ro
       - ./config/linea-besu-sequencer/log4j.xml:/var/lib/besu/log4j.xml:ro
@@ -50,7 +49,7 @@ services:
         ipv4_address: 11.11.11.101
 
   maru:
-    image: consensys/maru:${MARU_TAG:-68d6d22}
+    image: consensys/maru:${MARU_TAG:-dbb6c73}
     container_name: maru
     hostname: maru
     depends_on:
@@ -104,7 +103,7 @@ services:
         ipv4_address: 11.11.11.206
 
   credible-sidecar:
-    image: ghcr.io/phylaxsystems/credible-sdk/sidecar-linea:sha-01b3374
+    image: ghcr.io/phylaxsystems/credible-sdk/sidecar-linea:main
     container_name: credible-sidecar
     hostname: credible-sidecar
     depends_on:
@@ -115,16 +114,7 @@ services:
       otel-collector:
         condition: service_started
     command:
-      - "--transport.protocol=grpc"
-      - "--transport.bind-addr=0.0.0.0:50051"
-      - "--chain.spec-id=Cancun"
-      - "--chain.chain-id=1337"
-      - "--credible.assertion-da-rpc-url=http://assertion-da:5001"
-      - "--credible.assertion-gas-limit=3000000"
-      - "--credible.block-tag=latest"
-      - "--credible.indexer-rpc-url=ws://sequencer:8546"
-      - "--state.sequencer-url=http://sequencer:8545"
-      - "--state.besu-client-ws-url=ws://sequencer:8546"
+      - "--config-file-path=/etc/credible-sidecar/config.json"
     environment:
       - RUST_LOG=debug
       - OTEL_LEVEL=debug
@@ -135,11 +125,12 @@ services:
       - OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
       - TRACING_METRICS_PORT=9000
     ports:
-      - "50051:50051"
+      - "9546:9546"
       - "9013:9000"
     restart: unless-stopped
     volumes:
       - sidecar-store:/var/lib/credible
+      - ./config/credible-sidecar/grpc.config.json:/etc/credible-sidecar/config.json:ro
     networks:
       linea:
         ipv4_address: 11.11.11.205
