@@ -44,6 +44,8 @@ services:
       - ./config/linea-besu-sequencer/tls-files:/var/lib/besu/tls-files/
       - ./config/common/traces-limits-limitless.toml:/var/lib/besu/traces-limits.toml:ro
       - ./config/l2-genesis-initialization:/initialization/:ro
+    extra_hosts:
+      - "credible-sidecar:host-gateway"
     networks:
       linea:
         ipv4_address: 11.11.11.101
@@ -130,7 +132,7 @@ services:
     restart: unless-stopped
     volumes:
       - sidecar-store:/var/lib/credible
-      - ./config/credible-sidecar/grpc.config.json:/etc/credible-sidecar/config.json:ro
+      - ./config/credible-sidecar/grpc.container.config.json:/etc/credible-sidecar/config.json:ro
     networks:
       linea:
         ipv4_address: 11.11.11.205
