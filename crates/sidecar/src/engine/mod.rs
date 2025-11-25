@@ -126,6 +126,7 @@ use revm::{
 use std::collections::HashMap;
 #[cfg(feature = "cache_validation")]
 use tokio::task::AbortHandle;
+use tokio::task::JoinHandle;
 use tracing::{
     debug,
     error,
@@ -301,12 +302,16 @@ pub struct CoreEngine<DB> {
         HashMap<BlockExecutionId, HashMap<TxHash, Option<EvmState>>>,
     #[cfg(feature = "cache_validation")]
     cache_checker: Option<AbortHandle>,
+    cache_metrics_handle: Option<JoinHandle<()>>,
 }
 
 #[cfg(feature = "cache_validation")]
 impl<DB> Drop for CoreEngine<DB> {
     fn drop(&mut self) {
         if let Some(handle) = self.cache_checker.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.cache_metrics_handle.take() {
             handle.abort();
         }
     }
@@ -344,6 +349,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
             (processed_transactions, handle)
         };
         Self {
+            cache_metrics_handle: Some(cache.spawn_monitoring_thread()),
             cache,
             current_block_iterations: HashMap::new(),
             current_head: 0,
@@ -798,6 +804,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                         self.cache.invalidate_all();
                         self.sources
                             .reset_latest_unprocessed_block(self.current_head);
+                        self.current_block_iterations.clear();
                     }
                     ErrorRecoverability::Unrecoverable => {
                         // Log the critical error and break the loop
@@ -938,7 +945,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
                     self.processed_transactions.insert(tx_hash, state);
                 }
             }
-            self.iteration_pending_processed_transactions = HashMap::new();
+            self.iteration_pending_processed_transactions.clear();
         }
 
         // Set the block number to the latest applied head
@@ -953,7 +960,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         self.block_metrics.reset();
         *block_processing_time = Instant::now();
 
-        self.current_block_iterations = HashMap::new();
+        self.current_block_iterations.clear();
 
         info!(
             target = "engine",
