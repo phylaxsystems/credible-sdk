@@ -1,6 +1,9 @@
 #![allow(clippy::field_reassign_with_default)]
 use super::*;
-use crate::utils::TestDbError;
+use crate::utils::{
+    LocalInstance,
+    TestDbError,
+};
 use assertion_executor::{
     ExecutorConfig,
     primitives::AccountInfo,

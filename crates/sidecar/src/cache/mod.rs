@@ -716,7 +716,7 @@ mod tests {
 
     #[test]
     fn test_cache_new_with_sources() {
-        let source1: Arc<dyn Source> = Arc::new(MockSource::new(SourceName::Sequencer));
+        let source1: Arc<dyn Source> = Arc::new(MockSource::new(SourceName::Redis));
         let source2: Arc<dyn Source> = Arc::new(MockSource::new(SourceName::EthRpcSource));
         let sources = vec![source1, source2];
 
