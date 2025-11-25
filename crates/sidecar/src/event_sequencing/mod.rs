@@ -180,7 +180,20 @@ impl EventSequencing {
 
         // Handle reorg events
         if event_metadata.is_reorg() {
-            self.send_event_recursive(event, &event_metadata)?;
+            // Check if we can cancel the last sent event right now
+            let context = self.get_context_mut(block_number, "handle_current_context_event")?;
+            let can_cancel = context
+                .sent_events
+                .get(&event_iteration_id)
+                .and_then(|q| q.back())
+                .is_some_and(|last| last.cancel_each_other(&event_metadata));
+
+            if can_cancel {
+                // The last sent event is the TX we want to cancel
+                self.send_event_recursive(event, &event_metadata)?;
+            } else if let Some(previous_event) = event_metadata.calculate_previous_event() {
+                self.add_to_dependency_graph(block_number, previous_event, event_metadata, event)?;
+            }
             return Ok(());
         }
 
@@ -222,6 +235,34 @@ impl EventSequencing {
                 &event_metadata,
             )
         {
+            // Check if there's a pending reorg that would cancel this event
+            let context = self.get_context_mut(block_number, "handle_sequential_event")?;
+            let has_cancelling_reorg =
+                context
+                    .dependency_graph
+                    .get(&previous_event)
+                    .is_some_and(|dependents| {
+                        dependents.keys().any(|existing| {
+                            let existing_meta: EventMetadata = existing.into();
+                            existing_meta.is_reorg()
+                                && event_metadata.cancel_each_other(&existing_meta)
+                        })
+                    });
+
+            if has_cancelling_reorg {
+                // Remove the reorg from the dependency graph
+                let context = self.get_context_mut(block_number, "handle_sequential_event")?;
+                if let Some(dependents) = context.dependency_graph.get_mut(&previous_event) {
+                    dependents.retain(|existing, _| {
+                        let existing_meta: EventMetadata = existing.into();
+                        !(existing_meta.is_reorg()
+                            && event_metadata.cancel_each_other(&existing_meta))
+                    });
+                }
+                // Don't send this TX, as it's been reorged
+                return Ok(());
+            }
+
             self.send_event_recursive(event, &event_metadata)?;
         } else {
             // Queue the event as a dependency
