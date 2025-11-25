@@ -64,6 +64,7 @@ use state_store::{
     CircularBufferConfig,
     StateReader,
 };
+use tokio::task::JoinHandle;
 use tracing::log::info;
 
 fn create_transport_from_args(
@@ -145,12 +146,12 @@ async fn main() -> anyhow::Result<()> {
 
         let (transport_tx_sender, event_sequencing_tx_receiver) = unbounded();
         let (event_sequencing_tx_sender, core_engine_tx_receiver) = unbounded();
-        let mut transport =
+        let transport =
             create_transport_from_args(&config, transport_tx_sender, engine_state_results.clone())?;
 
-        let mut event_sequencing =
+        let event_sequencing =
             EventSequencing::new(event_sequencing_tx_receiver, event_sequencing_tx_sender);
-        let mut health_server = HealthServer::new(health_bind_addr);
+        let health_server = HealthServer::new(health_bind_addr);
 
         let mut engine = CoreEngine::new(
             cache,
@@ -173,53 +174,104 @@ async fn main() -> anyhow::Result<()> {
         let indexer_cfg =
             init_indexer_config(&config, assertion_store.clone(), &executor_config).await?;
 
-        tokio::select! {
+        // Spawn each component as a separate task for true parallelism
+        let engine_handle: JoinHandle<()> = tokio::spawn(async move {
+            if let Err(e) = engine.run().await {
+                if ErrorRecoverability::from(&e).is_recoverable() {
+                    tracing::error!(error = ?e, "Engine exited");
+                } else {
+                    critical!(error = ?e, "Engine exited");
+                }
+            }
+        });
+
+        let transport_handle: JoinHandle<()> = tokio::spawn(async move {
+            let mut transport = transport;
+            if let Err(e) = transport.run().await {
+                if ErrorRecoverability::from(&e).is_recoverable() {
+                    tracing::error!(error = ?e, "Transport exited");
+                } else {
+                    critical!(error = ?e, "Transport exited");
+                }
+            }
+            transport.stop();
+        });
+
+        let event_sequencing_handle: JoinHandle<()> = tokio::spawn(async move {
+            let mut event_sequencing = event_sequencing;
+            if let Err(e) = event_sequencing.run().await {
+                if ErrorRecoverability::from(&e).is_recoverable() {
+                    tracing::error!(error = ?e, "Event sequencing exited");
+                } else {
+                    critical!(error = ?e, "Event sequencing exited");
+                }
+            }
+        });
+
+        let health_handle: JoinHandle<()> = tokio::spawn(async move {
+            let mut health_server = health_server;
+            if let Err(e) = health_server.run().await {
+                critical!(error = ?e, "Health server exited");
+            }
+            health_server.stop();
+        });
+
+        // Collect abort handles so we can cancel all tasks on shutdown/restart
+        let engine_abort = engine_handle.abort_handle();
+        let transport_abort = transport_handle.abort_handle();
+        let event_sequencing_abort = event_sequencing_handle.abort_handle();
+        let health_abort = health_handle.abort_handle();
+
+        let abort_all = || {
+            engine_abort.abort();
+            transport_abort.abort();
+            event_sequencing_abort.abort();
+            health_abort.abort();
+        };
+
+        let should_break = tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("Received Ctrl+C, shutting down...");
-                break;
+                true
             }
             () = wait_for_sigterm() => {
                 tracing::info!("Received SIGTERM, shutting down...");
+                true
             }
-            _ = engine.run() => {}
-            result = transport.run() => {
-                if let Err(e) = result {
-                    if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = ?e, "Transport exited");
-                    } else {
-                        critical!(error = ?e, "Transport exited");
+            _ = engine_handle => {
+                tracing::warn!("Engine task exited");
+                false
+            }
+            _ = transport_handle => {
+                tracing::warn!("Transport task exited");
+                false
+            }
+            _ = event_sequencing_handle => {
+                tracing::warn!("Event sequencing task exited");
+                false
+            }
+            _ = health_handle => {
+                tracing::warn!("Health server task exited");
+                false
+            }
+                result = indexer::run_indexer(indexer_cfg) => {
+                    if let Err(e) = result {
+                        if ErrorRecoverability::from(&e).is_recoverable() {
+                            tracing::error!(error = ?e, "Indexer exited");
+                        } else {
+                            critical!(error = ?e, "Indexer exited");
+                        }
                     }
+                false
                 }
-            }
-            result = event_sequencing.run() => {
-                if let Err(e) = result {
-                    if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = ?e, "Event sequencing exited");
-                    } else {
-                        critical!(error = ?e, "Event sequencing exited");
-                    }
-                }
-            }
-            result = health_server.run() => {
-                if let Err(e) = result {
-                    critical!(error = ?e, "Health server exited");
-                }
-            }
-            result = indexer::run_indexer(indexer_cfg) => {
-                if let Err(e) = result {
-                    if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = ?e, "Indexer exited");
-                    } else {
-                        critical!(error = ?e, "Indexer exited");
-                    }
-                }
-            }
+        };
+
+        // Abort all remaining tasks before restart or shutdown
+        abort_all();
+
+        if should_break {
+            break;
         }
-        transport.stop();
-        health_server.stop();
-        drop(transport);
-        drop(health_server);
-        drop(engine);
         tracing::warn!("Sidecar restarted.");
     }
 
