@@ -66,13 +66,22 @@ use assertion_executor::primitives::{
 use std::{
     collections::VecDeque,
     fmt::Debug,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
+    },
     time::{
         Duration,
         Instant,
     },
 };
-use tokio::time::sleep;
+use tokio::{
+    sync::oneshot,
+    time::sleep,
+};
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -123,7 +132,10 @@ use revm::{
         B256,
     },
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    thread::JoinHandle,
+};
 #[cfg(feature = "cache_validation")]
 use tokio::task::AbortHandle;
 use tracing::{
@@ -134,6 +146,9 @@ use tracing::{
     trace,
     warn,
 };
+
+/// Timeout for recv - threads will check for the shutdown flag at this interval
+const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Contains the last two executed transaction identifiers and resulting states.
 /// Uses a `VecDeque` with fixed capacity of 2 for efficient FIFO operations.
@@ -197,6 +212,8 @@ pub enum EngineError {
     NoIterationDataToCommit,
     #[error("Block number specified by transaction and block number currently built do not match!")]
     TxBlockMismatch,
+    #[error("Shutdown signal received")]
+    Shutdown,
 }
 
 impl From<&EngineError> for ErrorRecoverability {
@@ -214,7 +231,8 @@ impl From<&EngineError> for ErrorRecoverability {
             | EngineError::NoIterationDataToCommit
             | EngineError::TxBlockMismatch
             | EngineError::BadReorgHash
-            | EngineError::NoSyncedSources => ErrorRecoverability::Recoverable,
+            | EngineError::NoSyncedSources
+            | EngineError::Shutdown => ErrorRecoverability::Recoverable,
         }
     }
 }
@@ -312,7 +330,7 @@ impl<DB> Drop for CoreEngine<DB> {
     }
 }
 
-impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
+impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     #[allow(clippy::too_many_arguments)]
     #[instrument(name = "engine::new", skip_all, level = "debug")]
     pub async fn new(
@@ -683,6 +701,7 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
     ///
     /// If the sources do not become synced after a set amount of time, the function
     /// errors.
+    #[cfg(test)]
     async fn verify_state_sources_synced_for_tx(&mut self) -> Result<(), EngineError> {
         const RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -723,10 +742,190 @@ impl<DB: DatabaseRef + Send + Sync> CoreEngine<DB> {
         }
     }
 
+    /// Spawns the engine on a dedicated OS thread with blocking receive.
+    #[allow(clippy::type_complexity)]
+    pub fn spawn(
+        self,
+        shutdown: Arc<AtomicBool>,
+    ) -> Result<
+        (
+            JoinHandle<Result<(), EngineError>>,
+            oneshot::Receiver<Result<(), EngineError>>,
+        ),
+        std::io::Error,
+    > {
+        let (tx, rx) = oneshot::channel();
+
+        let handle = std::thread::Builder::new()
+            .name("sidecar-engine".into())
+            .spawn(move || {
+                let mut engine = self;
+                let result = engine.run_blocking(shutdown);
+                // Notify that we're exiting (ignore send error if receiver dropped)
+                let _ = tx.send(result.clone());
+                result
+            })?;
+
+        Ok((handle, rx))
+    }
+
+    /// Blocking run loop with shutdown support
+    #[allow(clippy::needless_pass_by_value)]
+    fn run_blocking(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), EngineError> {
+        let mut processed_blocks = 0u64;
+        let mut block_processing_time = Instant::now();
+        let mut idle_start = Instant::now();
+
+        loop {
+            // Check for the shutdown flag
+            if shutdown.load(Ordering::Relaxed) {
+                info!(target = "engine", "Shutdown signal received");
+                return Ok(());
+            }
+
+            // Use recv_timeout so we can periodically check the shutdown flag
+            let event = match self.tx_receiver.recv_timeout(RECV_TIMEOUT) {
+                Ok(event) => {
+                    self.block_metrics.idle_time += idle_start.elapsed();
+                    event
+                }
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                    // No event, loop back and check for the shutdown flag
+                    continue;
+                }
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                    info!(target = "engine", "Channel disconnected");
+                    return Err(EngineError::ChannelClosed);
+                }
+            };
+
+            // Check shutdown before processing (in case of long processing)
+            if shutdown.load(Ordering::Relaxed) {
+                info!(target = "engine", "Shutdown signal received");
+                return Ok(());
+            }
+
+            let event_start = Instant::now();
+
+            let result = match event {
+                TxQueueContents::NewIteration(new_iteration, current_span) => {
+                    let _guard = current_span.enter();
+                    self.process_iteration(&new_iteration)
+                }
+                TxQueueContents::CommitHead(commit_head, current_span) => {
+                    let _guard = current_span.enter();
+                    self.process_commit_head(
+                        &commit_head,
+                        &mut processed_blocks,
+                        &mut block_processing_time,
+                    )
+                }
+                TxQueueContents::Tx(queue_transaction, current_span) => {
+                    let _guard = current_span.enter();
+                    match self.verify_state_sources_synced_blocking(&shutdown) {
+                        Ok(()) => self.process_transaction_event(queue_transaction),
+                        Err(e) => Err(e),
+                    }
+                }
+                TxQueueContents::Reorg(tx_execution_id, current_span) => {
+                    let _guard = current_span.enter();
+                    self.execute_reorg(tx_execution_id)
+                }
+            };
+
+            if let Err(error) = result {
+                let recoverability = ErrorRecoverability::from(&error);
+
+                match recoverability {
+                    ErrorRecoverability::Recoverable => {
+                        warn!(
+                            target = "engine",
+                            error = ?error,
+                            "Recoverable error occurred during event processing, continuing"
+                        );
+                        self.cache.invalidate_all();
+                        self.sources
+                            .reset_latest_unprocessed_block(self.current_head);
+                    }
+                    ErrorRecoverability::Unrecoverable => {
+                        critical!(
+                            error = ?error,
+                            "Unrecoverable error occurred, stopping engine"
+                        );
+                        return Err(error);
+                    }
+                }
+            }
+
+            self.block_metrics.event_processing_time += event_start.elapsed();
+            idle_start = Instant::now();
+
+            if processed_blocks > 0 && processed_blocks.is_multiple_of(100) {
+                info!(
+                    target = "engine",
+                    blocks = processed_blocks,
+                    cache_entries = self.cache.cache_entry_count(),
+                    "Engine processing stats"
+                );
+            }
+        }
+    }
+
+    /// Blocking version of state source sync check with shutdown support
+    fn verify_state_sources_synced_blocking(
+        &mut self,
+        shutdown: &AtomicBool,
+    ) -> Result<(), EngineError> {
+        const RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+        if !self.check_sources_available {
+            return Ok(());
+        }
+        self.check_sources_available = false;
+
+        let start = Instant::now();
+        loop {
+            // Check shutdown
+            if shutdown.load(Ordering::Relaxed) {
+                return Err(EngineError::Shutdown);
+            }
+
+            if self
+                .sources
+                .iter_synced_sources()
+                .into_iter()
+                .any(|a| a.is_synced(self.current_head, self.current_head))
+            {
+                return Ok(());
+            }
+
+            let waited = start.elapsed();
+            if waited >= self.state_sources_sync_timeout {
+                error!(
+                    target = "engine",
+                    waited_ms = waited.as_millis(),
+                    timeout_ms = self.state_sources_sync_timeout.as_millis(),
+                    "No synced sources within timeout"
+                );
+                return Err(EngineError::NoSyncedSources);
+            }
+
+            debug!(
+                target = "engine",
+                waited_ms = waited.as_millis(),
+                next_retry_ms = RETRY_INTERVAL.as_millis(),
+                timeout_ms = self.state_sources_sync_timeout.as_millis(),
+                "No synced sources, retrying"
+            );
+
+            // Blocking sleep is fine on a dedicated thread
+            std::thread::sleep(RETRY_INTERVAL);
+        }
+    }
+
     /// Run the engine and process transactions and blocks received
     /// via the transaction queue.
-    // TODO: fn should probably not be async but we do it because
-    // so we can easily select on result in main. too bad!
+    #[cfg(test)]
     pub async fn run(&mut self) -> Result<(), EngineError> {
         let mut processed_blocks = 0u64;
         let mut block_processing_time = Instant::now();

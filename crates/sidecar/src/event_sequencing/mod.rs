@@ -25,17 +25,29 @@ use std::{
         HashSet,
         VecDeque,
     },
+    sync::{
+        Arc,
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
+    },
+    thread::JoinHandle,
     time::{
         Duration,
         Instant,
     },
 };
 use thiserror::Error;
+use tokio::sync::oneshot;
 use tracing::{
     error,
     info,
     warn,
 };
+
+/// Timeout for recv - threads will check for the shutdown flag at this interval
+const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// The event sequencing processes events from the transport layer and ensures the correct ordering
 /// before sending the event to the core engine
@@ -79,8 +91,68 @@ impl EventSequencing {
         }
     }
 
+    /// Spawns event sequencing on a dedicated OS thread with blocking receive.
+    #[allow(clippy::type_complexity)]
+    pub fn spawn(
+        self,
+        shutdown: Arc<AtomicBool>,
+    ) -> Result<
+        (
+            JoinHandle<Result<(), EventSequencingError>>,
+            oneshot::Receiver<Result<(), EventSequencingError>>,
+        ),
+        std::io::Error,
+    > {
+        let (tx, rx) = oneshot::channel();
+
+        let handle = std::thread::Builder::new()
+            .name("sidecar-sequencing".into())
+            .spawn(move || {
+                let mut sequencing = self;
+                let result = sequencing.run_blocking(shutdown);
+                let _ = tx.send(result.clone());
+                result
+            })?;
+
+        Ok((handle, rx))
+    }
+
+    /// Blocking run loop with shutdown support
+    #[allow(clippy::needless_pass_by_value)]
+    fn run_blocking(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), EventSequencingError> {
+        loop {
+            // Check for the shutdown flag
+            if shutdown.load(Ordering::Relaxed) {
+                info!(target = "event_sequencing", "Shutdown signal received");
+                return Ok(());
+            }
+
+            // Use recv_timeout so we can periodically check the shutdown flag
+            let event = match self.tx_receiver.recv_timeout(RECV_TIMEOUT) {
+                Ok(event) => event,
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                    // No event, loop back and check for the shutdown flag
+                    continue;
+                }
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                    info!(target = "event_sequencing", "Channel disconnected");
+                    return Err(EventSequencingError::ChannelClosed);
+                }
+            };
+
+            // Check shutdown before processing
+            if shutdown.load(Ordering::Relaxed) {
+                info!(target = "event_sequencing", "Shutdown signal received");
+                return Ok(());
+            }
+
+            self.process_event(event)?;
+        }
+    }
+
     /// An asynchronous function that continuously processes events from a transaction queue channel
     /// and forwards them to a core engine for further handling.
+    #[cfg(test)]
     pub async fn run(&mut self) -> Result<(), EventSequencingError> {
         loop {
             let event = self.receive_event().await?;
@@ -89,6 +161,7 @@ impl EventSequencing {
     }
 
     /// Receives an event from the transaction queue, yielding when empty.
+    #[cfg(test)]
     async fn receive_event(&mut self) -> Result<TxQueueContents, EventSequencingError> {
         loop {
             match self.tx_receiver.try_recv() {
@@ -545,7 +618,7 @@ impl EventSequencing {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum EventSequencingError {
     #[error("Transaction queue channel closed")]
     ChannelClosed,
