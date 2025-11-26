@@ -21,7 +21,6 @@ axum = { workspace = true }
 tonic = { version = "0.14.2", features = ["transport"] }
 prost = "0.14"
 tonic-prost = "0.14.2"
-tokio-stream = { version = "0.1", features = ["net"] }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -48,6 +47,7 @@ int-test-utils = { path = "../int-test-utils", optional = true }
 state-store = { path = "../state-store", features = ["reader"] }
 hashlink = "0.11.0"
 flume = "0.11.1"
+arrayvec = "0.7.6"
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"
