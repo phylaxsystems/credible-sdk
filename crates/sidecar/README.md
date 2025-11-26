@@ -447,7 +447,7 @@ The sidecar is a binary in the credible-sdk workspace, you can run it from the c
 ```cargo run -p sidecar```
 
 And with logging + default config + sequencer:
-```
+```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
 OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf \

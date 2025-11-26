@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [workspace]
 members = [
     "crates/assertion-da/da-client",
@@ -150,5 +152,6 @@ incremental = false
 # Only use for builds that are going to get used by end users
 [profile.debug-perf]
 inherits = "release"
-debug = true
 strip = "none"
+rustflags = ["-C", "force-frame-pointers=yes", "-C", "symbol-mangling-version=v0"]
+debug = "line-tables-only"
