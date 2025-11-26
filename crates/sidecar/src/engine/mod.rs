@@ -789,11 +789,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                     self.block_metrics.idle_time += idle_start.elapsed();
                     event
                 }
-                Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                Err(flume::RecvTimeoutError::Timeout) => {
                     // No event, loop back and check for the shutdown flag
                     continue;
                 }
-                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                Err(flume::RecvTimeoutError::Disconnected) => {
                     info!(target = "engine", "Channel disconnected");
                     return Err(EngineError::ChannelClosed);
                 }
@@ -939,12 +939,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                     self.block_metrics.idle_time += idle_start.elapsed();
                     event
                 }
-                Err(crossbeam::channel::TryRecvError::Empty) => {
+                Err(flume::TryRecvError::Empty) => {
                     // Channel is empty, yield to allow other tasks to run
                     tokio::task::yield_now().await;
                     continue;
                 }
-                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                Err(flume::TryRecvError::Disconnected) => {
                     error!(target = "engine", "Transaction queue channel disconnected");
                     return Err(EngineError::ChannelClosed);
                 }

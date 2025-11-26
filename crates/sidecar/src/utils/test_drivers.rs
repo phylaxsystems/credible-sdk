@@ -68,7 +68,6 @@ use assertion_executor::{
         counter_call,
     },
 };
-use crossbeam::channel;
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use revm::{
     context_interface::block::BlobExcessGasAndPrice,
@@ -254,7 +253,7 @@ impl CommonSetup {
         &self,
         transport_rx: TransactionQueueReceiver,
     ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
-        let (event_sequencing_tx_sender, core_engine_tx_receiver) = channel::unbounded();
+        let (event_sequencing_tx_sender, core_engine_tx_receiver) = flume::unbounded();
 
         let state = OverlayDb::new(Some(self.underlying_db.clone()));
         let assertion_executor =
@@ -313,8 +312,8 @@ impl LocalInstanceMockDriver {
         let setup = CommonSetup::new(Some(assertion_store)).await?;
 
         // Create channels for transport -> event_sequencing -> engine
-        let (transport_tx_sender, event_sequencing_tx_receiver) = channel::unbounded();
-        let (mock_tx, mock_rx) = channel::unbounded();
+        let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
+        let (mock_tx, mock_rx) = flume::unbounded();
 
         // Spawn engine and event sequencing
         let (engine_handle, sequencing_handle) = setup
@@ -367,8 +366,8 @@ impl TestTransport for LocalInstanceMockDriver {
         let setup = CommonSetup::new(None).await?;
 
         // Create channels for transport -> event_sequencing -> engine
-        let (transport_tx_sender, event_sequencing_tx_receiver) = channel::unbounded();
-        let (mock_tx, mock_rx) = channel::unbounded();
+        let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
+        let (mock_tx, mock_rx) = flume::unbounded();
 
         // Spawn engine and event sequencing
         let (engine_handle, sequencing_handle) = setup
@@ -634,7 +633,7 @@ impl LocalInstanceHttpDriver {
         let setup = CommonSetup::new(assertion_store).await?;
 
         // Create channels for transport -> event_sequencing -> engine
-        let (transport_tx_sender, event_sequencing_tx_receiver) = channel::unbounded();
+        let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
 
         // Spawn engine and event sequencing
         let (engine_handle, sequencing_handle) = setup
@@ -988,7 +987,7 @@ impl LocalInstanceGrpcDriver {
         let setup = CommonSetup::new(assertion_store).await?;
 
         // Create channels for transport -> event_sequencing -> engine
-        let (transport_tx_sender, event_sequencing_tx_receiver) = channel::unbounded();
+        let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
 
         // Spawn engine and event sequencing
         let (engine_handle, sequencing_handle) = setup

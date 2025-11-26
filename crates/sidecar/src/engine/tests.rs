@@ -32,7 +32,7 @@ impl<DB> CoreEngine<DB> {
     #[allow(dead_code)]
     #[allow(clippy::missing_panics_doc)]
     pub fn new_test() -> Self {
-        let (_, tx_receiver) = crossbeam::channel::unbounded();
+        let (_, tx_receiver) = flume::unbounded();
         let sources = Arc::new(Sources::new(vec![], 10));
         Self {
             cache: OverlayDb::new(None),
@@ -135,9 +135,9 @@ async fn create_test_engine_with_timeout(
     timeout: Duration,
 ) -> (
     CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
-    crossbeam::channel::Sender<TxQueueContents>,
+    flume::Sender<TxQueueContents>,
 ) {
-    let (tx_sender, tx_receiver) = crossbeam::channel::unbounded();
+    let (tx_sender, tx_receiver) = flume::unbounded();
     let underlying_db = CacheDB::new(EmptyDBTyped::default());
     let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)));
     let assertion_store =
@@ -165,7 +165,7 @@ async fn create_test_engine_with_timeout(
 
 async fn create_test_engine() -> (
     CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
-    crossbeam::channel::Sender<TxQueueContents>,
+    flume::Sender<TxQueueContents>,
 ) {
     create_test_engine_with_timeout(Duration::from_millis(100)).await
 }

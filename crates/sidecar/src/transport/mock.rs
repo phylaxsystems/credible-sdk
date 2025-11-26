@@ -54,7 +54,7 @@ impl Transport for MockTransport {
         state_results: Arc<TransactionsState>,
     ) -> Result<Self, Self::Error> {
         // Create a dummy receiver channel for the trait implementation
-        let (_, mock_receiver) = crossbeam::channel::unbounded();
+        let (_, mock_receiver) = flume::unbounded();
         Ok(Self {
             tx_sender,
             mock_receiver,
@@ -72,11 +72,11 @@ impl Transport for MockTransport {
                         .send(rax)
                         .map_err(|_| MockTransportError::CoreSendError)?;
                 }
-                Err(crossbeam::channel::TryRecvError::Empty) => {
+                Err(flume::TryRecvError::Empty) => {
                     // No data yet, yield and try again
                     tokio::task::yield_now().await;
                 }
-                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                Err(flume::TryRecvError::Disconnected) => {
                     // Channel closed, exit gracefully
                     tracing::debug!("MockTransport channel disconnected, stopping");
                     break;

@@ -130,11 +130,11 @@ impl EventSequencing {
             // Use recv_timeout so we can periodically check the shutdown flag
             let event = match self.tx_receiver.recv_timeout(RECV_TIMEOUT) {
                 Ok(event) => event,
-                Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                Err(flume::RecvTimeoutError::Timeout) => {
                     // No event, loop back and check for the shutdown flag
                     continue;
                 }
-                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                Err(flume::RecvTimeoutError::Disconnected) => {
                     info!(target = "event_sequencing", "Channel disconnected");
                     return Err(EventSequencingError::ChannelClosed);
                 }
@@ -166,11 +166,11 @@ impl EventSequencing {
         loop {
             match self.tx_receiver.try_recv() {
                 Ok(event) => return Ok(event),
-                Err(crossbeam::channel::TryRecvError::Empty) => {
+                Err(flume::TryRecvError::Empty) => {
                     // Channel is empty, yield to allow other tasks to run
                     tokio::task::yield_now().await;
                 }
-                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                Err(flume::TryRecvError::Disconnected) => {
                     error!(
                         target = "event_sequencing",
                         "Transaction queue channel disconnected"
