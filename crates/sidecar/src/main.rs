@@ -9,7 +9,7 @@ use assertion_executor::{
     AssertionExecutor,
     db::overlay::OverlayDb,
 };
-use crossbeam::channel::unbounded;
+use flume::unbounded;
 use sidecar::{
     args::{
         Config,

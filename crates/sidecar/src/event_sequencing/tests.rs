@@ -16,7 +16,6 @@ use assertion_executor::primitives::{
     Bytes,
     U256,
 };
-use crossbeam::channel;
 use revm::{
     context::{
         BlockEnv,
@@ -168,8 +167,8 @@ fn build_dependency_graph_from_events(
 
 // Helper to create a test EventSequencing
 fn create_test_sequencing() -> (EventSequencing, TransactionQueueReceiver) {
-    let (tx_send, tx_recv) = channel::unbounded();
-    let (engine_send, engine_recv) = channel::unbounded();
+    let (tx_send, tx_recv) = flume::unbounded();
+    let (engine_send, engine_recv) = flume::unbounded();
 
     let sequencing = EventSequencing::new(tx_recv, engine_send);
 
