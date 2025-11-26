@@ -14,6 +14,7 @@
     <Logger name="org.hyperledger.besu.consensus.merge.blockcreation" level="INFO" />
     <Logger name="org.hyperledger.besu.ethereum.api.jsonrpc" level="INFO" />
     <Logger name="io.opentelemetry" level="WARN" />
+    <Logger name="net.phylax.credible" level="DEBUG" />
     <Logger name="net.consensys.linea.bl.TransactionProfitabilityCalculator" level="INFO" />
     <Logger name="net.consensys.linea.sequencer.txselection" level="INFO" />
     <Logger name="net.consensys.linea.sequencer.liveness" level="INFO" />

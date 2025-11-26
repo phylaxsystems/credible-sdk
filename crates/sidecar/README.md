@@ -288,7 +288,7 @@ The configuration file is a JSON file with the following schema:
           "pattern": "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|[a-zA-Z0-9.-]+):[0-9]{1,5}$",
           "examples": [
             "127.0.0.1:3001",
-            "0.0.0.0:8080"
+            "0.0.0.0:9547"
           ]
         }
       },
@@ -425,7 +425,7 @@ The default configuration can be found in [default_config.json](default_config.j
   "transport": {
     "protocol": "grpc",
     "bind_addr": "0.0.0.0:50051",
-    "health_bind_addr": "0.0.0.0:8080"
+    "health_bind_addr": "0.0.0.0:9547"
   },
   "state": {
     "sequencer_url": "http://127.0.0.1:8545",
@@ -446,9 +446,37 @@ The sidecar is a binary in the credible-sdk workspace, you can run it from the c
 
 ```cargo run -p sidecar```
 
+And with logging + default config + sequencer:
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf \
+RUST_LOG=debug \
+cargo run --locked --release -p sidecar -- --config-file-path crates/sidecar/default_config.json
+
+docker compose -f docker/maru-besu-sidecar/docker-compose.yml up -d --scale credible-sidecar=0
+
+# bring it down
+docker compose -f docker/maru-besu-sidecar/docker-compose.yml down -v
+```
+
 Alternatively, you can run a sidecar locally with all services needed to get it running + an observability stack via:
 
 ```make run-sidecar-host```
+
+#### Linux
+
+On linux you might need to edit:
+```yaml
+  extra_hosts:
+    - "credible-sidecar:host-gateway"
+```
+in the dockerfile to:
+```yaml
+extra_hosts:
+  - "credible-sidecar:192.168.0.10"
+```
+or whatever your local network device ip is.
 
 ### Dockerfile
 
@@ -463,3 +491,26 @@ If you need to pass arguments to the sidecar binary:
 
 If the sidecar needs to expose ports (you'll need to check what port it uses), add -p flag:
 `docker run -p <host-port>:<container-port> sidecar`
+
+### Profiling
+
+For profiling you can use the following:
+```bash
+# If running in userspace you will need to relax security features
+sudo sysctl kernel.kptr_restrict=0
+sudo sysctl kernel.perf_event_paranoid=-1
+sudo sysctl kernel.perf_event_max_sample_rate=100000
+
+# Build with a sidecar w/ additionald debug info
+# The traces will not come out nice without this
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile debug-perf
+
+# This will collect perf.data. tune the `-c` flag for more or less detailed collection
+RUST_LOG=info perf record -c 100000 -g target/debug-perf/sidecar --config-file-path crates/sidecar/default_config.json
+
+# This will convert the perf data into a profile readable by flamegraph, firefox profiler, etc...
+perf script -i perf.data > perf.script
+```
+Note: you will need to be on linux to run perf.
+
+Alternatively you can also try using dtrace/cargo-flamegraph, but the setup might not work due to weird env caputuring docker networking. YMMV.
