@@ -464,6 +464,20 @@ Alternatively, you can run a sidecar locally with all services needed to get it 
 
 ```make run-sidecar-host```
 
+#### Linux
+
+On linux you might need to edit:
+```yaml
+  extra_hosts:
+    - "credible-sidecar:host-gateway"
+```
+in the dockerfile to:
+```yaml
+extra_hosts:
+  - "credible-sidecar:192.168.0.10"
+```
+or whatever your local network device ip is.
+
 ### Dockerfile
 
 Build:
@@ -477,3 +491,26 @@ If you need to pass arguments to the sidecar binary:
 
 If the sidecar needs to expose ports (you'll need to check what port it uses), add -p flag:
 `docker run -p <host-port>:<container-port> sidecar`
+
+### Profiling
+
+For profiling you can use the following:
+```bash
+# If running in userspace you will need to relax security features
+sudo sysctl kernel.kptr_restrict=0
+sudo sysctl kernel.perf_event_paranoid=-1
+sudo sysctl kernel.perf_event_max_sample_rate=100000
+
+# Build with a sidecar w/ additionald debug info
+# The traces will not come out nice without this
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile debug-perf
+
+# This will collect perf.data. tune the `-c` flag for more or less detailed collection
+RUST_LOG=info perf record -c 100000 -g target/debug-perf/sidecar --config-file-path crates/sidecar/default_config.json
+
+# This will convert the perf data into a profile readable by flamegraph, firefox profiler, etc...
+perf script -i perf.data > perf.script
+```
+Note: you will need to be on linux to run perf.
+
+Alternatively you can also try using dtrace/cargo-flamegraph, but the setup might not work due to weird env caputuring docker networking. YMMV.
