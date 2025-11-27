@@ -31,7 +31,7 @@ pub struct ForkStorageMap {
 #[derive(Debug)]
 pub struct ForkDb<ExtDb> {
     /// Maps addresses to storage slots and their history indexed by block.
-    pub storage: HashMap<Address, ForkStorageMap>,
+    pub storage: Arc<HashMap<Address, ForkStorageMap>>,
     /// Maps addresses to their account info and indexes it by block.
     pub(super) basic: HashMap<Address, AccountInfo>,
     /// Maps bytecode hashes to bytecode.
@@ -43,7 +43,7 @@ pub struct ForkDb<ExtDb> {
 impl<ExtDb> Clone for ForkDb<ExtDb> {
     fn clone(&self) -> Self {
         Self {
-            storage: self.storage.clone(),
+            storage: Arc::clone(&self.storage),
             basic: self.basic.clone(),
             code_by_hash: self.code_by_hash.clone(),
             inner_db: self.inner_db.clone(),
@@ -119,14 +119,17 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
 
 impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
     fn commit(&mut self, changes: EvmState) {
+        // Make the storage mutable by getting ownership of the HashMap
+        let mut storage = Arc::unwrap_or_clone(Arc::clone(&self.storage));
+
         for (address, account) in changes {
             if !account.is_touched() {
                 continue;
             }
+
             if account.is_selfdestructed() {
                 self.basic.insert(address, account.info.clone());
-
-                let fork_storage_map = self.storage.entry(address).or_default();
+                let fork_storage_map = storage.entry(address).or_default();
 
                 // Mark the account to not read from the inner database if it is self destructed.
                 fork_storage_map.dont_read_from_inner_db = true;
@@ -141,7 +144,7 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
             }
 
             self.basic.insert(address, account.info.clone());
-            match self.storage.get_mut(&address) {
+            match storage.get_mut(&address) {
                 Some(s) => {
                     s.map.extend(
                         account
@@ -151,7 +154,7 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
                     );
                 }
                 None => {
-                    self.storage.insert(
+                    storage.insert(
                         address,
                         ForkStorageMap {
                             map: account
@@ -172,11 +175,30 @@ impl<ExtDb> ForkDb<ExtDb> {
     /// Creates a new `ForkDb`.
     pub fn new(inner_db: ExtDb) -> Self {
         Self {
-            storage: HashMap::default(),
+            storage: Arc::new(HashMap::default()),
             basic: HashMap::default(),
             code_by_hash: HashMap::default(),
             inner_db: Arc::new(inner_db),
         }
+    }
+
+    pub fn mark_accounts_isolated(&mut self, addresses: &[Address]) {
+        // Early return if nothing to do
+        if addresses.is_empty() {//no need for this tbh
+            return;
+        }
+
+        // Get mutable access to storage via copy-on-write
+        let mut storage = Arc::unwrap_or_clone(Arc::clone(&self.storage));
+
+        // Mark each address as isolated
+        for address in addresses {
+            let fork_storage_map = storage.entry(*address).or_default();
+            fork_storage_map.dont_read_from_inner_db = true;
+        }
+
+        // Replace the Arc with the modified storage
+        self.storage = Arc::new(storage);
     }
 
     /// Replace the inner database with a new one.
@@ -196,7 +218,7 @@ impl<ExtDb> ForkDb<ExtDb> {
     }
 
     pub fn invalidate(&mut self) {
-        self.storage = HashMap::default();
+        self.storage = Arc::new(HashMap::default());
         self.basic = HashMap::default();
         self.code_by_hash = HashMap::default();
     }
