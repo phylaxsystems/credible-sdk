@@ -4,6 +4,7 @@ use crate::{
         DatabaseCommit,
         DatabaseRef,
         RollbackDb,
+        fork_db::ForkDb,
     },
     primitives::{
         AccountInfo,
@@ -14,190 +15,33 @@ use crate::{
         U256,
     },
 };
-use dashmap::DashMap;
-use std::sync::Arc;
 
-#[derive(Debug, Clone, Default)]
-struct DatabaseTypes {
-    basic: DashMap<Address, AccountInfo>,
-    code_by_hash: DashMap<B256, Bytecode>,
-    storage: DashMap<Address, StorageEntry>,
-    block_hash: DashMap<u64, B256>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct StorageEntry {
-    map: DashMap<U256, B256>,
-    dont_read_from_inner_db: bool,
-}
-
-impl StorageEntry {
-    fn mark_selfdestructed(&mut self) {
-        self.dont_read_from_inner_db = true;
-        self.map.clear();
-    }
-}
-
-impl DatabaseTypes {
-    fn get_basic(&self, address: Address) -> Option<AccountInfo> {
-        self.basic.get(&address).map(|guard| guard.value().clone())
-    }
-
-    fn get_code(&self, code_hash: &B256) -> Option<Bytecode> {
-        self.code_by_hash
-            .get(code_hash)
-            .map(|guard| guard.value().clone())
-    }
-
-    fn get_storage(&self, address: Address, slot: U256) -> Option<B256> {
-        self.storage
-            .get(&address)
-            .and_then(|entry| entry.map.get(&slot).map(|guard| *guard.value()))
-    }
-
-    fn is_selfdestructed(&self, address: Address) -> bool {
-        self.storage
-            .get(&address)
-            .is_some_and(|entry| entry.dont_read_from_inner_db)
-    }
-
-    fn get_block_hash(&self, number: u64) -> Option<B256> {
-        self.block_hash.get(&number).map(|guard| *guard.value())
-    }
-
-    fn insert_basic(&mut self, address: Address, info: AccountInfo) {
-        self.basic.insert(address, info);
-    }
-
-    fn insert_code(&mut self, code_hash: B256, code: Bytecode) {
-        self.code_by_hash.insert(code_hash, code);
-    }
-
-    fn insert_storage(&mut self, address: Address, slot: U256, value: B256) {
-        let entry = if let Some(entry) = self.storage.get_mut(&address) {
-            entry
-        } else {
-            self.storage.insert(address, StorageEntry::default());
-            self.storage.get_mut(&address).expect("entry must exist")
-        };
-        entry.map.insert(slot, value);
-    }
-
-    fn insert_selfdestructed(&mut self, address: Address) {
-        let mut entry = if let Some(entry) = self.storage.get_mut(&address) {
-            entry
-        } else {
-            self.storage.insert(address, StorageEntry::default());
-            self.storage.get_mut(&address).expect("entry must exist")
-        };
-        entry.mark_selfdestructed();
-    }
-
-    #[allow(dead_code)]
-    fn insert_block_hash(&mut self, number: u64, block_hash: B256) {
-        self.block_hash.insert(number, block_hash);
-    }
-
-    fn apply_delta(&mut self, delta: &DatabaseTypes) {
-        for entry in &delta.basic {
-            self.basic.insert(*entry.key(), entry.value().clone());
-        }
-        for entry in &delta.code_by_hash {
-            self.code_by_hash
-                .insert(*entry.key(), entry.value().clone());
-        }
-        for entry in &delta.storage {
-            let address = *entry.key();
-            let delta_entry = entry.value();
-
-            let mut storage_entry = if let Some(entry) = self.storage.get_mut(&address) {
-                entry
-            } else {
-                self.storage.insert(address, StorageEntry::default());
-                self.storage.get_mut(&address).expect("entry must exist")
-            };
-
-            let storage_entry = storage_entry.value_mut();
-            storage_entry.dont_read_from_inner_db |= delta_entry.dont_read_from_inner_db;
-
-            if delta_entry.dont_read_from_inner_db {
-                storage_entry.map.clear();
-            }
-
-            for storage_kv in &delta_entry.map {
-                storage_entry
-                    .map
-                    .insert(*storage_kv.key(), *storage_kv.value());
-            }
-        }
-        for entry in &delta.block_hash {
-            self.block_hash.insert(*entry.key(), *entry.value());
-        }
-    }
-}
-
-/// Versioned database that keeps a base state plus a changelog per commit.
-/// Rolling back rebuilds the in-memory state by replaying the changelog from the
-/// persisted base snapshot.
-#[derive(Debug)]
+/// Versioned database that reuses `ForkDb` for state management and keeps a
+/// shallow log of commits. Rolling back rebuilds state by replaying logged
+/// changes on top of the base snapshot.
+#[derive(Debug, Clone)]
 pub struct VersionDb<Db> {
-    inner_db: Arc<Db>,
-    base_state: DatabaseTypes,
-    state: DatabaseTypes,
-    commit_log: Vec<DatabaseTypes>,
-    commit_depth: usize,
-}
-
-impl<Db: Clone> Clone for VersionDb<Db> {
-    fn clone(&self) -> Self {
-        Self {
-            inner_db: self.inner_db.clone(),
-            base_state: self.base_state.clone(),
-            state: self.state.clone(),
-            commit_log: self.commit_log.clone(),
-            commit_depth: self.commit_depth,
-        }
-    }
+    base_state: ForkDb<Db>,
+    state: ForkDb<Db>,
+    commit_log: Vec<EvmState>,
 }
 
 impl<Db> VersionDb<Db> {
     pub fn new(inner_db: Db) -> Self {
-        let base_state = DatabaseTypes::default();
+        let state = ForkDb::new(inner_db);
         Self {
-            inner_db: Arc::new(inner_db),
-            state: base_state.clone(),
-            base_state,
+            base_state: state.clone(),
+            state,
             commit_log: Vec::new(),
-            commit_depth: 0,
         }
     }
 
-    /// Convert an `EvmState` into a typed delta optimized for storage in `DatabaseTypes`.
-    fn build_delta(changes: EvmState) -> DatabaseTypes {
-        let mut delta = DatabaseTypes::default();
-
-        for (address, mut account) in changes {
-            if !account.is_touched() {
-                continue;
-            }
-
-            if account.is_selfdestructed() {
-                delta.insert_selfdestructed(address);
-            }
-
-            delta.insert_basic(address, account.info.clone());
-
-            if let Some(code) = account.info.code.take() {
-                delta.insert_code(account.info.code_hash, code);
-            }
-
-            for (slot, storage_slot) in account.storage {
-                let value_b256: B256 = storage_slot.present_value().to_be_bytes().into();
-                delta.insert_storage(address, slot, value_b256);
-            }
+    fn rebuild_state(&mut self, depth: usize) {
+        self.state = self.base_state.clone();
+        for delta in self.commit_log.iter().take(depth) {
+            self.state.commit(delta.clone());
         }
-
-        delta
+        self.commit_log.truncate(depth);
     }
 }
 
@@ -208,19 +52,11 @@ impl<Db: DatabaseRef> DatabaseRef for VersionDb<Db> {
         &self,
         address: Address,
     ) -> Result<Option<AccountInfo>, <Self as DatabaseRef>::Error> {
-        if let Some(account_info) = self.state.get_basic(address) {
-            return Ok(Some(account_info));
-        }
-
-        self.inner_db.basic_ref(address)
+        self.state.basic_ref(address)
     }
 
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, <Self as DatabaseRef>::Error> {
-        if let Some(code) = self.state.get_code(&code_hash) {
-            return Ok(code);
-        }
-
-        self.inner_db.code_by_hash_ref(code_hash)
+        self.state.code_by_hash_ref(code_hash)
     }
 
     fn storage_ref(
@@ -228,28 +64,11 @@ impl<Db: DatabaseRef> DatabaseRef for VersionDb<Db> {
         address: Address,
         slot: U256,
     ) -> Result<U256, <Self as DatabaseRef>::Error> {
-        if self.state.is_selfdestructed(address) {
-            if let Some(raw_value) = self.state.get_storage(address, slot) {
-                let value_u256: U256 = raw_value.into();
-                return Ok(value_u256);
-            }
-            return Ok(U256::ZERO);
-        }
-
-        if let Some(raw_value) = self.state.get_storage(address, slot) {
-            let value_u256: U256 = raw_value.into();
-            return Ok(value_u256);
-        }
-
-        self.inner_db.storage_ref(address, slot)
+        self.state.storage_ref(address, slot)
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, <Self as DatabaseRef>::Error> {
-        if let Some(hash) = self.state.get_block_hash(number) {
-            return Ok(hash);
-        }
-
-        self.inner_db.block_hash_ref(number)
+        self.state.block_hash_ref(number)
     }
 }
 
@@ -275,10 +94,8 @@ impl<Db: DatabaseRef> Database for VersionDb<Db> {
 
 impl<Db> DatabaseCommit for VersionDb<Db> {
     fn commit(&mut self, changes: EvmState) {
-        let delta = Self::build_delta(changes);
-        self.state.apply_delta(&delta);
-        self.commit_log.push(delta);
-        self.commit_depth += 1;
+        self.state.commit(changes.clone());
+        self.commit_log.push(changes);
     }
 }
 
@@ -299,25 +116,18 @@ impl<Db> RollbackDb for VersionDb<Db> {
             });
         }
 
-        self.state = self.base_state.clone();
-        for delta in self.commit_log.iter().take(depth) {
-            self.state.apply_delta(delta);
-        }
-
-        self.commit_log.truncate(depth);
-        self.commit_depth = depth;
+        self.rebuild_state(depth);
         Ok(())
     }
 
     fn collapse_log(&mut self) {
         self.base_state = self.state.clone();
         self.commit_log.clear();
-        self.commit_depth = 0;
     }
 
     /// Number of commits currently tracked.
     fn depth(&self) -> usize {
-        self.commit_depth
+        self.commit_log.len()
     }
 }
 
@@ -331,6 +141,7 @@ mod tests {
         },
         primitives::{
             Account,
+            AccountInfo,
             AccountStatus,
             Bytecode,
             EvmStorage,
@@ -453,7 +264,7 @@ mod tests {
             version_db.storage_ref(address, slot).unwrap(),
             uint!(5_U256)
         );
-        let storage_calls_after_first_read = version_db.inner_db.get_storage_calls();
+        let storage_calls_after_first_read = version_db.state.inner_db.get_storage_calls();
 
         let mut changes = EvmState::default();
         changes.insert(
@@ -468,7 +279,7 @@ mod tests {
 
         assert_eq!(version_db.storage_ref(address, slot).unwrap(), U256::ZERO);
         assert_eq!(
-            version_db.inner_db.get_storage_calls(),
+            version_db.state.inner_db.get_storage_calls(),
             storage_calls_after_first_read
         );
 
@@ -477,7 +288,80 @@ mod tests {
             version_db.storage_ref(address, slot).unwrap(),
             uint!(5_U256)
         );
-        assert!(version_db.inner_db.get_storage_calls() > storage_calls_after_first_read);
+        assert!(version_db.state.inner_db.get_storage_calls() > storage_calls_after_first_read);
+    }
+
+    #[test]
+    fn selfdestruct_clears_storage_written_in_same_commit() {
+        let mut version_db = VersionDb::new(MockDb::new());
+        let address = address!("0000000000000000000000000000000000000004");
+        let slot = U256::from(1);
+
+        let mut storage = EvmStorage::default();
+        storage.insert(
+            slot,
+            EvmStorageSlot {
+                present_value: uint!(7_U256),
+                ..Default::default()
+            },
+        );
+
+        let mut changes = EvmState::default();
+        changes.insert(
+            address,
+            Account {
+                info: AccountInfo::default(),
+                storage,
+                status: AccountStatus::SelfDestructed | AccountStatus::Touched,
+            },
+        );
+
+        version_db.commit(changes);
+
+        assert_eq!(version_db.storage_ref(address, slot).unwrap(), U256::ZERO);
+        assert_eq!(version_db.depth(), 1);
+    }
+
+    #[test]
+    fn selfdestruct_clears_prior_storage() {
+        let mut version_db = VersionDb::new(MockDb::new());
+        let address = address!("0000000000000000000000000000000000000005");
+        let slot = U256::from(7);
+
+        // First commit writes storage.
+        let mut storage = EvmStorage::default();
+        storage.insert(
+            slot,
+            EvmStorageSlot {
+                present_value: uint!(42_U256),
+                ..Default::default()
+            },
+        );
+        let mut create = EvmState::default();
+        create.insert(
+            address,
+            Account {
+                info: AccountInfo::default(),
+                storage,
+                status: AccountStatus::Touched,
+            },
+        );
+        version_db.commit(create);
+
+        // Second commit selfdestructs the same account.
+        let mut destroy = EvmState::default();
+        destroy.insert(
+            address,
+            Account {
+                info: AccountInfo::default(),
+                storage: EvmStorage::default(),
+                status: AccountStatus::SelfDestructed | AccountStatus::Touched,
+            },
+        );
+        version_db.commit(destroy);
+
+        assert_eq!(version_db.storage_ref(address, slot).unwrap(), U256::ZERO);
+        assert_eq!(version_db.depth(), 2);
     }
 
     #[test]
@@ -502,7 +386,7 @@ mod tests {
         );
         version_db.commit(initial_changes);
 
-        let storage_calls_after_selfdestruct = version_db.inner_db.get_storage_calls();
+        let storage_calls_after_selfdestruct = version_db.state.inner_db.get_storage_calls();
 
         let mut recreation_storage = EvmStorage::default();
         recreation_storage.insert(
@@ -529,7 +413,7 @@ mod tests {
             uint!(9_U256)
         );
         assert_eq!(
-            version_db.inner_db.get_storage_calls(),
+            version_db.state.inner_db.get_storage_calls(),
             storage_calls_after_selfdestruct
         );
     }
