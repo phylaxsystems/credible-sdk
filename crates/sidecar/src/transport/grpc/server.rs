@@ -5,25 +5,31 @@
 //!
 //! These methods get called later when we receive a corresponding protobuf message
 //! in the transport.
+//!
+//! ## Streaming Architecture
+//! - `StreamEvents`: Bidirectional stream for events (commits, iterations, transactions, reorgs)
+//! - `SubscribeResults`: Server stream pushing transaction results as they complete
 
 use super::pb::{
+    self,
     BasicAck,
+    BlockEnv as PbBlockEnv,
     CommitHead as PbCommitHead,
+    Event,
     GetTransactionRequest,
     GetTransactionResponse,
     GetTransactionsRequest,
     GetTransactionsResponse,
     NewIteration as PbNewIteration,
-    ReorgRequest,
-    SendEvents as PbSendEvents,
-    SendTransactionsRequest,
-    SendTransactionsResponse,
+    ResultStatus,
+    StreamAck,
+    SubscribeResultsRequest,
     Transaction,
     TransactionEnv,
     TransactionResult as PbTransactionResult,
     TxExecutionId as PbTxExecutionId,
+    event::Event as EventVariant,
     get_transaction_response::Outcome as GetTransactionOutcome,
-    send_events::event::Event as SendEventVariant,
     sidecar_transport_server::SidecarTransport,
 };
 use crate::{
@@ -38,6 +44,7 @@ use crate::{
         },
     },
     execution_ids::TxExecutionId,
+    transactions_state::TransactionResultEvent,
     transport::{
         common::HttpDecoderError,
         rpc_metrics::RpcRequestDuration,
@@ -81,47 +88,55 @@ use revm::{
     primitives::{
         B256,
         alloy_primitives::TxHash,
-        ruint::ParseError,
     },
 };
 use std::{
-    num::ParseIntError,
-    str::FromStr,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
     time::Instant,
 };
 use thiserror::Error;
+use tokio::{
+    sync::{
+        broadcast,
+        mpsc,
+    },
+    task::AbortHandle,
+};
+use tokio_stream::Stream;
 use tonic::{
     Request,
     Response,
     Status,
+    Streaming,
 };
 use tracing::{
     debug,
+    error,
     info,
     instrument,
     warn,
 };
 
 mod error_messages {
-    pub const INVALID_TX_HASH: &str = "invalid tx_execution_id.tx_hash";
-    pub const INVALID_BENEFICIARY: &str = "invalid beneficiary";
-    pub const INVALID_DIFFICULTY: &str = "invalid difficulty";
-    pub const INVALID_PREVRANDAO: &str = "invalid prevrandao";
-    pub const INVALID_BLOB_GASPRICE: &str = "invalid blob_gasprice";
+    pub const INVALID_TX_HASH: &str = "invalid tx_hash: expected 32 bytes";
+    pub const INVALID_BENEFICIARY: &str = "invalid beneficiary: expected 20 bytes";
+    pub const INVALID_DIFFICULTY: &str = "invalid difficulty: expected 32 bytes";
+    pub const INVALID_PREVRANDAO: &str = "invalid prevrandao: expected 32 bytes";
+    pub const INVALID_BLOB_GASPRICE: &str = "invalid blob_gasprice: expected 16 bytes";
     pub const MISSING_TX_EXECUTION_ID: &str = "missing tx_execution_id";
     pub const SELECTED_ITERATION_REQUIRED: &str = "selected_iteration_id is required";
     pub const BLOCK_ENV_REQUIRED: &str = "block_env is required";
-    pub const EVENTS_EMPTY: &str = "events must not be empty";
     pub const EVENT_PAYLOAD_MISSING: &str = "event payload missing";
     pub const COMMIT_HEAD_REQUIRED: &str = "commit head must be received before other events";
-    pub const INVALID_LAST_TX_HASH: &str = "invalid last_tx_hash";
+    pub const INVALID_LAST_TX_HASH: &str = "invalid last_tx_hash: expected 32 bytes";
     pub const N_TX_ZERO_HASH_PRESENT: &str =
         "when n_transactions is 0, last_tx_hash must be null, empty, or missing";
     pub const N_TX_POSITIVE_HASH_MISSING: &str =
@@ -130,233 +145,132 @@ mod error_messages {
     pub const QUEUE_REORG_FAILED: &str = "failed to queue reorg";
 }
 
-/// Status string constants to avoid repeated heap allocations
-mod status_strings {
-    pub const SUCCESS: &str = "success";
-    pub const REVERTED: &str = "reverted";
-    pub const HALTED: &str = "halted";
-    pub const FAILED: &str = "failed";
-    pub const ASSERTION_FAILED: &str = "assertion_failed";
-}
+/// Expected byte lengths for binary-encoded fields.
+const ADDRESS_LEN: usize = 20;
+const HASH_LEN: usize = 32;
+const U128_LEN: usize = 16;
+const U256_LEN: usize = 32;
 
 // Optimized error type that avoids heap allocations for common error cases.
 // Only stores minimal metadata needed to reconstruct the error if necessary.
 #[derive(Debug, Clone, Error)]
-pub enum FastHttpDecoderError {
+pub enum DecodeError {
     #[error("missing tx_env")]
     MissingTxEnv,
     #[error("missing tx_execution_id")]
     MissingTxExecutionId,
-    #[error("invalid data")]
-    InvalidData,
-    #[error("invalid value")]
-    InvalidValue,
-    #[error("invalid access_list")]
-    InvalidAccessList,
-    #[error("invalid blob_hashes")]
-    InvalidBlobHashes,
-    #[error("invalid authorization_list")]
-    InvalidAuthorizationList,
-    #[error("invalid signature")]
-    InvalidSignature,
-    #[error("invalid gas_priority_fee")]
-    InvalidGasPriorityFee,
-    #[error("invalid max_fee_per_blob_gas")]
-    InvalidMaxFeePerBlobGas,
-    #[error("invalid chain_id")]
-    InvalidChainId,
-    #[error("invalid y_parity")]
-    InvalidYParity,
-    #[error("invalid hash (len={input_len})")]
-    InvalidHash { input_len: usize },
-    #[error("invalid address (len={input_len})")]
-    InvalidAddress { input_len: usize },
-    #[error("invalid caller (len={input_len})")]
-    InvalidCaller { input_len: usize },
-    #[error("invalid gas_price (len={input_len})")]
-    InvalidGasPrice { input_len: usize },
-    #[error("invalid kind (len={input_len})")]
-    InvalidKind { input_len: usize },
+    #[error("invalid address: expected {ADDRESS_LEN} bytes, got {0}")]
+    InvalidAddress(usize),
+    #[error("invalid hash: expected {HASH_LEN} bytes, got {0}")]
+    InvalidHash(usize),
+    #[error("invalid u128: expected {U128_LEN} bytes, got {0}")]
+    InvalidU128(usize),
+    #[error("invalid u256: expected {U256_LEN} bytes, got {0}")]
+    InvalidU256(usize),
     #[error("invalid tx_type: {0}")]
     InvalidTxType(u32),
-    #[error("invalid hex (len={input_len})")]
-    InvalidHex { input_len: usize },
+    #[error("invalid signature")]
+    InvalidSignature,
 }
 
-impl FastHttpDecoderError {
-    #[inline]
-    const fn invalid_hash(s: &str) -> Self {
-        Self::InvalidHash { input_len: s.len() }
-    }
-
-    #[inline]
-    const fn invalid_hex(s: &str) -> Self {
-        Self::InvalidHex { input_len: s.len() }
-    }
-}
-
-impl From<FastHttpDecoderError> for HttpDecoderError {
-    fn from(e: FastHttpDecoderError) -> Self {
+impl From<DecodeError> for HttpDecoderError {
+    fn from(e: DecodeError) -> Self {
         match e {
-            FastHttpDecoderError::MissingTxEnv => HttpDecoderError::MissingTxEnv,
-            FastHttpDecoderError::MissingTxExecutionId => HttpDecoderError::MissingTxExecutionId,
-            FastHttpDecoderError::InvalidData => HttpDecoderError::InvalidData,
-            FastHttpDecoderError::InvalidValue => HttpDecoderError::InvalidValue,
-            FastHttpDecoderError::InvalidAccessList => HttpDecoderError::InvalidAccessList,
-            FastHttpDecoderError::InvalidBlobHashes => HttpDecoderError::InvalidBlobHashes,
-            FastHttpDecoderError::InvalidAuthorizationList => {
-                HttpDecoderError::InvalidAuthorizationList
+            DecodeError::MissingTxEnv => HttpDecoderError::MissingTxEnv,
+            DecodeError::MissingTxExecutionId => HttpDecoderError::MissingTxExecutionId,
+            DecodeError::InvalidAddress(_) => HttpDecoderError::InvalidAddress(String::new()),
+            DecodeError::InvalidHash(_) => HttpDecoderError::InvalidHash(String::new()),
+            DecodeError::InvalidU128(_) | DecodeError::InvalidU256(_) => {
+                HttpDecoderError::InvalidValue
             }
-            FastHttpDecoderError::InvalidSignature => HttpDecoderError::InvalidSignature,
-            FastHttpDecoderError::InvalidGasPriorityFee => HttpDecoderError::InvalidGasPriorityFee,
-            FastHttpDecoderError::InvalidMaxFeePerBlobGas => {
-                HttpDecoderError::InvalidMaxFeePerBlobGas(String::new())
-            }
-            FastHttpDecoderError::InvalidChainId => HttpDecoderError::InvalidChainId(String::new()),
-            FastHttpDecoderError::InvalidYParity => HttpDecoderError::InvalidYParity(String::new()),
-            FastHttpDecoderError::InvalidHash { .. } => {
-                HttpDecoderError::InvalidHash(String::new())
-            }
-            FastHttpDecoderError::InvalidAddress { .. } => {
-                HttpDecoderError::InvalidAddress(String::new())
-            }
-            FastHttpDecoderError::InvalidCaller { .. } => {
-                HttpDecoderError::InvalidCaller(String::new())
-            }
-            FastHttpDecoderError::InvalidGasPrice { .. } => {
-                HttpDecoderError::InvalidGasPrice(String::new())
-            }
-            FastHttpDecoderError::InvalidKind { .. } => {
-                HttpDecoderError::InvalidKind(String::new())
-            }
-            FastHttpDecoderError::InvalidTxType(t) => {
-                HttpDecoderError::InvalidTxType(t.to_string())
-            }
-            FastHttpDecoderError::InvalidHex { .. } => HttpDecoderError::InvalidHex(String::new()),
+            DecodeError::InvalidTxType(t) => HttpDecoderError::InvalidTxType(t.to_string()),
+            DecodeError::InvalidSignature => HttpDecoderError::InvalidSignature,
         }
     }
 }
 
 #[inline]
-fn parse_pb_tx_execution_id(pb: &PbTxExecutionId) -> Result<TxExecutionId, Status> {
-    let tx_hash = pb
-        .tx_hash
-        .parse::<TxHash>()
-        .map_err(|_| Status::invalid_argument(error_messages::INVALID_TX_HASH))?;
-    Ok(TxExecutionId::new(
-        pb.block_number,
-        pb.iteration_id,
-        tx_hash,
-        pb.index,
-    ))
-}
-
-#[inline]
-fn into_pb_tx_execution_id(tx_execution_id: TxExecutionId) -> PbTxExecutionId {
-    PbTxExecutionId {
-        block_number: tx_execution_id.block_number,
-        iteration_id: tx_execution_id.iteration_id,
-        tx_hash: tx_execution_id.tx_hash_hex(),
-        index: tx_execution_id.index,
+fn decode_address(bytes: &[u8]) -> Result<Address, DecodeError> {
+    if bytes.len() != ADDRESS_LEN {
+        return Err(DecodeError::InvalidAddress(bytes.len()));
     }
+    Ok(Address::from_slice(bytes))
 }
 
 #[inline]
-fn parse_pb_tx_execution_id_fast(
-    pb: &PbTxExecutionId,
-) -> Result<TxExecutionId, FastHttpDecoderError> {
-    let tx_hash = TxHash::from_str(&pb.tx_hash)
-        .map_err(|_| FastHttpDecoderError::invalid_hash(&pb.tx_hash))?;
-    Ok(TxExecutionId::new(
-        pb.block_number,
-        pb.iteration_id,
-        tx_hash,
-        pb.index,
-    ))
+fn decode_b256(bytes: &[u8]) -> Result<B256, DecodeError> {
+    if bytes.len() != HASH_LEN {
+        return Err(DecodeError::InvalidHash(bytes.len()));
+    }
+    Ok(B256::from_slice(bytes))
 }
 
 #[inline]
-fn parse_address(addr_str: &str) -> Result<Address, FastHttpDecoderError> {
-    Address::from_str(addr_str).map_err(|_| {
-        FastHttpDecoderError::InvalidAddress {
-            input_len: addr_str.len(),
-        }
-    })
+fn decode_u128_be(bytes: &[u8]) -> Result<u128, DecodeError> {
+    if bytes.len() != U128_LEN {
+        return Err(DecodeError::InvalidU128(bytes.len()));
+    }
+    Ok(u128::from_be_bytes(bytes.try_into().unwrap()))
 }
 
 #[inline]
-fn parse_tx_kind(to_str: &str) -> Result<TxKind, FastHttpDecoderError> {
-    if to_str.is_empty() || to_str == "0x" || to_str == "0x0" {
+fn decode_u256_be(bytes: &[u8]) -> Result<U256, DecodeError> {
+    if bytes.len() != U256_LEN {
+        return Err(DecodeError::InvalidU256(bytes.len()));
+    }
+    Ok(U256::from_be_bytes::<32>(bytes.try_into().unwrap()))
+}
+
+#[inline]
+fn decode_tx_kind(bytes: &[u8]) -> Result<TxKind, DecodeError> {
+    if bytes.is_empty() {
         Ok(TxKind::Create)
     } else {
-        Ok(TxKind::Call(parse_address(to_str)?))
-    }
-}
-
-/// Parse a U256 from a decimal or hex string.
-#[inline]
-fn parse_u256(value_str: &str) -> Result<U256, ParseError> {
-    let bytes = value_str.as_bytes();
-    if bytes.len() >= 2 && bytes[0] == b'0' && (bytes[1] | 0x20) == b'x' {
-        U256::from_str(value_str)
-    } else {
-        U256::from_str_radix(value_str, 10)
+        Ok(TxKind::Call(decode_address(bytes)?))
     }
 }
 
 #[inline]
-fn parse_u128(value_str: &str) -> Result<u128, ParseIntError> {
-    value_str.parse::<u128>()
+fn encode_address(addr: Address) -> Vec<u8> {
+    addr.as_slice().to_vec()
 }
 
-/// Parse an u8 from a decimal or hex string.
 #[inline]
-fn parse_u8(value_str: &str) -> Result<u8, ParseIntError> {
-    let bytes = value_str.as_bytes();
-    if bytes.len() >= 2 && bytes[0] == b'0' && (bytes[1] | 0x20) == b'x' {
-        u8::from_str_radix(&value_str[2..], 16)
-    } else {
-        value_str.parse::<u8>()
+fn encode_b256(hash: B256) -> Vec<u8> {
+    hash.as_slice().to_vec()
+}
+
+#[inline]
+fn encode_tx_execution_id(id: TxExecutionId) -> PbTxExecutionId {
+    PbTxExecutionId {
+        block_number: id.block_number,
+        iteration_id: id.iteration_id,
+        tx_hash: encode_b256(id.tx_hash),
+        index: id.index,
     }
 }
 
-/// Parse bytes from a hex string with optimized allocation.
 #[inline]
-fn parse_bytes(data_str: &str) -> Result<Bytes, FastHttpDecoderError> {
-    if data_str.is_empty() {
-        return Ok(Bytes::new());
-    }
-
-    let hex_str = data_str.strip_prefix("0x").unwrap_or(data_str);
-    if hex_str.is_empty() {
-        return Ok(Bytes::new());
-    }
-
-    // Pre-allocate the exact size needed
-    let len = hex_str.len() / 2;
-    let mut buf = vec![0u8; len];
-    hex::decode_to_slice(hex_str, &mut buf)
-        .map_err(|_| FastHttpDecoderError::invalid_hex(data_str))?;
-    Ok(Bytes::from(buf))
+fn decode_tx_execution_id(pb: &PbTxExecutionId) -> Result<TxExecutionId, DecodeError> {
+    let tx_hash = decode_b256(&pb.tx_hash)?;
+    Ok(TxExecutionId::new(
+        pb.block_number,
+        pb.iteration_id,
+        tx_hash,
+        pb.index,
+    ))
 }
 
 #[inline]
-fn parse_b256(hash_str: &str) -> Result<B256, FastHttpDecoderError> {
-    B256::from_str(hash_str).map_err(|_| FastHttpDecoderError::invalid_hex(hash_str))
-}
-
-#[inline]
-fn parse_access_list(
-    pb_list: &[crate::transport::grpc::pb::AccessListItem],
-) -> Result<AccessList, FastHttpDecoderError> {
-    pb_list
+fn decode_access_list(items: &[pb::AccessListItem]) -> Result<AccessList, DecodeError> {
+    items
         .iter()
         .map(|item| {
-            let address = parse_address(&item.address)?;
+            let address = decode_address(&item.address)?;
             let storage_keys: Vec<B256> = item
                 .storage_keys
                 .iter()
-                .map(|key| parse_b256(key))
+                .map(|k| decode_b256(k))
                 .collect::<Result<_, _>>()?;
             Ok(AccessListItem {
                 address,
@@ -367,24 +281,18 @@ fn parse_access_list(
         .map(AccessList)
 }
 
-#[inline]
-fn parse_blob_hashes(hashes: &[String]) -> Result<Vec<B256>, FastHttpDecoderError> {
-    hashes.iter().map(|h| parse_b256(h)).collect()
-}
-
-fn parse_authorization_list(
-    pb_auths: &[crate::transport::grpc::pb::Authorization],
-) -> Result<Vec<Either<SignedAuthorization, RecoveredAuthorization>>, FastHttpDecoderError> {
-    pb_auths
+fn decode_authorization_list(
+    auths: &[pb::Authorization],
+) -> Result<Vec<Either<SignedAuthorization, RecoveredAuthorization>>, DecodeError> {
+    auths
         .iter()
         .map(|auth| {
-            let address = parse_address(&auth.address)?;
-            let chain_id =
-                parse_u256(&auth.chain_id).map_err(|_| FastHttpDecoderError::InvalidChainId)?;
+            let chain_id = decode_u256_be(&auth.chain_id)?;
+            let address = decode_address(&auth.address)?;
+            let r = decode_u256_be(&auth.r)?;
+            let s = decode_u256_be(&auth.s)?;
             let y_parity =
-                parse_u8(&auth.y_parity).map_err(|_| FastHttpDecoderError::InvalidYParity)?;
-            let r = parse_u256(&auth.r).map_err(|_| FastHttpDecoderError::InvalidSignature)?;
-            let s = parse_u256(&auth.s).map_err(|_| FastHttpDecoderError::InvalidSignature)?;
+                u8::try_from(auth.y_parity).map_err(|_| DecodeError::InvalidSignature)?;
 
             let inner = Authorization {
                 chain_id,
@@ -398,131 +306,72 @@ fn parse_authorization_list(
         .collect()
 }
 
-#[inline]
-fn parse_commit_metadata(
-    last_tx_hash_raw: &str,
-    n_transactions: u64,
-) -> Result<Option<TxHash>, Status> {
-    let parsed_hash = if last_tx_hash_raw.is_empty() {
-        None
-    } else {
-        Some(
-            last_tx_hash_raw
-                .parse::<TxHash>()
-                .map_err(|_| Status::invalid_argument(error_messages::INVALID_LAST_TX_HASH))?,
-        )
-    };
+/// Convert protobuf TransactionEnv to revm TxEnv using binary decoding.
+pub fn decode_tx_env(pb: &TransactionEnv) -> Result<TxEnv, DecodeError> {
+    let caller = decode_address(&pb.caller)?;
+    let gas_price = decode_u128_be(&pb.gas_price)?;
+    let kind = decode_tx_kind(&pb.transact_to)?;
+    let value = decode_u256_be(&pb.value)?;
+    let data = Bytes::from(pb.data.clone());
+    let access_list = decode_access_list(&pb.access_list)?;
 
-    if n_transactions == 0 && parsed_hash.is_some() {
-        return Err(Status::invalid_argument(
-            error_messages::N_TX_ZERO_HASH_PRESENT,
-        ));
-    }
-
-    if n_transactions > 0 && parsed_hash.is_none() {
-        return Err(Status::invalid_argument(
-            error_messages::N_TX_POSITIVE_HASH_MISSING,
-        ));
-    }
-
-    Ok(parsed_hash)
-}
-
-#[inline]
-fn convert_pb_commit_head(commit_head: &PbCommitHead) -> Result<CommitHead, Status> {
-    let selected_iteration_id = commit_head
-        .selected_iteration_id
-        .ok_or_else(|| Status::invalid_argument(error_messages::SELECTED_ITERATION_REQUIRED))?;
-    let last_tx_hash =
-        parse_commit_metadata(&commit_head.last_tx_hash, commit_head.n_transactions)?;
-
-    Ok(CommitHead::new(
-        commit_head.block_number,
-        selected_iteration_id,
-        last_tx_hash,
-        commit_head.n_transactions,
-    ))
-}
-
-#[inline]
-fn convert_pb_new_iteration(new_iteration: PbNewIteration) -> Result<NewIteration, Status> {
-    let block_env_pb = new_iteration
-        .block_env
-        .ok_or_else(|| Status::invalid_argument(error_messages::BLOCK_ENV_REQUIRED))?;
-    let block_env = convert_pb_block_env(block_env_pb)?;
-
-    Ok(NewIteration::new(new_iteration.iteration_id, block_env))
-}
-
-#[inline]
-fn convert_pb_block_env(block_env: super::pb::BlockEnv) -> Result<RevmBlockEnv, Status> {
-    let beneficiary = parse_address(&block_env.beneficiary)
-        .map_err(|_| Status::invalid_argument(error_messages::INVALID_BENEFICIARY))?;
-
-    let difficulty = parse_u256(&block_env.difficulty)
-        .map_err(|_| Status::invalid_argument(error_messages::INVALID_DIFFICULTY))?;
-
-    let prevrandao = block_env
-        .prevrandao
-        .filter(|v| !v.is_empty())
-        .map(|v| parse_b256(&v))
-        .transpose()
-        .map_err(|_| Status::invalid_argument(error_messages::INVALID_PREVRANDAO))?;
-
-    let blob_excess_gas_and_price = block_env
-        .blob_excess_gas_and_price
+    let gas_priority_fee = pb
+        .gas_priority_fee
         .as_ref()
-        .map(convert_pb_blob_excess_gas_and_price)
+        .filter(|b| !b.is_empty())
+        .map(|b| decode_u128_be(b))
         .transpose()?;
 
-    Ok(RevmBlockEnv {
-        number: block_env.number,
-        beneficiary,
-        timestamp: block_env.timestamp,
-        gas_limit: block_env.gas_limit,
-        basefee: block_env.basefee,
-        difficulty,
-        prevrandao,
-        blob_excess_gas_and_price,
-    })
-}
+    let blob_hashes: Vec<B256> = pb
+        .blob_hashes
+        .iter()
+        .map(|h| decode_b256(h))
+        .collect::<Result<_, _>>()?;
 
-#[inline]
-fn convert_pb_blob_excess_gas_and_price(
-    blob: &super::pb::BlobExcessGasAndPrice,
-) -> Result<RevmBlobExcessGasAndPrice, Status> {
-    let blob_gasprice = parse_u128(&blob.blob_gasprice)
-        .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOB_GASPRICE))?;
+    let max_fee_per_blob_gas = if pb.max_fee_per_blob_gas.is_empty() {
+        0u128
+    } else {
+        decode_u128_be(&pb.max_fee_per_blob_gas)?
+    };
 
-    Ok(RevmBlobExcessGasAndPrice {
-        excess_blob_gas: blob.excess_blob_gas,
-        blob_gasprice,
+    let authorization_list = decode_authorization_list(&pb.authorization_list)?;
+
+    Ok(TxEnv {
+        tx_type: u8::try_from(pb.tx_type).map_err(|_| DecodeError::InvalidTxType(pb.tx_type))?,
+        caller,
+        gas_limit: pb.gas_limit,
+        gas_price,
+        kind,
+        value,
+        data,
+        nonce: pb.nonce,
+        chain_id: pb.chain_id,
+        access_list,
+        gas_priority_fee,
+        blob_hashes,
+        max_fee_per_blob_gas,
+        authorization_list,
     })
 }
 
 /// Convert a Transaction to queue transaction contents.
-#[inline]
-pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
-    let tx_env =
-        convert_pb_tx_env_to_revm_fast(t.tx_env.as_ref().ok_or(HttpDecoderError::MissingTxEnv)?)
-            .map_err(HttpDecoderError::from)?;
+pub fn decode_transaction(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
+    let tx_env = decode_tx_env(t.tx_env.as_ref().ok_or(DecodeError::MissingTxEnv)?)?;
 
-    let pb_tx_execution_id = t
+    let pb_id = t
         .tx_execution_id
         .as_ref()
-        .ok_or(HttpDecoderError::MissingTxExecutionId)?;
+        .ok_or(DecodeError::MissingTxExecutionId)?;
 
-    let tx_execution_id =
-        parse_pb_tx_execution_id_fast(pb_tx_execution_id).map_err(HttpDecoderError::from)?;
+    let tx_execution_id = decode_tx_execution_id(pb_id)?;
 
     let prev_tx_hash = t
         .prev_tx_hash
         .as_ref()
-        .map(|prev_tx_hash| {
-            TxHash::from_str(prev_tx_hash)
-                .map_err(|_| HttpDecoderError::InvalidHash(prev_tx_hash.clone()))
-        })
-        .transpose()?;
+        .filter(|b| !b.is_empty())
+        .map(|b| decode_b256(b))
+        .transpose()
+        .map_err(|_| HttpDecoderError::InvalidHash(String::new()))?;
 
     Ok(TxQueueContents::Tx(
         QueueTransaction {
@@ -534,76 +383,90 @@ pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError>
     ))
 }
 
-/// Convert protobuf TransactionEnv to revm TxEnv using optimized parsing.
-pub fn convert_pb_tx_env_to_revm_fast(
-    pb_tx_env: &TransactionEnv,
-) -> Result<TxEnv, FastHttpDecoderError> {
-    let caller = parse_address(&pb_tx_env.caller).map_err(|_| {
-        FastHttpDecoderError::InvalidCaller {
-            input_len: pb_tx_env.caller.len(),
-        }
-    })?;
-
-    let gas_price = parse_u128(&pb_tx_env.gas_price).map_err(|_| {
-        FastHttpDecoderError::InvalidGasPrice {
-            input_len: pb_tx_env.gas_price.len(),
-        }
-    })?;
-
-    let kind = parse_tx_kind(&pb_tx_env.kind).map_err(|_| {
-        FastHttpDecoderError::InvalidKind {
-            input_len: pb_tx_env.kind.len(),
-        }
-    })?;
-
-    let value = parse_u256(&pb_tx_env.value).map_err(|_| FastHttpDecoderError::InvalidValue)?;
-    let data = parse_bytes(&pb_tx_env.data)?;
-
-    let access_list = parse_access_list(&pb_tx_env.access_list)
-        .map_err(|_| FastHttpDecoderError::InvalidAccessList)?;
-
-    let gas_priority_fee = pb_tx_env
-        .gas_priority_fee
+#[inline]
+fn decode_commit_head(pb: &PbCommitHead) -> Result<CommitHead, Status> {
+    let last_tx_hash = pb
+        .last_tx_hash
         .as_ref()
-        .filter(|s| !s.is_empty())
-        .map(|s| parse_u128(s))
+        .filter(|b| !b.is_empty())
+        .map(|b| decode_b256(b))
         .transpose()
-        .map_err(|_| FastHttpDecoderError::InvalidGasPriorityFee)?;
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_LAST_TX_HASH))?;
 
-    let blob_hashes = parse_blob_hashes(&pb_tx_env.blob_hashes)
-        .map_err(|_| FastHttpDecoderError::InvalidBlobHashes)?;
+    if pb.n_transactions == 0 && last_tx_hash.is_some() {
+        return Err(Status::invalid_argument(
+            error_messages::N_TX_ZERO_HASH_PRESENT,
+        ));
+    }
 
-    let max_fee_per_blob_gas = parse_u128(&pb_tx_env.max_fee_per_blob_gas)
-        .map_err(|_| FastHttpDecoderError::InvalidMaxFeePerBlobGas)?;
+    if pb.n_transactions > 0 && last_tx_hash.is_none() {
+        return Err(Status::invalid_argument(
+            error_messages::N_TX_POSITIVE_HASH_MISSING,
+        ));
+    }
 
-    let authorization_list = parse_authorization_list(&pb_tx_env.authorization_list)
-        .map_err(|_| FastHttpDecoderError::InvalidAuthorizationList)?;
+    Ok(CommitHead::new(
+        pb.block_number,
+        pb.selected_iteration_id,
+        last_tx_hash,
+        pb.n_transactions,
+    ))
+}
 
-    Ok(TxEnv {
-        tx_type: u8::try_from(pb_tx_env.tx_type)
-            .map_err(|_| FastHttpDecoderError::InvalidTxType(pb_tx_env.tx_type))?,
-        caller,
-        gas_limit: pb_tx_env.gas_limit,
-        gas_price,
-        kind,
-        value,
-        data,
-        nonce: pb_tx_env.nonce,
-        chain_id: pb_tx_env.chain_id,
-        access_list,
-        gas_priority_fee,
-        blob_hashes,
-        max_fee_per_blob_gas,
-        authorization_list,
+#[inline]
+fn decode_block_env(pb: PbBlockEnv) -> Result<RevmBlockEnv, Status> {
+    let beneficiary = decode_address(&pb.beneficiary)
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_BENEFICIARY))?;
+
+    let difficulty = decode_u256_be(&pb.difficulty)
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_DIFFICULTY))?;
+
+    let prevrandao = pb
+        .prevrandao
+        .filter(|b| !b.is_empty())
+        .map(|b| decode_b256(&b))
+        .transpose()
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_PREVRANDAO))?;
+
+    let blob_excess_gas_and_price = pb
+        .blob_excess_gas_and_price
+        .map(|b| -> Result<RevmBlobExcessGasAndPrice, Status> {
+            let blob_gasprice = decode_u128_be(&b.blob_gasprice)
+                .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOB_GASPRICE))?;
+            Ok(RevmBlobExcessGasAndPrice {
+                excess_blob_gas: b.excess_blob_gas,
+                blob_gasprice,
+            })
+        })
+        .transpose()?;
+
+    Ok(RevmBlockEnv {
+        number: pb.number,
+        beneficiary,
+        timestamp: pb.timestamp,
+        gas_limit: pb.gas_limit,
+        basefee: pb.basefee,
+        difficulty,
+        prevrandao,
+        blob_excess_gas_and_price,
     })
 }
 
 #[inline]
-fn into_pb_transaction_result(
+fn decode_new_iteration(pb: PbNewIteration) -> Result<NewIteration, Status> {
+    let block_env = decode_block_env(
+        pb.block_env
+            .ok_or_else(|| Status::invalid_argument(error_messages::BLOCK_ENV_REQUIRED))?,
+    )?;
+    Ok(NewIteration::new(pb.iteration_id, block_env))
+}
+
+#[inline]
+fn encode_transaction_result(
     tx_execution_id: TxExecutionId,
     result: &TransactionResult,
 ) -> PbTransactionResult {
-    let pb_tx_id = Some(into_pb_tx_execution_id(tx_execution_id));
+    let pb_tx_id = Some(encode_tx_execution_id(tx_execution_id));
 
     match result {
         TransactionResult::ValidationCompleted {
@@ -614,7 +477,7 @@ fn into_pb_transaction_result(
             if !*is_valid {
                 return PbTransactionResult {
                     tx_execution_id: pb_tx_id,
-                    status: status_strings::ASSERTION_FAILED.into(),
+                    status: ResultStatus::AssertionFailed.into(),
                     gas_used,
                     error: String::new(),
                 };
@@ -623,7 +486,7 @@ fn into_pb_transaction_result(
                 ExecutionResult::Success { .. } => {
                     PbTransactionResult {
                         tx_execution_id: pb_tx_id,
-                        status: status_strings::SUCCESS.into(),
+                        status: ResultStatus::Success.into(),
                         gas_used,
                         error: String::new(),
                     }
@@ -631,7 +494,7 @@ fn into_pb_transaction_result(
                 ExecutionResult::Revert { .. } => {
                     PbTransactionResult {
                         tx_execution_id: pb_tx_id,
-                        status: status_strings::REVERTED.into(),
+                        status: ResultStatus::Reverted.into(),
                         gas_used,
                         error: String::new(),
                     }
@@ -639,7 +502,7 @@ fn into_pb_transaction_result(
                 ExecutionResult::Halt { reason, .. } => {
                     PbTransactionResult {
                         tx_execution_id: pb_tx_id,
-                        status: status_strings::HALTED.into(),
+                        status: ResultStatus::Halted.into(),
                         gas_used,
                         error: format!("Transaction halted: {reason:?}"),
                     }
@@ -649,7 +512,7 @@ fn into_pb_transaction_result(
         TransactionResult::ValidationError(error) => {
             PbTransactionResult {
                 tx_execution_id: pb_tx_id,
-                status: status_strings::FAILED.into(),
+                status: ResultStatus::Failed.into(),
                 gas_used: 0,
                 error: format!("Validation error: {error}"),
             }
@@ -657,23 +520,91 @@ fn into_pb_transaction_result(
     }
 }
 
+/// Type alias for the streaming results output.
+type ResultStream = Pin<Box<dyn Stream<Item = Result<PbTransactionResult, Status>> + Send>>;
+
+/// Type alias for the streaming acks output.
+type AckStream = Pin<Box<dyn Stream<Item = Result<StreamAck, Status>> + Send>>;
+
+/// Buffer size for the result broadcaster channel.
+const RESULT_BROADCAST_BUFFER: usize = 16_384;
+
 #[derive(Clone)]
 pub struct GrpcService {
     tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
     commit_head_seen: Arc<AtomicBool>,
+    /// Broadcast channel for pushing transaction results to gRPC subscribers.
+    /// Fed by a background task consuming from the flume channel.
+    result_broadcaster: broadcast::Sender<PbTransactionResult>,
+    abort_handle: Option<AbortHandle>,
+}
+
+impl Drop for GrpcService {
+    fn drop(&mut self) {
+        if let Some(abort_handle) = self.abort_handle.take() {
+            abort_handle.abort();
+        }
+    }
 }
 
 impl GrpcService {
+    /// Create a new GrpcService.
+    ///
+    /// If `result_event_rx` is provided, spawns a background task that consumes
+    /// transaction result events and broadcasts them to gRPC subscribers.
     pub fn new(
         tx_sender: TransactionQueueSender,
         transactions_results: QueryTransactionsResults,
+        result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
     ) -> Self {
+        let (result_broadcaster, _) = broadcast::channel(RESULT_BROADCAST_BUFFER);
+
+        let mut abort_handle = None;
+        // Spawn background task to forward results from flume to broadcast
+        if let Some(rx) = result_event_rx {
+            let broadcaster = result_broadcaster.clone();
+            let handler = tokio::spawn(async move {
+                Self::result_forwarder_task(rx, broadcaster).await;
+            });
+            abort_handle = Some(handler.abort_handle());
+        }
+
         Self {
             tx_sender,
             transactions_results,
             commit_head_seen: Arc::new(AtomicBool::new(false)),
+            result_broadcaster,
+            abort_handle,
         }
+    }
+
+    /// Background task that consumes from the flume channel and broadcasts to subscribers.
+    async fn result_forwarder_task(
+        rx: flume::Receiver<TransactionResultEvent>,
+        broadcaster: broadcast::Sender<PbTransactionResult>,
+    ) {
+        // Use async recv to avoid blocking the runtime
+        while let Ok(event) = rx.recv_async().await {
+            let pb_result = encode_transaction_result(event.tx_execution_id, &event.result);
+
+            // Ignore send errors - just means no subscribers
+            let subscriber_count = broadcaster.send(pb_result).unwrap_or(0);
+
+            if subscriber_count > 0 {
+                debug!(
+                    target = "transport::grpc",
+                    tx_hash = ?event.tx_execution_id.tx_hash,
+                    subscribers = subscriber_count,
+                    "Forwarded result to gRPC subscribers"
+                );
+            }
+        }
+
+        info!(
+            target = "transport::grpc",
+            "Result forwarder task ended - channel closed"
+        );
     }
 
     #[inline]
@@ -699,6 +630,69 @@ impl GrpcService {
         }
     }
 
+    /// Process a single event from the stream.
+    fn process_event(&self, event: Event, events_processed: &AtomicU64) -> Result<(), Status> {
+        let variant = event
+            .event
+            .ok_or_else(|| Status::invalid_argument(error_messages::EVENT_PAYLOAD_MISSING))?;
+
+        match variant {
+            EventVariant::CommitHead(commit) => {
+                let commit_head = decode_commit_head(&commit)?;
+                self.send_queue_event(TxQueueContents::CommitHead(
+                    commit_head,
+                    tracing::Span::current(),
+                ))?;
+                self.mark_commit_head_seen();
+            }
+            EventVariant::NewIteration(iteration) => {
+                self.ensure_commit_head_seen()?;
+                let new_iteration = decode_new_iteration(iteration)?;
+                self.send_queue_event(TxQueueContents::NewIteration(
+                    new_iteration,
+                    tracing::Span::current(),
+                ))?;
+            }
+            EventVariant::Transaction(transaction) => {
+                self.ensure_commit_head_seen()?;
+                let queue_tx = decode_transaction(&transaction)
+                    .map_err(|e| Status::invalid_argument(format!("invalid transaction: {e}")))?;
+
+                if let TxQueueContents::Tx(ref tx, _) = queue_tx
+                    && self
+                        .transactions_results
+                        .is_tx_received_now(&tx.tx_execution_id)
+                {
+                    warn!(
+                        tx_hash = ?tx.tx_execution_id.tx_hash,
+                        "TX hash already received, skipping"
+                    );
+                    return Ok(());
+                }
+
+                self.transactions_results.add_accepted_tx(&queue_tx);
+                self.send_queue_event(queue_tx)?;
+            }
+            EventVariant::Reorg(reorg) => {
+                self.ensure_commit_head_seen()?;
+                let pb_id = reorg.tx_execution_id.ok_or_else(|| {
+                    Status::invalid_argument(error_messages::MISSING_TX_EXECUTION_ID)
+                })?;
+                let tx_execution_id = decode_tx_execution_id(&pb_id)
+                    .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+                let event = TxQueueContents::Reorg(tx_execution_id, tracing::Span::current());
+                self.transactions_results.add_accepted_tx(&event);
+                self.tx_sender
+                    .send(event)
+                    .map_err(|_| Status::internal(error_messages::QUEUE_REORG_FAILED))?;
+            }
+        }
+
+        events_processed.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
     #[inline]
     async fn fetch_transaction_result(
         &self,
@@ -717,18 +711,18 @@ impl GrpcService {
             }
         };
 
-        let pb_result = into_pb_transaction_result(tx_execution_id, &result);
+        let pb_result = encode_transaction_result(tx_execution_id, &result);
         histogram!("sidecar_fetch_transaction_result_duration").record(fetch_started_at.elapsed());
 
         Ok(pb_result)
     }
 
     /// Collect transaction results with parallel fetching.
-    /// Optimized to minimize clones - only clones hash strings when actually needed for errors.
-    async fn collect_transaction_results_parallel<'a, I>(
+    /// Optimized to minimize clones - only clones hash bytes when actually needed for errors.
+    async fn collect_results_parallel<'a, I>(
         &self,
         ids: I,
-    ) -> Result<(Vec<PbTransactionResult>, Vec<String>), Status>
+    ) -> Result<(Vec<PbTransactionResult>, Vec<Vec<u8>>), Status>
     where
         I: IntoIterator<Item = &'a PbTxExecutionId>,
     {
@@ -738,28 +732,27 @@ impl GrpcService {
         // Phase 1: Parse all IDs and categorize
         // Store references to avoid cloning until necessary
         let mut ready_ids = Vec::with_capacity(lower_bound);
-        let mut waiters: Vec<(TxExecutionId, &'a str, _)> = Vec::new();
+        let mut waiters: Vec<(TxExecutionId, Vec<u8>, _)> = Vec::new();
         let mut not_found = Vec::new();
 
-        for pb_tx_execution_id in iter {
-            match parse_pb_tx_execution_id(pb_tx_execution_id) {
+        for pb_id in iter {
+            match decode_tx_execution_id(pb_id) {
                 Ok(tx_execution_id) => {
                     match self.transactions_results.is_tx_received(&tx_execution_id) {
                         AcceptedState::Yes => ready_ids.push(tx_execution_id),
                         AcceptedState::NotYet(rx) => {
                             info!(
                                 target = "transport::grpc",
-                                method = "GetTransactions",
                                 tx_execution_id = ?tx_execution_id,
                                 "Transaction not yet received, waiting for it"
                             );
-                            // Store reference to hash, only clone if tx not found later
-                            waiters.push((tx_execution_id, &pb_tx_execution_id.tx_hash, rx));
+                            // Clone hash bytes only when needed for waiting
+                            waiters.push((tx_execution_id, pb_id.tx_hash.clone(), rx));
                         }
                     }
                 }
                 // Only clone on parse error
-                Err(_) => not_found.push(pb_tx_execution_id.tx_hash.clone()),
+                Err(_) => not_found.push(pb_id.tx_hash.clone()),
             }
         }
 
@@ -783,7 +776,7 @@ impl GrpcService {
             // Convert to owned data only for the wait operation
             let waiters_owned: Vec<_> = waiters
                 .into_iter()
-                .map(|(id, hash, rx)| ((id, hash.to_owned()), rx))
+                .map(|(id, hash, rx)| ((id, hash), rx))
                 .collect();
 
             let wait_outcomes = wait_for_pending_transactions(waiters_owned).await;
@@ -819,159 +812,132 @@ impl GrpcService {
 
 #[tonic::async_trait]
 impl SidecarTransport for GrpcService {
-    /// Handle gRPC request for batched iteration events.
-    #[instrument(name = "grpc_server::SendEvents", skip(self, request), level = "debug")]
-    async fn send_events(
-        &self,
-        request: Request<PbSendEvents>,
-    ) -> Result<Response<BasicAck>, Status> {
-        let mut rpc_timer = None;
-        let payload = request.into_inner();
+    type StreamEventsStream = AckStream;
+    type SubscribeResultsStream = ResultStream;
 
-        if payload.events.is_empty() {
-            return Err(Status::invalid_argument(error_messages::EVENTS_EMPTY));
-        }
-
-        for event in payload.events {
-            let event_variant = event
-                .event
-                .ok_or_else(|| Status::invalid_argument(error_messages::EVENT_PAYLOAD_MISSING))?;
-
-            match event_variant {
-                SendEventVariant::CommitHead(commit) => {
-                    let commit_head = convert_pb_commit_head(&commit)?;
-                    self.send_queue_event(TxQueueContents::CommitHead(
-                        commit_head,
-                        tracing::Span::current(),
-                    ))?;
-                    self.mark_commit_head_seen();
-                }
-                SendEventVariant::NewIteration(iteration) => {
-                    self.ensure_commit_head_seen()?;
-                    let new_iteration = convert_pb_new_iteration(iteration)?;
-                    self.send_queue_event(TxQueueContents::NewIteration(
-                        new_iteration,
-                        tracing::Span::current(),
-                    ))?;
-                }
-                SendEventVariant::Transaction(transaction) => {
-                    self.ensure_commit_head_seen()?;
-                    let queue_tx = to_queue_tx(&transaction).map_err(|e| {
-                        Status::invalid_argument(format!("invalid transaction: {e}"))
-                    })?;
-
-                    if let TxQueueContents::Tx(ref tx, _) = queue_tx
-                        && self
-                            .transactions_results
-                            .is_tx_received_now(&tx.tx_execution_id)
-                    {
-                        warn!(
-                            tx_hash = %tx.tx_execution_id.tx_hash_hex(),
-                            "TX hash already received, skipping"
-                        );
-                        continue;
-                    }
-
-                    self.transactions_results.add_accepted_tx(&queue_tx);
-                    if matches!(&queue_tx, TxQueueContents::Tx(_, _)) {
-                        rpc_timer.get_or_insert_with(|| {
-                            RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "SendEvents"))
-                        });
-                    }
-                    self.send_queue_event(queue_tx)?;
-                }
-            }
-        }
-
-        Ok(Response::new(BasicAck {
-            accepted: true,
-            message: "events processed".into(),
-        }))
-    }
-
-    /// Handle gRPC request for `SendTransactions`.
+    /// Client sends events and the server responds with an ACK for each event received.
     #[instrument(
-        name = "grpc_server::SendTransactions",
+        name = "grpc_server::StreamEvents",
         skip(self, request),
         level = "debug"
     )]
-    async fn send_transactions(
+    async fn stream_events(
         &self,
-        request: Request<SendTransactionsRequest>,
-    ) -> Result<Response<SendTransactionsResponse>, Status> {
-        let _rpc_timer =
-            RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "SendTransactions"));
+        request: Request<Streaming<Event>>,
+    ) -> Result<Response<Self::StreamEventsStream>, Status> {
+        let mut stream = request.into_inner();
+        let service = self.clone();
+        let events_processed = Arc::new(AtomicU64::new(0));
+        let events_processed_clone = events_processed.clone();
+
+        let (tx, rx) = mpsc::channel(256);
+
+        // Spawn task to process incoming events
+        tokio::spawn(async move {
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => {
+                        // Process the event
+                        if let Err(e) = service.process_event(event, &events_processed_clone) {
+                            // Send error ACK
+                            let error_ack = StreamAck {
+                                success: false,
+                                message: e.message().to_string(),
+                                events_processed: events_processed_clone.load(Ordering::Relaxed),
+                            };
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
+
+                        // Send success ACK for this event
+                        let ack = StreamAck {
+                            success: true,
+                            message: String::new(),
+                            events_processed: events_processed_clone.load(Ordering::Relaxed),
+                        };
+                        if tx.send(Ok(ack)).await.is_err() {
+                            // Client disconnected
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = ?e, "Error receiving event from stream");
+                        let _ = tx.send(Err(e)).await;
+                        return;
+                    }
+                }
+            }
+
+            // Send final ack on stream completion
+            let final_ack = StreamAck {
+                success: true,
+                message: "stream completed".into(),
+                events_processed: events_processed_clone.load(Ordering::Relaxed),
+            };
+            let _ = tx.send(Ok(final_ack)).await;
+        });
+
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(output_stream)))
+    }
+
+    /// Handle subscription to transaction results.
+    /// Server pushes results as they complete.
+    #[instrument(
+        name = "grpc_server::SubscribeResults",
+        skip(self, request),
+        level = "debug"
+    )]
+    async fn subscribe_results(
+        &self,
+        request: Request<SubscribeResultsRequest>,
+    ) -> Result<Response<Self::SubscribeResultsStream>, Status> {
         self.ensure_commit_head_seen()?;
 
         let req = request.into_inner();
-        debug!(
-            target = "transport::grpc",
-            method = "SendTransactions",
-            req = ?req,
-            "SendTransactions received"
-        );
+        let from_block = req.from_block;
 
-        let total = req.transactions.len() as u64;
-        let mut accepted: u64 = 0;
+        // Subscribe to the broadcast channel
+        let mut rx = self.result_broadcaster.subscribe();
 
-        for t in req.transactions {
-            let queue_tx = match to_queue_tx(&t) {
-                Ok(tx) => tx,
-                Err(e) => {
-                    warn!(error = ?e, "Skipping invalid transaction in gRPC batch");
-                    continue;
+        let (tx, stream_rx) = mpsc::channel(256);
+
+        // Spawn task to filter and forward results to the gRPC stream
+        tokio::spawn(async move {
+            'main: loop {
+                match rx.recv().await {
+                    Ok(pb_result) => {
+                        // Optional: filter by block number if requested
+                        if let Some(min_block) = from_block
+                            && let Some(ref tx_id) = pb_result.tx_execution_id
+                            && tx_id.block_number < min_block
+                        {
+                            continue;
+                        }
+
+                        if tx.send(Ok(pb_result)).await.is_err() {
+                            // Client disconnected
+                            break 'main;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(
+                            target = "transport::grpc",
+                            lagged = n,
+                            "Result subscriber lagged, some results were dropped"
+                        );
+                        // Continue receiving
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // Channel closed, end stream
+                        break 'main;
+                    }
                 }
-            };
-
-            if let TxQueueContents::Tx(ref tx, _) = queue_tx
-                && self
-                    .transactions_results
-                    .is_tx_received_now(&tx.tx_execution_id)
-            {
-                warn!(
-                    tx_hash = %tx.tx_execution_id.tx_hash_hex(),
-                    "TX hash already received, skipping"
-                );
-                continue;
             }
+        });
 
-            self.transactions_results.add_accepted_tx(&queue_tx);
-            self.tx_sender
-                .send(queue_tx)
-                .map_err(|_| Status::internal(error_messages::QUEUE_TX_FAILED))?;
-            accepted += 1;
-        }
-
-        Ok(Response::new(SendTransactionsResponse {
-            accepted_count: accepted,
-            request_count: total,
-            message: "Requests processed successfully".into(),
-        }))
-    }
-
-    /// Handle gRPC request for `Reorg` messages.
-    #[instrument(name = "grpc_server::Reorg", skip(self, request), level = "debug")]
-    async fn reorg(&self, request: Request<ReorgRequest>) -> Result<Response<BasicAck>, Status> {
-        let _rpc_timer = RpcRequestDuration::new(concat!("sidecar_rpc_duration_", "Reorg"));
-        self.ensure_commit_head_seen()?;
-
-        let payload = request.into_inner();
-        let pb_tx_execution_id = payload
-            .tx_execution_id
-            .ok_or_else(|| Status::invalid_argument(error_messages::MISSING_TX_EXECUTION_ID))?;
-
-        let tx_execution_id = parse_pb_tx_execution_id(&pb_tx_execution_id)?;
-
-        let event = TxQueueContents::Reorg(tx_execution_id, tracing::Span::current());
-        self.transactions_results.add_accepted_tx(&event);
-        self.tx_sender
-            .send(event)
-            .map_err(|_| Status::internal(error_messages::QUEUE_REORG_FAILED))?;
-
-        Ok(Response::new(BasicAck {
-            accepted: true,
-            message: "reorg accepted".into(),
-        }))
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(stream_rx);
+        Ok(Response::new(Box::pin(output_stream)))
     }
 
     /// Handle gRPC request for `GetTransactions` messages.
@@ -992,12 +958,12 @@ impl SidecarTransport for GrpcService {
         info!(
             target = "transport::grpc",
             method = "GetTransactions",
-            tx_execution_id = ?payload.tx_execution_id,
+            count = payload.tx_execution_ids.len(),
             "GetTransactions received"
         );
 
         let (results, not_found) = self
-            .collect_transaction_results_parallel(payload.tx_execution_id.iter())
+            .collect_results_parallel(payload.tx_execution_ids.iter())
             .await?;
 
         Ok(Response::new(GetTransactionsResponse {
@@ -1028,32 +994,30 @@ impl SidecarTransport for GrpcService {
             "GetTransaction received"
         );
 
-        let pb_tx_execution_id = payload
+        let pb_id = payload
             .tx_execution_id
             .ok_or_else(|| Status::invalid_argument(error_messages::MISSING_TX_EXECUTION_ID))?;
 
-        let hash_value = pb_tx_execution_id.tx_hash.clone();
+        let hash_bytes = pb_id.tx_hash.clone();
 
         let (mut results, mut not_found) = self
-            .collect_transaction_results_parallel(std::iter::once(&pb_tx_execution_id))
+            .collect_results_parallel(std::iter::once(&pb_id))
             .await?;
 
         if let Some(result) = results.pop() {
             debug!(
                 target = "transport::grpc",
                 method = "GetTransaction",
-                tx_execution_id = ?pb_tx_execution_id,
                 "Sending transaction result"
             );
             Ok(Response::new(GetTransactionResponse {
                 outcome: Some(GetTransactionOutcome::Result(result)),
             }))
         } else {
-            let not_found_hash = not_found.pop().unwrap_or(hash_value);
+            let not_found_hash = not_found.pop().unwrap_or(hash_bytes);
             debug!(
                 target = "transport::grpc",
                 method = "GetTransaction",
-                tx_execution_id = ?pb_tx_execution_id,
                 "Transaction not found"
             );
             Ok(Response::new(GetTransactionResponse {
@@ -1067,5 +1031,12 @@ impl SidecarTransport for GrpcService {
 /// This is the legacy interface that returns HttpDecoderError.
 #[inline]
 pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, HttpDecoderError> {
-    convert_pb_tx_env_to_revm_fast(pb_tx_env).map_err(HttpDecoderError::from)
+    decode_tx_env(pb_tx_env).map_err(HttpDecoderError::from)
+}
+
+/// Convert a Transaction to queue transaction contents.
+/// Legacy interface wrapper around decode_transaction.
+#[inline]
+pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
+    decode_transaction(t)
 }
