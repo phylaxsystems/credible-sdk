@@ -1,8 +1,10 @@
 #![allow(clippy::too_many_lines)]
 use crate::{
+    cli::ProviderType,
     connect_provider,
     genesis,
     integration_tests::setup::LocalInstance,
+    state,
     worker::StateWorker,
 };
 use alloy::primitives::{
@@ -777,7 +779,13 @@ async fn test_restart_continues_from_last_block() {
         )
         .unwrap();
 
-        let mut worker = StateWorker::new(provider, redis.clone(), None);
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, redis.clone(), None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         // Start worker in background
@@ -836,7 +844,13 @@ async fn test_restart_continues_from_last_block() {
         let start_block = redis.latest_block_number().unwrap();
         assert_eq!(start_block, Some(3), "Should resume from block 3");
 
-        let mut worker = StateWorker::new(provider, redis.clone(), None);
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, redis.clone(), None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move {
@@ -927,14 +941,18 @@ async fn test_restart_with_buffer_wrap_applies_diffs() {
         )
         .unwrap();
 
-        let mut worker = StateWorker::new(provider, redis, None);
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, redis, None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
 
-        // Change this from 0..=4 to 0..4
         for _ in 0..4 {
-            // ← CHANGED: 4 iterations instead of 5
             http_server_mock.send_new_head();
             sleep(Duration::from_millis(100)).await;
         }
@@ -985,7 +1003,13 @@ async fn test_restart_with_buffer_wrap_applies_diffs() {
         )
         .unwrap();
 
-        let mut worker = StateWorker::new(provider, redis, None);
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, redis, None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
@@ -1067,14 +1091,18 @@ async fn test_restart_after_mid_block_crash() {
         )
         .unwrap();
 
-        let mut worker = StateWorker::new(provider, redis, None);
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, redis, None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
 
-        // Change from 0..=2 to 0..2 (2 iterations, not 3)
         for _ in 0..2 {
-            // ← CHANGED: 2 iterations to get blocks 0-2
             http_server_mock.send_new_head();
             sleep(Duration::from_millis(100)).await;
         }
@@ -1095,7 +1123,7 @@ async fn test_restart_after_mid_block_crash() {
                 "result": [{
                     "transactionHash": format!("0x{:064x}", i),
                     "trace": [],
-                "vmTrace": null,
+                    "vmTrace": null,
                     "stateDiff": {},
                     "output": "0x"
                 }]
@@ -1118,7 +1146,13 @@ async fn test_restart_after_mid_block_crash() {
         let start_block = redis.latest_block_number().unwrap();
         assert_eq!(start_block, Some(2), "Should detect last completed block");
 
-        let mut worker = StateWorker::new(provider, redis, None);
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, redis, None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });

@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 use crate::{
+    cli::ProviderType,
     connect_provider,
     genesis::GenesisState,
+    state,
     worker::StateWorker,
 };
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
@@ -9,6 +11,7 @@ use state_store::{
     CircularBufferConfig,
     StateWriter,
 };
+use std::time::Duration;
 use testcontainers::{
     ContainerAsync,
     runners::AsyncRunner,
@@ -84,7 +87,14 @@ impl LocalInstance {
         )
         .map_err(|e| format!("Failed to initialize redis client: {e}"))?;
 
-        let mut worker = StateWorker::new(provider, redis, genesis_state);
+        // Create trace provider (using Parity for the mock server)
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, redis, genesis_state);
         let (shutdown_tx, _) = broadcast::channel(1);
         let handle_worker = tokio::spawn(async move {
             if let Err(e) = worker.run(Some(0), shutdown_tx.subscribe()).await {
