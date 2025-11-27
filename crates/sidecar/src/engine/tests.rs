@@ -61,6 +61,7 @@ impl<DB> CoreEngine<DB> {
                 Duration::from_millis(20),
             ),
             current_head: 0,
+            cache_metrics_handle: None,
         }
     }
 
