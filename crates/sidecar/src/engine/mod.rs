@@ -132,10 +132,7 @@ use revm::{
         B256,
     },
 };
-use std::{
-    collections::HashMap,
-    thread::JoinHandle,
-};
+use std::collections::HashMap;
 #[cfg(feature = "cache_validation")]
 use tokio::task::AbortHandle;
 use tokio::task::JoinHandle;
@@ -781,7 +778,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         shutdown: Arc<AtomicBool>,
     ) -> Result<
         (
-            JoinHandle<Result<(), EngineError>>,
+            std::thread::JoinHandle<Result<(), EngineError>>,
             oneshot::Receiver<Result<(), EngineError>>,
         ),
         std::io::Error,
