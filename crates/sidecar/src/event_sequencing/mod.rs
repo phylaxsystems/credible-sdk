@@ -185,6 +185,16 @@ impl EventSequencing {
     fn process_event(&mut self, event: TxQueueContents) -> Result<(), EventSequencingError> {
         let event_block_number = event.block_number();
 
+        // Create EventMetadata once
+        let event_metadata = EventMetadata::from(&event);
+        info!(
+            target = "event_sequencing",
+            event_block_number,
+            current_head = self.current_head,
+            event_metadata = ?event_metadata,
+            "Event received"
+        );
+
         // Ignore events older than or equal to the current head
         if self.current_head >= event_block_number && self.first_commit_head_received {
             error!(
@@ -195,16 +205,6 @@ impl EventSequencing {
             );
             return Ok(());
         }
-
-        // Create EventMetadata once
-        let event_metadata = EventMetadata::from(&event);
-        info!(
-            target = "event_sequencing",
-            event_block_number,
-            current_head = self.current_head,
-            event_metadata = ?event_metadata,
-            "Event received"
-        );
 
         self.context.entry(event_block_number).or_default();
 
