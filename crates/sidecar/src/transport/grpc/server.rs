@@ -105,6 +105,7 @@ use std::{
 use thiserror::Error;
 use tokio::{
     sync::{
+        Mutex,
         broadcast,
         mpsc,
     },
@@ -529,23 +530,28 @@ type AckStream = Pin<Box<dyn Stream<Item = Result<StreamAck, Status>> + Send>>;
 /// Buffer size for the result broadcaster channel.
 const RESULT_BROADCAST_BUFFER: usize = 16_384;
 
+/// Shared state that lives as long as at least one GrpcService clone exists.
+struct GrpcServiceInner {
+    commit_head_seen: AtomicBool,
+    result_broadcaster: broadcast::Sender<PbTransactionResult>,
+    abort_handles: Mutex<Vec<AbortHandle>>,
+}
+
+impl Drop for GrpcServiceInner {
+    fn drop(&mut self) {
+        // get_mut() avoids async lock—safe because we have &mut self (exclusive access)
+        let handles = self.abort_handles.get_mut();
+        for handle in handles.drain(..) {
+            handle.abort();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct GrpcService {
     tx_sender: TransactionQueueSender,
     transactions_results: QueryTransactionsResults,
-    commit_head_seen: Arc<AtomicBool>,
-    /// Broadcast channel for pushing transaction results to gRPC subscribers.
-    /// Fed by a background task consuming from the flume channel.
-    result_broadcaster: broadcast::Sender<PbTransactionResult>,
-    abort_handle: Option<AbortHandle>,
-}
-
-impl Drop for GrpcService {
-    fn drop(&mut self) {
-        if let Some(abort_handle) = self.abort_handle.take() {
-            abort_handle.abort();
-        }
-    }
+    inner: Arc<GrpcServiceInner>,
 }
 
 impl GrpcService {
@@ -560,22 +566,27 @@ impl GrpcService {
     ) -> Self {
         let (result_broadcaster, _) = broadcast::channel(RESULT_BROADCAST_BUFFER);
 
-        let mut abort_handle = None;
+        let mut abort_handle = vec![];
         // Spawn background task to forward results from flume to broadcast
         if let Some(rx) = result_event_rx {
             let broadcaster = result_broadcaster.clone();
-            let handler = tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 Self::result_forwarder_task(rx, broadcaster).await;
             });
-            abort_handle = Some(handler.abort_handle());
+            // Use blocking_lock since we're not in an async context
+            abort_handle.push(handle.abort_handle());
         }
+
+        let inner = Arc::new(GrpcServiceInner {
+            commit_head_seen: AtomicBool::new(false),
+            result_broadcaster,
+            abort_handles: Mutex::new(abort_handle),
+        });
 
         Self {
             tx_sender,
             transactions_results,
-            commit_head_seen: Arc::new(AtomicBool::new(false)),
-            result_broadcaster,
-            abort_handle,
+            inner,
         }
     }
 
@@ -616,12 +627,12 @@ impl GrpcService {
 
     #[inline]
     fn mark_commit_head_seen(&self) {
-        self.commit_head_seen.store(true, Ordering::Release);
+        self.inner.commit_head_seen.store(true, Ordering::Release);
     }
 
     #[inline]
     fn ensure_commit_head_seen(&self) -> Result<(), Status> {
-        if self.commit_head_seen.load(Ordering::Acquire) {
+        if self.inner.commit_head_seen.load(Ordering::Acquire) {
             Ok(())
         } else {
             Err(Status::failed_precondition(
@@ -833,7 +844,7 @@ impl SidecarTransport for GrpcService {
         let (tx, rx) = mpsc::channel(256);
 
         // Spawn task to process incoming events
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(event) => {
@@ -877,6 +888,12 @@ impl SidecarTransport for GrpcService {
             let _ = tx.send(Ok(final_ack)).await;
         });
 
+        self.inner
+            .abort_handles
+            .lock()
+            .await
+            .push(handle.abort_handle());
+
         let output_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Response::new(Box::pin(output_stream)))
     }
@@ -892,13 +909,13 @@ impl SidecarTransport for GrpcService {
         &self,
         request: Request<SubscribeResultsRequest>,
     ) -> Result<Response<Self::SubscribeResultsStream>, Status> {
-        self.ensure_commit_head_seen()?;
+        info!(target = "transport::grpc", "New results subscription");
 
         let req = request.into_inner();
         let from_block = req.from_block;
 
         // Subscribe to the broadcast channel
-        let mut rx = self.result_broadcaster.subscribe();
+        let mut rx = self.inner.result_broadcaster.subscribe();
 
         let (tx, stream_rx) = mpsc::channel(256);
 
