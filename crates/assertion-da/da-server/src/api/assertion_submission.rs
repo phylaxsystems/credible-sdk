@@ -77,8 +77,18 @@ pub async fn accept_bytecode_assertion(
         ));
     };
 
+    let Some(clean_code) = sanitize_single_hex_prefix(code) else {
+        warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, "Invalid params: multiple 0x prefixes found in bytecode");
+        return Ok(rpc_error_with_request_id(
+            json_rpc,
+            500,
+            "Failed to decode hex",
+            request_id,
+        ));
+    };
+
     // Validate hex inputs
-    let Ok(bytecode) = alloy::hex::decode(code.trim_start_matches("0x")) else {
+    let Ok(bytecode) = alloy::hex::decode(clean_code) else {
         warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, "Failed to decode hex bytecode");
         return Ok(rpc_error_with_request_id(
             json_rpc,
@@ -284,8 +294,18 @@ pub async fn retreive_assertion(
         ));
     };
 
+    let Some(clean_id) = sanitize_single_hex_prefix(id) else {
+        warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, id = id, "Invalid params: multiple 0x prefixes found in id");
+        return Ok(rpc_error_with_request_id(
+            json_rpc,
+            -32605,
+            "Internal Error: Failed to decode hex of id",
+            request_id,
+        ));
+    };
+
     // Validate hex input
-    let id: B256 = if let Ok(id) = id.trim_start_matches("0x").parse() {
+    let id: B256 = if let Ok(id) = clean_id.parse() {
         id
     } else {
         warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, id = id, "Failed to decode hex ID");
@@ -371,6 +391,18 @@ async fn process_add_assertion(
     }
 }
 
+fn sanitize_single_hex_prefix(input: &str) -> Option<&str> {
+    if let Some(stripped) = input.strip_prefix("0x") {
+        if stripped.starts_with("0x") {
+            None
+        } else {
+            Some(stripped)
+        }
+    } else {
+        Some(input)
+    }
+}
+
 #[instrument(
     skip_all,
     target = "assertion_submission::process_get_assertion",
@@ -417,5 +449,26 @@ async fn process_get_assertion(
                 &request_id,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_single_hex_prefix;
+
+    #[test]
+    fn allows_single_prefix() {
+        assert_eq!(sanitize_single_hex_prefix("0xabc123"), Some("abc123"));
+    }
+
+    #[test]
+    fn rejects_multiple_prefixes() {
+        assert_eq!(sanitize_single_hex_prefix("0x0xabc123"), None);
+        assert_eq!(sanitize_single_hex_prefix("0x0x0x"), None);
+    }
+
+    #[test]
+    fn allows_without_prefix() {
+        assert_eq!(sanitize_single_hex_prefix("abc123"), Some("abc123"));
     }
 }
