@@ -30,20 +30,21 @@ use std::sync::{
         Ordering,
     },
 };
+use tokio::runtime::Handle;
 use tracing::Span;
 
 impl DBErrorMarker for JsonRpcDbError {}
 
 /// A `DatabaseRef` implementation that fetches data from an Ethereum node via JSON-RPC
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JsonRpcDb {
     provider: Arc<RootProvider>,
-    target_block: AtomicU64,
+    target_block: Arc<AtomicU64>,
+    tokio_handle: Handle,
 }
 
 impl JsonRpcDb {
     pub async fn try_new_with_rpc_url(rpc_url: &str) -> Result<Self, JsonRpcDbError> {
-        // Create provider (this needs to be done in async context)
         let provider = ProviderBuilder::new()
             .connect(rpc_url)
             .await
@@ -51,14 +52,26 @@ impl JsonRpcDb {
 
         Ok(Self {
             provider: Arc::new(provider.root().clone()),
-            target_block: AtomicU64::new(0),
+            target_block: Arc::new(AtomicU64::new(0)),
+            tokio_handle: Handle::current(),
         })
     }
 
     pub fn new_with_provider(provider: Arc<RootProvider>) -> Self {
         Self {
             provider,
-            target_block: AtomicU64::new(0),
+            target_block: Arc::new(AtomicU64::new(0)),
+            tokio_handle: Handle::current(),
+        }
+    }
+
+    /// Creates a new instance with an explicit Tokio handle.
+    /// Use this when constructing from a non-async context.
+    pub fn new_with_provider_and_handle(provider: Arc<RootProvider>, tokio_handle: Handle) -> Self {
+        Self {
+            provider,
+            target_block: Arc::new(AtomicU64::new(0)),
+            tokio_handle,
         }
     }
 
@@ -69,6 +82,22 @@ impl JsonRpcDb {
     fn target_block(&self) -> u64 {
         self.target_block.load(Ordering::Acquire)
     }
+
+    /// Executes an async future on the Tokio runtime from any thread.
+    /// This is safe to call from the dedicated engine thread.
+    fn block_on<F, T>(&self, future: F) -> Result<T, JsonRpcDbError>
+    where
+        F: Future<Output = Result<T, JsonRpcDbError>> + Send,
+        T: Send,
+    {
+        let span = Span::current();
+        // Use thread::scope to ensure the spawned thread doesn't outlive the future
+        std::thread::scope(|s| {
+            s.spawn(|| span.in_scope(|| self.tokio_handle.block_on(future)))
+                .join()
+                .map_err(|_| JsonRpcDbError::Runtime)?
+        })
+    }
 }
 
 impl DatabaseRef for JsonRpcDb {
@@ -77,7 +106,8 @@ impl DatabaseRef for JsonRpcDb {
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let provider = self.provider.clone();
         let target_block = self.target_block();
-        let future = async move {
+
+        self.block_on(async move {
             // Get balance, nonce, and code in parallel for efficiency
             let (balance_result, nonce_result, code_result) = tokio::join!(
                 provider.get_balance(address).number(target_block),
@@ -108,13 +138,6 @@ impl DatabaseRef for JsonRpcDb {
             };
 
             Ok(Some(account_info))
-        };
-        let handle = tokio::runtime::Handle::current();
-        let span = Span::current();
-        std::thread::scope(|s| {
-            s.spawn(move || span.in_scope(|| handle.block_on(future)))
-                .join()
-                .map_err(|_| JsonRpcDbError::Runtime)?
         })
     }
 
@@ -129,7 +152,7 @@ impl DatabaseRef for JsonRpcDb {
         let provider = self.provider.clone();
         let target_block = self.target_block();
 
-        let future = async move {
+        self.block_on(async move {
             let value = provider
                 .get_storage_at(address, index)
                 .block_id(BlockId::number(target_block))
@@ -137,20 +160,13 @@ impl DatabaseRef for JsonRpcDb {
                 .map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
 
             Ok(value)
-        };
-        let handle = tokio::runtime::Handle::current();
-        let span = Span::current();
-        std::thread::scope(|s| {
-            s.spawn(move || span.in_scope(|| handle.block_on(future)))
-                .join()
-                .map_err(|_| JsonRpcDbError::Runtime)?
         })
     }
 
     fn block_hash_ref(&self, block_number: u64) -> Result<B256, Self::Error> {
         let provider = self.provider.clone();
 
-        let future = async move {
+        self.block_on(async move {
             let block = provider
                 .get_block_by_number(block_number.into())
                 .await
@@ -158,13 +174,6 @@ impl DatabaseRef for JsonRpcDb {
                 .ok_or(JsonRpcDbError::BlockNotFound)?;
 
             Ok(block.header.hash)
-        };
-        let handle = tokio::runtime::Handle::current();
-        let span = Span::current();
-        std::thread::scope(|s| {
-            s.spawn(move || span.in_scope(|| handle.block_on(future)))
-                .join()
-                .map_err(|_| JsonRpcDbError::Runtime)?
         })
     }
 }

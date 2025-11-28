@@ -25,17 +25,29 @@ use std::{
         HashSet,
         VecDeque,
     },
+    sync::{
+        Arc,
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
+    },
+    thread::JoinHandle,
     time::{
         Duration,
         Instant,
     },
 };
 use thiserror::Error;
+use tokio::sync::oneshot;
 use tracing::{
     error,
     info,
     warn,
 };
+
+/// Timeout for recv - threads will check for the shutdown flag at this interval
+const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// The event sequencing processes events from the transport layer and ensures the correct ordering
 /// before sending the event to the core engine
@@ -79,8 +91,68 @@ impl EventSequencing {
         }
     }
 
+    /// Spawns event sequencing on a dedicated OS thread with blocking receive.
+    #[allow(clippy::type_complexity)]
+    pub fn spawn(
+        self,
+        shutdown: Arc<AtomicBool>,
+    ) -> Result<
+        (
+            JoinHandle<Result<(), EventSequencingError>>,
+            oneshot::Receiver<Result<(), EventSequencingError>>,
+        ),
+        std::io::Error,
+    > {
+        let (tx, rx) = oneshot::channel();
+
+        let handle = std::thread::Builder::new()
+            .name("sidecar-sequencing".into())
+            .spawn(move || {
+                let mut sequencing = self;
+                let result = sequencing.run_blocking(shutdown);
+                let _ = tx.send(result.clone());
+                result
+            })?;
+
+        Ok((handle, rx))
+    }
+
+    /// Blocking run loop with shutdown support
+    #[allow(clippy::needless_pass_by_value)]
+    fn run_blocking(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), EventSequencingError> {
+        loop {
+            // Check for the shutdown flag
+            if shutdown.load(Ordering::Relaxed) {
+                info!(target = "event_sequencing", "Shutdown signal received");
+                return Ok(());
+            }
+
+            // Use recv_timeout so we can periodically check the shutdown flag
+            let event = match self.tx_receiver.recv_timeout(RECV_TIMEOUT) {
+                Ok(event) => event,
+                Err(flume::RecvTimeoutError::Timeout) => {
+                    // No event, loop back and check for the shutdown flag
+                    continue;
+                }
+                Err(flume::RecvTimeoutError::Disconnected) => {
+                    info!(target = "event_sequencing", "Channel disconnected");
+                    return Err(EventSequencingError::ChannelClosed);
+                }
+            };
+
+            // Check shutdown before processing
+            if shutdown.load(Ordering::Relaxed) {
+                info!(target = "event_sequencing", "Shutdown signal received");
+                return Ok(());
+            }
+
+            self.process_event(event)?;
+        }
+    }
+
     /// An asynchronous function that continuously processes events from a transaction queue channel
     /// and forwards them to a core engine for further handling.
+    #[cfg(test)]
     pub async fn run(&mut self) -> Result<(), EventSequencingError> {
         loop {
             let event = self.receive_event().await?;
@@ -89,15 +161,16 @@ impl EventSequencing {
     }
 
     /// Receives an event from the transaction queue, yielding when empty.
+    #[cfg(test)]
     async fn receive_event(&mut self) -> Result<TxQueueContents, EventSequencingError> {
         loop {
             match self.tx_receiver.try_recv() {
                 Ok(event) => return Ok(event),
-                Err(crossbeam::channel::TryRecvError::Empty) => {
+                Err(flume::TryRecvError::Empty) => {
                     // Channel is empty, yield to allow other tasks to run
                     tokio::task::yield_now().await;
                 }
-                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                Err(flume::TryRecvError::Disconnected) => {
                     error!(
                         target = "event_sequencing",
                         "Transaction queue channel disconnected"
@@ -180,7 +253,20 @@ impl EventSequencing {
 
         // Handle reorg events
         if event_metadata.is_reorg() {
-            self.send_event_recursive(event, &event_metadata)?;
+            // Check if we can cancel the last sent event right now
+            let context = self.get_context_mut(block_number, "handle_current_context_event")?;
+            let can_cancel = context
+                .sent_events
+                .get(&event_iteration_id)
+                .and_then(|q| q.back())
+                .is_some_and(|last| last.cancel_each_other(&event_metadata));
+
+            if can_cancel {
+                // The last sent event is the TX we want to cancel
+                self.send_event_recursive(event, &event_metadata)?;
+            } else if let Some(previous_event) = event_metadata.calculate_previous_event() {
+                self.add_to_dependency_graph(block_number, previous_event, event_metadata, event)?;
+            }
             return Ok(());
         }
 
@@ -222,6 +308,34 @@ impl EventSequencing {
                 &event_metadata,
             )
         {
+            // Check if there's a pending reorg that would cancel this event
+            let context = self.get_context_mut(block_number, "handle_sequential_event")?;
+            let has_cancelling_reorg =
+                context
+                    .dependency_graph
+                    .get(&previous_event)
+                    .is_some_and(|dependents| {
+                        dependents.keys().any(|existing| {
+                            let existing_meta: EventMetadata = existing.into();
+                            existing_meta.is_reorg()
+                                && event_metadata.cancel_each_other(&existing_meta)
+                        })
+                    });
+
+            if has_cancelling_reorg {
+                // Remove the reorg from the dependency graph
+                let context = self.get_context_mut(block_number, "handle_sequential_event")?;
+                if let Some(dependents) = context.dependency_graph.get_mut(&previous_event) {
+                    dependents.retain(|existing, _| {
+                        let existing_meta: EventMetadata = existing.into();
+                        !(existing_meta.is_reorg()
+                            && event_metadata.cancel_each_other(&existing_meta))
+                    });
+                }
+                // Don't send this TX, as it's been reorged
+                return Ok(());
+            }
+
             self.send_event_recursive(event, &event_metadata)?;
         } else {
             // Queue the event as a dependency
@@ -361,18 +475,36 @@ impl EventSequencing {
             })?;
 
             // Record the send event
-            context
-                .sent_events
-                .entry(iteration_id)
-                .or_default()
-                .push_back(event_metadata.clone());
+            if !event_metadata.is_reorg() {
+                context
+                    .sent_events
+                    .entry(iteration_id)
+                    .or_default()
+                    .push_back(event_metadata.clone());
+            }
         }
 
         // Extract any events that were waiting for this event to complete
-        let dependent_events = context
+        let mut dependent_events = context
             .dependency_graph
             .remove(event_metadata)
             .unwrap_or_default();
+
+        // Special handling for reorgs: after removing the cancelled TX, check if there are
+        // events waiting for the new last event in sent_events
+        if event_metadata.is_reorg()
+            && should_send
+            && let Some(new_last_event) = context
+                .sent_events
+                .get(&iteration_id)
+                .and_then(|queue| queue.back())
+                .cloned()
+        {
+            // Get any events that were waiting for the new last event
+            if let Some(waiting_events) = context.dependency_graph.remove(&new_last_event) {
+                dependent_events.extend(waiting_events);
+            }
+        }
 
         // Drop the mutable borrow before recursing
         let _ = context;
@@ -486,7 +618,7 @@ impl EventSequencing {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum EventSequencingError {
     #[error("Transaction queue channel closed")]
     ChannelClosed,

@@ -16,7 +16,6 @@ use assertion_executor::primitives::{
     Bytes,
     U256,
 };
-use crossbeam::channel;
 use revm::{
     context::{
         BlockEnv,
@@ -168,8 +167,8 @@ fn build_dependency_graph_from_events(
 
 // Helper to create a test EventSequencing
 fn create_test_sequencing() -> (EventSequencing, TransactionQueueReceiver) {
-    let (tx_send, tx_recv) = channel::unbounded();
-    let (engine_send, engine_recv) = channel::unbounded();
+    let (tx_send, tx_recv) = flume::unbounded();
+    let (engine_send, engine_recv) = flume::unbounded();
 
     let sequencing = EventSequencing::new(tx_recv, engine_send);
 
@@ -519,7 +518,7 @@ fn test_send_event_recursive_with_reorg() {
     // The transaction should have been popped and the reorg added
     let ctx = sequencing.context.get(&100).unwrap();
     let sent = ctx.sent_events.get(&1).unwrap();
-    assert_eq!(sent.len(), 1); // Only reorg remains
+    assert_eq!(sent.len(), 0); // Org event should be removed from sent_events
 }
 
 #[test]
@@ -4451,5 +4450,341 @@ async fn test_dependency_arrives_with_wrong_hash(mut instance: LocalInstance<_>)
     assert!(
         instance.get_transaction_result(&tx1_id).is_none(),
         "tx1 should not be processed (expected different prev_tx_hash)"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_reorg_and_replacement_current_block(mut instance: LocalInstance<_>) {
+    // Send commit head for block 0
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send new iteration for block 1
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send TX1
+    let tx1_hash = TxHash::random();
+    let tx1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // TX1 should be processed
+    instance
+        .wait_for_transaction_processed(&tx1_id)
+        .await
+        .unwrap();
+
+    // Revert TX1
+    instance.transport.reorg(tx1_id).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // Send new TX1 (replacement with same index, different hash)
+    let tx1_replacement_hash = TxHash::random();
+    let tx1_replacement_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_replacement_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx1_replacement_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_replacement_id, tx1_replacement_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // The replacement TX should be executed
+    instance
+        .wait_for_transaction_processed(&tx1_replacement_id)
+        .await
+        .unwrap();
+    assert!(
+        instance
+            .get_transaction_result(&tx1_replacement_id)
+            .is_some(),
+        "Replacement TX1 should be processed"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_reorg_enables_replacement_transaction(mut instance: LocalInstance<_>) {
+    // Send commit head for block 0
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send new iteration for block 1
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send TX1 (index 0)
+    let tx1_hash = TxHash::random();
+    let tx1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // TX1 should be processed
+    instance
+        .wait_for_transaction_processed(&tx1_id)
+        .await
+        .unwrap();
+
+    // Send TX1.1 (index 0, replacement with different hash)
+    let tx1_1_hash = TxHash::random();
+    let tx1_1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_1_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx1_1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_1_id, tx1_1_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // TX1.1 should NOT be processed yet (waiting for TX1 to be reorged)
+    assert!(
+        instance.get_transaction_result(&tx1_1_id).is_none(),
+        "TX1.1 should not be processed yet"
+    );
+
+    // Reorg TX1
+    instance.transport.reorg(tx1_id).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // TX1.1 should now be executed
+    instance
+        .wait_for_transaction_processed(&tx1_1_id)
+        .await
+        .unwrap();
+    assert!(
+        instance.get_transaction_result(&tx1_1_id).is_some(),
+        "TX1.1 should be processed after TX1 reorg"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_reorg_enables_replacement_transaction_with_reorg_first(
+    mut instance: LocalInstance<_>,
+) {
+    // Send commit head for block 0
+    instance.transport.new_block(0, 1, 0).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send new iteration for block 1
+    let block1_env = BlockEnv {
+        number: 1,
+        gas_limit: 50_000_000,
+        ..Default::default()
+    };
+    instance
+        .transport
+        .new_iteration(1, block1_env.clone())
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // Send a new iteration twice on purpose
+    instance
+        .transport
+        .new_iteration(1, block1_env)
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
+    // TX1 (index 0)
+    let tx1_hash = TxHash::random();
+    let tx1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+
+    // Reorg first the reorg for TX1
+    instance.transport.reorg(tx1_id).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    instance.transport.set_last_tx_hash(None);
+    let tx1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_id, tx1_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // Send TX1.1 (index 0, replacement with different hash)
+    let tx1_1_hash = TxHash::random();
+    let tx1_1_id = TxExecutionId {
+        block_number: 1,
+        iteration_id: 1,
+        tx_hash: tx1_1_hash,
+        index: 0,
+    };
+
+    instance.transport.set_last_tx_hash(None);
+    let tx1_1_env = TxEnvBuilder::new()
+        .caller(instance.default_account)
+        .gas_limit(100_000)
+        .gas_price(0)
+        .kind(TxKind::Create)
+        .value(U256::ZERO)
+        .data(Bytes::default())
+        .nonce(0)
+        .build()
+        .unwrap();
+    instance
+        .transport
+        .send_transaction(tx1_1_id, tx1_1_env)
+        .await
+        .unwrap();
+
+    instance
+        .wait_for_processing(Duration::from_millis(20))
+        .await;
+
+    // TX1.1 should now be executed
+    instance
+        .wait_for_transaction_processed(&tx1_1_id)
+        .await
+        .unwrap();
+    assert!(
+        instance.get_transaction_result(&tx1_1_id).is_some(),
+        "TX1.1 should be processed after TX1 reorg"
+    );
+    assert!(
+        instance.get_transaction_result(&tx1_id).is_none(),
+        "TX1.0 should not be processed"
     );
 }

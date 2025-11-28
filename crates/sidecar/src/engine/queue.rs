@@ -29,7 +29,7 @@
 
 use crate::execution_ids::TxExecutionId;
 use alloy::primitives::TxHash;
-use crossbeam::channel::{
+use flume::{
     Receiver,
     Sender,
 };

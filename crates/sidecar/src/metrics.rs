@@ -497,3 +497,54 @@ impl SourceMetrics {
             .set(unsync_count as f64);
     }
 }
+
+/// Metrics for the engine transactions result
+#[derive(Debug, Default)]
+pub struct EngineTransactionsResultMetrics {}
+
+impl EngineTransactionsResultMetrics {
+    /// Set the current engine `transactions` length (`sidecar_engine_transactions_results_transactions_length`)
+    ///
+    /// Commited as a `Gauge`.
+    pub fn set_engine_transaction_length(&self, len: usize) {
+        gauge!("sidecar_engine_transactions_results_transactions_length").set(len as f64);
+    }
+
+    /// Set the current engine `accepted_txs` length (`sidecar_engine_transactions_state_accepted_txs_length`)
+    ///
+    /// Commited as a `Gauge`.
+    pub fn set_engine_transactions_state_accepted_txs_length(&self, len: usize) {
+        gauge!("sidecar_engine_transactions_state_accepted_txs_length").set(len as f64);
+    }
+
+    /// Set the current engine `transaction_results_pending_requests` length (`sidecar_engine_transactions_state_transaction_results_pending_requests_length`)
+    ///
+    /// Commited as a `Gauge`.
+    pub fn set_engine_transactions_state_transaction_results_pending_requests_length(
+        &self,
+        len: usize,
+    ) {
+        gauge!("sidecar_engine_transactions_state_transaction_results_pending_requests_length")
+            .set(len as f64);
+    }
+
+    /// Set the current engine `transaction_results` length (`sidecar_engine_transactions_state_transaction_results_length`)
+    ///
+    /// Commited as a `Gauge`.
+    pub fn set_engine_transactions_state_transaction_results_length(&self, len: usize) {
+        gauge!("sidecar_engine_transactions_state_transaction_results_length").set(len as f64);
+    }
+}
+
+/// Metrics for the transport transactions result
+#[derive(Clone, Debug, Default)]
+pub struct TransportTransactionsResultMetrics {}
+
+impl TransportTransactionsResultMetrics {
+    /// Set the current transport `transactions` length (`sidecar_transport_transactions_result_pending_receives_length`)
+    ///
+    /// Commited as a `Gauge`.
+    pub fn set_transport_pending_receives_length(&self, len: usize) {
+        gauge!("sidecar_transport_transactions_result_pending_receives_length").set(len as f64);
+    }
+}

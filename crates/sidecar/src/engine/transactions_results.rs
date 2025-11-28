@@ -1,12 +1,11 @@
 use crate::{
     engine::TransactionResult,
     execution_ids::TxExecutionId,
+    metrics::EngineTransactionsResultMetrics,
     transactions_state::TransactionsState,
 };
-use std::{
-    collections::VecDeque,
-    sync::Arc,
-};
+use hashlink::LinkedHashMap;
+use std::sync::Arc;
 
 /// Wrapper for `TransactionsState` for write-only operations.
 /// `TransactionsResults` is a wrapper on top of `TransactionState` exposing only methods to insert
@@ -16,8 +15,11 @@ use std::{
 #[derive(Debug)]
 pub struct TransactionsResults {
     transactions_state: Arc<TransactionsState>,
-    transactions: VecDeque<TxExecutionId>,
+    /// Ordered map: maintains insertion order with O(1) operations.
+    /// Value is () since we only need the key ordering.
+    transactions: LinkedHashMap<TxExecutionId, ()>,
     max_capacity: usize,
+    metrics: EngineTransactionsResultMetrics,
 }
 
 impl TransactionsResults {
@@ -27,34 +29,70 @@ impl TransactionsResults {
             "The maximum capacity must be greater than 0"
         );
         Self {
-            transactions: VecDeque::with_capacity(max_capacity),
+            transactions: LinkedHashMap::with_capacity(max_capacity),
             max_capacity,
             transactions_state,
+            metrics: EngineTransactionsResultMetrics::default(),
         }
     }
 
+    /// If the transaction already exists, it's moved to the back (most recent)
+    /// and its result is updated. If at capacity, the oldest transaction is pruned.
+    #[inline]
     pub fn add_transaction_result(
         &mut self,
         tx_execution_id: TxExecutionId,
         result: &TransactionResult,
     ) {
-        self.transactions_state
-            .add_transaction_result(tx_execution_id, result);
-
-        // If at capacity, remove the oldest before adding the new one
-        if self.transactions.len() == self.max_capacity
-            && let Some(old_tx_execution_id) = self.transactions.pop_front()
-        {
+        // Check if this is an update (tx already exists)
+        if self.transactions.contains_key(&tx_execution_id) {
+            // Move to back by removing and re-inserting
+            self.transactions.remove(&tx_execution_id);
+            self.transactions.insert(tx_execution_id, ());
+            // Update the result in state
             self.transactions_state
-                .remove_transaction_result(&old_tx_execution_id);
+                .add_transaction_result(tx_execution_id, result);
+            return;
         }
 
-        self.transactions.push_back(tx_execution_id);
+        // New transaction
+        let transactions_len = self.transactions.len();
+        let (accepted_txs_len, transaction_results_pending_requests_len, transaction_results_len) =
+            self.transactions_state.get_all_lengths();
+        self.metrics.set_engine_transaction_length(transactions_len);
+        self.metrics
+            .set_engine_transactions_state_accepted_txs_length(accepted_txs_len);
+        self.metrics
+            .set_engine_transactions_state_transaction_results_pending_requests_length(
+                transaction_results_pending_requests_len,
+            );
+        self.metrics
+            .set_engine_transactions_state_transaction_results_length(transaction_results_len);
+        if transactions_len >= self.max_capacity {
+            // Remove oldest (front)
+            if let Some((old_tx_id, ())) = self.transactions.pop_front() {
+                self.transactions_state
+                    .remove_transaction_result(&old_tx_id);
+            }
+        }
+
+        // Insert a new transaction
+        self.transactions.insert(tx_execution_id, ());
+        self.transactions_state
+            .add_transaction_result(tx_execution_id, result);
     }
 
+    /// Removes from both the queue and the state to keep them in sync.
+    #[inline]
     pub fn remove_transaction_result(&mut self, tx_execution_id: TxExecutionId) {
+        self.transactions.remove(&tx_execution_id);
         self.transactions_state
             .remove_transaction_result(&tx_execution_id);
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.transactions.len()
     }
 
     #[cfg(test)]
@@ -72,16 +110,18 @@ impl TransactionsResults {
     ) -> &dashmap::DashMap<TxExecutionId, TransactionResult> {
         self.transactions_state.get_all_transaction_result()
     }
+
+    #[cfg(test)]
+    pub fn get_queue_order(&self) -> Vec<TxExecutionId> {
+        self.transactions.keys().copied().collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::cast_possible_truncation)]
+    #![allow(clippy::needless_range_loop)]
     use super::*;
-    use crate::{
-        engine::TransactionResult,
-        transactions_state::TransactionsState,
-    };
     use assertion_executor::primitives::ExecutionResult;
     use revm::{
         context::result::{
@@ -91,7 +131,6 @@ mod tests {
         primitives::Bytes,
     };
 
-    // Helper function to create a test TransactionResult
     fn create_test_result_success() -> TransactionResult {
         TransactionResult::ValidationCompleted {
             execution_result: ExecutionResult::Success {
@@ -119,7 +158,6 @@ mod tests {
         }
     }
 
-    // Helper to create a test TxExecutionId
     fn create_test_tx_execution_id(byte: u8) -> TxExecutionId {
         let tx_hash = revm::primitives::alloy_primitives::TxHash::from([byte; 32]);
         TxExecutionId::new(u64::from(byte), 0, tx_hash, 0)
@@ -133,25 +171,20 @@ mod tests {
         let results = TransactionsResults::new(transactions_state, max_capacity);
 
         assert_eq!(results.max_capacity, max_capacity);
-        assert_eq!(results.transactions.len(), 0);
-        assert_eq!(results.transactions.capacity(), max_capacity);
+        assert_eq!(results.len(), 0);
     }
 
     #[test]
     fn test_add_transaction_result_stores_in_state_and_queue() {
         let transactions_state = TransactionsState::new();
-        let mut results = TransactionsResults::new(transactions_state.clone(), 5);
+        let mut results = TransactionsResults::new(transactions_state, 5);
 
         let tx_execution_id = create_test_tx_execution_id(1);
         let result = create_test_result_success();
 
-        results.add_transaction_result(tx_execution_id, &result.clone());
+        results.add_transaction_result(tx_execution_id, &result);
 
-        // Check that transaction is in queue
-        assert_eq!(results.transactions.len(), 1);
-        assert_eq!(results.transactions[0], tx_execution_id);
-
-        // Check that transaction result is stored in state
+        assert_eq!(results.len(), 1);
         let stored_result = results.get_transaction_result(&tx_execution_id);
         assert!(stored_result.is_some());
         assert_eq!(*stored_result.unwrap(), result);
@@ -160,7 +193,7 @@ mod tests {
     #[test]
     fn test_add_multiple_transaction_results_within_capacity() {
         let transactions_state = TransactionsState::new();
-        let mut results = TransactionsResults::new(transactions_state.clone(), 5);
+        let mut results = TransactionsResults::new(transactions_state, 5);
 
         let tx_execution_ids = vec![
             create_test_tx_execution_id(1),
@@ -177,37 +210,31 @@ mod tests {
             results.add_transaction_result(tx_execution_id, &result);
         }
 
-        // All transactions should be present
-        assert_eq!(results.transactions.len(), 3);
+        assert_eq!(results.len(), 3);
         for &tx_execution_id in &tx_execution_ids {
             assert!(results.get_transaction_result(&tx_execution_id).is_some());
         }
 
-        // Check queue order (FIFO)
-        for (i, &expected_id) in tx_execution_ids.iter().enumerate() {
-            assert_eq!(results.transactions[i], expected_id);
-        }
+        let queue_order = results.get_queue_order();
+        assert_eq!(queue_order, tx_execution_ids);
     }
 
     #[test]
     fn test_add_transaction_result_at_exact_capacity() {
         let transactions_state = TransactionsState::new();
         let capacity = 3;
-        let mut results = TransactionsResults::new(transactions_state.clone(), capacity);
+        let mut results = TransactionsResults::new(transactions_state, capacity);
 
-        // Add exactly max_capacity transactions
         for i in 0..capacity {
-            let tx_execution_id = create_test_tx_execution_id(i as u8 + 1);
+            let tx_execution_id = create_test_tx_execution_id(u8::try_from(i).unwrap() + 1);
             let result = create_test_result_success();
             results.add_transaction_result(tx_execution_id, &result);
         }
 
-        // Should have exactly capacity transactions
-        assert_eq!(results.transactions.len(), capacity);
+        assert_eq!(results.len(), capacity);
 
-        // All should be retrievable
         for i in 0..capacity {
-            let tx_execution_id = create_test_tx_execution_id(i as u8 + 1);
+            let tx_execution_id = create_test_tx_execution_id(u8::try_from(i).unwrap() + 1);
             assert!(results.get_transaction_result(&tx_execution_id).is_some());
         }
     }
@@ -216,15 +243,14 @@ mod tests {
     fn test_add_transaction_result_exceeds_capacity_prunes_fifo() {
         let transactions_state = TransactionsState::new();
         let capacity = 3;
-        let mut results = TransactionsResults::new(transactions_state.clone(), capacity);
+        let mut results = TransactionsResults::new(transactions_state, capacity);
 
-        // Add more than capacity
         let tx_execution_ids = vec![
-            create_test_tx_execution_id(1), // This will be pruned first
-            create_test_tx_execution_id(2), // This will be pruned second
-            create_test_tx_execution_id(3), // This will remain
-            create_test_tx_execution_id(4), // This will remain
-            create_test_tx_execution_id(5), // This will remain
+            create_test_tx_execution_id(1),
+            create_test_tx_execution_id(2),
+            create_test_tx_execution_id(3),
+            create_test_tx_execution_id(4),
+            create_test_tx_execution_id(5),
         ];
 
         for &tx_execution_id in &tx_execution_ids {
@@ -232,8 +258,7 @@ mod tests {
             results.add_transaction_result(tx_execution_id, &result);
         }
 
-        // Should still have only capacity transactions
-        assert_eq!(results.transactions.len(), capacity);
+        assert_eq!(results.len(), capacity);
 
         // First two should be pruned (FIFO)
         assert!(
@@ -264,16 +289,16 @@ mod tests {
                 .is_some()
         );
 
-        // Check queue contains the right transactions in FIFO order
-        assert_eq!(results.transactions[0], tx_execution_ids[2]);
-        assert_eq!(results.transactions[1], tx_execution_ids[3]);
-        assert_eq!(results.transactions[2], tx_execution_ids[4]);
+        let queue_order = results.get_queue_order();
+        assert_eq!(queue_order[0], tx_execution_ids[2]);
+        assert_eq!(queue_order[1], tx_execution_ids[3]);
+        assert_eq!(queue_order[2], tx_execution_ids[4]);
     }
 
     #[test]
     fn test_add_transaction_result_with_different_result_types() {
         let transactions_state = TransactionsState::new();
-        let mut results = TransactionsResults::new(transactions_state.clone(), 5);
+        let mut results = TransactionsResults::new(transactions_state, 5);
 
         let tx_id_success = create_test_tx_execution_id(1);
         let tx_id_error = create_test_tx_execution_id(2);
@@ -283,11 +308,10 @@ mod tests {
         let error_result = create_test_result_error("validation failed");
         let revert_result = create_test_result_revert();
 
-        results.add_transaction_result(tx_id_success, &success_result.clone());
-        results.add_transaction_result(tx_id_error, &error_result.clone());
-        results.add_transaction_result(tx_id_revert, &revert_result.clone());
+        results.add_transaction_result(tx_id_success, &success_result);
+        results.add_transaction_result(tx_id_error, &error_result);
+        results.add_transaction_result(tx_id_revert, &revert_result);
 
-        // All should be stored correctly
         assert_eq!(
             *results.get_transaction_result(&tx_id_success).unwrap(),
             success_result
@@ -306,9 +330,8 @@ mod tests {
     fn test_extensive_pruning_behavior() {
         let transactions_state = TransactionsState::new();
         let capacity = 2;
-        let mut results = TransactionsResults::new(transactions_state.clone(), capacity);
+        let mut results = TransactionsResults::new(transactions_state, capacity);
 
-        // Add many transactions to test continuous pruning
         let mut tx_execution_ids = Vec::new();
         for i in 1..=10 {
             let tx_execution_id = create_test_tx_execution_id(i);
@@ -317,10 +340,8 @@ mod tests {
             results.add_transaction_result(tx_execution_id, &result);
         }
 
-        // Should only have the last 2 transactions
-        assert_eq!(results.transactions.len(), capacity);
+        assert_eq!(results.len(), capacity);
 
-        // Only the last 2 should be retrievable
         for tx_execution_id in tx_execution_ids.iter().take(8) {
             assert!(results.get_transaction_result(tx_execution_id).is_none());
         }
@@ -335,15 +356,15 @@ mod tests {
                 .is_some()
         );
 
-        // Check queue order
-        assert_eq!(results.transactions[0], tx_execution_ids[8]);
-        assert_eq!(results.transactions[1], tx_execution_ids[9]);
+        let queue_order = results.get_queue_order();
+        assert_eq!(queue_order[0], tx_execution_ids[8]);
+        assert_eq!(queue_order[1], tx_execution_ids[9]);
     }
 
     #[test]
     fn test_capacity_one_behavior() {
         let transactions_state = TransactionsState::new();
-        let mut results = TransactionsResults::new(transactions_state.clone(), 1);
+        let mut results = TransactionsResults::new(transactions_state, 1);
 
         let tx_id1 = create_test_tx_execution_id(1);
         let tx_id2 = create_test_tx_execution_id(2);
@@ -353,42 +374,37 @@ mod tests {
         let result2 = create_test_result_error("error");
         let result3 = create_test_result_revert();
 
-        // Add first transaction
         results.add_transaction_result(tx_id1, &result1);
-        assert_eq!(results.transactions.len(), 1);
+        assert_eq!(results.len(), 1);
         assert!(results.get_transaction_result(&tx_id1).is_some());
 
-        // Add second transaction - should replace first
         results.add_transaction_result(tx_id2, &result2);
-        assert_eq!(results.transactions.len(), 1);
+        assert_eq!(results.len(), 1);
         assert!(results.get_transaction_result(&tx_id1).is_none());
         assert!(results.get_transaction_result(&tx_id2).is_some());
 
-        // Add third transaction - should replace second
         results.add_transaction_result(tx_id3, &result3);
-        assert_eq!(results.transactions.len(), 1);
+        assert_eq!(results.len(), 1);
         assert!(results.get_transaction_result(&tx_id1).is_none());
         assert!(results.get_transaction_result(&tx_id2).is_none());
         assert!(results.get_transaction_result(&tx_id3).is_some());
 
-        // Queue should contain only the latest transaction
-        assert_eq!(results.transactions[0], tx_id3);
+        let queue_order = results.get_queue_order();
+        assert_eq!(queue_order[0], tx_id3);
     }
 
     #[test]
     fn test_get_all_transaction_result_reflects_current_state() {
         let transactions_state = TransactionsState::new();
-        let mut results = TransactionsResults::new(transactions_state.clone(), 3);
+        let mut results = TransactionsResults::new(transactions_state, 3);
 
-        // Initially empty
         assert_eq!(results.get_all_transaction_result().len(), 0);
 
-        // Add some transactions
         let tx_execution_ids = [
             create_test_tx_execution_id(1),
             create_test_tx_execution_id(2),
             create_test_tx_execution_id(3),
-            create_test_tx_execution_id(4), // This will cause pruning
+            create_test_tx_execution_id(4),
         ];
 
         for &tx_execution_id in &tx_execution_ids[..3] {
@@ -398,13 +414,9 @@ mod tests {
 
         assert_eq!(results.get_all_transaction_result().len(), 3);
 
-        // Add one more to trigger pruning
         results.add_transaction_result(tx_execution_ids[3], &create_test_result_success());
 
-        // Should still have 3, but different ones
         assert_eq!(results.get_all_transaction_result().len(), 3);
-
-        // Verify the pruned transaction is not in the map
         assert!(
             !results
                 .get_all_transaction_result()
@@ -418,27 +430,24 @@ mod tests {
     }
 
     #[test]
-    fn test_same_transaction_hash_overwrites() {
+    fn test_same_transaction_updates_instead_of_duplicating() {
         let transactions_state = TransactionsState::new();
-        let mut results = TransactionsResults::new(transactions_state.clone(), 5);
+        let mut results = TransactionsResults::new(transactions_state, 5);
 
         let tx_execution_id = create_test_tx_execution_id(1);
         let result1 = create_test_result_success();
-        let result2 = create_test_result_error("different error");
+        let result2 = create_test_result_error("updated error");
 
-        // Add first result
         results.add_transaction_result(tx_execution_id, &result1);
-        assert_eq!(results.transactions.len(), 1);
+        assert_eq!(results.len(), 1);
 
-        // Add second result with same hash
-        results.add_transaction_result(tx_execution_id, &result2.clone());
+        // Add same tx with different result - should UPDATE, not duplicate
+        results.add_transaction_result(tx_execution_id, &result2);
 
-        // Should have 2 entries in queue (duplicate hash)
-        assert_eq!(results.transactions.len(), 2);
-        assert_eq!(results.transactions[0], tx_execution_id);
-        assert_eq!(results.transactions[1], tx_execution_id);
+        // Should still have only 1 entry
+        assert_eq!(results.len(), 1);
 
-        // But the result should be the latest one
+        // Result should be the updated one
         assert_eq!(
             *results.get_transaction_result(&tx_execution_id).unwrap(),
             result2
@@ -446,40 +455,235 @@ mod tests {
     }
 
     #[test]
-    fn test_no_reallocation_when_at_capacity() {
+    fn test_update_moves_tx_to_end_of_queue() {
+        let transactions_state = TransactionsState::new();
+        let mut results = TransactionsResults::new(transactions_state, 5);
+
+        let tx_id1 = create_test_tx_execution_id(1);
+        let tx_id2 = create_test_tx_execution_id(2);
+        let tx_id3 = create_test_tx_execution_id(3);
+
+        results.add_transaction_result(tx_id1, &create_test_result_success());
+        results.add_transaction_result(tx_id2, &create_test_result_success());
+        results.add_transaction_result(tx_id3, &create_test_result_success());
+
+        let queue_order = results.get_queue_order();
+        assert_eq!(queue_order, vec![tx_id1, tx_id2, tx_id3]);
+
+        // Update tx_id1 - should move it to the end
+        results.add_transaction_result(tx_id1, &create_test_result_error("updated"));
+
+        let queue_order = results.get_queue_order();
+        assert_eq!(queue_order, vec![tx_id2, tx_id3, tx_id1]);
+    }
+
+    #[test]
+    fn test_update_does_not_trigger_pruning() {
         let transactions_state = TransactionsState::new();
         let capacity = 3;
-        let mut results = TransactionsResults::new(transactions_state.clone(), capacity);
+        let mut results = TransactionsResults::new(transactions_state, capacity);
+
+        let tx_id1 = create_test_tx_execution_id(1);
+        let tx_id2 = create_test_tx_execution_id(2);
+        let tx_id3 = create_test_tx_execution_id(3);
+
+        results.add_transaction_result(tx_id1, &create_test_result_success());
+        results.add_transaction_result(tx_id2, &create_test_result_success());
+        results.add_transaction_result(tx_id3, &create_test_result_success());
+
+        assert_eq!(results.len(), capacity);
+
+        // Update tx_id1 - should NOT trigger pruning since it's an update
+        results.add_transaction_result(tx_id1, &create_test_result_error("updated"));
+
+        // All three should still be present
+        assert_eq!(results.len(), capacity);
+        assert!(results.get_transaction_result(&tx_id1).is_some());
+        assert!(results.get_transaction_result(&tx_id2).is_some());
+        assert!(results.get_transaction_result(&tx_id3).is_some());
+    }
+
+    #[test]
+    fn test_remove_transaction_result_updates_both_state_and_queue() {
+        let transactions_state = TransactionsState::new();
+        let mut results = TransactionsResults::new(transactions_state, 5);
+
+        let tx_id1 = create_test_tx_execution_id(1);
+        let tx_id2 = create_test_tx_execution_id(2);
+        let tx_id3 = create_test_tx_execution_id(3);
+
+        results.add_transaction_result(tx_id1, &create_test_result_success());
+        results.add_transaction_result(tx_id2, &create_test_result_success());
+        results.add_transaction_result(tx_id3, &create_test_result_success());
+
+        assert_eq!(results.len(), 3);
+
+        // Remove the middle transaction
+        results.remove_transaction_result(tx_id2);
+
+        // Queue should have 2 entries now
+        assert_eq!(results.len(), 2);
+
+        // State should not have tx_id2
+        assert!(results.get_transaction_result(&tx_id2).is_none());
+
+        // Queue should have the correct order
+        let queue_order = results.get_queue_order();
+        assert_eq!(queue_order, vec![tx_id1, tx_id3]);
+    }
+
+    #[test]
+    fn test_remove_then_add_new_respects_capacity() {
+        let transactions_state = TransactionsState::new();
+        let capacity = 3;
+        let mut results = TransactionsResults::new(transactions_state, capacity);
+
+        let tx_id1 = create_test_tx_execution_id(1);
+        let tx_id2 = create_test_tx_execution_id(2);
+        let tx_id3 = create_test_tx_execution_id(3);
+        let tx_id4 = create_test_tx_execution_id(4);
+
+        // Fill to capacity
+        results.add_transaction_result(tx_id1, &create_test_result_success());
+        results.add_transaction_result(tx_id2, &create_test_result_success());
+        results.add_transaction_result(tx_id3, &create_test_result_success());
+
+        // Remove one
+        results.remove_transaction_result(tx_id2);
+        assert_eq!(results.len(), 2);
+
+        // Add a new one - should NOT trigger pruning since we have space
+        results.add_transaction_result(tx_id4, &create_test_result_success());
+
+        assert_eq!(results.len(), 3);
+        assert!(results.get_transaction_result(&tx_id1).is_some());
+        assert!(results.get_transaction_result(&tx_id3).is_some());
+        assert!(results.get_transaction_result(&tx_id4).is_some());
+    }
+
+    #[test]
+    fn test_queue_and_state_remain_in_sync_under_mixed_operations() {
+        let transactions_state = TransactionsState::new();
+        let capacity = 5;
+        let mut results = TransactionsResults::new(transactions_state, capacity);
+
+        let ops = vec![
+            ("add", 1),
+            ("add", 2),
+            ("add", 3),
+            ("remove", 2),
+            ("add", 4),
+            ("add", 1), // Update existing
+            ("add", 5),
+            ("add", 6),
+            ("remove", 3),
+            ("add", 7),
+            ("add", 8), // Should trigger pruning
+        ];
+
+        for (op, id) in ops {
+            let tx_id = create_test_tx_execution_id(id);
+            match op {
+                "add" => results.add_transaction_result(tx_id, &create_test_result_success()),
+                "remove" => results.remove_transaction_result(tx_id),
+                _ => panic!("unknown op"),
+            }
+
+            // Verify invariant: queue length == state length
+            let queue_len = results.len();
+            let state_len = results.get_all_transaction_result().len();
+            assert_eq!(
+                queue_len, state_len,
+                "Queue and state out of sync after op {op} on id {id}"
+            );
+
+            // Verify invariant: all queue entries exist in state
+            for tx_id in results.get_queue_order() {
+                assert!(
+                    results.get_transaction_result(&tx_id).is_some(),
+                    "Queue contains {tx_id:?} but state does not"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_o1_performance_at_scale() {
+        let transactions_state = TransactionsState::new();
+        let capacity = 10_000;
+        let mut results = TransactionsResults::new(transactions_state, capacity);
 
         // Fill to capacity
         for i in 0..capacity {
-            let tx_execution_id = create_test_tx_execution_id(i as u8 + 1);
-            let result = create_test_result_success();
-            results.add_transaction_result(tx_execution_id, &result);
+            let tx_id = TxExecutionId::new(
+                i as u64,
+                0,
+                revm::primitives::alloy_primitives::TxHash::from([((i % 256) as u8); 32]),
+                0,
+            );
+            results.add_transaction_result(tx_id, &create_test_result_success());
         }
 
-        // Get the initial capacity of the VecDeque
-        let initial_capacity = results.transactions.capacity();
+        let start = std::time::Instant::now();
 
-        // Add many more transactions beyond capacity
-        for i in capacity..(capacity + 10) {
-            let tx_execution_id = create_test_tx_execution_id(i as u8 + 1);
-            let result = create_test_result_success();
-            results.add_transaction_result(tx_execution_id, &result);
-
-            // Verify no reallocation occurred
-            assert_eq!(
-                results.transactions.capacity(),
-                initial_capacity,
-                "VecDeque capacity should not change - no reallocation should occur"
+        // Add 1000 more (triggers 1000 prunings from front)
+        for i in capacity..(capacity + 1000) {
+            let tx_id = TxExecutionId::new(
+                i as u64,
+                0,
+                revm::primitives::alloy_primitives::TxHash::from([((i % 256) as u8); 32]),
+                0,
             );
-
-            // Verify we maintain exactly the capacity
-            assert_eq!(
-                results.transactions.len(),
-                capacity,
-                "Should maintain exactly max_capacity transactions"
-            );
+            results.add_transaction_result(tx_id, &create_test_result_success());
         }
+
+        let elapsed = start.elapsed();
+
+        // O(1) operations should complete very fast
+        assert!(
+            elapsed.as_millis() < 100,
+            "Operations took too long: {:?}ms - indicates non-O(1) behavior",
+            elapsed.as_millis()
+        );
+
+        assert_eq!(results.len(), capacity);
+    }
+
+    #[test]
+    fn test_o1_arbitrary_removal() {
+        let transactions_state = TransactionsState::new();
+        let capacity = 10_000;
+        let mut results = TransactionsResults::new(transactions_state, capacity);
+
+        // Fill to capacity
+        let mut tx_ids = Vec::with_capacity(capacity);
+        for i in 0..capacity {
+            let tx_id = TxExecutionId::new(
+                i as u64,
+                0,
+                revm::primitives::alloy_primitives::TxHash::from([((i % 256) as u8); 32]),
+                0,
+            );
+            tx_ids.push(tx_id);
+            results.add_transaction_result(tx_id, &create_test_result_success());
+        }
+
+        let start = std::time::Instant::now();
+
+        // Remove 1000 items from the middle (indices 4500-5500)
+        for i in 4500..5500 {
+            results.remove_transaction_result(tx_ids[i]);
+        }
+
+        let elapsed = start.elapsed();
+
+        // O(1) removals should be very fast
+        assert!(
+            elapsed.as_millis() < 50,
+            "Arbitrary removals took too long: {:?}ms - indicates non-O(1) behavior",
+            elapsed.as_millis()
+        );
+
+        assert_eq!(results.len(), capacity - 1000);
     }
 }
