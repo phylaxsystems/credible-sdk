@@ -759,21 +759,15 @@ impl Indexer {
                 // the modification should be moved to the store. But we also need to avoid back
                 // pressure on extracting the assertion contracts once we have fetched them from
                 // the DA.
-                let DaFetchResponse {
-                    bytecode,
-                    encoded_constructor_args,
-                    ..
-                } = self
+                let DaFetchResponse { bytecode, .. } = self
                     .da_client
                     .fetch_assertion(event.assertionId)
                     .await
                     .map_err(IndexerError::DaClientError)?;
 
-                let mut deployment_bytecode = (*bytecode).to_vec();
-                deployment_bytecode.extend_from_slice(&encoded_constructor_args);
-
+                // The DA already returns deployment bytecode (creation code + constructor args)
                 let assertion_contract_res =
-                    extract_assertion_contract(&deployment_bytecode.into(), &self.executor_config);
+                    extract_assertion_contract(&bytecode, &self.executor_config);
 
                 match assertion_contract_res {
                     Ok((assertion_contract, trigger_recorder)) => {
@@ -901,9 +895,21 @@ mod test_indexer {
             U256,
         },
     };
+    use alloy::{
+        hex,
+        primitives::keccak256,
+        sol_types::SolValue,
+    };
     use alloy_transport::mock::Asserter;
     use sled::Config;
     use tempfile::TempDir;
+    use tokio::{
+        io::{
+            AsyncReadExt,
+            AsyncWriteExt,
+        },
+        net::TcpListener,
+    };
 
     // Helper to create a test indexer with in-memory database
     fn create_test_indexer() -> (Indexer, TempDir) {
@@ -1117,17 +1123,10 @@ mod test_indexer {
         let activation_block = 100u64;
 
         // Create event topics and data
-        let mut addr_bytes = [0u8; 32];
-        addr_bytes[12..].copy_from_slice(&contract_address.into_array());
+        let topics = vec![AssertionAdded::SIGNATURE_HASH];
 
-        let topics = vec![
-            AssertionAdded::SIGNATURE_HASH,
-            B256::from(addr_bytes),
-            assertion_id,
-        ];
-
-        // Create data using proper ABI encoding for the event
-        let data = U256::from(activation_block).to_be_bytes_vec();
+        // ABI-encode non-indexed event params: (assertionAdopter, assertionId, activationBlock)
+        let data = (contract_address, assertion_id, U256::from(activation_block)).abi_encode();
 
         let log_data = alloy::primitives::LogData::new(topics, data.into()).unwrap();
 
@@ -1140,6 +1139,97 @@ mod test_indexer {
     }
 
     #[tokio::test]
+    async fn test_extract_pending_modifications_assertion_added_with_constructor_args() {
+        // Build deployment bytecode with constructor args appended once
+        let constructor_arg = Address::random();
+        let encoded_constructor_args = (constructor_arg,).abi_encode();
+        let mut deployment_bytecode =
+            crate::test_utils::bytecode("MockAssertion.sol:MockAssertion").to_vec();
+        deployment_bytecode.extend_from_slice(&encoded_constructor_args);
+        let expected_assertion_id = keccak256(&deployment_bytecode);
+
+        // Spin up a tiny HTTP JSON-RPC server to mock the DA client
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}");
+        let deployment_hex = hex::encode(&deployment_bytecode);
+        let encoded_args_hex = hex::encode(&encoded_constructor_args);
+
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 4096];
+                // best-effort read to clear the request
+                let _ = stream.read(&mut buf).await;
+                let body = format!(
+                    r#"{{"jsonrpc":"2.0","result":{{"solidity_source":"","bytecode":"0x{deployment_hex}","prover_signature":"0x","encoded_constructor_args":"0x{encoded_args_hex}","constructor_abi_signature":"constructor(address)"}}, "id":1}}"#
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        // Build an indexer that points to the mock DA server
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = Config::new()
+            .path(temp_dir.path())
+            .cache_capacity_bytes(1024)
+            .open()
+            .unwrap();
+
+        let store = AssertionStore::new_ephemeral().unwrap();
+
+        let provider = alloy_provider::ProviderBuilder::new()
+            .connect_mocked_client(Asserter::default())
+            .root()
+            .clone();
+
+        let da_client = DaClient::new(&url).unwrap();
+
+        let indexer = Indexer::new(IndexerCfg {
+            state_oracle: Address::random(),
+            state_oracle_deployment_block: 0,
+            da_client,
+            executor_config: ExecutorConfig::default(),
+            store,
+            provider,
+            db,
+            await_tag: BlockTag::Latest,
+        });
+
+        // Create AssertionAdded event data that matches the mocked DA response
+        let topics = vec![AssertionAdded::SIGNATURE_HASH];
+        let activation_block = 42u64;
+        let data = (
+            Address::random(),
+            expected_assertion_id,
+            U256::from(activation_block),
+        )
+            .abi_encode();
+        let log_data = alloy::primitives::LogData::new(topics, data.into()).unwrap();
+
+        let result = indexer
+            .extract_pending_modifications(&log_data, 0)
+            .await
+            .unwrap();
+        let Some(PendingModification::Add {
+            assertion_contract,
+            activation_block: returned_activation_block,
+            ..
+        }) = result
+        else {
+            panic!("Expected PendingModification::Add");
+        };
+
+        assert_eq!(assertion_contract.id, expected_assertion_id);
+        assert_eq!(returned_activation_block, activation_block);
+    }
+
+    #[tokio::test]
     async fn test_extract_pending_modifications_assertion_removed() {
         let (indexer, _temp_dir) = create_test_indexer();
 
@@ -1149,17 +1239,10 @@ mod test_indexer {
         let activation_block = 100u64;
 
         // Create event topics and data
-        let mut addr_bytes = [0u8; 32];
-        addr_bytes[12..].copy_from_slice(&contract_address.into_array());
+        let topics = vec![AssertionRemoved::SIGNATURE_HASH];
 
-        let topics = vec![
-            AssertionRemoved::SIGNATURE_HASH,
-            B256::from(addr_bytes),
-            assertion_id,
-        ];
-
-        // Create data using proper ABI encoding for the event
-        let data = U256::from(activation_block).to_be_bytes_vec();
+        // ABI-encode non-indexed event params: (assertionAdopter, assertionId, deactivationBlock)
+        let data = (contract_address, assertion_id, U256::from(activation_block)).abi_encode();
 
         let log_data = alloy::primitives::LogData::new(topics, data.into()).unwrap();
 
