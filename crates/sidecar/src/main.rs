@@ -37,7 +37,10 @@ use sidecar::{
     event_sequencing::EventSequencing,
     health::HealthServer,
     indexer,
-    transactions_state::TransactionsState,
+    transactions_state::{
+        TransactionResultEvent,
+        TransactionsState,
+    },
     transport::{
         AnyTransport,
         Transport,
@@ -70,10 +73,14 @@ use std::{
 };
 use tracing::log::info;
 
+/// Create transport with optional result streaming support.
+///
+/// For gRPC transport with `result_event_rx`, enables `SubscribeResults` streaming.
 fn create_transport_from_args(
     config: &Config,
     tx_sender: TransactionQueueSender,
     state_results: Arc<TransactionsState>,
+    result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
 ) -> anyhow::Result<AnyTransport> {
     match config.transport.protocol {
         TransportProtocol::Http => {
@@ -83,7 +90,12 @@ fn create_transport_from_args(
         }
         TransportProtocol::Grpc => {
             let cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
-            let t = GrpcTransport::new(cfg, tx_sender, state_results)?;
+            let t = match result_event_rx {
+                Some(rx) => {
+                    GrpcTransport::with_result_receiver(&cfg, tx_sender, state_results, rx)?
+                }
+                None => GrpcTransport::new(cfg, tx_sender, state_results)?,
+            };
             Ok(AnyTransport::Grpc(t))
         }
     }
@@ -140,7 +152,6 @@ async fn main() -> anyhow::Result<()> {
     let assertion_store = init_assertion_store(&config)?;
     let assertion_executor =
         AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
-    let engine_state_results = TransactionsState::new();
     let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
 
     let mut should_shutdown = false;
@@ -188,8 +199,20 @@ async fn main() -> anyhow::Result<()> {
         // Channel: EventSequencing -> CoreEngine
         let (event_sequencing_tx, engine_rx) = unbounded();
 
-        let mut transport =
-            create_transport_from_args(&config, transport_tx_sender, engine_state_results.clone())?;
+        let (engine_state_results, result_event_rx) = match config.transport.protocol {
+            TransportProtocol::Grpc => {
+                let (tx, rx) = unbounded();
+                (TransactionsState::with_result_sender(tx), Some(rx))
+            }
+            TransportProtocol::Http => (TransactionsState::new(), None),
+        };
+
+        let mut transport = create_transport_from_args(
+            &config,
+            transport_tx_sender,
+            engine_state_results.clone(),
+            result_event_rx,
+        )?;
 
         // Spawn EventSequencing on a dedicated OS thread
         let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);

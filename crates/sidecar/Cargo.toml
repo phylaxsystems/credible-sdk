@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 assertion-executor = { workspace = true, default-features = false }
 rust-tracing = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 axum = { workspace = true }
 tonic = { version = "0.14.2", features = ["transport"] }

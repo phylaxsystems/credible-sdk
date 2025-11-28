@@ -5,7 +5,6 @@ use crate::{
     },
     execution_ids::TxExecutionId,
 };
-use assertion_executor::primitives::B256;
 use dashmap::{
     DashMap,
     DashSet,
@@ -14,6 +13,13 @@ use dashmap::{
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::error;
+
+/// Event emitted when a transaction result is available.
+#[derive(Debug, Clone)]
+pub struct TransactionResultEvent {
+    pub tx_execution_id: TxExecutionId,
+    pub result: TransactionResult,
+}
 
 #[derive(Debug)]
 pub struct TransactionsState {
@@ -30,6 +36,8 @@ pub struct TransactionsState {
         DashMap<TxExecutionId, broadcast::Sender<TransactionResult>>,
     /// `HashSet` containing the accepted transactions which haven't been processed yet.
     accepted_txs: DashSet<TxExecutionId>,
+    /// Optional channel for streaming transaction results to external observers (e.g., transports).
+    result_event_sender: Option<flume::Sender<TransactionResultEvent>>,
 }
 
 impl TransactionsState {
@@ -38,6 +46,22 @@ impl TransactionsState {
             transaction_results: DashMap::new(),
             transaction_results_pending_requests: DashMap::new(),
             accepted_txs: DashSet::new(),
+            result_event_sender: None,
+        })
+    }
+
+    /// Create a new `TransactionsState` with a result event sender.
+    ///
+    /// The sender will receive `TransactionResultEvent` for every transaction result,
+    /// allowing external systems (e.g., transport layers) to stream results.
+    pub fn with_result_sender(
+        result_event_sender: flume::Sender<TransactionResultEvent>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            transaction_results: DashMap::new(),
+            transaction_results_pending_requests: DashMap::new(),
+            accepted_txs: DashSet::new(),
+            result_event_sender: Some(result_event_sender),
         })
     }
 
@@ -50,6 +74,16 @@ impl TransactionsState {
             .insert(tx_execution_id, result.clone());
         self.accepted_txs.remove(&tx_execution_id);
         self.process_pending_queries(tx_execution_id, result);
+
+        // Send to external observers if configured.
+        if let Some(ref sender) = self.result_event_sender
+            && let Err(e) = sender.send(TransactionResultEvent {
+                tx_execution_id,
+                result: result.clone(),
+            })
+        {
+            error!(target = "transactions_state", error = ?e, "Failed to send transaction result to result event sender");
+        }
     }
 
     pub fn remove_transaction_result(&self, tx_execution_id: &TxExecutionId) {
@@ -240,6 +274,15 @@ mod tests {
         assert!(state.transaction_results.is_empty());
         assert!(state.transaction_results_pending_requests.is_empty());
         assert!(state.accepted_txs.is_empty());
+        assert!(state.result_event_sender.is_none());
+    }
+
+    #[test]
+    fn test_with_result_sender_stores_sender() {
+        let (tx, _rx) = flume::bounded(16);
+        let state = TransactionsState::with_result_sender(tx);
+
+        assert!(state.result_event_sender.is_some());
     }
 
     #[test]
@@ -253,6 +296,33 @@ mod tests {
         assert_eq!(state.transaction_results.len(), 1);
         let stored_result = state.get_transaction_result(&tx_execution_id).unwrap();
         assert_eq!(*stored_result, result);
+    }
+
+    #[test]
+    fn test_add_transaction_result_sends_to_channel() {
+        let (tx, rx) = flume::bounded(16);
+        let state = TransactionsState::with_result_sender(tx);
+        let tx_execution_id = create_test_tx_execution_id();
+        let result = create_test_transaction_result();
+
+        state.add_transaction_result(tx_execution_id, &result.clone());
+
+        // Should receive event on the channel
+        let event = rx.try_recv().expect("Should receive event");
+        assert_eq!(event.tx_execution_id, tx_execution_id);
+        assert_eq!(event.result, result);
+    }
+
+    #[test]
+    fn test_add_transaction_result_does_not_error_without_sender() {
+        let state = TransactionsState::new();
+        let tx_execution_id = create_test_tx_execution_id();
+        let result = create_test_transaction_result();
+
+        // Should not panic even without the sender
+        state.add_transaction_result(tx_execution_id, &result);
+
+        assert!(state.transaction_results.contains_key(&tx_execution_id));
     }
 
     #[test]
