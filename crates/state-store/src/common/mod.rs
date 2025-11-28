@@ -90,7 +90,7 @@ pub struct CircularBufferConfig {
 
 impl CircularBufferConfig {
     pub fn new(buffer_size: usize) -> StateResult<Self> {
-        if buffer_size == 0 {
+        if buffer_size <= 1 {
             return Err(StateError::InvalidBufferSize);
         }
         Ok(Self { buffer_size })
