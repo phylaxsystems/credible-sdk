@@ -514,3 +514,13 @@ perf script -i perf.data > perf.script
 Note: you will need to be on linux to run perf.
 
 Alternatively you can also try using dtrace/cargo-flamegraph, but the setup might not work due to weird env caputuring docker networking. YMMV.
+
+### Hardware requirements
+
+For **production usage** on a real network the sidecar should be ran with at least the following:
+- CPU: 32 physical cores, AMD Zen 3 performance equivalent or higher
+- Storage: 512gb+ recommended, fast local (not networked) PCIE NVME SSDs preffered to keep I/O latency low. Budget sustained IOPS and 2x storage to keep SSD reads fast.
+- RAM: 128gb recommended, RAM allocation should be enough to store the entire chain *state*(not full blocks, just state) in memory.
+- Networking: Keep RTT to the sequencer sub-millisecond by colocating in the same AZ/cluster (co-scheduling on the same k8s node/pod is ideal). Use a minimum of 10Gbps between the sequencer and sidecar and VPC-peer them; avoid routing over the public internet. Ensure stable, low-jitter egress to your DA RPC (HTTP) and indexer RPC (WS) endpoints—prefer private endpoints or allowlisted static egress IPs.
+
+For **local testing** unless you are benchmarking performance the sidecar is fairly light-weight and doesnt have hard hardware requirements.
