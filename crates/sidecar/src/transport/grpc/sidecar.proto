@@ -98,20 +98,24 @@ message ReorgEvent {
 
 // Unified event wrapper for streaming.
 // Replaces the previous SendEvents batch RPC with a streaming approach.
+// Each event includes a event_id for matching with the corresponding StreamAck.
 message Event {
+  uint64 event_id = 1;                                    // client-provided ID for request-response matching
   oneof event {
-    CommitHead commit_head = 1;
-    NewIteration new_iteration = 2;
-    Transaction transaction = 3;
-    ReorgEvent reorg = 4;
+    CommitHead commit_head = 2;
+    NewIteration new_iteration = 3;
+    Transaction transaction = 4;
+    ReorgEvent reorg = 5;
   }
 }
 
-// Stream acknowledgment - sent periodically or on completion/error.
+// Stream acknowledgment - sent for each event processed.
+// The event_id matches the event_id from the corresponding Event.
 message StreamAck {
   bool success = 1;                                       // whether processing succeeded
   string message = 2;                                     // info/error message
   uint64 events_processed = 3;                            // total events processed so far
+  uint64 event_id = 4;                                    // matches the event_id from the Event
 }
 
 // Transaction execution result status.
@@ -174,6 +178,7 @@ message GetTransactionResponse {
 service SidecarTransport {
   // Bidirectional stream: client sends events, server sends periodic acks.
   // Events must start with CommitHead before any other event type.
+  // Each ack includes the event_id from the corresponding event for explicit matching.
   rpc StreamEvents(stream Event) returns (stream StreamAck);
 
   // Server stream: subscribe to transaction results as they complete.

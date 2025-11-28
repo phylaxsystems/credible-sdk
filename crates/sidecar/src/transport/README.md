@@ -33,7 +33,8 @@ The gRPC transport provides a high-performance binary protocol with bidirectiona
 The gRPC transport uses a streaming-first architecture for optimal performance:
 
 - **`StreamEvents`**: Bidirectional stream for sending events (commits, iterations, transactions, reorgs). The client
-  sends events and receives acknowledgments for each event processed.
+  sends events and receives acknowledgments for each event processed. Each event includes a `event_id` that is echoed
+  back in the corresponding `StreamAck` for explicit request-response matching.
 - **`SubscribeResults`**: Server-push stream for receiving transaction results as they complete. Results are pushed
   immediately when transactions finish executing.
 
@@ -47,6 +48,27 @@ The `StreamEvents` RPC accepts the following event types:
 | `NewIteration` | Initializes building for a new iteration ID with block environment.                    |
 | `Transaction`  | Submits a transaction for execution.                                                   |
 | `ReorgEvent`   | Signals a chain reorganization.                                                        |
+
+#### Event Structure
+
+Each event sent via `StreamEvents` is wrapped in an `Event` message containing:
+
+- `event_id`: A client-provided `uint64` identifier for request-response matching
+- One of the event types above (`commit_head`, `new_iteration`, `transaction`, or `reorg`)
+
+#### Stream Acknowledgments
+
+Each event processed by the server generates a `StreamAck` response containing:
+
+| Field              | Type     | Description                                            |
+|--------------------|----------|--------------------------------------------------------|
+| `success`          | `bool`   | Whether the event was processed successfully           |
+| `message`          | `string` | Error message (if `success` is false) or info message  |
+| `events_processed` | `uint64` | Total number of events processed so far in this stream |
+| `event_id`         | `uint64` | The `event_id` from the corresponding `Event`          |
+
+The `event_id` allows clients to match acknowledgments to their original requests, which is especially useful when
+sending events concurrently or when network ordering is not guaranteed.
 
 #### Result Subscription
 
