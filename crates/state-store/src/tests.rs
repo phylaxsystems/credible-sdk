@@ -656,7 +656,7 @@ async fn test_roundtrip_basic_account_read() -> Result<()> {
     writer.commit_block(update)?;
 
     // Read back
-    let account = reader.get_account(address.into(), 0)?;
+    let account = reader.get_account_with_storage(address.into(), 0)?;
     assert!(account.is_some());
 
     let account = account.unwrap();
@@ -708,7 +708,7 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
     writer.commit_block(update)?;
 
     // Read back full account
-    let account = reader.get_account(address.into(), 0)?;
+    let account = reader.get_account_with_storage(address.into(), 0)?;
     assert!(account.is_some());
 
     let account = account.unwrap();

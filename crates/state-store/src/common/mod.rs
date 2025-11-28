@@ -293,7 +293,18 @@ where
         .transpose()
 }
 
-/// Complete account state with all fields.
+/// Account info without storage slots.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AccountInfo {
+    pub address_hash: AddressHash,
+    pub balance: U256,
+    pub nonce: u64,
+    pub code_hash: B256,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<Vec<u8>>,
+}
+
+/// Complete account state with all fields including storage.
 /// This is the canonical representation used by both reader and writer.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AccountState {

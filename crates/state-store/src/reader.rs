@@ -3,6 +3,7 @@
 use crate::{
     CircularBufferConfig,
     common::{
+        AccountInfo,
         AccountState,
         AddressHash,
         BlockMetadata,
@@ -59,9 +60,32 @@ impl StateReader {
             .with_connection(move |conn| read_latest_block_number(conn, &base_namespace))
     }
 
-    /// Get the complete account state including code and all storage slots.
-    /// Optimized to fetch everything in a single Redis roundtrip.
+    /// Get account info without storage slots (balance, nonce, code hash, code only).
+    /// This is the recommended method for most use cases to avoid large data transfers.
+    /// Use `get_account_with_storage` or `get_all_storage` separately if storage is needed.
     pub fn get_account(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<Option<AccountInfo>> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        self.client.with_connection(move |conn| {
+            get_account_at_block(
+                conn,
+                &base_namespace,
+                buffer_size,
+                &address_hash,
+                block_number,
+            )
+        })
+    }
+
+    /// Get the complete account state including code and all storage slots.
+    /// WARNING: This can be expensive for contracts with large storage (millions of slots).
+    /// Use `get_account` + `get_storage` for specific slots when possible.
+    pub fn get_account_with_storage(
         &self,
         address_hash: AddressHash,
         block_number: u64,
@@ -70,7 +94,7 @@ impl StateReader {
         let buffer_size = self.client.buffer_config.buffer_size;
 
         self.client.with_connection(move |conn| {
-            get_account_at_block(
+            get_account_with_storage_at_block(
                 conn,
                 &base_namespace,
                 buffer_size,
@@ -232,8 +256,77 @@ impl StateReader {
 // Internal helper functions
 // ============================================================================
 
-/// Get complete account state including code and storage in a single roundtrip.
+/// Get account info without storage slots.
+/// This is the lightweight version that avoids loading potentially large storage.
 fn get_account_at_block<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    buffer_size: usize,
+    address_hash: &AddressHash,
+    block_number: u64,
+) -> StateResult<Option<AccountInfo>>
+where
+    C: redis::ConnectionLike,
+{
+    let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
+
+    let namespace_block = read_namespace_block_number(conn, &namespace)?;
+    if namespace_block != Some(block_number) {
+        return Err(StateError::BlockNotFound { block_number });
+    }
+
+    let account_key = get_account_key(&namespace, address_hash);
+
+    // Only fetch account fields, not storage
+    let account_fields: HashMap<String, String> =
+        redis::cmd("HGETALL").arg(&account_key).query(conn)?;
+
+    if account_fields.is_empty() {
+        return Ok(None);
+    }
+
+    let balance = account_fields
+        .get("balance")
+        .ok_or(StateError::MissingField("balance"))?;
+    let nonce = account_fields
+        .get("nonce")
+        .ok_or(StateError::MissingField("nonce"))?;
+    let code_hash = account_fields
+        .get("code_hash")
+        .ok_or(StateError::MissingField("code_hash"))?;
+
+    let code_hash_decoded = decode_b256(code_hash)?;
+
+    // Fetch code if code_hash is non-empty
+    let code = if code_hash_decoded == B256::ZERO {
+        None
+    } else {
+        let code_hash_hex = hex::encode(code_hash_decoded);
+        let code_key = get_code_key(&namespace, &code_hash_hex);
+
+        let value: Option<String> = redis::cmd("GET").arg(&code_key).query(conn)?;
+
+        value.map(|v| decode_bytes(&v)).transpose()?
+    };
+
+    let balance_parsed =
+        U256::from_str_radix(balance, 10).map_err(|e| StateError::ParseU256(balance.clone(), e))?;
+    let nonce_parsed = nonce
+        .parse()
+        .map_err(|e| StateError::ParseInt(nonce.clone(), e))?;
+
+    Ok(Some(AccountInfo {
+        address_hash: address_hash.clone(),
+        balance: balance_parsed,
+        nonce: nonce_parsed,
+        code_hash: code_hash_decoded,
+        code,
+    }))
+}
+
+/// Get the complete account state including code and storage in a single roundtrip.
+/// WARNING: This can transfer large amounts of data for contracts with many storage slots.
+fn get_account_with_storage_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,

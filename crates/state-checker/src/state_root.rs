@@ -179,7 +179,7 @@ impl StateRootCalculator {
             // Read a single account from Redis
             let account_data = self
                 .reader
-                .get_account(address_hash.clone(), block_number)
+                .get_account_with_storage(address_hash.clone(), block_number)
                 .context(format!("Failed to read account {address_hash:?}"))?;
 
             if let Some(data) = account_data {
