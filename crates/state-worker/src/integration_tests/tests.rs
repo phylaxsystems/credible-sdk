@@ -1173,3 +1173,161 @@ async fn test_restart_after_mid_block_crash() {
         let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_zero_storage_values_are_deleted() {
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+
+    let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
+
+    // Block 1: Set storage slots 0 and 1 to non-zero values
+    let parity_trace_block_1 = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": [
+            {
+                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {
+                    test_address: {
+                        "balance": { "+": "0x100" },
+                        "nonce": { "+": "0x1" },
+                        "code": { "+": "0x" },
+                        "storage": {
+                            "0x0000000000000000000000000000000000000000000000000000000000000000": { "+": "0x0000000000000000000000000000000000000000000000000000000000000001" },
+                            "0x0000000000000000000000000000000000000000000000000000000000000001": { "+": "0x0000000000000000000000000000000000000000000000000000000000000002" }
+                        }
+                    }
+                },
+                "output": "0x"
+            }
+        ]
+    });
+
+    instance
+        .http_server_mock
+        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+    instance.http_server_mock.send_new_head();
+    sleep(Duration::from_millis(200)).await;
+
+    let client =
+        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
+    let mut conn = client
+        .get_connection()
+        .expect("Failed to get Redis connection");
+
+    let namespace = get_namespace_for_block("state_worker_test", 1, 3);
+    let storage_key = get_storage_key(&namespace, &address_hash.into());
+
+    let slot_zero_key = format!(
+        "0x{}",
+        hex::encode(keccak256(U256::ZERO.to_be_bytes::<32>()))
+    );
+    let slot_one_key = format!(
+        "0x{}",
+        hex::encode(keccak256(U256::from(1).to_be_bytes::<32>()))
+    );
+
+    // Wait for block 1 to be processed and verify both slots exist
+    let mut slot_zero: Option<String> = None;
+    let mut slot_one: Option<String> = None;
+    for _ in 0..30 {
+        slot_zero = redis::cmd("HGET")
+            .arg(&storage_key)
+            .arg(&slot_zero_key)
+            .query::<Option<String>>(&mut conn)
+            .ok()
+            .flatten();
+        slot_one = redis::cmd("HGET")
+            .arg(&storage_key)
+            .arg(&slot_one_key)
+            .query::<Option<String>>(&mut conn)
+            .ok()
+            .flatten();
+
+        if slot_zero.is_some() && slot_one.is_some() {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    assert!(slot_zero.is_some(), "Slot 0 should exist after block 1");
+    assert!(slot_one.is_some(), "Slot 1 should exist after block 1");
+
+    // Block 2: Set slot 1 to zero (should be deleted)
+    let parity_trace_block_2 = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": [
+            {
+                "transactionHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {
+                    test_address: {
+                        "balance": "=",
+                        "nonce": "=",
+                        "code": "=",
+                        "storage": {
+                            "0x0000000000000000000000000000000000000000000000000000000000000001": {
+                                "*": {
+                                    "from": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                                    "to": "0x0000000000000000000000000000000000000000000000000000000000000000"
+                                }
+                            }
+                        }
+                    }
+                },
+                "output": "0x"
+            }
+        ]
+    });
+
+    instance
+        .http_server_mock
+        .add_response("trace_replayBlockTransactions", parity_trace_block_2);
+    instance.http_server_mock.send_new_head();
+    sleep(Duration::from_millis(200)).await;
+
+    // Wait for block 2 to be processed
+    let namespace_2 = get_namespace_for_block("state_worker_test", 2, 3);
+    let block_2_key = format!("{namespace_2}:block");
+    for _ in 0..30 {
+        if let Ok(b) = conn.get::<_, String>(&block_2_key)
+            && b == "2"
+        {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    // Verify slot 0 still exists and slot 1 was deleted
+    let storage_key_2 = get_storage_key(&namespace_2, &address_hash.into());
+
+    let slot_zero_after: Option<String> = redis::cmd("HGET")
+        .arg(&storage_key_2)
+        .arg(&slot_zero_key)
+        .query(&mut conn)
+        .ok()
+        .flatten();
+
+    let slot_one_after: Option<String> = redis::cmd("HGET")
+        .arg(&storage_key_2)
+        .arg(&slot_one_key)
+        .query(&mut conn)
+        .ok()
+        .flatten();
+
+    assert!(
+        slot_zero_after.is_some(),
+        "Slot 0 should still exist after block 2"
+    );
+    assert!(
+        slot_one_after.is_none(),
+        "Slot 1 should be deleted after being set to zero in block 2"
+    );
+}

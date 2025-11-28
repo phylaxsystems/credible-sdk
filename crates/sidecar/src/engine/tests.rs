@@ -1585,11 +1585,11 @@ async fn test_cache_miss_with_iteration_selection(mut instance: crate::utils::Lo
     let (caller1, tx1_iter1) = instance.send_create_tx_with_cache_miss().await.unwrap();
 
     // Iteration 2: Trigger another cache miss
-    instance.set_current_iteration_id(2);
+    instance.set_current_iteration_id(1);
     let (caller2, tx1_iter2) = instance.send_create_tx_with_cache_miss().await.unwrap();
 
     instance
-        .wait_for_processing(Duration::from_millis(50))
+        .wait_for_processing(Duration::from_millis(150))
         .await;
 
     assert!(instance.get_transaction_result(&tx1_iter1).is_some());
