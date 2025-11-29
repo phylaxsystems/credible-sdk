@@ -827,6 +827,7 @@ impl SidecarTransport for GrpcService {
     type SubscribeResultsStream = ResultStream;
 
     /// Client sends events and the server responds with an ACK for each event received.
+    /// Each ACK includes the event_id from the corresponding event for explicit matching.
     #[instrument(
         name = "grpc_server::StreamEvents",
         skip(self, request),
@@ -848,23 +849,28 @@ impl SidecarTransport for GrpcService {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(event) => {
+                        // Extract event_id before processing
+                        let event_id = event.event_id;
+
                         // Process the event
                         if let Err(e) = service.process_event(event, &events_processed_clone) {
-                            // Send error ACK
+                            // Send error ACK with event_id
                             let error_ack = StreamAck {
                                 success: false,
                                 message: e.message().to_string(),
                                 events_processed: events_processed_clone.load(Ordering::Relaxed),
+                                event_id,
                             };
-                            let _ = tx.send(Err(e)).await;
+                            let _ = tx.send(Ok(error_ack)).await;
                             return;
                         }
 
-                        // Send success ACK for this event
+                        // Send success ACK with event_id
                         let ack = StreamAck {
                             success: true,
                             message: String::new(),
                             events_processed: events_processed_clone.load(Ordering::Relaxed),
+                            event_id,
                         };
                         if tx.send(Ok(ack)).await.is_err() {
                             // Client disconnected
@@ -879,11 +885,12 @@ impl SidecarTransport for GrpcService {
                 }
             }
 
-            // Send final ack on stream completion
+            // Send final ack on stream completion (event_id 0 indicates completion)
             let final_ack = StreamAck {
                 success: true,
                 message: "stream completed".into(),
                 events_processed: events_processed_clone.load(Ordering::Relaxed),
+                event_id: 0,
             };
             let _ = tx.send(Ok(final_ack)).await;
         });

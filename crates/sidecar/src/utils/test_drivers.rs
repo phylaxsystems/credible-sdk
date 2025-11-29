@@ -1133,6 +1133,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         };
 
         let event = Event {
+            event_id: 0,
             event: Some(EventVariant::CommitHead(commit_head)),
         };
 
@@ -1165,6 +1166,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let transaction = Self::build_pb_transaction(&tx_execution_id, &tx_env, prev_tx_hash);
 
         let event = Event {
+            event_id: 0,
             event: Some(EventVariant::Transaction(transaction)),
         };
 
@@ -1187,6 +1189,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         };
 
         let event = Event {
+            event_id: 0,
             event: Some(EventVariant::NewIteration(new_iteration)),
         };
 
@@ -1218,6 +1221,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         };
 
         let event = Event {
+            event_id: 0,
             event: Some(EventVariant::Reorg(reorg_event)),
         };
 
