@@ -39,7 +39,10 @@ pub fn publish_sync_state(
     if let Some(block_number) = latest_head {
         observed_block.store(block_number, Ordering::Release);
         let oldest = oldest_block.unwrap_or(block_number);
-        oldest_observed_block.store(oldest, Ordering::Release);
+        // We shift the oldest block to be +1, so we avoid fetching status for a block in Redis which will be rotated next
+        // But we can only do it if the redis depth is > 1
+        let shift = u64::from(block_number > oldest);
+        oldest_observed_block.store(oldest + shift, Ordering::Release);
 
         // Find the intersection of the two ranges
         let lower_bound = cache_status
@@ -174,7 +177,7 @@ mod tests {
         );
 
         assert_eq!(observed_block.load(Ordering::Acquire), 8);
-        assert_eq!(oldest_block.load(Ordering::Acquire), 6);
+        assert_eq!(oldest_block.load(Ordering::Acquire), 7);
         // target_block should be updated to upper_bound = min(9, 8) = 8
         assert_eq!(target_block.load(Ordering::Acquire), 8);
         assert!(sync_status.load(Ordering::Acquire));
@@ -202,7 +205,7 @@ mod tests {
         );
 
         assert_eq!(observed_block.load(Ordering::Acquire), 8);
-        assert_eq!(oldest_block.load(Ordering::Acquire), 6);
+        assert_eq!(oldest_block.load(Ordering::Acquire), 7);
         // target_block should be updated to upper_bound = min(10, 8) = 8
         assert_eq!(target_block.load(Ordering::Acquire), 8);
         // sync_status should be true because 8 is within [6, 8]
@@ -259,7 +262,7 @@ mod tests {
         );
 
         assert_eq!(observed_block.load(Ordering::Acquire), 5);
-        assert_eq!(oldest_block.load(Ordering::Acquire), 1);
+        assert_eq!(oldest_block.load(Ordering::Acquire), 2);
         // Intersection: [max(2,1), min(4,5)] = [2, 4]
         // target_block should be updated to 4
         assert_eq!(target_block.load(Ordering::Acquire), 4);
@@ -293,7 +296,7 @@ mod tests {
         assert_eq!(target_block.load(Ordering::Acquire), 100);
         assert!(sync_status.load(Ordering::Acquire));
         assert_eq!(observed_block.load(Ordering::Acquire), 100);
-        assert_eq!(oldest_block.load(Ordering::Acquire), 98);
+        assert_eq!(oldest_block.load(Ordering::Acquire), 99);
     }
 
     #[test]
