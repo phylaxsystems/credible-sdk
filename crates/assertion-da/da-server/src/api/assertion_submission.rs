@@ -77,14 +77,17 @@ pub async fn accept_bytecode_assertion(
         ));
     };
 
-    let Some(clean_code) = sanitize_single_hex_prefix(code) else {
-        warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, "Invalid params: multiple 0x prefixes found in bytecode");
-        return Ok(rpc_error_with_request_id(
+    let clean_code = match sanitize_single_hex_prefix(code).map_err(|err| {
+        warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, error = ?err, "Invalid params: multiple 0x prefixes found in bytecode");
+        rpc_error_with_request_id(
             json_rpc,
             500,
             "Failed to decode hex",
             request_id,
-        ));
+        )
+    }) {
+        Ok(code) => code,
+        Err(err_response) => return Ok(err_response),
     };
 
     // Validate hex inputs
@@ -294,14 +297,17 @@ pub async fn retreive_assertion(
         ));
     };
 
-    let Some(clean_id) = sanitize_single_hex_prefix(id) else {
-        warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, id = id, "Invalid params: multiple 0x prefixes found in id");
-        return Ok(rpc_error_with_request_id(
+    let clean_id = match sanitize_single_hex_prefix(id).map_err(|err| {
+        warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, id = id, error = ?err, "Invalid params: multiple 0x prefixes found in id");
+        rpc_error_with_request_id(
             json_rpc,
             -32605,
             "Internal Error: Failed to decode hex of id",
             request_id,
-        ));
+        )
+    }) {
+        Ok(id) => id,
+        Err(err_response) => return Ok(err_response),
     };
 
     // Validate hex input
@@ -391,15 +397,15 @@ async fn process_add_assertion(
     }
 }
 
-fn sanitize_single_hex_prefix(input: &str) -> Option<&str> {
+fn sanitize_single_hex_prefix(input: &str) -> Result<&str> {
     if let Some(stripped) = input.strip_prefix("0x") {
         if stripped.starts_with("0x") {
-            None
+            Err(anyhow::anyhow!("Multiple 0x prefixes found"))
         } else {
-            Some(stripped)
+            Ok(stripped)
         }
     } else {
-        Some(input)
+        Ok(input)
     }
 }
 
@@ -458,17 +464,17 @@ mod tests {
 
     #[test]
     fn allows_single_prefix() {
-        assert_eq!(sanitize_single_hex_prefix("0xabc123"), Some("abc123"));
+        assert_eq!(sanitize_single_hex_prefix("0xabc123").unwrap(), "abc123");
     }
 
     #[test]
     fn rejects_multiple_prefixes() {
-        assert_eq!(sanitize_single_hex_prefix("0x0xabc123"), None);
-        assert_eq!(sanitize_single_hex_prefix("0x0x0x"), None);
+        assert!(sanitize_single_hex_prefix("0x0xabc123").is_err());
+        assert!(sanitize_single_hex_prefix("0x0x0x").is_err());
     }
 
     #[test]
     fn allows_without_prefix() {
-        assert_eq!(sanitize_single_hex_prefix("abc123"), Some("abc123"));
+        assert_eq!(sanitize_single_hex_prefix("abc123").unwrap(), "abc123");
     }
 }
