@@ -17,8 +17,11 @@ use redis::Commands;
 use serde_json::json;
 use state_store::{
     CircularBufferConfig,
+    StateReader,
     StateWriter,
     common::{
+        AccountInfo,
+        AccountState,
         get_account_key,
         get_storage_key,
     },
@@ -1330,4 +1333,276 @@ async fn test_zero_storage_values_are_deleted() {
         slot_one_after.is_none(),
         "Slot 1 should be deleted after being set to zero in block 2"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_get_account_does_not_load_storage() {
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+
+    let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
+
+    // Block 1: Create account with multiple storage slots
+    let parity_trace_block_1 = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": [
+            {
+                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {
+                    test_address: {
+                        "balance": { "+": "0x100" },
+                        "nonce": { "+": "0x1" },
+                        "code": { "+": "0x6080" },
+                        "storage": {
+                            "0x0000000000000000000000000000000000000000000000000000000000000000": { "+": "0x0000000000000000000000000000000000000000000000000000000000000001" },
+                            "0x0000000000000000000000000000000000000000000000000000000000000001": { "+": "0x0000000000000000000000000000000000000000000000000000000000000002" },
+                            "0x0000000000000000000000000000000000000000000000000000000000000002": { "+": "0x0000000000000000000000000000000000000000000000000000000000000003" }
+                        }
+                    }
+                },
+                "output": "0x"
+            }
+        ]
+    });
+
+    instance
+        .http_server_mock
+        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+    instance.http_server_mock.send_new_head();
+    sleep(Duration::from_millis(300)).await;
+
+    // Wait for block to be processed
+    let client =
+        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
+    let mut conn = client
+        .get_connection()
+        .expect("Failed to get Redis connection");
+
+    let namespace = get_namespace_for_block("state_worker_test", 1, 3);
+    let block_key = format!("{namespace}:block");
+
+    for _ in 0..30 {
+        if let Ok(b) = conn.get::<_, String>(&block_key)
+            && b == "1"
+        {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    // Create reader
+    let reader = StateReader::new(
+        &instance.redis_url,
+        "state_worker_test",
+        CircularBufferConfig::new(3).unwrap(),
+    )
+    .expect("Failed to create reader");
+
+    // Test get_account returns AccountInfo (without storage field at all)
+    let account_info: AccountInfo = reader
+        .get_account(address_hash.into(), 1)
+        .expect("Failed to get account")
+        .expect("Account should exist");
+
+    assert_eq!(account_info.balance, U256::from(0x100));
+    assert_eq!(account_info.nonce, 1);
+
+    // Test get_full_account returns AccountState (with storage)
+    let account_state: AccountState = reader
+        .get_full_account(address_hash.into(), 1)
+        .expect("Failed to get account with storage")
+        .expect("Account should exist");
+
+    assert_eq!(account_state.balance, U256::from(0x100));
+    assert_eq!(account_state.nonce, 1);
+    assert_eq!(
+        account_state.storage.len(),
+        3,
+        "get_full_account should return all storage slots"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_get_full_account_returns_all_slots() {
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+
+    let test_address = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
+
+    // Block 1: Create account with storage
+    let parity_trace_block_1 = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": [
+            {
+                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {
+                    test_address: {
+                        "balance": { "+": "0x200" },
+                        "nonce": { "+": "0x5" },
+                        "code": { "+": "0x" },
+                        "storage": {
+                            "0x0000000000000000000000000000000000000000000000000000000000000000": { "+": "0x000000000000000000000000000000000000000000000000000000000000000a" },
+                            "0x0000000000000000000000000000000000000000000000000000000000000001": { "+": "0x000000000000000000000000000000000000000000000000000000000000000b" }
+                        }
+                    }
+                },
+                "output": "0x"
+            }
+        ]
+    });
+
+    instance
+        .http_server_mock
+        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+    instance.http_server_mock.send_new_head();
+    sleep(Duration::from_millis(300)).await;
+
+    // Wait for block to be processed
+    let client =
+        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
+    let mut conn = client
+        .get_connection()
+        .expect("Failed to get Redis connection");
+
+    let namespace = get_namespace_for_block("state_worker_test", 1, 3);
+    let block_key = format!("{namespace}:block");
+
+    for _ in 0..30 {
+        if let Ok(b) = conn.get::<_, String>(&block_key)
+            && b == "1"
+        {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    let reader = StateReader::new(
+        &instance.redis_url,
+        "state_worker_test",
+        CircularBufferConfig::new(3).unwrap(),
+    )
+    .expect("Failed to create reader");
+
+    // Test get_full_account returns AccountState
+    let account: AccountState = reader
+        .get_full_account(address_hash.into(), 1)
+        .expect("Failed to get account with storage")
+        .expect("Account should exist");
+
+    assert_eq!(account.balance, U256::from(0x200));
+    assert_eq!(account.nonce, 5);
+    assert_eq!(account.storage.len(), 2);
+
+    // Verify storage values
+    let slot_0_hash = keccak256(U256::ZERO.to_be_bytes::<32>());
+    let slot_1_hash = keccak256(U256::from(1).to_be_bytes::<32>());
+
+    let slot_0_key = U256::from_be_bytes(slot_0_hash.into());
+    let slot_1_key = U256::from_be_bytes(slot_1_hash.into());
+
+    assert!(
+        account.storage.contains_key(&slot_0_key),
+        "Storage should contain slot 0"
+    );
+    assert!(
+        account.storage.contains_key(&slot_1_key),
+        "Storage should contain slot 1"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_get_storage_returns_individual_slot() {
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+
+    let test_address = "0xcccccccccccccccccccccccccccccccccccccccc";
+    let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
+
+    // Block 1: Create account with storage
+    let parity_trace_block_1 = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": [
+            {
+                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {
+                    test_address: {
+                        "balance": { "+": "0x300" },
+                        "nonce": { "+": "0x1" },
+                        "code": { "+": "0x" },
+                        "storage": {
+                            "0x0000000000000000000000000000000000000000000000000000000000000005": { "+": "0x00000000000000000000000000000000000000000000000000000000000000ff" }
+                        }
+                    }
+                },
+                "output": "0x"
+            }
+        ]
+    });
+
+    instance
+        .http_server_mock
+        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+    instance.http_server_mock.send_new_head();
+    sleep(Duration::from_millis(300)).await;
+
+    // Wait for block to be processed
+    let client =
+        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
+    let mut conn = client
+        .get_connection()
+        .expect("Failed to get Redis connection");
+
+    let namespace = get_namespace_for_block("state_worker_test", 1, 3);
+    let block_key = format!("{namespace}:block");
+
+    for _ in 0..30 {
+        if let Ok(b) = conn.get::<_, String>(&block_key)
+            && b == "1"
+        {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    let reader = StateReader::new(
+        &instance.redis_url,
+        "state_worker_test",
+        CircularBufferConfig::new(3).unwrap(),
+    )
+    .expect("Failed to create reader");
+
+    // Use get_storage for individual slot lookup
+    let slot_5_hash = keccak256(U256::from(5).to_be_bytes::<32>());
+    let slot_key = U256::from_be_bytes(slot_5_hash.into());
+
+    let value = reader
+        .get_storage(address_hash.into(), slot_key, 1)
+        .expect("Failed to get storage")
+        .expect("Storage slot should exist");
+
+    assert_eq!(value, U256::from(0xff));
+
+    // Verify non-existent slot returns None
+    let non_existent_slot = keccak256(U256::from(999).to_be_bytes::<32>());
+    let non_existent_key = U256::from_be_bytes(non_existent_slot.into());
+
+    let missing = reader
+        .get_storage(address_hash.into(), non_existent_key, 1)
+        .expect("Failed to get storage");
+
+    assert!(missing.is_none(), "Non-existent slot should return None");
 }
