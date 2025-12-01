@@ -21,15 +21,12 @@ pub struct Args {
     #[arg(long, env = "STATE_WORKER_START_BLOCK")]
     pub start_block: Option<u64>,
 
-    #[arg(long, env = "STATE_WORKER_CHAIN_ID")]
-    pub chain_id: Option<u64>,
-
     #[arg(long, env = "STATE_WORKER_STATE_DEPTH", default_value = "3")]
     pub state_depth: usize,
 
-    /// Optional file to read genesis state from. If specified, overrides the embedded genesis snapshot.
+    /// File to read genesis state from. Required to seed initial state.
     #[arg(long, env = "STATE_WORKER_FILE_TO_GENESIS")]
-    pub file_to_genesis: Option<String>,
+    pub file_to_genesis: String,
 }
 
 #[derive(Debug, Clone, Copy)]

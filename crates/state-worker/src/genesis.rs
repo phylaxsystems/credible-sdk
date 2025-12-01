@@ -1,5 +1,4 @@
 //! Helpers for hydrating the worker's view of block 0 from a genesis JSON file.
-use crate::genesis_data;
 use alloy::primitives::{
     Address,
     B256,
@@ -62,19 +61,6 @@ pub fn parse_from_str(data: &str) -> Result<GenesisState> {
     let genesis: GenesisFile =
         serde_json::from_str(data).context("failed to deserialize genesis JSON")?;
     build_state(genesis)
-}
-
-/// Parse accounts from an embedded JSON value.
-pub fn parse_from_value(value: &serde_json::Value) -> Result<GenesisState> {
-    let data = serde_json::to_string(value).context("failed to serialize genesis JSON value")?;
-    parse_from_str(&data)
-}
-
-/// Load a genesis state for a known chain id embedded in the binary.
-pub fn load_embedded(chain_id: u64) -> Result<GenesisState> {
-    let value = genesis_data::for_chain_id(chain_id)
-        .ok_or_else(|| anyhow!("no embedded genesis for chain id {chain_id}"))?;
-    parse_from_value(value)
 }
 
 fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
@@ -477,11 +463,5 @@ mod tests {
                 "accounts should be sorted by address"
             );
         }
-    }
-
-    #[test]
-    fn test_load_embedded_invalid_chain() {
-        let result = load_embedded(999_999);
-        assert!(result.is_err(), "should fail for unknown chain id");
     }
 }

@@ -30,8 +30,8 @@ state:state_root:{number}     → state root
 
 ## Using and configuring the `state-worker`
 
-The state worker requires `--ws-url` for the Ethereum WebSocket endpoint and `--redis-url` for the Redis
-database. Optional flags include:
+The state worker requires `--ws-url` for the Ethereum WebSocket endpoint, `--redis-url` for the Redis
+database, and `--file-to-genesis` to preload the initial state from a file. Optional flags include:
 
 - `--redis-namespace` to change the key namespace (defaults to `state`).
 - `--start-block` to override the resume position derived from `state:meta:latest_block`.
