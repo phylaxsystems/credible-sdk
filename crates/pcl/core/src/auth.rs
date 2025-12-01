@@ -140,11 +140,11 @@ impl AuthCommand {
 
     /// Initiate the login process and wait for user authentication
     async fn login(&self, config: &mut CliConfig) -> Result<(), AuthError> {
-        if config.auth.is_some() {
+        if let Some(auth) = &config.auth {
             println!(
                 "{} Already logged in as: {}",
                 "ℹ️".blue(),
-                config.auth.as_ref().unwrap().user_address
+                auth.user_address
             );
             println!(
                 "Please use {} first to login with a different wallet",
