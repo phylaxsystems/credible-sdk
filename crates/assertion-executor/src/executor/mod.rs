@@ -741,7 +741,10 @@ mod test {
             EmptyDBTyped,
         },
     };
-    use std::convert::Infallible;
+    use std::{
+        collections::HashMap,
+        convert::Infallible,
+    };
 
     // Define a concrete error type for tests if needed, or use Infallible
     type TestDbError = Infallible; // Or a custom test error enum
@@ -824,7 +827,7 @@ mod test {
                     code: None,
                     ..Default::default()
                 },
-                storage: Default::default(),
+                storage: HashMap::default(),
                 status: AccountStatus::Touched,
             },
         );
@@ -839,7 +842,7 @@ mod test {
                     logs: vec![],
                     output: Output::Call(Bytes::new()),
                 },
-                state: Default::default(),
+                state: HashMap::default(),
             },
         };
 
