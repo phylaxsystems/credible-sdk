@@ -168,17 +168,6 @@ async fn main() -> anyhow::Result<()> {
         {
             sources.push(Arc::new(sequencer));
         }
-        if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
-            &config.state.eth_rpc_source_ws_url,
-            &config.state.eth_rpc_source_http_url,
-        ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
-            eth_rpc_source_ws_url.as_str(),
-            eth_rpc_source_http_url.as_str(),
-        )
-        .await
-        {
-            sources.push(eth_rpc_source);
-        }
         if let (Some(redis_url), Some(redis_namespace), Some(redis_depth)) = (
             config.state.redis_url.as_ref(),
             config.state.redis_namespace.as_ref(),
@@ -189,6 +178,17 @@ async fn main() -> anyhow::Result<()> {
             CircularBufferConfig::new(redis_depth)?,
         ) {
             sources.push(Arc::new(RedisSource::new(redis_client)));
+        }
+        if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
+            &config.state.eth_rpc_source_ws_url,
+            &config.state.eth_rpc_source_http_url,
+        ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
+            eth_rpc_source_ws_url.as_str(),
+            eth_rpc_source_http_url.as_str(),
+        )
+        .await
+        {
+            sources.push(eth_rpc_source);
         }
 
         let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
