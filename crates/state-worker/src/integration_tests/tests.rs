@@ -1412,9 +1412,9 @@ async fn test_get_account_does_not_load_storage() {
     assert_eq!(account_info.balance, U256::from(0x100));
     assert_eq!(account_info.nonce, 1);
 
-    // Test get_account_with_storage returns AccountState (with storage)
+    // Test get_full_account returns AccountState (with storage)
     let account_state: AccountState = reader
-        .get_account_with_storage(address_hash.into(), 1)
+        .get_full_account(address_hash.into(), 1)
         .expect("Failed to get account with storage")
         .expect("Account should exist");
 
@@ -1423,12 +1423,12 @@ async fn test_get_account_does_not_load_storage() {
     assert_eq!(
         account_state.storage.len(),
         3,
-        "get_account_with_storage should return all storage slots"
+        "get_full_account should return all storage slots"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_get_account_with_storage_returns_all_slots() {
+async fn test_get_full_account_returns_all_slots() {
     let instance = LocalInstance::new()
         .await
         .expect("Failed to start instance");
@@ -1493,9 +1493,9 @@ async fn test_get_account_with_storage_returns_all_slots() {
     )
     .expect("Failed to create reader");
 
-    // Test get_account_with_storage returns AccountState
+    // Test get_full_account returns AccountState
     let account: AccountState = reader
-        .get_account_with_storage(address_hash.into(), 1)
+        .get_full_account(address_hash.into(), 1)
         .expect("Failed to get account with storage")
         .expect("Account should exist");
 

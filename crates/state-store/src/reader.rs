@@ -29,6 +29,7 @@ use crate::{
 };
 use alloy::primitives::{
     B256,
+    KECCAK256_EMPTY,
     U256,
 };
 use redis::Pipeline;
@@ -62,7 +63,7 @@ impl StateReader {
 
     /// Get account info without storage slots (balance, nonce, code hash, code only).
     /// This is the recommended method for most use cases to avoid large data transfers.
-    /// Use `get_account_with_storage` or `get_all_storage` separately if storage is needed.
+    /// Use `get_full_account` or `get_all_storage` separately if storage is needed.
     pub fn get_account(
         &self,
         address_hash: AddressHash,
@@ -85,7 +86,7 @@ impl StateReader {
     /// Get the complete account state including code and all storage slots.
     /// WARNING: This can be expensive for contracts with large storage (millions of slots).
     /// Use `get_account` + `get_storage` for specific slots when possible.
-    pub fn get_account_with_storage(
+    pub fn get_full_account(
         &self,
         address_hash: AddressHash,
         block_number: u64,
@@ -94,7 +95,7 @@ impl StateReader {
         let buffer_size = self.client.buffer_config.buffer_size;
 
         self.client.with_connection(move |conn| {
-            get_account_with_storage_at_block(
+            get_full_account_at_block(
                 conn,
                 &base_namespace,
                 buffer_size,
@@ -297,18 +298,6 @@ where
 
     let code_hash_decoded = decode_b256(code_hash)?;
 
-    // Fetch code if code_hash is non-empty
-    let code = if code_hash_decoded == B256::ZERO {
-        None
-    } else {
-        let code_hash_hex = hex::encode(code_hash_decoded);
-        let code_key = get_code_key(&namespace, &code_hash_hex);
-
-        let value: Option<String> = redis::cmd("GET").arg(&code_key).query(conn)?;
-
-        value.map(|v| decode_bytes(&v)).transpose()?
-    };
-
     let balance_parsed =
         U256::from_str_radix(balance, 10).map_err(|e| StateError::ParseU256(balance.clone(), e))?;
     let nonce_parsed = nonce
@@ -320,13 +309,12 @@ where
         balance: balance_parsed,
         nonce: nonce_parsed,
         code_hash: code_hash_decoded,
-        code,
     }))
 }
 
 /// Get the complete account state including code and storage in a single roundtrip.
 /// WARNING: This can transfer large amounts of data for contracts with many storage slots.
-fn get_account_with_storage_at_block<C>(
+fn get_full_account_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
@@ -380,7 +368,7 @@ where
     }
 
     // Fetch code if code_hash is non-empty
-    let code = if code_hash_decoded == B256::ZERO {
+    let code = if code_hash_decoded == KECCAK256_EMPTY {
         None
     } else {
         let code_hash_hex = hex::encode(code_hash_decoded);
