@@ -36,6 +36,9 @@ impl<Db> VersionDb<Db> {
         }
     }
 
+    // FIXME: we have unnecessary clones for state data across
+    // the `VersionDb`. these should be removed and replaced
+    // with proper interior mutability
     fn rebuild_state(&mut self, depth: usize) {
         self.state = self.base_state.clone();
         for delta in self.commit_log.iter().take(depth) {
@@ -109,7 +112,7 @@ impl<Db> RollbackDb for VersionDb<Db> {
     type Err = VersionDbError;
 
     fn rollback_to(&mut self, depth: usize) -> Result<(), VersionDbError> {
-        if depth > self.commit_log.len() {
+        if depth >= self.commit_log.len() {
             return Err(VersionDbError::InvalidDepth {
                 attempted: depth,
                 max_depth: self.commit_log.len(),
