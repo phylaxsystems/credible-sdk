@@ -27,6 +27,7 @@ use crate::{
         },
     },
 };
+use alloy::primitives::U256;
 use revm::{
     context::BlockEnv,
     primitives::alloy_primitives::TxHash,
@@ -199,7 +200,7 @@ struct CommitHeadEvent {
     #[serde(default)]
     last_tx_hash: Option<String>,
     n_transactions: u64,
-    block_number: u64,
+    block_number: U256,
     selected_iteration_id: Option<u64>,
 }
 

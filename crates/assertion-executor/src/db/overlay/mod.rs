@@ -902,9 +902,10 @@ mod overlay_db_tests {
                 code_hash,
                 code: Some(code.clone()),
             },
+            transaction_id: 0,
             storage: HashMap::from_iter([
-                (U256::from(1), EvmStorageSlot::new(U256::from(100))),
-                (U256::from(2), EvmStorageSlot::new(U256::from(200))),
+                (U256::from(1), EvmStorageSlot::new(U256::from(100), 0)),
+                (U256::from(2), EvmStorageSlot::new(U256::from(200), 0)),
             ]),
             status: AccountStatus::Touched,
         };
@@ -918,7 +919,11 @@ mod overlay_db_tests {
                 ),
                 code: None,
             },
-            storage: HashMap::from_iter([(U256::from(10), EvmStorageSlot::new(U256::from(1000)))]),
+            transaction_id: 0,
+            storage: HashMap::from_iter([(
+                U256::from(10),
+                EvmStorageSlot::new(U256::from(1000), 0),
+            )]),
             status: AccountStatus::Touched,
         };
 
@@ -932,6 +937,7 @@ mod overlay_db_tests {
                 ),
                 code: None,
             },
+            transaction_id: 0,
             storage: HashMap::default(),
             status: AccountStatus::default(), // Not touched
         };
@@ -1035,9 +1041,10 @@ mod overlay_db_tests {
                 code_hash,
                 code: Some(code.clone()),
             },
+            transaction_id: 0,
             storage: HashMap::from_iter([
-                (U256::from(100), EvmStorageSlot::new(U256::from(1000))),
-                (U256::from(200), EvmStorageSlot::new(U256::from(2000))),
+                (U256::from(100), EvmStorageSlot::new(U256::from(1000), 0)),
+                (U256::from(200), EvmStorageSlot::new(U256::from(2000), 0)),
             ]),
             status: AccountStatus::Touched,
         };
@@ -1051,7 +1058,11 @@ mod overlay_db_tests {
                 ),
                 code: None,
             },
-            storage: HashMap::from_iter([(U256::from(300), EvmStorageSlot::new(U256::from(3000)))]),
+            transaction_id: 0,
+            storage: HashMap::from_iter([(
+                U256::from(300),
+                EvmStorageSlot::new(U256::from(3000), 0),
+            )]),
             status: AccountStatus::Touched,
         };
 

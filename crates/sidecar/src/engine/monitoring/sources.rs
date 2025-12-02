@@ -4,14 +4,14 @@ use crate::{
     engine::EngineError,
     metrics::SourceMetrics,
 };
+use alloy::primitives::U256;
 use dashmap::DashMap;
+use parking_lot::RwLock;
 use std::{
     sync::{
         Arc,
         atomic::{
             AtomicBool,
-            AtomicU64,
-            AtomicUsize,
             Ordering,
         },
     },
@@ -53,7 +53,7 @@ pub struct SourcesInner {
     /// Reference to the underlying state sources
     cache_sources: Arc<CacheSources>,
     /// Current head block number
-    head_block_number: AtomicU64,
+    head_block_number: RwLock<U256>,
 }
 
 impl Drop for Sources {
@@ -74,10 +74,9 @@ impl Sources {
             cache_sources,
             period,
             any_source_synced: AtomicBool::new(false),
-            head_block_number: AtomicU64::new(0),
+            head_block_number: RwLock::new(U256::ZERO),
         });
         let abort_handle = sources_inner.clone().spawn_monitoring();
-
         Arc::new(Self {
             sources_inner,
             abort_handle,
@@ -90,10 +89,14 @@ impl Sources {
     }
 
     /// Updates the current head block number
-    pub fn update_head_block_number(&self, block_number: u64) {
-        self.sources_inner
-            .head_block_number
-            .store(block_number, Ordering::Relaxed);
+    pub fn update_head_block_number(&self, block_number: U256) {
+        *self.sources_inner.head_block_number.write() = block_number;
+    }
+
+    /// Returns the current head block number
+    #[cfg(any(test, feature = "test", feature = "bench-utils"))]
+    pub fn get_head_block_number(&self) -> U256 {
+        *self.sources_inner.head_block_number.read()
     }
 }
 
@@ -117,10 +120,9 @@ impl SourcesInner {
     async fn run(self: Arc<Self>) -> ! {
         let start = Instant::now();
         loop {
-            let head_block_number = self.head_block_number.load(Ordering::Relaxed);
+            let head_block_number = *self.head_block_number.read();
             let min_synced_block = self.cache_sources.get_minimum_synced_block_number();
             let timestamp = Instant::now().duration_since(start).as_secs();
-
             let mut any_synced = false;
 
             // Iterate over all configured sources
@@ -132,12 +134,10 @@ impl SourcesInner {
                     .cache_sources
                     .iter_synced_sources()
                     .find(|s| s.name() == *source_name)
-                    .is_some_and(|source| source.is_synced(min_synced_block, head_block_number)); // Default to not
-                // synced if source not found
+                    .is_some_and(|source| source.is_synced(min_synced_block, head_block_number));
 
                 // Update per-source metrics
                 source_metric.update_sync_status(is_synced, timestamp);
-
                 if is_synced {
                     any_synced = true;
                 }

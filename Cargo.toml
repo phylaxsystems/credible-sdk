@@ -69,7 +69,7 @@ k256 = "0.13.4"
 hex = "0.4.3"
 tempfile = { version = "3.12.0" }
 wiremock = "0.6.1"
-redis-test = "0.12.0"
+redis-test = "0.13.0"
 redis = "0.32.5"
 directories = "6.0.0"
 bollard = "0.19"
@@ -91,32 +91,32 @@ parking_lot = "0.12.1"
 metrics = "0.24"
 
 # alloy dependencies
-alloy-provider = { version = "1.0.9", features = [
+alloy-provider = { version = "1.1.2", features = [
     "ws",
     "anvil-node",
     "trace-api",
     "debug-api",
 ] }
-alloy-consensus = { version = "1.0.9", features = ["k256"] }
-alloy-rpc-types = "1.0.9"
-alloy-rpc-types-trace = "1.0.9"
-alloy-rpc-types-anvil = "1.0.9"
-alloy-pubsub = "1.0.9"
-alloy-rpc-client = "1.0.9"
-alloy-node-bindings = "1.0.9"
-alloy-network = "1.0.9"
-alloy-network-primitives = "1.0.9"
-alloy-signer = "1.0.9"
-alloy-signer-local = "1.0.9"
-alloy-transport = "1.0.9"
-alloy-transport-ws = "1.0.9"
-alloy-eips = "1.0.9"
+alloy-consensus = { version = "1.1.2", features = ["k256"] }
+alloy-rpc-types = "1.1.2"
+alloy-rpc-types-trace = "1.1.2"
+alloy-rpc-types-anvil = "1.1.2"
+alloy-pubsub = "1.1.2"
+alloy-rpc-client = "1.1.2"
+alloy-node-bindings = "1.1.2"
+alloy-network = "1.1.2"
+alloy-network-primitives = "1.1.2"
+alloy-signer = "1.1.2"
+alloy-signer-local = "1.1.2"
+alloy-transport = "1.1.2"
+alloy-transport-ws = "1.1.2"
+alloy-eips = "1.1.2"
 
 # alloy core
-alloy-primitives = { version = "1.1.0", features = ["getrandom"] }
-alloy-sol-types = "1.1.0"
+alloy-primitives = { version = "1.4.1", features = ["getrandom"] }
+alloy-sol-types = "1.4.1"
 
-alloy = { version = "1.0.9", features = [
+alloy = { version = "1.1.2", features = [
     "full",
     "node-bindings",
     "json-rpc",
@@ -124,15 +124,15 @@ alloy = { version = "1.0.9", features = [
     "signer-local",
     "k256",
 ] }
-alloy-dyn-abi = { version = "1.2.1", features = ["std"] }
-alloy-json-abi = "1.2.1"
+alloy-dyn-abi = { version = "1.4.1", features = ["std"] }
+alloy-json-abi = "1.4.1"
 
 ## alloy-evm
-alloy-evm = "0.10.0"
+alloy-evm = "0.24.2"
 
 # revm dependencies
-revm = { version = "24.0.1", features = ["serde"] }
-op-revm = { version = "5.0.1", default-features = false }
+revm = { version = "33.1.0", features = ["serde"] }
+op-revm = { version = "14.1.0", default-features = false }
 moka = { version = "0.12.10", features = ["sync"] }
 enum-as-inner = "0.6.1"
 url = "2.5.4"
@@ -155,3 +155,14 @@ inherits = "release"
 strip = "none"
 rustflags = ["-C", "force-frame-pointers=yes", "-C", "symbol-mangling-version=v0"]
 debug = "line-tables-only"
+
+# Temporary due to a requirement in phoundry
+[patch.crates-io]
+solar-compiler = { git = "https://github.com/paradigmxyz/solar.git", rev = "1f28069" }
+solar-interface = { git = "https://github.com/paradigmxyz/solar.git", rev = "1f28069" }
+solar-ast = { git = "https://github.com/paradigmxyz/solar.git", rev = "1f28069" }
+solar-sema = { git = "https://github.com/paradigmxyz/solar.git", rev = "1f28069" }
+solar-parse = { git = "https://github.com/paradigmxyz/solar.git", rev = "1f28069" }
+solar-config = { git = "https://github.com/paradigmxyz/solar.git", rev = "1f28069" }
+solar-data-structures = { git = "https://github.com/paradigmxyz/solar.git", rev = "1f28069" }
+solar-macros = { git = "https://github.com/paradigmxyz/solar.git", rev = "1f28069" }

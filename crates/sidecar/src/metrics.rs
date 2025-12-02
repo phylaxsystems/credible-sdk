@@ -11,11 +11,13 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::unused_self)]
 
+use alloy::primitives::U256;
 use metrics::{
     counter,
     gauge,
     histogram,
 };
+use parking_lot::RwLock;
 use std::sync::atomic::{
     AtomicBool,
     AtomicU64,
@@ -84,7 +86,7 @@ pub struct BlockMetrics {
     /// Current block height
     ///
     /// Committed as a `Gauge`.
-    pub current_height: u64,
+    pub current_height: U256,
 }
 
 impl BlockMetrics {
@@ -96,9 +98,10 @@ impl BlockMetrics {
 
     /// Increments the `sidecar_cache_invalidations` counter, commit its duration
     /// `sidecar_cache_invalidations_time_seconds` and set the min required height counter.
-    pub fn increment_cache_invalidation(&self, duration: std::time::Duration, height: u64) {
+    pub fn increment_cache_invalidation(&self, duration: std::time::Duration, height: U256) {
         counter!("sidecar_cache_invalidations").increment(1);
-        counter!("sidecar_cache_min_required_height").absolute(height);
+        let height_u64: u64 = height.try_into().unwrap_or(u64::MAX);
+        counter!("sidecar_cache_min_required_height").absolute(height_u64);
         gauge!("sidecar_cache_invalidations_time_seconds").set(duration);
     }
 
@@ -121,7 +124,7 @@ impl BlockMetrics {
         gauge!("sidecar_block_gas_used").set(self.block_gas_used as f64);
         gauge!("sidecar_assertions_per_block").set(self.assertions_per_block as f64);
         gauge!("sidecar_assertion_gas_per_block").set(self.assertion_gas_per_block as f64);
-        gauge!("sidecar_current_height").set(self.current_height as f64);
+        gauge!("sidecar_current_height").set(f64::from(self.current_height));
     }
 
     /// Resets all values inside of `&mut Self` back to their defaults
@@ -137,7 +140,7 @@ impl BlockMetrics {
         self.block_gas_used = 0;
         self.assertions_per_block = 0;
         self.assertion_gas_per_block = 0;
-        self.current_height = 0;
+        self.current_height = U256::ZERO;
     }
 }
 
@@ -191,45 +194,55 @@ impl Drop for TransactionMetrics {
 }
 
 /// State metrics. The metrics are committed to prometheus on write. The fields in this struct are
-/// for tracking purposes
-#[derive(Debug, Default)]
+/// for tracking purposes.
+#[derive(Debug)]
 pub struct StateMetrics {
-    pub latest_unprocessed_block: AtomicU64,
-    pub latest_head: AtomicU64,
+    /// Latest unprocessed block number
+    pub latest_unprocessed_block: RwLock<U256>,
+    /// Latest head block number
+    pub latest_head: RwLock<U256>,
+    /// Counter for reset operations
     pub reset_latest_unprocessed_block: AtomicU64,
+}
+
+impl Default for StateMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StateMetrics {
     pub fn new() -> Self {
         Self {
-            latest_unprocessed_block: AtomicU64::new(0),
-            latest_head: AtomicU64::new(0),
+            latest_unprocessed_block: RwLock::new(U256::ZERO),
+            latest_head: RwLock::new(U256::ZERO),
             reset_latest_unprocessed_block: AtomicU64::new(0),
         }
     }
 
     /// Set the state sources latest unprocessed block number (`sidecar_cache_latest_unprocessed_block`)
     ///
-    /// Commited as a `Gauge`.
-    pub fn set_latest_unprocessed_block(&self, block_number: u64) {
-        self.latest_unprocessed_block
-            .store(block_number, Ordering::Relaxed);
-        gauge!("sidecar_cache_latest_unprocessed_block").set(block_number as f64);
+    /// Committed as a `Gauge`.
+    pub fn set_latest_unprocessed_block(&self, block_number: U256) {
+        *self.latest_unprocessed_block.write() = block_number;
+        // For metrics, we convert to f64. Large U256 values will lose precision,
+        // but this is acceptable for metrics purposes.
+        gauge!("sidecar_cache_latest_unprocessed_block").set(u256_to_f64(block_number));
     }
 
     /// Set the state sources min synced head (`sidecar_cache_min_synced_head`)
     ///
-    /// Commited as a `Gauge`.
-    pub fn set_min_synced_head(&self, number: u64) {
-        gauge!("sidecar_cache_min_synced_head").set(number as f64);
+    /// Committed as a `Gauge`.
+    pub fn set_min_synced_head(&self, number: U256) {
+        gauge!("sidecar_cache_min_synced_head").set(u256_to_f64(number));
     }
 
     /// Set the state sources latest head (`sidecar_cache_latest_head`)
     ///
-    /// Commited as a `Gauge`.
-    pub fn set_latest_head(&self, block_number: u64) {
-        self.latest_head.store(block_number, Ordering::Relaxed);
-        gauge!("sidecar_cache_latest_head").set(block_number as f64);
+    /// Committed as a `Gauge`.
+    pub fn set_latest_head(&self, block_number: U256) {
+        *self.latest_head.write() = block_number;
+        gauge!("sidecar_cache_latest_head").set(u256_to_f64(block_number));
     }
 
     /// Track the number of times the `basic_ref` was called successfully
@@ -343,12 +356,10 @@ impl StateMetrics {
     /// Track the number of times the required last unprocessed block was reset
     /// (`sidecar_cache_reset_latest_unprocessed_block_counter`)
     ///
-    /// Commited as a `Counter`.
+    /// Committed as a `Counter`.
     pub fn increase_reset_latest_unprocessed_block(&self) {
-        let reset_required_head_counter =
-            self.reset_latest_unprocessed_block.load(Ordering::Relaxed) + 1;
         self.reset_latest_unprocessed_block
-            .store(reset_required_head_counter, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Relaxed);
         counter!("sidecar_cache_reset_latest_unprocessed_block_counter").increment(1);
     }
 
@@ -429,6 +440,24 @@ impl StateMetrics {
     }
 }
 
+/// Convert U256 to f64 for metrics.
+///
+/// Note: This will lose precision for very large values (> 2^53),
+/// but this is acceptable for metrics purposes since block numbers
+/// in practice fit well within f64's precise range.
+#[inline]
+fn u256_to_f64(value: U256) -> f64 {
+    // For values that fit in u64, use direct conversion for precision
+    if value <= U256::from(u64::MAX) {
+        let limbs = value.as_limbs();
+        limbs[0] as f64
+    } else {
+        // For larger values, convert via string parsing (slower but handles full range)
+        // In practice, block numbers should never reach this path
+        value.to_string().parse::<f64>().unwrap_or(f64::MAX)
+    }
+}
+
 /// Metrics for an individual source
 ///
 /// Tracks per-source synchronization status and statistics including
@@ -505,21 +534,21 @@ pub struct EngineTransactionsResultMetrics {}
 impl EngineTransactionsResultMetrics {
     /// Set the current engine `transactions` length (`sidecar_engine_transactions_results_transactions_length`)
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub fn set_engine_transaction_length(&self, len: usize) {
         gauge!("sidecar_engine_transactions_results_transactions_length").set(len as f64);
     }
 
     /// Set the current engine `accepted_txs` length (`sidecar_engine_transactions_state_accepted_txs_length`)
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub fn set_engine_transactions_state_accepted_txs_length(&self, len: usize) {
         gauge!("sidecar_engine_transactions_state_accepted_txs_length").set(len as f64);
     }
 
     /// Set the current engine `transaction_results_pending_requests` length (`sidecar_engine_transactions_state_transaction_results_pending_requests_length`)
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub fn set_engine_transactions_state_transaction_results_pending_requests_length(
         &self,
         len: usize,
@@ -530,7 +559,7 @@ impl EngineTransactionsResultMetrics {
 
     /// Set the current engine `transaction_results` length (`sidecar_engine_transactions_state_transaction_results_length`)
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub fn set_engine_transactions_state_transaction_results_length(&self, len: usize) {
         gauge!("sidecar_engine_transactions_state_transaction_results_length").set(len as f64);
     }
@@ -543,7 +572,7 @@ pub struct TransportTransactionsResultMetrics {}
 impl TransportTransactionsResultMetrics {
     /// Set the current transport `transactions` length (`sidecar_transport_transactions_result_pending_receives_length`)
     ///
-    /// Commited as a `Gauge`.
+    /// Committed as a `Gauge`.
     pub fn set_transport_pending_receives_length(&self, len: usize) {
         gauge!("sidecar_transport_transactions_result_pending_receives_length").set(len as f64);
     }

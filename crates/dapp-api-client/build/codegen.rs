@@ -12,8 +12,7 @@ pub fn generate_client_code() -> anyhow::Result<()> {
     // Check if spec file exists
     if !std::path::Path::new(SPEC_FILE).exists() {
         anyhow::bail!(
-            "OpenAPI spec not found at {}. Run with --features=regenerate to fetch it.",
-            SPEC_FILE
+            "OpenAPI spec not found at {SPEC_FILE}. Run with --features=regenerate to fetch it.",
         );
     }
 

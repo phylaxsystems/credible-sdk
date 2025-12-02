@@ -108,7 +108,7 @@ pub trait TestTransport: Sized {
     /// Should send a `CommitHead` event to the core engine.
     async fn new_block(
         &mut self,
-        block_number: u64,
+        block_number: U256,
         selected_iteration_id: u64,
         n_transactions: u64,
     ) -> Result<(), String>;
@@ -164,7 +164,7 @@ pub struct LocalInstance<T: TestTransport> {
     /// Engine task handle
     engine_handle: Option<JoinHandle<()>>,
     /// Current block number
-    pub block_number: u64,
+    pub block_number: U256,
     /// Shared transaction results from engine
     transaction_results: Arc<crate::TransactionsState>,
     /// Default account for transactions
@@ -205,7 +205,7 @@ impl<T: TestTransport> LocalInstance<T> {
         assertion_store: Arc<AssertionStore>,
         transport_handle: Option<JoinHandle<()>>,
         engine_handle: Option<JoinHandle<()>>,
-        block_number: u64,
+        block_number: U256,
         transaction_results: Arc<crate::TransactionsState>,
         default_account: Address,
         local_address: Option<&SocketAddr>,
@@ -246,7 +246,7 @@ impl<T: TestTransport> LocalInstance<T> {
     ) -> Result<(), String> {
         // Send the block environment first
         self.send_block(self.block_number).await?;
-        self.block_number += 1;
+        self.block_number += U256::from(1);
 
         // Then send all transactions
         for (tx_hash, tx_env) in transactions {
@@ -344,8 +344,8 @@ impl<T: TestTransport> LocalInstance<T> {
     pub async fn wait_for_source_synced(
         &self,
         source_index: usize,
-        block_number: u64,
-        min_synced_block: u64,
+        block_number: U256,
+        min_synced_block: U256,
     ) -> Result<(), String> {
         let source = self
             .list_of_sources
@@ -495,7 +495,7 @@ impl<T: TestTransport> LocalInstance<T> {
         Ok(())
     }
 
-    async fn send_block(&mut self, block_number: u64) -> Result<(), String> {
+    async fn send_block(&mut self, block_number: U256) -> Result<(), String> {
         self.transport
             .new_block(
                 block_number,
@@ -515,7 +515,7 @@ impl<T: TestTransport> LocalInstance<T> {
 
         self.active_iterations.clear();
 
-        let next_block_number = block_number + 1;
+        let next_block_number = block_number + U256::from(1);
         let block_env = Self::default_block_env(next_block_number);
         self.transport
             .new_iteration(self.iteration_id, block_env)
@@ -536,7 +536,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // Ensure we have a block
         self.send_block(self.block_number).await?;
 
-        self.block_number += 1;
+        self.block_number += U256::from(1);
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -651,7 +651,7 @@ impl<T: TestTransport> LocalInstance<T> {
     ) -> Result<(Address, TxExecutionId), String> {
         // Ensure we have a block
         self.send_block(self.block_number).await?;
-        self.block_number += 1;
+        self.block_number += U256::from(1);
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -768,7 +768,7 @@ impl<T: TestTransport> LocalInstance<T> {
     ) -> Result<TxExecutionId, String> {
         // Ensure we have a block
         self.send_block(self.block_number).await?;
-        self.block_number += 1;
+        self.block_number += U256::from(1);
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -823,7 +823,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // verify that we spend less gas on storage reads
         // interact with the pre-loaded counter contract so the access list actually matters
         self.send_block(self.block_number).await?;
-        self.block_number += 1;
+        self.block_number += U256::from(1);
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -873,7 +873,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // TODO: send blockenv with base fee of 2 and verify we include the
         // tx below and properly decrement gas
         self.send_block(self.block_number).await?;
-        self.block_number += 1;
+        self.block_number += U256::from(1);
 
         // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
@@ -913,7 +913,7 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // type3, eip-4844
         self.send_block(self.block_number).await?;
-        self.block_number += 1;
+        self.block_number += U256::from(1);
 
         let tx_hash = Self::generate_random_tx_hash();
         let tx_execution_id = self.build_tx_id(tx_hash);
@@ -955,7 +955,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // Authorization list present, should derive EIP-7702
         // TODO: check if the account has code
         self.send_block(self.block_number).await?;
-        self.block_number += 1;
+        self.block_number += U256::from(1);
 
         let auth = RecoveredAuthorization::new_unchecked(
             Authorization {
@@ -1138,7 +1138,7 @@ impl<T: TestTransport> LocalInstance<T> {
     pub async fn send_assertion_passing_failing_pair(&mut self) -> Result<(), String> {
         // Ensure we have a block
         self.send_block(self.block_number).await?;
-        self.block_number += 1;
+        self.block_number += U256::from(1);
 
         let basefee = 10u64;
         let caller = counter_call().caller; // Get the caller address
@@ -1228,12 +1228,12 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Advance the chain by 1 block by sending a new `BlockEnv` to the core engine.
     pub async fn new_block(&mut self) -> Result<(), String> {
         self.send_block(self.block_number).await?;
-        self.block_number += 1;
+        self.block_number += U256::from(1);
 
         Ok(())
     }
 
-    fn default_block_env(block_number: u64) -> BlockEnv {
+    fn default_block_env(block_number: U256) -> BlockEnv {
         BlockEnv {
             number: block_number,
             gas_limit: 50_000_000,

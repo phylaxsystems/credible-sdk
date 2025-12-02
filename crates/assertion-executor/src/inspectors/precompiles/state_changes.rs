@@ -168,7 +168,9 @@ mod test {
 
         // Add journal entries for storage changes
         for value_update in value_updates {
-            journal.sstore(db, address, slot, value_update).unwrap();
+            journal
+                .sstore(db, address, slot, value_update, false)
+                .unwrap();
         }
 
         journal
@@ -287,8 +289,9 @@ mod test {
         // Add account but without the requested slot
         let account = Account {
             info: AccountInfo::default(),
+            transaction_id: 0,
             storage: std::collections::HashMap::default(), // Empty storage - slot not found
-            status: AccountStatus::Loaded,
+            status: AccountStatus::Touched,
         };
         journal.state.insert(contract_address, account);
 
@@ -356,7 +359,7 @@ mod test {
         let mut db = MockDb::new();
         journal.load_account(&mut db, other_address).unwrap();
         journal
-            .sstore(&mut db, other_address, slot, U256::from(50))
+            .sstore(&mut db, other_address, slot, U256::from(50), false)
             .unwrap();
 
         let result =

@@ -5,6 +5,7 @@ use crate::cache::sources::{
     json_rpc_db::JsonRpcDb,
 };
 use alloy::{
+    primitives::U256,
     providers::{
         Provider,
         ProviderBuilder,
@@ -24,6 +25,7 @@ use assertion_executor::primitives::{
     Bytecode,
 };
 use futures::StreamExt;
+use parking_lot::RwLock;
 use revm::{
     DatabaseRef,
     primitives::{
@@ -32,13 +34,7 @@ use revm::{
     },
 };
 use std::{
-    sync::{
-        Arc,
-        atomic::{
-            AtomicU64,
-            Ordering,
-        },
-    },
+    sync::Arc,
     time::Duration,
 };
 use thiserror::Error;
@@ -68,7 +64,7 @@ struct EthRpcSourceInner {
     /// Provider for sync status
     ws_provider: Arc<RootProvider>,
     /// The latest head the underlying node has seen
-    latest_head: Arc<AtomicU64>,
+    latest_head: Arc<RwLock<U256>>,
     /// `JsonRpcDb` using http for making `DatabaseRef` calls
     json_rpc_db: JsonRpcDb,
 }
@@ -97,7 +93,7 @@ impl EthRpcSource {
         );
 
         let inner = Arc::new(EthRpcSourceInner {
-            latest_head: Arc::new(AtomicU64::new(0)),
+            latest_head: Arc::new(RwLock::new(U256::ZERO)),
             json_rpc_db: JsonRpcDb::new_with_provider(http_provider.clone()),
             ws_provider,
         });
@@ -117,7 +113,7 @@ impl EthRpcSourceInner {
     async fn connect_and_sync_head(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
         // Get the current block to initialize state
         if let Ok(block_number) = self.ws_provider.get_block_number().await {
-            self.latest_head.store(block_number, Ordering::Relaxed);
+            *self.latest_head.write() = U256::from(block_number);
             info!("Initial block number: {}", block_number);
         }
 
@@ -141,12 +137,12 @@ impl EthRpcSourceInner {
         info!("New block: #{}", block_number);
 
         // Update state
-        self.latest_head.store(block_number, Ordering::Relaxed);
+        *self.latest_head.write() = U256::from(block_number);
     }
 
     /// Get the latest head
-    pub fn get_latest_head(&self) -> u64 {
-        self.latest_head.load(Ordering::Acquire)
+    pub fn get_latest_head(&self) -> U256 {
+        *self.latest_head.read()
     }
 
     /// Run sync with automatic reconnection
@@ -212,13 +208,13 @@ impl Source for EthRpcSource {
         SourceName::EthRpcSource
     }
 
-    fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool {
-        let client_latest_head = self.inner.latest_head.load(Ordering::Acquire);
+    fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool {
+        let client_latest_head = *self.inner.latest_head.read();
         min_synced_block <= client_latest_head && latest_head <= client_latest_head
     }
 
-    fn update_cache_status(&self, min_synced_block: u64, latest_head: u64) {
-        let client_latest_head = self.inner.latest_head.load(Ordering::Acquire);
+    fn update_cache_status(&self, min_synced_block: U256, latest_head: U256) {
+        let client_latest_head = *self.inner.latest_head.read();
         // Update the target block if the client is synced and the latest head is within the
         // range of the client's latest head
         if min_synced_block <= client_latest_head && latest_head <= client_latest_head {

@@ -5,6 +5,7 @@
 #![allow(clippy::similar_names)]
 #![allow(clippy::struct_field_names)]
 #![allow(unused)]
+extern crate core;
 
 pub mod args;
 pub mod cache;

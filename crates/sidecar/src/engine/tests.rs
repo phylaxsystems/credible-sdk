@@ -60,7 +60,7 @@ impl<DB> CoreEngine<DB> {
                 sources,
                 Duration::from_millis(20),
             ),
-            current_head: 0,
+            current_head: U256::from(0),
             cache_metrics_handle: None,
         }
     }
@@ -180,7 +180,7 @@ async fn test_core_engine_errors_when_no_synced_sources() {
 
     // Create iteration with block number 1
     let mut block_env = BlockEnv::default();
-    block_env.number = 1; // Match the transaction's block number
+    block_env.number = U256::from(1); // Match the transaction's block number
 
     let new_iteration = queue::NewIteration {
         block_env,
@@ -188,7 +188,7 @@ async fn test_core_engine_errors_when_no_synced_sources() {
     };
 
     let queue_tx = queue::QueueTransaction {
-        tx_execution_id: TxExecutionId::new(1, 0, B256::from([0x11; 32]), 0),
+        tx_execution_id: TxExecutionId::new(U256::from(1), 0, B256::from([0x11; 32]), 0),
         tx_env: TxEnv::default(),
         prev_tx_hash: None,
     };
@@ -212,7 +212,7 @@ async fn test_tx_block_mismatch_yields_validation_error() {
 
     // Set up and commit block 1 to establish current_head = 1
     let block_env_1 = BlockEnv {
-        number: 1,
+        number: U256::from(1),
         basefee: 0,
         ..Default::default()
     };
@@ -223,18 +223,18 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     };
     engine.process_iteration(&queue_iteration_1).unwrap();
 
-    let queue_commit_1 = queue::CommitHead::new(1, 0, None, 0);
+    let queue_commit_1 = queue::CommitHead::new(U256::from(1), 0, None, 0);
     engine
         .process_commit_head(&queue_commit_1, &mut 0, &mut Instant::now())
         .unwrap();
 
     // Now current_head = 1, so expected_block_number = 2
-    let expected_block_number = engine.current_head + 1; // = 2
+    let expected_block_number = engine.current_head + U256::from(1); // = 2
 
     // Create an iteration for a mismatched block (e.g., block 5)
-    let mismatched_block_number = 5;
+    let mismatched_block_number = 5u64;
     let block_env_mismatched = BlockEnv {
-        number: mismatched_block_number,
+        number: U256::from(mismatched_block_number),
         basefee: 0,
         ..Default::default()
     };
@@ -250,7 +250,12 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     );
 
     // Send transaction for the mismatched block
-    let tx_execution_id = TxExecutionId::new(mismatched_block_number, 0, B256::from([0x42; 32]), 0);
+    let tx_execution_id = TxExecutionId::new(
+        U256::from(mismatched_block_number),
+        0,
+        B256::from([0x42; 32]),
+        0,
+    );
     let queue_transaction = queue::QueueTransaction {
         tx_execution_id,
         tx_env: TxEnv::default(),
@@ -346,7 +351,7 @@ fn test_last_executed_tx_overflow_discards_oldest() {
 
 fn create_test_block_env() -> BlockEnv {
     BlockEnv {
-        number: 1,
+        number: U256::from(1),
         basefee: 0, // Set basefee to 0 to avoid balance issues
         ..Default::default()
     }
@@ -595,7 +600,7 @@ async fn test_core_engine_reorg_valid_then_previous_rejected(
 
     // Reorg for the previous tx (tx1) should be rejected
     // Because the engine only keeps the last executed tx in the buffer
-    tx1.block_number += 1;
+    tx1.block_number += U256::from(1);
     assert!(
         instance.send_reorg(tx1).await.is_err(),
         "Reorg with wrong hash should be rejected and exit engine"
@@ -1029,12 +1034,12 @@ async fn test_failed_transaction_commit() {
     let tx_hash = B256::from([0x44; 32]);
 
     let block_execution_id = BlockExecutionId {
-        block_number: 1,
+        block_number: U256::from(1),
         iteration_id: 1,
     };
 
     let tx_execution_id = TxExecutionId {
-        block_number: 1,
+        block_number: U256::from(1),
         iteration_id: 1,
         tx_hash,
         index: 0,

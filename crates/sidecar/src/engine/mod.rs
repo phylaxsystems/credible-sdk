@@ -105,7 +105,10 @@ use crate::{
     },
     utils::ErrorRecoverability,
 };
-use alloy::primitives::TxHash;
+use alloy::primitives::{
+    TxHash,
+    U256,
+};
 use arrayvec::ArrayVec;
 use assertion_executor::{
     ExecutorError,
@@ -303,7 +306,7 @@ pub struct CoreEngine<DB> {
     /// Current block iteration data per block execution id.
     current_block_iterations: HashMap<BlockExecutionId, BlockIterationData<DB>>,
     /// Current head: last committed block.
-    current_head: u64,
+    current_head: U256,
     /// External providers of state we use when we do not have a piece of state cached in our in memory db.
     /// External state providers implement a trait that we use to query databaseref-like data and populate `state: OverlayDb<DB>`
     /// for execution with it.
@@ -382,7 +385,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             cache_metrics_handle: Some(cache.spawn_monitoring_thread()),
             cache,
             current_block_iterations: HashMap::new(),
-            current_head: 0,
+            current_head: U256::ZERO,
             sources: sources.clone(),
             tx_receiver,
             assertion_executor,
@@ -517,7 +520,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         info!(
             target = "engine",
             tx_hash = %tx_hash,
-            block_number = tx_execution_id.block_number,
+            block_number = %tx_execution_id.block_number,
             iteration_id = tx_execution_id.iteration_id,
             is_valid,
             execution_result = ?execution_result,
@@ -609,7 +612,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         debug!(
             target = "engine",
             tx_hash = %tx_execution_id.tx_hash,
-            block_number = current_block_iteration.block_env.number,
+            block_number = %current_block_iteration.block_env.number,
             "Validating transaction against assertions"
         );
 
@@ -695,7 +698,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             };
 
         // Check cheapest conditions first
-        let head_mismatch = self.current_head != commit_head.block_number.saturating_sub(1);
+        let head_mismatch =
+            self.current_head != commit_head.block_number.saturating_sub(U256::from(1));
         let tx_hash_mismatch =
             last_tx_id.is_some() && last_tx_id.map(|id| id.tx_hash) != commit_head.last_tx_hash;
         let count_mismatch = n_transactions != commit_head.n_transactions;
@@ -1048,12 +1052,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         // Checks if the received iteration is sequential to the current head, otherwise we should
         // drop the event.
-        let expected_block_number = self.current_head + 1;
+        let expected_block_number = self.current_head + U256::from(1);
         let block_env = &new_iteration.block_env;
         if expected_block_number != block_env.number {
             warn!(
                 target = "engine",
-                current_head = self.current_head,
+                current_head = %self.current_head,
                 block_env = ?block_env,
                 iteration_id = %new_iteration.iteration_id,
                 "Iteration block number does not match block number currently built in engine!"
@@ -1076,8 +1080,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         info!(
             target = "engine",
-            timestamp = block_env.timestamp,
-            number = block_env.number,
+            timestamp = %block_env.timestamp,
+            number = %block_env.number,
             gas_limit = block_env.gas_limit,
             base_fee = ?block_env.basefee,
             iteration_id = block_execution_id.iteration_id,
@@ -1192,7 +1196,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             error!(
                 target = "engine",
                 tx_hash = %tx_hash,
-                block_number = tx_execution_id.block_number,
+                block_number = %tx_execution_id.block_number,
                 iteration_id = tx_execution_id.iteration_id,
                 caller = %tx_env.caller,
                 "Received transaction without first receiving a BlockEnv. An iteration for the id must be received first"
@@ -1200,15 +1204,15 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Err(EngineError::TransactionError);
         };
 
-        let expected_block_number = self.current_head + 1;
+        let expected_block_number = self.current_head + U256::from(1);
         let iteration_block_number = current_block_iteration.block_env.number;
         if iteration_block_number != expected_block_number {
             warn!(
                 target = "engine",
                 tx_hash = %tx_hash,
-                tx_block = tx_execution_id.block_number,
-                iteration_block = iteration_block_number,
-                expected_block = expected_block_number,
+                tx_block = %tx_execution_id.block_number,
+                iteration_block = %iteration_block_number,
+                expected_block = %expected_block_number,
                 "Transaction block number does not match expected block number"
             );
             let message = format!(
@@ -1226,11 +1230,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         debug!(
             target = "engine",
             tx_hash = %tx_hash,
-            block_number = tx_execution_id.block_number,
+            block_number = %tx_execution_id.block_number,
             iteration_id = tx_execution_id.iteration_id,
             caller = %tx_env.caller,
             gas_limit = tx_env.gas_limit,
-            current_head = self.current_head,
+            current_head = %self.current_head,
             "Processing transaction"
         );
 
@@ -1321,7 +1325,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         skip_all,
         fields(
             tx_hash = %tx_execution_id.tx_hash,
-            block_number = tx_execution_id.block_number,
+            block_number = %tx_execution_id.block_number,
             iteration_id = tx_execution_id.iteration_id
         ),
         level = "info"
@@ -1340,7 +1344,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             error!(
                 target = "engine",
                 tx_hash = %tx_execution_id.tx_hash,
-                block_number = tx_execution_id.block_number,
+                block_number = %tx_execution_id.block_number,
                 iteration_id = tx_execution_id.iteration_id,
                 "Received reorg without first receiving a BlockEnv"
             );
@@ -1374,7 +1378,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             target = "engine",
             tx_execution_id = %tx_execution_id.to_json_string(),
             current_block_iteration_tx_hash = ?current_block_iteration.last_tx_id().map(|id| id.tx_hash),
-            current_block_iteration_tx_block_number = current_block_iteration.last_tx_id().map(|id| id.block_number),
+            current_block_iteration_tx_block_number = ?current_block_iteration.last_tx_id().map(|id| id.block_number),
             "Reorg not found"
         );
 

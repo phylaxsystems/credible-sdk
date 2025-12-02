@@ -17,7 +17,10 @@ use crate::{
     },
     utils::ErrorRecoverability,
 };
-use alloy::primitives::TxHash;
+use alloy::primitives::{
+    TxHash,
+    U256,
+};
 use std::{
     collections::{
         BTreeMap,
@@ -59,9 +62,9 @@ pub struct EventSequencing {
     /// A boolean to track if we received the first commit head
     first_commit_head_received: bool,
     /// The current head of the chain: The last committed head.
-    current_head: u64,
+    current_head: U256,
     /// Context for each block.
-    context: BTreeMap<u64, Context>,
+    context: BTreeMap<U256, Context>,
 }
 
 /// The `Context` struct contains the context for a block. It is used to track the state of the block
@@ -86,7 +89,7 @@ impl EventSequencing {
             tx_receiver,
             tx_sender,
             first_commit_head_received: false,
-            current_head: 0,
+            current_head: U256::ZERO,
             context: BTreeMap::new(),
         }
     }
@@ -189,8 +192,8 @@ impl EventSequencing {
         let event_metadata = EventMetadata::from(&event);
         info!(
             target = "event_sequencing",
-            event_block_number,
-            current_head = self.current_head,
+            %event_block_number,
+            current_head = %self.current_head,
             event_metadata = ?event_metadata,
             "Event received"
         );
@@ -199,8 +202,8 @@ impl EventSequencing {
         if self.current_head >= event_block_number && self.first_commit_head_received {
             error!(
                 target = "event_sequencing",
-                event_block_number,
-                current_head = self.current_head,
+                %event_block_number,
+                current_head = %self.current_head,
                 "Received event for block older than current head"
             );
             return Ok(());
@@ -215,9 +218,11 @@ impl EventSequencing {
             return Ok(());
         }
 
-        if self.current_head + 1 == event_block_number && self.first_commit_head_received {
+        if self.current_head + U256::from(1) == event_block_number
+            && self.first_commit_head_received
+        {
             self.handle_current_context_event(event, event_metadata, event_block_number)?;
-        } else if event_block_number > self.current_head + 1 {
+        } else if event_block_number > self.current_head + U256::from(1) {
             self.handle_future_context_event(event, event_metadata, event_block_number)?;
         }
 
@@ -229,7 +234,7 @@ impl EventSequencing {
         &mut self,
         event: TxQueueContents,
         event_metadata: EventMetadata,
-        block_number: u64,
+        block_number: U256,
     ) -> Result<(), EventSequencingError> {
         let event_iteration_id = event.iteration_id();
 
@@ -300,7 +305,7 @@ impl EventSequencing {
         previous_sent_event: &EventMetadata,
         previous_event: EventMetadata,
         event_iteration_id: u64,
-        block_number: u64,
+        block_number: U256,
     ) -> Result<(), EventSequencingError> {
         if *previous_sent_event == previous_event
             && Self::check_previous_send_event_against_current_event(
@@ -363,7 +368,7 @@ impl EventSequencing {
         &mut self,
         event: TxQueueContents,
         event_metadata: EventMetadata,
-        block_number: u64,
+        block_number: U256,
     ) -> Result<(), EventSequencingError> {
         if let Some(previous_event) = event_metadata.calculate_previous_event() {
             self.add_to_dependency_graph(block_number, previous_event, event_metadata, event)?;
@@ -374,14 +379,14 @@ impl EventSequencing {
     /// Adds an event to the dependency graph, handling cancellation logic.
     fn add_to_dependency_graph(
         &mut self,
-        block_number: u64,
+        block_number: U256,
         previous_event: EventMetadata,
         event_metadata: EventMetadata,
         event: TxQueueContents,
     ) -> Result<(), EventSequencingError> {
         info!(
             target = "event_sequencing",
-            current_head = self.current_head,
+            current_head = %self.current_head,
             event_metadata = ?event_metadata,
             "Event added to the dependency graph"
         );
@@ -548,11 +553,11 @@ impl EventSequencing {
         let block_number = commit_head_event.block_number();
         info!(
             target = "event_sequencing",
-            block_number, "CommitHead completed, cleaning up context and moving to next block"
+            %block_number, "CommitHead completed, cleaning up context and moving to next block"
         );
 
         // Clean up context for the completed block
-        self.context = self.context.split_off(&(block_number + 1));
+        self.context = self.context.split_off(&(block_number + U256::from(1)));
 
         // Update current_head to the next block
         self.current_head = block_number;
@@ -568,7 +573,7 @@ impl EventSequencing {
         &mut self,
         commit_head_event: &EventMetadata,
     ) -> Result<(), EventSequencingError> {
-        let next_block = self.current_head + 1;
+        let next_block = self.current_head + U256::from(1);
 
         // Check if we have events queued for the next block
         let Some(context) = self.context.get_mut(&next_block) else {
@@ -593,7 +598,7 @@ impl EventSequencing {
         for (meta, event) in all_new_iterations {
             info!(
                 target = "event_sequencing",
-                block = next_block,
+                block = %next_block,
                 "Starting next block processing with queued event"
             );
             self.send_event_recursive(event.clone(), &(&meta).into())?;
@@ -606,7 +611,7 @@ impl EventSequencing {
     #[inline]
     fn get_context_mut(
         &mut self,
-        block_number: u64,
+        block_number: U256,
         context_name: &'static str,
     ) -> Result<&mut Context, EventSequencingError> {
         self.context
@@ -624,7 +629,7 @@ pub enum EventSequencingError {
     ChannelClosed,
     #[error("Missing context for block {block_number} in {context}")]
     MissingContext {
-        block_number: u64,
+        block_number: U256,
         context: &'static str,
     },
     #[error("Failed to send event to core engine")]

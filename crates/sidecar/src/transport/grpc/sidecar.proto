@@ -5,9 +5,9 @@ package sidecar.transport.v1;
 // Block environment for EVM execution context.
 // All numeric types that exceed 64 bits are encoded as big-endian bytes.
 message BlockEnv {
-  uint64 number = 1;                                      // block number
+  bytes number = 1;                                       // 32 bytes - block number as U256 big-endian
   bytes beneficiary = 2;                                  // 20 bytes - coinbase address
-  uint64 timestamp = 3;                                   // seconds since UNIX epoch
+  bytes timestamp = 3;                                    // 32 bytes - timestamp as U256 big-endian
   uint64 gas_limit = 4;                                   // block gas limit
   uint64 basefee = 5;                                     // base fee per gas (u64)
   bytes difficulty = 6;                                   // 32 bytes - difficulty as U256 big-endian
@@ -64,7 +64,7 @@ message TransactionEnv {
 
 // Unique identifier for a transaction execution within a block iteration.
 message TxExecutionId {
-  uint64 block_number = 1;                                // block number
+  bytes block_number = 1;                                 // 32 bytes - block number as U256 big-endian
   uint64 iteration_id = 2;                                // iteration ID within the block
   bytes tx_hash = 3;                                      // 32 bytes - transaction hash
   uint64 index = 4;                                       // transaction index within iteration
@@ -81,7 +81,7 @@ message Transaction {
 message CommitHead {
   optional bytes last_tx_hash = 1;                        // 32 bytes - last TX hash (None means absent)
   uint64 n_transactions = 2;                              // number of transactions in previous iteration
-  uint64 block_number = 3;                                // block number we're committing
+  bytes block_number = 3;                                 // 32 bytes - block number as U256 big-endian
   uint64 selected_iteration_id = 4;                       // selected iteration ID
 }
 
@@ -139,7 +139,7 @@ message TransactionResult {
 
 // Request to subscribe to transaction results stream.
 message SubscribeResultsRequest {
-  optional uint64 from_block = 1;                         // optional: filter by starting block number
+  optional bytes from_block = 1;                          // 32 bytes - filter by starting block number as U256 big-endian
 }
 
 // Request for multiple transaction results (kept for compatibility with unary queries).

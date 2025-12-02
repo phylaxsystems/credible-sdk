@@ -2,7 +2,10 @@
 mod tests;
 
 use crate::engine::queue::TxQueueContents;
-use alloy::primitives::TxHash;
+use alloy::primitives::{
+    TxHash,
+    U256,
+};
 use std::hash::{
     DefaultHasher,
     Hash,
@@ -12,24 +15,24 @@ use std::hash::{
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum CompleteEventMetadata {
     NewIteration {
-        block_number: u64,
+        block_number: U256,
         iteration_id: u64,
     },
     Transaction {
-        block_number: u64,
+        block_number: U256,
         iteration_id: u64,
         index: u64,
         tx_hash: TxHash,
         prev_tx_hash: Option<TxHash>,
     },
     Reorg {
-        block_number: u64,
+        block_number: U256,
         iteration_id: u64,
         tx_hash: TxHash,
         index: u64,
     },
     CommitHead {
-        block_number: u64,
+        block_number: U256,
         selected_iteration_id: u64,
         n_transactions: u64,
         prev_tx_hash: Option<TxHash>,
@@ -153,24 +156,24 @@ impl From<&CompleteEventMetadata> for EventMetadata {
 #[derive(Clone, Debug)]
 pub enum EventMetadata {
     NewIteration {
-        block_number: u64,
+        block_number: U256,
         iteration_id: u64,
     },
     Transaction {
-        block_number: u64,
+        block_number: U256,
         iteration_id: u64,
         index: u64,
         tx_hash: TxHash,
         prev_tx_hash: Option<TxHash>,
     },
     Reorg {
-        block_number: u64,
+        block_number: U256,
         iteration_id: u64,
         tx_hash: TxHash,
         index: u64,
     },
     CommitHead {
-        block_number: u64,
+        block_number: U256,
         selected_iteration_id: u64,
         n_transactions: u64,
         prev_tx_hash: Option<TxHash>,
@@ -194,7 +197,7 @@ impl EventMetadata {
         }
     }
 
-    pub fn block_number(&self) -> u64 {
+    pub fn block_number(&self) -> U256 {
         match self {
             Self::NewIteration { block_number, .. }
             | Self::Transaction { block_number, .. }
@@ -302,7 +305,7 @@ impl EventMetadata {
                     None
                 } else {
                     Some(EventMetadata::CommitHead {
-                        block_number: block_number - 1,
+                        block_number: block_number - U256::from(1),
                         selected_iteration_id: 0,
                         n_transactions: 0,
                         prev_tx_hash: None,

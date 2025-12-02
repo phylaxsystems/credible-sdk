@@ -620,6 +620,7 @@ mod active_overlay_tests {
     }
 
     // Test DatabaseCommit implementation
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn test_active_database_commit() {
         use crate::primitives::{
@@ -656,9 +657,10 @@ mod active_overlay_tests {
                 code_hash,
                 code: Some(code.clone()),
             },
+            transaction_id: 0,
             storage: HashMap::from_iter([
-                (U256::from(5), EvmStorageSlot::new(U256::from(500))),
-                (U256::from(6), EvmStorageSlot::new(U256::from(600))),
+                (U256::from(5), EvmStorageSlot::new(U256::from(500), 0)),
+                (U256::from(6), EvmStorageSlot::new(U256::from(600), 0)),
             ]),
             status: AccountStatus::Touched,
         };
@@ -672,7 +674,11 @@ mod active_overlay_tests {
                 ),
                 code: None,
             },
-            storage: HashMap::from_iter([(U256::from(20), EvmStorageSlot::new(U256::from(2000)))]),
+            transaction_id: 0,
+            storage: HashMap::from_iter([(
+                U256::from(20),
+                EvmStorageSlot::new(U256::from(2000), 0),
+            )]),
             status: AccountStatus::Touched,
         };
 
@@ -686,6 +692,7 @@ mod active_overlay_tests {
                 ),
                 code: None,
             },
+            transaction_id: 0,
             storage: HashMap::default(),
             status: AccountStatus::default(), // Not touched
         };
@@ -793,7 +800,8 @@ mod active_overlay_tests {
                 ),
                 code: None,
             },
-            storage: HashMap::from_iter([(U256::from(1), EvmStorageSlot::new(U256::from(100)))]),
+            transaction_id: 0,
+            storage: HashMap::from_iter([(U256::from(1), EvmStorageSlot::new(U256::from(100), 0))]),
             status: AccountStatus::Touched,
         };
 
@@ -809,7 +817,8 @@ mod active_overlay_tests {
                 ),
                 code: None,
             },
-            storage: HashMap::from_iter([(U256::from(2), EvmStorageSlot::new(U256::from(200)))]),
+            transaction_id: 0,
+            storage: HashMap::from_iter([(U256::from(2), EvmStorageSlot::new(U256::from(200), 0))]),
             status: AccountStatus::Touched,
         };
 

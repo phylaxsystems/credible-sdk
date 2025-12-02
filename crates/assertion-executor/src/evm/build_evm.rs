@@ -11,7 +11,6 @@ use crate::{
 use alloy_evm::{
     EvmEnv,
     eth::EthEvmContext,
-    precompiles::PrecompilesMap,
 };
 
 use op_revm::{
@@ -33,19 +32,19 @@ use revm::{
         LocalContext,
     },
     handler::{
+        EthFrame,
         EthPrecompiles,
         instructions::EthInstructions,
     },
     interpreter::{
         Gas,
         Host,
-        Interpreter,
+        InstructionContext,
         instructions::host::{
             sload,
             sstore,
         },
         interpreter::EthInterpreter,
-        interpreter_types::LoopControl,
     },
     precompile::{
         PrecompileSpecId,
@@ -82,7 +81,7 @@ pub type OpCtx<'db, DB> = Context<
     L1BlockInfo,
 >;
 type OpIns<'db, DB> = EthInstructions<EthInterpreter, OpCtx<'db, DB>>;
-type OpEvm<'db, DB, I> = Evm<OpCtx<'db, DB>, I, OpIns<'db, DB>, PrecompilesMap>;
+type OpEvm<'db, DB, I> = Evm<OpCtx<'db, DB>, I, OpIns<'db, DB>, OpPrecompiles, EthFrame>;
 
 /// Builds an Optimism EVM, using all optimism related types.
 /// Passes the `db` as a mutable reference to the inspector.
@@ -120,14 +119,14 @@ where
         error: Ok(()),
     };
     let op_precompiles = OpPrecompiles::new_with_spec(op_cfg.spec);
-    let precompiles = PrecompilesMap::from_static(op_precompiles.precompiles());
-    let evm = op_revm::OpEvm::new(op_context, inspector).with_precompiles(precompiles);
+    let evm = op_revm::OpEvm::new(op_context, inspector).with_precompiles(op_precompiles);
     evm.0
 }
+
 pub type EthCtx<'db, DB> =
     Context<BlockEnv, TxEnv, CfgEnv<SpecId>, &'db mut DB, Journal<&'db mut DB>, ()>;
 pub type EthIns<'db, DB> = EthInstructions<EthInterpreter, EthCtx<'db, DB>>;
-type EthEvm<'db, DB, I> = Evm<EthCtx<'db, DB>, I, EthIns<'db, DB>, PrecompilesMap>;
+type EthEvm<'db, DB, I> = Evm<EthCtx<'db, DB>, I, EthIns<'db, DB>, EthPrecompiles, EthFrame>;
 
 /// Builds a mainnet Ethereum EVM, using all mainnet related types.
 /// Passes the `db` as a mutable reference to the inspector.
@@ -156,7 +155,6 @@ where
         precompiles: Precompiles::new(PrecompileSpecId::from_spec_id(spec)),
         spec,
     };
-    let precompiles = PrecompilesMap::from_static(eth_precompiles.precompiles);
 
     MainnetEvm::new_with_inspector(
         eth_context,
@@ -164,56 +162,60 @@ where
         EthInstructions::default(),
         eth_precompiles,
     )
-    .with_precompiles(precompiles)
 }
 
 #[macro_export]
 macro_rules! reprice_evm_storage {
     ($evm:expr) => {{
+        use revm::interpreter::Instruction;
         $evm.instruction.insert_instruction(
             revm::bytecode::opcode::SLOAD,
-            $crate::evm::build_evm::ph_sload::<_>,
+            Instruction::new($crate::evm::build_evm::ph_sload, 100),
         );
         $evm.instruction.insert_instruction(
             revm::bytecode::opcode::SSTORE,
-            $crate::evm::build_evm::ph_sstore::<_>,
+            Instruction::new($crate::evm::build_evm::ph_sstore, 100),
         );
     }};
 }
-
 /// Reprice the gas of an operation to a fixed cost.
 /// Will still run out of gas if the operation spends all gas intentionally.
 macro_rules! reprice_gas {
-    ($interpreter:expr, $host:expr, $operation:expr, $gas:expr) => {{
+    ($context:expr, $operation:expr, $gas:expr) => {{
         // Spend the new expected gas. Will revert execution with an out-of-gas error if the gas
         // limit is exceeded.
-        revm::interpreter::gas!($interpreter, $gas);
+        if !$context.interpreter.gas.record_cost($gas) {
+            $context.interpreter.halt_oog();
+            return;
+        }
 
         // Cache the expected gas outcome, and replace the gas with the maximum value so that gas
         // limits are not enforced against other costs.
-        let gas = std::mem::replace(&mut $interpreter.control.gas, Gas::new(u64::MAX));
-        $operation($interpreter, $host);
+        let gas_ptr: *mut Gas = &mut $context.interpreter.gas;
+        let saved_gas = std::mem::replace(unsafe { &mut *gas_ptr }, Gas::new(u64::MAX));
 
-        $interpreter.control.gas = gas;
+        $operation($context);
+
+        unsafe { *gas_ptr = saved_gas };
     }};
 }
 
 /// Reprice the SLOAD operation to 100 gas.
 /// Will still run out of gas if the operation spends all gas intentionally.
-pub fn ph_sload<H>(interpreter: &mut Interpreter, host: &mut H)
+pub fn ph_sload<H>(context: InstructionContext<'_, H, EthInterpreter>)
 where
     H: Host + ?Sized,
 {
-    reprice_gas!(interpreter, host, sload::<EthInterpreter, H>, 100);
+    reprice_gas!(context, sload::<EthInterpreter, H>, 100);
 }
 
 /// Reprice the SSTORE operation to 100 gas.
 /// Will still run out of gas if the operation spends all gas intentionally.
-pub fn ph_sstore<H>(interpreter: &mut Interpreter, host: &mut H)
+pub fn ph_sstore<H>(context: InstructionContext<'_, H, EthInterpreter>)
 where
     H: Host + ?Sized,
 {
-    reprice_gas!(interpreter, host, sstore::<EthInterpreter, H>, 100);
+    reprice_gas!(context, sstore::<EthInterpreter, H>, 100);
 }
 
 #[cfg(test)]

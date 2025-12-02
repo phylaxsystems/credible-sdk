@@ -132,6 +132,8 @@ mod error_messages {
     pub const INVALID_DIFFICULTY: &str = "invalid difficulty: expected 32 bytes";
     pub const INVALID_PREVRANDAO: &str = "invalid prevrandao: expected 32 bytes";
     pub const INVALID_BLOB_GASPRICE: &str = "invalid blob_gasprice: expected 16 bytes";
+    pub const INVALID_BLOCK_NUMBER: &str = "invalid block_number: expected 32 bytes";
+    pub const INVALID_TIMESTAMP: &str = "invalid timestamp: expected 32 bytes";
     pub const MISSING_TX_EXECUTION_ID: &str = "missing tx_execution_id";
     pub const SELECTED_ITERATION_REQUIRED: &str = "selected_iteration_id is required";
     pub const BLOCK_ENV_REQUIRED: &str = "block_env is required";
@@ -223,6 +225,11 @@ fn decode_u256_be(bytes: &[u8]) -> Result<U256, DecodeError> {
 }
 
 #[inline]
+fn encode_u256_be(value: U256) -> Vec<u8> {
+    value.to_be_bytes::<32>().to_vec()
+}
+
+#[inline]
 fn decode_tx_kind(bytes: &[u8]) -> Result<TxKind, DecodeError> {
     if bytes.is_empty() {
         Ok(TxKind::Create)
@@ -244,7 +251,7 @@ fn encode_b256(hash: B256) -> Vec<u8> {
 #[inline]
 fn encode_tx_execution_id(id: TxExecutionId) -> PbTxExecutionId {
     PbTxExecutionId {
-        block_number: id.block_number,
+        block_number: encode_u256_be(id.block_number),
         iteration_id: id.iteration_id,
         tx_hash: encode_b256(id.tx_hash),
         index: id.index,
@@ -253,9 +260,10 @@ fn encode_tx_execution_id(id: TxExecutionId) -> PbTxExecutionId {
 
 #[inline]
 fn decode_tx_execution_id(pb: &PbTxExecutionId) -> Result<TxExecutionId, DecodeError> {
+    let block_number = decode_u256_be(&pb.block_number)?;
     let tx_hash = decode_b256(&pb.tx_hash)?;
     Ok(TxExecutionId::new(
-        pb.block_number,
+        block_number,
         pb.iteration_id,
         tx_hash,
         pb.index,
@@ -394,6 +402,9 @@ fn decode_commit_head(pb: &PbCommitHead) -> Result<CommitHead, Status> {
         .transpose()
         .map_err(|_| Status::invalid_argument(error_messages::INVALID_LAST_TX_HASH))?;
 
+    let block_number = decode_u256_be(&pb.block_number)
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_NUMBER))?;
+
     if pb.n_transactions == 0 && last_tx_hash.is_some() {
         return Err(Status::invalid_argument(
             error_messages::N_TX_ZERO_HASH_PRESENT,
@@ -407,7 +418,7 @@ fn decode_commit_head(pb: &PbCommitHead) -> Result<CommitHead, Status> {
     }
 
     Ok(CommitHead::new(
-        pb.block_number,
+        block_number,
         pb.selected_iteration_id,
         last_tx_hash,
         pb.n_transactions,
@@ -416,6 +427,12 @@ fn decode_commit_head(pb: &PbCommitHead) -> Result<CommitHead, Status> {
 
 #[inline]
 fn decode_block_env(pb: PbBlockEnv) -> Result<RevmBlockEnv, Status> {
+    let number = decode_u256_be(&pb.number)
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_NUMBER))?;
+
+    let timestamp = decode_u256_be(&pb.timestamp)
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_TIMESTAMP))?;
+
     let beneficiary = decode_address(&pb.beneficiary)
         .map_err(|_| Status::invalid_argument(error_messages::INVALID_BENEFICIARY))?;
 
@@ -442,9 +459,9 @@ fn decode_block_env(pb: PbBlockEnv) -> Result<RevmBlockEnv, Status> {
         .transpose()?;
 
     Ok(RevmBlockEnv {
-        number: pb.number,
+        number,
         beneficiary,
-        timestamp: pb.timestamp,
+        timestamp,
         gas_limit: pb.gas_limit,
         basefee: pb.basefee,
         difficulty,
@@ -919,7 +936,13 @@ impl SidecarTransport for GrpcService {
         info!(target = "transport::grpc", "New results subscription");
 
         let req = request.into_inner();
-        let from_block = req.from_block;
+        // Decode from_block filter (optional U256)
+        let from_block: Option<U256> = req
+            .from_block
+            .filter(|b| !b.is_empty())
+            .map(|b| decode_u256_be(&b))
+            .transpose()
+            .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_NUMBER))?;
 
         // Subscribe to the broadcast channel
         let mut rx = self.inner.result_broadcaster.subscribe();
@@ -934,9 +957,13 @@ impl SidecarTransport for GrpcService {
                         // Optional: filter by block number if requested
                         if let Some(min_block) = from_block
                             && let Some(ref tx_id) = pb_result.tx_execution_id
-                            && tx_id.block_number < min_block
                         {
-                            continue;
+                            // Decode the block number from the result for comparison
+                            if let Ok(result_block) = decode_u256_be(&tx_id.block_number)
+                                && result_block < min_block
+                            {
+                                continue;
+                            }
                         }
 
                         if tx.send(Ok(pb_result)).await.is_err() {

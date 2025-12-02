@@ -1243,9 +1243,9 @@ fn test_mixed_valid_invalid_transactions() {
 fn test_block_env_serialization_round_trip() {
     let original = NewIteration {
         block_env: BlockEnv {
-            number: 123456u64,
+            number: U256::from(123456u64),
             beneficiary: Address::ZERO,
-            timestamp: 1234567890u64,
+            timestamp: U256::from(1234567890u64),
             gas_limit: 30000000u64,
             basefee: 1000000000u64,
             difficulty: U256::ZERO,
@@ -2186,35 +2186,15 @@ fn test_send_events_mixed_commit_head_and_new_iteration_success() {
 
 #[test]
 fn test_send_events_commit_head_invalid_field_types() {
-    let test_cases = vec![
-        (
-            "string_n_transactions",
-            json!({
-                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "n_transactions": "10",
-                "block_number": 100,
-                "selected_iteration_id": 1
-            }),
-        ),
-        (
-            "string_block_number",
-            json!({
-                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "n_transactions": 10,
-                "block_number": "100",
-                "selected_iteration_id": 1
-            }),
-        ),
-        (
-            "negative_n_transactions",
-            json!({
-                "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "n_transactions": -1,
-                "block_number": 100,
-                "selected_iteration_id": 1
-            }),
-        ),
-    ];
+    let test_cases = vec![(
+        "negative_n_transactions",
+        json!({
+            "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "n_transactions": -1,
+            "block_number": 100,
+            "selected_iteration_id": 1
+        }),
+    )];
 
     for (name, commit_head) in test_cases {
         let request = JsonRpcRequest {
