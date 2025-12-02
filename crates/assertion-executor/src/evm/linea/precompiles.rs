@@ -333,8 +333,8 @@ mod tests {
             value: CallValue::Transfer(U256::ZERO),
             scheme: CallScheme::Call,
             is_static: false,
-            is_eof: false,
             return_memory_offset: 0..0,
+            known_bytecode: None,
         }
     }
 

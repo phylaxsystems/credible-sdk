@@ -117,13 +117,13 @@ mod test {
         let mock_db = MockDb::new();
         let pre_tx_db = ForkDb::new(mock_db);
         let mut multi_fork_db = MultiForkDb::new(pre_tx_db, &JournalInner::new());
-        let mut context = revm::handler::MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        let context = revm::handler::MainnetContext::new(&mut multi_fork_db, SpecId::default());
         let ph_context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
             adopter: Address::ZERO,
             console_logs: vec![],
         };
-        let input = call_inputs.input.bytes(&mut context);
+        let input = call_inputs.input.bytes(&context);
         let inputs = getCallInputsCall::abi_decode(&input).unwrap();
         get_call_inputs(&ph_context, inputs.target, inputs.selector, None)
     }
@@ -153,12 +153,12 @@ mod test {
             input: CallInput::Bytes(input_data.into()),
             gas_limit: 1_000_000,
             bytecode_address: Address::ZERO,
+            known_bytecode: None,
             target_address: Address::ZERO,
             caller: Address::ZERO,
             value: CallValue::Transfer(U256::ZERO),
             scheme: CallScheme::Call,
             is_static: false,
-            is_eof: false,
             return_memory_offset: 0..0,
         }
     }
@@ -172,12 +172,12 @@ mod test {
             input: CallInput::Bytes(input_data.clone().into()),
             gas_limit: 100_000,
             bytecode_address: random_address(),
+            known_bytecode: None,
             target_address: target,
             caller: random_address(),
             value: CallValue::Transfer(random_u256()),
             scheme: CallScheme::Call,
             is_static: false,
-            is_eof: false,
             return_memory_offset: 0..0,
         };
         (call_inputs, input_data.into())

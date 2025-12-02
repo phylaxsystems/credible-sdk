@@ -15,28 +15,28 @@ use revm::{
         ContextSetters,
         ContextTr,
         Evm,
+        FrameStack,
         JournalTr,
         LocalContext,
         TxEnv,
     },
     handler::{
+        EthFrame,
         EthPrecompiles,
         EvmTr,
-        instructions::{
-            EthInstructions,
-            InstructionProvider,
+        FrameInitOrResult,
+        FrameTr,
+        evm::{
+            ContextDbError,
+            FrameInitResult,
         },
+        instructions::EthInstructions,
     },
     inspector::{
         InspectorEvmTr,
         JournalExt,
-        inspect_instructions,
     },
-    interpreter::{
-        Interpreter,
-        InterpreterTypes,
-        interpreter::EthInterpreter,
-    },
+    interpreter::interpreter::EthInterpreter,
     primitives::hardfork::SpecId,
 };
 use std::marker::PhantomData;
@@ -46,7 +46,8 @@ pub type LineaCtx<'db, DB> =
 #[allow(dead_code)]
 pub type LineaIns<'db, DB> = EthInstructions<EthInterpreter, LineaCtx<'db, DB>>;
 #[allow(dead_code)]
-type LineaEvmTyped<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, LineaIns<'db, DB>, EthPrecompiles>;
+type LineaEvmTyped<'db, DB, I> =
+    Evm<LineaCtx<'db, DB>, I, LineaIns<'db, DB>, EthPrecompiles, EthFrame>;
 
 /// `LineaEvm` is a Linea v4 spec version of revm with custom opcodes and precompile
 /// behaviour.
@@ -66,7 +67,7 @@ type LineaEvmTyped<'db, DB, I> = Evm<LineaCtx<'db, DB>, I, LineaIns<'db, DB>, Et
 /// To implement our *own* evm we needed to wrap the Linea evm in a struct.
 /// It can be interacted with like so: `linea_evm.0.transact(tx_env)`
 pub struct LineaEvm<CTX, INSP>(
-    pub Evm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, EthPrecompiles>,
+    pub Evm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, EthPrecompiles, EthFrame>,
 );
 
 impl<CTX: ContextTr, INSP> LineaEvm<CTX, INSP> {
@@ -79,6 +80,7 @@ impl<CTX: ContextTr, INSP> LineaEvm<CTX, INSP> {
             inspector,
             instruction,
             precompiles: EthPrecompiles::default(),
+            frame_stack: FrameStack::new_prealloc(8),
         })
     }
 }
@@ -90,6 +92,29 @@ where
     type Context = CTX;
     type Instructions = EthInstructions<EthInterpreter, CTX>;
     type Precompiles = EthPrecompiles;
+    type Frame = EthFrame;
+
+    fn all(
+        &self,
+    ) -> (
+        &Self::Context,
+        &Self::Instructions,
+        &Self::Precompiles,
+        &FrameStack<Self::Frame>,
+    ) {
+        self.0.all()
+    }
+
+    fn all_mut(
+        &mut self,
+    ) -> (
+        &mut Self::Context,
+        &mut Self::Instructions,
+        &mut Self::Precompiles,
+        &mut FrameStack<Self::Frame>,
+    ) {
+        self.0.all_mut()
+    }
 
     fn ctx(&mut self) -> &mut Self::Context {
         &mut self.0.ctx
@@ -103,18 +128,28 @@ where
         self.0.ctx_instructions()
     }
 
-    fn run_interpreter(
-        &mut self,
-        interpreter: &mut Interpreter<
-            <Self::Instructions as InstructionProvider>::InterpreterTypes,
-        >,
-    ) -> <<Self::Instructions as InstructionProvider>::InterpreterTypes as InterpreterTypes>::Output
-    {
-        self.0.run_interpreter(interpreter)
-    }
-
     fn ctx_precompiles(&mut self) -> (&mut Self::Context, &mut Self::Precompiles) {
         self.0.ctx_precompiles()
+    }
+
+    fn frame_init(
+        &mut self,
+        frame_input: <Self::Frame as FrameTr>::FrameInit,
+    ) -> Result<FrameInitResult<'_, Self::Frame>, ContextDbError<Self::Context>> {
+        self.0.frame_init(frame_input)
+    }
+
+    fn frame_run(
+        &mut self,
+    ) -> Result<FrameInitOrResult<Self::Frame>, ContextDbError<Self::Context>> {
+        self.0.frame_run()
+    }
+
+    fn frame_return_result(
+        &mut self,
+        result: <Self::Frame as FrameTr>::FrameResult,
+    ) -> Result<Option<<Self::Frame as FrameTr>::FrameResult>, ContextDbError<Self::Context>> {
+        self.0.frame_return_result(result)
     }
 }
 
@@ -125,31 +160,36 @@ where
 {
     type Inspector = INSP;
 
+    fn all_inspector(
+        &self,
+    ) -> (
+        &Self::Context,
+        &Self::Instructions,
+        &Self::Precompiles,
+        &FrameStack<Self::Frame>,
+        &Self::Inspector,
+    ) {
+        self.0.all_inspector()
+    }
+
+    fn all_mut_inspector(
+        &mut self,
+    ) -> (
+        &mut Self::Context,
+        &mut Self::Instructions,
+        &mut Self::Precompiles,
+        &mut FrameStack<Self::Frame>,
+        &mut Self::Inspector,
+    ) {
+        self.0.all_mut_inspector()
+    }
+
     fn inspector(&mut self) -> &mut Self::Inspector {
         self.0.inspector()
     }
 
     fn ctx_inspector(&mut self) -> (&mut Self::Context, &mut Self::Inspector) {
         self.0.ctx_inspector()
-    }
-
-    fn run_inspect_interpreter(
-        &mut self,
-        interpreter: &mut Interpreter<
-            <Self::Instructions as InstructionProvider>::InterpreterTypes,
-        >,
-    ) -> <<Self::Instructions as InstructionProvider>::InterpreterTypes as InterpreterTypes>::Output
-    {
-        let context = &mut self.0.ctx;
-        let instructions = &mut self.0.instruction;
-        let inspector = &mut self.0.inspector;
-
-        inspect_instructions(
-            context,
-            interpreter,
-            inspector,
-            instructions.instruction_table(),
-        )
     }
 }
 
@@ -363,7 +403,7 @@ mod tests {
         let linea_evm = LineaEvm::new(context, inspector);
 
         // Verify the EVM was created successfully and has Linea instructions
-        assert!(!linea_evm.0.instruction.instruction_table().is_empty());
+        assert!(!linea_evm.0.instruction.instruction_table.is_empty());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use alloy::primitives::U256;
 use assertion_executor::db::DatabaseRef;
 use revm::context::DBErrorMarker;
 use state_store::common::error::StateError;
@@ -88,7 +89,7 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     ///     // Check if this source has data for `current`
     /// }
     /// ```
-    fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool;
+    fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool;
 
     /// Returns a unique identifier for this source.
     ///
@@ -107,7 +108,7 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
     /// to be synced to (`min_synced_block`) and the latest head in the cache (`latest_head`)
     ///
     /// The two inputs represent the range of blocks from which the source can fetch the data
-    fn update_cache_status(&self, min_synced_block: u64, latest_head: u64);
+    fn update_cache_status(&self, min_synced_block: U256, latest_head: U256);
 }
 
 /// Names for a particular source.

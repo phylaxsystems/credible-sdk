@@ -31,7 +31,7 @@ pub async fn tracing_middleware(
         "json_rpc_request",
         method = %method,
         path = %path,
-        block.number = latest_head,
+        block.number = ?latest_head,
         tx.hash = tracing::field::Empty,
     );
 

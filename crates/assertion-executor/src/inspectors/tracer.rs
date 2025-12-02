@@ -295,9 +295,9 @@ impl CallTracer {
             return_memory_offset: 0..0,
             gas_limit: 0,
             bytecode_address: address,
+            known_bytecode: None,
             target_address: address,
             caller: address,
-            is_eof: false,
             is_static: false,
             scheme: revm::interpreter::CallScheme::Call,
             value: CallValue::default(),
@@ -410,7 +410,7 @@ mod test {
         let env = evm_env(1, SpecId::default(), BlockEnv::default());
         let mut evm = build_optimism_evm(&mut db, &env, &mut tracer);
 
-        evm.inspect_with_tx(OpTransaction::new(TxEnv {
+        evm.inspect_tx(OpTransaction::new(TxEnv {
             caller: address!("5fdcca53617f4d2b9134b29090c87d01058e27e0"),
             kind: TxKind::Call(callee),
             data: Bytes::default(),
@@ -456,12 +456,12 @@ mod test {
             return_memory_offset: 0..100,
             gas_limit: 21000,
             bytecode_address: target_addr,
+            known_bytecode: None,
             target_address: target_addr,
             caller: caller_addr,
             value: CallValue::Transfer(U256::from(1000)),
             scheme: CallScheme::Call,
             is_static: false,
-            is_eof: false,
         };
 
         // Create test CallOutcome
@@ -472,6 +472,8 @@ mod test {
                 gas: Gas::new(21000),
             },
             memory_offset: 0..0,
+            was_precompile_called: false,
+            precompile_call_logs: vec![],
         };
 
         // Test call method - should record the call start
@@ -569,7 +571,7 @@ mod test {
 
         let mut evm = build_optimism_evm(&mut db, &env, &mut tracer);
 
-        evm.inspect_with_tx(OpTransaction::new(tx_env))
+        evm.inspect_tx(OpTransaction::new(tx_env))
             .expect("Transaction to work");
         let tracer = evm.inspector;
 
@@ -615,12 +617,12 @@ mod test {
                     return_memory_offset: 0..0,
                     gas_limit: 0,
                     bytecode_address: address,
+                    known_bytecode: None,
                     target_address: address,
                     caller: address,
                     value: CallValue::default(),
                     scheme: CallScheme::Call,
                     is_static: false,
-                    is_eof: false,
                 },
                 &input_bytes,
                 &mut JournalInner::new(),
@@ -704,12 +706,12 @@ mod test {
                 return_memory_offset: 0..0,
                 gas_limit: 0,
                 bytecode_address: addr,
+                known_bytecode: None,
                 target_address: addr,
                 caller: addr,
                 value: CallValue::default(),
                 scheme: CallScheme::Call,
                 is_static: false,
-                is_eof: false,
             },
             &input_bytes,
             &mut JournalInner::new(),
@@ -766,7 +768,6 @@ mod test {
                 value: CallValue::default(),
                 scheme: CallScheme::Call,
                 is_static: false,
-                is_eof: false,
             },
             &adopter_input_bytes,
             &mut JournalInner::new(),
@@ -787,7 +788,6 @@ mod test {
                 value: CallValue::default(),
                 scheme: CallScheme::Call,
                 is_static: false,
-                is_eof: false,
             },
             &non_adopter_input_bytes,
             &mut JournalInner::new(),

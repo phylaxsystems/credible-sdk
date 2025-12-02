@@ -2,6 +2,7 @@ use crate::engine::queue::{
     CommitHead,
     NewIteration,
 };
+use alloy::primitives::U256;
 use revm::primitives::alloy_primitives::TxHash;
 use serde::{
     Deserialize,
@@ -30,7 +31,7 @@ use std::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TxExecutionId {
     /// What block number the transaction was meant for.
-    pub block_number: u64,
+    pub block_number: U256,
     /// What iteration the transaction should be executed at.
     pub iteration_id: u64,
     /// Transaction hash.
@@ -45,13 +46,13 @@ pub struct TxExecutionId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockExecutionId {
     /// What block number the transaction was meant for.
-    pub block_number: u64,
+    pub block_number: U256,
     /// What iteration the transaction should be executed at.
     pub iteration_id: u64,
 }
 
 impl TxExecutionId {
-    pub const fn new(block_number: u64, iteration_id: u64, tx_hash: TxHash, index: u64) -> Self {
+    pub const fn new(block_number: U256, iteration_id: u64, tx_hash: TxHash, index: u64) -> Self {
         Self {
             block_number,
             iteration_id,
@@ -69,7 +70,7 @@ impl TxExecutionId {
 
     #[cfg(test)]
     pub fn from_hash(tx_hash: TxHash) -> Self {
-        Self::new(0, 0, tx_hash, 0)
+        Self::new(U256::ZERO, 0, tx_hash, 0)
     }
 
     /// Return the transaction hash formatted with `0x` prefix.

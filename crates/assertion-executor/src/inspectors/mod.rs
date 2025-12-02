@@ -54,6 +54,8 @@ pub fn inspector_result_to_call_outcome<E: std::fmt::Display>(
                     gas,
                 },
                 memory_offset,
+                was_precompile_called: false,
+                precompile_call_logs: vec![],
             }
         }
         Err(e) => {
@@ -64,6 +66,8 @@ pub fn inspector_result_to_call_outcome<E: std::fmt::Display>(
                     gas,
                 },
                 memory_offset,
+                was_precompile_called: false,
+                precompile_call_logs: vec![],
             }
         }
     }

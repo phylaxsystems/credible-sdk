@@ -182,7 +182,6 @@ fuzz_target!(|data: &[u8]| {
         caller: call_inputs.caller,
         value: call_inputs.value.clone(),
         is_static: false,
-        is_eof: false,
         scheme: CallScheme::Call,
     };
 
@@ -228,7 +227,6 @@ fuzz_target!(|data: &[u8]| {
         caller: call_inputs.caller,
         value: call_inputs.value,
         is_static: false,
-        is_eof: false,
         scheme: CallScheme::Call,
     };
 

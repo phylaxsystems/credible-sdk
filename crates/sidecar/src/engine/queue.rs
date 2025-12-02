@@ -28,7 +28,10 @@
 //! executed transaction.
 
 use crate::execution_ids::TxExecutionId;
-use alloy::primitives::TxHash;
+use alloy::primitives::{
+    TxHash,
+    U256,
+};
 use flume::{
     Receiver,
     Sender,
@@ -76,7 +79,7 @@ pub enum TxQueueContents {
 }
 
 impl TxQueueContents {
-    pub fn block_number(&self) -> u64 {
+    pub fn block_number(&self) -> U256 {
         match self {
             TxQueueContents::Tx(v, _) => v.tx_execution_id.block_number,
             TxQueueContents::Reorg(v, _) => v.block_number,
@@ -102,7 +105,7 @@ impl TxQueueContents {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitHead {
     /// Block number of the selected iteration.
-    pub(crate) block_number: u64,
+    pub(crate) block_number: U256,
     /// Identifier of the selected iteration. Selected iteration will be
     /// applied as the head block.
     pub(crate) selected_iteration_id: u64,
@@ -115,7 +118,7 @@ pub struct CommitHead {
 impl CommitHead {
     /// Construct a new commit head event.
     pub fn new(
-        block_number: u64,
+        block_number: U256,
         selected_iteration_id: u64,
         last_tx_hash: Option<TxHash>,
         n_transactions: u64,

@@ -15,7 +15,8 @@ use revm::{
     handler::instructions::EthInstructions,
     interpreter::{
         Host,
-        Interpreter,
+        Instruction,
+        InstructionContext,
         InterpreterTypes,
         interpreter_types::StackTr,
     },
@@ -29,8 +30,11 @@ where
     WIRE: InterpreterTypes,
     HOST: Host,
 {
-    instructions.insert_instruction(BLOBHASH, linea_blob_hash);
-    instructions.insert_instruction(BLOBBASEFEE, linea_blob_basefee);
+    instructions.insert_instruction(BLOBHASH, Instruction::new(linea_blob_hash::<WIRE, HOST>, 3));
+    instructions.insert_instruction(
+        BLOBBASEFEE,
+        Instruction::new(linea_blob_basefee::<WIRE, HOST>, 2),
+    );
 }
 
 /// Implements the linea version of the BLOBHASH instruction.
@@ -38,14 +42,12 @@ where
 /// EIP-4844: Shard Blob Transactions - gets the hash of a transaction blob.
 ///
 /// On Linea v4, we always return 0.
-pub fn linea_blob_hash<WIRE: InterpreterTypes, HOST: Host>(
-    interpreter: &mut Interpreter<WIRE>,
-    _host: &mut HOST,
+#[allow(clippy::needless_pass_by_value)]
+pub fn linea_blob_hash<WIRE: InterpreterTypes, HOST: Host + ?Sized>(
+    context: InstructionContext<'_, HOST, WIRE>,
 ) {
-    // On Linea v4, we always return 0
-    // Pop the index from stack and push 0
-    if let Some(_index) = interpreter.stack.pop() {
-        let _ = interpreter.stack.push(revm::primitives::U256::ZERO);
+    if let Some(_index) = context.interpreter.stack.pop() {
+        let _ = context.interpreter.stack.push(revm::primitives::U256::ZERO);
     }
 }
 
@@ -53,11 +55,14 @@ pub fn linea_blob_hash<WIRE: InterpreterTypes, HOST: Host>(
 ///
 /// The linea version of BLOBBASEFEE returns the minimum value.
 /// The minimum value is always `1_u256`.
-pub fn linea_blob_basefee<WIRE: InterpreterTypes, HOST: Host>(
-    interpreter: &mut Interpreter<WIRE>,
-    _host: &mut HOST,
+#[allow(clippy::needless_pass_by_value)]
+pub fn linea_blob_basefee<WIRE: InterpreterTypes, HOST: Host + ?Sized>(
+    context: InstructionContext<'_, HOST, WIRE>,
 ) {
-    let _ = interpreter.stack.push(revm::primitives::U256::from(1));
+    let _ = context
+        .interpreter
+        .stack
+        .push(revm::primitives::U256::from(1));
 }
 
 #[cfg(test)]
@@ -89,7 +94,11 @@ mod tests {
         let mut interpreter = create_test_interpreter(stack);
 
         let mut host = DummyHost;
-        linea_blob_hash(&mut interpreter, &mut host);
+        let context = InstructionContext {
+            interpreter: &mut interpreter,
+            host: &mut host,
+        };
+        linea_blob_hash(context);
 
         // Should have popped the index and pushed 0
         assert_eq!(interpreter.stack.len(), 1);
@@ -106,7 +115,11 @@ mod tests {
             let mut interpreter = create_test_interpreter(stack);
             let mut host = DummyHost;
 
-            linea_blob_hash(&mut interpreter, &mut host);
+            let context = InstructionContext {
+                interpreter: &mut interpreter,
+                host: &mut host,
+            };
+            linea_blob_hash(context);
 
             assert_eq!(interpreter.stack.len(), 1);
             assert_eq!(
@@ -124,7 +137,11 @@ mod tests {
 
         let mut host = DummyHost;
 
-        linea_blob_basefee(&mut interpreter, &mut host);
+        let context = InstructionContext {
+            interpreter: &mut interpreter,
+            host: &mut host,
+        };
+        linea_blob_basefee(context);
 
         // Should have pushed the blob gas price from DummyHost
         assert_eq!(interpreter.stack.len(), 1);
@@ -144,10 +161,18 @@ mod tests {
         let mut host = DummyHost;
 
         // Test BLOBHASH
-        linea_blob_hash(&mut interpreter, &mut host);
+        let context = InstructionContext {
+            interpreter: &mut interpreter,
+            host: &mut host,
+        };
+        linea_blob_hash(context);
 
         // Test BLOBBASEFEE
-        linea_blob_basefee(&mut interpreter, &mut host);
+        let context = InstructionContext {
+            interpreter: &mut interpreter,
+            host: &mut host,
+        };
+        linea_blob_basefee(context);
 
         // Should have 3 values on stack now
         assert_eq!(interpreter.stack.len(), 2);
@@ -163,12 +188,11 @@ mod tests {
         let bytecode = ExtBytecode::new(Bytecode::default());
         let inputs = InputsImpl::default();
         let is_static = false;
-        let is_eof = false;
         let spec_id = SpecId::PRAGUE;
         let gas_limit = 1000000u64;
 
         let mut interpreter = revm::interpreter::Interpreter::new(
-            memory, bytecode, inputs, is_static, is_eof, spec_id, gas_limit,
+            memory, bytecode, inputs, is_static, spec_id, gas_limit,
         );
 
         // Replace the default stack with our test stack

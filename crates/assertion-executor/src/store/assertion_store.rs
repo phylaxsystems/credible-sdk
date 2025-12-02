@@ -14,7 +14,6 @@ use crate::{
     store::PendingModification,
 };
 
-#[cfg(any(test, feature = "test"))]
 use crate::{
     ExecutorConfig,
     primitives::Bytes,
@@ -101,7 +100,6 @@ struct AssertionStateMetadata<'a> {
 impl AssertionState {
     /// Creates a new active assertion state.
     /// Will be active across all blocks.
-    #[cfg(any(test, feature = "test"))]
     #[allow(clippy::result_large_err)]
     pub fn new_active(
         bytecode: &Bytes,
@@ -1094,12 +1092,12 @@ mod tests {
                 return_memory_offset: 0..0,
                 gas_limit: 0,
                 bytecode_address: aa,
+                known_bytecode: None,
                 target_address: aa,
                 caller: Address::random(),
                 value: revm::interpreter::CallValue::Transfer(U256::from(100)),
                 scheme: revm::interpreter::CallScheme::Call,
                 is_static: false,
-                is_eof: false,
             },
             &[0x12, 0x34, 0x56, 0x78],
             &mut JournalInner::new(),
