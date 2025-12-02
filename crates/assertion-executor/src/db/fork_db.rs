@@ -169,7 +169,7 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
             }
         }
 
-         self.storage = Arc::new(storage);
+        self.storage = Arc::new(storage);
     }
 }
 
