@@ -207,7 +207,7 @@ mod test {
     {
         let assertion_store = AssertionStore::new_ephemeral().unwrap();
         let mut call_tracer = CallTracer::new(assertion_store.clone());
-        for (mut input, input_bytes) in call_inputs {
+        for (input, input_bytes) in call_inputs {
             insert_adopter(&assertion_store, input.target_address);
             call_tracer.record_call_start(input, &input_bytes, &mut JournalInner::new());
             call_tracer.result.clone().unwrap();

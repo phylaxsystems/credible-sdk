@@ -349,7 +349,9 @@ mod test {
             build_optimism_evm,
             evm_env,
         },
+        inspectors::TriggerRecorder,
         primitives::{
+            AssertionContract,
             BlockEnv,
             Bytecode,
             SpecId,
@@ -359,6 +361,7 @@ mod test {
             address,
             bytes,
         },
+        store::AssertionState,
         test_utils::deployed_bytecode,
     };
     use op_revm::OpTransaction;
@@ -713,5 +716,84 @@ mod test {
             trigger_selector: selector
         }));
         assert_eq!(triggers[&addr].len(), 1);
+    }
+
+    #[test]
+    fn call_tracer_records_calldata_only_for_adopters() {
+        let adopter = address!("1111111111111111111111111111111111111111");
+        let non_adopter = address!("2222222222222222222222222222222222222222");
+        let adopter_selector = FixedBytes::<4>::from([0xAA, 0xBB, 0xCC, 0xDD]);
+        let non_adopter_selector = FixedBytes::<4>::from([0x11, 0x22, 0x33, 0x44]);
+
+        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        assertion_store
+            .insert(
+                adopter,
+                AssertionState {
+                    activation_block: 0,
+                    inactivation_block: None,
+                    assertion_contract: AssertionContract::default(),
+                    trigger_recorder: TriggerRecorder::default(),
+                },
+            )
+            .unwrap();
+
+        let mut tracer = CallTracer::new(assertion_store);
+
+        let adopter_input_bytes: Bytes = adopter_selector.into();
+        tracer.record_call_start(
+            CallInputs {
+                input: CallInput::Bytes(adopter_input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: adopter,
+                target_address: adopter,
+                caller: adopter,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+                is_eof: false,
+            },
+            &adopter_input_bytes,
+            &mut JournalInner::new(),
+        );
+        tracer.result.clone().unwrap();
+        tracer.record_call_end(&mut JournalInner::new());
+        tracer.result.clone().unwrap();
+
+        let non_adopter_input_bytes: Bytes = non_adopter_selector.into();
+        tracer.record_call_start(
+            CallInputs {
+                input: CallInput::Bytes(non_adopter_input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: non_adopter,
+                target_address: non_adopter,
+                caller: non_adopter,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+                is_eof: false,
+            },
+            &non_adopter_input_bytes,
+            &mut JournalInner::new(),
+        );
+        tracer.result.clone().unwrap();
+        tracer.record_call_end(&mut JournalInner::new());
+        tracer.result.clone().unwrap();
+
+        let adopter_calls = tracer.get_call_inputs(adopter, adopter_selector);
+        assert_eq!(adopter_calls.len(), 1);
+        match &adopter_calls[0].call_input.input {
+            CallInput::Bytes(bytes) => assert_eq!(&bytes[..], &adopter_input_bytes[..]),
+            CallInput::SharedBuffer(_) => panic!("unexpected shared buffer for adopter call"),
+        }
+
+        let non_adopter_calls = tracer.get_call_inputs(non_adopter, non_adopter_selector);
+        assert_eq!(non_adopter_calls.len(), 1);
+        match &non_adopter_calls[0].call_input.input {
+            CallInput::Bytes(bytes) => assert!(bytes.is_empty()),
+            CallInput::SharedBuffer(_) => panic!("unexpected shared buffer for non-adopter call"),
+        }
     }
 }
