@@ -164,6 +164,7 @@ impl LastExecutedTx {
         }
     }
 
+    #[inline]
     fn take_current_state(&mut self) -> Option<EvmState> {
         self.execution_results
             .back_mut()
