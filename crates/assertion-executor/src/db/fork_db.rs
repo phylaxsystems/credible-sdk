@@ -168,6 +168,8 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
                 }
             }
         }
+
+         self.storage = Arc::new(storage);
     }
 }
 
