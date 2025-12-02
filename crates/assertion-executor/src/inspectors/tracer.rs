@@ -76,6 +76,8 @@ pub enum CallTracerError {
     PendingPostCallWriteNotFound { depth: usize },
     #[error("Post call checkpoint not initialized as None for the index {index}")]
     PostCallCheckpointNotInitialized { index: usize },
+    #[error("Error trying to read store sled db!")]
+    SledError,
 }
 
 #[derive(Clone, Debug)]
@@ -155,10 +157,21 @@ impl CallTracer {
         let mut inputs = inputs;
 
         // Check if the target is an AA. We only store calldata for targets which are AAs
-        //
+        let is_aa = match self.assertion_store.has_assertions(inputs.target_address) {
+            Ok(rax) => {
+                rax
+            },
+            Err(_) => {
+                error!(target: "assertion-executor::call_tracer", "Tried to access store, but failed!");
+                self.result = Err(CallTracerError::SledError);
+                return;
+            },
+        };
+
         // In case where we are hit with a non-AA call, we want to ignore its calldata,
         // but we still have to store the rest of it to preserve the journal depth.
-        if self.assertion_store.has_assertions(inputs.target_address) {
+        // unwrap
+        if is_aa {
             // Coerce the bytes at the time of recording the call,
             // in case they are of the SharedBuffer variant
             inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
