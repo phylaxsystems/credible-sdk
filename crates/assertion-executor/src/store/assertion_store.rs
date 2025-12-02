@@ -307,7 +307,6 @@ impl AssertionStore {
         }
     }
 
-
     /// Reads the assertions for the given assertion adopter at the given block.
     /// Returns the assertions that are active at the given block.
     /// An assertion is considered active at a block if the `activation_block` is less than or equal

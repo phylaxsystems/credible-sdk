@@ -82,13 +82,13 @@ mod test {
             overlay::test_utils::MockDb,
         },
         inspectors::{
+            TriggerRecorder,
             phevm::{
                 LogsAndTraces,
                 PhEvmContext,
             },
             sol_primitives::PhEvm::getCallInputsCall,
             tracer::CallTracer,
-            TriggerRecorder,
         },
         primitives::AssertionContract,
         store::{

@@ -9,7 +9,8 @@ use crate::{
         Bytes,
         FixedBytes,
         JournalEntry,
-    }, store::AssertionStore,
+    },
+    store::AssertionStore,
 };
 use revm::{
     Database,
@@ -91,8 +92,12 @@ pub struct CallTracer {
     // you want to read call_inputs from the tracer.
     // Because of this, we coerce the bytes at the time of recording the call.
     call_inputs: Vec<CallInputs>,
-    /// Assertion store, we limit call input recording to AAs
-    assertion_store: AssertionStore,
+    /// Assertion store, we limit call input recording to AAs when present.
+    ///
+    /// If set to `None`, the `CallTracer` will record data for all addresses
+    assertion_store: Option<AssertionStore>,
+    /// Cache adopter lookups to avoid repeated sled hits per address
+    adopter_cache: HashMap<Address, bool>,
     // Records assertion triggers
     // triggers: HashMap<Address, HashSet<TriggerType>>,
     pub journal: JournalInner<JournalEntry>,
@@ -107,13 +112,14 @@ impl Default for CallTracer {
     fn default() -> Self {
         Self {
             call_inputs: Vec::new(),
-            assertion_store: AssertionStore::new_ephemeral().unwrap(),
+            assertion_store: None,
             journal: JournalInner::new(),
             pre_call_checkpoints: Vec::new(),
             post_call_checkpoints: Vec::new(),
             pending_post_call_writes: HashMap::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
+            adopter_cache: HashMap::new(),
         }
     }
 }
@@ -128,13 +134,14 @@ impl CallTracer {
     pub fn new(assertion_store: AssertionStore) -> Self {
         Self {
             call_inputs: Vec::new(),
-            assertion_store,
+            assertion_store: Some(assertion_store),
             journal: JournalInner::new(),
             pre_call_checkpoints: Vec::new(),
             post_call_checkpoints: Vec::new(),
             pending_post_call_writes: HashMap::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
+            adopter_cache: HashMap::new(),
         }
     }
 
@@ -156,16 +163,23 @@ impl CallTracer {
 
         let mut inputs = inputs;
 
-        // Check if the target is an AA. We only store calldata for targets which are AAs
-        let is_aa = match self.assertion_store.has_assertions(inputs.target_address) {
-            Ok(rax) => {
-                rax
-            },
-            Err(_) => {
-                error!(target: "assertion-executor::call_tracer", "Tried to access store, but failed!");
-                self.result = Err(CallTracerError::SledError);
-                return;
-            },
+        // Check if the target is an AA when a store is present. Otherwise record calldata.
+        // We have a cache to reduce i/o to sled for accessing the same AA multiple times
+        // Note: sled does have an in memory cache, but we still have a mutex and associated contention.
+        let is_aa = match &self.assertion_store {
+            Some(store) => {
+                if let Some(is_adopter) = self.adopter_cache.get(&inputs.target_address) {
+                    *is_adopter
+                } else if let Ok(is_adopter) = store.has_assertions(inputs.target_address) {
+                    self.adopter_cache.insert(inputs.target_address, is_adopter);
+                    is_adopter
+                } else {
+                    error!(target: "assertion-executor::call_tracer", "Tried to access store, but failed!");
+                    self.result = Err(CallTracerError::SledError);
+                    return;
+                }
+            }
+            None => true,
         };
 
         // In case where we are hit with a non-AA call, we want to ignore its calldata,
@@ -177,7 +191,7 @@ impl CallTracer {
             inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
         } else {
             inputs.input = CallInput::Bytes(Bytes::default());
-        }    
+        }
 
         let index = self.call_inputs.len();
         let depth = journal_inner.depth;
