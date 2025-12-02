@@ -184,7 +184,8 @@ impl<ExtDb> ForkDb<ExtDb> {
 
     pub fn mark_accounts_isolated(&mut self, addresses: &[Address]) {
         // Early return if nothing to do
-        if addresses.is_empty() {//no need for this tbh
+        if addresses.is_empty() {
+            //no need for this tbh
             return;
         }
 

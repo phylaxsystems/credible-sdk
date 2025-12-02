@@ -415,7 +415,7 @@ impl<Db> OverlayDb<Db> {
         }
 
         // Update storage slots
-        let storage = Arc::unwrap_or_clone( fork_db.storage);//xtra latentcy
+        let storage = Arc::unwrap_or_clone(fork_db.storage); //xtra latentcy
         for (address, slot_map) in storage {
             for (slot, storage_slot) in slot_map.map {
                 let storage_key = TableKey::Storage(address, slot);
