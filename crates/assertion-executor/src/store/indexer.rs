@@ -37,6 +37,7 @@ use tracing::{
 };
 
 use alloy::primitives::{
+    Bytes,
     LogData,
     U256,
 };
@@ -759,15 +760,23 @@ impl Indexer {
                 // the modification should be moved to the store. But we also need to avoid back
                 // pressure on extracting the assertion contracts once we have fetched them from
                 // the DA.
-                let DaFetchResponse { bytecode, .. } = self
+                let DaFetchResponse {
+                    bytecode,
+                    encoded_constructor_args,
+                    ..
+                } = self
                     .da_client
                     .fetch_assertion(event.assertionId)
                     .await
                     .map_err(IndexerError::DaClientError)?;
 
-                // The DA already returns deployment bytecode (creation code + constructor args)
+                // Rebuild deployment bytecode by appending constructor args returned separately
+                let mut deployment_bytecode = bytecode.to_vec();
+                deployment_bytecode.extend_from_slice(encoded_constructor_args.as_ref());
+                let deployment_bytecode: Bytes = deployment_bytecode.into();
+
                 let assertion_contract_res =
-                    extract_assertion_contract(&bytecode, &self.executor_config);
+                    extract_assertion_contract(&deployment_bytecode, &self.executor_config);
 
                 match assertion_contract_res {
                     Ok((assertion_contract, trigger_recorder)) => {
@@ -1143,8 +1152,8 @@ mod test_indexer {
         // Build deployment bytecode with constructor args appended once
         let constructor_arg = Address::random();
         let encoded_constructor_args = (constructor_arg,).abi_encode();
-        let mut deployment_bytecode =
-            crate::test_utils::bytecode("MockAssertion.sol:MockAssertion").to_vec();
+        let assertion_bytecode = crate::test_utils::bytecode("MockAssertion.sol:MockAssertion");
+        let mut deployment_bytecode = assertion_bytecode.to_vec();
         deployment_bytecode.extend_from_slice(&encoded_constructor_args);
         let expected_assertion_id = keccak256(&deployment_bytecode);
 
@@ -1152,7 +1161,7 @@ mod test_indexer {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
-        let deployment_hex = hex::encode(&deployment_bytecode);
+        let bytecode_hex = hex::encode(assertion_bytecode);
         let encoded_args_hex = hex::encode(&encoded_constructor_args);
 
         tokio::spawn(async move {
@@ -1162,7 +1171,7 @@ mod test_indexer {
                 // best-effort read to clear the request
                 let _ = stream.read(&mut buf).await;
                 let body = format!(
-                    r#"{{"jsonrpc":"2.0","result":{{"solidity_source":"","bytecode":"0x{deployment_hex}","prover_signature":"0x","encoded_constructor_args":"0x{encoded_args_hex}","constructor_abi_signature":"constructor(address)"}}, "id":1}}"#
+                    r#"{{"jsonrpc":"2.0","result":{{"solidity_source":"","bytecode":"0x{bytecode_hex}","prover_signature":"0x","encoded_constructor_args":"0x{encoded_args_hex}","constructor_abi_signature":"constructor(address)"}}, "id":1}}"#
                 );
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",

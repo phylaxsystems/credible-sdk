@@ -232,7 +232,7 @@ pub async fn accept_solidity_assertion(
         da_submission.assertion_contract_name.clone(),
         da_submission.compiler_version.clone(),
         da_submission.solidity_source,
-        deployment_data,
+        bytecode,
         prover_signature,
         da_submission.constructor_abi_signature,
         encoded_constructor_args,
