@@ -1306,16 +1306,15 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         };
 
-        #[allow(clippy::used_underscore_binding)]
-        if let Some((_tx_execution_id, state)) = current_block_iteration.last_executed_tx.current()
+        if let Some(changes) = current_block_iteration
+            .last_executed_tx
+            .take_current_state()
         {
-            let changes = state.clone().ok_or(EngineError::NothingToCommit)?;
             self.cache.commit(changes);
         }
-        current_block_iteration.last_executed_tx = LastExecutedTx::new();
+        current_block_iteration.last_executed_tx.clear();
         Ok(())
     }
-
     /// Processes a reorg event. Checks if the execution id of the last executed tx
     /// matches the identifier supplied by the reorg event.
     /// If yes, we throw out the last executed tx buffer. If not, we throw
