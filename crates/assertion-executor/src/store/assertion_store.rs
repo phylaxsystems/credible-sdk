@@ -278,6 +278,20 @@ impl AssertionStore {
         Ok(assertions)
     }
 
+    /// Returns `true` if the address has any active assertions associated with it.
+    /// Used to check if a account is an assertion adopter.
+    #[tracing::instrument(
+        skip_all,
+        name = "read_adopter_from_db",
+        target = "assertion_store::has_assertions",
+        fields(assertion_adopter=?assertion_adopter),
+        level = "trace"
+    )]
+    pub fn has_assertions(&self, assertion_adopter: Address) -> bool {
+        unimplemented!()
+    }
+
+
     /// Reads the assertions for the given assertion adopter at the given block.
     /// Returns the assertions that are active at the given block.
     /// An assertion is considered active at a block if the `activation_block` is less than or equal

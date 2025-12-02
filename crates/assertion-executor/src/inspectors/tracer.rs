@@ -9,7 +9,7 @@ use crate::{
         Bytes,
         FixedBytes,
         JournalEntry,
-    },
+    }, store::AssertionStore,
 };
 use revm::{
     Database,
@@ -19,6 +19,7 @@ use revm::{
         journaled_state::JournalCheckpoint,
     },
     interpreter::{
+        CallInput,
         CallInputs,
         CallOutcome,
         CreateInputs,
@@ -77,7 +78,7 @@ pub enum CallTracerError {
     PostCallCheckpointNotInitialized { index: usize },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct CallTracer {
     // Not public to prohibit inserting CallInputs with CallInput::SharedBuffer
     // If call_inputs with CallInput::SharedBuffer are inserted, then accessing the data without the previous context will be problematic
@@ -88,6 +89,10 @@ pub struct CallTracer {
     // you want to read call_inputs from the tracer.
     // Because of this, we coerce the bytes at the time of recording the call.
     call_inputs: Vec<CallInputs>,
+    /// Assertion store, we limit call input recording to AAs
+    assertion_store: AssertionStore,
+    // Records assertion triggers
+    // triggers: HashMap<Address, HashSet<TriggerType>>,
     pub journal: JournalInner<JournalEntry>,
     pub pre_call_checkpoints: Vec<JournalCheckpoint>,
     pub post_call_checkpoints: Vec<Option<JournalCheckpoint>>,
@@ -100,6 +105,7 @@ impl Default for CallTracer {
     fn default() -> Self {
         Self {
             call_inputs: Vec::new(),
+            assertion_store: AssertionStore::new_ephemeral().unwrap(),
             journal: JournalInner::new(),
             pre_call_checkpoints: Vec::new(),
             post_call_checkpoints: Vec::new(),
@@ -117,9 +123,10 @@ pub struct CallInputsWithId<'a> {
 }
 
 impl CallTracer {
-    pub fn new() -> Self {
+    pub fn new(assertion_store: AssertionStore) -> Self {
         Self {
             call_inputs: Vec::new(),
+            assertion_store,
             journal: JournalInner::new(),
             pre_call_checkpoints: Vec::new(),
             post_call_checkpoints: Vec::new(),
@@ -146,8 +153,18 @@ impl CallTracer {
         };
 
         let mut inputs = inputs;
-        // Coerce the bytes at the time of recording the call, in case they are of the SharedBuffer variant
-        inputs.input = revm::interpreter::CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+
+        // Check if the target is an AA. We only store calldata for targets which are AAs
+        //
+        // In case where we are hit with a non-AA call, we want to ignore its calldata,
+        // but we still have to store the rest of it to preserve the journal depth.
+        if self.assertion_store.has_assertions(inputs.target_address) {
+            // Coerce the bytes at the time of recording the call,
+            // in case they are of the SharedBuffer variant
+            inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+        } else {
+            inputs.input = CallInput::Bytes(Bytes::default());
+        }    
 
         let index = self.call_inputs.len();
         let depth = journal_inner.depth;
