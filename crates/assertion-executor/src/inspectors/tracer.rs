@@ -219,7 +219,7 @@ impl CallTracer {
             .get(&TargetAndSelector { target, selector })
         {
             Some(indices) => {
-                let mut call_inputs = Vec::new();
+                let mut call_inputs = Vec::with_capacity(indices.len());
                 for index in indices {
                     call_inputs.push(CallInputsWithId {
                         call_input: &self.call_inputs[*index],
