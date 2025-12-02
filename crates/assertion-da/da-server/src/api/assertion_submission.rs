@@ -81,7 +81,7 @@ pub async fn accept_bytecode_assertion(
         warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, error = ?err, "Invalid params: multiple 0x prefixes found in bytecode");
         rpc_error_with_request_id(
             json_rpc,
-            500,
+            400,
             "Failed to decode hex",
             request_id,
         )
