@@ -16,18 +16,27 @@ use assertion_executor::{
         CallTracer,
         LogsAndTraces,
         PhEvmContext,
+        TriggerRecorder,
     },
     primitives::{
         Address,
         Bytes,
+        JournalEntry,
         U256,
+        AssertionContract,
+    },
+    store::{
+        AssertionState,
+        AssertionStore,
     },
 };
 use libfuzzer_sys::fuzz_target;
 
+use revm::context::JournalInner;
 use revm::interpreter::{
     CallInputs,
     CallScheme,
+    CallInput,
 };
 
 /// Struct that returns generated call input params so we can querry them
@@ -37,6 +46,20 @@ use revm::interpreter::{
 struct CallInputParams {
     target: Address,
     slot: U256,
+}
+
+fn dummy_assertion_state() -> AssertionState {
+    AssertionState {
+        activation_block: 0,
+        inactivation_block: None,
+        assertion_contract: AssertionContract::default(),
+        trigger_recorder: TriggerRecorder::default(),
+    }
+}
+
+fn insert_dummy_assertion(store: &AssertionStore, adopter: Address) {
+    // Presence is enough for the call tracer to treat calldata as relevant.
+    store.insert(adopter, dummy_assertion_state()).unwrap();
 }
 
 /// Helper to create CallInputs from fuzzer data
@@ -135,7 +158,9 @@ fuzz_target!(|data: &[u8]| {
 
     // Create a minimally viable context
     let log_array: &[Log] = &[];
-    let mut call_tracer = CallTracer::default();
+    let assertion_store = AssertionStore::new_ephemeral().unwrap();
+    insert_dummy_assertion(&assertion_store, params.target);
+    let mut call_tracer = CallTracer::new(assertion_store);
 
     // Explicitly create a call input with the correct selector for the context
     let selector_bytes = if data.len() >= 28 {
@@ -161,7 +186,15 @@ fuzz_target!(|data: &[u8]| {
         scheme: CallScheme::Call,
     };
 
-    call_tracer.record_call(target_call_input.clone());
+    let mut journal = JournalInner::<JournalEntry>::new();
+    let input_bytes = match &target_call_input.input {
+        CallInput::Bytes(bytes) => bytes.clone(),
+        _ => Bytes::new(),
+    };
+    call_tracer.record_call_start(target_call_input.clone(), &input_bytes, &mut journal);
+    call_tracer.result.clone().unwrap();
+    call_tracer.record_call_end(&mut journal);
+    call_tracer.result.clone().unwrap();
     let logs_traces = LogsAndTraces {
         tx_logs: log_array,
         call_traces: &call_tracer,

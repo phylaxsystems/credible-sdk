@@ -582,7 +582,7 @@ mod test {
             U256,
         };
 
-        let mut tracer = CallTracer::new();
+        let mut tracer = CallTracer::default();
         let addr1 = address!("1111111111111111111111111111111111111111");
         let addr2 = address!("2222222222222222222222222222222222222222");
         let addr3 = address!("3333333333333333333333333333333333333333");
@@ -675,7 +675,7 @@ mod test {
 
     #[test]
     fn test_triggers_no_journal_state() {
-        let mut tracer = CallTracer::new();
+        let mut tracer = CallTracer::default();
         let addr = address!("1111111111111111111111111111111111111111");
         let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
         let input_bytes: Bytes = selector.into();

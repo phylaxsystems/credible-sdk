@@ -393,7 +393,7 @@ mod test_multi_fork {
         let mut pre_tx_fork_db = setup_fork_db(sender);
         let mut active_journal = JournalInner::new();
 
-        let mut call_tracer = CallTracer::new();
+        let mut call_tracer = CallTracer::default();
         let call_inputs = CallInputs {
             caller: sender,
             target_address: receiver,
@@ -497,7 +497,7 @@ mod test_multi_fork {
             ForkId::PostTx,
             &[(sender, uint!(0_U256)), (receiver, uint!(1000_U256))],
             &mut active_journal,
-            &CallTracer::new(),
+            &CallTracer::default(),
         );
 
         switch_and_verify_fork_state(
@@ -505,7 +505,7 @@ mod test_multi_fork {
             ForkId::PreTx,
             &[(sender, uint!(1000_U256))],
             &mut active_journal,
-            &CallTracer::new(),
+            &CallTracer::default(),
         );
 
         // assert that pre tx journal is empty
@@ -514,7 +514,7 @@ mod test_multi_fork {
         assert!(db.forks.contains_key(&ForkId::PreTx));
         assert_eq!(db.active_fork_id, ForkId::PreTx);
 
-        db.switch_fork(ForkId::PostTx, &mut active_journal, &CallTracer::new())
+        db.switch_fork(ForkId::PostTx, &mut active_journal, &CallTracer::default())
             .unwrap();
     }
 
@@ -527,7 +527,7 @@ mod test_multi_fork {
         let pre_tx_fork_db = setup_fork_db(address);
         let mut active_journal = JournalInner::new();
         let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
-        db.switch_fork(ForkId::PreTx, &mut active_journal, &CallTracer::new())
+        db.switch_fork(ForkId::PreTx, &mut active_journal, &CallTracer::default())
             .unwrap();
 
         assert_eq!(active_journal.state.len(), 0);
@@ -570,7 +570,7 @@ mod test_multi_fork {
         );
 
         // switch to post tx fork
-        db.switch_fork(ForkId::PostTx, &mut active_journal, &CallTracer::new())
+        db.switch_fork(ForkId::PostTx, &mut active_journal, &CallTracer::default())
             .unwrap();
 
         // active_journal is now post tx fork journal

@@ -156,8 +156,7 @@ fuzz_target!(|data: &[u8]| {
     // Create a minimally viable context
     let log_array: &[Log] = std::slice::from_ref(&log);
     let mut call_tracer = CallTracer::default();
-    let (call_inputs, params) = create_call_inputs(data);
-    call_tracer.record_call(call_inputs);
+    let (_call_inputs, params) = create_call_inputs(data);
 
     let logs_traces = LogsAndTraces {
         tx_logs: log_array,
