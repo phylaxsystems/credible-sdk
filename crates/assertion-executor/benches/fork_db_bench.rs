@@ -1,6 +1,14 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use std::collections::HashMap;
-use std::sync::Arc;
+use criterion::{
+    BenchmarkId,
+    Criterion,
+    black_box,
+    criterion_group,
+    criterion_main,
+};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+};
 
 type Address = [u8; 20];
 type U256 = u128;
@@ -67,7 +75,10 @@ impl ForkDbWithoutArc {
 }
 
 // Helper to create test data
-fn create_storage_with_data(num_addresses: usize, slots_per_address: usize) -> HashMap<Address, ForkStorageMap> {
+fn create_storage_with_data(
+    num_addresses: usize,
+    slots_per_address: usize,
+) -> HashMap<Address, ForkStorageMap> {
     let mut storage = HashMap::new();
 
     for i in 0..num_addresses {
@@ -140,12 +151,11 @@ fn benchmark_parallel_distribution(c: &mut Criterion) {
     group.finish();
 }
 
-
 fn benchmark_cow_mutation_single_holder(c: &mut Criterion) {
     let mut group = c.benchmark_group("cow_mutation_single_holder");
 
     for storage_size in [100, 500, 1000].iter() {
-        // WITH Arc 
+        // WITH Arc
         group.bench_with_input(
             BenchmarkId::new("with_arc", storage_size),
             storage_size,
@@ -210,7 +220,7 @@ fn benchmark_cow_mutation_shared(c: &mut Criterion) {
     group.sample_size(10);
 
     for storage_size in [100, 500].iter() {
-        // WITH Arc 
+        // WITH Arc
         group.bench_with_input(
             BenchmarkId::new("with_arc_shared", storage_size),
             storage_size,
@@ -276,7 +286,6 @@ fn benchmark_cow_mutation_shared(c: &mut Criterion) {
     group.finish();
 }
 
-
 fn benchmark_realistic_workflow(c: &mut Criterion) {
     let mut group = c.benchmark_group("realistic_workflow");
     group.sample_size(10);
@@ -294,9 +303,7 @@ fn benchmark_realistic_workflow(c: &mut Criterion) {
 
                 b.iter(|| {
                     // Phase 1: Clone for parallel execution (very cheap with Arc)
-                    let mut fork_dbs: Vec<_> = (0..num_parallel)
-                        .map(|_| fork_db.clone())
-                        .collect();
+                    let mut fork_dbs: Vec<_> = (0..num_parallel).map(|_| fork_db.clone()).collect();
 
                     // Phase 2: Each executor mutates independently
                     for (idx, fork_db) in fork_dbs.iter_mut().enumerate() {
@@ -327,9 +334,7 @@ fn benchmark_realistic_workflow(c: &mut Criterion) {
 
                 b.iter(|| {
                     // Phase 1: Clone for parallel execution (expensive)
-                    let mut fork_dbs: Vec<_> = (0..num_parallel)
-                        .map(|_| fork_db.clone())
-                        .collect();
+                    let mut fork_dbs: Vec<_> = (0..num_parallel).map(|_| fork_db.clone()).collect();
 
                     // Phase 2: Each executor mutates
                     for (idx, fork_db) in fork_dbs.iter_mut().enumerate() {
