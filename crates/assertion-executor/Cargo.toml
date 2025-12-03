@@ -80,3 +80,7 @@ evm-glue = { workspace = true }
 name = "worst-case-op"
 required-features = ["test"]
 harness = false
+
+[[bench]]
+name = "fork_db_bench"
+harness = false

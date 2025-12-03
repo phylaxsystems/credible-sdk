@@ -120,7 +120,8 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
 impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
     fn commit(&mut self, changes: EvmState) {
         // Make the storage mutable by getting ownership of the HashMap
-        let mut storage = Arc::unwrap_or_clone(Arc::clone(&self.storage));
+
+        let storage = Arc::make_mut(&mut self.storage);
 
         for (address, account) in changes {
             if !account.is_touched() {
@@ -168,8 +169,6 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
                 }
             }
         }
-
-        self.storage = Arc::new(storage);
     }
 }
 
@@ -192,16 +191,13 @@ impl<ExtDb> ForkDb<ExtDb> {
         }
 
         // Get mutable access to storage via copy-on-write
-        let mut storage = Arc::unwrap_or_clone(Arc::clone(&self.storage));
+        let storage = Arc::make_mut(&mut self.storage);
 
         // Mark each address as isolated
         for address in addresses {
             let fork_storage_map = storage.entry(*address).or_default();
             fork_storage_map.dont_read_from_inner_db = true;
         }
-
-        // Replace the Arc with the modified storage
-        self.storage = Arc::new(storage);
     }
 
     /// Replace the inner database with a new one.

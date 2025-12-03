@@ -35,12 +35,11 @@ impl ForkDbWithArc {
         if addresses.is_empty() {
             return;
         }
-        let mut storage = Arc::unwrap_or_clone(Arc::clone(&self.storage));
+        let storage = Arc::make_mut(&mut self.storage);
         for address in addresses {
             let entry = storage.entry(*address).or_default();
             entry.dont_read_from_inner_db = true;
         }
-        self.storage = Arc::new(storage);
     }
 }
 
