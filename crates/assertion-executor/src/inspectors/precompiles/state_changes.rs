@@ -138,7 +138,7 @@ mod test {
     where
         F: FnOnce(&PhEvmContext) -> R,
     {
-        let mut call_tracer = CallTracer::new();
+        let mut call_tracer = CallTracer::default();
         call_tracer.journal = journal;
 
         let logs_and_traces = LogsAndTraces {

@@ -45,7 +45,7 @@ mod test {
     };
 
     fn test_logging(input_bytes: &Bytes) -> Result<Bytes, ConsoleLogError> {
-        let call_tracer = CallTracer::new();
+        let call_tracer = CallTracer::default();
         let logs_and_traces = LogsAndTraces {
             tx_logs: &[],
             call_traces: &call_tracer,
@@ -67,7 +67,7 @@ mod test {
 
     #[test]
     fn test_logging_success() {
-        let call_tracer = CallTracer::new();
+        let call_tracer = CallTracer::default();
         let logs_and_traces = LogsAndTraces {
             tx_logs: &[],
             call_traces: &call_tracer,

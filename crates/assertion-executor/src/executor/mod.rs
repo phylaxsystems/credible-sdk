@@ -523,7 +523,7 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send,
         Active::Error: Send,
     {
-        let mut call_tracer = CallTracer::default();
+        let mut call_tracer = CallTracer::new(self.store.clone());
         let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
 
         let mut evm = crate::build_evm_by_features!(fork_db, &env, &mut call_tracer);
@@ -579,7 +579,7 @@ impl AssertionExecutor {
     where
         ExtDb: Database + Sync + Send,
     {
-        let mut call_tracer = CallTracer::default();
+        let mut call_tracer = CallTracer::new(self.store.clone());
         let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
 
         let mut evm = crate::build_evm_by_features!(external_db, &env, &mut call_tracer);
@@ -818,7 +818,7 @@ mod test {
 
         let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
-        let mut call_tracer = CallTracer::new();
+        let mut call_tracer = CallTracer::new(executor.store.clone());
         call_tracer.insert_trace(COUNTER_ADDRESS);
         call_tracer.journal.state.insert(
             ASSERTION_CONTRACT,

@@ -212,7 +212,7 @@ mod test {
         });
 
         // Test fork_pre_state function
-        let result = fork_pre_tx(&mut context, &CallTracer::new());
+        let result = fork_pre_tx(&mut context, &CallTracer::default());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Bytes::default());
 
@@ -242,7 +242,7 @@ mod test {
         });
 
         // Test fork_post_state function
-        let result = fork_post_tx(&mut context, &CallTracer::new());
+        let result = fork_post_tx(&mut context, &CallTracer::default());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Bytes::default());
 
@@ -270,19 +270,19 @@ mod test {
         });
 
         // Start with pre-tx state
-        let result = fork_pre_tx(&mut context, &CallTracer::new());
+        let result = fork_pre_tx(&mut context, &CallTracer::default());
         assert!(result.is_ok());
         let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, pre_value);
 
         // Switch to post-tx state
-        let result = fork_post_tx(&mut context, &CallTracer::new());
+        let result = fork_post_tx(&mut context, &CallTracer::default());
         assert!(result.is_ok());
         let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, post_value);
 
         // Switch back to pre-tx state
-        let result = fork_pre_tx(&mut context, &CallTracer::new());
+        let result = fork_pre_tx(&mut context, &CallTracer::default());
         assert!(result.is_ok());
         let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, pre_value);
@@ -314,7 +314,7 @@ mod test {
         });
 
         // Test pre-tx state
-        let result = fork_pre_tx(&mut context, &CallTracer::new());
+        let result = fork_pre_tx(&mut context, &CallTracer::default());
         assert!(result.is_ok());
 
         let storage_value1 = context.db().storage_ref(address1, slot1).unwrap();
@@ -323,7 +323,7 @@ mod test {
         assert_eq!(storage_value2, U256::from(20));
 
         // Test post-tx state
-        let result = fork_post_tx(&mut context, &CallTracer::new());
+        let result = fork_post_tx(&mut context, &CallTracer::default());
         assert!(result.is_ok());
 
         let storage_value1 = context.db().storage_ref(address1, slot1).unwrap();

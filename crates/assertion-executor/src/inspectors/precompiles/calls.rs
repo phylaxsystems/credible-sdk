@@ -82,12 +82,18 @@ mod test {
             overlay::test_utils::MockDb,
         },
         inspectors::{
+            TriggerRecorder,
             phevm::{
                 LogsAndTraces,
                 PhEvmContext,
             },
             sol_primitives::PhEvm::getCallInputsCall,
             tracer::CallTracer,
+        },
+        primitives::AssertionContract,
+        store::{
+            AssertionState,
+            AssertionStore,
         },
         test_utils::{
             random_address,
@@ -177,13 +183,33 @@ mod test {
         (call_inputs, input_data.into())
     }
 
+    fn empty_assertion_state() -> AssertionState {
+        AssertionState {
+            activation_block: 0,
+            inactivation_block: None,
+            assertion_contract: AssertionContract::default(),
+            trigger_recorder: TriggerRecorder::default(),
+        }
+    }
+
+    fn empty_call_tracer() -> CallTracer {
+        CallTracer::new(AssertionStore::new_ephemeral().unwrap())
+    }
+
+    fn insert_adopter(store: &AssertionStore, adopter: Address) {
+        // Presence is enough for CallTracer::has_assertions to mark calldata as relevant.
+        store.insert(adopter, empty_assertion_state()).unwrap();
+    }
+
     fn create_call_tracer_with_inputs<I>(call_inputs: I) -> CallTracer
     where
         I: IntoIterator<Item = (CallInputs, Bytes)>,
     {
-        let mut call_tracer = CallTracer::new();
-        for input in call_inputs {
-            call_tracer.record_call_start(input.0, &input.1, &mut JournalInner::new());
+        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        let mut call_tracer = CallTracer::new(assertion_store.clone());
+        for (input, input_bytes) in call_inputs {
+            insert_adopter(&assertion_store, input.target_address);
+            call_tracer.record_call_start(input, &input_bytes, &mut JournalInner::new());
             call_tracer.result.clone().unwrap();
 
             call_tracer.record_call_end(&mut JournalInner::new());
@@ -229,7 +255,7 @@ mod test {
         let get_call_inputs = create_get_call_input(target, selector);
 
         // Create context with no matching call inputs (different target and selector)
-        let call_tracer = CallTracer::new();
+        let call_tracer = empty_call_tracer();
 
         let result = test_with_inputs_and_tracer(&get_call_inputs, &call_tracer);
         assert!(result.is_ok());

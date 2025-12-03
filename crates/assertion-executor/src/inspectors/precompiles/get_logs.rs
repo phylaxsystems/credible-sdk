@@ -61,7 +61,7 @@ mod test {
     where
         F: FnOnce(&PhEvmContext) -> R,
     {
-        let call_tracer = CallTracer::new();
+        let call_tracer = CallTracer::default();
         let logs_and_traces = LogsAndTraces {
             tx_logs: &logs,
             call_traces: &call_tracer,
