@@ -164,6 +164,13 @@ impl LastExecutedTx {
         }
     }
 
+    #[inline]
+    fn take_current_state(&mut self) -> Option<EvmState> {
+        self.execution_results
+            .back_mut()
+            .and_then(|(_, state)| state.take())
+    }
+
     fn push(&mut self, tx_execution_id: TxExecutionId, state: Option<EvmState>) {
         if self.execution_results.len() == 2 {
             self.execution_results.pop_front();
@@ -1253,16 +1260,17 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         };
 
+        // If there is no last executed transaction, there is nothing to apply.
         if current_block_iteration.last_executed_tx.current().is_none() {
             return Ok(());
         }
 
-        //Invariant: We checked that it's not None, so we can unwrap.
-        let (tx_id, state) = current_block_iteration.last_executed_tx.remove_last().unwrap();
+        let changes = current_block_iteration
+            .last_executed_tx
+            .take_current_state()
+            .ok_or(EngineError::NothingToCommit)?;
 
-        let changes = state.ok_or(EngineError::NothingToCommit)?;
         current_block_iteration.fork_db.commit(changes);
-        current_block_iteration.last_executed_tx.push(tx_id, None);
         Ok(())
     }
 
@@ -1298,7 +1306,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         };
 
-        if let Some((_, Some(changes))) = current_block_iteration.last_executed_tx.remove_last() {
+        if let Some(changes) = current_block_iteration
+            .last_executed_tx
+            .take_current_state()
+        {
             self.cache.commit(changes);
         }
         current_block_iteration.last_executed_tx.clear();
