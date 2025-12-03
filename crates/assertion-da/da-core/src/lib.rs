@@ -28,8 +28,10 @@ pub struct DaSubmissionResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DaFetchResponse {
     pub solidity_source: String,
+    /// Creation bytecode for the assertion contract, without constructor args appended.
     pub bytecode: Bytes,
     pub prover_signature: Bytes,
+    /// ABI-encoded constructor args that should be appended to `bytecode` when deploying.
     pub encoded_constructor_args: Bytes,
     pub constructor_abi_signature: String,
 }
