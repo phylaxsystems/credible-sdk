@@ -33,10 +33,17 @@ impl Clone for ForkDbWithArc {
 }
 
 impl ForkDbWithArc {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             storage: Arc::new(HashMap::default()),
         }
+    }
+}
+
+impl Default for ForkDbWithArc {
+    fn default() -> Self {
+        Self::new()
     }
 
     pub fn mark_accounts_isolated(&mut self, addresses: &[Address]) {
@@ -57,10 +64,17 @@ pub struct ForkDbWithoutArc {
 }
 
 impl ForkDbWithoutArc {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             storage: HashMap::default(),
         }
+    }
+}
+
+impl Default for ForkDbWithoutArc {
+    fn default() -> Self {
+        Self::new()
     }
 
     pub fn mark_accounts_isolated(&mut self, addresses: &[Address]) {
@@ -83,7 +97,7 @@ fn create_storage_with_data(
 
     for i in 0..num_addresses {
         let mut addr = [0u8; 20];
-        addr[0] = (i % 256) as u8;
+        addr[0] = u8::try_from(i % 256).unwrap();
 
         let mut map = HashMap::new();
         for j in 0..slots_per_address {
@@ -103,12 +117,12 @@ fn create_storage_with_data(
 }
 
 /// Benchmark: Parallel Distribution Pattern
-/// Simulates distributing ForkDb to multiple assertion executors
+/// Simulates distributing `ForkDb` to multiple assertion executors
 fn benchmark_parallel_distribution(c: &mut Criterion) {
     let mut group = c.benchmark_group("parallel_distribution");
     group.sample_size(10);
 
-    for num_clones in [10, 50, 100].iter() {
+    for num_clones in &[10, 50, 100] {
         // WITH Arc
         group.bench_with_input(
             BenchmarkId::new("with_arc", num_clones),
@@ -154,7 +168,7 @@ fn benchmark_parallel_distribution(c: &mut Criterion) {
 fn benchmark_cow_mutation_single_holder(c: &mut Criterion) {
     let mut group = c.benchmark_group("cow_mutation_single_holder");
 
-    for storage_size in [100, 500, 1000].iter() {
+    for storage_size in &[100, 500, 1000] {
         // WITH Arc
         group.bench_with_input(
             BenchmarkId::new("with_arc", storage_size),
@@ -171,7 +185,7 @@ fn benchmark_cow_mutation_single_holder(c: &mut Criterion) {
                         let addresses: Vec<Address> = (0..10)
                             .map(|i| {
                                 let mut addr = [0u8; 20];
-                                addr[0] = (i % 256) as u8;
+                                addr[0] = u8::try_from(i % 256).unwrap();
                                 addr
                             })
                             .collect();
@@ -197,7 +211,7 @@ fn benchmark_cow_mutation_single_holder(c: &mut Criterion) {
                         let addresses: Vec<Address> = (0..10)
                             .map(|i| {
                                 let mut addr = [0u8; 20];
-                                addr[0] = (i % 256) as u8;
+                                addr[0] = u8::try_from(i % 256).unwrap();
                                 addr
                             })
                             .collect();
@@ -219,7 +233,7 @@ fn benchmark_cow_mutation_shared(c: &mut Criterion) {
     let mut group = c.benchmark_group("cow_mutation_shared");
     group.sample_size(10);
 
-    for storage_size in [100, 500].iter() {
+    for storage_size in &[100, 500] {
         // WITH Arc
         group.bench_with_input(
             BenchmarkId::new("with_arc_shared", storage_size),
@@ -240,7 +254,7 @@ fn benchmark_cow_mutation_shared(c: &mut Criterion) {
                         let addresses: Vec<Address> = (0..10)
                             .map(|i| {
                                 let mut addr = [0u8; 20];
-                                addr[0] = (i % 256) as u8;
+                                addr[0] = u8::try_from(i % 256).unwrap();
                                 addr
                             })
                             .collect();
@@ -270,7 +284,7 @@ fn benchmark_cow_mutation_shared(c: &mut Criterion) {
                         let addresses: Vec<Address> = (0..10)
                             .map(|i| {
                                 let mut addr = [0u8; 20];
-                                addr[0] = (i % 256) as u8;
+                                addr[0] = u8::try_from(i % 256).unwrap();
                                 addr
                             })
                             .collect();
@@ -290,7 +304,7 @@ fn benchmark_realistic_workflow(c: &mut Criterion) {
     let mut group = c.benchmark_group("realistic_workflow");
     group.sample_size(10);
 
-    for num_parallel in [4, 8].iter() {
+    for num_parallel in &[4, 8] {
         // WITH Arc
         group.bench_with_input(
             BenchmarkId::new("with_arc", num_parallel),
@@ -307,7 +321,7 @@ fn benchmark_realistic_workflow(c: &mut Criterion) {
 
                     // Phase 2: Each executor mutates independently
                     for (idx, fork_db) in fork_dbs.iter_mut().enumerate() {
-                        let addr = [idx as u8; 20];
+                        let addr = [u8::try_from(idx).unwrap(); 20];
                         let mut storage = Arc::unwrap_or_clone(Arc::clone(&fork_db.storage));
                         storage.insert(
                             addr,
@@ -338,7 +352,7 @@ fn benchmark_realistic_workflow(c: &mut Criterion) {
 
                     // Phase 2: Each executor mutates
                     for (idx, fork_db) in fork_dbs.iter_mut().enumerate() {
-                        let addr = [idx as u8; 20];
+                        let addr = [u8::try_from(idx).unwrap(); 20];
                         fork_db.storage.insert(
                             addr,
                             ForkStorageMap {
