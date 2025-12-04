@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = "0.1.89"
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

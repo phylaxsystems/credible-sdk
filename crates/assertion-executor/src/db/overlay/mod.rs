@@ -13,6 +13,7 @@
 
 #![allow(clippy::double_parens)]
 
+use super::fork_db::ForkDb;
 use crate::{
     db::{
         Database,
@@ -33,15 +34,17 @@ use alloy_primitives::{
     U256,
 };
 use dashmap::DashMap;
-use metrics::counter;
+use enum_as_inner::EnumAsInner;
+use metrics::{
+    counter,
+    gauge,
+};
 use std::{
     cell::UnsafeCell,
     sync::Arc,
+    time::Duration,
 };
-
-use enum_as_inner::EnumAsInner;
-
-use super::fork_db::ForkDb;
+use tokio::task::JoinHandle;
 
 pub mod active_overlay;
 #[cfg(any(test, feature = "test"))]
@@ -170,7 +173,43 @@ impl<Db> OverlayDb<Db> {
 
     /// Returns the number of entries inside the cache.
     pub fn cache_entry_count(&self) -> u64 {
-        self.overlay.iter().count() as u64
+        self.overlay.len() as u64
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    pub fn spawn_monitoring_thread(&self) -> JoinHandle<()> {
+        const MONITORING_INTERVAL: Duration = Duration::from_secs(10);
+
+        let overlay_db = self.overlay.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(MONITORING_INTERVAL);
+            loop {
+                interval.tick().await;
+
+                // Total count
+                let total = overlay_db.len();
+                gauge!("overlay_db_cache_total_entries").set(total as f64);
+
+                let mut basic_count = 0u64;
+                let mut storage_count = 0u64;
+                let mut code_count = 0u64;
+                let mut block_hash_count = 0u64;
+
+                for entry in overlay_db.iter() {
+                    match entry.key() {
+                        TableKey::Basic(_) => basic_count += 1,
+                        TableKey::Storage(_, _) => storage_count += 1,
+                        TableKey::CodeByHash(_) => code_count += 1,
+                        TableKey::BlockHash(_) => block_hash_count += 1,
+                    }
+                }
+
+                gauge!("overlay_db_cache_basic_entries").set(basic_count as f64);
+                gauge!("overlay_db_cache_storage_entries").set(storage_count as f64);
+                gauge!("overlay_db_cache_code_entries").set(code_count as f64);
+                gauge!("overlay_db_cache_block_hash_entries").set(block_hash_count as f64);
+            }
+        })
     }
 }
 

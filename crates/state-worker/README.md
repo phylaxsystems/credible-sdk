@@ -3,9 +3,12 @@
 The `state-worker` is a component that pulls in state from a blockchain and commits it to
 an external redis database.
 
-The `state-worker` subscribes to the `newHeads` subscription over WS and then for every new block
-it uses `trace_replayBlockTransactions` to get the state changes made in a block which later get collapsed
-into a single block which gets committed to redis.
+The `state-worker` subscribes to the `newHeads` subscription over WS and then for every new block.
+
+- If configured with provider type `parity`: it uses `trace_replayBlockTransactions` to get the state changes made in a
+  block which later get collapsed into a single block which gets committed to redis.
+- If configured with provider type `geth`: it uses `debug_traceByBlockHash` and `debug_traceByBlockNumber` to get the
+  state changes made in a block.
 
 The changes are stored in a `revm::DatabaseRef` compatible format so we can consume the redis cache directly
 in the sidecar by calling into it.
@@ -27,8 +30,8 @@ state:state_root:{number}     → state root
 
 ## Using and configuring the `state-worker`
 
-The state worker requires `--ws-url` for the Ethereum WebSocket endpoint and `--redis-url` for the Redis
-database. Optional flags include:
+The state worker requires `--ws-url` for the Ethereum WebSocket endpoint, `--redis-url` for the Redis
+database, and `--file-to-genesis` to preload the initial state from a file. Optional flags include:
 
 - `--redis-namespace` to change the key namespace (defaults to `state`).
 - `--start-block` to override the resume position derived from `state:meta:latest_block`.

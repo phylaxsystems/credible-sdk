@@ -2,145 +2,192 @@ syntax = "proto3";
 
 package sidecar.transport.v1;
 
+// Block environment for EVM execution context.
+// All numeric types that exceed 64 bits are encoded as big-endian bytes.
 message BlockEnv {
-  uint64 number = 1;                     // block number
-  string beneficiary = 2;                // 20-byte address as hex string
-  uint64 timestamp = 3;                  // seconds since UNIX epoch
-  uint64 gas_limit = 4;                  // block gas limit
-  uint64 basefee = 5;                    // base fee per gas (u64)
-  string difficulty = 6;                 // difficulty as hex or decimal string (U256)
-  optional string prevrandao = 7;        // 32-byte prevrandao as hex string
+  uint64 number = 1;                                      // block number
+  bytes beneficiary = 2;                                  // 20 bytes - coinbase address
+  uint64 timestamp = 3;                                   // seconds since UNIX epoch
+  uint64 gas_limit = 4;                                   // block gas limit
+  uint64 basefee = 5;                                     // base fee per gas (u64)
+  bytes difficulty = 6;                                   // 32 bytes - difficulty as U256 big-endian
+  optional bytes prevrandao = 7;                          // 32 bytes - prevrandao hash
   optional BlobExcessGasAndPrice blob_excess_gas_and_price = 8;
 }
 
+// EIP-4844 blob gas pricing information.
 message BlobExcessGasAndPrice {
-  uint64 excess_blob_gas = 1;            // blob excess gas
-  string blob_gasprice = 2;              // blob gas price as decimal string (u128)
+  uint64 excess_blob_gas = 1;                             // excess blob gas
+  bytes blob_gasprice = 2;                                // 16 bytes - blob gas price as u128 big-endian
 }
 
+// Generic acknowledgment response.
 message BasicAck {
   bool accepted = 1;
   string message = 2;
 }
 
-// Access list item for EIP-2930
+// Access list item for EIP-2930 transactions.
 message AccessListItem {
-  string address = 1;      // 20-byte address as hex string
-  repeated string storage_keys = 2; // 32-byte storage keys as hex strings
+  bytes address = 1;                                      // 20 bytes - account address
+  repeated bytes storage_keys = 2;                        // 32 bytes each - storage slot keys
 }
 
-// Authorization for EIP-7702 (account abstraction)
+// Authorization for EIP-7702 (account abstraction).
 message Authorization {
-  string chain_id = 1;
-  string address = 2;      // 20-byte address as hex string
-  uint64 nonce = 3;
-  string y_parity = 4;     // hex string for y_parity
-  string r = 5;           // hex string for signature r
-  string s = 6;           // hex string for signature s
+  bytes chain_id = 1;                                     // 32 bytes - chain ID as U256 big-endian
+  bytes address = 2;                                      // 20 bytes - authorized address
+  uint64 nonce = 3;                                       // authorization nonce
+  uint32 y_parity = 4;                                    // signature y-parity (0 or 1)
+  bytes r = 5;                                            // 32 bytes - signature r as U256 big-endian
+  bytes s = 6;                                            // 32 bytes - signature s as U256 big-endian
 }
 
-// Transaction environment equivalent to revm's TxEnv
+// Transaction environment equivalent to revm's TxEnv.
+// Uses raw bytes for all hash/address/numeric fields to avoid hex encoding overhead.
 message TransactionEnv {
-  uint32 tx_type = 1;                             // transaction type (0=legacy, 1=eip2930, 2=eip1559, etc.)
-  string caller = 2;                              // 20-byte sender address as hex string
-  uint64 gas_limit = 3;                           // gas limit
-  string gas_price = 4;                           // gas price as decimal string (u128)
-  string kind = 5;                                // target address (empty/0x for create)
-  string value = 6;                               // transaction value as decimal string (U256)
-  string data = 7;                                // transaction data as hex string
-  uint64 nonce = 8;                               // transaction nonce
-  optional uint64 chain_id = 9;                   // chain ID (optional)
-  repeated AccessListItem access_list = 10;       // EIP-2930 access list
-  optional string gas_priority_fee = 11;          // priority fee as decimal string (u128, optional)
-  repeated string blob_hashes = 12;               // EIP-4844 blob versioned hashes as hex strings
-  string max_fee_per_blob_gas = 13;               // max fee per blob gas as decimal string (u128)
-  repeated Authorization authorization_list = 14; // EIP-7702 authorization list
+  uint32 tx_type = 1;                                     // transaction type (0=legacy, 1=eip2930, 2=eip1559, etc.)
+  bytes caller = 2;                                       // 20 bytes - sender address
+  uint64 gas_limit = 3;                                   // gas limit
+  bytes gas_price = 4;                                    // 16 bytes - gas price as u128 big-endian
+  bytes transact_to = 5;                                  // 20 bytes or empty for create
+  bytes value = 6;                                        // 32 bytes - transaction value as U256 big-endian
+  bytes data = 7;                                         // calldata bytes
+  uint64 nonce = 8;                                       // transaction nonce
+  optional uint64 chain_id = 9;                           // chain ID (optional for legacy)
+  repeated AccessListItem access_list = 10;               // EIP-2930 access list
+  optional bytes gas_priority_fee = 11;                   // 16 bytes - priority fee as u128 big-endian (optional)
+  repeated bytes blob_hashes = 12;                        // 32 bytes each - EIP-4844 blob versioned hashes
+  bytes max_fee_per_blob_gas = 13;                        // 16 bytes - max fee per blob gas as u128 big-endian
+  repeated Authorization authorization_list = 14;         // EIP-7702 authorization list
 }
 
+// Unique identifier for a transaction execution within a block iteration.
+message TxExecutionId {
+  uint64 block_number = 1;                                // block number
+  uint64 iteration_id = 2;                                // iteration ID within the block
+  bytes tx_hash = 3;                                      // 32 bytes - transaction hash
+  uint64 index = 4;                                       // transaction index within iteration
+}
+
+// Transaction with execution context.
 message Transaction {
-  TxExecutionId tx_execution_id = 1; // TX execution ID
-  TransactionEnv tx_env = 2;         // transaction env
-  optional string prev_tx_hash = 3;  // Previous TX hash
+  TxExecutionId tx_execution_id = 1;                      // TX execution ID
+  TransactionEnv tx_env = 2;                              // transaction environment
+  optional bytes prev_tx_hash = 3;                        // 32 bytes - previous TX hash for ordering
 }
 
-message SendTransactionsRequest {
-  repeated Transaction transactions = 1;
+// Commit head event - signals the start of a new block building round.
+message CommitHead {
+  optional bytes last_tx_hash = 1;                        // 32 bytes - last TX hash (None means absent)
+  uint64 n_transactions = 2;                              // number of transactions in previous iteration
+  uint64 block_number = 3;                                // block number we're committing
+  uint64 selected_iteration_id = 4;                       // selected iteration ID
 }
 
-message SendTransactionsResponse {
-  uint64 accepted_count = 1; // number of accepted transactions
-  uint64 request_count = 2;  // total transactions received
-  string message = 3;        // info message
+// New iteration event - initializes building for an iteration ID.
+message NewIteration {
+  BlockEnv block_env = 1;                                 // block environment
+  uint64 iteration_id = 2;                                // iteration ID
 }
 
-message ReorgRequest {
-  TxExecutionId tx_execution_id = 1; // TX execution ID
+// Reorg event - signals a chain reorganization.
+message ReorgEvent {
+  TxExecutionId tx_execution_id = 1;                      // TX execution ID to reorg from
 }
 
-message GetTransactionsRequest {
-  repeated TxExecutionId tx_execution_id = 1; // TX execution ID
+// Unified event wrapper for streaming.
+// Replaces the previous SendEvents batch RPC with a streaming approach.
+// Each event includes a event_id for matching with the corresponding StreamAck.
+message Event {
+  uint64 event_id = 1;                                    // client-provided ID for request-response matching
+  oneof event {
+    CommitHead commit_head = 2;
+    NewIteration new_iteration = 3;
+    Transaction transaction = 4;
+    ReorgEvent reorg = 5;
+  }
 }
 
+// Stream acknowledgment - sent for each event processed.
+// The event_id matches the event_id from the corresponding Event.
+message StreamAck {
+  bool success = 1;                                       // whether processing succeeded
+  string message = 2;                                     // info/error message
+  uint64 events_processed = 3;                            // total events processed so far
+  uint64 event_id = 4;                                    // matches the event_id from the Event
+}
+
+// Transaction execution result status.
+// Using an enum instead of strings for type safety and efficiency.
+enum ResultStatus {
+  RESULT_STATUS_UNSPECIFIED = 0;
+  RESULT_STATUS_SUCCESS = 1;                              // transaction executed successfully
+  RESULT_STATUS_REVERTED = 2;                             // transaction reverted
+  RESULT_STATUS_HALTED = 3;                               // transaction halted (out of gas, etc.)
+  RESULT_STATUS_FAILED = 4;                               // validation failed
+  RESULT_STATUS_ASSERTION_FAILED = 5;                     // assertion validation failed
+}
+
+// Transaction execution result.
 message TransactionResult {
-  TxExecutionId tx_execution_id = 1; // TX execution ID
-  string status = 2;                 // success | reverted | halted | assertion_failed | failed
-  uint64 gas_used = 3;               // 0 when unknown
-  string error = 4;                  // empty when none
+  TxExecutionId tx_execution_id = 1;                      // TX execution ID
+  ResultStatus status = 2;                                // execution status
+  uint64 gas_used = 3;                                    // gas consumed (0 when unknown)
+  string error = 4;                                       // error message (empty when none)
 }
 
+// Request to subscribe to transaction results stream.
+message SubscribeResultsRequest {
+  optional uint64 from_block = 1;                         // optional: filter by starting block number
+}
+
+// Request for multiple transaction results (kept for compatibility with unary queries).
+message GetTransactionsRequest {
+  repeated TxExecutionId tx_execution_ids = 1;            // TX execution IDs to query
+}
+
+// Response containing multiple transaction results.
 message GetTransactionsResponse {
-  repeated TransactionResult results = 1;
-  repeated string not_found = 2;
+  repeated TransactionResult results = 1;                 // found results
+  repeated bytes not_found = 2;                           // 32-byte hashes not found
 }
 
+// Request for a single transaction result.
 message GetTransactionRequest {
-  TxExecutionId tx_execution_id = 1; // TX execution ID
+  TxExecutionId tx_execution_id = 1;                      // TX execution ID
 }
 
+// Response for a single transaction result.
 message GetTransactionResponse {
   oneof outcome {
-    TransactionResult result = 1; // single transaction result
-    string not_found = 2;         // original hash when no result available
+    TransactionResult result = 1;                         // transaction result if found
+    bytes not_found = 2;                                  // 32-byte hash if not found
   }
 }
 
-message TxExecutionId {
-  uint64 block_number = 1; // Block number
-  uint64 iteration_id = 2; // Iteration Id
-  string tx_hash = 3;      // 0x-prefixed hash string
-  uint64 index = 4;        // TX index
-}
-
-message CommitHead {
-  string last_tx_hash = 1; // empty string means absent
-  uint64 n_transactions = 2; // n transactions included in the iteration
-  uint64 block_number = 3; // Block number of the iteration we're committing
-  optional uint64 selected_iteration_id = 4; // selected iteration id
-}
-
-// Info about a new iteration, used to initialize building for an iteration id
-message NewIteration {
-  BlockEnv block_env = 1; // Blockenv
-  uint64 iteration_id = 2; // Iteration Id
-}
-
-// Batch of iteration events sent to the sidecar transport.
-message SendEvents {
-  message Event {
-    oneof event {
-      CommitHead commit_head = 1;
-      NewIteration new_iteration = 2;
-      Transaction transaction = 3;
-    }
-  }
-
-  repeated Event events = 1;
-}
-
+// Sidecar transport service.
+//
+// Streaming RPCs:
+// - StreamEvents: Bidirectional stream for sending events (replaces SendEvents, SendTransactions, Reorg)
+// - SubscribeResults: Server stream for receiving transaction results as they complete
+//
+// Unary RPCs (kept for simple queries):
+// - GetTransactions: Query multiple transaction results
+// - GetTransaction: Query a single transaction result
 service SidecarTransport {
-  rpc SendEvents(sidecar.transport.v1.SendEvents) returns (BasicAck);
-  rpc SendTransactions(SendTransactionsRequest) returns (SendTransactionsResponse);
-  rpc Reorg(ReorgRequest) returns (BasicAck);
+  // Bidirectional stream: client sends events, server sends periodic acks.
+  // Events must start with CommitHead before any other event type.
+  // Each ack includes the event_id from the corresponding event for explicit matching.
+  rpc StreamEvents(stream Event) returns (stream StreamAck);
+
+  // Server stream: subscribe to transaction results as they complete.
+  // Results are pushed immediately when transactions finish executing.
+  rpc SubscribeResults(SubscribeResultsRequest) returns (stream TransactionResult);
+
+  // Query multiple transaction results by their execution IDs.
   rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
+
+  // Query a single transaction result by its execution ID.
   rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
 }

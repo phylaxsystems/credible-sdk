@@ -7,21 +7,16 @@
 use crate::{
     critical,
     genesis::GenesisState,
-    state::BlockStateUpdateBuilder,
-};
-use alloy::{
-    eips::BlockId,
-    rpc::types::{
-        BlockNumberOrTag,
-        Header,
+    state::{
+        BlockStateUpdateBuilder,
+        TraceProvider,
     },
 };
+use alloy::rpc::types::Header;
 use alloy_provider::{
     Provider,
     RootProvider,
-    ext::TraceApi,
 };
-use alloy_rpc_types_trace::parity::TraceType;
 use anyhow::{
     Context,
     Result,
@@ -48,6 +43,7 @@ const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker {
     provider: Arc<RootProvider>,
+    trace_provider: Box<dyn TraceProvider>,
     redis: StateWriter,
     genesis_state: Option<GenesisState>,
 }
@@ -56,11 +52,13 @@ impl StateWorker {
     /// Build a worker that shares the provider/Redis client across async tasks.
     pub fn new(
         provider: Arc<RootProvider>,
+        trace_provider: Box<dyn TraceProvider>,
         redis: StateWriter,
         genesis_state: Option<GenesisState>,
     ) -> Self {
         Self {
             provider,
+            trace_provider,
             redis,
             genesis_state,
         }
@@ -193,39 +191,15 @@ impl StateWorker {
     async fn process_block(&mut self, block_number: u64) -> Result<()> {
         info!(block_number, "processing block");
 
-        let block_id = BlockNumberOrTag::Number(block_number);
-        let block = self
-            .provider
-            .get_block_by_number(block_id)
-            .await?
-            .with_context(|| format!("block {block_number} not found"))?;
-        let block_hash = block.header.hash;
-        let state_root = block.header.state_root;
-
-        // Use the standardized pre-state tracer options so we receive per-tx
-        // diffs matching the sidecar's expectations.
-        let traces = match self
-            .provider
-            .trace_replay_block_transactions(BlockId::Number(block_number.into()))
-            .trace_type(TraceType::StateDiff)
-            .await
-        {
-            Ok(traces) => traces,
+        let mut update = match self.trace_provider.fetch_block_state(block_number).await {
+            Ok(update) => update,
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to trace block");
                 return Err(anyhow!("failed to trace block {block_number}"));
             }
         };
 
-        let mut update = BlockStateUpdateBuilder::into_block_state_update_from_traces(
-            block_number,
-            block_hash,
-            state_root,
-            traces,
-        );
-
         if block_number == 0 && update.accounts.is_empty() {
-            // Check if block 0 already exists in Redis to avoid reapplying genesis
             let already_exists = self
                 .redis
                 .latest_block_number()
@@ -242,10 +216,10 @@ impl StateWorker {
                             warn!("genesis file contained no accounts; skipping hydration");
                         } else {
                             info!("hydrating genesis state from genesis file");
-                            update = BlockStateUpdateBuilder::into_block_state_from_accounts(
+                            update = BlockStateUpdateBuilder::from_accounts(
                                 block_number,
-                                block_hash,
-                                state_root,
+                                update.block_hash,
+                                update.state_root,
                                 accounts,
                             );
                         }

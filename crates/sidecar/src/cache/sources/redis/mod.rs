@@ -150,7 +150,9 @@ impl DatabaseRef for RedisSource {
             balance: account.balance,
             nonce: account.nonce,
             code_hash: account.code_hash,
-            code: account.code.map(|bytes| Bytecode::new_raw(bytes.into())),
+            // `code_hash` will be used to fetch it from the database, if code needs to be
+            // loaded from inside `revm`.
+            code: None,
         };
         Ok(Some(account_info))
     }
@@ -191,7 +193,7 @@ impl DatabaseRef for RedisSource {
             .backend
             .get_storage(address.into(), slot, target_block)
             .map_err(Self::Error::RedisStorage)?
-            .ok_or(Self::Error::StorageNotFound)?;
+            .unwrap_or_default();
         Ok(value)
     }
 }

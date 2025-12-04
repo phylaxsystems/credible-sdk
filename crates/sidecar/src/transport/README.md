@@ -9,7 +9,7 @@ The transport system consists of:
 
 - **Transport Trait**: Defines the interface that all transports must implement
 - **HTTP Transport**: JSON-RPC 2.0 over HTTP (default)
-- **gRPC Transport**: Protocol Buffers over gRPC
+- **gRPC Transport**: Protocol Buffers over gRPC with streaming support
 - **Message Queue**: Internal channel for communication with the core engine
 - **Decoder**: Converts transport-specific messages to internal queue format
 
@@ -24,17 +24,74 @@ implementation details.
 
 ### gRPC Transport
 
-The gRPC transport provides a high-performance binary protocol for communication.
+The gRPC transport provides a high-performance binary protocol with bidirectional streaming support.
 
 **[See gRPC Transport Documentation](grpc/README.md)** for detailed API reference and implementation details.
 
+#### Streaming Architecture
+
+The gRPC transport uses a streaming-first architecture for optimal performance:
+
+- **`StreamEvents`**: Bidirectional stream for sending events (commits, iterations, transactions, reorgs). The client
+  sends events and receives acknowledgments for each event processed. Each event includes a `event_id` that is echoed
+  back in the corresponding `StreamAck` for explicit request-response matching.
+- **`SubscribeResults`**: Server-push stream for receiving transaction results as they complete. Results are pushed
+  immediately when transactions finish executing.
+
+#### Event Types
+
+The `StreamEvents` RPC accepts the following event types:
+
+| Event          | Description                                                                            |
+|----------------|----------------------------------------------------------------------------------------|
+| `CommitHead`   | Signals the start of a new block building round. Must be sent before any other events. |
+| `NewIteration` | Initializes building for a new iteration ID with block environment.                    |
+| `Transaction`  | Submits a transaction for execution.                                                   |
+| `ReorgEvent`   | Signals a chain reorganization.                                                        |
+
+#### Event Structure
+
+Each event sent via `StreamEvents` is wrapped in an `Event` message containing:
+
+- `event_id`: A client-provided `uint64` identifier for request-response matching
+- One of the event types above (`commit_head`, `new_iteration`, `transaction`, or `reorg`)
+
+#### Stream Acknowledgments
+
+Each event processed by the server generates a `StreamAck` response containing:
+
+| Field              | Type     | Description                                            |
+|--------------------|----------|--------------------------------------------------------|
+| `success`          | `bool`   | Whether the event was processed successfully           |
+| `message`          | `string` | Error message (if `success` is false) or info message  |
+| `events_processed` | `uint64` | Total number of events processed so far in this stream |
+| `event_id`         | `uint64` | The `event_id` from the corresponding `Event`          |
+
+The `event_id` allows clients to match acknowledgments to their original requests, which is especially useful when
+sending events concurrently or when network ordering is not guaranteed.
+
+#### Result Subscription
+
+The `SubscribeResults` RPC provides real-time transaction results:
+
+- Results are pushed immediately as transactions complete execution
+- Optional `from_block` filter to receive only results from a specific block number onwards
+- Multiple subscribers supported—each receives all results independently
+- Handles slow subscribers gracefully with configurable buffer (lagged subscribers receive a warning)
+
 ## Choosing a Transport
 
-- **HTTP/JSON-RPC**: Best for debugging, human readability, and simple integrations
-- **gRPC**: Best for high-performance, production deployments with tight latency requirements
-- **Mock**: For testing purposes only
+| Use Case                    | Recommended Transport |
+|-----------------------------|-----------------------|
+| Debugging and development   | HTTP/JSON-RPC         |
+| Human-readable requests     | HTTP/JSON-RPC         |
+| Simple integrations         | HTTP/JSON-RPC         |
+| High-performance production | gRPC                  |
+| Real-time result streaming  | gRPC                  |
+| Tight latency requirements  | gRPC                  |
+| Testing                     | Mock                  |
 
-Both transports provide identical functionality and semantics.
+Both transports provide identical functionality and semantics for core operations.
 
 ## Core API Overview
 
@@ -42,9 +99,9 @@ Both transports implement the same core API methods:
 
 ### Transaction Management
 
-- **`sendTransactions`**: Submit batch of transactions for execution
-- **`getTransactions`**: Retrieve transaction results by their hashes
-- **`getTransaction`**: Retrieve a single transaction result by hash
+- **`sendTransactions`**: Submit transactions for execution
+- **`getTransactions`**: Retrieve transaction results by their execution IDs
+- **`getTransaction`**: Retrieve a single transaction result
 - **`reorg`**: Handle chain reorganizations
 
 ### State Synchronization
@@ -80,19 +137,32 @@ finalized.
 
 ### Transaction Structure
 
-When sending transactions via `sendTransactions`, each transaction consists of:
+When sending transactions via `sendTransactions` or `StreamEvents`, each transaction consists of:
 
 - `tx_execution_id`: The execution identifier (TxExecutionId)
 - `tx_env`: The transaction environment data (TxEnv)
 - `prev_tx_hash`: The hash of the previous transaction in the batch, or null for the first transaction
 
-## Long-Polling Semantics
+## Long-Polling vs Streaming Semantics
+
+### HTTP Transport (Long-Polling)
 
 The `getTransactions` and `getTransaction` methods use long-polling:
 
 - Requests will block until results are available
 - Configure appropriate timeouts on your client
 - For transactions not yet received, the response includes them in the `not_found` array
+
+### gRPC Transport (Streaming)
+
+The `SubscribeResults` RPC provides real-time streaming:
+
+- Results are pushed immediately as they become available
+- No polling required—server pushes to client
+- Supports filtering by `from_block` to skip historical results
+- Connection stays open for continuous result delivery
+
+The `GetTransactions` and `GetTransaction` unary RPCs are also available for one-off queries.
 
 ## Common Components
 
@@ -137,9 +207,7 @@ creates an `RpcRequestDuration` guard when the request starts and the guard reco
 | HTTP      | `sidecar_rpc_duration_getTransactions`      | JSON-RPC `getTransactions` long-polling calls                            |
 | HTTP      | `sidecar_rpc_duration_getTransaction`       | JSON-RPC `getTransaction` calls                                          |
 | Shared    | `sidecar_get_transaction_wait_duration`     | Time spent waiting for a transaction to be received while getTransaction |
-| gRPC      | `sidecar_rpc_duration_SendEvents`           | `SendEvents` streaming batches                                           |
-| gRPC      | `sidecar_rpc_duration_SendTransactions`     | `SendTransactions` batches                                               |
-| gRPC      | `sidecar_rpc_duration_Reorg`                | `Reorg` notifications                                                    |
+| gRPC      | `sidecar_rpc_duration_StreamEvents`         | `StreamEvents` bidirectional streaming                                   |
 | gRPC      | `sidecar_rpc_duration_GetTransactions`      | `GetTransactions` RPC                                                    |
 | gRPC      | `sidecar_rpc_duration_GetTransaction`       | `GetTransaction` RPC                                                     |
 | Shared    | `sidecar_fetch_transaction_result_duration` | Fetch + serialization latency for transaction results                    |
@@ -359,6 +427,17 @@ If `tx_type` is omitted, the system automatically derives it based on fields pre
 - **Hashes**: 32-byte hex strings with optional `0x` prefix
 - **Data**: Hex strings with optional `0x` prefix
 
+### gRPC Binary Encoding
+
+For gRPC transport, numeric values are encoded as big-endian bytes for efficiency:
+
+- **Addresses**: 20 bytes raw
+- **Hashes**: 32 bytes raw
+- **U128 values**: 16 bytes big-endian
+- **U256 values**: 32 bytes big-endian
+
+This eliminates hex encoding/decoding overhead for high-throughput scenarios.
+
 ## Configuration
 
 Transport configuration can be set via command-line arguments or environment variables. See [
@@ -380,7 +459,12 @@ Transport configuration can be set via command-line arguments or environment var
 
 ### gRPC Transport Configuration
 
-The gRPC transport is currently in development. Configuration options will be added as the implementation progresses.
+- **Bind Address**:
+    - **CLI Flag**: `--transport.bind-addr <address:port>`
+    - **Environment Variable**: `TRANSPORT_BIND_ADDR`
+    - **Default**: `0.0.0.0:50051`
+
+The gRPC transport uses optimized HTTP/2 settings for blockchain workloads.
 
 ### Health Endpoint Server
 

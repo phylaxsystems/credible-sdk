@@ -77,8 +77,21 @@ pub async fn accept_bytecode_assertion(
         ));
     };
 
+    let clean_code = match sanitize_single_hex_prefix(code).map_err(|err| {
+        warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, error = ?err, "Invalid params: multiple 0x prefixes found in bytecode");
+        rpc_error_with_request_id(
+            json_rpc,
+            400,
+            "Failed to decode hex",
+            request_id,
+        )
+    }) {
+        Ok(code) => code,
+        Err(err_response) => return Ok(err_response),
+    };
+
     // Validate hex inputs
-    let Ok(bytecode) = alloy::hex::decode(code.trim_start_matches("0x")) else {
+    let Ok(bytecode) = alloy::hex::decode(clean_code) else {
         warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, "Failed to decode hex bytecode");
         return Ok(rpc_error_with_request_id(
             json_rpc,
@@ -232,7 +245,7 @@ pub async fn accept_solidity_assertion(
         da_submission.assertion_contract_name.clone(),
         da_submission.compiler_version.clone(),
         da_submission.solidity_source,
-        deployment_data,
+        bytecode,
         prover_signature,
         da_submission.constructor_abi_signature,
         encoded_constructor_args,
@@ -284,8 +297,21 @@ pub async fn retreive_assertion(
         ));
     };
 
+    let clean_id = match sanitize_single_hex_prefix(id).map_err(|err| {
+        warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, id = id, error = ?err, "Invalid params: multiple 0x prefixes found in id");
+        rpc_error_with_request_id(
+            json_rpc,
+            -32605,
+            "Internal Error: Failed to decode hex of id",
+            request_id,
+        )
+    }) {
+        Ok(id) => id,
+        Err(err_response) => return Ok(err_response),
+    };
+
     // Validate hex input
-    let id: B256 = if let Ok(id) = id.trim_start_matches("0x").parse() {
+    let id: B256 = if let Ok(id) = clean_id.parse() {
         id
     } else {
         warn!(target: "json_rpc", method = "da_get_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, id = id, "Failed to decode hex ID");
@@ -371,6 +397,18 @@ async fn process_add_assertion(
     }
 }
 
+fn sanitize_single_hex_prefix(input: &str) -> Result<&str> {
+    if let Some(stripped) = input.strip_prefix("0x") {
+        if stripped.starts_with("0x") {
+            Err(anyhow::anyhow!("Multiple 0x prefixes found"))
+        } else {
+            Ok(stripped)
+        }
+    } else {
+        Ok(input)
+    }
+}
+
 #[instrument(
     skip_all,
     target = "assertion_submission::process_get_assertion",
@@ -417,5 +455,26 @@ async fn process_get_assertion(
                 &request_id,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_single_hex_prefix;
+
+    #[test]
+    fn allows_single_prefix() {
+        assert_eq!(sanitize_single_hex_prefix("0xabc123").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn rejects_multiple_prefixes() {
+        assert!(sanitize_single_hex_prefix("0x0xabc123").is_err());
+        assert!(sanitize_single_hex_prefix("0x0x0x").is_err());
+    }
+
+    #[test]
+    fn allows_without_prefix() {
+        assert_eq!(sanitize_single_hex_prefix("abc123").unwrap(), "abc123");
     }
 }

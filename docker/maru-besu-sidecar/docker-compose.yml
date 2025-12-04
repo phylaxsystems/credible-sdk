@@ -10,7 +10,7 @@ services:
       - ./config/coordinator/coordinator-config-v2.toml:/coordinator/coordinator-config-v2.toml:ro
 
   sequencer:
-    image: ghcr.io/phylaxsystems/linea-monorepo/linea-besu-package:b3040a0806e3f97b06c94fca1908837b513e3365
+    image: ghcr.io/phylaxsystems/linea-monorepo/linea-besu-package:96de27998e34ff7ed0b71007ed37a67f437740aa
     container_name: sequencer
     hostname: sequencer
     depends_on:
@@ -33,21 +33,19 @@ services:
       LOG4J_CONFIGURATION_FILE: /var/lib/besu/log4j.xml
     entrypoint: besu-untuned
     command:
-      - --config-file=/var/lib/besu/sequencer-credible-grpc.config.toml
+      - --config-file=/var/lib/besu/sequencer.config.toml
       - --node-private-key-file=/var/lib/besu/key
-      - --plugin-linea-l1-polling-interval=PT12S
-      - --plugin-linea-l1-smart-contract-address=0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9
-      - --plugin-linea-l1-rpc-endpoint=http://l1-el-node:8545
-      - --plugin-linea-rejected-tx-endpoint=http://transaction-exclusion-api:8080
       - --plugin-linea-node-type=SEQUENCER
     volumes:
-      - ./config/linea-besu-sequencer/sequencer-credible-grpc.config.toml:/var/lib/besu/sequencer-credible-grpc.config.toml:ro
+      - ./config/linea-besu-sequencer/sequencer-credible-grpc.config.toml:/var/lib/besu/sequencer.config.toml:ro
       - ./config/linea-besu-sequencer/deny-list.txt:/var/lib/besu/deny-list.txt:ro
       - ./config/linea-besu-sequencer/key:/var/lib/besu/key:ro
       - ./config/linea-besu-sequencer/log4j.xml:/var/lib/besu/log4j.xml:ro
       - ./config/linea-besu-sequencer/tls-files:/var/lib/besu/tls-files/
       - ./config/common/traces-limits-limitless.toml:/var/lib/besu/traces-limits.toml:ro
       - ./config/l2-genesis-initialization:/initialization/:ro
+    extra_hosts:
+      - "credible-sidecar:host-gateway"
     networks:
       linea:
         ipv4_address: 11.11.11.101
@@ -73,7 +71,7 @@ services:
         ipv4_address: 11.11.11.210
 
   assertion-da:
-    image: ghcr.io/phylaxsystems/credible-sdk/assertion-da-dev:main
+    image: ghcr.io/phylaxsystems/credible-sdk/assertion-da-dev:sha-01b3374
     container_name: assertion-da
     hostname: assertion-da
     depends_on:
@@ -107,7 +105,7 @@ services:
         ipv4_address: 11.11.11.206
 
   credible-sidecar:
-    image: ghcr.io/phylaxsystems/credible-sdk/sidecar-linea:sha-e7c930b
+    image: ghcr.io/phylaxsystems/credible-sdk/sidecar-linea:main
     container_name: credible-sidecar
     hostname: credible-sidecar
     depends_on:
@@ -118,16 +116,7 @@ services:
       otel-collector:
         condition: service_started
     command:
-      - "--transport.protocol=grpc"
-      - "--transport.bind-addr=0.0.0.0:50051"
-      - "--chain.spec-id=Cancun"
-      - "--chain.chain-id=1337"
-      - "--credible.assertion-da-rpc-url=http://assertion-da:5001"
-      - "--credible.assertion-gas-limit=3000000"
-      - "--credible.block-tag=latest"
-      - "--credible.indexer-rpc-url=ws://sequencer:8546"
-      - "--state.sequencer-url=http://sequencer:8545"
-      - "--state.besu-client-ws-url=ws://sequencer:8546"
+      - "--config-file-path=/etc/credible-sidecar/config.json"
     environment:
       - RUST_LOG=debug
       - OTEL_LEVEL=debug
@@ -143,6 +132,7 @@ services:
     restart: unless-stopped
     volumes:
       - sidecar-store:/var/lib/credible
+      - ./config/credible-sidecar/grpc.container.config.json:/etc/credible-sidecar/config.json:ro
     networks:
       linea:
         ipv4_address: 11.11.11.205

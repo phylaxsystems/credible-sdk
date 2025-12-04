@@ -10,6 +10,7 @@ use crate::{
         FixedBytes,
         JournalEntry,
     },
+    store::AssertionStore,
 };
 use revm::{
     Database,
@@ -19,6 +20,7 @@ use revm::{
         journaled_state::JournalCheckpoint,
     },
     interpreter::{
+        CallInput,
         CallInputs,
         CallOutcome,
         CreateInputs,
@@ -75,9 +77,11 @@ pub enum CallTracerError {
     PendingPostCallWriteNotFound { depth: usize },
     #[error("Post call checkpoint not initialized as None for the index {index}")]
     PostCallCheckpointNotInitialized { index: usize },
+    #[error("Error trying to read store sled db!")]
+    SledError,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct CallTracer {
     // Not public to prohibit inserting CallInputs with CallInput::SharedBuffer
     // If call_inputs with CallInput::SharedBuffer are inserted, then accessing the data without the previous context will be problematic
@@ -88,6 +92,14 @@ pub struct CallTracer {
     // you want to read call_inputs from the tracer.
     // Because of this, we coerce the bytes at the time of recording the call.
     call_inputs: Vec<CallInputs>,
+    /// Assertion store, we limit call input recording to AAs when present.
+    ///
+    /// If set to `None`, the `CallTracer` will record data for all addresses
+    assertion_store: Option<AssertionStore>,
+    /// Cache adopter lookups to avoid repeated sled hits per address
+    adopter_cache: HashMap<Address, bool>,
+    // Records assertion triggers
+    // triggers: HashMap<Address, HashSet<TriggerType>>,
     pub journal: JournalInner<JournalEntry>,
     pub pre_call_checkpoints: Vec<JournalCheckpoint>,
     pub post_call_checkpoints: Vec<Option<JournalCheckpoint>>,
@@ -100,12 +112,14 @@ impl Default for CallTracer {
     fn default() -> Self {
         Self {
             call_inputs: Vec::new(),
+            assertion_store: None,
             journal: JournalInner::new(),
             pre_call_checkpoints: Vec::new(),
             post_call_checkpoints: Vec::new(),
             pending_post_call_writes: HashMap::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
+            adopter_cache: HashMap::new(),
         }
     }
 }
@@ -117,15 +131,17 @@ pub struct CallInputsWithId<'a> {
 }
 
 impl CallTracer {
-    pub fn new() -> Self {
+    pub fn new(assertion_store: AssertionStore) -> Self {
         Self {
             call_inputs: Vec::new(),
+            assertion_store: Some(assertion_store),
             journal: JournalInner::new(),
             pre_call_checkpoints: Vec::new(),
             post_call_checkpoints: Vec::new(),
             pending_post_call_writes: HashMap::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
+            adopter_cache: HashMap::new(),
         }
     }
 
@@ -146,8 +162,36 @@ impl CallTracer {
         };
 
         let mut inputs = inputs;
-        // Coerce the bytes at the time of recording the call, in case they are of the SharedBuffer variant
-        inputs.input = revm::interpreter::CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+
+        // Check if the target is an AA when a store is present. Otherwise record calldata.
+        // We have a cache to reduce i/o to sled for accessing the same AA multiple times
+        // Note: sled does have an in memory cache, but we still have a mutex and associated contention.
+        let is_aa = match &self.assertion_store {
+            Some(store) => {
+                if let Some(is_adopter) = self.adopter_cache.get(&inputs.target_address) {
+                    *is_adopter
+                } else if let Ok(is_adopter) = store.has_assertions(inputs.target_address) {
+                    self.adopter_cache.insert(inputs.target_address, is_adopter);
+                    is_adopter
+                } else {
+                    error!(target: "assertion-executor::call_tracer", "Tried to access store, but failed!");
+                    self.result = Err(CallTracerError::SledError);
+                    return;
+                }
+            }
+            None => true,
+        };
+
+        // In case where we are hit with a non-AA call, we want to ignore its calldata,
+        // but we still have to store the rest of it to preserve the journal depth.
+        // unwrap
+        if is_aa {
+            // Coerce the bytes at the time of recording the call,
+            // in case they are of the SharedBuffer variant
+            inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+        } else {
+            inputs.input = CallInput::Bytes(Bytes::default());
+        }
 
         let index = self.call_inputs.len();
         let depth = journal_inner.depth;
@@ -219,7 +263,7 @@ impl CallTracer {
             .get(&TargetAndSelector { target, selector })
         {
             Some(indices) => {
-                let mut call_inputs = Vec::new();
+                let mut call_inputs = Vec::with_capacity(indices.len());
                 for index in indices {
                     call_inputs.push(CallInputsWithId {
                         call_input: &self.call_inputs[*index],
@@ -319,7 +363,9 @@ mod test {
             build_optimism_evm,
             evm_env,
         },
+        inspectors::TriggerRecorder,
         primitives::{
+            AssertionContract,
             BlockEnv,
             Bytecode,
             SpecId,
@@ -329,6 +375,7 @@ mod test {
             address,
             bytes,
         },
+        store::AssertionState,
         test_utils::deployed_bytecode,
     };
     use op_revm::OpTransaction;
@@ -552,7 +599,7 @@ mod test {
             U256,
         };
 
-        let mut tracer = CallTracer::new();
+        let mut tracer = CallTracer::default();
         let addr1 = address!("1111111111111111111111111111111111111111");
         let addr2 = address!("2222222222222222222222222222222222222222");
         let addr3 = address!("3333333333333333333333333333333333333333");
@@ -645,7 +692,7 @@ mod test {
 
     #[test]
     fn test_triggers_no_journal_state() {
-        let mut tracer = CallTracer::new();
+        let mut tracer = CallTracer::default();
         let addr = address!("1111111111111111111111111111111111111111");
         let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
         let input_bytes: Bytes = selector.into();
@@ -683,5 +730,84 @@ mod test {
             trigger_selector: selector
         }));
         assert_eq!(triggers[&addr].len(), 1);
+    }
+
+    #[test]
+    fn call_tracer_records_calldata_only_for_adopters() {
+        let adopter = address!("1111111111111111111111111111111111111111");
+        let non_adopter = address!("2222222222222222222222222222222222222222");
+        let adopter_selector = FixedBytes::<4>::from([0xAA, 0xBB, 0xCC, 0xDD]);
+        let non_adopter_selector = FixedBytes::<4>::from([0x11, 0x22, 0x33, 0x44]);
+
+        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        assertion_store
+            .insert(
+                adopter,
+                AssertionState {
+                    activation_block: 0,
+                    inactivation_block: None,
+                    assertion_contract: AssertionContract::default(),
+                    trigger_recorder: TriggerRecorder::default(),
+                },
+            )
+            .unwrap();
+
+        let mut tracer = CallTracer::new(assertion_store);
+
+        let adopter_input_bytes: Bytes = adopter_selector.into();
+        tracer.record_call_start(
+            CallInputs {
+                input: CallInput::Bytes(adopter_input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: adopter,
+                target_address: adopter,
+                caller: adopter,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+                is_eof: false,
+            },
+            &adopter_input_bytes,
+            &mut JournalInner::new(),
+        );
+        tracer.result.clone().unwrap();
+        tracer.record_call_end(&mut JournalInner::new());
+        tracer.result.clone().unwrap();
+
+        let non_adopter_input_bytes: Bytes = non_adopter_selector.into();
+        tracer.record_call_start(
+            CallInputs {
+                input: CallInput::Bytes(non_adopter_input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: non_adopter,
+                target_address: non_adopter,
+                caller: non_adopter,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+                is_eof: false,
+            },
+            &non_adopter_input_bytes,
+            &mut JournalInner::new(),
+        );
+        tracer.result.clone().unwrap();
+        tracer.record_call_end(&mut JournalInner::new());
+        tracer.result.clone().unwrap();
+
+        let adopter_calls = tracer.get_call_inputs(adopter, adopter_selector);
+        assert_eq!(adopter_calls.len(), 1);
+        match &adopter_calls[0].call_input.input {
+            CallInput::Bytes(bytes) => assert_eq!(&bytes[..], &adopter_input_bytes[..]),
+            CallInput::SharedBuffer(_) => panic!("unexpected shared buffer for adopter call"),
+        }
+
+        let non_adopter_calls = tracer.get_call_inputs(non_adopter, non_adopter_selector);
+        assert_eq!(non_adopter_calls.len(), 1);
+        match &non_adopter_calls[0].call_input.input {
+            CallInput::Bytes(bytes) => assert!(bytes.is_empty()),
+            CallInput::SharedBuffer(_) => panic!("unexpected shared buffer for non-adopter call"),
+        }
     }
 }

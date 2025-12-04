@@ -543,82 +543,78 @@ async fn test_large_scale_rotation() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_storage_slot_zeroing() -> Result<()> {
+async fn test_zero_storage_values_are_deleted() -> Result<()> {
     let container = Redis::default().start().await?;
     let host = container.get_host().await?.to_string();
     let port = container.get_host_port_ipv4(6379).await?;
 
     wait_for_redis(&host, port).await?;
 
-    let namespace = "storage_zero".to_string();
+    let namespace = "zero_storage_deletion".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
-    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
 
-    let address = Address::repeat_byte(0xf1);
+    let writer = StateWriter::new(
+        &format!("redis://{host}:{port}"),
+        namespace.clone(),
+        config.clone(),
+    )?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
-    // Block 0: Set storage slot 1 = 100
-    let storage_0 = HashMap::from([(u256_from_u64(1), u256_from_u64(100))]);
-    let update0 = create_test_update(
-        0,
-        B256::repeat_byte(0xBB),
-        address,
-        1000,
-        0,
-        storage_0,
-        None,
-    );
+    let address = Address::repeat_byte(0xaa);
+
+    // Block 0: Set storage slots 1, 2, 3 to non-zero values
+    let storage_0 = HashMap::from([
+        (u256_from_u64(1), u256_from_u64(100)),
+        (u256_from_u64(2), u256_from_u64(200)),
+        (u256_from_u64(3), u256_from_u64(300)),
+    ]);
+    let update0 = create_test_update(0, B256::ZERO, address, 1000, 0, storage_0, None);
     writer.commit_block(update0)?;
 
-    // Block 1: Set storage slot 1 = 0 (deleted/zeroed)
-    let storage_1 = HashMap::from([(u256_from_u64(1), U256::ZERO)]);
-    let update1 = create_test_update(
-        1,
-        B256::repeat_byte(0xBB),
-        address,
-        1000,
-        1,
-        storage_1,
-        None,
-    );
+    // Verify all slots exist
+    let all_storage = reader.get_all_storage(address.into(), 0)?;
+    assert_eq!(all_storage.len(), 3);
+
+    // Block 1: Set slot 2 to zero (should be deleted)
+    let storage_1 = HashMap::from([(u256_from_u64(2), U256::ZERO)]);
+    let update1 = create_test_update(1, B256::ZERO, address, 1000, 1, storage_1, None);
     writer.commit_block(update1)?;
 
-    // Block 2: Different account (doesn't touch storage)
-    let other_addr = Address::repeat_byte(0xf2);
-    let update2 = create_test_update(
+    // Verify slot 2 is deleted from Redis
+    let all_storage = reader.get_all_storage(address.into(), 1)?;
+    assert_eq!(
+        all_storage.len(),
         2,
-        B256::repeat_byte(0xBB),
-        other_addr,
-        2000,
-        2,
-        HashMap::new(),
-        None,
+        "Slot 2 should be deleted when set to zero"
     );
+    assert!(
+        all_storage.contains_key(&hash_slot(u256_from_u64(1))),
+        "Slot 1 should still exist"
+    );
+    assert!(
+        !all_storage.contains_key(&hash_slot(u256_from_u64(2))),
+        "Slot 2 should be deleted"
+    );
+    assert!(
+        all_storage.contains_key(&hash_slot(u256_from_u64(3))),
+        "Slot 3 should still exist"
+    );
+
+    // Verify individual slot read returns None for deleted slot
+    let slot_2_value = reader.get_storage(address.into(), hash_slot(u256_from_u64(2)), 1)?;
+    assert_eq!(slot_2_value, None, "Deleted slot should return None");
+
+    // Block 2: Set slots 1 and 3 to zero
+    let storage_2 = HashMap::from([
+        (u256_from_u64(1), U256::ZERO),
+        (u256_from_u64(3), U256::ZERO),
+    ]);
+    let update2 = create_test_update(2, B256::ZERO, address, 1000, 2, storage_2, None);
     writer.commit_block(update2)?;
 
-    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
-    let mut conn = client.get_connection()?;
-
-    // Block 3: Overwrites namespace 0
-    let third_addr = Address::repeat_byte(0xf3);
-    let update3 = create_test_update(
-        3,
-        B256::repeat_byte(0xBB),
-        third_addr,
-        3000,
-        3,
-        HashMap::new(),
-        None,
-    );
-    writer.commit_block(update3)?;
-
-    // Storage slot 1 should be ZERO (not 100)
-    verify_storage(
-        &mut conn,
-        &format!("{namespace}:0"),
-        address,
-        u256_from_u64(1),
-        U256::ZERO,
-    )?;
+    // Verify all slots are deleted
+    let all_storage = reader.get_all_storage(address.into(), 2)?;
+    assert_eq!(all_storage.len(), 0, "All slots should be deleted");
 
     Ok(())
 }
@@ -660,7 +656,7 @@ async fn test_roundtrip_basic_account_read() -> Result<()> {
     writer.commit_block(update)?;
 
     // Read back
-    let account = reader.get_account(address.into(), 0)?;
+    let account = reader.get_full_account(address.into(), 0)?;
     assert!(account.is_some());
 
     let account = account.unwrap();
@@ -712,7 +708,7 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
     writer.commit_block(update)?;
 
     // Read back full account
-    let account = reader.get_account(address.into(), 0)?;
+    let account = reader.get_full_account(address.into(), 0)?;
     assert!(account.is_some());
 
     let account = account.unwrap();
@@ -776,7 +772,6 @@ async fn test_roundtrip_account_with_code() -> Result<()> {
     assert!(account.is_some());
 
     let account = account.unwrap();
-    assert_eq!(account.code, Some(code.clone()));
     assert_eq!(account.code_hash, keccak256(&code));
 
     // Test direct code read
@@ -1057,15 +1052,16 @@ async fn test_roundtrip_storage_evolution() -> Result<()> {
 
     // Read block 3 and verify all storage
     let all_storage = reader.get_all_storage(address.into(), 3)?;
-    assert_eq!(all_storage.len(), 5);
+    assert_eq!(
+        all_storage.len(),
+        4,
+        "Slot 2 should be deleted when set to zero"
+    );
     assert_eq!(
         all_storage.get(&hash_slot(u256_from_u64(1))),
         Some(&u256_from_u64(150).into())
     );
-    assert_eq!(
-        all_storage.get(&hash_slot(u256_from_u64(2))),
-        Some(&U256::ZERO.into())
-    );
+    assert_eq!(all_storage.get(&hash_slot(u256_from_u64(2))), None,);
     assert_eq!(
         all_storage.get(&hash_slot(u256_from_u64(3))),
         Some(&u256_from_u64(350).into())

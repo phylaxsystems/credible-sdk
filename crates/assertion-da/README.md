@@ -222,6 +222,8 @@ Parameters:
 }
 ```
 
+The `bytecode` value contains the creation bytecode only; append `encoded_constructor_args` to build the full deployment payload.
+
 ### Error Codes
 
 The API uses the following error codes:

@@ -278,6 +278,35 @@ impl AssertionStore {
         Ok(assertions)
     }
 
+    /// Returns `true` if the address has any active assertions associated with it.
+    /// Used to check if a account is an assertion adopter.
+    #[tracing::instrument(
+        skip_all,
+        name = "read_adopter_from_db",
+        target = "assertion_store::has_assertions",
+        fields(assertion_adopter=?assertion_adopter),
+        level = "trace"
+    )]
+    pub fn has_assertions(&self, assertion_adopter: Address) -> Result<bool, AssertionStoreError> {
+        match self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(assertion_adopter)
+        {
+            Ok(has_assertions) => Ok(has_assertions),
+            Err(err) => {
+                error!(
+                    target: "assertion_store::has_assertions",
+                    ?err,
+                    ?assertion_adopter,
+                    "Failed to check if assertion adopter has active assertions"
+                );
+                Err(AssertionStoreError::SledError(err))
+            }
+        }
+    }
+
     /// Reads the assertions for the given assertion adopter at the given block.
     /// Returns the assertions that are active at the given block.
     /// An assertion is considered active at a block if the `activation_block` is less than or equal
@@ -591,6 +620,27 @@ mod tests {
             assertion_contract_id: id,
             inactivation_block: inactive_at,
         }
+    }
+
+    #[test]
+    fn test_has_assertions_false_when_absent() -> Result<(), AssertionStoreError> {
+        let store = AssertionStore::new_ephemeral()?;
+        let aa = Address::random();
+
+        assert!(!store.has_assertions(aa).unwrap());
+        Ok(())
+    }
+
+    #[test]
+    fn test_has_assertions_true_when_present() -> Result<(), AssertionStoreError> {
+        let store = AssertionStore::new_ephemeral()?;
+        let aa = Address::random();
+
+        let assertion = create_test_assertion(0, None);
+        store.insert(aa, assertion)?;
+
+        assert!(store.has_assertions(aa).unwrap());
+        Ok(())
     }
 
     #[test]

@@ -523,7 +523,7 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send,
         Active::Error: Send,
     {
-        let mut call_tracer = CallTracer::default();
+        let mut call_tracer = CallTracer::new(self.store.clone());
         let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
 
         let mut evm = crate::build_evm_by_features!(fork_db, &env, &mut call_tracer);
@@ -579,7 +579,7 @@ impl AssertionExecutor {
     where
         ExtDb: Database + Sync + Send,
     {
-        let mut call_tracer = CallTracer::default();
+        let mut call_tracer = CallTracer::new(self.store.clone());
         let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
 
         let mut evm = crate::build_evm_by_features!(external_db, &env, &mut call_tracer);
@@ -710,8 +710,17 @@ mod test {
                 test_utils::MockDb,
             },
         },
+        inspectors::CallTracer,
         primitives::{
+            Account,
+            AccountInfo,
+            AccountStatus,
             BlockEnv,
+            Bytes,
+            EvmState,
+            EvmStorage,
+            EvmStorageSlot,
+            ExecutionResult,
             U256,
             uint,
         },
@@ -723,12 +732,19 @@ mod test {
     };
     use revm::{
         context::JournalInner,
+        context_interface::result::{
+            Output,
+            SuccessReason,
+        },
         database::{
             CacheDB,
             EmptyDBTyped,
         },
     };
-    use std::convert::Infallible;
+    use std::{
+        collections::HashMap,
+        convert::Infallible,
+    };
 
     // Define a concrete error type for tests if needed, or use Infallible
     type TestDbError = Infallible; // Or a custom test error enum
@@ -767,6 +783,83 @@ mod test {
             .clone();
 
         assert_eq!(account_info.code.unwrap(), counter_assertion.deployed_code);
+    }
+
+    #[test]
+    fn test_execute_assertion_detects_post_tx_overrides() {
+        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+        let mut fork_db: TestForkDB = test_db.fork();
+
+        let mut counter_storage = EvmStorage::default();
+        counter_storage.insert(
+            U256::ZERO,
+            EvmStorageSlot::new_changed(U256::ZERO, U256::from(2)),
+        );
+
+        let mut counter_state = EvmState::default();
+        counter_state.insert(
+            COUNTER_ADDRESS,
+            Account {
+                info: counter_acct_info(),
+                storage: counter_storage,
+                status: AccountStatus::Touched,
+            },
+        );
+        fork_db.commit(counter_state);
+
+        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
+        assertion_store
+            .insert(
+                COUNTER_ADDRESS,
+                AssertionState::new_test(&assertion_bytecode),
+            )
+            .unwrap();
+
+        let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
+
+        let mut call_tracer = CallTracer::new(executor.store.clone());
+        call_tracer.insert_trace(COUNTER_ADDRESS);
+        call_tracer.journal.state.insert(
+            ASSERTION_CONTRACT,
+            Account {
+                info: AccountInfo {
+                    code: None,
+                    ..Default::default()
+                },
+                storage: HashMap::default(),
+                status: AccountStatus::Touched,
+            },
+        );
+
+        let forked_tx_result = ExecuteForkedTxResult {
+            call_tracer,
+            result_and_state: ResultAndState {
+                result: ExecutionResult::Success {
+                    reason: SuccessReason::Stop,
+                    gas_used: 0,
+                    gas_refunded: 0,
+                    logs: vec![],
+                    output: Output::Call(Bytes::new()),
+                },
+                state: HashMap::default(),
+            },
+        };
+
+        let block_env = BlockEnv {
+            number: 1,
+            ..Default::default()
+        };
+
+        let results = executor
+            .execute_assertions(block_env, fork_db, &forked_tx_result)
+            .expect("assertion execution should succeed");
+
+        assert!(!results.is_empty());
+        assert!(
+            !results[0].assertion_fns_results[0].is_success(),
+            "Assertion should revert when counter exceeds limit even if post-tx journal clears code"
+        );
     }
 
     #[test]

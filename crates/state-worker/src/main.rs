@@ -3,11 +3,9 @@
 
 mod cli;
 mod genesis;
-mod genesis_data;
 #[cfg(test)]
 mod integration_tests;
 mod macros;
-// mod redis;
 mod state;
 mod worker;
 
@@ -35,7 +33,10 @@ use anyhow::{
 };
 use clap::Parser;
 use state_store::StateWriter;
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::broadcast;
 
 #[tokio::main]
@@ -60,30 +61,27 @@ async fn main() -> Result<()> {
     redis
         .ensure_dump_index_metadata()
         .context("failed to ensure redis namespace index metadata")?;
-    let genesis_state = if let Some(file_path) = &args.file_to_genesis {
-        // Load genesis from file (overrides embedded genesis)
-        info!("Loading genesis from file: {}", file_path);
-        let contents = std::fs::read_to_string(file_path)
+    // Load genesis from file (required to seed initial state)
+    let file_path = &args.file_to_genesis;
+    info!("Loading genesis from file: {}", file_path);
+    let contents = std::fs::read_to_string(file_path)
+        .inspect_err(|e| warn!(error = ?e, file_path = file_path, "Failed to read genesis file"))
+        .with_context(|| format!("failed to read genesis file: {file_path}"))?;
+    let genesis_state = Some(
+        genesis::parse_from_str(&contents)
             .inspect_err(
-                |e| warn!(error = ?e, file_path = file_path, "Failed to read genesis file"),
+                |e| warn!(error = ?e, file_path = file_path, "Failed to parse genesis from file"),
             )
-            .with_context(|| format!("failed to read genesis file: {file_path}"))?;
-        Some(genesis::parse_from_str(&contents)
-                .inspect_err(|e| warn!(error = ?e, file_path = file_path, "Failed to parse genesis from file"))
-                .with_context(|| format!("failed to parse genesis from file: {file_path}"))?)
-    } else if let Some(chain_id) = args.chain_id {
-        // Fall back to embedded genesis
-        Some(
-            genesis::load_embedded(chain_id).with_context(|| {
-                format!("failed to load embedded genesis for chain id {chain_id}")
-            })?,
-        )
-    } else {
-        warn!("Chain Id not specified, not loading genesis block!");
-        None
-    };
+            .with_context(|| format!("failed to parse genesis from file: {file_path}"))?,
+    );
 
-    // Create shutdown channel
+    // Create the trace provider based on config
+    let trace_provider = state::create_trace_provider(
+        args.provider_type,
+        provider.clone(),
+        Duration::from_secs(30), // default timeout
+    );
+
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
     // Spawn signal handler
@@ -97,9 +95,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut worker = StateWorker::new(provider, redis, genesis_state);
+    let mut worker = StateWorker::new(provider, trace_provider, redis, genesis_state);
 
-    // Run worker with shutdown signal
     match worker.run(args.start_block, shutdown_rx).await {
         Ok(()) => {
             info!("State worker shutdown gracefully");

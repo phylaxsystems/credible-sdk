@@ -30,6 +30,7 @@
             libiconv
           ] else [
             llvm.libcxx
+            linuxPackages.perf
           ];
 
       in
@@ -72,8 +73,6 @@
             export CXXFLAGS="-O3 $CXXFLAGS"
 
             export LIBCLANG_PATH="${llvm.libclang.lib}/lib"
-
-            export PATH=$HOME/.cargo/bin:$PATH
 
             rustup default nightly 2>/dev/null || true
 

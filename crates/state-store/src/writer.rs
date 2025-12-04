@@ -122,8 +122,12 @@ fn write_account_to_pipe(pipe: &mut redis::Pipeline, namespace: &str, account: &
         for (slot, value) in &account.storage {
             let slot_hash = B256::from(slot.to_be_bytes::<32>());
             let slot_hex = encode_b256(slot_hash);
-            let value_hex = encode_u256(*value);
-            pipe.hset(&storage_key, slot_hex, value_hex);
+            if value.is_zero() {
+                pipe.hdel(&storage_key, slot_hex);
+            } else {
+                let value_hex = encode_u256(*value);
+                pipe.hset(&storage_key, slot_hex, value_hex);
+            }
         }
     }
 }

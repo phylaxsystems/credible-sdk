@@ -459,19 +459,34 @@ pub struct CompilationConfig {
     pub metadata_hash: String,
 }
 
+/// Removes leading chars so we get clean sol versions
+///
+/// We dont have to worry about sanitizing the whole string
+/// as we will try to pull a dokcer image, and if an invalid
+/// `compiler_version` is supplied, we will try to pull a non existing image.
+fn normalize_compiler_version(compiler_version: &str) -> String {
+    let mut chars = compiler_version.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_digit() => std::iter::once(c).chain(chars).collect(),
+        Some(_) => chars.collect(),
+        None => String::new(),
+    }
+}
+
 impl CompilationConfig {
     /// # Panics
     ///
     /// Will panic if the regex is invalid (infallible)
     pub fn new(assertion_contract_name: &str, source_code: &str, compiler_version: &str) -> Self {
+        let compiler_version = normalize_compiler_version(compiler_version);
         // Validate compiler version format (should be like 0.8.17)
         // This regex handles both exact versions (0.8.17) and complex version requirements (=0.8.28 ^0.8.13)
         let version_regex =
             Regex::new(r"^\d+\.\d+\.\d+$|^=\d+\.\d+\.\d+\s+\^\d+\.\d+\.\d+$").unwrap();
-        if !version_regex.is_match(compiler_version) {
+        if !version_regex.is_match(&compiler_version) {
             debug!(
                 target: "solidity_compilation",
-                compiler_version = compiler_version,
+                compiler_version = %compiler_version,
                 "Invalid compiler version format"
             );
         }
@@ -479,10 +494,31 @@ impl CompilationConfig {
         Self {
             assertion_contract_name: assertion_contract_name.to_string(),
             source_code: source_code.to_string(),
-            compiler_version: compiler_version.to_string(),
+            compiler_version,
             output_type: "bin".to_string(),
             metadata_hash: "none".to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::normalize_compiler_version;
+
+    #[test]
+    fn removes_leading_non_digit() {
+        assert_eq!(normalize_compiler_version("^0.8.17"), "0.8.17".to_string());
+        assert_eq!(normalize_compiler_version("=0.8.17"), "0.8.17".to_string());
+    }
+
+    #[test]
+    fn keeps_leading_digit() {
+        assert_eq!(normalize_compiler_version("0.8.17"), "0.8.17".to_string());
+    }
+
+    #[test]
+    fn handles_empty_string() {
+        assert_eq!(normalize_compiler_version(""), "");
     }
 }
 

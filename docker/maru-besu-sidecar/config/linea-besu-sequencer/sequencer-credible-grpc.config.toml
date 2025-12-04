@@ -40,23 +40,14 @@ metrics-host="0.0.0.0"
 metrics-port=9545
 
 tx-pool-no-local-priority=false
-#
-api-gas-and-priority-fee-limiting-enabled=false
-api-gas-and-priority-fee-lower-bound-coefficient=120
-api-gas-and-priority-fee-upper-bound-coefficient=300
-#poa-block-txs-selection-max-time=1000
+block-txs-selection-max-time=800
+# plugin-block-txs-selection-max-time=50 #default as 50 which means 400ms
+
+cache-last-block-headers-preload-enabled=true
+cache-last-block-headers=50
 
 # plugins
-plugins=[
-  "LineaEstimateGasEndpointPlugin",
-  "LineaL1FinalizationTagUpdaterPlugin",
-  "LineaExtraDataPlugin",
-  "LineaTransactionPoolValidatorPlugin",
-  "LineaBundleEndpointsPlugin",
-  "LineaSetExtraDataEndpointPlugin",
-  "LineaTransactionSelectorPlugin",
-  "CredibleLayerPlugin"
-]
+plugins=["LineaEstimateGasEndpointPlugin","LineaExtraDataPlugin","LineaTransactionPoolValidatorPlugin","LineaBundleEndpointsPlugin","LineaSetExtraDataEndpointPlugin","LineaTransactionSelectorPlugin","CredibleLayerPlugin"]
 plugin-linea-module-limit-file-path="/var/lib/besu/traces-limits.toml"
 plugin-linea-deny-list-path="/var/lib/besu/deny-list.txt"
 plugin-linea-estimate-gas-compatibility-mode-enabled=false
@@ -81,7 +72,7 @@ plugin-credible-sidecar-transport-type="grpc"
 plugin-credible-sidecar-grpc-endpoints=["credible-sidecar:50051"]
 strict-tx-replay-protection-enabled=false
 
-# enable when liveness supported
+# should uncomment only when the linea-sequencer plugin supports liveness
 plugin-linea-liveness-enabled=true
 plugin-linea-liveness-max-block-age-seconds=8
 plugin-linea-liveness-bundle-max-timestamp-surplus-seconds=12
@@ -99,12 +90,10 @@ plugin-linea-liveness-gas-price=7
 
 Xplugin-rocksdb-high-spec-enabled=true
 Xsynchronizer-fast-sync-full-validation-rate=0.000001
-tx-pool-priority-senders=[
-  "0xfe3b557e8fb62b89f4916b721be55ceb828dbd73",
+tx-pool-priority-senders=["0xfe3b557e8fb62b89f4916b721be55ceb828dbd73",
   "0xd42e308fc964b71e18126df469c21b0d7bcb86cc",
   "0x1b9abeec3215d8ade8a33607f2cf0f4f60e5f0d0",
-  "0xc8c92fe825d8930b9357c006e0af160dfa727a62"
-]
+  "0xc8c92fe825d8930b9357c006e0af160dfa727a62"]
 
 Xin-process-rpc-enabled=true
 Xin-process-rpc-apis=["ETH", "MINER"]

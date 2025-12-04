@@ -21,17 +21,18 @@ use crate::{
     },
     event_sequencing::EventSequencing,
     execution_ids::TxExecutionId,
+    transactions_state::TransactionResultEvent,
     transport::{
         Transport,
         grpc::{
             GrpcTransport,
             config::GrpcTransportConfig,
             pb::{
-                ReorgRequest,
-                SendTransactionsRequest,
-                Transaction as GrpcTransaction,
-                TransactionEnv as GrpcTransactionEnv,
+                self,
+                Event,
+                GetTransactionRequest,
                 TxExecutionId as GrpcTxExecutionId,
+                event::Event as EventVariant,
                 sidecar_transport_client::SidecarTransportClient,
             },
         },
@@ -68,6 +69,7 @@ use assertion_executor::{
         counter_call,
     },
 };
+use futures::StreamExt;
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use revm::{
     context_interface::block::BlobExcessGasAndPrice,
@@ -81,6 +83,8 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tracing::{
     Span,
@@ -89,6 +93,30 @@ use tracing::{
     info,
     warn,
 };
+
+mod grpc_encode {
+    use super::*;
+
+    #[inline]
+    pub fn address(addr: Address) -> Vec<u8> {
+        addr.as_slice().to_vec()
+    }
+
+    #[inline]
+    pub fn b256(hash: B256) -> Vec<u8> {
+        hash.as_slice().to_vec()
+    }
+
+    #[inline]
+    pub fn u256_be(val: U256) -> Vec<u8> {
+        val.to_be_bytes::<32>().to_vec()
+    }
+
+    #[inline]
+    pub fn u128_be(val: u128) -> Vec<u8> {
+        val.to_be_bytes().to_vec()
+    }
+}
 
 /// Setup test database with common accounts pre-funded
 fn populate_test_database(underlying_db: &mut CacheDB<Arc<Sources>>) -> Address {
@@ -141,52 +169,8 @@ fn setup_assertion_store() -> Result<Arc<AssertionStore>, String> {
     Ok(assertion_store)
 }
 
-// HTTP transport retry configuration constants
-const MAX_HTTP_RETRY_ATTEMPTS: usize = 3;
+const MAX_HTTP_RETRY_ATTEMPTS: usize = 10;
 const HTTP_RETRY_DELAY_MS: u64 = 100;
-
-/// Wrapper over the `LocalInstance` that provides `MockTransport` functionality
-pub struct LocalInstanceMockDriver {
-    /// Channel for sending transactions and blocks to the mock transport
-    mock_sender: TransactionQueueSender,
-    /// Ordered hashes for transactions sent per iteration since the last block update
-    block_tx_hashes_by_iteration: HashMap<u64, Vec<TxHash>>,
-    /// Explicit override for the next `n_transactions` value
-    override_n_transactions: Option<u64>,
-    /// Explicit override for the next `last_tx_hash` value
-    /// We use Option<Option<TxHash>> to distinguish: None (use default), Some(None) (force no hash), Some(Some(hash)) (force specific hash)
-    #[allow(clippy::option_option)]
-    override_last_tx_hash: Option<Option<TxHash>>,
-}
-
-impl LocalInstanceMockDriver {
-    fn next_block_metadata(&self, selected_iteration_id: u64) -> (u64, Option<TxHash>) {
-        let iteration_hashes: &[TxHash] = self
-            .block_tx_hashes_by_iteration
-            .get(&selected_iteration_id)
-            .map_or(&[], |v| v.as_slice());
-
-        let n_transactions = self
-            .override_n_transactions
-            .unwrap_or(iteration_hashes.len() as u64);
-
-        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
-
-        (n_transactions, last_tx_hash)
-    }
-
-    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
-        if let Some(value) = &self.override_last_tx_hash {
-            *value
-        } else {
-            let iteration_hashes: &[TxHash] = self
-                .block_tx_hashes_by_iteration
-                .get(&iteration_id)
-                .map_or(&[], |v| v.as_slice());
-            iteration_hashes.last().copied()
-        }
-    }
-}
 
 /// Common initialization for all driver types
 struct CommonSetup {
@@ -201,9 +185,14 @@ struct CommonSetup {
 }
 
 impl CommonSetup {
-    /// Initialize common database, cache, and mocks for test drivers
-    async fn new(assertion_store: Option<AssertionStore>) -> Result<Self, String> {
-        // Create the database and state
+    /// Initialize common database, cache, and mocks for test drivers.
+    ///
+    /// If `result_event_sender` is provided, the `TransactionsState` will broadcast
+    /// transaction results to it (used for gRPC `SubscribeResults` streaming).
+    async fn new(
+        assertion_store: Option<AssertionStore>,
+        result_event_sender: Option<flume::Sender<TransactionResultEvent>>,
+    ) -> Result<Self, String> {
         let sequencer_http_mock = DualProtocolMockServer::new()
             .await
             .expect("Failed to create sequencer mock");
@@ -228,13 +217,16 @@ impl CommonSetup {
 
         let underlying_db = Arc::new(underlying_db);
 
-        // Create assertion store if not provided
         let assertion_store = match assertion_store {
             Some(store) => Arc::new(store),
             None => setup_assertion_store()?,
         };
 
-        let state_results = crate::TransactionsState::new();
+        // Create state with or without result sender
+        let state_results = match result_event_sender {
+            Some(sender) => crate::TransactionsState::with_result_sender(sender),
+            None => crate::TransactionsState::new(),
+        };
 
         Ok(CommonSetup {
             underlying_db,
@@ -276,16 +268,13 @@ impl CommonSetup {
 
         let engine_handle = tokio::spawn(async move {
             info!(target: "test_driver", "Engine task started, waiting for items...");
-            info!(target: "test_driver", "Engine about to call run()");
             let result = engine.run().await;
             match result {
                 Ok(()) => info!(target: "test_driver", "Engine run() completed successfully"),
                 Err(e) => error!(target: "test_driver", "Engine run() failed: {:?}", e),
             }
-            info!(target: "test_driver", "Engine task completed");
         });
 
-        // Spawn event sequencing task
         let mut event_sequencing = EventSequencing::new(transport_rx, event_sequencing_tx_sender);
 
         let sequencing_handle = tokio::spawn(async move {
@@ -295,45 +284,72 @@ impl CommonSetup {
                 Ok(()) => info!(target: "test_driver", "Event sequencing completed successfully"),
                 Err(e) => error!(target: "test_driver", "Event sequencing failed: {:?}", e),
             }
-            info!(target: "test_driver", "Event sequencing task completed");
         });
 
         (engine_handle, sequencing_handle)
     }
 }
 
+pub struct LocalInstanceMockDriver {
+    mock_sender: TransactionQueueSender,
+    block_tx_hashes_by_iteration: HashMap<u64, Vec<TxHash>>,
+    override_n_transactions: Option<u64>,
+    #[allow(clippy::option_option)]
+    override_last_tx_hash: Option<Option<TxHash>>,
+}
+
 impl LocalInstanceMockDriver {
-    /// Same as `new()`, but takes in an `AssertionStore` as an argument
+    fn next_block_metadata(&self, selected_iteration_id: u64) -> (u64, Option<TxHash>) {
+        let iteration_hashes: &[TxHash] = self
+            .block_tx_hashes_by_iteration
+            .get(&selected_iteration_id)
+            .map_or(&[], |v| v.as_slice());
+
+        let n_transactions = self
+            .override_n_transactions
+            .unwrap_or(iteration_hashes.len() as u64);
+
+        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
+
+        (n_transactions, last_tx_hash)
+    }
+
+    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
+        if let Some(value) = &self.override_last_tx_hash {
+            *value
+        } else {
+            let iteration_hashes: &[TxHash] = self
+                .block_tx_hashes_by_iteration
+                .get(&iteration_id)
+                .map_or(&[], |v| v.as_slice());
+            iteration_hashes.last().copied()
+        }
+    }
+
     pub async fn new_with_store(
         assertion_store: AssertionStore,
     ) -> Result<LocalInstance<Self>, String> {
         info!(target: "test_transport", "Creating LocalInstance with MockTransport");
 
-        let setup = CommonSetup::new(Some(assertion_store)).await?;
+        let setup = CommonSetup::new(Some(assertion_store), None).await?;
 
-        // Create channels for transport -> event_sequencing -> engine
         let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
         let (mock_tx, mock_rx) = flume::unbounded();
 
-        // Spawn engine and event sequencing
-        let (engine_handle, sequencing_handle) = setup
+        let (engine_handle, _sequencing_handle) = setup
             .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
             .await;
 
-        // Create mock transport with the channels
         let transport =
             MockTransport::with_receiver(transport_tx_sender, mock_rx, setup.state_results.clone());
 
-        // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
             info!(target: "test_transport", "Transport task started");
-            info!(target: "test_transport", "Transport about to call run()");
             let result = transport.run().await;
             match result {
                 Ok(()) => info!(target: "test_transport", "Transport run() completed successfully"),
                 Err(e) => warn!(target: "test_transport", "Transport stopped with error: {}", e),
             }
-            info!(target: "test_transport", "Transport task completed");
         });
 
         Ok(LocalInstance::new_internal(
@@ -363,31 +379,25 @@ impl TestTransport for LocalInstanceMockDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
         info!(target: "test_transport", "Creating LocalInstance with MockTransport");
 
-        let setup = CommonSetup::new(None).await?;
+        let setup = CommonSetup::new(None, None).await?;
 
-        // Create channels for transport -> event_sequencing -> engine
         let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
         let (mock_tx, mock_rx) = flume::unbounded();
 
-        // Spawn engine and event sequencing
-        let (engine_handle, sequencing_handle) = setup
+        let (engine_handle, _sequencing_handle) = setup
             .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
             .await;
 
-        // Create mock transport with the channels
         let transport =
             MockTransport::with_receiver(transport_tx_sender, mock_rx, setup.state_results.clone());
 
-        // Spawn the transport task
         let transport_handle = tokio::spawn(async move {
             info!(target: "test_transport", "Transport task started");
-            info!(target: "test_transport", "Transport about to call run()");
             let result = transport.run().await;
             match result {
                 Ok(()) => info!(target: "test_transport", "Transport run() completed successfully"),
                 Err(e) => warn!(target: "test_transport", "Transport stopped with error: {}", e),
             }
-            info!(target: "test_transport", "Transport task completed");
         });
 
         Ok(LocalInstance::new_internal(
@@ -416,15 +426,10 @@ impl TestTransport for LocalInstanceMockDriver {
         &mut self,
         block_number: u64,
         selected_iteration_id: u64,
-        n_transactions: u64,
+        _n_transactions: u64,
     ) -> Result<(), String> {
         info!(target: "test_transport", "LocalInstance finalizing block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
         let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
-        let block_env = BlockEnv {
-            number: block_number,
-            gas_limit: 50_000_000, // Set higher gas limit for assertions
-            ..Default::default()
-        };
 
         self.block_tx_hashes_by_iteration.clear();
         self.override_n_transactions = None;
@@ -441,7 +446,7 @@ impl TestTransport for LocalInstanceMockDriver {
             .send(TxQueueContents::CommitHead(commit_head, Span::current()))
             .map_err(|e| format!("Failed to send commit head: {e}"))?;
 
-        info!(target: "test_transport", "Successfully sent  to mock_sender");
+        info!(target: "test_transport", "Successfully sent to mock_sender");
         Ok(())
     }
 
@@ -501,9 +506,7 @@ impl TestTransport for LocalInstanceMockDriver {
                 debug!(
                     target: "test_transport",
                     "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
-                    tracked_hash,
-                    last_hash,
-                    iteration_id
+                    tracked_hash, last_hash, iteration_id
                 );
             }
         }
@@ -528,7 +531,6 @@ pub struct LocalInstanceHttpDriver {
     address: SocketAddr,
     block_tx_hashes_by_iteration: HashMap<u64, Vec<TxHash>>,
     override_n_transactions: Option<u64>,
-    /// We use Option<Option<TxHash>> to distinguish: None (use default), Some(None) (force no hash), Some(Some(hash)) (force specific hash)
     #[allow(clippy::option_option)]
     override_last_tx_hash: Option<Option<TxHash>>,
 }
@@ -549,7 +551,6 @@ impl LocalInstanceHttpDriver {
         (n_transactions, last_tx_hash)
     }
 
-    // FIXME: Avoid code repetition
     fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
         if let Some(value) = &self.override_last_tx_hash {
             *value
@@ -613,8 +614,7 @@ impl LocalInstanceHttpDriver {
                     last_error = format!("HTTP request failed: {e}");
                     if attempts < MAX_HTTP_RETRY_ATTEMPTS {
                         debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
-                            .await;
+                        tokio::time::sleep(Duration::from_millis(HTTP_RETRY_DELAY_MS)).await;
                     }
                 }
             }
@@ -630,13 +630,13 @@ impl LocalInstanceHttpDriver {
     ) -> Result<LocalInstance<Self>, String> {
         info!(target: "LocalInstanceHttpDriver", "Creating LocalInstance with HttpTransport");
 
-        let setup = CommonSetup::new(assertion_store).await?;
+        let setup = CommonSetup::new(assertion_store, None).await?;
 
         // Create channels for transport -> event_sequencing -> engine
         let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
 
         // Spawn engine and event sequencing
-        let (engine_handle, sequencing_handle) = setup
+        let (engine_handle, _sequencing_handle) = setup
             .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
             .await;
 
@@ -691,7 +691,6 @@ impl LocalInstanceHttpDriver {
         ))
     }
 
-    /// Same as `new()`, but takes in an `AssertionStore` as an argument
     pub async fn new_with_store(
         assertion_store: AssertionStore,
     ) -> Result<LocalInstance<Self>, String> {
@@ -708,7 +707,7 @@ impl TestTransport for LocalInstanceHttpDriver {
         &mut self,
         block_number: u64,
         selected_iteration_id: u64,
-        n_transactions: u64,
+        _n_transactions: u64,
     ) -> Result<(), String> {
         info!(target: "LocalInstanceHttpDriver", "LocalInstance finalizing block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
 
@@ -770,54 +769,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             }
         });
 
-        debug!(target: "LocalInstanceHttpDriver", "Sending HTTP request: {}", serde_json::to_string_pretty(&request).unwrap_or_default());
-
-        let mut last_error = String::new();
-        let mut attempts = 0;
-
-        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
-            attempts += 1;
-
-            match self
-                .client
-                .post(format!("http://{}/tx", self.address))
-                .header("content-type", "application/json")
-                .json(&request)
-                .send()
-                .await
-            {
-                Ok(response) => {
-                    if !response.status().is_success() {
-                        return Err(format!("HTTP error: {}", response.status()));
-                    }
-
-                    let json_response: serde_json::Value = response
-                        .json()
-                        .await
-                        .map_err(|e| format!("Failed to parse response: {e}"))?;
-
-                    debug!(target: "LocalInstanceHttpDriver", "Received response: {}", serde_json::to_string_pretty(&json_response).unwrap_or_default());
-
-                    if let Some(error) = json_response.get("error") {
-                        return Err(format!("JSON-RPC error: {error}"));
-                    }
-
-                    return Ok(());
-                }
-                Err(e) => {
-                    last_error = format!("HTTP request failed: {e}");
-                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
-                        debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
-                            .await;
-                    }
-                }
-            }
-        }
-
-        Err(format!(
-            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
-        ))
+        self.submit_json_request(&request).await
     }
 
     async fn new_iteration(
@@ -864,9 +816,7 @@ impl TestTransport for LocalInstanceHttpDriver {
                 debug!(
                     target: "LocalInstanceHttpDriver",
                     "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
-                    tracked_hash,
-                    last_hash,
-                    iteration_id
+                    tracked_hash, last_hash, iteration_id
                 );
             }
         }
@@ -878,54 +828,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             "params": serde_json::to_value(tx_execution_id).unwrap(),
         });
 
-        debug!(target: "LocalInstanceHttpDriver", "Sending HTTP request: {}", serde_json::to_string_pretty(&request).unwrap_or_default());
-
-        let mut last_error = String::new();
-        let mut attempts = 0;
-
-        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
-            attempts += 1;
-
-            match self
-                .client
-                .post(format!("http://{}/tx", self.address))
-                .header("content-type", "application/json")
-                .json(&request)
-                .send()
-                .await
-            {
-                Ok(response) => {
-                    if !response.status().is_success() {
-                        return Err(format!("HTTP error: {}", response.status()));
-                    }
-
-                    let json_response: serde_json::Value = response
-                        .json()
-                        .await
-                        .map_err(|e| format!("Failed to parse response: {e}"))?;
-
-                    debug!(target: "LocalInstanceHttpDriver", "Received response: {}", serde_json::to_string_pretty(&json_response).unwrap_or_default());
-
-                    if let Some(error) = json_response.get("error") {
-                        return Err(format!("JSON-RPC error: {error}"));
-                    }
-
-                    return Ok(());
-                }
-                Err(e) => {
-                    last_error = format!("HTTP request failed: {e}");
-                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
-                        debug!(target: "LocalInstanceHttpDriver", "HTTP request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
-                            .await;
-                    }
-                }
-            }
-        }
-
-        Err(format!(
-            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
-        ))
+        self.submit_json_request(&request).await
     }
 
     fn set_n_transactions(&mut self, n_transactions: u64) {
@@ -937,8 +840,8 @@ impl TestTransport for LocalInstanceHttpDriver {
     }
 }
 
-/// Wrapper over the `LocalInstance` that provides `GrpcTransport` functionality
 pub struct LocalInstanceGrpcDriver {
+    event_sender: mpsc::Sender<Event>,
     /// gRPC client for the transport
     client: SidecarTransportClient<Channel>,
     /// Ordered hashes for transactions sent per iteration since the last block announcement
@@ -979,18 +882,121 @@ impl LocalInstanceGrpcDriver {
         }
     }
 
+    fn build_pb_block_env(block_env: &BlockEnv) -> pb::BlockEnv {
+        pb::BlockEnv {
+            number: block_env.number,
+            beneficiary: grpc_encode::address(block_env.beneficiary),
+            timestamp: block_env.timestamp,
+            gas_limit: block_env.gas_limit,
+            basefee: block_env.basefee,
+            difficulty: grpc_encode::u256_be(block_env.difficulty),
+            prevrandao: block_env.prevrandao.map(grpc_encode::b256),
+            blob_excess_gas_and_price: block_env.blob_excess_gas_and_price.as_ref().map(|blob| {
+                pb::BlobExcessGasAndPrice {
+                    excess_blob_gas: blob.excess_blob_gas,
+                    blob_gasprice: grpc_encode::u128_be(blob.blob_gasprice),
+                }
+            }),
+        }
+    }
+
+    fn build_pb_tx_execution_id(tx_execution_id: &TxExecutionId) -> GrpcTxExecutionId {
+        GrpcTxExecutionId {
+            block_number: tx_execution_id.block_number,
+            iteration_id: tx_execution_id.iteration_id,
+            tx_hash: grpc_encode::b256(tx_execution_id.tx_hash),
+            index: tx_execution_id.index,
+        }
+    }
+
+    fn build_pb_transaction(
+        tx_execution_id: &TxExecutionId,
+        tx_env: &TxEnv,
+        prev_tx_hash: Option<TxHash>,
+    ) -> pb::Transaction {
+        pb::Transaction {
+            tx_execution_id: Some(Self::build_pb_tx_execution_id(tx_execution_id)),
+            tx_env: Some(pb::TransactionEnv {
+                tx_type: tx_env.tx_type.into(),
+                caller: grpc_encode::address(tx_env.caller),
+                gas_limit: tx_env.gas_limit,
+                gas_price: grpc_encode::u128_be(tx_env.gas_price),
+                transact_to: match tx_env.kind {
+                    TxKind::Call(addr) => grpc_encode::address(addr),
+                    TxKind::Create => vec![],
+                },
+                value: grpc_encode::u256_be(tx_env.value),
+                data: tx_env.data.to_vec(),
+                nonce: tx_env.nonce,
+                chain_id: tx_env.chain_id,
+                access_list: tx_env
+                    .access_list
+                    .0
+                    .iter()
+                    .map(|item| {
+                        pb::AccessListItem {
+                            address: grpc_encode::address(item.address),
+                            storage_keys: item
+                                .storage_keys
+                                .iter()
+                                .map(|k| grpc_encode::b256(*k))
+                                .collect(),
+                        }
+                    })
+                    .collect(),
+                gas_priority_fee: tx_env.gas_priority_fee.map(grpc_encode::u128_be),
+                blob_hashes: tx_env
+                    .blob_hashes
+                    .iter()
+                    .map(|h| grpc_encode::b256(*h))
+                    .collect(),
+                max_fee_per_blob_gas: grpc_encode::u128_be(tx_env.max_fee_per_blob_gas),
+                authorization_list: tx_env
+                    .authorization_list
+                    .iter()
+                    .filter_map(|auth| {
+                        match auth {
+                            alloy::signers::Either::Left(signed_auth) => {
+                                let inner = signed_auth.inner();
+                                Some(pb::Authorization {
+                                    chain_id: grpc_encode::u256_be(inner.chain_id),
+                                    address: grpc_encode::address(inner.address),
+                                    nonce: inner.nonce,
+                                    y_parity: signed_auth.y_parity().into(),
+                                    r: grpc_encode::u256_be(signed_auth.r()),
+                                    s: grpc_encode::u256_be(signed_auth.s()),
+                                })
+                            }
+                            alloy::signers::Either::Right(_) => None,
+                        }
+                    })
+                    .collect(),
+            }),
+            prev_tx_hash: prev_tx_hash.map(grpc_encode::b256),
+        }
+    }
+
+    async fn send_event(&self, event: Event) -> Result<(), String> {
+        self.event_sender
+            .send(event)
+            .await
+            .map_err(|e| format!("Failed to send event to stream: {e}"))
+    }
+
     async fn create(
         assertion_store: Option<AssertionStore>,
     ) -> Result<LocalInstance<Self>, String> {
-        info!(target: "LocalInstanceGrpcDriver", "Creating LocalInstance with GrpcTransport");
+        info!(target: "LocalInstanceGrpcDriver", "Creating LocalInstance with streaming GrpcTransport");
 
-        let setup = CommonSetup::new(assertion_store).await?;
+        // Create result event channel for SubscribeResults streaming
+        let (result_event_tx, result_event_rx) = flume::bounded(4096);
 
-        // Create channels for transport -> event_sequencing -> engine
+        // Pass the sender to CommonSetup so state_results broadcasts results
+        let setup = CommonSetup::new(assertion_store, Some(result_event_tx)).await?;
+
         let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
 
-        // Spawn engine and event sequencing
-        let (engine_handle, sequencing_handle) = setup
+        let (engine_handle, _sequencing_handle) = setup
             .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
             .await;
 
@@ -1004,8 +1010,15 @@ impl LocalInstanceGrpcDriver {
         drop(listener);
 
         let config = GrpcTransportConfig { bind_addr: address };
-        let transport =
-            GrpcTransport::new(config, transport_tx_sender, setup.state_results.clone()).unwrap();
+
+        // Use with_result_receiver to enable SubscribeResults streaming
+        let transport = GrpcTransport::with_result_receiver(
+            &config,
+            transport_tx_sender,
+            setup.state_results.clone(),
+            result_event_rx,
+        )
+        .map_err(|e| format!("Failed to create gRPC transport: {e}"))?;
 
         let transport_handle = tokio::spawn(async move {
             info!(target: "LocalInstanceGrpcDriver", "Transport task started");
@@ -1022,6 +1035,7 @@ impl LocalInstanceGrpcDriver {
             info!(target: "LocalInstanceGrpcDriver", "Transport task completed");
         });
 
+        // Connect gRPC client with retries
         let mut attempts = 0;
         let client = loop {
             attempts += 1;
@@ -1034,11 +1048,37 @@ impl LocalInstanceGrpcDriver {
                         ));
                     }
                     debug!(target: "LocalInstanceGrpcDriver", "gRPC connection failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
-                        .await;
+                    tokio::time::sleep(Duration::from_millis(HTTP_RETRY_DELAY_MS)).await;
                 }
             }
         };
+
+        let (event_tx, event_rx) = mpsc::channel(256);
+        let stream = ReceiverStream::new(event_rx);
+
+        let mut client_clone = client.clone();
+        let mut response_stream = client_clone
+            .stream_events(stream)
+            .await
+            .map_err(|e| format!("Failed to start event stream: {e}"))?
+            .into_inner();
+
+        tokio::spawn(async move {
+            while let Some(result) = response_stream.next().await {
+                match result {
+                    Ok(ack) => {
+                        debug!(target: "LocalInstanceGrpcDriver", "Received ack: success={}, events_processed={}", ack.success, ack.events_processed);
+                        if !ack.success {
+                            error!(target: "LocalInstanceGrpcDriver", "Stream ack indicates failure: {}", ack.message);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(target: "LocalInstanceGrpcDriver", "Stream error: {e}");
+                        break;
+                    }
+                }
+            }
+        });
 
         Ok(LocalInstance::new_internal(
             setup.underlying_db,
@@ -1054,6 +1094,7 @@ impl LocalInstanceGrpcDriver {
             Some(&address),
             setup.list_of_sources,
             LocalInstanceGrpcDriver {
+                event_sender: event_tx,
                 client,
                 block_tx_hashes_by_iteration: HashMap::new(),
                 override_n_transactions: None,
@@ -1062,7 +1103,6 @@ impl LocalInstanceGrpcDriver {
         ))
     }
 
-    /// Same as `new()`, but takes in an `AssertionStore` as an argument
     pub async fn new_with_store(
         assertion_store: AssertionStore,
     ) -> Result<LocalInstance<Self>, String> {
@@ -1079,59 +1119,29 @@ impl TestTransport for LocalInstanceGrpcDriver {
         &mut self,
         block_number: u64,
         selected_iteration_id: u64,
-        n_transactions: u64,
+        _n_transactions: u64,
     ) -> Result<(), String> {
         info!(target: "LocalInstanceGrpcDriver", "LocalInstance finalizing block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
 
         let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
 
-        let commit_head = crate::transport::grpc::pb::CommitHead {
-            last_tx_hash: last_tx_hash.map(|h| h.to_string()).unwrap_or_default(),
+        let commit_head = pb::CommitHead {
+            last_tx_hash: last_tx_hash.map(grpc_encode::b256),
             n_transactions,
-            selected_iteration_id: Some(selected_iteration_id),
             block_number,
+            selected_iteration_id,
         };
 
-        let request = crate::transport::grpc::pb::SendEvents {
-            events: vec![crate::transport::grpc::pb::send_events::Event {
-                event: Some(
-                    crate::transport::grpc::pb::send_events::event::Event::CommitHead(commit_head),
-                ),
-            }],
+        let event = Event {
+            event_id: 0,
+            event: Some(EventVariant::CommitHead(commit_head)),
         };
 
         self.block_tx_hashes_by_iteration.clear();
         self.override_n_transactions = None;
         self.override_last_tx_hash = None;
 
-        let mut attempts = 0;
-        let mut last_error = String::new();
-
-        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
-            attempts += 1;
-
-            match self.client.send_events(request.clone()).await {
-                Ok(response) => {
-                    let ack = response.into_inner();
-                    if !ack.accepted {
-                        return Err(format!("Events request rejected: {}", ack.message));
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    last_error = format!("gRPC request failed: {e}");
-                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
-                        debug!(target: "LocalInstanceGrpcDriver", "gRPC request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
-                            .await;
-                    }
-                }
-            }
-        }
-
-        Err(format!(
-            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
-        ))
+        self.send_event(event).await
     }
 
     async fn send_transaction(
@@ -1146,124 +1156,21 @@ impl TestTransport for LocalInstanceGrpcDriver {
         }
 
         let iteration_id = tx_execution_id.iteration_id;
-        let prev_tx_hash = self
-            .get_last_tx_hash(iteration_id)
-            .map(|h| format!("{h:#x}"));
+        let prev_tx_hash = self.get_last_tx_hash(iteration_id);
+
         self.block_tx_hashes_by_iteration
             .entry(iteration_id)
             .or_default()
             .push(tx_execution_id.tx_hash);
 
-        let transaction = GrpcTransaction {
-            tx_execution_id: Some(GrpcTxExecutionId {
-                block_number: tx_execution_id.block_number,
-                iteration_id: tx_execution_id.iteration_id,
-                tx_hash: format!("{:#x}", tx_execution_id.tx_hash),
-                index: tx_execution_id.index,
-            }),
-            tx_env: Some(GrpcTransactionEnv {
-                tx_type: 0, // Default to legacy transaction type
-                caller: tx_env.caller.to_string(),
-                gas_limit: tx_env.gas_limit,
-                gas_price: tx_env.gas_price.to_string(),
-                kind: match tx_env.kind {
-                    TxKind::Call(addr) => addr.to_string(),
-                    TxKind::Create => "0x".to_string(), // Must be "0x" for create, not empty string
-                },
-                value: tx_env.value.to_string(),
-                data: format!("0x{}", alloy::hex::encode(&tx_env.data)),
-                nonce: tx_env.nonce,
-                chain_id: tx_env.chain_id,
-                access_list: tx_env
-                    .access_list
-                    .0
-                    .iter()
-                    .map(|item| {
-                        crate::transport::grpc::pb::AccessListItem {
-                            address: item.address.to_string(),
-                            storage_keys: item
-                                .storage_keys
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect(),
-                        }
-                    })
-                    .collect(),
-                authorization_list: tx_env
-                    .authorization_list
-                    .iter()
-                    .filter_map(|auth| {
-                        match auth {
-                            alloy::signers::Either::Left(signed_auth) => {
-                                let inner = signed_auth.inner();
-                                Some(crate::transport::grpc::pb::Authorization {
-                                    chain_id: inner.chain_id.to_string(),
-                                    address: inner.address.to_string(),
-                                    nonce: inner.nonce,
-                                    y_parity: signed_auth.y_parity().to_string(),
-                                    r: signed_auth.r().to_string(),
-                                    s: signed_auth.s().to_string(),
-                                })
-                            }
-                            alloy::signers::Either::Right(_recovered_auth) => {
-                                // Skip RecoveredAuthorization for now since we can't easily access its fields
-                                // In a real implementation, you'd need to handle this case properly
-                                None
-                            }
-                        }
-                    })
-                    .collect(),
-                blob_hashes: tx_env.blob_hashes.iter().map(ToString::to_string).collect(),
-                gas_priority_fee: tx_env.gas_priority_fee.map(|fee| fee.to_string()),
-                max_fee_per_blob_gas: tx_env.max_fee_per_blob_gas.to_string(),
-            }),
-            prev_tx_hash,
+        let transaction = Self::build_pb_transaction(&tx_execution_id, &tx_env, prev_tx_hash);
+
+        let event = Event {
+            event_id: 0,
+            event: Some(EventVariant::Transaction(transaction)),
         };
 
-        let request = SendTransactionsRequest {
-            transactions: vec![transaction],
-        };
-
-        debug!(target: "LocalInstanceGrpcDriver", "Sending gRPC transaction request for hash: {}", tx_execution_id.tx_hash);
-
-        let mut last_error = String::new();
-        let mut attempts = 0;
-
-        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
-            attempts += 1;
-
-            match self.client.send_transactions(request.clone()).await {
-                Ok(response) => {
-                    let resp = response.into_inner();
-                    if resp.accepted_count == 0 {
-                        return Err(format!(
-                            "Transaction rejected: {} (request_count: {})",
-                            resp.message, resp.request_count
-                        ));
-                    }
-                    if resp.accepted_count != resp.request_count {
-                        return Err(format!(
-                            "Partial acceptance: {}/{} transactions accepted: {}",
-                            resp.accepted_count, resp.request_count, resp.message
-                        ));
-                    }
-                    debug!(target: "LocalInstanceGrpcDriver", "Transaction accepted: {}/{} transactions", resp.accepted_count, resp.request_count);
-                    return Ok(());
-                }
-                Err(e) => {
-                    last_error = format!("gRPC request failed: {e}");
-                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
-                        debug!(target: "LocalInstanceGrpcDriver", "gRPC request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
-                            .await;
-                    }
-                }
-            }
-        }
-
-        Err(format!(
-            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
-        ))
+        self.send_event(event).await
     }
 
     async fn new_iteration(
@@ -1272,68 +1179,21 @@ impl TestTransport for LocalInstanceGrpcDriver {
         block_env: BlockEnv,
     ) -> Result<(), String> {
         info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending new iteration: {} with block {}", iteration_id, block_env.number);
+
         self.block_tx_hashes_by_iteration
             .insert(iteration_id, Vec::new());
 
-        let block_env_pb = crate::transport::grpc::pb::BlockEnv {
-            number: block_env.number,
-            beneficiary: block_env.beneficiary.to_string(),
-            timestamp: block_env.timestamp,
-            gas_limit: block_env.gas_limit,
-            basefee: block_env.basefee,
-            difficulty: format!("0x{:x}", block_env.difficulty),
-            prevrandao: block_env.prevrandao.map(|h| h.to_string()),
-            blob_excess_gas_and_price: block_env.blob_excess_gas_and_price.map(|blob| {
-                crate::transport::grpc::pb::BlobExcessGasAndPrice {
-                    excess_blob_gas: blob.excess_blob_gas,
-                    blob_gasprice: blob.blob_gasprice.to_string(),
-                }
-            }),
-        };
-
-        let new_iteration = crate::transport::grpc::pb::NewIteration {
+        let new_iteration = pb::NewIteration {
             iteration_id,
-            block_env: Some(block_env_pb),
+            block_env: Some(Self::build_pb_block_env(&block_env)),
         };
 
-        let request = crate::transport::grpc::pb::SendEvents {
-            events: vec![crate::transport::grpc::pb::send_events::Event {
-                event: Some(
-                    crate::transport::grpc::pb::send_events::event::Event::NewIteration(
-                        new_iteration,
-                    ),
-                ),
-            }],
+        let event = Event {
+            event_id: 0,
+            event: Some(EventVariant::NewIteration(new_iteration)),
         };
 
-        let mut attempts = 0;
-        let mut last_error = String::new();
-
-        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
-            attempts += 1;
-
-            match self.client.send_events(request.clone()).await {
-                Ok(response) => {
-                    let ack = response.into_inner();
-                    if !ack.accepted {
-                        return Err(format!("Events request rejected: {}", ack.message));
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    last_error = format!("gRPC request failed: {e}");
-                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
-                        debug!(target: "LocalInstanceGrpcDriver", "gRPC request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
-                            .await;
-                    }
-                }
-            }
-        }
-
-        Err(format!(
-            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
-        ))
+        self.send_event(event).await
     }
 
     async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
@@ -1351,52 +1211,21 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 debug!(
                     target: "LocalInstanceGrpcDriver",
                     "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
-                    tracked_hash,
-                    last_hash,
-                    iteration_id
+                    tracked_hash, last_hash, iteration_id
                 );
             }
         }
 
-        let request = ReorgRequest {
-            tx_execution_id: Some(GrpcTxExecutionId {
-                block_number: tx_execution_id.block_number,
-                iteration_id: tx_execution_id.iteration_id,
-                tx_hash: format!("{:#x}", tx_execution_id.tx_hash),
-                index: tx_execution_id.index,
-            }),
+        let reorg_event = pb::ReorgEvent {
+            tx_execution_id: Some(Self::build_pb_tx_execution_id(&tx_execution_id)),
         };
 
-        debug!(target: "LocalInstanceGrpcDriver", "Sending gRPC reorg request");
+        let event = Event {
+            event_id: 0,
+            event: Some(EventVariant::Reorg(reorg_event)),
+        };
 
-        let mut last_error = String::new();
-        let mut attempts = 0;
-
-        while attempts < MAX_HTTP_RETRY_ATTEMPTS {
-            attempts += 1;
-
-            match self.client.clone().reorg(request.clone()).await {
-                Ok(response) => {
-                    let ack = response.into_inner();
-                    if !ack.accepted {
-                        return Err(format!("Reorg rejected: {}", ack.message));
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    last_error = format!("gRPC request failed: {e}");
-                    if attempts < MAX_HTTP_RETRY_ATTEMPTS {
-                        debug!(target: "LocalInstanceGrpcDriver", "gRPC request failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(HTTP_RETRY_DELAY_MS))
-                            .await;
-                    }
-                }
-            }
-        }
-
-        Err(format!(
-            "Failed after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {last_error}",
-        ))
+        self.send_event(event).await
     }
 
     fn set_n_transactions(&mut self, n_transactions: u64) {

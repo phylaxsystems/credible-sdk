@@ -3,6 +3,7 @@
 use crate::{
     CircularBufferConfig,
     common::{
+        AccountInfo,
         AccountState,
         AddressHash,
         BlockMetadata,
@@ -18,16 +19,17 @@ use crate::{
         get_account_key,
         get_all_accounts_patter,
         get_block_hash_key,
+        get_block_key,
         get_code_key,
         get_namespace_for_block,
         get_state_root_key,
         get_storage_key,
         read_latest_block_number,
-        read_namespace_block_number,
     },
 };
 use alloy::primitives::{
     B256,
+    KECCAK256_EMPTY,
     U256,
 };
 use redis::Pipeline;
@@ -59,9 +61,32 @@ impl StateReader {
             .with_connection(move |conn| read_latest_block_number(conn, &base_namespace))
     }
 
-    /// Get the complete account state including code and all storage slots.
-    /// Optimized to fetch everything in a single Redis roundtrip.
+    /// Get account info without storage slots (balance, nonce, code hash, code only).
+    /// This is the recommended method for most use cases to avoid large data transfers.
+    /// Use `get_full_account` or `get_all_storage` separately if storage is needed.
     pub fn get_account(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<Option<AccountInfo>> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        self.client.with_connection(move |conn| {
+            get_account_at_block(
+                conn,
+                &base_namespace,
+                buffer_size,
+                &address_hash,
+                block_number,
+            )
+        })
+    }
+
+    /// Get the complete account state including code and all storage slots.
+    /// WARNING: This can be expensive for contracts with large storage (millions of slots).
+    /// Use `get_account` + `get_storage` for specific slots when possible.
+    pub fn get_full_account(
         &self,
         address_hash: AddressHash,
         block_number: u64,
@@ -70,7 +95,7 @@ impl StateReader {
         let buffer_size = self.client.buffer_config.buffer_size;
 
         self.client.with_connection(move |conn| {
-            get_account_at_block(
+            get_full_account_at_block(
                 conn,
                 &base_namespace,
                 buffer_size,
@@ -232,8 +257,88 @@ impl StateReader {
 // Internal helper functions
 // ============================================================================
 
-/// Get complete account state including code and storage in a single roundtrip.
+/// Parse namespace block number from optional string.
+fn parse_namespace_block(namespace_block_str: Option<String>) -> StateResult<Option<u64>> {
+    namespace_block_str
+        .map(|s| {
+            s.parse::<u64>()
+                .map_err(|e| StateError::ParseInt(s.clone(), e))
+        })
+        .transpose()
+}
+
+/// Verify the namespace contains the expected block number.
+fn verify_namespace_block(namespace_block: Option<u64>, expected: u64) -> StateResult<()> {
+    if namespace_block != Some(expected) {
+        return Err(StateError::BlockNotFound {
+            block_number: expected,
+        });
+    }
+    Ok(())
+}
+
+/// Get account info without storage slots.
+/// This is the lightweight version that avoids loading potentially large storage.
 fn get_account_at_block<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    buffer_size: usize,
+    address_hash: &AddressHash,
+    block_number: u64,
+) -> StateResult<Option<AccountInfo>>
+where
+    C: redis::ConnectionLike,
+{
+    let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
+
+    let block_key = get_block_key(&namespace);
+    let account_key = get_account_key(&namespace, address_hash);
+
+    // Atomic read: fetch namespace block number AND account data in single pipeline
+    let mut pipe = Pipeline::new();
+    pipe.get(&block_key).hgetall(&account_key);
+
+    let results: (Option<String>, HashMap<String, String>) = pipe.query(conn)?;
+
+    let (namespace_block_str, account_fields) = results;
+
+    // Verify block number after atomic read
+    let namespace_block = parse_namespace_block(namespace_block_str)?;
+    verify_namespace_block(namespace_block, block_number)?;
+
+    if account_fields.is_empty() {
+        return Ok(None);
+    }
+
+    let balance = account_fields
+        .get("balance")
+        .ok_or(StateError::MissingField("balance"))?;
+    let nonce = account_fields
+        .get("nonce")
+        .ok_or(StateError::MissingField("nonce"))?;
+    let code_hash = account_fields
+        .get("code_hash")
+        .ok_or(StateError::MissingField("code_hash"))?;
+
+    let code_hash_decoded = decode_b256(code_hash)?;
+
+    let balance_parsed =
+        U256::from_str_radix(balance, 10).map_err(|e| StateError::ParseU256(balance.clone(), e))?;
+    let nonce_parsed = nonce
+        .parse()
+        .map_err(|e| StateError::ParseInt(nonce.clone(), e))?;
+
+    Ok(Some(AccountInfo {
+        address_hash: address_hash.clone(),
+        balance: balance_parsed,
+        nonce: nonce_parsed,
+        code_hash: code_hash_decoded,
+    }))
+}
+
+/// Get the complete account state including code and storage in a single roundtrip.
+/// WARNING: This can transfer large amounts of data for contracts with many storage slots.
+fn get_full_account_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
@@ -245,21 +350,27 @@ where
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
 
-    let namespace_block = read_namespace_block_number(conn, &namespace)?;
-    if namespace_block != Some(block_number) {
-        return Err(StateError::BlockNotFound { block_number });
-    }
-
+    let block_key = get_block_key(&namespace);
     let account_key = get_account_key(&namespace, address_hash);
     let storage_key = get_storage_key(&namespace, address_hash);
 
-    // Pipeline all reads together for single roundtrip
+    // Atomic read: fetch namespace block number AND data in single pipeline
     let mut pipe = Pipeline::new();
-    pipe.hgetall(&account_key).hgetall(&storage_key);
+    pipe.get(&block_key)
+        .hgetall(&account_key)
+        .hgetall(&storage_key);
 
-    let results: (HashMap<String, String>, HashMap<String, String>) = pipe.query(conn)?;
+    let results: (
+        Option<String>,
+        HashMap<String, String>,
+        HashMap<String, String>,
+    ) = pipe.query(conn)?;
 
-    let (account_fields, storage_fields) = results;
+    let (namespace_block_str, account_fields, storage_fields) = results;
+
+    // Verify block number after atomic read
+    let namespace_block = parse_namespace_block(namespace_block_str)?;
+    verify_namespace_block(namespace_block, block_number)?;
 
     if account_fields.is_empty() {
         return Ok(None);
@@ -287,7 +398,8 @@ where
     }
 
     // Fetch code if code_hash is non-empty
-    let code = if code_hash_decoded == B256::ZERO {
+    // Note: This is a separate read, but code is content-addressed so it's safe
+    let code = if code_hash_decoded == KECCAK256_EMPTY {
         None
     } else {
         let code_hash_hex = hex::encode(code_hash_decoded);
@@ -329,19 +441,25 @@ where
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
 
-    let namespace_block = read_namespace_block_number(conn, &namespace)?;
-    if namespace_block != Some(block_number) {
-        return Err(StateError::BlockNotFound { block_number });
-    }
-
+    let block_key = get_block_key(&namespace);
     let storage_key = get_storage_key(&namespace, address_hash);
     let slot_hash = B256::from(slot.to_be_bytes::<32>());
     let slot_hex = encode_b256(slot_hash);
 
-    let value: Option<String> = redis::cmd("HGET")
+    // Atomic read: fetch namespace block number AND storage slot together
+    let mut pipe = Pipeline::new();
+    pipe.get(&block_key)
+        .cmd("HGET")
         .arg(&storage_key)
-        .arg(&slot_hex)
-        .query(conn)?;
+        .arg(&slot_hex);
+
+    let results: (Option<String>, Option<String>) = pipe.query(conn)?;
+
+    let (namespace_block_str, value) = results;
+
+    // Verify block number after atomic read
+    let namespace_block = parse_namespace_block(namespace_block_str)?;
+    verify_namespace_block(namespace_block, block_number)?;
 
     value.map(|v| decode_u256(&v)).transpose()
 }
@@ -359,14 +477,20 @@ where
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
 
-    let namespace_block = read_namespace_block_number(conn, &namespace)?;
-    if namespace_block != Some(block_number) {
-        return Err(StateError::BlockNotFound { block_number });
-    }
-
+    let block_key = get_block_key(&namespace);
     let storage_key = get_storage_key(&namespace, address_hash);
 
-    let fields: HashMap<String, String> = redis::cmd("HGETALL").arg(&storage_key).query(conn)?;
+    // Atomic read: fetch namespace block number AND all storage together
+    let mut pipe = Pipeline::new();
+    pipe.get(&block_key).hgetall(&storage_key);
+
+    let results: (Option<String>, HashMap<String, String>) = pipe.query(conn)?;
+
+    let (namespace_block_str, fields) = results;
+
+    // Verify block number after atomic read
+    let namespace_block = parse_namespace_block(namespace_block_str)?;
+    verify_namespace_block(namespace_block, block_number)?;
 
     let mut result = HashMap::new();
     for (slot_hex, value_hex) in fields {
@@ -392,21 +516,30 @@ where
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
 
-    let namespace_block = read_namespace_block_number(conn, &namespace)?;
-    if namespace_block != Some(block_number) {
-        return Err(StateError::BlockNotFound { block_number });
-    }
-
+    let block_key = get_block_key(&namespace);
     let code_hash_hex = hex::encode(code_hash);
     let code_key = get_code_key(&namespace, &code_hash_hex);
 
-    let value: Option<String> = redis::cmd("GET").arg(&code_key).query(conn)?;
+    // Atomic read: fetch namespace block number AND code together
+    let mut pipe = Pipeline::new();
+    pipe.get(&block_key).get(&code_key);
+
+    let results: (Option<String>, Option<String>) = pipe.query(conn)?;
+
+    let (namespace_block_str, value) = results;
+
+    // Verify block number after atomic read
+    let namespace_block = parse_namespace_block(namespace_block_str)?;
+    verify_namespace_block(namespace_block, block_number)?;
 
     value.map(|v| decode_bytes(&v)).transpose()
 }
 
 /// Scan all account hashes at a specific block.
 /// Keys are stored as: namespace:account:KECCAK(ADDRESS)_HEX
+///
+/// Note: SCAN is inherently non-atomic, so we verify the namespace block
+/// both before and after the scan to detect race conditions.
 fn scan_account_hashes_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
@@ -417,15 +550,14 @@ where
     C: redis::ConnectionLike,
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
+    let block_key = get_block_key(&namespace);
 
-    // Verify the namespace contains the requested block
-    let namespace_block = read_namespace_block_number(conn, &namespace)?;
-    if namespace_block != Some(block_number) {
-        return Err(StateError::BlockNotFound { block_number });
-    }
+    // Verify namespace contains the requested block before scanning
+    let namespace_block_str: Option<String> = redis::cmd("GET").arg(&block_key).query(conn)?;
+    let namespace_block = parse_namespace_block(namespace_block_str)?;
+    verify_namespace_block(namespace_block, block_number)?;
 
     // Scan for all account keys in this namespace
-    // Keys are: namespace:account:KECCAK_HEX
     let pattern = get_all_accounts_patter(&namespace);
     let mut cursor = 0u64;
     let mut hashes = Vec::new();
@@ -439,11 +571,8 @@ where
             .arg(100)
             .query(conn)?;
 
-        // Extract the keccak hash from each key
         for key in keys {
-            // Key format: "namespace:account:KECCAK_HEX"
             if let Some(hash_hex) = key.strip_prefix(&format!("{namespace}:account:")) {
-                // Remove 0x prefix if present
                 let hash_hex = hash_hex.strip_prefix("0x").unwrap_or(hash_hex);
 
                 let bytes = hex::decode(hash_hex)
@@ -462,6 +591,11 @@ where
             break;
         }
     }
+
+    // Re-verify namespace block hasn't changed during scan
+    let namespace_block_str: Option<String> = redis::cmd("GET").arg(&block_key).query(conn)?;
+    let namespace_block = parse_namespace_block(namespace_block_str)?;
+    verify_namespace_block(namespace_block, block_number)?;
 
     Ok(hashes)
 }
@@ -507,6 +641,10 @@ where
     C: redis::ConnectionLike,
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
-    let namespace_block = read_namespace_block_number(conn, &namespace)?;
+    let block_key = get_block_key(&namespace);
+
+    let namespace_block_str: Option<String> = redis::cmd("GET").arg(&block_key).query(conn)?;
+    let namespace_block = parse_namespace_block(namespace_block_str)?;
+
     Ok(namespace_block == Some(block_number))
 }

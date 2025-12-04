@@ -2008,4 +2008,23 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_storage_ref_returns_zero_for_missing_slot() {
+        // MockSource without the storage_value set should return U256::ZERO
+        let source = Arc::new(MockSource::new(SourceName::Sequencer));
+
+        let cache = Sources::new(vec![source.clone()], 10);
+        let address = create_test_address();
+        let storage_key = U256::from(999); // arbitrary slot that doesn't exist
+
+        let result = cache.storage_ref(address, storage_key).unwrap();
+
+        assert_eq!(
+            result,
+            U256::ZERO,
+            "Missing storage slot should return zero"
+        );
+        assert_eq!(source.storage_ref_call_count(), 1);
+    }
 }
