@@ -282,7 +282,7 @@ fn test_last_executed_tx_single_push_and_pop() {
     let cur = txs.current().expect("should contain the pushed tx");
     assert_eq!(cur.0, id1, "current should be the last pushed hash");
 
-    let popped = txs.remove_last().expect("should pop the only element");
+    let popped = txs.take().expect("should pop the only element");
     assert_eq!(popped.0, id1, "popped should be the same hash");
     assert!(txs.current().is_none(), "should be empty after pop");
 }
@@ -300,10 +300,10 @@ fn test_last_executed_tx_two_elements_lifo() {
     // LIFO: current is h2
     assert_eq!(txs.current().unwrap().0, id2);
     // Pop h2, current becomes h1
-    assert_eq!(txs.remove_last().unwrap().0, id2);
+    assert_eq!(txs.take().unwrap().0, id2);
     assert_eq!(txs.current().unwrap().0, id1);
     // Pop h1, now empty
-    assert_eq!(txs.remove_last().unwrap().0, id1);
+    assert_eq!(txs.take().unwrap().0, id1);
     assert!(txs.current().is_none());
 }
 
@@ -331,7 +331,7 @@ fn test_last_executed_tx_overflow_discards_oldest() {
     );
 
     // Removing last returns h3, and now current should be h2 (h1 was discarded)
-    assert_eq!(txs.remove_last().unwrap().0, id3);
+    assert_eq!(txs.take().unwrap().0, id3);
     assert_eq!(
         txs.current().unwrap().0,
         id2,
@@ -339,7 +339,7 @@ fn test_last_executed_tx_overflow_discards_oldest() {
     );
 
     // Removing last again returns h2 and leaves empty
-    assert_eq!(txs.remove_last().unwrap().0, id2);
+    assert_eq!(txs.take().unwrap().0, id2);
     assert!(txs.current().is_none());
 }
 

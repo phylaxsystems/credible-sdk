@@ -164,13 +164,6 @@ impl LastExecutedTx {
         }
     }
 
-    #[inline]
-    fn take_current_state(&mut self) -> Option<EvmState> {
-        self.execution_results
-            .back_mut()
-            .and_then(|(_, state)| state.take())
-    }
-
     fn push(&mut self, tx_execution_id: TxExecutionId, state: Option<EvmState>) {
         if self.execution_results.len() == 2 {
             self.execution_results.pop_front();
@@ -178,7 +171,7 @@ impl LastExecutedTx {
         self.execution_results.push_back((tx_execution_id, state));
     }
 
-    fn remove_last(&mut self) -> Option<(TxExecutionId, Option<EvmState>)> {
+    fn take(&mut self) -> Option<(TxExecutionId, Option<EvmState>)> {
         self.execution_results.pop_back()
     }
 
@@ -1265,13 +1258,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         }
 
-        let changes = current_block_iteration
-            .last_executed_tx
-            .take_current_state()
-            .ok_or(EngineError::NothingToCommit)?;
-
-        current_block_iteration.fork_db.commit(changes);
-        Ok(())
+        if let Some((_, Some(changes))) = current_block_iteration.last_executed_tx.take() {
+            current_block_iteration.fork_db.commit(changes);
+            current_block_iteration.last_executed_tx.clear();
+            Ok(())
+        } else {
+            Err(EngineError::NothingToCommit)
+        }
     }
 
     /// Finalizes the previous block by committing the block fork to the underlying state
@@ -1306,11 +1299,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         };
 
-        if let Some(changes) = current_block_iteration
-            .last_executed_tx
-            .take_current_state()
-        {
+        if let Some((_, Some(changes))) = current_block_iteration.last_executed_tx.take() {
             self.cache.commit(changes);
+        } else {
+            return Err(EngineError::NothingToCommit);
         }
         current_block_iteration.last_executed_tx.clear();
         Ok(())
@@ -1366,7 +1358,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
 
             // Remove the last transaction from buffer, preserving the previous one if it exists
-            current_block_iteration.last_executed_tx.remove_last();
+            current_block_iteration.last_executed_tx.take();
 
             // Remove transaction from results
             self.transaction_results
@@ -1449,6 +1441,7 @@ where
     fn from(error: &ExecutorError<ActiveDbErr, ExtDbErr>) -> Self {
         match error {
             ExecutorError::ForkTxExecutionError(e) => e.into(), // ← This calls TxExecutionError::into()
+
             ExecutorError::AssertionExecutionError(..) => ErrorRecoverability::Unrecoverable,
         }
     }
