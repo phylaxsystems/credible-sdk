@@ -291,7 +291,7 @@ mod test {
             info: AccountInfo::default(),
             transaction_id: 0,
             storage: std::collections::HashMap::default(), // Empty storage - slot not found
-            status: AccountStatus::Touched,
+            status: AccountStatus::LoadedAsNotExisting,
         };
         journal.state.insert(contract_address, account);
 

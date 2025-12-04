@@ -170,11 +170,11 @@ macro_rules! reprice_evm_storage {
         use revm::interpreter::Instruction;
         $evm.instruction.insert_instruction(
             revm::bytecode::opcode::SLOAD,
-            Instruction::new($crate::evm::build_evm::ph_sload, 100),
+            Instruction::new($crate::evm::build_evm::ph_sload, 0),
         );
         $evm.instruction.insert_instruction(
             revm::bytecode::opcode::SSTORE,
-            Instruction::new($crate::evm::build_evm::ph_sstore, 100),
+            Instruction::new($crate::evm::build_evm::ph_sstore, 0),
         );
     }};
 }

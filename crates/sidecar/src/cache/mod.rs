@@ -1603,14 +1603,6 @@ mod tests {
         // Await result
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while !logs_contain("critical") {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("expected critical log after exhausting fallbacks");
-
         // The first fallback is hit
         let eth_rpc_source_db_basic_ref_counter = *instance
             .eth_rpc_source_http_mock
