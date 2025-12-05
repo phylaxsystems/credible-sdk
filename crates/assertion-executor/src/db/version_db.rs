@@ -456,10 +456,7 @@ mod tests {
 
         let storage_calls_before = version_db.state.inner_db.get_storage_calls();
 
-        assert_eq!(
-            version_db.storage_ref(address, slot).unwrap(),
-            U256::ZERO
-        );
+        assert_eq!(version_db.storage_ref(address, slot).unwrap(), U256::ZERO);
         assert_eq!(
             version_db.state.inner_db.get_storage_calls(),
             storage_calls_before

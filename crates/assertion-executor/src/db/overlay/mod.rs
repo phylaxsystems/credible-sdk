@@ -33,7 +33,10 @@ use alloy_primitives::{
     B256,
     U256,
 };
-use dashmap::DashMap;
+use dashmap::{
+    DashMap,
+    DashSet,
+};
 use enum_as_inner::EnumAsInner;
 use metrics::{
     counter,
@@ -80,8 +83,13 @@ pub enum TableValue {
 /// - standalone: Without any underlying db.
 #[derive(Debug)]
 pub struct OverlayDb<Db> {
+    /// Database we read from as a fallback.
     underlying_db: Option<Arc<Db>>,
+    /// Overlay database, in memory cache.
     pub overlay: Arc<DashMap<TableKey, TableValue>>,
+    /// Stores accounts which were created inside of the overlay,
+    /// so we dont query the underlying state when reading from them.
+    created_accounts: Arc<DashSet<Address>>,
 }
 
 impl<Db> Clone for OverlayDb<Db> {
@@ -89,6 +97,7 @@ impl<Db> Clone for OverlayDb<Db> {
         Self {
             underlying_db: self.underlying_db.clone(),
             overlay: self.overlay.clone(),
+            created_accounts: self.created_accounts.clone(),
         }
     }
 }
@@ -98,6 +107,7 @@ impl<Db> Default for OverlayDb<Db> {
         Self {
             underlying_db: None,
             overlay: Arc::new(DashMap::new()),
+            created_accounts: Arc::new(DashSet::new()),
         }
     }
 }
@@ -108,21 +118,25 @@ impl<Db> OverlayDb<Db> {
         Self {
             underlying_db,
             overlay: Arc::new(DashMap::new()),
+            created_accounts: Arc::new(DashSet::new()),
         }
     }
 
     /// Creates a new `OverlayDb` with the max capacity being determined by the number
     /// of elements inside of the cache instead of the size.
+    #[warn(deprecated)]
     pub fn new_with_len(underlying_db: Option<Arc<Db>>) -> Self {
         Self {
             underlying_db,
             overlay: Arc::new(DashMap::new()),
+            created_accounts: Arc::new(DashSet::new()),
         }
     }
 
     ///Invalidates all cache entries.
     pub fn invalidate_all(&self) {
         self.overlay.clear();
+        self.created_accounts.clear();
     }
 
     /// Replaces underlying database refrance with a new one.
@@ -228,6 +242,10 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
             return Ok(None);
         }
 
+        if self.created_accounts.contains(&address) {
+            return Ok(None);
+        }
+
         counter!("assex_overlay_db_basic_ref_misses").increment(1);
 
         // Not in cache, try underlying DB if it exists
@@ -290,6 +308,12 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
             counter!("assex_overlay_db_storage_ref_hits").increment(1);
             let value_u256: U256 = (*value.as_storage().unwrap()).into();
             return Ok(value_u256); // unwrap safe
+        }
+
+        if self.created_accounts.contains(&address) {
+            // so we dont go down the path of checking created accounts again
+            self.overlay.insert(key, TableValue::Storage(B256::ZERO));
+            return Ok(U256::ZERO);
         }
 
         counter!("assex_overlay_db_storage_ref_misses").increment(1);
@@ -375,6 +399,10 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
                 continue;
             }
 
+            if account.is_created() {
+                self.created_accounts.insert(address);
+            }
+
             // Update account info
             let key = TableKey::Basic(address);
             self.overlay
@@ -416,15 +444,34 @@ impl<Db> OverlayDb<Db> {
 
         // Update storage slots
         for (address, slot_map) in fork_db.storage {
+            if slot_map.dont_read_from_inner_db {
+                self.created_accounts.insert(address);
+
+                if slot_map.map.is_empty() {
+                    let keys_to_remove: Vec<_> = self
+                        .overlay
+                        .iter()
+                        .filter_map(|entry| {
+                            match entry.key() {
+                                TableKey::Storage(addr, slot) if *addr == address => {
+                                    Some(TableKey::Storage(*addr, *slot))
+                                }
+                                _ => None,
+                            }
+                        })
+                        .collect();
+
+                    for key in keys_to_remove {
+                        self.overlay.remove(&key);
+                    }
+                }
+            }
+
             for (slot, storage_slot) in slot_map.map {
                 let storage_key = TableKey::Storage(address, slot);
                 let value_b256: B256 = storage_slot.to_be_bytes().into();
-                if slot_map.dont_read_from_inner_db {
-                    self.overlay.remove(&storage_key);
-                } else {
-                    self.overlay
-                        .insert(storage_key, TableValue::Storage(value_b256));
-                }
+                self.overlay
+                    .insert(storage_key, TableValue::Storage(value_b256));
             }
         }
     }
@@ -450,6 +497,10 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
         // Not in cache, try underlying DB if it exists
         match self.underlying_db.as_ref() {
             Some(db) => {
+                if self.created_accounts.contains(&address) {
+                    return Ok(None);
+                }
+
                 // Map potential underlying DB error to NotFoundError
                 match db.basic_ref(address).map_err(|_| NotFoundError)? {
                     Some(account_info) => {
@@ -506,6 +557,11 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
         // Not in cache, try underlying DB
         match self.underlying_db.as_ref() {
             Some(db) => {
+                if self.created_accounts.contains(&address) {
+                    self.overlay.insert(key, TableValue::Storage(B256::ZERO));
+                    return Ok(U256::ZERO);
+                }
+
                 // Underlying DB returns Result<U256, Error>
                 let value_u256 = db.storage_ref(address, index).map_err(|_| NotFoundError)?;
                 // Found in DB (even if zero), cache it as B256
@@ -552,7 +608,15 @@ mod overlay_db_tests {
             MockDb,
             mock_account_info,
         },
-        primitives::Bytecode,
+        primitives::{
+            Account,
+            AccountInfo,
+            AccountStatus,
+            Bytecode,
+            EvmState,
+            EvmStorage,
+            EvmStorageSlot,
+        },
     };
     use alloy_primitives::{
         address,
@@ -801,6 +865,53 @@ mod overlay_db_tests {
         assert_eq!(result, Some(info1));
         assert_eq!(mock_db_arc.get_basic_calls(), 2); // Called underlying again
         assert!(overlay_db.is_cached(&key1)); // Repopulated
+    }
+
+    #[test]
+    fn created_account_storage_skips_underlying_and_resets_on_invalidate() {
+        let addr = address!("00000000000000000000000000000000000000c1");
+        let slot = U256::from(3);
+
+        let mut mock_db = MockDb::new();
+        mock_db.insert_storage(addr, slot, U256::from(5));
+        let mock_db_arc = Arc::new(mock_db);
+
+        let mut overlay_db = OverlayDb::new(Some(mock_db_arc.clone()));
+
+        let mut storage = EvmStorage::default();
+        storage.insert(
+            slot,
+            EvmStorageSlot {
+                present_value: U256::from(9),
+                ..Default::default()
+            },
+        );
+
+        let mut evm_state = EvmState::default();
+        evm_state.insert(
+            addr,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage,
+                status: AccountStatus::Created | AccountStatus::Touched,
+            },
+        );
+
+        overlay_db.commit(evm_state);
+
+        // Remove cached storage to force a miss and ensure we don't hit the underlying DB.
+        overlay_db.overlay.remove(&TableKey::Storage(addr, slot));
+        let storage_calls_before = mock_db_arc.get_storage_calls();
+
+        assert_eq!(overlay_db.storage_ref(addr, slot).unwrap(), U256::ZERO);
+        assert_eq!(mock_db_arc.get_storage_calls(), storage_calls_before);
+
+        // Clearing the cache should also clear created-account tracking so we fall back again.
+        overlay_db.invalidate_all();
+
+        assert_eq!(overlay_db.storage_ref(addr, slot).unwrap(), U256::from(5));
+        assert!(mock_db_arc.get_storage_calls() > storage_calls_before);
     }
 
     #[test]
