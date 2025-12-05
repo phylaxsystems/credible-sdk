@@ -123,6 +123,7 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
             if !account.is_touched() {
                 continue;
             }
+            let created_in_fork = account.is_created();
             if account.is_selfdestructed() {
                 self.basic.insert(address, account.info.clone());
 
@@ -143,6 +144,9 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
             self.basic.insert(address, account.info.clone());
             match self.storage.get_mut(&address) {
                 Some(s) => {
+                    if created_in_fork {
+                        s.dont_read_from_inner_db = true;
+                    }
                     s.map.extend(
                         account
                             .storage
@@ -159,7 +163,7 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
                                 .into_iter()
                                 .map(|(k, v)| (k, v.present_value()))
                                 .collect(),
-                            dont_read_from_inner_db: false,
+                            dont_read_from_inner_db: created_in_fork,
                         },
                     );
                 }

@@ -431,6 +431,42 @@ mod tests {
     }
 
     #[test]
+    fn created_account_does_not_fallback_to_inner_db() {
+        let mut inner = MockDb::new();
+        let address = address!("0000000000000000000000000000000000000006");
+        let slot = U256::from(3);
+
+        inner.insert_account(address, mock_account_info(uint!(1_U256), 0, None));
+        inner.insert_storage(address, slot, uint!(7_U256));
+
+        let mut version_db = VersionDb::new(inner);
+
+        let mut creation_state = EvmState::default();
+        creation_state.insert(
+            address,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Created | AccountStatus::Touched,
+            },
+        );
+
+        version_db.commit(creation_state);
+
+        let storage_calls_before = version_db.state.inner_db.get_storage_calls();
+
+        assert_eq!(
+            version_db.storage_ref(address, slot).unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(
+            version_db.state.inner_db.get_storage_calls(),
+            storage_calls_before
+        );
+    }
+
+    #[test]
     fn rollback_restores_prior_code_and_storage_per_depth() {
         let mut version_db = VersionDb::new(MockDb::new());
         let address = address!("0000000000000000000000000000000000000003");
