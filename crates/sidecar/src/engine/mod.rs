@@ -180,8 +180,8 @@ impl LastExecutedTx {
     }
 
     #[inline]
-    fn remove_last(&mut self) -> Option<(TxExecutionId, Option<EvmState>)> {
-        self.execution_results.pop()
+    fn take(&mut self) -> Option<(TxExecutionId, Option<EvmState>)> {
+        self.execution_results.pop_back()
     }
 
     #[inline]
@@ -1254,13 +1254,18 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         };
 
-        if let Some((_, state)) = current_block_iteration.last_executed_tx.current() {
-            let changes = state.clone().ok_or(EngineError::NothingToCommit)?;
-            // Commit to the current block fork
-            current_block_iteration.fork_db.commit(changes);
+        // If there is no last executed transaction, there is nothing to apply.
+        if current_block_iteration.last_executed_tx.current().is_none() {
+            return Ok(());
         }
-        current_block_iteration.last_executed_tx = LastExecutedTx::new();
-        Ok(())
+
+        if let Some((_, Some(changes))) = current_block_iteration.last_executed_tx.take() {
+            current_block_iteration.fork_db.commit(changes);
+            current_block_iteration.last_executed_tx.clear();
+            Ok(())
+        } else {
+            Err(EngineError::NothingToCommit)
+        }
     }
 
     /// Finalizes the previous block by committing the block fork to the underlying state
@@ -1295,13 +1300,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         };
 
-        #[allow(clippy::used_underscore_binding)]
-        if let Some((_tx_execution_id, state)) = current_block_iteration.last_executed_tx.current()
-        {
-            let changes = state.clone().ok_or(EngineError::NothingToCommit)?;
+        if let Some((_, Some(changes))) = current_block_iteration.last_executed_tx.take() {
             self.cache.commit(changes);
+        } else {
+            return Err(EngineError::NothingToCommit);
         }
-        current_block_iteration.last_executed_tx = LastExecutedTx::new();
+        current_block_iteration.last_executed_tx.clear();
         Ok(())
     }
 
@@ -1356,7 +1360,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
 
             // Remove the last transaction from buffer, preserving the previous one if it exists
-            current_block_iteration.last_executed_tx.remove_last();
+            current_block_iteration.last_executed_tx.take();
 
             // Remove transaction from results
             self.transaction_results
