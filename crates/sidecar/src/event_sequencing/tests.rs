@@ -228,7 +228,15 @@ fn create_commit_head(
     last_tx_hash: Option<TxHash>,
 ) -> TxQueueContents {
     TxQueueContents::CommitHead(
-        CommitHead::new(U256::from(block), iteration, last_tx_hash, n_txs),
+        CommitHead::new(
+            U256::from(block),
+            iteration,
+            last_tx_hash,
+            n_txs,
+            None,
+            None,
+            U256::ZERO,
+        ),
         tracing::Span::none(),
     )
 }

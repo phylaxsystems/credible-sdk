@@ -40,16 +40,24 @@
 
 mod monitoring;
 pub mod queue;
+pub mod system_calls;
 #[cfg(test)]
 mod tests;
 mod transactions_results;
 
-use super::engine::queue::{
-    CommitHead,
-    NewIteration,
-    QueueTransaction,
-    TransactionQueueReceiver,
-    TxQueueContents,
+use self::{
+    queue::{
+        CommitHead,
+        NewIteration,
+        QueueTransaction,
+        TransactionQueueReceiver,
+        TxQueueContents,
+    },
+    system_calls::{
+        SpecIdExt,
+        SystemCalls,
+        SystemCallsConfig,
+    },
 };
 use crate::{
     TransactionsState,
@@ -98,7 +106,10 @@ use revm::state::EvmState;
 
 use crate::{
     cache::Sources,
-    engine::transactions_results::TransactionsResults,
+    engine::{
+        system_calls::SystemCallError,
+        transactions_results::TransactionsResults,
+    },
     execution_ids::{
         BlockExecutionId,
         TxExecutionId,
@@ -122,6 +133,7 @@ use assertion_executor::{
 use dashmap::DashMap;
 #[cfg(feature = "cache_validation")]
 use monitoring::cache::CacheChecker;
+use revm::primitives::hardfork::SpecId;
 #[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
@@ -228,6 +240,8 @@ pub enum EngineError {
     TxBlockMismatch,
     #[error("Shutdown signal received")]
     Shutdown,
+    #[error("System call error")]
+    SystemCallError(#[source] SystemCallError),
 }
 
 impl From<&EngineError> for ErrorRecoverability {
@@ -246,6 +260,7 @@ impl From<&EngineError> for ErrorRecoverability {
             | EngineError::TxBlockMismatch
             | EngineError::BadReorgHash
             | EngineError::NoSyncedSources
+            | EngineError::SystemCallError(_)
             | EngineError::Shutdown => ErrorRecoverability::Recoverable,
         }
     }
@@ -328,6 +343,8 @@ pub struct CoreEngine<DB> {
     sources_monitoring: Arc<monitoring::sources::Sources>,
     /// Option to invalidate the cache on every block
     overlay_cache_invalidation_every_block: bool,
+    /// System calls handler for EIP-2935 and EIP-4788.
+    system_calls: SystemCalls,
     #[cfg(feature = "cache_validation")]
     processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
     #[cfg(feature = "cache_validation")]
@@ -381,6 +398,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
             (processed_transactions, handle)
         };
+
         Self {
             cache_metrics_handle: Some(cache.spawn_monitoring_thread()),
             cache,
@@ -401,6 +419,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 source_monitoring_period,
             ),
             overlay_cache_invalidation_every_block,
+            system_calls: SystemCalls::new(),
             #[cfg(feature = "cache_validation")]
             processed_transactions,
             #[cfg(feature = "cache_validation")]
@@ -408,6 +427,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             #[cfg(feature = "cache_validation")]
             cache_checker,
         }
+    }
+
+    /// Returns the current spec ID from the executor configuration.
+    #[inline]
+    fn get_spec_id(&self) -> SpecId {
+        self.assertion_executor.config.spec_id
     }
 
     /// Helper function to take an errored transaction, and either:
@@ -1102,6 +1127,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             target = "engine",
             commit_head = ?commit_head,
             processed_blocks = *processed_blocks,
+            has_hash = commit_head.block_hash.is_some(),
+            has_beacon_root = commit_head.beacon_block_root.is_some(),
             "Processing CommitHead",
         );
 
@@ -1115,15 +1142,33 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             self.check_cache(commit_head, &block_execution_id);
         }
 
+        let spec_id = self.get_spec_id();
+        let system_calls = self.system_calls.clone();
+
         // Finalize the previous block by committing its fork to the underlying state
         // Apply the last transaction's state to the current block fork
         if self
             .current_block_iterations
             .contains_key(&block_execution_id)
         {
+            // Finalize the previous block by committing its fork to the underlying state
             self.apply_state_buffer_to_fork(block_execution_id)?;
+
             self.finalize_previous_block(block_execution_id);
         }
+
+        // Apply EIP-2935 and EIP-4788 system calls before finalizing
+        let config = SystemCallsConfig::new(
+            spec_id,
+            commit_head.block_number,
+            commit_head.timestamp,
+            commit_head.block_hash,
+            commit_head.beacon_block_root,
+        );
+
+        system_calls
+            .apply_system_calls(&config, &mut self.cache)
+            .map_err(EngineError::SystemCallError)?;
 
         *processed_blocks += 1;
 

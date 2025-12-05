@@ -147,6 +147,8 @@ mod error_messages {
         "when n_transactions > 0, last_tx_hash must be provided";
     pub const QUEUE_TX_FAILED: &str = "failed to queue transaction";
     pub const QUEUE_REORG_FAILED: &str = "failed to queue reorg";
+    pub const INVALID_BLOCK_HASH: &str = "invalid block_hash: expected 32 bytes";
+    pub const INVALID_BEACON_ROOT: &str = "invalid beacon_block_root: expected 32 bytes";
 }
 
 /// Expected byte lengths for binary-encoded fields.
@@ -406,6 +408,9 @@ fn decode_commit_head(pb: &PbCommitHead) -> Result<CommitHead, Status> {
     let block_number = decode_u256_be(&pb.block_number)
         .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_NUMBER))?;
 
+    let timestamp = decode_u256_be(&pb.timestamp)
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_TIMESTAMP))?;
+
     if pb.n_transactions == 0 && last_tx_hash.is_some() {
         return Err(Status::invalid_argument(
             error_messages::N_TX_ZERO_HASH_PRESENT,
@@ -418,11 +423,32 @@ fn decode_commit_head(pb: &PbCommitHead) -> Result<CommitHead, Status> {
         ));
     }
 
+    // Decode block_hash (EIP-2935)
+    let block_hash = pb
+        .block_hash
+        .as_ref()
+        .filter(|b| !b.is_empty())
+        .map(|b| decode_b256(b))
+        .transpose()
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_HASH))?;
+
+    // Decode beacon_block_root (EIP-4788)
+    let beacon_block_root = pb
+        .beacon_block_root
+        .as_ref()
+        .filter(|b| !b.is_empty())
+        .map(|b| decode_b256(b))
+        .transpose()
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_BEACON_ROOT))?;
+
     Ok(CommitHead::new(
         block_number,
         pb.selected_iteration_id,
         last_tx_hash,
         pb.n_transactions,
+        block_hash,
+        beacon_block_root,
+        timestamp,
     ))
 }
 
