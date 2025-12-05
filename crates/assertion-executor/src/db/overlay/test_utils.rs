@@ -19,7 +19,10 @@ use alloy_primitives::KECCAK256_EMPTY;
 use revm::database::InMemoryDB;
 
 use super::OverlayDb;
-use dashmap::DashMap;
+use dashmap::{
+    DashMap,
+    DashSet,
+};
 use std::{
     collections::HashMap,
     sync::{
@@ -33,6 +36,7 @@ impl<Db> OverlayDb<Db> {
         OverlayDb {
             underlying_db: Some(Arc::new(InMemoryDB::default())),
             overlay: Arc::new(DashMap::new()),
+            created_accounts: Arc::new(DashSet::new()),
         }
     }
 }
