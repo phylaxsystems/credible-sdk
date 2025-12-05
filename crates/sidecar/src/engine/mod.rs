@@ -181,7 +181,7 @@ impl LastExecutedTx {
 
     #[inline]
     fn take(&mut self) -> Option<(TxExecutionId, Option<EvmState>)> {
-        self.execution_results.pop_back()
+        self.execution_results.pop()
     }
 
     #[inline]
