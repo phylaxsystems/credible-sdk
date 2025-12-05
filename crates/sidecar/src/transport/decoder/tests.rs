@@ -1517,6 +1517,7 @@ fn test_send_events_single_commit_head() {
                         "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
                         "n_transactions": 10,
                         "block_number": 100,
+                        "timestamp": 0,
                         "selected_iteration_id": 5
                     }
                 }
@@ -1575,6 +1576,7 @@ fn test_send_events_commit_head_with_zero_transactions() {
                     "commit_head": {
                         "n_transactions": 0,
                         "block_number": 100,
+                        "timestamp": 100,
                         "selected_iteration_id": 1
                     }
                 }
@@ -1599,6 +1601,7 @@ fn test_send_events_commit_head_last_tx_hash_variations() {
         let mut commit_head = json!({
             "n_transactions": 0,
             "block_number": 100,
+            "timestamp": 100,
             "selected_iteration_id": 1
         });
 
@@ -1793,6 +1796,7 @@ fn test_send_events_commit_head_validation_errors() {
                 "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
                 "n_transactions": 0,
                 "block_number": 100,
+                "timestamp": 100,
                 "selected_iteration_id": 1
             }),
         ),
@@ -1801,6 +1805,7 @@ fn test_send_events_commit_head_validation_errors() {
             json!({
                 "n_transactions": 10,
                 "block_number": 100,
+                "timestamp": 100,
                 "selected_iteration_id": 1
             }),
         ),
@@ -1810,6 +1815,7 @@ fn test_send_events_commit_head_validation_errors() {
                 "last_tx_hash": null,
                 "n_transactions": 10,
                 "block_number": 100,
+                "timestamp": 100,
                 "selected_iteration_id": 1
             }),
         ),
@@ -1819,6 +1825,7 @@ fn test_send_events_commit_head_validation_errors() {
                 "last_tx_hash": "",
                 "n_transactions": 10,
                 "block_number": 100,
+                "timestamp": 100,
                 "selected_iteration_id": 1
             }),
         ),
@@ -1860,6 +1867,7 @@ fn test_send_events_commit_head_invalid_hash() {
                         "last_tx_hash": hash,
                         "n_transactions": 10,
                         "block_number": 100,
+                        "timestamp": 100,
                         "selected_iteration_id": 1
                     }
                 }]
@@ -2149,6 +2157,7 @@ fn test_send_events_mixed_commit_head_and_new_iteration_success() {
                     "commit_head": {
                         "n_transactions": 0,
                         "block_number": 100,
+                        "timestamp": 0,
                         "selected_iteration_id": 1
                     }
                 },
@@ -2221,6 +2230,7 @@ fn test_send_events_boundary_values() {
                     "last_tx_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
                     "n_transactions": u64::MAX,
                     "block_number": u64::MAX,
+                    "timestamp": u64::MAX,
                     "selected_iteration_id": u64::MAX
                 }
             }),
@@ -2231,6 +2241,7 @@ fn test_send_events_boundary_values() {
                 "commit_head": {
                     "n_transactions": 0,
                     "block_number": 0,
+                    "timestamp": 0,
                     "selected_iteration_id": 1
                 }
             }),
@@ -2261,6 +2272,7 @@ fn test_send_events_large_event_array() {
             "commit_head": {
                 "n_transactions": 0,
                 "block_number": i,
+                "timestamp": i,
                 "selected_iteration_id": 1
             }
         }));
