@@ -37,6 +37,5 @@ jobs:
       # Feature matrices are supported as follows: ["", "--features=foo", "--features=bar", "--features=foo,bar"]
       feature-sets: '[
         "--no-default-features --features test", 
-        "--no-default-features --features test --features linea", 
         "--no-default-features --features test --features optimism"
         ]'

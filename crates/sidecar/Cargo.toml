@@ -57,8 +57,7 @@ prost-build = "0.14"
 protoc-bin-vendored = "3"
 
 [features]
-default = ["linea"]
-linea = ["assertion-executor/linea"]
+default = []
 optimism = ["assertion-executor/optimism"]
 test = [
     "assertion-executor/test",

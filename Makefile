@@ -4,10 +4,6 @@ build:
 build-contracts:
 	forge build --root testdata/mock-protocol 
 
-# Run the rust tests for linea
-test-linea: build-contracts
-	cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features linea --features test
-
 # Run the rust tests for optimism
 test-optimism: build-contracts
 	cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features optimism --features test
@@ -16,7 +12,7 @@ test-optimism: build-contracts
 test-default: build-contracts
 	cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features test
 
-make test: test-linea test-optimism test-default
+make test: test-optimism test-default
 
 # Run tests without full tests (skips Docker-dependent tests and integration tests)
 test-no-full:
