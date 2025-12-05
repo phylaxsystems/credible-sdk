@@ -19,12 +19,9 @@ use std::{
 };
 
 /// Maps storage slots to their values.
-/// Also contains a flag to indicate if the account is self destructed.
-/// Dont read from inner db is used to indicate that the account is not self destructed.
 #[derive(Debug, Clone, Default)]
 pub struct ForkStorageMap {
     pub map: HashMap<U256, U256>,
-    pub dont_read_from_inner_db: bool,
 }
 
 /// Contains mutations on top of an existing database.
@@ -75,6 +72,7 @@ impl<ExtDb: DatabaseRef> Database for ForkDb<ExtDb> {
 
 impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
     type Error = <ExtDb as DatabaseRef>::Error;
+
     fn basic_ref(
         &self,
         address: Address,
@@ -84,17 +82,16 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
             None => Ok(self.inner_db.basic_ref(address)?),
         }
     }
+
     fn storage_ref(
         &self,
         address: Address,
         slot: U256,
     ) -> Result<U256, <Self as DatabaseRef>::Error> {
+        // Check fork's storage first, then fall back to inner db
         let value = match self.storage.get(&address) {
             Some(s) => {
-                // If the account is self destructed, do not read from inner db.
-                if s.dont_read_from_inner_db {
-                    *s.map.get(&slot).unwrap_or(&U256::ZERO)
-                } else if let Some(v) = s.map.get(&slot) {
+                if let Some(v) = s.map.get(&slot) {
                     *v
                 } else {
                     self.inner_db.storage_ref(address, slot)?
@@ -105,6 +102,7 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
 
         Ok(value)
     }
+
     fn code_by_hash_ref(&self, hash: B256) -> Result<Bytecode, <Self as DatabaseRef>::Error> {
         match self.code_by_hash.get(&hash) {
             Some(code) => Ok(code.clone()),
@@ -117,30 +115,31 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
     }
 }
 
+/// Post-Cancun `DatabaseCommit` implementation.
+///
+/// ## SELFDESTRUCT Behavior (EIP-6780)
+///
+/// Post-Cancun, SELFDESTRUCT only transfers balance to the beneficiary.
+/// Code, storage, and nonce remain intact. We treat selfdestructed accounts
+/// the same as any other touched account, just update the account info
+/// (which will have balance = 0) and any storage changes.
 impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
     fn commit(&mut self, changes: EvmState) {
         for (address, account) in changes {
             if !account.is_touched() {
                 continue;
             }
-            if account.is_selfdestructed() {
-                self.basic.insert(address, account.info.clone());
 
-                let fork_storage_map = self.storage.entry(address).or_default();
-
-                // Mark the account to not read from the inner database if it is self destructed.
-                fork_storage_map.dont_read_from_inner_db = true;
-                fork_storage_map.map.clear();
-
-                continue;
-            }
-
+            // Post-Cancun: No special handling for selfdestructed accounts.
+            // SELFDESTRUCT only transfers balance, everything else persists.
+            // The account.info will have balance = 0, which is all we need.
             if account.info.code.is_some() {
                 self.code_by_hash
                     .insert(account.info.code_hash, account.info.code.clone().unwrap());
             }
 
             self.basic.insert(address, account.info.clone());
+
             match self.storage.get_mut(&address) {
                 Some(s) => {
                     s.map.extend(
@@ -159,7 +158,6 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
                                 .into_iter()
                                 .map(|(k, v)| (k, v.present_value()))
                                 .collect(),
-                            dont_read_from_inner_db: false,
                         },
                     );
                 }
@@ -206,6 +204,7 @@ impl<ExtDb> ForkDb<ExtDb> {
 mod fork_db_tests {
     use super::*;
     use crate::db::overlay::{
+        OverlayDb,
         TableKey,
         TableValue,
     };
@@ -216,10 +215,7 @@ mod fork_db_tests {
     use std::convert::Infallible;
 
     use crate::{
-        db::{
-            DatabaseRef,
-            overlay::OverlayDb,
-        },
+        db::DatabaseRef,
         primitives::{
             Account,
             AccountStatus,
@@ -457,12 +453,10 @@ mod fork_db_tests {
     }
 
     #[tokio::test]
-    async fn test_commit_self_destruct() {
+    async fn test_commit_self_destruct_post_cancun() {
         let overlay_db = OverlayDb::<CacheDB<EmptyDBTyped<Infallible>>>::new_test();
 
         let mut evm_state = EvmState::default();
-
-        let mut storage = HashMap::from_iter([]);
 
         let evm_storage_slot = EvmStorageSlot {
             original_value: uint!(0_U256),
@@ -471,20 +465,29 @@ mod fork_db_tests {
             is_cold: false,
         };
 
+        let mut storage = HashMap::from_iter([]);
         storage.insert(uint!(0_U256), evm_storage_slot.clone());
 
         evm_state.insert(
             Address::ZERO,
             Account {
-                info: AccountInfo::default(),
+                info: AccountInfo {
+                    balance: uint!(1000_U256),
+                    ..Default::default()
+                },
                 transaction_id: 0,
                 storage: storage.clone(),
                 status: AccountStatus::Touched,
             },
         );
+
+        // Setup overlay with initial state
         overlay_db.overlay.insert(
             TableKey::Basic(Address::ZERO),
-            TableValue::Basic(AccountInfo::default()),
+            TableValue::Basic(AccountInfo {
+                balance: uint!(1000_U256),
+                ..Default::default()
+            }),
         );
         overlay_db.overlay.insert(
             TableKey::Storage(Address::ZERO, uint!(0_U256)),
@@ -492,22 +495,26 @@ mod fork_db_tests {
         );
 
         let mut fork_db = overlay_db.fork();
-        assert_eq!(
-            overlay_db
-                .storage_ref(Address::ZERO, uint!(0_U256))
-                .unwrap(),
-            evm_storage_slot.present_value()
-        );
+
+        // Verify initial state
         assert_eq!(
             fork_db.storage_ref(Address::ZERO, uint!(0_U256)).unwrap(),
-            evm_storage_slot.present_value()
+            uint!(1_U256)
+        );
+        assert_eq!(
+            fork_db.basic_ref(Address::ZERO).unwrap().unwrap().balance,
+            uint!(1000_U256)
         );
 
+        // Commit selfdestruct
         let mut evm_state = EvmState::default();
         evm_state.insert(
             Address::ZERO,
             Account {
-                info: AccountInfo::default(),
+                info: AccountInfo {
+                    balance: U256::ZERO,
+                    ..Default::default()
+                },
                 transaction_id: 0,
                 storage: HashMap::from_iter([]),
                 status: AccountStatus::SelfDestructed | AccountStatus::Touched,
@@ -516,16 +523,32 @@ mod fork_db_tests {
 
         fork_db.commit(evm_state);
 
+        // Post-Cancun: balance is zero
+        assert_eq!(
+            fork_db.basic_ref(Address::ZERO).unwrap().unwrap().balance,
+            U256::ZERO
+        );
+
+        // Post-Cancun: storage PERSISTS (reads from inner db)
+        assert_eq!(
+            fork_db.storage_ref(Address::ZERO, uint!(0_U256)).unwrap(),
+            uint!(1_U256),
+        );
+
+        // Original overlay unchanged
         assert_eq!(
             overlay_db
                 .storage_ref(Address::ZERO, uint!(0_U256))
                 .unwrap(),
-            evm_storage_slot.present_value()
+            uint!(1_U256)
         );
-
         assert_eq!(
-            fork_db.storage_ref(Address::ZERO, uint!(0_U256)).unwrap(),
-            U256::ZERO
+            overlay_db
+                .basic_ref(Address::ZERO)
+                .unwrap()
+                .unwrap()
+                .balance,
+            uint!(1000_U256)
         );
     }
 }

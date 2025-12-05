@@ -2,6 +2,11 @@
 //!
 //! These tests verify that both Geth and Parity trace providers produce
 //! identical output when given equivalent state changes.
+//!
+//! ## Post-Cancun Behavior (EIP-6780)
+//!
+//! Post-Cancun, SELFDESTRUCT only transfers balance. There is no full account
+//! deletion. The tracer reports only balance changes for SELFDESTRUCT operations.
 use crate::state::{
     geth,
     parity,
@@ -283,17 +288,19 @@ fn test_storage_updates_produce_identical_output() {
 }
 
 #[test]
-fn test_account_deletion_produces_identical_output() {
+fn test_selfdestruct_balance_transfer_produces_identical_output() {
     let address = address!("0x4444444444444444444444444444444444444444");
 
-    // === Parity format ===
     let mut parity_diff = StateDiff::default();
     parity_diff.0.insert(
         address,
         AccountDiff {
-            balance: Delta::Removed(U256::from(1000)),
-            nonce: Delta::Removed(U64::from(5)),
-            code: Delta::Removed(Bytes::from(vec![0x60, 0x80])),
+            balance: Delta::Changed(ChangedType {
+                from: U256::from(1000),
+                to: U256::ZERO,
+            }),
+            nonce: Delta::Unchanged,
+            code: Delta::Unchanged,
             storage: BTreeMap::new(),
         },
     );
@@ -301,7 +308,6 @@ fn test_account_deletion_produces_identical_output() {
     let parity_traces = vec![create_parity_trace(B256::ZERO, parity_diff)];
     let mut parity_accounts = parity::process_parity_traces(parity_traces);
 
-    // === Geth format (account in pre, not in post) ===
     let mut geth_pre = BTreeMap::new();
     geth_pre.insert(
         address,
@@ -313,10 +319,21 @@ fn test_account_deletion_produces_identical_output() {
         },
     );
 
+    let mut geth_post = BTreeMap::new();
+    geth_post.insert(
+        address,
+        GethAccountState {
+            balance: Some(U256::ZERO),
+            nonce: None,
+            code: None,
+            storage: BTreeMap::new(),
+        },
+    );
+
     let geth_trace = TraceResult::Success {
         result: GethTrace::PreStateTracer(PreStateFrame::Diff(DiffMode {
             pre: geth_pre,
-            post: BTreeMap::new(),
+            post: geth_post,
         })),
         tx_hash: Some(B256::ZERO),
     };
@@ -334,61 +351,62 @@ fn test_account_deletion_produces_identical_output() {
     let geth_account = &geth_accounts[0];
 
     assert_eq!(parity_account.address_hash, geth_account.address_hash);
-    assert!(parity_account.deleted);
-    assert!(geth_account.deleted);
+    assert!(!parity_account.deleted);
+    assert!(!geth_account.deleted);
     assert_eq!(parity_account.balance, U256::ZERO);
     assert_eq!(geth_account.balance, U256::ZERO);
-    assert_eq!(parity_account.nonce, 0);
-    assert_eq!(geth_account.nonce, 0);
-    assert_eq!(parity_account.code, None);
-    assert_eq!(geth_account.code, None);
 }
 
 #[test]
-fn test_deletion_with_storage_produces_identical_output() {
+fn test_selfdestruct_storage_persists_produces_identical_output() {
     let address = address!("0x5555555555555555555555555555555555555555");
     let slot1 = B256::from(U256::from(10));
-    let slot2 = B256::from(U256::from(20));
-
-    // === Parity format ===
-    let mut parity_storage = BTreeMap::new();
-    parity_storage.insert(slot1, Delta::Removed(B256::from(U256::from(111))));
-    parity_storage.insert(slot2, Delta::Removed(B256::from(U256::from(222))));
 
     let mut parity_diff = StateDiff::default();
     parity_diff.0.insert(
         address,
         AccountDiff {
-            balance: Delta::Removed(U256::from(5000)),
-            nonce: Delta::Removed(U64::from(10)),
-            code: Delta::Removed(Bytes::from(vec![0x60])),
-            storage: parity_storage,
+            balance: Delta::Changed(ChangedType {
+                from: U256::from(5000),
+                to: U256::ZERO,
+            }),
+            nonce: Delta::Unchanged,
+            code: Delta::Unchanged,
+            storage: BTreeMap::new(),
         },
     );
 
     let parity_traces = vec![create_parity_trace(B256::ZERO, parity_diff)];
     let mut parity_accounts = parity::process_parity_traces(parity_traces);
 
-    // === Geth format ===
-    let mut geth_pre_storage = BTreeMap::new();
-    geth_pre_storage.insert(slot1, B256::from(U256::from(111)));
-    geth_pre_storage.insert(slot2, B256::from(U256::from(222)));
-
     let mut geth_pre = BTreeMap::new();
+    let mut pre_storage = BTreeMap::new();
+    pre_storage.insert(slot1, B256::from(U256::from(111)));
     geth_pre.insert(
         address,
         GethAccountState {
             balance: Some(U256::from(5000)),
             nonce: Some(10),
             code: Some(Bytes::from(vec![0x60])),
-            storage: geth_pre_storage,
+            storage: pre_storage,
+        },
+    );
+
+    let mut geth_post = BTreeMap::new();
+    geth_post.insert(
+        address,
+        GethAccountState {
+            balance: Some(U256::ZERO),
+            nonce: None,
+            code: None,
+            storage: BTreeMap::new(),
         },
     );
 
     let geth_trace = TraceResult::Success {
         result: GethTrace::PreStateTracer(PreStateFrame::Diff(DiffMode {
             pre: geth_pre,
-            post: BTreeMap::new(),
+            post: geth_post,
         })),
         tx_hash: Some(B256::ZERO),
     };
@@ -405,17 +423,14 @@ fn test_deletion_with_storage_produces_identical_output() {
     let parity_account = &parity_accounts[0];
     let geth_account = &geth_accounts[0];
 
-    assert!(parity_account.deleted);
-    assert!(geth_account.deleted);
+    assert!(!parity_account.deleted);
+    assert!(!geth_account.deleted);
 
-    // Both should have zeroed storage
-    let hashed_slot1 = hash_slot(slot1);
-    let hashed_slot2 = hash_slot(slot2);
+    assert_eq!(parity_account.balance, U256::ZERO);
+    assert_eq!(geth_account.balance, U256::ZERO);
 
-    assert_eq!(parity_account.storage.get(&hashed_slot1), Some(&U256::ZERO));
-    assert_eq!(geth_account.storage.get(&hashed_slot1), Some(&U256::ZERO));
-    assert_eq!(parity_account.storage.get(&hashed_slot2), Some(&U256::ZERO));
-    assert_eq!(geth_account.storage.get(&hashed_slot2), Some(&U256::ZERO));
+    assert_eq!(parity_account.storage.len(), 0);
+    assert_eq!(geth_account.storage.len(), 0);
 }
 
 #[test]
@@ -521,9 +536,9 @@ fn test_multiple_transactions_produce_identical_output() {
     assert_eq!(geth_account.nonce, 2);
 }
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn test_complex_scenario_produces_identical_output() {
-    // Complex scenario with multiple accounts, storage updates, and deletions
     let addr1 = address!("0x1111111111111111111111111111111111111111");
     let addr2 = address!("0x2222222222222222222222222222222222222222");
     let addr3 = address!("0x3333333333333333333333333333333333333333");
@@ -558,13 +573,15 @@ fn test_complex_scenario_produces_identical_output() {
         },
     );
 
-    // Account 3: Deleted account
     parity_diff.0.insert(
         addr3,
         AccountDiff {
-            balance: Delta::Removed(U256::from(500)),
-            nonce: Delta::Removed(U64::from(5)),
-            code: Delta::Removed(Bytes::from(vec![0x00])),
+            balance: Delta::Changed(ChangedType {
+                from: U256::from(500),
+                to: U256::ZERO,
+            }),
+            nonce: Delta::Unchanged,
+            code: Delta::Unchanged,
             storage: BTreeMap::new(),
         },
     );
@@ -606,6 +623,15 @@ fn test_complex_scenario_produces_identical_output() {
             storage: geth_storage,
         },
     );
+    geth_post.insert(
+        addr3,
+        GethAccountState {
+            balance: Some(U256::ZERO),
+            nonce: None,
+            code: None,
+            storage: BTreeMap::new(),
+        },
+    );
 
     let geth_trace = TraceResult::Success {
         result: GethTrace::PreStateTracer(PreStateFrame::Diff(DiffMode {
@@ -632,6 +658,9 @@ fn test_complex_scenario_produces_identical_output() {
         assert_eq!(parity_account.code, geth_account.code);
         assert_eq!(parity_account.deleted, geth_account.deleted);
         assert_eq!(parity_account.storage.len(), geth_account.storage.len());
+
+        assert!(!parity_account.deleted);
+        assert!(!geth_account.deleted);
 
         // Verify storage matches
         for (key, value) in &parity_account.storage {
