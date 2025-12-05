@@ -19,12 +19,12 @@
 #[macro_export]
 macro_rules! build_evm_by_features {
     ($db:expr, $env:expr, $inspector:expr) => {{
-        #[cfg(all(feature = "optimism"))]
+        #[cfg(feature = "optimism")]
         {
             $crate::evm::build_evm::build_optimism_evm($db, $env, $inspector)
         }
 
-        #[cfg(all(not(feature = "optimism")))]
+        #[cfg(not(feature = "optimism"))]
         {
             $crate::evm::build_evm::build_eth_evm($db, $env, $inspector)
         }
@@ -49,12 +49,12 @@ macro_rules! build_evm_by_features {
 #[macro_export]
 macro_rules! wrap_tx_env_for_optimism {
     ($tx_env:expr) => {{
-        #[cfg(all(feature = "optimism"))]
+        #[cfg(feature = "optimism")]
         {
             op_revm::OpTransaction::new($tx_env)
         }
 
-        #[cfg(any(not(feature = "optimism")))]
+        #[cfg(not(feature = "optimism"))]
         {
             $tx_env
         }
