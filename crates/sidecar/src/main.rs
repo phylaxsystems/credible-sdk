@@ -85,16 +85,34 @@ fn create_transport_from_args(
     match config.transport.protocol {
         TransportProtocol::Http => {
             let cfg = HttpTransportConfig::try_from(config.transport.clone())?;
-            let t = HttpTransport::new(cfg, tx_sender, state_results)?;
+            let t = HttpTransport::new(
+                cfg,
+                tx_sender,
+                state_results,
+                config.transport.event_id_buffer_capacity,
+            )?;
             Ok(AnyTransport::Http(t))
         }
         TransportProtocol::Grpc => {
             let cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
             let t = match result_event_rx {
                 Some(rx) => {
-                    GrpcTransport::with_result_receiver(&cfg, tx_sender, state_results, rx)?
+                    GrpcTransport::with_result_receiver(
+                        &cfg,
+                        tx_sender,
+                        state_results,
+                        rx,
+                        config.transport.event_id_buffer_capacity,
+                    )?
                 }
-                None => GrpcTransport::new(cfg, tx_sender, state_results)?,
+                None => {
+                    GrpcTransport::new(
+                        cfg,
+                        tx_sender,
+                        state_results,
+                        config.transport.event_id_buffer_capacity,
+                    )?
+                }
             };
             Ok(AnyTransport::Grpc(t))
         }

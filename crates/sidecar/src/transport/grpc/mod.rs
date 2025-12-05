@@ -131,6 +131,8 @@ pub struct GrpcTransport {
     /// Receiver for transaction result events from the engine.
     /// This allows streaming results to gRPC subscribers.
     result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
+    /// Event ID deduplication buffer capacity.
+    event_id_buffer_capacity: usize,
 }
 
 impl Transport for GrpcTransport {
@@ -142,6 +144,7 @@ impl Transport for GrpcTransport {
         config: Self::Config,
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
+        event_id_buffer_capacity: usize,
     ) -> Result<Self, Self::Error> {
         debug!(bind_addr = %config.bind_addr, "Creating gRPC transport");
         Ok(Self {
@@ -150,6 +153,7 @@ impl Transport for GrpcTransport {
             shutdown_token: CancellationToken::new(),
             transactions_results: QueryTransactionsResults::new(state_results),
             result_event_rx: None,
+            event_id_buffer_capacity,
         })
     }
 
@@ -166,6 +170,7 @@ impl Transport for GrpcTransport {
             self.tx_sender.clone(),
             self.transactions_results.clone(),
             self.result_event_rx.clone(),
+            self.event_id_buffer_capacity,
         );
 
         info!(bind_addr = %self.bind_addr, "gRPC transport server starting");
@@ -208,6 +213,7 @@ impl GrpcTransport {
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
         result_event_rx: flume::Receiver<TransactionResultEvent>,
+        event_id_buffer_capacity: usize,
     ) -> Result<Self, GrpcTransportError> {
         debug!(bind_addr = %config.bind_addr, "Creating streaming gRPC transport with result receiver");
         Ok(Self {
@@ -216,6 +222,7 @@ impl GrpcTransport {
             shutdown_token: CancellationToken::new(),
             transactions_results: QueryTransactionsResults::new(state_results),
             result_event_rx: Some(result_event_rx),
+            event_id_buffer_capacity,
         })
     }
 }
@@ -224,6 +231,7 @@ impl GrpcTransport {
 mod tests {
     #![allow(clippy::cast_sign_loss)]
     #![allow(clippy::expect_fun_call)]
+    #![allow(clippy::cast_possible_truncation)]
 
     use super::pb::{
         self,
@@ -644,5 +652,264 @@ mod tests {
         assert_eq!(hash1, tx_execution_id.tx_hash);
         assert_eq!(hash2, tx_execution_id.tx_hash);
         assert_eq!(hash1, hash2, "both subscribers should receive same result");
+    }
+
+    #[crate::utils::engine_test(grpc)]
+    async fn test_duplicate_event_id_is_skipped(mut instance: crate::utils::LocalInstance) {
+        instance
+            .new_block()
+            .await
+            .expect("failed to announce new block");
+
+        let address = instance
+            .local_address
+            .expect("grpc transport should expose an address");
+
+        let mut client = connect_grpc_client_with_retry(address).await;
+
+        // Create a channel to send events
+        let (tx, rx) = tokio::sync::mpsc::channel::<Event>(32);
+        let request_stream = ReceiverStream::new(rx);
+
+        // Start the bidirectional stream
+        let mut response_stream = client
+            .stream_events(request_stream)
+            .await
+            .expect("stream_events failed")
+            .into_inner();
+
+        // Create a transaction event with a specific event_id
+        let event_id = 12345u64;
+        let tx_hash = B256::repeat_byte(0x42);
+        let tx_event = create_transaction_event(event_id, tx_hash, 1, 1);
+
+        // Send the event first time
+        tx.send(tx_event.clone())
+            .await
+            .expect("failed to send first event");
+
+        // Wait for the ACK
+        let ack1 = tokio::time::timeout(Duration::from_secs(5), response_stream.next())
+            .await
+            .expect("timeout waiting for first ACK")
+            .expect("stream ended")
+            .expect("ACK error");
+
+        assert!(ack1.success, "first event should succeed");
+        assert_eq!(ack1.event_id, event_id);
+        assert_eq!(ack1.events_processed, 1, "first event should be processed");
+
+        // Send the same event again (duplicate event_id)
+        let duplicate_event = create_transaction_event(event_id, tx_hash, 1, 1);
+        tx.send(duplicate_event)
+            .await
+            .expect("failed to send duplicate event");
+
+        // Wait for the ACK
+        let ack2 = tokio::time::timeout(Duration::from_secs(5), response_stream.next())
+            .await
+            .expect("timeout waiting for second ACK")
+            .expect("stream ended")
+            .expect("ACK error");
+
+        assert!(ack2.success, "duplicate event should still return success");
+        assert_eq!(ack2.event_id, event_id);
+        // events_processed should NOT increment for duplicates
+        assert_eq!(
+            ack2.events_processed, 1,
+            "duplicate event should not increment events_processed"
+        );
+    }
+
+    #[crate::utils::engine_test(grpc)]
+    async fn test_different_event_ids_are_all_processed(mut instance: crate::utils::LocalInstance) {
+        instance
+            .new_block()
+            .await
+            .expect("failed to announce new block");
+
+        let address = instance
+            .local_address
+            .expect("grpc transport should expose an address");
+
+        let mut client = connect_grpc_client_with_retry(address).await;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Event>(32);
+        let request_stream = ReceiverStream::new(rx);
+
+        let mut response_stream = client
+            .stream_events(request_stream)
+            .await
+            .expect("stream_events failed")
+            .into_inner();
+
+        // Send 5 events with different event_ids
+        for i in 1..=5u64 {
+            let tx_hash = B256::repeat_byte(i as u8);
+            let event = create_transaction_event(i, tx_hash, 1, 1);
+            tx.send(event).await.expect("failed to send event");
+
+            let ack = tokio::time::timeout(Duration::from_secs(5), response_stream.next())
+                .await
+                .expect("timeout waiting for ACK")
+                .expect("stream ended")
+                .expect("ACK error");
+
+            assert!(ack.success, "event {i} should succeed");
+            assert_eq!(ack.event_id, i);
+            assert_eq!(
+                ack.events_processed, i,
+                "events_processed should be {i} after processing event {i}"
+            );
+        }
+    }
+
+    #[crate::utils::engine_test(grpc)]
+    async fn test_interleaved_duplicates_and_new_events(mut instance: crate::utils::LocalInstance) {
+        instance
+            .new_block()
+            .await
+            .expect("failed to announce new block");
+
+        let address = instance
+            .local_address
+            .expect("grpc transport should expose an address");
+
+        let mut client = connect_grpc_client_with_retry(address).await;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Event>(32);
+        let request_stream = ReceiverStream::new(rx);
+
+        let mut response_stream = client
+            .stream_events(request_stream)
+            .await
+            .expect("stream_events failed")
+            .into_inner();
+
+        // Send events in pattern: 1, 2, 1 (dup), 3, 2 (dup), 4
+        let event_ids = [1u64, 2, 1, 3, 2, 4];
+        let expected_processed = [1u64, 2, 2, 3, 3, 4]; // 1 and 2 are duplicates, don't increment
+
+        for (i, &event_id) in event_ids.iter().enumerate() {
+            let tx_hash = B256::repeat_byte((event_id * 10) as u8);
+            let event = create_transaction_event(event_id, tx_hash, 1, 1);
+            tx.send(event).await.expect("failed to send event");
+
+            let ack = tokio::time::timeout(Duration::from_secs(5), response_stream.next())
+                .await
+                .expect("timeout waiting for ACK")
+                .expect("stream ended")
+                .expect("ACK error");
+
+            assert!(ack.success, "event should succeed");
+            assert_eq!(ack.event_id, event_id);
+            assert_eq!(
+                ack.events_processed, expected_processed[i],
+                "events_processed mismatch at index {i} for event_id {event_id}"
+            );
+        }
+    }
+
+    #[crate::utils::engine_test(grpc)]
+    async fn test_event_id_zero_is_valid_and_deduplicated(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        instance
+            .new_block()
+            .await
+            .expect("failed to announce new block");
+
+        let address = instance
+            .local_address
+            .expect("grpc transport should expose an address");
+
+        let mut client = connect_grpc_client_with_retry(address).await;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Event>(32);
+        let request_stream = ReceiverStream::new(rx);
+
+        let mut response_stream = client
+            .stream_events(request_stream)
+            .await
+            .expect("stream_events failed")
+            .into_inner();
+
+        // Send event with event_id = 0
+        let tx_hash = B256::repeat_byte(0x01);
+        let event = create_transaction_event(0, tx_hash, 1, 1);
+        tx.send(event).await.expect("failed to send event");
+
+        let ack1 = tokio::time::timeout(Duration::from_secs(5), response_stream.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("ACK error");
+
+        assert!(ack1.success);
+        assert_eq!(ack1.event_id, 0);
+        assert_eq!(ack1.events_processed, 1);
+
+        // Send duplicate with event_id = 0
+        let tx_hash_2 = B256::repeat_byte(0x02);
+        let event2 = create_transaction_event(0, tx_hash_2, 1, 1);
+        tx.send(event2).await.expect("failed to send event");
+
+        let ack2 = tokio::time::timeout(Duration::from_secs(5), response_stream.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("ACK error");
+
+        assert!(ack2.success);
+        assert_eq!(ack2.event_id, 0);
+        assert_eq!(
+            ack2.events_processed, 1,
+            "event_id 0 should also be deduplicated"
+        );
+    }
+
+    /// Create a transaction event with the given parameters for testing.
+    fn create_transaction_event(
+        event_id: u64,
+        tx_hash: B256,
+        block_number: u64,
+        iteration_id: u64,
+    ) -> Event {
+        use assertion_executor::primitives::Address;
+
+        let tx_env = pb::TransactionEnv {
+            tx_type: 0,
+            caller: Address::ZERO.as_slice().to_vec(),
+            gas_limit: 21000,
+            gas_price: encode_u128_be(1_000_000_000),
+            transact_to: Address::ZERO.as_slice().to_vec(),
+            value: encode_u256_be(U256::ZERO),
+            data: vec![],
+            nonce: 0,
+            chain_id: Some(1),
+            access_list: vec![],
+            gas_priority_fee: None,
+            blob_hashes: vec![],
+            max_fee_per_blob_gas: vec![],
+            authorization_list: vec![],
+        };
+
+        let tx_execution_id = TxExecutionId {
+            block_number: U256::from(block_number).to_be_bytes::<32>().to_vec(),
+            iteration_id,
+            tx_hash: encode_b256(tx_hash),
+            index: 0,
+        };
+
+        let transaction = pb::Transaction {
+            tx_env: Some(tx_env),
+            tx_execution_id: Some(tx_execution_id),
+            prev_tx_hash: None,
+        };
+
+        Event {
+            event_id,
+            event: Some(EventVariant::Transaction(transaction)),
+        }
     }
 }

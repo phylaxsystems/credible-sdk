@@ -114,6 +114,7 @@ impl Transport for HttpTransport {
         config: HttpTransportConfig,
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
+        _event_id_buffer_capacity: usize,
     ) -> Result<Self, Self::Error> {
         debug!(
             bind_addr = %config.bind_addr,

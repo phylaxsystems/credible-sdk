@@ -47,6 +47,7 @@ use crate::{
     transactions_state::TransactionResultEvent,
     transport::{
         common::HttpDecoderError,
+        event_id_deduplication::EventIdBuffer,
         rpc_metrics::RpcRequestDuration,
         transactions_results::{
             AcceptedState,
@@ -552,6 +553,8 @@ struct GrpcServiceInner {
     commit_head_seen: AtomicBool,
     result_broadcaster: broadcast::Sender<PbTransactionResult>,
     abort_handles: Mutex<Vec<AbortHandle>>,
+    /// Buffer for detecting duplicate event IDs
+    event_id_buffer: EventIdBuffer,
 }
 
 impl Drop for GrpcServiceInner {
@@ -580,6 +583,7 @@ impl GrpcService {
         tx_sender: TransactionQueueSender,
         transactions_results: QueryTransactionsResults,
         result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
+        event_buffer_capacity: usize,
     ) -> Self {
         let (result_broadcaster, _) = broadcast::channel(RESULT_BROADCAST_BUFFER);
 
@@ -598,6 +602,7 @@ impl GrpcService {
             commit_head_seen: AtomicBool::new(false),
             result_broadcaster,
             abort_handles: Mutex::new(abort_handle),
+            event_id_buffer: EventIdBuffer::new(event_buffer_capacity),
         });
 
         Self {
@@ -660,6 +665,20 @@ impl GrpcService {
 
     /// Process a single event from the stream.
     fn process_event(&self, event: Event, events_processed: &AtomicU64) -> Result<(), Status> {
+        // Check for duplicate event_id first (fast path)
+        if self
+            .inner
+            .event_id_buffer
+            .check_duplicate_and_insert(event.event_id)
+        {
+            debug!(
+                target = "transport::grpc",
+                event_id = event.event_id,
+                "Duplicate event_id detected, skipping"
+            );
+            return Ok(());
+        }
+
         let variant = event
             .event
             .ok_or_else(|| Status::invalid_argument(error_messages::EVENT_PAYLOAD_MISSING))?;

@@ -26,6 +26,10 @@ fn default_health_bind_addr() -> String {
     "0.0.0.0:9547".to_string()
 }
 
+fn default_event_id_buffer_capacity() -> usize {
+    1000
+}
+
 /// Configuration loaded from JSON file
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Config {
@@ -145,6 +149,9 @@ pub struct TransportConfig {
     /// Health server bind address and port
     #[serde(default = "default_health_bind_addr")]
     pub health_bind_addr: String,
+    /// Maximum number of events ID in the transport layer buffer before dropping new events.
+    #[serde(default = "default_event_id_buffer_capacity")]
+    pub event_id_buffer_capacity: usize,
 }
 
 /// State configuration from file
