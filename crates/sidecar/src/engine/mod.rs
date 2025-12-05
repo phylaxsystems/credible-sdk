@@ -616,11 +616,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             "Validating transaction against assertions"
         );
 
-        #[cfg(feature = "linea")]
-        if check_recepient_address(tx_env).is_none() {
-            return Ok(());
-        }
-
         // Validate transaction and run assertions
         // Execute directly on the block fork
         // Note: block_fork is ForkDb<OverlayDb<DB>>, so the error type will be
@@ -1386,30 +1381,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // or if the tx hashes dont match something bad happened and we need to exit
         Err(EngineError::BadReorgHash)
     }
-}
-
-/// This is a linea specific function that checks that transaction recepients
-/// are not precompiles, or fall in the reserved address range of `0x01`-`0x09`.
-///
-/// We call this function on txenvs before we execute them, and return a `None`
-/// if the recepient falls on this address range.
-#[cfg(feature = "linea")]
-fn check_recepient_address(tx: &TxEnv) -> Option<()> {
-    // tx is create, not calling range
-    if tx.kind.is_create() {
-        return Some(());
-    }
-
-    let address = tx.kind.to().unwrap().0;
-    let is_precompile_range = address[0..19] == [0; 19] && (1..=9).contains(&address[19]);
-
-    // Not in the bad precompile range, return some
-    if !is_precompile_range {
-        return Some(());
-    }
-
-    // Bad precompile range, return none
-    None
 }
 
 impl<DBError> From<&EVMError<DBError>> for ErrorRecoverability {

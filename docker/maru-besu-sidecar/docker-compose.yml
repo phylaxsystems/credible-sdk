@@ -105,7 +105,7 @@ services:
         ipv4_address: 11.11.11.206
 
   credible-sidecar:
-    image: ghcr.io/phylaxsystems/credible-sdk/sidecar-linea:main
+    image: ghcr.io/phylaxsystems/credible-sdk/sidecar:main
     container_name: credible-sidecar
     hostname: credible-sidecar
     depends_on:

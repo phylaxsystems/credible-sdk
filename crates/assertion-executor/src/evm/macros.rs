@@ -1,8 +1,7 @@
 /// Macro to build the appropriate EVM based on feature flags.
 ///
 /// This macro handles the complex cfg selects for different EVM types:
-/// - Linea EVM when `linea` feature is enabled
-/// - Optimism EVM when `optimism` feature is enabled (but not `linea`)
+/// - Optimism EVM when `optimism` feature is enabled
 /// - Ethereum mainnet EVM as default
 ///
 /// # Arguments
@@ -20,21 +19,12 @@
 #[macro_export]
 macro_rules! build_evm_by_features {
     ($db:expr, $env:expr, $inspector:expr) => {{
-        // ensure only one EVM feature is enabled
-        #[cfg(all(feature = "linea", feature = "optimism"))]
-        compile_error!("Cannot enable both 'linea' and 'optimism' features simultaneously. Please enable only one EVM feature at a time.");
-
-        #[cfg(feature = "linea")]
-        {
-            $crate::evm::linea::build_linea_evm($db, $env, $inspector)
-        }
-
-        #[cfg(all(feature = "optimism", not(feature = "linea")))]
+        #[cfg(all(feature = "optimism"))]
         {
             $crate::evm::build_evm::build_optimism_evm($db, $env, $inspector)
         }
 
-        #[cfg(all(not(feature = "optimism"), not(feature = "linea")))]
+        #[cfg(all(not(feature = "optimism")))]
         {
             $crate::evm::build_evm::build_eth_evm($db, $env, $inspector)
         }
@@ -59,16 +49,12 @@ macro_rules! build_evm_by_features {
 #[macro_export]
 macro_rules! wrap_tx_env_for_optimism {
     ($tx_env:expr) => {{
-        // ensure only one EVM feature is enabled
-        #[cfg(all(feature = "linea", feature = "optimism"))]
-        compile_error!("Cannot enable both 'linea' and 'optimism' features simultaneously. Please enable only one EVM feature at a time.");
-
-        #[cfg(all(feature = "optimism", not(feature = "linea")))]
+        #[cfg(all(feature = "optimism"))]
         {
             op_revm::OpTransaction::new($tx_env)
         }
 
-        #[cfg(any(feature = "linea", not(feature = "optimism")))]
+        #[cfg(any(not(feature = "optimism")))]
         {
             $tx_env
         }

@@ -57,7 +57,6 @@ evm-glue = { workspace = true }
 [features]
 default = ["full-test"]
 optimism = []
-linea = []
 phoundry = ["revm/optional_eip3607"]
 test = ["serde_json", "rand"]
 serde_json = []
