@@ -189,6 +189,14 @@ async fn create_test_engine() -> (
     create_test_engine_with_timeout(Duration::from_millis(100)).await
 }
 
+fn create_test_block_env() -> BlockEnv {
+    BlockEnv {
+        number: U256::from(1),
+        basefee: 0, // Set basefee to 0 to avoid balance issues
+        ..Default::default()
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_core_engine_errors_when_no_synced_sources() {
     let (mut engine, tx_sender) = create_test_engine_with_timeout(Duration::from_millis(10)).await;
@@ -303,7 +311,8 @@ async fn test_tx_block_mismatch_yields_validation_error() {
 }
 
 #[test]
-fn test_last_executed_tx_single_push_and_pop() {
+fn test_last_executed_tx_operations() {
+    // Test single push and pop
     let mut txs = LastExecutedTx::new();
     let h1 = B256::from([0x11; 32]);
     let id1 = TxExecutionId::from_hash(h1);
@@ -317,10 +326,8 @@ fn test_last_executed_tx_single_push_and_pop() {
     let popped = txs.remove_last().expect("should pop the only element");
     assert_eq!(popped.0, id1, "popped should be the same hash");
     assert!(txs.current().is_none(), "should be empty after pop");
-}
 
-#[test]
-fn test_last_executed_tx_two_elements_lifo() {
+    // Test two elements LIFO
     let mut txs = LastExecutedTx::new();
     let h1 = B256::from([0x21; 32]);
     let h2 = B256::from([0x22; 32]);
@@ -337,10 +344,8 @@ fn test_last_executed_tx_two_elements_lifo() {
     // Pop h1, now empty
     assert_eq!(txs.remove_last().unwrap().0, id1);
     assert!(txs.current().is_none());
-}
 
-#[test]
-fn test_last_executed_tx_overflow_discards_oldest() {
+    // Test overflow discards oldest
     let mut txs = LastExecutedTx::new();
     let h1 = B256::from([0x31; 32]);
     let h2 = B256::from([0x32; 32]);
@@ -373,14 +378,6 @@ fn test_last_executed_tx_overflow_discards_oldest() {
     // Removing last again returns h2 and leaves empty
     assert_eq!(txs.remove_last().unwrap().0, id2);
     assert!(txs.current().is_none());
-}
-
-fn create_test_block_env() -> BlockEnv {
-    BlockEnv {
-        number: U256::from(1),
-        basefee: 0, // Set basefee to 0 to avoid balance issues
-        ..Default::default()
-    }
 }
 
 #[crate::utils::engine_test(all)]
@@ -470,7 +467,7 @@ async fn test_core_engine_reject_tx_before_blockenv(mut instance: crate::utils::
 }
 
 #[crate::utils::engine_test(all)]
-async fn test_core_engine_reorg_real(mut instance: crate::utils::LocalInstance) {
+async fn test_core_engine_reorg_scenarios(mut instance: crate::utils::LocalInstance) {
     // 1. run tx + reorg
 
     // Send and verify a successful CREATE transaction
@@ -709,7 +706,7 @@ async fn test_core_engine_reorg_followed_by_blockenv_with_last_tx_hash(
 
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
-async fn test_database_commit_verification() {
+async fn test_database_commit_and_block_env_requirements() {
     use revm::primitives::address;
 
     let (mut engine, _) = create_test_engine().await;
@@ -840,10 +837,8 @@ async fn test_database_commit_verification() {
             panic!("Unexpected validation error: {e:?}");
         }
     }
-}
 
-#[tokio::test]
-async fn test_engine_requires_block_env_before_tx() {
+    // Test engine requires block env before tx
     let (mut engine, _) = create_test_engine().await;
     let tx_env = TxEnv {
         caller: Address::from([0x04; 20]),
@@ -1090,8 +1085,11 @@ async fn test_failed_transaction_commit() {
 }
 
 #[crate::utils::engine_test(all)]
-async fn test_multiple_iterations_winner_selected(mut instance: crate::utils::LocalInstance) {
+async fn test_iteration_selection_and_commit(mut instance: crate::utils::LocalInstance) {
     info!("Testing multiple iterations with winner selection");
+
+    let initial_cache_count = instance.cache_reset_count();
+
     instance.new_block().await.unwrap();
 
     // Send transactions with different iteration IDs in Block 1
@@ -1149,50 +1147,6 @@ async fn test_multiple_iterations_winner_selected(mut instance: crate::utils::Lo
             .await
             .unwrap(),
         "Transaction in Block 2 should succeed after iteration 2 was selected"
-    );
-}
-
-#[crate::utils::engine_test(all)]
-async fn test_iteration_selection_commits_only_winner(mut instance: crate::utils::LocalInstance) {
-    info!("Testing that only winning iteration is committed to state");
-
-    let initial_cache_count = instance.cache_reset_count();
-
-    // Block 1
-    instance.new_block().await.unwrap();
-
-    // Iteration 1: Create a contract at value 100
-    instance.new_iteration(1).await.unwrap();
-    let tx_iter1 = instance
-        .send_successful_create_tx_dry(uint!(100_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    // Iteration 2: Create a contract at value 200
-    instance.new_iteration(2).await.unwrap();
-    let tx_iter2 = instance
-        .send_successful_create_tx_dry(uint!(200_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(instance.is_transaction_successful(&tx_iter1).await.unwrap());
-    assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
-
-    // Block 2: Select iteration 1 as the winner
-    instance.new_block().await.unwrap();
-    instance.new_iteration(1).await.unwrap();
-
-    // The state should reflect iteration 1's changes, not iteration 2's
-    let tx_verify = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx_verify)
-            .await
-            .unwrap()
     );
 
     // No cache flush should occur
@@ -1261,7 +1215,7 @@ async fn test_wrong_iteration_selected_triggers_flush(mut instance: crate::utils
 }
 
 #[crate::utils::engine_test(all)]
-async fn test_multiple_transactions_same_iteration(mut instance: crate::utils::LocalInstance) {
+async fn test_multiple_transactions_and_iterations(mut instance: crate::utils::LocalInstance) {
     info!("Testing multiple transactions in the same iteration");
 
     // Block 1
@@ -1320,181 +1274,10 @@ async fn test_multiple_transactions_same_iteration(mut instance: crate::utils::L
             .unwrap(),
         "Should commit all 3 transactions from iteration 2"
     );
-}
 
-#[crate::utils::engine_test(all)]
-async fn test_iteration_selection_with_transaction_count_mismatch(
-    mut instance: crate::utils::LocalInstance,
-) {
-    info!("Testing iteration selection with wrong transaction count");
-
-    // Block 1
-    instance.new_block().await.unwrap();
-    instance
-        .wait_for_processing(Duration::from_millis(10))
-        .await;
-
-    // Iteration 1: 2 transactions
-    instance.new_iteration(1).await.unwrap();
-    let tx1_iter1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    instance
-        .wait_for_processing(Duration::from_millis(10))
-        .await;
-
-    let tx2_iter1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    instance
-        .wait_for_processing(Duration::from_millis(100))
-        .await;
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx1_iter1)
-            .await
-            .unwrap()
-    );
-    assert!(
-        instance
-            .is_transaction_successful(&tx2_iter1)
-            .await
-            .unwrap()
-    );
-
-    // Block 2: Select iteration 1 but set the wrong count (3 instead of 2)
-    instance.new_iteration(1).await.unwrap();
-    instance.transport.set_n_transactions(3);
-    instance
-        .wait_for_processing(Duration::from_millis(10))
-        .await;
-
-    instance
-        .expect_cache_flush(|instance| {
-            Box::pin(async move {
-                instance.new_block().await?;
-                instance
-                    .wait_for_processing(Duration::from_millis(10))
-                    .await;
-                Ok(())
-            })
-        })
-        .await
-        .unwrap();
-}
-
-#[crate::utils::engine_test(all)]
-async fn test_reorg_in_specific_iteration_before_selection(
-    mut instance: crate::utils::LocalInstance,
-) {
-    info!("Testing reorg within iteration before block selection");
-
-    // Block 1
-    instance.new_block().await.unwrap();
-
-    // Iteration 1: Send 2 transactions
-    instance.new_iteration(1).await.unwrap();
-    let tx1_iter1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    let tx2_iter1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    // Iteration 2: Send 1 transaction
-    instance.new_iteration(2).await.unwrap();
-    let tx1_iter2 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx1_iter1)
-            .await
-            .unwrap()
-    );
-    assert!(
-        instance
-            .is_transaction_successful(&tx2_iter1)
-            .await
-            .unwrap()
-    );
-    assert!(
-        instance
-            .is_transaction_successful(&tx1_iter2)
-            .await
-            .unwrap()
-    );
-
-    // Reorg last transaction in iteration 1
-    instance.new_iteration(1).await.unwrap();
-    instance.send_reorg(tx2_iter1).await.unwrap();
-
-    // Block 2: Select iteration 1 with only 1 transaction (after reorg)
-    instance.new_block().await.unwrap();
-    instance.new_iteration(1).await.unwrap();
-
-    let tx_block2 = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx_block2)
-            .await
-            .unwrap(),
-        "Should work after reorg and correct iteration selection"
-    );
-}
-
-#[crate::utils::engine_test(all)]
-async fn test_empty_iteration_selected(mut instance: crate::utils::LocalInstance) {
-    info!("Testing selection of empty iteration (no transactions)");
-
-    // Block 1
-    instance.new_block().await.unwrap();
-
-    // Only send transactions in iteration 2
-    instance.new_iteration(2).await.unwrap();
-    let tx_iter2 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
-
-    // Block 2: Select iteration 1 which has no transactions
-    instance.new_block().await.unwrap();
-    instance.new_iteration(1).await.unwrap();
-
-    // Should still work
-    let tx_block2 = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx_block2)
-            .await
-            .unwrap(),
-        "Should work when empty iteration is selected"
-    );
-}
-
-#[crate::utils::engine_test(all)]
-async fn test_interleaved_iterations(mut instance: crate::utils::LocalInstance) {
     info!("Testing interleaved iteration IDs");
 
-    // Block 1
+    // Block 3
     instance.new_block().await.unwrap();
 
     // Send transactions with alternating iteration IDs
@@ -1548,9 +1331,184 @@ async fn test_interleaved_iterations(mut instance: crate::utils::LocalInstance) 
             .unwrap()
     );
 
-    // Block 2: Select iteration 1 (should have 2 transactions)
+    // Block 4: Select iteration 1 (should have 2 transactions)
     instance.new_block().await.unwrap();
     instance.new_iteration(2).await.unwrap();
+
+    let tx_block4 = instance
+        .send_successful_create_tx(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+
+    assert!(
+        instance
+            .is_transaction_successful(&tx_block4)
+            .await
+            .unwrap(),
+        "Should correctly handle interleaved iterations"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_iteration_selection_with_transaction_count_mismatch(
+    mut instance: crate::utils::LocalInstance,
+) {
+    info!("Testing iteration selection with wrong transaction count");
+
+    // Block 1
+    instance.new_block().await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(100))
+        .await;
+
+    // Iteration 1: 2 transactions
+    instance.new_iteration(1).await.unwrap();
+    let tx1_iter1 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(100))
+        .await;
+
+    let tx2_iter1 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(100))
+        .await;
+
+    assert!(
+        instance
+            .is_transaction_successful(&tx1_iter1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        instance
+            .is_transaction_successful(&tx2_iter1)
+            .await
+            .unwrap()
+    );
+
+    // Block 2: Select iteration 1 but set the wrong count (3 instead of 2)
+    instance.new_iteration(1).await.unwrap();
+    instance.transport.set_n_transactions(3);
+    instance
+        .wait_for_processing(Duration::from_millis(100))
+        .await;
+
+    instance
+        .expect_cache_flush(|instance| {
+            Box::pin(async move {
+                instance.new_block().await?;
+                instance
+                    .wait_for_processing(Duration::from_millis(100))
+                    .await;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_reorg_in_specific_iteration(mut instance: crate::utils::LocalInstance) {
+    info!("Testing reorg within iteration before block selection");
+
+    // Block 1
+    instance.new_block().await.unwrap();
+
+    // Iteration 1: Send 3 transactions
+    instance.new_iteration(1).await.unwrap();
+    let tx1_iter1 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+
+    let tx2_iter1 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+
+    let tx3_iter1 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+
+    // Iteration 2: Send 2 transactions
+    instance.new_iteration(2).await.unwrap();
+    let tx1_iter2 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+
+    let tx2_iter2 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+
+    assert!(
+        instance
+            .is_transaction_successful(&tx1_iter1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        instance
+            .is_transaction_successful(&tx2_iter1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        instance
+            .is_transaction_successful(&tx3_iter1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        instance
+            .is_transaction_successful(&tx1_iter2)
+            .await
+            .unwrap()
+    );
+    assert!(
+        instance
+            .is_transaction_successful(&tx2_iter2)
+            .await
+            .unwrap()
+    );
+
+    // Reorg last transaction in iteration 1
+    instance.new_iteration(1).await.unwrap();
+    instance.send_reorg(tx3_iter1).await.unwrap();
+
+    // Verify reorg only affected iteration 1
+    assert!(
+        instance.is_transaction_removed(&tx3_iter1).await.unwrap(),
+        "Reorged transaction should be removed"
+    );
+    assert!(
+        instance.get_transaction_result(&tx1_iter1).is_some(),
+        "Other transactions in iteration 1 should remain"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_iter1).is_some(),
+        "Other transactions in iteration 1 should remain"
+    );
+    assert!(
+        instance.get_transaction_result(&tx1_iter2).is_some(),
+        "Iteration 2 should be unaffected"
+    );
+    assert!(
+        instance.get_transaction_result(&tx2_iter2).is_some(),
+        "Iteration 2 should be unaffected"
+    );
+
+    // Block 2: Select iteration 1 (now with 2 transactions)
+    instance.new_block().await.unwrap();
+    instance.new_iteration(1).await.unwrap();
 
     let tx_block2 = instance
         .send_successful_create_tx(uint!(0_U256), Bytes::new())
@@ -1562,7 +1520,42 @@ async fn test_interleaved_iterations(mut instance: crate::utils::LocalInstance) 
             .is_transaction_successful(&tx_block2)
             .await
             .unwrap(),
-        "Should correctly handle interleaved iterations"
+        "Should work after reorg and correct iteration selection"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_empty_iteration_selected(mut instance: crate::utils::LocalInstance) {
+    info!("Testing selection of empty iteration (no transactions)");
+
+    // Block 1
+    instance.new_block().await.unwrap();
+
+    // Only send transactions in iteration 2
+    instance.new_iteration(2).await.unwrap();
+    let tx_iter2 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+
+    assert!(instance.is_transaction_successful(&tx_iter2).await.unwrap());
+
+    // Block 2: Select iteration 1 which has no transactions
+    instance.new_block().await.unwrap();
+    instance.new_iteration(1).await.unwrap();
+
+    // Should still work
+    let tx_block2 = instance
+        .send_successful_create_tx(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+
+    assert!(
+        instance
+            .is_transaction_successful(&tx_block2)
+            .await
+            .unwrap(),
+        "Should work when empty iteration is selected"
     );
 }
 
@@ -1725,84 +1718,6 @@ async fn test_switching_winning_iterations_across_blocks(
         instance.is_transaction_successful(&final_tx).await.unwrap(),
         "Should handle switching winning iterations across blocks"
     );
-}
-
-#[crate::utils::engine_test(all)]
-async fn test_reorg_affects_only_target_iteration(mut instance: crate::utils::LocalInstance) {
-    info!("Testing that reorg only affects the target iteration");
-
-    // Block 1
-    instance.new_block().await.unwrap();
-
-    // Iteration 1: 3 transactions
-    instance.new_iteration(1).await.unwrap();
-    let tx1_i1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    let tx2_i1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    let tx3_i1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    // Iteration 2: 2 transactions
-    instance.new_iteration(2).await.unwrap();
-    let tx1_i2 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    let tx2_i2 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    // All should be successful
-    assert!(instance.is_transaction_successful(&tx1_i1).await.unwrap());
-    assert!(instance.is_transaction_successful(&tx2_i1).await.unwrap());
-    assert!(instance.is_transaction_successful(&tx3_i1).await.unwrap());
-    assert!(instance.is_transaction_successful(&tx1_i2).await.unwrap());
-    assert!(instance.is_transaction_successful(&tx2_i2).await.unwrap());
-
-    // Reorg last transaction in iteration 1
-    instance.new_iteration(1).await.unwrap();
-    instance.send_reorg(tx3_i1).await.unwrap();
-
-    // Verify reorg only affected iteration 1
-    assert!(
-        instance.is_transaction_removed(&tx3_i1).await.unwrap(),
-        "Reorged transaction should be removed"
-    );
-    assert!(
-        instance.get_transaction_result(&tx1_i1).is_some(),
-        "Other transactions in iteration 1 should remain"
-    );
-    assert!(
-        instance.get_transaction_result(&tx2_i1).is_some(),
-        "Other transactions in iteration 1 should remain"
-    );
-    assert!(
-        instance.get_transaction_result(&tx1_i2).is_some(),
-        "Iteration 2 should be unaffected"
-    );
-    assert!(
-        instance.get_transaction_result(&tx2_i2).is_some(),
-        "Iteration 2 should be unaffected"
-    );
-
-    // Block 2: Select iteration 1 (now with 2 transactions)
-    instance.new_block().await.unwrap();
-    instance.new_iteration(1).await.unwrap();
-
-    let final_tx = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(instance.is_transaction_successful(&final_tx).await.unwrap());
 }
 
 #[crate::utils::engine_test(all)]
@@ -1989,72 +1904,32 @@ async fn test_storage_slot_persistence_intra_and_cross_block(
 }
 
 #[crate::utils::engine_test(all)]
-async fn test_eip2935_block_hash_stored(mut instance: crate::utils::LocalInstance) {
-    // Block 1
+async fn test_system_calls_configurations(mut instance: crate::utils::LocalInstance) {
+    // Block 1: Setup
     instance.new_block().await.unwrap();
-
-    // Send a transaction to have something in the block
     instance.new_iteration(1).await.unwrap();
     let tx1 = instance
         .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
         .await
         .unwrap();
-
     assert!(instance.is_transaction_successful(&tx1).await.unwrap());
 
-    // Block 2: Commit with a specific parent block hash
+    // Block 2: No hashes (None, None)
+    instance.new_block_with_hashes(None, None).await.unwrap();
+    instance.new_iteration(1).await.unwrap();
+    let tx2 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+    assert!(
+        instance.is_transaction_successful(&tx2).await.unwrap(),
+        "Engine should gracefully handle missing parent hash"
+    );
+
+    // Block 3: Only parent hash
     let hash = B256::repeat_byte(0xab);
     instance
         .new_block_with_hashes(Some(hash), None)
-        .await
-        .unwrap();
-
-    // Now verify the parent hash was stored at the correct slot
-    // Parent block number = 1, slot_index = 1 % 8191 = 1
-    // Number slot = 1, Hash slot = 1 + 8191 = 8192
-    instance.new_iteration(1).await.unwrap();
-
-    // Create a transaction that reads from the history storage contract
-    // We'll verify by checking the contract exists and has code
-    let tx2 = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance.is_transaction_successful(&tx2).await.unwrap(),
-        "Engine should continue working after system calls"
-    );
-}
-
-#[crate::utils::engine_test(all)]
-async fn test_eip2935_multiple_blocks_ring_buffer(mut instance: crate::utils::LocalInstance) {
-    // Block 1
-    instance.new_block().await.unwrap();
-    instance.new_iteration(1).await.unwrap();
-    let tx1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    assert!(instance.is_transaction_successful(&tx1).await.unwrap());
-
-    // Block 2 with parent hash 0xaa
-    let hash_1 = B256::repeat_byte(0xaa);
-    instance
-        .new_block_with_hashes(Some(hash_1), None)
-        .await
-        .unwrap();
-    instance.new_iteration(1).await.unwrap();
-    let tx2 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    assert!(instance.is_transaction_successful(&tx2).await.unwrap());
-
-    // Block 3 with parent hash 0xbb
-    let hash_2 = B256::repeat_byte(0xbb);
-    instance
-        .new_block_with_hashes(Some(hash_2), None)
         .await
         .unwrap();
     instance.new_iteration(1).await.unwrap();
@@ -2062,141 +1937,80 @@ async fn test_eip2935_multiple_blocks_ring_buffer(mut instance: crate::utils::Lo
         .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
         .await
         .unwrap();
-    assert!(instance.is_transaction_successful(&tx3).await.unwrap());
-
-    // Block 4 with parent hash 0xcc
-    let hash_3 = B256::repeat_byte(0xcc);
-    instance
-        .new_block_with_hashes(Some(hash_3), None)
-        .await
-        .unwrap();
-    instance.new_iteration(1).await.unwrap();
-
-    let tx4 = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
     assert!(
-        instance.is_transaction_successful(&tx4).await.unwrap(),
-        "Engine should handle multiple blocks with parent hashes"
+        instance.is_transaction_successful(&tx3).await.unwrap(),
+        "Engine should gracefully handle missing beacon root"
     );
-}
 
-#[crate::utils::engine_test(all)]
-async fn test_eip2935_without_hash_continues(mut instance: crate::utils::LocalInstance) {
-    // Block 1
-    instance.new_block().await.unwrap();
-    instance.new_iteration(1).await.unwrap();
-    let tx1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    assert!(instance.is_transaction_successful(&tx1).await.unwrap());
-
-    // Block 2 without parent hash (None)
-    instance.new_block_with_hashes(None, None).await.unwrap();
-    instance.new_iteration(1).await.unwrap();
-
-    // Engine should continue working
-    let tx2 = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance.is_transaction_successful(&tx2).await.unwrap(),
-        "Engine should gracefully handle missing parent hash"
-    );
-}
-
-#[crate::utils::engine_test(all)]
-async fn test_eip4788_beacon_root_stored(mut instance: crate::utils::LocalInstance) {
-    // Block 1
-    instance.new_block().await.unwrap();
-    instance.new_iteration(1).await.unwrap();
-    let tx1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    assert!(instance.is_transaction_successful(&tx1).await.unwrap());
-
-    // Block 2: Commit with a specific beacon root
+    // Block 4: Only beacon root
     let beacon_root = B256::repeat_byte(0xcd);
     instance
         .new_block_with_hashes(None, Some(beacon_root))
         .await
         .unwrap();
     instance.new_iteration(1).await.unwrap();
-
-    let tx2 = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
+    let tx4 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
         .await
         .unwrap();
-
     assert!(
-        instance.is_transaction_successful(&tx2).await.unwrap(),
+        instance.is_transaction_successful(&tx4).await.unwrap(),
         "Engine should continue working after beacon root system call"
     );
-}
 
-#[crate::utils::engine_test(all)]
-async fn test_eip4788_without_beacon_root_continues(mut instance: crate::utils::LocalInstance) {
-    // Block 1
-    instance.new_block().await.unwrap();
-    instance.new_iteration(1).await.unwrap();
-    let tx1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    assert!(instance.is_transaction_successful(&tx1).await.unwrap());
-
-    // Block 2 without beacon root
-    instance
-        .new_block_with_hashes(Some(B256::repeat_byte(0x11)), None)
-        .await
-        .unwrap();
-    instance.new_iteration(1).await.unwrap();
-
-    let tx2 = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance.is_transaction_successful(&tx2).await.unwrap(),
-        "Engine should gracefully handle missing beacon root"
-    );
-}
-
-#[crate::utils::engine_test(all)]
-async fn test_both_system_calls_applied(mut instance: crate::utils::LocalInstance) {
-    // Block 1
-    instance.new_block().await.unwrap();
-    instance.new_iteration(1).await.unwrap();
-    let tx1 = instance
-        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-    assert!(instance.is_transaction_successful(&tx1).await.unwrap());
-
-    // Block 2: Both parent hash and beacon root
-    let hash = B256::repeat_byte(0xab);
-    let beacon_root = B256::repeat_byte(0xcd);
+    // Block 5: Both parent hash and beacon root
+    let hash = B256::repeat_byte(0xef);
+    let beacon_root = B256::repeat_byte(0x12);
     instance
         .new_block_with_hashes(Some(hash), Some(beacon_root))
         .await
         .unwrap();
     instance.new_iteration(1).await.unwrap();
+    let tx5 = instance
+        .send_successful_create_tx(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+    assert!(
+        instance.is_transaction_successful(&tx5).await.unwrap(),
+        "Both system calls should be applied successfully"
+    );
+}
 
-    let tx2 = instance
+#[crate::utils::engine_test(all)]
+async fn test_system_calls_sequential_blocks(mut instance: crate::utils::LocalInstance) {
+    for i in 0..5 {
+        instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
+
+        let tx = instance
+            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+            .await
+            .unwrap();
+        assert!(
+            instance.is_transaction_successful(&tx).await.unwrap(),
+            "Transaction in block {} should succeed",
+            i + 1
+        );
+
+        // Apply system calls with unique hashes for each block
+        let hash = B256::from([i as u8; 32]);
+        let beacon_root = B256::from([(i + 100) as u8; 32]);
+        instance
+            .new_block_with_hashes(Some(hash), Some(beacon_root))
+            .await
+            .unwrap();
+    }
+
+    // Final verification
+    instance.new_iteration(1).await.unwrap();
+    let final_tx = instance
         .send_successful_create_tx(uint!(0_U256), Bytes::new())
         .await
         .unwrap();
 
     assert!(
-        instance.is_transaction_successful(&tx2).await.unwrap(),
-        "Both system calls should be applied successfully"
+        instance.is_transaction_successful(&final_tx).await.unwrap(),
+        "System calls should work across many sequential blocks"
     );
 }
 
@@ -2298,44 +2112,6 @@ async fn test_system_calls_with_reorg(mut instance: crate::utils::LocalInstance)
     );
 }
 
-#[crate::utils::engine_test(all)]
-async fn test_system_calls_sequential_blocks(mut instance: crate::utils::LocalInstance) {
-    for i in 0..5 {
-        instance.new_block().await.unwrap();
-        instance.new_iteration(1).await.unwrap();
-
-        let tx = instance
-            .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
-            .await
-            .unwrap();
-        assert!(
-            instance.is_transaction_successful(&tx).await.unwrap(),
-            "Transaction in block {} should succeed",
-            i + 1
-        );
-
-        // Apply system calls with unique hashes for each block
-        let hash = B256::from([i as u8; 32]);
-        let beacon_root = B256::from([(i + 100) as u8; 32]);
-        instance
-            .new_block_with_hashes(Some(hash), Some(beacon_root))
-            .await
-            .unwrap();
-    }
-
-    // Final verification
-    instance.new_iteration(1).await.unwrap();
-    let final_tx = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance.is_transaction_successful(&final_tx).await.unwrap(),
-        "System calls should work across many sequential blocks"
-    );
-}
-
 /// Simple mock database for testing system calls
 #[derive(Debug, Default)]
 struct MockDb {
@@ -2381,11 +2157,11 @@ impl revm::DatabaseCommit for MockDb {
 }
 
 #[test]
-fn test_eip2935_ring_buffer_wraparound() {
+fn test_ring_buffer_and_slot_calculations() {
     let mut db = MockDb::default();
     let system_calls = SystemCalls::new();
 
-    // Test with block number that wraps around the ring buffer
+    // EIP-2935: Test with block number that wraps around the ring buffer
     let block_number = HISTORY_SERVE_WINDOW + 99;
     let hash = B256::repeat_byte(0xff);
 
@@ -2401,18 +2177,12 @@ fn test_eip2935_ring_buffer_wraparound() {
     assert!(result.is_ok());
 
     let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS).unwrap();
-
     // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8290 % 8191 = 99
     let expected_slot = U256::from(99u64);
     assert!(account.storage.contains_key(&expected_slot));
-}
 
-#[test]
-fn test_eip4788_ring_buffer_wraparound() {
+    // EIP-4788: Test with timestamp that wraps around
     let mut db = MockDb::default();
-    let system_calls = SystemCalls::new();
-
-    // Test with timestamp that wraps around
     let timestamp = HISTORY_BUFFER_LENGTH * 2 + 500;
     let beacon_root = B256::repeat_byte(0xee);
 
@@ -2428,93 +2198,10 @@ fn test_eip4788_ring_buffer_wraparound() {
     assert!(result.is_ok());
 
     let account = db.accounts.get(&BEACON_ROOTS_ADDRESS).unwrap();
-
     // Slot should be timestamp % HISTORY_BUFFER_LENGTH = 500
     let expected_slot = U256::from(500u64);
     assert!(account.storage.contains_key(&expected_slot));
-}
 
-#[test]
-fn test_spec_id_activation_boundaries() {
-    // Test Shanghai (pre-Cancun)
-    assert!(!SpecId::SHANGHAI.is_cancun_active());
-    assert!(!SpecId::SHANGHAI.is_prague_active());
-
-    // Test Cancun
-    assert!(SpecId::CANCUN.is_cancun_active());
-    assert!(!SpecId::CANCUN.is_prague_active());
-
-    // Test Prague
-    assert!(SpecId::PRAGUE.is_cancun_active());
-    assert!(SpecId::PRAGUE.is_prague_active());
-}
-
-#[test]
-fn test_system_calls_respects_spec_id() {
-    let mut db = MockDb::default();
-    let system_calls = SystemCalls::new();
-
-    // Pre-Cancun spec should not apply EIP-4788
-    let config = SystemCallsConfig {
-        spec_id: SpecId::SHANGHAI,
-        block_number: U256::from(100),
-        timestamp: U256::from(1234567890),
-        block_hash: Some(B256::repeat_byte(0x11)),
-        parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
-    };
-
-    let result = system_calls.apply_system_calls(&config, &mut db);
-    assert!(result.is_ok());
-
-    // Neither contract should be touched for Shanghai
-    assert!(!db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
-    assert!(!db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
-}
-
-#[test]
-fn test_cancun_only_applies_eip4788() {
-    let mut db = MockDb::default();
-    let system_calls = SystemCalls::new();
-
-    let config = SystemCallsConfig {
-        spec_id: SpecId::CANCUN,
-        block_number: U256::from(100),
-        timestamp: U256::from(1234567890),
-        block_hash: Some(B256::repeat_byte(0x11)),
-        parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
-    };
-
-    let result = system_calls.apply_system_calls(&config, &mut db);
-    assert!(result.is_ok());
-
-    // Only beacon roots should be touched for Cancun
-    assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
-    assert!(!db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
-}
-
-#[test]
-fn test_prague_applies_both() {
-    let mut db = MockDb::default();
-    let system_calls = SystemCalls::new();
-
-    let config = SystemCallsConfig {
-        spec_id: SpecId::PRAGUE,
-        block_number: U256::from(100),
-        timestamp: U256::from(1234567890),
-        block_hash: Some(B256::repeat_byte(0x11)),
-        parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
-    };
-
-    let result = system_calls.apply_system_calls(&config, &mut db);
-    assert!(result.is_ok());
-
-    // Both contracts should be touched for Prague
-    assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
-    assert!(db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
-}
-
-#[test]
-fn test_storage_slot_calculations() {
     // EIP-2935: parent block number 100, slot = 100 % 8191 = 100
     let block_number = 100u64;
     let slot_index = block_number % HISTORY_SERVE_WINDOW as u64;
@@ -2529,4 +2216,69 @@ fn test_storage_slot_calculations() {
     let timestamp = 1700000000u64;
     let timestamp_index = timestamp % HISTORY_BUFFER_LENGTH;
     assert_eq!(timestamp_index, 7096);
+}
+
+#[test]
+fn test_spec_id_activation_and_behavior() {
+    // Test Shanghai (pre-Cancun)
+    assert!(!SpecId::SHANGHAI.is_cancun_active());
+    assert!(!SpecId::SHANGHAI.is_prague_active());
+
+    // Test Cancun
+    assert!(SpecId::CANCUN.is_cancun_active());
+    assert!(!SpecId::CANCUN.is_prague_active());
+
+    // Test Prague
+    assert!(SpecId::PRAGUE.is_cancun_active());
+    assert!(SpecId::PRAGUE.is_prague_active());
+
+    let system_calls = SystemCalls::new();
+
+    // Shanghai: neither contract should be touched
+    let mut db = MockDb::default();
+    let config = SystemCallsConfig {
+        spec_id: SpecId::SHANGHAI,
+        block_number: U256::from(100),
+        timestamp: U256::from(1234567890),
+        block_hash: Some(B256::repeat_byte(0x11)),
+        parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
+    };
+
+    let result = system_calls.apply_system_calls(&config, &mut db);
+    assert!(result.is_ok());
+    // Neither contract should be touched for Shanghai
+    assert!(!db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
+    assert!(!db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
+
+    // Cancun: only beacon roots should be touched
+    let mut db = MockDb::default();
+    let config = SystemCallsConfig {
+        spec_id: SpecId::CANCUN,
+        block_number: U256::from(100),
+        timestamp: U256::from(1234567890),
+        block_hash: Some(B256::repeat_byte(0x11)),
+        parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
+    };
+
+    let result = system_calls.apply_system_calls(&config, &mut db);
+    assert!(result.is_ok());
+    // Only beacon roots should be touched for Cancun
+    assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
+    assert!(!db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
+
+    // Prague: both contracts should be touched
+    let mut db = MockDb::default();
+    let config = SystemCallsConfig {
+        spec_id: SpecId::PRAGUE,
+        block_number: U256::from(100),
+        timestamp: U256::from(1234567890),
+        block_hash: Some(B256::repeat_byte(0x11)),
+        parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
+    };
+
+    let result = system_calls.apply_system_calls(&config, &mut db);
+    assert!(result.is_ok());
+    // Both contracts should be touched for Prague
+    assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
+    assert!(db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
 }
