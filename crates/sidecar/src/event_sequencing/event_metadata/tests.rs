@@ -56,7 +56,7 @@ fn collect_event_chain_limited(event: &EventMetadata, limit: usize) -> Vec<Event
 #[test]
 fn test_transaction_index_0_returns_new_iteration() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 0,
         tx_hash: test_hash(1),
@@ -79,7 +79,7 @@ fn test_transaction_index_0_returns_new_iteration() {
 #[test]
 fn test_transaction_index_greater_than_0_returns_previous_transaction() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 3,
         tx_hash: test_hash(1),
@@ -105,7 +105,7 @@ fn test_transaction_index_greater_than_0_returns_previous_transaction() {
 #[test]
 fn test_reorg_returns_transaction() {
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
@@ -132,7 +132,7 @@ fn test_reorg_returns_transaction() {
 #[test]
 fn test_commit_head_with_zero_transactions_returns_new_iteration() {
     let commit = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 0,
         prev_tx_hash: None,
@@ -154,7 +154,7 @@ fn test_commit_head_with_zero_transactions_returns_new_iteration() {
 #[test]
 fn test_commit_head_with_transactions_returns_last_transaction() {
     let commit = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 10,
         prev_tx_hash: Some(test_hash(9)),
@@ -181,7 +181,7 @@ fn test_commit_head_with_transactions_returns_last_transaction() {
 #[test]
 fn test_new_iteration_at_block_0_returns_none() {
     let new_iter = EventMetadata::NewIteration {
-        block_number: 0,
+        block_number: U256::from(0),
         iteration_id: 5,
     };
 
@@ -191,7 +191,7 @@ fn test_new_iteration_at_block_0_returns_none() {
 #[test]
 fn test_new_iteration_returns_previous_block_commit_head() {
     let new_iter = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
     };
 
@@ -215,7 +215,7 @@ fn test_new_iteration_returns_previous_block_commit_head() {
 #[test]
 fn test_new_iteration_at_block_1_returns_commit_head_at_block_0() {
     let new_iter = EventMetadata::NewIteration {
-        block_number: 1,
+        block_number: U256::from(1),
         iteration_id: 3,
     };
 
@@ -231,7 +231,7 @@ fn test_new_iteration_at_block_1_returns_commit_head_at_block_0() {
 #[test]
 fn test_recursive_chain_from_commit_head_to_new_iteration() {
     let commit = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 5,
         prev_tx_hash: Some(test_hash(4)),
@@ -268,7 +268,7 @@ fn test_recursive_chain_from_commit_head_to_new_iteration() {
 #[test]
 fn test_recursive_chain_from_transaction_to_new_iteration() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 3,
         tx_hash: test_hash(3),
@@ -298,7 +298,7 @@ fn test_recursive_chain_from_transaction_to_new_iteration() {
 #[test]
 fn test_recursive_chain_from_reorg_to_new_iteration() {
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
@@ -321,7 +321,7 @@ fn test_recursive_chain_from_reorg_to_new_iteration() {
 #[test]
 fn test_recursive_chain_from_commit_head_with_zero_transactions() {
     let commit = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 0,
         prev_tx_hash: None,
@@ -343,7 +343,7 @@ fn test_recursive_chain_from_commit_head_with_zero_transactions() {
 #[test]
 fn test_recursive_chain_crosses_block_boundary() {
     let new_iter = EventMetadata::NewIteration {
-        block_number: 5,
+        block_number: U256::from(5),
         iteration_id: 2,
     };
 
@@ -372,7 +372,7 @@ fn test_recursive_chain_crosses_block_boundary() {
 #[test]
 fn test_recursive_chain_reaches_block_0() {
     let new_iter = EventMetadata::NewIteration {
-        block_number: 3,
+        block_number: U256::from(3),
         iteration_id: 0,
     };
 
@@ -394,7 +394,7 @@ fn test_recursive_chain_reaches_block_0() {
 #[test]
 fn test_recursive_chain_preserves_block_and_iteration_within_block() {
     let commit = EventMetadata::CommitHead {
-        block_number: 42,
+        block_number: U256::from(42),
         selected_iteration_id: 7,
         n_transactions: 3,
         prev_tx_hash: Some(test_hash(2)),
@@ -425,7 +425,7 @@ fn test_recursive_chain_preserves_block_and_iteration_within_block() {
 #[test]
 fn test_reorg_and_transaction_cancel() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -433,7 +433,7 @@ fn test_reorg_and_transaction_cancel() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -446,7 +446,7 @@ fn test_reorg_and_transaction_cancel() {
 #[test]
 fn test_transaction_and_reorg_different_tx_hash_dont_cancel() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -454,7 +454,7 @@ fn test_transaction_and_reorg_different_tx_hash_dont_cancel() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(2), // Different tx_hash
@@ -467,7 +467,7 @@ fn test_transaction_and_reorg_different_tx_hash_dont_cancel() {
 #[test]
 fn test_transaction_and_reorg_different_index_dont_cancel() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -475,7 +475,7 @@ fn test_transaction_and_reorg_different_index_dont_cancel() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 3, // Different index
         tx_hash: test_hash(1),
@@ -488,7 +488,7 @@ fn test_transaction_and_reorg_different_index_dont_cancel() {
 #[test]
 fn test_transaction_and_reorg_different_block_dont_cancel() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -496,7 +496,7 @@ fn test_transaction_and_reorg_different_block_dont_cancel() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 101, // Different block
+        block_number: U256::from(101), // Different block
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -509,7 +509,7 @@ fn test_transaction_and_reorg_different_block_dont_cancel() {
 #[test]
 fn test_transaction_and_reorg_different_iteration_dont_cancel() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -517,7 +517,7 @@ fn test_transaction_and_reorg_different_iteration_dont_cancel() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 6, // Different iteration
         index: 2,
         tx_hash: test_hash(1),
@@ -530,7 +530,7 @@ fn test_transaction_and_reorg_different_iteration_dont_cancel() {
 #[test]
 fn test_identical_transactions_dont_cancel() {
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -538,7 +538,7 @@ fn test_identical_transactions_dont_cancel() {
     };
 
     let tx2 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -553,14 +553,14 @@ fn test_identical_transactions_dont_cancel() {
 #[test]
 fn test_identical_reorgs_dont_cancel() {
     let reorg1 = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
     };
 
     let reorg2 = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
@@ -574,7 +574,7 @@ fn test_identical_reorgs_dont_cancel() {
 #[test]
 fn test_commit_head_and_transaction_dont_cancel() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -582,7 +582,7 @@ fn test_commit_head_and_transaction_dont_cancel() {
     };
 
     let commit = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 3,
         prev_tx_hash: None,
@@ -595,14 +595,14 @@ fn test_commit_head_and_transaction_dont_cancel() {
 #[test]
 fn test_commit_head_and_reorg_dont_cancel() {
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
     };
 
     let commit = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 3,
         prev_tx_hash: None,
@@ -615,7 +615,7 @@ fn test_commit_head_and_reorg_dont_cancel() {
 #[test]
 fn test_new_iteration_and_transaction_dont_cancel() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 0,
         tx_hash: test_hash(1),
@@ -623,7 +623,7 @@ fn test_new_iteration_and_transaction_dont_cancel() {
     };
 
     let new_iter = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
     };
 
@@ -634,14 +634,14 @@ fn test_new_iteration_and_transaction_dont_cancel() {
 #[test]
 fn test_new_iteration_and_reorg_dont_cancel() {
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
     };
 
     let new_iter = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
     };
 
@@ -652,12 +652,12 @@ fn test_new_iteration_and_reorg_dont_cancel() {
 #[test]
 fn test_new_iterations_dont_cancel() {
     let iter1 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
     };
 
     let iter2 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
     };
 
@@ -667,14 +667,14 @@ fn test_new_iterations_dont_cancel() {
 #[test]
 fn test_commit_heads_dont_cancel() {
     let commit1 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 10,
         prev_tx_hash: Some(test_hash(9)),
     };
 
     let commit2 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 10,
         prev_tx_hash: Some(test_hash(9)),
@@ -686,7 +686,7 @@ fn test_commit_heads_dont_cancel() {
 #[test]
 fn test_hash_transaction_same_identity_different_tx_hash() {
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -694,7 +694,7 @@ fn test_hash_transaction_same_identity_different_tx_hash() {
     };
 
     let tx2 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(99), // Different tx_hash
@@ -707,7 +707,7 @@ fn test_hash_transaction_same_identity_different_tx_hash() {
 #[test]
 fn test_hash_transaction_same_identity_different_prev_tx_hash() {
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -715,7 +715,7 @@ fn test_hash_transaction_same_identity_different_prev_tx_hash() {
     };
 
     let tx2 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -728,7 +728,7 @@ fn test_hash_transaction_same_identity_different_prev_tx_hash() {
 #[test]
 fn test_hash_transaction_different_index() {
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -736,7 +736,7 @@ fn test_hash_transaction_different_index() {
     };
 
     let tx2 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 3, // Different index
         tx_hash: test_hash(1),
@@ -749,7 +749,7 @@ fn test_hash_transaction_different_index() {
 #[test]
 fn test_hash_transaction_different_block() {
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -757,7 +757,7 @@ fn test_hash_transaction_different_block() {
     };
 
     let tx2 = EventMetadata::Transaction {
-        block_number: 101, // Different block
+        block_number: U256::from(101), // Different block
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -770,7 +770,7 @@ fn test_hash_transaction_different_block() {
 #[test]
 fn test_hash_transaction_different_iteration() {
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -778,7 +778,7 @@ fn test_hash_transaction_different_iteration() {
     };
 
     let tx2 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 6, // Different iteration
         index: 2,
         tx_hash: test_hash(1),
@@ -791,14 +791,14 @@ fn test_hash_transaction_different_iteration() {
 #[test]
 fn test_hash_reorg_same_identity_different_tx_hash() {
     let reorg1 = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
     };
 
     let reorg2 = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(99), // Different tx_hash
         index: 2,
@@ -810,14 +810,14 @@ fn test_hash_reorg_same_identity_different_tx_hash() {
 #[test]
 fn test_hash_reorg_different_index() {
     let reorg1 = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
     };
 
     let reorg2 = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 3, // Different index
@@ -829,12 +829,12 @@ fn test_hash_reorg_different_index() {
 #[test]
 fn test_hash_new_iteration_same_identity() {
     let iter1 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
     };
 
     let iter2 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
     };
 
@@ -844,12 +844,12 @@ fn test_hash_new_iteration_same_identity() {
 #[test]
 fn test_hash_new_iteration_different_block() {
     let iter1 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
     };
 
     let iter2 = EventMetadata::NewIteration {
-        block_number: 101, // Different block
+        block_number: U256::from(101), // Different block
         iteration_id: 5,
     };
 
@@ -859,12 +859,12 @@ fn test_hash_new_iteration_different_block() {
 #[test]
 fn test_hash_new_iteration_different_iteration() {
     let iter1 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
     };
 
     let iter2 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 6, // Different iteration
     };
 
@@ -874,14 +874,14 @@ fn test_hash_new_iteration_different_iteration() {
 #[test]
 fn test_hash_commit_head_ignores_selected_iteration_id() {
     let commit1 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 10,
         prev_tx_hash: Some(test_hash(9)),
     };
 
     let commit2 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 99, // Different selected_iteration_id
         n_transactions: 10,
         prev_tx_hash: Some(test_hash(9)),
@@ -893,14 +893,14 @@ fn test_hash_commit_head_ignores_selected_iteration_id() {
 #[test]
 fn test_hash_commit_head_ignores_n_transactions() {
     let commit1 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 10,
         prev_tx_hash: Some(test_hash(9)),
     };
 
     let commit2 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 20, // Different n_transactions
         prev_tx_hash: Some(test_hash(9)),
@@ -912,14 +912,14 @@ fn test_hash_commit_head_ignores_n_transactions() {
 #[test]
 fn test_hash_commit_head_ignores_prev_tx_hash() {
     let commit1 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 10,
         prev_tx_hash: Some(test_hash(9)),
     };
 
     let commit2 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 10,
         prev_tx_hash: Some(test_hash(50)), // Different prev_tx_hash
@@ -931,14 +931,14 @@ fn test_hash_commit_head_ignores_prev_tx_hash() {
 #[test]
 fn test_hash_commit_head_different_block() {
     let commit1 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 10,
         prev_tx_hash: Some(test_hash(9)),
     };
 
     let commit2 = EventMetadata::CommitHead {
-        block_number: 101, // Different block
+        block_number: U256::from(101), // Different block
         selected_iteration_id: 5,
         n_transactions: 10,
         prev_tx_hash: Some(test_hash(9)),
@@ -950,7 +950,7 @@ fn test_hash_commit_head_different_block() {
 #[test]
 fn test_hash_different_variants_same_fields() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -958,7 +958,7 @@ fn test_hash_different_variants_same_fields() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
@@ -971,7 +971,7 @@ fn test_hash_different_variants_same_fields() {
 #[test]
 fn test_hash_transaction_and_new_iteration_different() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 0,
         tx_hash: test_hash(1),
@@ -979,7 +979,7 @@ fn test_hash_transaction_and_new_iteration_different() {
     };
 
     let new_iter = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
     };
 
@@ -989,7 +989,7 @@ fn test_hash_transaction_and_new_iteration_different() {
 #[test]
 fn test_transaction_at_max_index() {
     let tx = EventMetadata::Transaction {
-        block_number: u64::MAX,
+        block_number: U256::MAX,
         iteration_id: u64::MAX,
         index: u64::MAX,
         tx_hash: test_hash(1),
@@ -1008,7 +1008,7 @@ fn test_transaction_at_max_index() {
 #[test]
 fn test_commit_head_with_one_transaction() {
     let commit = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 5,
         n_transactions: 1,
         prev_tx_hash: Some(test_hash(0)),
@@ -1030,7 +1030,7 @@ fn test_commit_head_with_one_transaction() {
 #[test]
 fn test_hash_consistency_with_clone() {
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
         tx_hash: test_hash(1),
@@ -1045,7 +1045,7 @@ fn test_hash_consistency_with_clone() {
 #[test]
 fn test_transaction_equality_ignores_tx_hash() {
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1053,7 +1053,7 @@ fn test_transaction_equality_ignores_tx_hash() {
     };
 
     let tx2 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1069,12 +1069,12 @@ fn test_transaction_equality_ignores_tx_hash() {
 #[test]
 fn test_new_iteration_inequality_different_block() {
     let iter1 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
     };
 
     let iter2 = EventMetadata::NewIteration {
-        block_number: 101,
+        block_number: U256::from(101),
         iteration_id: 1,
     };
 
@@ -1087,12 +1087,12 @@ fn test_new_iteration_inequality_different_block() {
 #[test]
 fn test_new_iteration_inequality_different_iteration() {
     let iter1 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
     };
 
     let iter2 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 2,
     };
 
@@ -1105,14 +1105,14 @@ fn test_new_iteration_inequality_different_iteration() {
 #[test]
 fn test_commit_head_inequality_different_block() {
     let commit1 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 1,
         n_transactions: 10,
         prev_tx_hash: Some(TxHash::random()),
     };
 
     let commit2 = EventMetadata::CommitHead {
-        block_number: 101,
+        block_number: U256::from(101),
         selected_iteration_id: 1,
         n_transactions: 10,
         prev_tx_hash: Some(TxHash::random()),
@@ -1127,7 +1127,7 @@ fn test_commit_head_inequality_different_block() {
 #[test]
 fn test_transaction_inequality_different_index() {
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1135,7 +1135,7 @@ fn test_transaction_inequality_different_index() {
     };
 
     let tx2 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 6,
         tx_hash: TxHash::random(),
@@ -1151,14 +1151,14 @@ fn test_transaction_inequality_different_index() {
 #[test]
 fn test_reorg_equality_ignores_tx_hash() {
     let reorg1 = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
     };
 
     let reorg2 = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1173,12 +1173,12 @@ fn test_reorg_equality_ignores_tx_hash() {
 #[test]
 fn test_new_iteration_equality() {
     let iter1 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
     };
 
     let iter2 = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
     };
 
@@ -1191,14 +1191,14 @@ fn test_new_iteration_equality() {
 #[test]
 fn test_commit_head_equality_ignores_most_fields() {
     let commit1 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 1,
         n_transactions: 10,
         prev_tx_hash: Some(TxHash::random()),
     };
 
     let commit2 = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 999, // Different!
         n_transactions: 5,          // Different!
         prev_tx_hash: None,         // Different!
@@ -1213,7 +1213,7 @@ fn test_commit_head_equality_ignores_most_fields() {
 #[test]
 fn test_different_variants_not_equal() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::default(),
@@ -1221,7 +1221,7 @@ fn test_different_variants_not_equal() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::default(),
@@ -1238,7 +1238,7 @@ fn test_cancel_each_other_transaction_and_reorg() {
     let tx_hash = TxHash::random();
 
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash,
@@ -1246,7 +1246,7 @@ fn test_cancel_each_other_transaction_and_reorg() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash,
@@ -1265,7 +1265,7 @@ fn test_cancel_each_other_transaction_and_reorg() {
 #[test]
 fn test_cancel_each_other_different_tx_hash() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1273,7 +1273,7 @@ fn test_cancel_each_other_different_tx_hash() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1288,7 +1288,7 @@ fn test_cancel_each_other_different_tx_hash() {
 #[test]
 fn test_cancel_each_other_same_type_no_cancel() {
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1296,7 +1296,7 @@ fn test_cancel_each_other_same_type_no_cancel() {
     };
 
     let tx2 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1324,7 +1324,7 @@ fn test_hash_consistency() {
     }
 
     let tx1 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1332,7 +1332,7 @@ fn test_hash_consistency() {
     };
 
     let tx2 = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1349,7 +1349,7 @@ fn test_hash_consistency() {
 #[test]
 fn test_calculate_previous_event_transaction_first_index() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 0,
         tx_hash: TxHash::random(),
@@ -1360,7 +1360,7 @@ fn test_calculate_previous_event_transaction_first_index() {
     assert!(prev.is_some());
 
     let expected = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
     };
     assert_eq!(prev.unwrap(), expected);
@@ -1369,7 +1369,7 @@ fn test_calculate_previous_event_transaction_first_index() {
 #[test]
 fn test_calculate_previous_event_transaction_non_zero_index() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1396,7 +1396,7 @@ fn test_calculate_previous_event_transaction_non_zero_index() {
 #[test]
 fn test_calculate_previous_event_new_iteration_at_genesis() {
     let new_iter = EventMetadata::NewIteration {
-        block_number: 0,
+        block_number: U256::from(0),
         iteration_id: 0,
     };
 
@@ -1410,7 +1410,7 @@ fn test_calculate_previous_event_new_iteration_at_genesis() {
 #[test]
 fn test_all_variant_combinations_not_equal() {
     let tx = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::default(),
@@ -1418,19 +1418,19 @@ fn test_all_variant_combinations_not_equal() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::default(),
     };
 
     let new_iter = EventMetadata::NewIteration {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
     };
 
     let commit = EventMetadata::CommitHead {
-        block_number: 100,
+        block_number: U256::from(100),
         selected_iteration_id: 1,
         n_transactions: 5,
         prev_tx_hash: None,
@@ -1463,7 +1463,7 @@ fn test_cancel_each_other_all_field_combinations() {
 
     // Base case - should cancel
     let tx_base = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: base_tx_hash,
@@ -1471,7 +1471,7 @@ fn test_cancel_each_other_all_field_combinations() {
     };
 
     let reorg_base = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: base_tx_hash,
@@ -1484,7 +1484,7 @@ fn test_cancel_each_other_all_field_combinations() {
 
     // Different block_number - should NOT cancel
     let reorg_diff_block = EventMetadata::Reorg {
-        block_number: 101,
+        block_number: U256::from(101),
         iteration_id: 1,
         index: 5,
         tx_hash: base_tx_hash,
@@ -1500,7 +1500,7 @@ fn test_cancel_each_other_all_field_combinations() {
 
     // Different iteration_id - should NOT cancel
     let reorg_diff_iter = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 2,
         index: 5,
         tx_hash: base_tx_hash,
@@ -1516,7 +1516,7 @@ fn test_cancel_each_other_all_field_combinations() {
 
     // Different index - should NOT cancel
     let reorg_diff_index = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 6,
         tx_hash: base_tx_hash,
@@ -1532,7 +1532,7 @@ fn test_cancel_each_other_all_field_combinations() {
 
     // Different tx_hash - should NOT cancel
     let reorg_diff_hash = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash: TxHash::random(),
@@ -1548,7 +1548,7 @@ fn test_cancel_each_other_all_field_combinations() {
 
     // Multiple fields different - should NOT cancel
     let reorg_multiple_diff = EventMetadata::Reorg {
-        block_number: 101,
+        block_number: U256::from(101),
         iteration_id: 2,
         index: 6,
         tx_hash: TxHash::random(),
@@ -1564,7 +1564,7 @@ fn test_cancel_each_other_prev_tx_hash_irrelevant() {
     let tx_hash = TxHash::random();
 
     let tx_with_prev = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash,
@@ -1572,7 +1572,7 @@ fn test_cancel_each_other_prev_tx_hash_irrelevant() {
     };
 
     let tx_without_prev = EventMetadata::Transaction {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash,
@@ -1580,7 +1580,7 @@ fn test_cancel_each_other_prev_tx_hash_irrelevant() {
     };
 
     let reorg = EventMetadata::Reorg {
-        block_number: 100,
+        block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
         tx_hash,

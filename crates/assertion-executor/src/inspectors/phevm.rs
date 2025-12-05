@@ -256,7 +256,8 @@ impl<'a> PhEvmInspector<'a> {
                 return Ok(crate::inspectors::precompiles::console_log::console_log(
                     &input_bytes,
                     &mut self.context,
-                )?);
+                )
+                .map_err(PrecompileError::ConsoleLogError)?);
 
                 #[cfg(not(feature = "phoundry"))]
                 return Ok(Bytes::default());

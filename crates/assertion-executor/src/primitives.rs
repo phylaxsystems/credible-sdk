@@ -231,11 +231,12 @@ mod test_merge_state {
             },
             status: AccountStatus::default(),
             storage: HashMap::from_iter([]),
+            transaction_id: 0,
         }
     }
 
     fn create_storage_slot(value: u64) -> EvmStorageSlot {
-        EvmStorageSlot::new(U256::from(value))
+        EvmStorageSlot::new(U256::from(value), 0)
     }
 
     fn addr(s: &str) -> Address {

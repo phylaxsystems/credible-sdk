@@ -360,7 +360,7 @@ impl LocalInstanceMockDriver {
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
-            0,
+            U256::from(0),
             setup.state_results,
             setup.default_account,
             None,
@@ -408,7 +408,7 @@ impl TestTransport for LocalInstanceMockDriver {
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
-            0,
+            U256::from(0),
             setup.state_results,
             setup.default_account,
             None,
@@ -424,7 +424,7 @@ impl TestTransport for LocalInstanceMockDriver {
 
     async fn new_block(
         &mut self,
-        block_number: u64,
+        block_number: U256,
         selected_iteration_id: u64,
         _n_transactions: u64,
     ) -> Result<(), String> {
@@ -676,7 +676,7 @@ impl LocalInstanceHttpDriver {
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
-            0,
+            U256::from(0),
             setup.state_results,
             setup.default_account,
             Some(&address),
@@ -705,7 +705,7 @@ impl TestTransport for LocalInstanceHttpDriver {
 
     async fn new_block(
         &mut self,
-        block_number: u64,
+        block_number: U256,
         selected_iteration_id: u64,
         _n_transactions: u64,
     ) -> Result<(), String> {
@@ -884,9 +884,9 @@ impl LocalInstanceGrpcDriver {
 
     fn build_pb_block_env(block_env: &BlockEnv) -> pb::BlockEnv {
         pb::BlockEnv {
-            number: block_env.number,
+            number: block_env.number.to_be_bytes::<32>().to_vec(),
             beneficiary: grpc_encode::address(block_env.beneficiary),
-            timestamp: block_env.timestamp,
+            timestamp: block_env.timestamp.to_be_bytes::<32>().to_vec(),
             gas_limit: block_env.gas_limit,
             basefee: block_env.basefee,
             difficulty: grpc_encode::u256_be(block_env.difficulty),
@@ -902,7 +902,7 @@ impl LocalInstanceGrpcDriver {
 
     fn build_pb_tx_execution_id(tx_execution_id: &TxExecutionId) -> GrpcTxExecutionId {
         GrpcTxExecutionId {
-            block_number: tx_execution_id.block_number,
+            block_number: tx_execution_id.block_number.to_be_bytes::<32>().to_vec(),
             iteration_id: tx_execution_id.iteration_id,
             tx_hash: grpc_encode::b256(tx_execution_id.tx_hash),
             index: tx_execution_id.index,
@@ -1088,7 +1088,7 @@ impl LocalInstanceGrpcDriver {
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
-            0,
+            U256::from(0),
             setup.state_results,
             setup.default_account,
             Some(&address),
@@ -1117,7 +1117,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
     async fn new_block(
         &mut self,
-        block_number: u64,
+        block_number: U256,
         selected_iteration_id: u64,
         _n_transactions: u64,
     ) -> Result<(), String> {
@@ -1128,7 +1128,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let commit_head = pb::CommitHead {
             last_tx_hash: last_tx_hash.map(grpc_encode::b256),
             n_transactions,
-            block_number,
+            block_number: block_number.to_be_bytes::<32>().to_vec(),
             selected_iteration_id,
         };
 

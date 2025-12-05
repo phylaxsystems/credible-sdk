@@ -397,7 +397,7 @@ impl AssertionExecutor {
         reprice_evm_storage!(evm);
 
         trace!(target: "assertion-executor::execute_assertions", "Executing assertion function");
-        let result_and_state = evm.inspect_with_tx(tx_env);
+        let result_and_state = evm.inspect_tx(tx_env);
 
         let result = result_and_state
             .map(|result_and_state| result_and_state.result)
@@ -529,7 +529,7 @@ impl AssertionExecutor {
         let mut evm = crate::build_evm_by_features!(fork_db, &env, &mut call_tracer);
         let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
 
-        let result_and_state = evm.inspect_with_tx(tx_env).map_err(|e| {
+        let result_and_state = evm.inspect_tx(tx_env).map_err(|e| {
             debug!(target: "assertion-executor::execute_tx", error = ?e, "Evm error in execute_forked_tx");
             TxExecutionError::TxEvmError(e)
         })?;
@@ -585,7 +585,7 @@ impl AssertionExecutor {
         let mut evm = crate::build_evm_by_features!(external_db, &env, &mut call_tracer);
         let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
 
-        let result_and_state = evm.inspect_with_tx(tx_env).map_err(|e| {
+        let result_and_state = evm.inspect_tx(tx_env).map_err(|e| {
             debug!(target: "assertion-executor::execute_tx", error = ?e, "Evm error in execute_forked_tx");
             e
         }).map_err(TxExecutionError::TxEvmError)?;
@@ -647,6 +647,7 @@ impl AssertionExecutor {
 
         let assertion_account = Account {
             info: assertion_account_info,
+            transaction_id: 0,
             storage: storage.clone(),
             status: *account_status,
         };
@@ -793,7 +794,7 @@ mod test {
         let mut counter_storage = EvmStorage::default();
         counter_storage.insert(
             U256::ZERO,
-            EvmStorageSlot::new_changed(U256::ZERO, U256::from(2)),
+            EvmStorageSlot::new_changed(U256::ZERO, U256::from(2), 0),
         );
 
         let mut counter_state = EvmState::default();
@@ -801,6 +802,7 @@ mod test {
             COUNTER_ADDRESS,
             Account {
                 info: counter_acct_info(),
+                transaction_id: 0,
                 storage: counter_storage,
                 status: AccountStatus::Touched,
             },
@@ -827,6 +829,7 @@ mod test {
                     code: None,
                     ..Default::default()
                 },
+                transaction_id: 0,
                 storage: HashMap::default(),
                 status: AccountStatus::Touched,
             },
@@ -847,7 +850,7 @@ mod test {
         };
 
         let block_env = BlockEnv {
-            number: 1,
+            number: U256::from(1),
             ..Default::default()
         };
 
@@ -947,7 +950,7 @@ mod test {
         let mut executor = AssertionExecutor::new(config.clone(), assertion_store);
 
         let basefee = 10;
-        let number = 1;
+        let number = U256::from(1);
         let block_env = BlockEnv {
             number,
             basefee,

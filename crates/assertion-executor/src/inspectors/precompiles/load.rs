@@ -15,10 +15,7 @@ use revm::{
         Journal,
         JournalTr,
     },
-    interpreter::{
-        CallInputs,
-        Host,
-    },
+    interpreter::CallInputs,
 };
 
 use alloy_sol_types::{
@@ -48,7 +45,7 @@ where
     // This prevents a bug with revm's State<Db> where it panics if reading the storage before
     // loading the account.
     context
-        .journal()
+        .journal_mut()
         .load_account(address)
         .map_err(LoadExternalSlotError)?;
 
@@ -110,12 +107,12 @@ mod test {
             input: CallInput::Bytes(encoded.into()),
             gas_limit: 1_000_000,
             bytecode_address: Address::ZERO,
+            known_bytecode: None,
             target_address: target,
             caller: Address::ZERO,
             value: CallValue::Transfer(U256::ZERO),
             scheme: CallScheme::Call,
             is_static: false,
-            is_eof: false,
             return_memory_offset: 0..0,
         }
     }

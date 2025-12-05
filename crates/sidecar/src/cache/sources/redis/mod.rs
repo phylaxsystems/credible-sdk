@@ -34,6 +34,7 @@ use assertion_executor::primitives::{
     Bytecode,
     U256,
 };
+use parking_lot::RwLock;
 use redis::Commands;
 use revm::{
     DatabaseRef,
@@ -53,7 +54,6 @@ use std::{
         Arc,
         atomic::{
             AtomicBool,
-            AtomicU64,
             Ordering,
         },
     },
@@ -62,17 +62,18 @@ use std::{
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
 pub struct RedisSource {
     backend: StateReader,
     /// Target block to request from redis.
-    target_block: Arc<AtomicU64>,
+    target_block: Arc<RwLock<U256>>,
     /// Records newest block the background poller has seen.
-    observed_head: Arc<AtomicU64>,
+    observed_head: Arc<RwLock<U256>>,
     /// Oldest block that exists in redis buffer. Used to prevent asking for a block redis doesnt have.
-    oldest_block: Arc<AtomicU64>,
+    oldest_block: Arc<RwLock<U256>>,
     sync_status: Arc<AtomicBool>,
     cancel_token: CancellationToken,
     sync_task: JoinHandle<()>,
@@ -81,21 +82,21 @@ pub struct RedisSource {
 
 #[derive(Debug)]
 pub(crate) struct CacheStatus {
-    pub min_synced_block: AtomicU64,
-    pub latest_head: AtomicU64,
+    pub min_synced_block: RwLock<U256>,
+    pub latest_head: RwLock<U256>,
 }
 
 impl RedisSource {
     /// Creates a cache that stores entries under the default `state` namespace.
     pub fn new(backend: StateReader) -> Self {
-        let target_block = Arc::new(AtomicU64::new(0));
-        let observed_head = Arc::new(AtomicU64::new(0));
-        let oldest_block = Arc::new(AtomicU64::new(0));
+        let target_block = Arc::new(RwLock::new(U256::ZERO));
+        let observed_head = Arc::new(RwLock::new(U256::ZERO));
+        let oldest_block = Arc::new(RwLock::new(U256::ZERO));
         let sync_status = Arc::new(AtomicBool::new(false));
         let cancel_token = CancellationToken::new();
         let cache_status = Arc::new(CacheStatus {
-            min_synced_block: AtomicU64::new(0),
-            latest_head: AtomicU64::new(0),
+            min_synced_block: RwLock::new(U256::ZERO),
+            latest_head: RwLock::new(U256::ZERO),
         });
         let sync_task = sync_task::spawn_sync_task(
             cache_status.clone(),
@@ -131,6 +132,13 @@ impl RedisSource {
             &self.sync_status,
         );
     }
+
+    /// Helper to convert U256 to u64 for backend calls.
+    /// Panics if the value overflows u64 (should never happen for block numbers in practice).
+    #[inline]
+    fn u256_to_u64(value: U256) -> u64 {
+        value.try_into().expect("block number overflow u64")
+    }
 }
 
 impl DatabaseRef for RedisSource {
@@ -138,10 +146,11 @@ impl DatabaseRef for RedisSource {
 
     /// Reconstructs an account from cached metadata, returning `None` when absent.
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        let target_block = self.target_block.load(Ordering::Relaxed);
+        let target_block = *self.target_block.read();
+        let target_block_u64 = Self::u256_to_u64(target_block);
         let Some(account) = self
             .backend
-            .get_account(address.into(), target_block)
+            .get_account(address.into(), target_block_u64)
             .map_err(Self::Error::RedisAccount)?
         else {
             return Ok(None);
@@ -169,10 +178,11 @@ impl DatabaseRef for RedisSource {
 
     /// Loads bytecode previously stored for a code hash.
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        let target_block = self.target_block.load(Ordering::Relaxed);
+        let target_block = *self.target_block.read();
+        let target_block_u64 = Self::u256_to_u64(target_block);
         let bytecode = Bytecode::new_raw(
             self.backend
-                .get_code(code_hash, target_block)
+                .get_code(code_hash, target_block_u64)
                 .map_err(Self::Error::RedisCodeByHash)?
                 .ok_or(Self::Error::CodeByHashNotFound)?
                 .into(),
@@ -188,10 +198,11 @@ impl DatabaseRef for RedisSource {
     ) -> Result<StorageValue, Self::Error> {
         let slot_hash = keccak256(index.to_be_bytes::<32>());
         let slot = U256::from_be_bytes(slot_hash.into());
-        let target_block = self.target_block.load(Ordering::Relaxed);
+        let target_block = *self.target_block.read();
+        let target_block_u64 = Self::u256_to_u64(target_block);
         let value = self
             .backend
-            .get_storage(address.into(), slot, target_block)
+            .get_storage(address.into(), slot, target_block_u64)
             .map_err(Self::Error::RedisStorage)?
             .unwrap_or_default();
         Ok(value)
@@ -200,12 +211,12 @@ impl DatabaseRef for RedisSource {
 
 impl Source for RedisSource {
     /// Reports whether the cache has synchronized past the requested block.
-    fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool {
+    fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool {
         if !self.sync_status.load(Ordering::Acquire) {
             return false;
         }
-        let redis_observed_head = self.observed_head.load(Ordering::Acquire);
-        let redis_oldest_block = self.oldest_block.load(Ordering::Acquire);
+        let redis_observed_head = *self.observed_head.read();
+        let redis_oldest_block = *self.oldest_block.read();
 
         // Find the intersection of the two ranges
         let lower_bound = min_synced_block.max(redis_oldest_block);
@@ -215,16 +226,12 @@ impl Source for RedisSource {
     }
 
     /// Updates the current cache status and set the target block
-    fn update_cache_status(&self, min_synced_block: u64, latest_head: u64) {
-        self.cache_status
-            .min_synced_block
-            .store(min_synced_block, Ordering::Relaxed);
-        self.cache_status
-            .latest_head
-            .store(latest_head, Ordering::Relaxed);
+    fn update_cache_status(&self, min_synced_block: U256, latest_head: U256) {
+        *self.cache_status.min_synced_block.write() = min_synced_block;
+        *self.cache_status.latest_head.write() = latest_head;
 
-        let redis_observed_head = self.observed_head.load(Ordering::Acquire);
-        let redis_oldest_block = self.oldest_block.load(Ordering::Acquire);
+        let redis_observed_head = *self.observed_head.read();
+        let redis_oldest_block = *self.oldest_block.read();
 
         // Find the intersection of the two ranges
         let lower_bound = min_synced_block.max(redis_oldest_block);
@@ -233,7 +240,7 @@ impl Source for RedisSource {
         if lower_bound <= upper_bound {
             // Pick the most recent block in the valid range
             let block_number = upper_bound;
-            self.target_block.store(block_number, Ordering::Relaxed);
+            *self.target_block.write() = block_number;
         }
     }
 
@@ -257,35 +264,37 @@ mod tests {
         Arc,
         atomic::{
             AtomicBool,
-            AtomicU64,
             Ordering,
         },
     };
 
     /// Helper struct to test the cache logic without needing a real Redis backend
     struct TestRedisCache {
-        target_block: Arc<AtomicU64>,
-        observed_head: Arc<AtomicU64>,
-        oldest_block: Arc<AtomicU64>,
+        target_block: Arc<RwLock<U256>>,
+        observed_head: Arc<RwLock<U256>>,
+        oldest_block: Arc<RwLock<U256>>,
         sync_status: Arc<AtomicBool>,
     }
 
     impl TestRedisCache {
         fn new(oldest_block: u64, observed_head: u64, synced: bool) -> Self {
             Self {
-                target_block: Arc::new(AtomicU64::new(0)),
-                observed_head: Arc::new(AtomicU64::new(observed_head)),
-                oldest_block: Arc::new(AtomicU64::new(oldest_block)),
+                target_block: Arc::new(RwLock::new(U256::ZERO)),
+                observed_head: Arc::new(RwLock::new(U256::from(observed_head))),
+                oldest_block: Arc::new(RwLock::new(U256::from(oldest_block))),
                 sync_status: Arc::new(AtomicBool::new(synced)),
             }
         }
 
         fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool {
+            let min_synced_block = U256::from(min_synced_block);
+            let latest_head = U256::from(latest_head);
+
             if !self.sync_status.load(Ordering::Acquire) {
                 return false;
             }
-            let redis_observed_head = self.observed_head.load(Ordering::Acquire);
-            let redis_oldest_block = self.oldest_block.load(Ordering::Acquire);
+            let redis_observed_head = *self.observed_head.read();
+            let redis_oldest_block = *self.oldest_block.read();
 
             let lower_bound = min_synced_block.max(redis_oldest_block);
             let upper_bound = latest_head.min(redis_observed_head);
@@ -294,20 +303,32 @@ mod tests {
         }
 
         fn update_cache_status(&self, min_synced_block: u64, latest_head: u64) {
-            let redis_observed_head = self.observed_head.load(Ordering::Acquire);
-            let redis_oldest_block = self.oldest_block.load(Ordering::Acquire);
+            let min_synced_block = U256::from(min_synced_block);
+            let latest_head = U256::from(latest_head);
+
+            let redis_observed_head = *self.observed_head.read();
+            let redis_oldest_block = *self.oldest_block.read();
 
             let lower_bound = min_synced_block.max(redis_oldest_block);
             let upper_bound = latest_head.min(redis_observed_head);
 
             if lower_bound <= upper_bound {
                 let block_number = upper_bound;
-                self.target_block.store(block_number, Ordering::Relaxed);
+                *self.target_block.write() = block_number;
             }
         }
 
         fn get_target_block(&self) -> u64 {
-            self.target_block.load(Ordering::Relaxed)
+            let target = *self.target_block.read();
+            target.try_into().expect("target block overflow u64")
+        }
+
+        fn set_observed_head(&self, value: u64) {
+            *self.observed_head.write() = U256::from(value);
+        }
+
+        fn set_oldest_block(&self, value: u64) {
+            *self.oldest_block.write() = U256::from(value);
         }
     }
 
@@ -532,8 +553,8 @@ mod tests {
         assert!(!cache.is_synced(100, 100), "Should not be synced yet");
 
         // RACE CONDITION: Redis syncs to block 100 AFTER update_cache_status was called
-        cache.observed_head.store(100, Ordering::Release);
-        cache.oldest_block.store(98, Ordering::Release);
+        cache.set_observed_head(100);
+        cache.set_oldest_block(98);
 
         // Now Redis has the block, call update_cache_status again
         // (This simulates what the background sync task does)
@@ -564,8 +585,8 @@ mod tests {
         // Execution starts, first few transactions succeed...
 
         // HALFWAY THROUGH: Redis syncs to block 100
-        cache.observed_head.store(100, Ordering::Release);
-        cache.oldest_block.store(98, Ordering::Release);
+        cache.set_observed_head(100);
+        cache.set_oldest_block(98);
 
         // Background sync task (or iter_synced_sources) calls update_cache_status again
         cache.update_cache_status(100, 100);
@@ -588,7 +609,7 @@ mod tests {
         assert_eq!(cache.get_target_block(), 97);
 
         // Redis syncs forward
-        cache.observed_head.store(100, Ordering::Release);
+        cache.set_observed_head(100);
 
         // Update should pick the most recent valid block
         cache.update_cache_status(96, 97);
@@ -636,7 +657,7 @@ mod tests {
         assert_eq!(cache.get_target_block(), 99);
 
         // Redis syncs forward to 105
-        cache.observed_head.store(105, Ordering::Release);
+        cache.set_observed_head(105);
 
         // Second update: request [100, 102]
         cache.update_cache_status(100, 102);
@@ -660,8 +681,8 @@ mod tests {
         assert_eq!(cache.get_target_block(), 98);
 
         // Redis buffer advances (oldest moves forward), now [95, 105]
-        cache.oldest_block.store(95, Ordering::Release);
-        cache.observed_head.store(105, Ordering::Release);
+        cache.set_oldest_block(95);
+        cache.set_observed_head(105);
 
         // Request same range [95, 98] - should still work
         cache.update_cache_status(95, 98);

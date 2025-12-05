@@ -260,6 +260,7 @@ mod tests {
     #![allow(clippy::match_same_arms)]
     use super::*;
     use crate::engine::queue::QueueTransaction;
+    use alloy::primitives::U256;
     use revm::{
         context::TxEnv,
         primitives::alloy_primitives::B256,
@@ -270,7 +271,7 @@ mod tests {
     };
 
     fn create_test_tx_execution_id(byte: u8) -> TxExecutionId {
-        TxExecutionId::new(1, 0, B256::from([byte; 32]), 0)
+        TxExecutionId::new(U256::from(1), 0, B256::from([byte; 32]), 0)
     }
 
     fn create_test_tx_queue_contents(tx_execution_id: TxExecutionId) -> TxQueueContents {

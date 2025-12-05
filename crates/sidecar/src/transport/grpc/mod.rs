@@ -224,6 +224,7 @@ impl GrpcTransport {
 mod tests {
     #![allow(clippy::cast_sign_loss)]
     #![allow(clippy::expect_fun_call)]
+
     use super::pb::{
         self,
         Event,
@@ -241,6 +242,7 @@ mod tests {
     };
     use futures::StreamExt;
     use std::{
+        io::Read,
         net::SocketAddr,
         time::Duration,
     };
@@ -289,7 +291,7 @@ mod tests {
         let response = client
             .get_transaction(GetTransactionRequest {
                 tx_execution_id: Some(TxExecutionId {
-                    block_number: tx_execution_id.block_number,
+                    block_number: tx_execution_id.block_number.to_be_bytes::<32>().to_vec(),
                     iteration_id: tx_execution_id.iteration_id,
                     tx_hash: encode_b256(tx_execution_id.tx_hash),
                     index: tx_execution_id.index,
@@ -344,7 +346,7 @@ mod tests {
         let response = client
             .get_transaction(GetTransactionRequest {
                 tx_execution_id: Some(TxExecutionId {
-                    block_number: 0,
+                    block_number: U256::ZERO.to_be_bytes::<32>().to_vec(),
                     iteration_id: 1,
                     tx_hash: encode_b256(missing_hash),
                     index: 0,
@@ -554,7 +556,7 @@ mod tests {
 
         let mut results_stream = client
             .subscribe_results(SubscribeResultsRequest {
-                from_block: Some(2),
+                from_block: Some(U256::from(2).to_be_bytes::<32>().to_vec()),
             })
             .await
             .expect("subscribe_results failed")
@@ -580,10 +582,11 @@ mod tests {
             .expect("result error");
 
         let result_tx_id = result.tx_execution_id.expect("missing tx_execution_id");
+        let block_number =
+            U256::from_be_bytes::<32>(result_tx_id.block_number.as_slice().try_into().unwrap());
         assert!(
-            result_tx_id.block_number >= 2,
-            "should only receive results from block >= 2, got block {}",
-            result_tx_id.block_number
+            block_number >= U256::from(2),
+            "should only receive results from block >= 2, got block {block_number:?}",
         );
     }
 

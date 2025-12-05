@@ -6,6 +6,7 @@ use crate::cache::sources::{
         JsonRpcDbError,
     },
 };
+use alloy::primitives::U256;
 use assertion_executor::{
     db::DatabaseRef,
     primitives::{
@@ -36,7 +37,7 @@ impl Sequencer {
 impl Source for Sequencer {
     // The Sequencer is always synced.
     #[inline]
-    fn is_synced(&self, _min_synced_block: u64, _latest_head: u64) -> bool {
+    fn is_synced(&self, _min_synced_block: U256, _latest_head: U256) -> bool {
         true
     }
 
@@ -46,7 +47,7 @@ impl Source for Sequencer {
     }
 
     #[inline]
-    fn update_cache_status(&self, min_synced_block: u64, _latest_head: u64) {
+    fn update_cache_status(&self, min_synced_block: U256, _latest_head: U256) {
         // NOTE: Since we do not keep track of the sequencer's current head, we just set the target
         // block to the minimum synced block
         self.json_rpc_db.set_target_block(min_synced_block);

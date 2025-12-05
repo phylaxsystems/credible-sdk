@@ -121,7 +121,9 @@ impl TransactionsResults {
 mod tests {
     #![allow(clippy::cast_possible_truncation)]
     #![allow(clippy::needless_range_loop)]
+
     use super::*;
+    use alloy::primitives::U256;
     use assertion_executor::primitives::ExecutionResult;
     use revm::{
         context::result::{
@@ -160,7 +162,7 @@ mod tests {
 
     fn create_test_tx_execution_id(byte: u8) -> TxExecutionId {
         let tx_hash = revm::primitives::alloy_primitives::TxHash::from([byte; 32]);
-        TxExecutionId::new(u64::from(byte), 0, tx_hash, 0)
+        TxExecutionId::new(U256::from(byte), 0, tx_hash, 0)
     }
 
     #[test]
@@ -616,7 +618,7 @@ mod tests {
         // Fill to capacity
         for i in 0..capacity {
             let tx_id = TxExecutionId::new(
-                i as u64,
+                U256::from(i),
                 0,
                 revm::primitives::alloy_primitives::TxHash::from([((i % 256) as u8); 32]),
                 0,
@@ -629,7 +631,7 @@ mod tests {
         // Add 1000 more (triggers 1000 prunings from front)
         for i in capacity..(capacity + 1000) {
             let tx_id = TxExecutionId::new(
-                i as u64,
+                U256::from(i),
                 0,
                 revm::primitives::alloy_primitives::TxHash::from([((i % 256) as u8); 32]),
                 0,
@@ -659,7 +661,7 @@ mod tests {
         let mut tx_ids = Vec::with_capacity(capacity);
         for i in 0..capacity {
             let tx_id = TxExecutionId::new(
-                i as u64,
+                U256::from(i),
                 0,
                 revm::primitives::alloy_primitives::TxHash::from([((i % 256) as u8); 32]),
                 0,

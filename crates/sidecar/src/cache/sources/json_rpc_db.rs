@@ -15,6 +15,7 @@ use alloy_provider::{
     Provider,
     RootProvider,
 };
+use parking_lot::RwLock;
 use revm::{
     DatabaseRef,
     database::DBErrorMarker,
@@ -23,13 +24,7 @@ use revm::{
         Bytecode,
     },
 };
-use std::sync::{
-    Arc,
-    atomic::{
-        AtomicU64,
-        Ordering,
-    },
-};
+use std::sync::Arc;
 use tokio::runtime::Handle;
 use tracing::Span;
 
@@ -39,7 +34,7 @@ impl DBErrorMarker for JsonRpcDbError {}
 #[derive(Debug, Clone)]
 pub struct JsonRpcDb {
     provider: Arc<RootProvider>,
-    target_block: Arc<AtomicU64>,
+    target_block: Arc<RwLock<U256>>,
     tokio_handle: Handle,
 }
 
@@ -52,7 +47,7 @@ impl JsonRpcDb {
 
         Ok(Self {
             provider: Arc::new(provider.root().clone()),
-            target_block: Arc::new(AtomicU64::new(0)),
+            target_block: Arc::new(RwLock::new(U256::ZERO)),
             tokio_handle: Handle::current(),
         })
     }
@@ -60,7 +55,7 @@ impl JsonRpcDb {
     pub fn new_with_provider(provider: Arc<RootProvider>) -> Self {
         Self {
             provider,
-            target_block: Arc::new(AtomicU64::new(0)),
+            target_block: Arc::new(RwLock::new(U256::ZERO)),
             tokio_handle: Handle::current(),
         }
     }
@@ -70,17 +65,24 @@ impl JsonRpcDb {
     pub fn new_with_provider_and_handle(provider: Arc<RootProvider>, tokio_handle: Handle) -> Self {
         Self {
             provider,
-            target_block: Arc::new(AtomicU64::new(0)),
+            target_block: Arc::new(RwLock::new(U256::ZERO)),
             tokio_handle,
         }
     }
 
-    pub fn set_target_block(&self, block_number: u64) {
-        self.target_block.store(block_number, Ordering::Relaxed);
+    pub fn set_target_block(&self, block_number: U256) {
+        *self.target_block.write() = block_number;
     }
 
-    fn target_block(&self) -> u64 {
-        self.target_block.load(Ordering::Acquire)
+    fn target_block(&self) -> U256 {
+        *self.target_block.read()
+    }
+
+    /// Helper to convert U256 to u64 for RPC calls.
+    /// Panics if the value overflows u64 (should never happen for block numbers in practice).
+    #[inline]
+    fn u256_to_u64(value: U256) -> u64 {
+        value.try_into().expect("block number overflow u64")
     }
 
     /// Executes an async future on the Tokio runtime from any thread.
@@ -105,7 +107,7 @@ impl DatabaseRef for JsonRpcDb {
 
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let provider = self.provider.clone();
-        let target_block = self.target_block();
+        let target_block = Self::u256_to_u64(self.target_block());
 
         self.block_on(async move {
             // Get balance, nonce, and code in parallel for efficiency
@@ -150,7 +152,7 @@ impl DatabaseRef for JsonRpcDb {
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
         let provider = self.provider.clone();
-        let target_block = self.target_block();
+        let target_block = Self::u256_to_u64(self.target_block());
 
         self.block_on(async move {
             let value = provider

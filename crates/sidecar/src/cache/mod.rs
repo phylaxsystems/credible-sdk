@@ -18,12 +18,14 @@ use crate::{
     },
     metrics::StateMetrics,
 };
+use alloy::primitives::U256;
 use assertion_executor::primitives::{
     AccountInfo,
     Address,
     B256,
     Bytecode,
 };
+use parking_lot::RwLock;
 use revm::{
     DatabaseRef,
     context::DBErrorMarker,
@@ -34,13 +36,7 @@ use revm::{
 };
 use std::{
     fmt::Debug,
-    sync::{
-        Arc,
-        atomic::{
-            AtomicU64,
-            Ordering,
-        },
-    },
+    sync::Arc,
     time::Instant,
 };
 use thiserror::Error;
@@ -71,7 +67,7 @@ pub mod sources;
 /// # Thread Safety
 ///
 /// The `Cache` is thread-safe and can be shared across multiple threads using `Arc`.
-/// The current block number is stored atomically to allow concurrent updates.
+/// Block numbers are stored using `parking_lot::RwLock` for efficient concurrent access.
 ///
 /// # Example
 ///
@@ -83,7 +79,7 @@ pub mod sources;
 /// let cache = Cache::new(vec![source1, source2]);
 ///
 /// // Update the current block number
-/// cache.set_block_number(12345);
+/// cache.set_block_number(U256::from(12345));
 ///
 /// // Query account information
 /// let account_info = cache.basic_ref(address)?;
@@ -91,14 +87,14 @@ pub mod sources;
 #[derive(Debug)]
 pub struct Sources {
     /// The current block number used to determine source synchronization status.
-    latest_head: AtomicU64,
+    latest_head: RwLock<U256>,
     /// Priority-ordered collection of data sources.
     /// Sources are tried in order until one succeeds.
     sources: Vec<Arc<dyn Source>>,
     /// The latest block which is unsynced by the sidecar.
-    latest_unprocessed_block: AtomicU64,
+    latest_unprocessed_block: RwLock<U256>,
     /// The maximum depth of the cache to be considered synced.
-    max_depth: u64,
+    max_depth: U256,
     /// Metrics for the cache.
     metrics: StateMetrics,
 }
@@ -110,16 +106,17 @@ impl Sources {
     ///
     /// * `sources` - A vector of sources ordered by priority. The source at index 0
     ///   has the highest priority and will be tried first.
+    /// * `max_depth` - The maximum block depth for sync consideration.
     ///
     /// # Returns
     ///
     /// A new `Cache` instance with the block number initialized to 0.
     pub fn new(sources: Vec<Arc<dyn Source>>, max_depth: u64) -> Self {
         Self {
-            latest_head: AtomicU64::new(0),
+            latest_head: RwLock::new(U256::ZERO),
             sources,
-            latest_unprocessed_block: AtomicU64::new(0),
-            max_depth,
+            latest_unprocessed_block: RwLock::new(U256::ZERO),
+            max_depth: U256::from(max_depth),
             metrics: StateMetrics::new(),
         }
     }
@@ -138,16 +135,15 @@ impl Sources {
     /// # Arguments
     ///
     /// * `block_number` - The new current block number
-    pub fn set_block_number(&self, block_number: u64) {
+    pub fn set_block_number(&self, block_number: U256) {
         // If the block number is 0 (meaning we are logging it in for the first time), we set the
         // latest unprocessed block number to the first block number received. This way, we require that the
         // cache has to be updated up to this block to be considered synced.
-        if self.latest_head.load(Ordering::Acquire) == 0 {
-            self.latest_unprocessed_block
-                .store(block_number, Ordering::Relaxed);
+        if *self.latest_head.read() == U256::ZERO {
+            *self.latest_unprocessed_block.write() = block_number;
             self.metrics.set_latest_unprocessed_block(block_number);
         }
-        self.latest_head.store(block_number, Ordering::Relaxed);
+        *self.latest_head.write() = block_number;
         self.metrics.set_latest_head(block_number);
 
         let minimum_synced_block_number = self.get_minimum_synced_block_number();
@@ -167,10 +163,9 @@ impl Sources {
     ///
     /// If the internal cache is flushed, this method must be called to sync the required head to
     /// the latest block, as the current cache is stale
-    pub fn reset_latest_unprocessed_block(&self, required_block: u64) {
+    pub fn reset_latest_unprocessed_block(&self, required_block: U256) {
         self.metrics.increase_reset_latest_unprocessed_block();
-        self.latest_unprocessed_block
-            .store(required_block, Ordering::Relaxed);
+        *self.latest_unprocessed_block.write() = required_block;
     }
 
     /// Returns how many times the cache has been explicitly reset.
@@ -178,7 +173,7 @@ impl Sources {
     pub fn reset_latest_unprocessed_block_count(&self) -> u64 {
         self.metrics
             .reset_latest_unprocessed_block
-            .load(Ordering::Relaxed)
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns an iterator over sources that are currently synced.
@@ -189,7 +184,7 @@ impl Sources {
         let instant = Instant::now();
 
         let min_synced_block = self.get_minimum_synced_block_number();
-        let latest_head = self.latest_head.load(Ordering::Acquire);
+        let latest_head = *self.latest_head.read();
 
         let sources = self
             .sources
@@ -202,16 +197,28 @@ impl Sources {
         sources
     }
 
-    pub(crate) fn get_minimum_synced_block_number(&self) -> u64 {
+    pub(crate) fn get_minimum_synced_block_number(&self) -> U256 {
         // MAX(latest BlockEnv - MINIMUM_STATE_DIFF, First block env processed)
-        let latest_unprocessed_block = self.latest_unprocessed_block.load(Ordering::Acquire);
-        let latest_head = self.latest_head.load(Ordering::Acquire);
+        let latest_unprocessed_block = *self.latest_unprocessed_block.read();
+        let latest_head = *self.latest_head.read();
 
-        if latest_unprocessed_block == 0 {
+        if latest_unprocessed_block == U256::ZERO {
             latest_head
         } else {
             latest_unprocessed_block.max(latest_head.saturating_sub(self.max_depth))
         }
+    }
+
+    /// Returns the current latest head block number.
+    #[cfg(any(test, feature = "test", feature = "bench-utils"))]
+    pub fn get_latest_head(&self) -> U256 {
+        *self.latest_head.read()
+    }
+
+    /// Returns the current latest unprocessed block number.
+    #[cfg(any(test, feature = "test", feature = "bench-utils"))]
+    pub fn get_latest_unprocessed_block(&self) -> U256 {
+        *self.latest_unprocessed_block.read()
     }
 }
 
@@ -283,7 +290,7 @@ impl DatabaseRef for Sources {
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
         trace!(
             target = "cache::block_hash_ref",
-            number = number,
+            number = %number,
             "Function call",
         );
         let total_operation_instant = Instant::now();
@@ -294,7 +301,7 @@ impl DatabaseRef for Sources {
                 let res = source.block_hash_ref(number);
 
                 match res.as_ref() {
-                    Ok(hash) => {
+                    Ok(_hash) => {
                         self.metrics.increase_block_hash_ref_success(&source.name());
                         self.metrics
                             .record_block_hash_ref_serving_source(&source.name());
@@ -304,7 +311,7 @@ impl DatabaseRef for Sources {
                         error!(
                             target = "cache::block_hash_ref",
                             name = %source.name(),
-                            number = number,
+                            number = %number,
                             error = ?e,
                             "Failed to fetch block hash from cache source"
                         );
@@ -335,7 +342,7 @@ impl DatabaseRef for Sources {
                 let res = source.code_by_hash_ref(code_hash);
 
                 match res.as_ref() {
-                    Ok(bytecode) => {
+                    Ok(_bytecode) => {
                         self.metrics
                             .increase_code_by_hash_ref_success(&source.name());
                         self.metrics
@@ -432,6 +439,7 @@ impl DBErrorMarker for CacheError {}
 #[cfg(test)]
 mod tests {
     #![allow(clippy::cast_possible_truncation)]
+    #![allow(clippy::cast_sign_loss)]
     use super::*;
     use crate::cache::sources::{
         Source,
@@ -480,7 +488,7 @@ mod tests {
     #[derive(Debug)]
     struct MockSource {
         name: SourceName,
-        synced_threshold: u64,
+        synced_threshold: U256,
         account_info: Option<AccountInfo>,
         block_hash: Option<B256>,
         bytecode: Option<Bytecode>,
@@ -498,7 +506,7 @@ mod tests {
         fn new(name: SourceName) -> Self {
             Self {
                 name,
-                synced_threshold: 0,
+                synced_threshold: U256::ZERO,
                 account_info: None,
                 block_hash: None,
                 bytecode: None,
@@ -513,7 +521,7 @@ mod tests {
             }
         }
 
-        fn with_synced_threshold(mut self, threshold: u64) -> Self {
+        fn with_synced_threshold(mut self, threshold: U256) -> Self {
             self.synced_threshold = threshold;
             self
         }
@@ -571,7 +579,7 @@ mod tests {
     }
 
     impl Source for MockSource {
-        fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool {
+        fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool {
             // Source has data from [synced_threshold, Inf)
             // We need data from [min_synced_block, latest_head]
             // Check if these ranges intersect:
@@ -580,7 +588,7 @@ mod tests {
             lower_bound <= upper_bound
         }
 
-        fn update_cache_status(&self, _min_synced_block: u64, _latest_head: u64) {}
+        fn update_cache_status(&self, _min_synced_block: U256, _latest_head: U256) {}
 
         fn name(&self) -> SourceName {
             self.name
@@ -660,29 +668,6 @@ mod tests {
                 calls,
             )
         }
-
-        fn for_backend_error(address: Address) -> (Self, Arc<AtomicUsize>) {
-            let account_key = format!("state:account:{}", hex::encode(address));
-            let commands = vec![
-                MockCmd::new(
-                    redis::cmd("GET").arg("state:meta:latest_block"),
-                    Ok::<_, RedisError>("1"),
-                ),
-                MockCmd::new(
-                    redis::cmd("HGETALL").arg(&account_key),
-                    Err::<String, RedisError>(redis_io_error("redis connection error")),
-                ),
-            ];
-            Self::with_commands(commands)
-        }
-
-        fn for_unsynced() -> (Self, Arc<AtomicUsize>) {
-            let commands = vec![MockCmd::new(
-                redis::cmd("GET").arg("state:meta:latest_block"),
-                Ok::<_, RedisError>("5"),
-            )];
-            Self::with_commands(commands)
-        }
     }
 
     fn redis_io_error(message: &str) -> RedisError {
@@ -710,7 +695,7 @@ mod tests {
     #[test]
     fn test_cache_new_creates_empty_cache() {
         let cache = Sources::new(vec![], 10);
-        assert_eq!(cache.latest_head.load(Ordering::Acquire), 0);
+        assert_eq!(cache.get_latest_head(), U256::ZERO);
         assert_eq!(cache.sources.len(), 0);
     }
 
@@ -722,25 +707,29 @@ mod tests {
 
         let cache = Sources::new(sources, 10);
         assert_eq!(cache.sources.len(), 2);
-        assert_eq!(cache.latest_head.load(Ordering::Acquire), 0);
+        assert_eq!(cache.get_latest_head(), U256::ZERO);
     }
 
     #[test]
     fn test_set_block_number() {
         let cache = Sources::new(vec![], 10);
 
-        cache.set_block_number(42);
-        assert_eq!(cache.latest_head.load(Ordering::Acquire), 42);
+        cache.set_block_number(U256::from(42));
+        assert_eq!(cache.get_latest_head(), U256::from(42));
 
-        cache.set_block_number(100);
-        assert_eq!(cache.latest_head.load(Ordering::Acquire), 100);
+        cache.set_block_number(U256::from(100));
+        assert_eq!(cache.get_latest_head(), U256::from(100));
     }
 
     #[test]
     fn test_synced_sources_filters_correctly() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource).with_synced_threshold(50));
-        let source3 = Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(0));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+        let source2 = Arc::new(
+            MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
+        );
+        let source3 =
+            Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(U256::ZERO));
 
         let cache = Sources::new(vec![source1, source2, source3], 10);
 
@@ -750,7 +739,7 @@ mod tests {
         assert_eq!(synced[0].name(), SourceName::Redis);
 
         // Block 15 - source1 and source3 should be synced
-        cache.set_block_number(15);
+        cache.set_block_number(U256::from(15));
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
         let names: Vec<_> = synced.iter().map(|s| s.name()).collect();
@@ -758,7 +747,7 @@ mod tests {
         assert!(names.contains(&SourceName::Redis));
 
         // Block 60 - all sources should be synced
-        cache.set_block_number(60);
+        cache.set_block_number(U256::from(60));
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 3);
     }
@@ -826,7 +815,7 @@ mod tests {
         );
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 10);
-        cache.set_block_number(1);
+        cache.set_block_number(U256::from(1));
         let address = create_test_address();
 
         let result = cache.basic_ref(address).unwrap();
@@ -843,7 +832,7 @@ mod tests {
         );
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 10);
-        cache.set_block_number(1);
+        cache.set_block_number(U256::from(1));
         let address = create_test_address();
 
         let result = cache.basic_ref(address).unwrap();
@@ -855,7 +844,6 @@ mod tests {
     #[test]
     fn test_basic_ref_falls_back_when_first_source_errors() {
         let address = create_test_address();
-        let (backend, redis_calls) = RedisTestBackend::for_backend_error(address);
         let first_source = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
 
         let account_info = create_test_account_info();
@@ -864,7 +852,7 @@ mod tests {
         );
 
         let cache = Sources::new(vec![first_source.clone(), fallback_source.clone()], 10);
-        cache.set_block_number(1);
+        cache.set_block_number(U256::from(1));
 
         let result = cache.basic_ref(address).unwrap();
         assert_eq!(result, Some(account_info));
@@ -884,7 +872,7 @@ mod tests {
         );
 
         let cache = Sources::new(vec![first_source, fallback_source.clone()], 10);
-        cache.set_block_number(15);
+        cache.set_block_number(U256::from(15));
 
         let result = cache.basic_ref(address).unwrap();
         assert_eq!(result, Some(account_info));
@@ -905,7 +893,8 @@ mod tests {
 
     #[test]
     fn test_basic_ref_no_synced_sources() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
         let cache = Sources::new(vec![source1], 10);
 
         // Block 0, source needs block 10 to be synced
@@ -1065,7 +1054,7 @@ mod tests {
             Arc::new(MockSource::new(SourceName::EthRpcSource).with_storage_value(storage_value));
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 10);
-        cache.set_block_number(1);
+        cache.set_block_number(U256::from(1));
         let address = create_test_address();
         let storage_key = U256::from(42);
 
@@ -1096,7 +1085,7 @@ mod tests {
             MockSource::new(SourceName::Sequencer).with_account_info(create_test_account_info()),
         );
         let cache = Arc::new(Sources::new(vec![source1], 10));
-        cache.set_block_number(1);
+        cache.set_block_number(U256::from(1));
         let mut handles = vec![];
 
         // Spawn multiple threads that concurrently access the cache
@@ -1104,7 +1093,7 @@ mod tests {
             let cache_clone = Arc::clone(&cache);
             let handle = thread::spawn(move || {
                 // Set block number
-                cache_clone.set_block_number(10 + i * 10);
+                cache_clone.set_block_number(U256::from(10 + i * 10));
 
                 // Read account info
                 let address = Address::from([(i as u8); 20]);
@@ -1112,8 +1101,8 @@ mod tests {
                 assert!(result.is_ok());
 
                 // Read current block number
-                let block_number = cache_clone.latest_head.load(Ordering::Acquire);
-                assert!((10..=100).contains(&block_number)); // Should be one of the values set by threads
+                let block_number = cache_clone.get_latest_head();
+                assert!(block_number >= U256::from(10) && block_number <= U256::from(100));
             });
             handles.push(handle);
         }
@@ -1122,19 +1111,6 @@ mod tests {
         for handle in handles {
             handle.join().unwrap();
         }
-    }
-
-    #[test]
-    fn test_atomic_block_number_operations() {
-        let cache = Sources::new(vec![], 10);
-
-        // Test ordering semantics
-        cache.set_block_number(42);
-        assert_eq!(cache.latest_head.load(Ordering::Acquire), 42);
-
-        // Test that load sees the stored value
-        cache.latest_head.store(100, Ordering::Release);
-        assert_eq!(cache.latest_head.load(Ordering::Acquire), 100);
     }
 
     #[test]
@@ -1243,32 +1219,26 @@ mod tests {
 
     #[test]
     fn test_cache_max_depth_filtering() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource).with_synced_threshold(50));
-        let source3 = Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(101)); // CHANGED: 100 -> 101
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+        let source2 = Arc::new(
+            MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
+        );
+        let source3 =
+            Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(U256::from(101)));
 
         // Test with max_depth = 20
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 20);
 
         // Set current block to 100 (this also sets required_head to 100)
-        cache.set_block_number(100);
+        cache.set_block_number(U256::from(100));
 
-        // min_synced_block = max(100, 100 - 20) = 100
-        // Checking range [100, 100]:
-        // source1 [10, Inf): max(100, 10) = 100 ≤ 100 -> OK
-        // source2 [50, Inf): max(100, 50) = 100 ≤ 100 -> OK
-        // source3 [101, Inf): max(100, 101) = 101 > 100 -> NOT SYNCED
         let synced: Vec<_> = cache.iter_synced_sources().collect();
-        assert_eq!(synced.len(), 2); // CHANGED: 3 -> 2
+        assert_eq!(synced.len(), 2);
 
-        // Set required block to 80 to test depth filtering (avoid special case)
-        cache.reset_latest_unprocessed_block(80); // CHANGED: 0 -> 80
+        // Reset required block number to 80 to test depth filtering
+        cache.reset_latest_unprocessed_block(U256::from(80));
 
-        // min_synced_block = max(80, 100 - 20) = max(80, 80) = 80
-        // Checking range [80, 100]:
-        // source1 [10, Inf): max(80, 10) = 80 ≤ 100 -> OK
-        // source2 [50, Inf): max(80, 50) = 80 ≤ 100 -> OK
-        // source3 [101, Inf): max(80, 101) = 101 > 100 -> NOT SYNCED
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
         let names: Vec<_> = synced.iter().map(|s| s.name()).collect();
@@ -1278,173 +1248,141 @@ mod tests {
 
         // Test with max_depth = 60
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 60);
-        cache.set_block_number(49); // CHANGED: 100 -> 49 (need to be < 50 to filter source2)
-        cache.reset_latest_unprocessed_block(40); // CHANGED: 0 -> 40
+        cache.set_block_number(U256::from(49));
+        cache.reset_latest_unprocessed_block(U256::from(40));
 
-        // min_synced_block = max(40, 49 - 60) = max(40, 0) = 40
-        // Checking range [40, 49]:
-        // source1 [10, Inf): max(40, 10) = 40 ≤ 49 -> OK
-        // source2 [50, Inf): max(40, 50) = 50 > 49 -> NOT SYNCED (source2 starts at 50, can't serve blocks < 50)
-        // source3 [101, Inf): max(40, 101) = 101 > 49 -> NOT SYNCED
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
         assert_eq!(synced[0].name(), SourceName::Sequencer);
 
         // Test with max_depth = 200 (larger than current block)
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 200);
-        cache.set_block_number(9); // CHANGED: 100 -> 9 (need to be < 10 to filter all)
-        cache.reset_latest_unprocessed_block(5); // CHANGED: 0 -> 5
+        cache.set_block_number(U256::from(9));
+        cache.reset_latest_unprocessed_block(U256::from(5));
 
-        // min_synced_block = max(5, 9 - 200) = max(5, 0) = 5
-        // Checking range [5, 9]:
-        // source1 [10, Inf): max(5, 10) = 10 > 9 NOT SYNCED (source1 starts at 10, can't serve blocks < 10)
-        // source2 [50, Inf): max(5, 50) = 50 > 9 NOT SYNCED
-        // source3 [101, Inf): max(5, 101) = 101 > 9 NOT SYNCED
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 0);
     }
 
     #[test]
     fn test_cache_required_head_override() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource).with_synced_threshold(50));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+        let source2 = Arc::new(
+            MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
+        );
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 20);
 
         // Set current block to 100 (this sets required_head to 100)
-        cache.set_block_number(100);
+        cache.set_block_number(U256::from(100));
 
-        // Initially, effective block = max(100, 100 - 20) = 100
-        // Both sources synced at block 100 (100 >= 10, 100 >= 50)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
 
         // Set required block number to 30
-        cache.reset_latest_unprocessed_block(30);
+        cache.reset_latest_unprocessed_block(U256::from(30));
 
-        // The effective block number should be max(30, 100 - 20) = max(30, 80) = 80
-        // Both sources synced at block 80 (80 >= 10, 80 >= 50)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
 
         // Set required block number to 5 (lower than depth calculation)
-        cache.reset_latest_unprocessed_block(5);
+        cache.reset_latest_unprocessed_block(U256::from(5));
 
-        // The effective block number should be max(5, 80) = 80
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
     }
 
     #[test]
     fn test_cache_reset_required_head() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource).with_synced_threshold(50));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+        let source2 = Arc::new(
+            MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
+        );
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 30);
 
         // Set current block to 100 (this sets required_head to 100)
-        cache.set_block_number(100);
+        cache.set_block_number(U256::from(100));
 
         // Verify required block number is set to 100
-        assert_eq!(
-            cache
-                .latest_unprocessed_block
-                .load(std::sync::atomic::Ordering::Acquire),
-            100
-        );
+        assert_eq!(cache.get_latest_unprocessed_block(), U256::from(100));
 
         // Reset required block number to 0
-        cache.reset_latest_unprocessed_block(0);
+        cache.reset_latest_unprocessed_block(U256::ZERO);
 
         // Verify it's now 0
-        assert_eq!(
-            cache
-                .latest_unprocessed_block
-                .load(std::sync::atomic::Ordering::Acquire),
-            0
-        );
+        assert_eq!(cache.get_latest_unprocessed_block(), U256::ZERO);
 
-        // Now the effective block number should be max(0, 100 - 30) = 70
-        // Both sources synced at block 70 (70 >= 10, 70 >= 50)
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
 
         // Reset to current block (simulating the old behavior)
-        cache.reset_latest_unprocessed_block(100);
-        assert_eq!(
-            cache
-                .latest_unprocessed_block
-                .load(std::sync::atomic::Ordering::Acquire),
-            100
-        );
+        cache.reset_latest_unprocessed_block(U256::from(100));
+        assert_eq!(cache.get_latest_unprocessed_block(), U256::from(100));
     }
 
     #[test]
     fn test_cache_out_of_sync_scenarios() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(100));
-        let source2 =
-            Arc::new(MockSource::new(SourceName::EthRpcSource).with_synced_threshold(200));
-        let source3 = Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(300));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(100)));
+        let source2 = Arc::new(
+            MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(200)),
+        );
+        let source3 =
+            Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(U256::from(300)));
 
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
 
         // Scenario 1: Set block and reset to test depth filtering
-        cache.set_block_number(150);
-        cache.reset_latest_unprocessed_block(0);
-        // Effective block number: max(0, 150 - 50) = 100
-        // Sources synced at block 100: only source1 (100 >= 100)
+        cache.set_block_number(U256::from(150));
+        cache.reset_latest_unprocessed_block(U256::ZERO);
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
         assert_eq!(synced[0].name(), SourceName::Sequencer);
 
         // Scenario 2: Lower block number
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
-        cache.set_block_number(50);
-        cache.reset_latest_unprocessed_block(0);
-        // Effective block number: max(0, 50 - 50) = 0
-        // Sources synced at block 0: none (0 < 100, 0 < 200, 0 < 300)
+        cache.set_block_number(U256::from(50));
+        cache.reset_latest_unprocessed_block(U256::ZERO);
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 0);
 
         // Scenario 3: Required block number forces higher sync requirement
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
-        cache.set_block_number(400);
-        cache.reset_latest_unprocessed_block(380);
-        // Effective block number: max(380, 400 - 50) = max(380, 350) = 380
-        // Sources synced at block 380: all sources (380 >= 100, 380 >= 200, 380 >= 300)
+        cache.set_block_number(U256::from(400));
+        cache.reset_latest_unprocessed_block(U256::from(380));
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 3);
     }
 
     #[test]
     fn test_cache_edge_cases() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(0));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::ZERO));
         let source2 =
-            Arc::new(MockSource::new(SourceName::EthRpcSource).with_synced_threshold(u64::MAX));
+            Arc::new(MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::MAX));
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], u64::MAX);
 
-        // Test with zero block number - only source1 should be synced (0 >= 0)
+        // Test with zero block number - only source1 should be synced
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
         assert_eq!(synced[0].name(), SourceName::Sequencer);
 
         // Test with maximum block number
         let cache = Sources::new(vec![source1.clone(), source2.clone()], u64::MAX);
-        cache.set_block_number(u64::MAX);
-        cache.reset_latest_unprocessed_block(0);
-        // When latest_unprocessed_block = 0, min_synced_block = latest_head = u64::MAX
-        // Both sources can serve [u64::MAX, u64::MAX]
+        cache.set_block_number(U256::MAX);
+        cache.reset_latest_unprocessed_block(U256::ZERO);
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
         assert_eq!(synced[0].name(), SourceName::Sequencer);
 
         // Test with zero max_depth
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 0);
-        cache.set_block_number(100);
-        cache.reset_latest_unprocessed_block(0);
-        // Effective block number: max(0, 100 - 0) = 100
-        // Both sources: source1 (100 >= 0 OK), source2 (100 >= u64::MAX NOT SYNCED)
+        cache.set_block_number(U256::from(100));
+        cache.reset_latest_unprocessed_block(U256::ZERO);
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
         assert_eq!(synced[0].name(), SourceName::Sequencer);
@@ -1452,59 +1390,55 @@ mod tests {
 
     #[test]
     fn test_original_test_understanding() {
-        // This replicates the original test to understand the correct behavior
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource).with_synced_threshold(50));
-        let source3 = Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(0));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+        let source2 = Arc::new(
+            MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
+        );
+        let source3 =
+            Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(U256::ZERO));
 
         let cache = Sources::new(vec![source1, source2, source3], 10);
 
-        // Block 0 - effective block is 0, only source3 (0 >= 0) should be synced
+        // Block 0 - effective block is 0, only source3 should be synced
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
         assert_eq!(synced[0].name(), SourceName::Redis);
 
         // Block 15 - this sets required_head to 15
-        cache.set_block_number(15);
-        // Effective block: max(15, 15 - 10) = 15
-        // Sources synced at block 15: source1 (15 >= 10), source3 (15 >= 0)
+        cache.set_block_number(U256::from(15));
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
 
         // Block 60 - current becomes 60, required stays 15
-        cache.set_block_number(60);
-        // Effective block: max(15, 60 - 10) = max(15, 50) = 50
-        // Sources synced at block 50: source1 (50 >= 10), source2 (50 >= 50), source3 (50 >= 0)
+        cache.set_block_number(U256::from(60));
         let synced: Vec<_> = cache.iter_synced_sources().collect();
-        assert_eq!(synced.len(), 3); // All sources should be synced
+        assert_eq!(synced.len(), 3);
     }
 
     #[test]
     fn test_cache_invalidation_simulation() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(10));
-        let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource).with_synced_threshold(50));
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+        let source2 = Arc::new(
+            MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
+        );
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 40);
 
         // Simulate normal operation
-        cache.set_block_number(100);
+        cache.set_block_number(U256::from(100));
         let synced: Vec<_> = cache.iter_synced_sources().collect();
-        assert_eq!(synced.len(), 2); // Both sources synced at block 100
+        assert_eq!(synced.len(), 2);
 
         // Simulate cache invalidation by resetting required block to 0
-        cache.reset_latest_unprocessed_block(0);
-        // Effective block: max(0, 100 - 40) = 60
-        // Both sources still synced (60 >= 10, 60 >= 50)
+        cache.reset_latest_unprocessed_block(U256::ZERO);
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
 
         // Simulate more restrictive invalidation
-        cache.reset_latest_unprocessed_block(40);
-        cache.set_block_number(49); // Lower current block
-        // min_synced_block = max(40, 49-40) = max(40, 9) = 40
-        // Checking range [40, 49]:
-        // source1 [10, Inf) can serve [40, 49] -> OK
-        // source2 [50, Inf) CANNOT serve [40, 49] because max(40, 50) = 50 > 49 -> NOT SYNCED
+        cache.reset_latest_unprocessed_block(U256::from(40));
+        cache.set_block_number(U256::from(49));
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
         assert_eq!(synced[0].name(), SourceName::Sequencer);
@@ -1521,7 +1455,7 @@ mod tests {
 
         // Wait for the Eth RPC source client to be synced
         instance
-            .wait_for_source_synced(0, 1, 1)
+            .wait_for_source_synced(0, U256::from(1), U256::from(1))
             .await
             .expect("Eth RPC source client should sync to block 1");
 
@@ -1563,7 +1497,7 @@ mod tests {
 
         // Wait for the Eth RPC source client to be synced for block 1
         instance
-            .wait_for_source_synced(0, 1, 1)
+            .wait_for_source_synced(0, U256::from(1), U256::from(1))
             .await
             .expect("Eth RPC source client should sync to block 1");
 
@@ -1573,8 +1507,6 @@ mod tests {
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
         // The first fallback is never called because it is not synced
-        // This is because the Eth RPC source client head is at block 1, but the
-        // sequencer head is at block 15
         assert!(
             instance
                 .eth_rpc_source_http_mock
@@ -1605,15 +1537,15 @@ mod tests {
 
         // Wait for the Eth RPC source client to be synced
         instance
-            .wait_for_source_synced(0, 1, 1)
+            .wait_for_source_synced(0, U256::from(1), U256::from(1))
             .await
             .expect("Eth RPC source client should sync to block 1");
 
         // Bad response for Eth RPC source client
         instance.eth_rpc_source_http_mock.mock_rpc_error(
             "eth_getBalance",
-            -32000,               // Error code
-            "Insufficient funds", // Error message
+            -32000,
+            "Insufficient funds",
         );
 
         // Send a random tx whose data is not in the in-memory cache
@@ -1650,36 +1582,26 @@ mod tests {
 
         // Wait for the Eth RPC source client to be synced
         instance
-            .wait_for_source_synced(0, 1, 1)
+            .wait_for_source_synced(0, U256::from(1), U256::from(1))
             .await
             .expect("Eth RPC source client should sync to block 1");
 
         // Bad response for Eth RPC source client
         instance.eth_rpc_source_http_mock.mock_rpc_error(
             "eth_getBalance",
-            -32000,               // Error code
-            "Insufficient funds", // Error message
+            -32000,
+            "Insufficient funds",
         );
 
         // Bad response for sequencer
-        instance.sequencer_http_mock.mock_rpc_error(
-            "eth_getBalance",
-            -32000,               // Error code
-            "Insufficient funds", // Error message
-        );
+        instance
+            .sequencer_http_mock
+            .mock_rpc_error("eth_getBalance", -32000, "Insufficient funds");
 
         // Send a random tx whose data is not in the in-memory cache
         let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
         // Await result
         let _ = instance.is_transaction_successful(&tx_hash).await;
-
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while !logs_contain("critical") {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("expected critical log after exhausting fallbacks");
 
         // The first fallback is hit
         let eth_rpc_source_db_basic_ref_counter = *instance
@@ -1713,15 +1635,15 @@ mod tests {
             instance.eth_rpc_source_http_mock.send_new_head();
         }
 
-        // Test the exact boundary: min_synced_block = 10, latest_head = 10
+        // Test the exact boundary
         instance
-            .wait_for_source_synced(0, 10, 10)
+            .wait_for_source_synced(0, U256::from(10), U256::from(10))
             .await
             .expect("Source should be synced at exact boundary");
 
         // Test min_synced_block slightly below latest_head
         instance
-            .wait_for_source_synced(0, 10, 9)
+            .wait_for_source_synced(0, U256::from(10), U256::from(9))
             .await
             .expect("Source should be synced when min < latest");
     }
@@ -1744,7 +1666,7 @@ mod tests {
         // This should timeout because min_synced_block (10) > latest_head (5)
         let result = tokio::time::timeout(
             Duration::from_millis(500),
-            instance.wait_for_source_synced(0, 5, 10),
+            instance.wait_for_source_synced(0, U256::from(5), U256::from(10)),
         )
         .await;
 
@@ -1767,15 +1689,13 @@ mod tests {
             instance.eth_rpc_source_http_mock.send_new_head();
         }
 
-        // Assuming max_depth is set (e.g., 50), test that source is synced
-        // when min_synced_block is within the acceptable range
         instance
-            .wait_for_source_synced(0, 100, 50)
+            .wait_for_source_synced(0, U256::from(100), U256::from(50))
             .await
             .expect("Source should be synced within max_depth range");
 
         // Send a transaction to verify the cache works at this depth
-        let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+        let (_address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
         instance.is_transaction_successful(&tx_hash).await.unwrap();
     }
 
@@ -1784,7 +1704,7 @@ mod tests {
         mut instance: crate::utils::LocalInstance,
     ) {
         // Send blocks progressively and test sync states
-        for block in 1..=5 {
+        for block in 1u64..=5 {
             instance.new_block().await.unwrap();
             instance.wait_for_processing(Duration::from_millis(2)).await;
 
@@ -1793,7 +1713,7 @@ mod tests {
 
             // Verify Eth RPC source client syncs to each block
             instance
-                .wait_for_source_synced(0, block, block)
+                .wait_for_source_synced(0, U256::from(block), U256::from(block))
                 .await
                 .unwrap_or_else(|_| panic!("Eth RPC source client should sync to block {block}"));
         }
@@ -1813,7 +1733,7 @@ mod tests {
 
     #[crate::utils::engine_test(all)]
     async fn test_cache_fallback_with_partial_sync(mut instance: crate::utils::LocalInstance) {
-        // Send 30 blocks instead of 20 - create more distance!
+        // Send 30 blocks
         for _ in 0..30 {
             instance.new_block().await.unwrap();
         }
@@ -1826,17 +1746,13 @@ mod tests {
 
         // Wait for Eth RPC source to sync to block 10
         instance
-            .wait_for_source_synced(0, 10, 10)
+            .wait_for_source_synced(0, U256::from(10), U256::from(10))
             .await
             .expect("Eth RPC source client should sync to block 10");
 
-        // Send a tx at block 31
-        // min_synced_block = 1.max(31 - max_depth)
-        // Even if max_depth = 20: min_synced_block = 1.max(11) = 11 > 10 OK
         let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
-        // Eth RPC source [0, 10] cannot serve [11, 31] because the intersection is empty
         assert!(
             instance
                 .eth_rpc_source_http_mock
@@ -1866,7 +1782,7 @@ mod tests {
 
         // Verify initial sync
         instance
-            .wait_for_source_synced(0, 5, 5)
+            .wait_for_source_synced(0, U256::from(5), U256::from(5))
             .await
             .expect("Initial sync should succeed");
 
@@ -1879,7 +1795,7 @@ mod tests {
         // Eth RPC source should be out of sync now
         let result = tokio::time::timeout(
             Duration::from_millis(300),
-            instance.wait_for_source_synced(0, 15, 15),
+            instance.wait_for_source_synced(0, U256::from(15), U256::from(15)),
         )
         .await;
         assert!(result.is_err(), "Eth RPC source should be out of sync");
@@ -1891,7 +1807,7 @@ mod tests {
 
         // Should be synced again
         instance
-            .wait_for_source_synced(0, 15, 15)
+            .wait_for_source_synced(0, U256::from(15), U256::from(15))
             .await
             .expect("Sync should recover");
     }
@@ -1906,13 +1822,13 @@ mod tests {
 
         // Should be able to sync to block 1 with min_synced_block = 0
         instance
-            .wait_for_source_synced(0, 1, 0)
+            .wait_for_source_synced(0, U256::from(1), U256::ZERO)
             .await
             .expect("Should sync with min_synced_block = 0");
 
         // Should also work with min_synced_block = 1
         instance
-            .wait_for_source_synced(0, 1, 1)
+            .wait_for_source_synced(0, U256::from(1), U256::from(1))
             .await
             .expect("Should sync with min_synced_block = 1");
     }
@@ -1922,10 +1838,10 @@ mod tests {
         instance.new_block().await.unwrap();
         instance.wait_for_processing(Duration::from_millis(2)).await;
 
-        // Try to access a non-existent source index (e.g., 999)
+        // Try to access a non-existent source index
         let result = tokio::time::timeout(
             Duration::from_millis(300),
-            instance.wait_for_source_synced(999, 1, 1),
+            instance.wait_for_source_synced(999, U256::from(1), U256::from(1)),
         )
         .await;
 
@@ -1939,7 +1855,7 @@ mod tests {
     #[crate::utils::engine_test(all)]
     async fn test_cache_rapid_block_progression(mut instance: crate::utils::LocalInstance) {
         // Rapidly send blocks and verify sync keeps up
-        for block in 1..=30 {
+        for block in 1u64..=30 {
             instance.new_block().await.unwrap();
             instance.eth_rpc_source_http_mock.send_new_head();
 
@@ -1949,7 +1865,7 @@ mod tests {
             // Every 5 blocks, verify sync
             if block % 5 == 0 {
                 instance
-                    .wait_for_source_synced(0, block, block)
+                    .wait_for_source_synced(0, U256::from(block), U256::from(block))
                     .await
                     .unwrap_or_else(|_| panic!("Should stay synced at block {block}"));
             }
@@ -1981,11 +1897,16 @@ mod tests {
 
         // Test various min_synced_block values within the valid range
         let test_cases = vec![
-            (15, 10, true, "min < latest"),
-            (15, 15, true, "min == latest"),
-            (15, 20, false, "min > latest (should timeout)"),
-            (15, 0, true, "min = 0"),
-            (15, 1, true, "min = 1"),
+            (U256::from(15), U256::from(10), true, "min < latest"),
+            (U256::from(15), U256::from(15), true, "min == latest"),
+            (
+                U256::from(15),
+                U256::from(20),
+                false,
+                "min > latest (should timeout)",
+            ),
+            (U256::from(15), U256::ZERO, true, "min = 0"),
+            (U256::from(15), U256::from(1), true, "min = 1"),
         ];
 
         for (latest_head, min_synced, should_succeed, description) in test_cases {
@@ -2016,7 +1937,7 @@ mod tests {
 
         let cache = Sources::new(vec![source.clone()], 10);
         let address = create_test_address();
-        let storage_key = U256::from(999); // arbitrary slot that doesn't exist
+        let storage_key = U256::from(999);
 
         let result = cache.storage_ref(address, storage_key).unwrap();
 

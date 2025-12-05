@@ -165,6 +165,7 @@ mod tests {
             address!("0000000000000000000000000000000000000001"),
             Account {
                 info: mock_account_info(uint!(10_U256), 1, None),
+                transaction_id: 0,
                 storage: EvmStorage::default(),
                 status: AccountStatus::Touched,
             },
@@ -211,6 +212,7 @@ mod tests {
             address!("0000000000000000000000000000000000000001"),
             Account {
                 info: mock_account_info(uint!(10_U256), 1, None),
+                transaction_id: 0,
                 storage: EvmStorage::default(),
                 status: AccountStatus::Touched,
             },
@@ -223,6 +225,7 @@ mod tests {
             address!("0000000000000000000000000000000000000001"),
             Account {
                 info: mock_account_info(uint!(20_U256), 2, None),
+                transaction_id: 0,
                 storage: EvmStorage::default(),
                 status: AccountStatus::Touched,
             },
@@ -274,6 +277,7 @@ mod tests {
             address,
             Account {
                 info: AccountInfo::default(),
+                transaction_id: 0,
                 storage: EvmStorage::default(),
                 status: AccountStatus::SelfDestructed | AccountStatus::Touched,
             },
@@ -314,6 +318,7 @@ mod tests {
             address,
             Account {
                 info: AccountInfo::default(),
+                transaction_id: 0,
                 storage,
                 status: AccountStatus::SelfDestructed | AccountStatus::Touched,
             },
@@ -345,6 +350,7 @@ mod tests {
             address,
             Account {
                 info: AccountInfo::default(),
+                transaction_id: 0,
                 storage,
                 status: AccountStatus::Touched,
             },
@@ -357,6 +363,7 @@ mod tests {
             address,
             Account {
                 info: AccountInfo::default(),
+                transaction_id: 0,
                 storage: EvmStorage::default(),
                 status: AccountStatus::SelfDestructed | AccountStatus::Touched,
             },
@@ -383,6 +390,7 @@ mod tests {
             address,
             Account {
                 info: AccountInfo::default(),
+                transaction_id: 0,
                 storage: EvmStorage::default(),
                 status: AccountStatus::SelfDestructed | AccountStatus::Touched,
             },
@@ -404,6 +412,7 @@ mod tests {
             address,
             Account {
                 info: mock_account_info(uint!(2_U256), 1, None),
+                transaction_id: 0,
                 storage: recreation_storage,
                 status: AccountStatus::Touched,
             },
@@ -443,6 +452,7 @@ mod tests {
             address,
             Account {
                 info: mock_account_info(uint!(1_U256), 0, Some(code_one.clone())),
+                transaction_id: 0,
                 storage: first_storage,
                 status: AccountStatus::Touched,
             },
@@ -462,6 +472,7 @@ mod tests {
             address,
             Account {
                 info: mock_account_info(uint!(2_U256), 1, Some(code_two.clone())),
+                transaction_id: 0,
                 storage: second_storage,
                 status: AccountStatus::Touched,
             },
@@ -510,6 +521,7 @@ mod tests {
             address!("0000000000000000000000000000000000000001"),
             Account {
                 info: mock_account_info(uint!(10_U256), 1, None),
+                transaction_id: 0,
                 storage: first_storage,
                 status: AccountStatus::Touched,
             },
@@ -534,6 +546,7 @@ mod tests {
             address!("0000000000000000000000000000000000000001"),
             Account {
                 info: mock_account_info(uint!(20_U256), 2, None),
+                transaction_id: 0,
                 storage: EvmStorage::default(),
                 status: AccountStatus::Touched,
             },

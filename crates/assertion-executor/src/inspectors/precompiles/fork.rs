@@ -50,9 +50,10 @@ where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
-    let Journal { database, inner } = context.journal();
-    database
-        .switch_fork(ForkId::PreTx, inner, call_tracer)
+    let journal = context.journal_mut();
+    journal
+        .database
+        .switch_fork(ForkId::PreTx, &mut journal.inner, call_tracer)
         .map_err(ForkError::MultiForkPreTxDbError)?;
     Ok(Bytes::default())
 }
@@ -66,9 +67,10 @@ where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
-    let Journal { database, inner } = context.journal();
-    database
-        .switch_fork(ForkId::PostTx, inner, call_tracer)
+    let journal = context.journal_mut();
+    journal
+        .database
+        .switch_fork(ForkId::PostTx, &mut journal.inner, call_tracer)
         .map_err(ForkError::MultiForkPostTxDbError)?;
     Ok(Bytes::default())
 }
@@ -87,11 +89,12 @@ where
         .map_err(ForkError::DecodeError)?
         .id;
 
-    let Journal { database, inner } = context.journal();
-    database
+    let journal = context.journal_mut();
+    journal
+        .database
         .switch_fork(
             ForkId::PreCall(call_id.try_into().map_err(ForkError::IdExceedsUsize)?),
-            inner,
+            &mut journal.inner,
             call_tracer,
         )
         .map_err(ForkError::MultiForkPreCallDbError)?;
@@ -112,11 +115,12 @@ where
         .map_err(ForkError::DecodeError)?
         .id;
 
-    let Journal { database, inner } = context.journal();
-    database
+    let journal = context.journal_mut();
+    journal
+        .database
         .switch_fork(
             ForkId::PostCall(call_id.try_into().map_err(ForkError::IdExceedsUsize)?),
-            inner,
+            &mut journal.inner,
             call_tracer,
         )
         .map_err(ForkError::MultiForkPostCallDbError)?;
@@ -183,7 +187,7 @@ mod test {
         for (address, slot, value) in post_tx_storage {
             journal_inner.load_account(&mut pre_tx_db, address).unwrap();
             journal_inner
-                .sstore(&mut pre_tx_db, address, slot, value)
+                .sstore(&mut pre_tx_db, address, slot, value, false)
                 .unwrap();
             journal_inner.touch(address); // Mark account as touched so changes get committed
         }
@@ -216,7 +220,7 @@ mod test {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Bytes::default());
 
-        context.journal().load_account(address).unwrap();
+        context.journal_mut().load_account(address).unwrap();
 
         // Verify that we're now on the pre-tx fork
         let storage_value = context.sload(address, slot).unwrap().data;
@@ -247,7 +251,7 @@ mod test {
         assert_eq!(result.unwrap(), Bytes::default());
 
         // Verify that we're now on the post-tx fork
-        let storage_value = context.journal().sload(address, slot).unwrap().data;
+        let storage_value = context.journal_mut().sload(address, slot).unwrap().data;
         assert_eq!(storage_value, post_value);
     }
 

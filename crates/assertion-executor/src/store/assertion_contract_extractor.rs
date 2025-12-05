@@ -142,7 +142,7 @@ pub fn extract_assertion_contract(
     let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
 
     let trigger_call_result = evm
-        .inspect_with_tx(tx_env)
+        .inspect_tx(tx_env)
         .map_err(FnSelectorExtractorError::TriggersCallError)?;
 
     if !trigger_call_result.result.is_success() {

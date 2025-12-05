@@ -244,7 +244,7 @@ mod test {
         let env = evm_env(1, SpecId::default(), BlockEnv::default());
         let mut evm = build_optimism_evm(&mut db, &env, &mut trigger_recorder);
 
-        let result = evm.inspect_with_tx(tx_env).unwrap();
+        let result = evm.inspect_tx(tx_env).unwrap();
         std::mem::drop(evm);
 
         assert!(

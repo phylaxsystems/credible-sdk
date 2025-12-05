@@ -252,6 +252,7 @@ mod fork_db_tests {
                     balance: uint!(1000_U256),
                     ..Default::default()
                 },
+                transaction_id: 0,
                 storage: HashMap::from_iter([]),
                 status: AccountStatus::Touched,
             },
@@ -314,6 +315,7 @@ mod fork_db_tests {
         let mut evm_storage_slot = EvmStorageSlot {
             original_value: uint!(0_U256),
             present_value: uint!(1_U256),
+            transaction_id: 0,
             is_cold: false,
         };
 
@@ -323,6 +325,7 @@ mod fork_db_tests {
             Address::ZERO,
             Account {
                 info: AccountInfo::default(),
+                transaction_id: 0,
                 storage: storage.clone(),
                 status: AccountStatus::Touched,
             },
@@ -392,6 +395,7 @@ mod fork_db_tests {
                     code: Some(bytecode.clone()),
                     ..Default::default()
                 },
+                transaction_id: 0,
                 storage: HashMap::from_iter([]),
                 status: AccountStatus::Touched,
             },
@@ -430,6 +434,7 @@ mod fork_db_tests {
                     code: Some(bytecode.clone()),
                     ..Default::default()
                 },
+                transaction_id: 0,
                 storage: HashMap::from_iter([]),
                 status: AccountStatus::Touched,
             },
@@ -462,6 +467,7 @@ mod fork_db_tests {
         let evm_storage_slot = EvmStorageSlot {
             original_value: uint!(0_U256),
             present_value: uint!(1_U256),
+            transaction_id: 0,
             is_cold: false,
         };
 
@@ -471,6 +477,7 @@ mod fork_db_tests {
             Address::ZERO,
             Account {
                 info: AccountInfo::default(),
+                transaction_id: 0,
                 storage: storage.clone(),
                 status: AccountStatus::Touched,
             },
@@ -501,6 +508,7 @@ mod fork_db_tests {
             Address::ZERO,
             Account {
                 info: AccountInfo::default(),
+                transaction_id: 0,
                 storage: HashMap::from_iter([]),
                 status: AccountStatus::SelfDestructed | AccountStatus::Touched,
             },

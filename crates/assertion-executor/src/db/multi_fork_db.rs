@@ -402,9 +402,9 @@ mod test_multi_fork {
             value: CallValue::Transfer(U256::from(900)),
             scheme: revm::interpreter::CallScheme::Call,
             is_static: false,
-            is_eof: false,
             input: revm::interpreter::CallInput::Bytes(Bytes::from("")),
             return_memory_offset: 0..0,
+            known_bytecode: None,
         };
         //Call 0
         active_journal.checkpoint();
@@ -542,6 +542,7 @@ mod test_multi_fork {
                     code_hash: FixedBytes::default(),
                     code: None,
                 },
+                transaction_id: 0,
                 storage: HashMap::default(),
                 status: AccountStatus::Touched,
             },
@@ -553,6 +554,7 @@ mod test_multi_fork {
                     balance: uint!(1337_U256),
                     ..Default::default()
                 },
+                transaction_id: 0,
                 storage: HashMap::default(),
                 status: AccountStatus::Touched,
             },
