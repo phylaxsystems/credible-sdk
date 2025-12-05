@@ -148,7 +148,8 @@ mod error_messages {
     pub const QUEUE_TX_FAILED: &str = "failed to queue transaction";
     pub const QUEUE_REORG_FAILED: &str = "failed to queue reorg";
     pub const INVALID_BLOCK_HASH: &str = "invalid block_hash: expected 32 bytes";
-    pub const INVALID_BEACON_ROOT: &str = "invalid beacon_block_root: expected 32 bytes";
+    pub const INVALID_PARENT_BEACON_BLOCK_ROOT: &str =
+        "invalid parent_beacon_block_root: expected 32 bytes";
 }
 
 /// Expected byte lengths for binary-encoded fields.
@@ -432,14 +433,14 @@ fn decode_commit_head(pb: &PbCommitHead) -> Result<CommitHead, Status> {
         .transpose()
         .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_HASH))?;
 
-    // Decode beacon_block_root (EIP-4788)
-    let beacon_block_root = pb
-        .beacon_block_root
+    // Decode parent_beacon_block_root (EIP-4788)
+    let parent_beacon_block_root = pb
+        .parent_beacon_block_root
         .as_ref()
         .filter(|b| !b.is_empty())
         .map(|b| decode_b256(b))
         .transpose()
-        .map_err(|_| Status::invalid_argument(error_messages::INVALID_BEACON_ROOT))?;
+        .map_err(|_| Status::invalid_argument(error_messages::INVALID_PARENT_BEACON_BLOCK_ROOT))?;
 
     Ok(CommitHead::new(
         block_number,
@@ -447,7 +448,7 @@ fn decode_commit_head(pb: &PbCommitHead) -> Result<CommitHead, Status> {
         last_tx_hash,
         pb.n_transactions,
         block_hash,
-        beacon_block_root,
+        parent_beacon_block_root,
         timestamp,
     ))
 }
