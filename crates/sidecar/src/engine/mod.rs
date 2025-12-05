@@ -1127,8 +1127,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             target = "engine",
             commit_head = ?commit_head,
             processed_blocks = *processed_blocks,
-            has_hash = commit_head.block_hash.is_some(),
-            has_beacon_root = commit_head.beacon_block_root.is_some(),
+            has_block_hash = commit_head.block_hash.is_some(),
+            has_parent_beacon_block_root = commit_head.parent_beacon_block_root.is_some(),
             "Processing CommitHead",
         );
 
@@ -1163,7 +1163,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             commit_head.block_number,
             commit_head.timestamp,
             commit_head.block_hash,
-            commit_head.beacon_block_root,
+            commit_head.parent_beacon_block_root,
         );
 
         system_calls

@@ -407,7 +407,7 @@ impl TestTransport for LocalInstanceMockDriver {
         // Use random hashes for EIP-2935 and EIP-4788
         let block_hash = Some(B256::random());
         let timestamp = U256::random();
-        let beacon_block_root = Some(B256::random());
+        let parent_beacon_block_root = Some(B256::random());
 
         let commit_head = CommitHead::new(
             block_number,
@@ -415,7 +415,7 @@ impl TestTransport for LocalInstanceMockDriver {
             last_tx_hash,
             n_transactions,
             block_hash,
-            beacon_block_root,
+            parent_beacon_block_root,
             timestamp,
         );
 
@@ -697,7 +697,7 @@ impl TestTransport for LocalInstanceHttpDriver {
 
         // Use random hashes for EIP-2935 and EIP-4788
         let block_hash = Some(B256::random());
-        let beacon_block_root = Some(B256::random());
+        let parent_beacon_block_root = Some(B256::random());
 
         let commit_head = CommitHead::new(
             block_number,
@@ -705,7 +705,7 @@ impl TestTransport for LocalInstanceHttpDriver {
             last_tx_hash,
             n_transactions,
             block_hash,
-            beacon_block_root,
+            parent_beacon_block_root,
             U256::random(),
         );
 
@@ -731,9 +731,9 @@ impl TestTransport for LocalInstanceHttpDriver {
             commit_head_json["block_hash"] = json!(hash.to_string());
         }
 
-        // Add beacon_block_root if provided (EIP-4788)
-        if let Some(root) = commit_head.beacon_block_root {
-            commit_head_json["beacon_block_root"] = json!(root.to_string());
+        // Add parent_beacon_block_root if provided (EIP-4788)
+        if let Some(root) = commit_head.parent_beacon_block_root {
+            commit_head_json["parent_beacon_block_root"] = json!(root.to_string());
         }
 
         // jsonrpc request for sending commit head event to the sidecar
@@ -1134,7 +1134,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         // Use random hashes for EIP-2935 and EIP-4788
         let block_hash = Some(B256::random());
-        let beacon_block_root = Some(B256::random());
+        let parent_beacon_block_root = Some(B256::random());
 
         let commit_head = CommitHead::new(
             block_number,
@@ -1142,7 +1142,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             last_tx_hash,
             n_transactions,
             block_hash,
-            beacon_block_root,
+            parent_beacon_block_root,
             U256::random(),
         );
 
@@ -1158,7 +1158,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
             block_number: grpc_encode::u256_be(commit_head.block_number),
             selected_iteration_id: commit_head.selected_iteration_id,
             block_hash: commit_head.block_hash.map(grpc_encode::b256),
-            beacon_block_root: commit_head.beacon_block_root.map(grpc_encode::b256),
+            parent_beacon_block_root: commit_head.parent_beacon_block_root.map(grpc_encode::b256),
             timestamp: grpc_encode::u256_be(commit_head.timestamp),
         };
 

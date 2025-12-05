@@ -84,7 +84,7 @@ message CommitHead {
   bytes block_number = 3;                                 // 32 bytes - block number as U256 big-endian
   uint64 selected_iteration_id = 4;                       // selected iteration ID
   optional bytes block_hash = 5;                          // 32 bytes - block hash for EIP-2935
-  optional bytes beacon_block_root = 6;                   // 32 bytes - beacon root for EIP-4788
+  optional bytes parent_beacon_block_root = 6;            // 32 bytes - parent beacon block root for EIP-4788
   bytes timestamp = 7;                                    // 32 bytes - timestamp as U256 big-endian
 }
 
