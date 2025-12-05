@@ -181,6 +181,7 @@ impl Transport for HttpTransport {
 
 #[cfg(test)]
 mod tests {
+    use crate::engine::queue::CommitHead;
     use alloy::primitives::B256;
     use assertion_executor::primitives::{
         Bytes,
@@ -436,6 +437,161 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .expect("missing not_found field");
         assert_eq!(not_found, missing_hash.to_string());
+    }
+
+    #[crate::utils::engine_test(http)]
+    async fn test_commit_head_invalid_block_hash_length(mut instance: crate::utils::LocalInstance) {
+        // First, set up a valid state
+        instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
+        let _ = instance.send_reverting_create_tx().await.unwrap();
+
+        let local_address = instance.local_address.unwrap();
+
+        // Send CommitHead with invalid block_hash (wrong length - 20 bytes instead of 32)
+        let invalid_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendEvents",
+            "params": {
+                "events": [
+                    {
+                        "commit_head": {
+                            "block_number": 2u64,
+                            "selected_iteration_id": 1u64,
+                            "last_tx_hash": null,
+                            "n_transactions": 0u64,
+                            "block_hash": "0x0000000000000000000000000000000000000000"  // 20 bytes, should be 32
+                        }
+                    }
+                ]
+            },
+            "id": 1
+        });
+
+        let res = send_raw_request(invalid_request, local_address)
+            .await
+            .unwrap();
+
+        // Should return an error about invalid hash length
+        assert!(
+            res.contains("error") || res.contains("invalid"),
+            "expected error for invalid block_hash length: {res}"
+        );
+    }
+
+    #[crate::utils::engine_test(http)]
+    async fn test_commit_head_invalid_beacon_root_length(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // First, set up a valid state
+        instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
+        let _ = instance.send_reverting_create_tx().await.unwrap();
+
+        let local_address = instance.local_address.unwrap();
+
+        // Send CommitHead with invalid parent_beacon_block_root (wrong length)
+        let invalid_request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendEvents",
+            "params": {
+                "events": [
+                    {
+                        "commit_head": {
+                            "block_number": 2u64,
+                            "selected_iteration_id": 1u64,
+                            "last_tx_hash": null,
+                            "n_transactions": 0u64,
+                            "parent_beacon_block_root": "0x00000000"  // 4 bytes, should be 32
+                        }
+                    }
+                ]
+            },
+            "id": 1
+        });
+
+        let res = send_raw_request(invalid_request, local_address)
+            .await
+            .unwrap();
+
+        // Should return an error about invalid hash length
+        assert!(
+            res.contains("error") || res.contains("invalid"),
+            "expected error for invalid parent_beacon_block_root length: {res}"
+        );
+    }
+
+    #[crate::utils::engine_test(http)]
+    async fn test_commit_head_empty_hashes_treated_as_none(
+        mut instance: crate::utils::LocalInstance,
+    ) {
+        // First, set up a valid state
+        instance.new_block().await.unwrap();
+        instance.new_iteration(1).await.unwrap();
+        let _ = instance.send_reverting_create_tx().await.unwrap();
+
+        let local_address = instance.local_address.unwrap();
+
+        // Send CommitHead with empty strings for parent hashes (should be treated as None)
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "sendEvents",
+            "params": {
+                "events": [
+                    {
+                        "commit_head": {
+                            "block_number": 2u64,
+                            "selected_iteration_id": 1u64,
+                            "last_tx_hash": null,
+                            "n_transactions": 0u64,
+                            "block_hash": "",
+                            "parent_beacon_block_root": ""
+                        }
+                    }
+                ]
+            },
+            "id": 1
+        });
+
+        let res = send_raw_request(request, local_address).await.unwrap();
+
+        // Empty strings should be filtered out and treated as None
+        // This should either succeed or return a valid response (not a parse error)
+        debug!("Response for empty parent hashes: {}", res);
+
+        // The request should be processed (may succeed or fail for other reasons,
+        // but should not fail due to empty string parsing)
+        let response_json: Value = serde_json::from_str(&res).expect("response must be valid json");
+        assert!(
+            response_json.get("jsonrpc").is_some(),
+            "should return valid JSON-RPC response"
+        );
+    }
+
+    #[crate::utils::engine_test(http)]
+    async fn test_commit_head_with_zero_hashes(mut instance: crate::utils::LocalInstance) {
+        // Test that zero hashes (all zeros) are valid and processed correctly
+        let zero_hash = B256::ZERO;
+
+        instance
+            .new_block_with_hashes(Some(zero_hash), Some(zero_hash))
+            .await
+            .expect("new_block with zero hashes should succeed");
+
+        instance.new_iteration(1).await.unwrap();
+
+        let tx_execution_id = instance
+            .send_successful_create_tx(U256::from(0u64), Bytes::new())
+            .await
+            .expect("failed to send transaction");
+
+        assert!(
+            instance
+                .is_transaction_successful(&tx_execution_id)
+                .await
+                .expect("transaction query failed"),
+            "transaction expected to succeed with zero parent hashes"
+        );
     }
 
     async fn send_raw_request(

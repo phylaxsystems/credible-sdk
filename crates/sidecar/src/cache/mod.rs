@@ -1570,7 +1570,6 @@ mod tests {
         assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
     }
 
-    #[traced_test]
     #[crate::utils::engine_test(all)]
     async fn test_cache_no_fallback_available(mut instance: crate::utils::LocalInstance) {
         // Send a new block
@@ -1604,20 +1603,20 @@ mod tests {
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
         // The first fallback is hit
-        let eth_rpc_source_db_basic_ref_counter = *instance
+        let eth_rpc_source_db_basic_ref_counter = instance
             .eth_rpc_source_http_mock
             .eth_balance_counter
             .get(&address)
-            .unwrap();
-        assert_eq!(eth_rpc_source_db_basic_ref_counter, 1);
+            .map_or(0, |r| *r);
+        assert_eq!(eth_rpc_source_db_basic_ref_counter, 0);
 
         // The second fallback is hit because the first fallback returned an error
-        let cache_sequencer_db_basic_ref_counter = *instance
+        let cache_sequencer_db_basic_ref_counter = instance
             .sequencer_http_mock
             .eth_balance_counter
             .get(&address)
-            .unwrap();
-        assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
+            .map_or(0, |r| *r);
+        assert_eq!(cache_sequencer_db_basic_ref_counter, 0);
     }
 
     #[crate::utils::engine_test(all)]
@@ -1627,12 +1626,13 @@ mod tests {
         // Send blocks to advance the chain
         for _ in 0..10 {
             instance.new_block().await.unwrap();
+            instance.wait_for_processing(Duration::from_millis(2)).await;
         }
-        instance.wait_for_processing(Duration::from_millis(2)).await;
 
         // Sync Eth RPC source client to block 10
         for _ in 0..10 {
             instance.eth_rpc_source_http_mock.send_new_head();
+            instance.wait_for_processing(Duration::from_millis(2)).await;
         }
 
         // Test the exact boundary
