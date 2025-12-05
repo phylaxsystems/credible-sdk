@@ -27,6 +27,7 @@
 
 mod common;
 pub mod decoder;
+mod event_id_deduplication;
 pub mod grpc;
 pub mod http;
 pub mod mock;
@@ -93,6 +94,7 @@ pub trait Transport: Send + Sync {
         config: Self::Config,
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
+        event_id_buffer_capacity: usize,
     ) -> Result<Self, Self::Error>
     where
         Self: Sized;

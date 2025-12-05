@@ -182,6 +182,7 @@ struct CommonSetup {
     state_results: Arc<crate::TransactionsState>,
     default_account: Address,
     list_of_sources: Vec<Arc<dyn Source>>,
+    event_id_buffer_capacity: usize,
 }
 
 impl CommonSetup {
@@ -237,6 +238,7 @@ impl CommonSetup {
             state_results,
             default_account,
             list_of_sources: sources,
+            event_id_buffer_capacity: 100,
         })
     }
 
@@ -650,8 +652,13 @@ impl LocalInstanceHttpDriver {
         drop(listener);
 
         let config = HttpTransportConfig { bind_addr: address };
-        let transport =
-            HttpTransport::new(config, transport_tx_sender, setup.state_results.clone()).unwrap();
+        let transport = HttpTransport::new(
+            config,
+            transport_tx_sender,
+            setup.state_results.clone(),
+            setup.event_id_buffer_capacity,
+        )
+        .unwrap();
 
         let transport_handle = tokio::spawn(async move {
             info!(target: "LocalInstanceHttpDriver", "Transport task started");
@@ -1017,6 +1024,7 @@ impl LocalInstanceGrpcDriver {
             transport_tx_sender,
             setup.state_results.clone(),
             result_event_rx,
+            setup.event_id_buffer_capacity,
         )
         .map_err(|e| format!("Failed to create gRPC transport: {e}"))?;
 
@@ -1133,7 +1141,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         };
 
         let event = Event {
-            event_id: 0,
+            event_id: rand::random(),
             event: Some(EventVariant::CommitHead(commit_head)),
         };
 
@@ -1166,7 +1174,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let transaction = Self::build_pb_transaction(&tx_execution_id, &tx_env, prev_tx_hash);
 
         let event = Event {
-            event_id: 0,
+            event_id: rand::random(),
             event: Some(EventVariant::Transaction(transaction)),
         };
 
@@ -1189,7 +1197,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         };
 
         let event = Event {
-            event_id: 0,
+            event_id: rand::random(),
             event: Some(EventVariant::NewIteration(new_iteration)),
         };
 
@@ -1221,7 +1229,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         };
 
         let event = Event {
-            event_id: 0,
+            event_id: rand::random(),
             event: Some(EventVariant::Reorg(reorg_event)),
         };
 

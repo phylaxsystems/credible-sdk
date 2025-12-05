@@ -34,8 +34,10 @@ name` resource key according to the OTEL conventions.
 
 The transports emit a few histograms so operators can distinguish between a slow client wait and slow engine fetch:
 
-- `sidecar_get_transaction_wait_duration` - Emitted when either transport waits for a tx to arrive (HTTP long-poll path and the shared pending receiver helper)
-- `sidecar_fetch_transaction_result_duration` - HTTP/gRPC: time spent waiting on the result after the transaction has been queued for being processed by the core engine
+- `sidecar_get_transaction_wait_duration` - Emitted when either transport waits for a tx to arrive (HTTP long-poll path
+  and the shared pending receiver helper)
+- `sidecar_fetch_transaction_result_duration` - HTTP/gRPC: time spent waiting on the result after the transaction has
+  been queued for being processed by the core engine
 
 All durations are reported in seconds to the configured metrics backend.
 
@@ -258,7 +260,8 @@ The configuration file is a JSON file with the following schema:
       "required": [
         "protocol",
         "bind_addr",
-        "health_bind_addr"
+        "health_bind_addr",
+        "event_id_buffer_capacity"
       ],
       "properties": {
         "protocol": {
@@ -289,6 +292,13 @@ The configuration file is a JSON file with the following schema:
           "examples": [
             "127.0.0.1:3001",
             "0.0.0.0:9547"
+          ]
+        },
+        "event_id_buffer_capacity": {
+          "type": "integer",
+          "description": "Maximum number of events ID in the transport layer buffer before dropping new events.",
+          "examples": [
+            "1000"
           ]
         }
       },
@@ -447,6 +457,7 @@ The sidecar is a binary in the credible-sdk workspace, you can run it from the c
 ```cargo run -p sidecar```
 
 And with logging + default config + sequencer:
+
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
@@ -467,15 +478,19 @@ Alternatively, you can run a sidecar locally with all services needed to get it 
 #### Linux
 
 On linux you might need to edit:
+
 ```yaml
   extra_hosts:
     - "credible-sidecar:host-gateway"
 ```
+
 in the dockerfile to:
+
 ```yaml
 extra_hosts:
   - "credible-sidecar:192.168.0.10"
 ```
+
 or whatever your local network device ip is.
 
 ### Dockerfile
@@ -495,6 +510,7 @@ If the sidecar needs to expose ports (you'll need to check what port it uses), a
 ### Profiling
 
 For profiling you can use the following:
+
 ```bash
 # If running in userspace you will need to relax security features
 sudo sysctl kernel.kptr_restrict=0
@@ -511,16 +527,25 @@ RUST_LOG=info perf record -c 100000 -g target/debug-perf/sidecar --config-file-p
 # This will convert the perf data into a profile readable by flamegraph, firefox profiler, etc...
 perf script -i perf.data > perf.script
 ```
+
 Note: you will need to be on linux to run perf.
 
-Alternatively you can also try using dtrace/cargo-flamegraph, but the setup might not work due to weird env caputuring docker networking. YMMV.
+Alternatively you can also try using dtrace/cargo-flamegraph, but the setup might not work due to weird env caputuring
+docker networking. YMMV.
 
 ### Hardware requirements
 
 For **production usage** on a real network the sidecar should be ran with at least the following:
-- CPU: 16 physical cores, AMD Zen 3 performance equivalent or higher
-- Storage: 512gb+ recommended, fast local (not networked) PCIE NVME SSDs preffered to keep I/O latency low. Budget sustained IOPS and 2x storage to keep SSD reads fast.
-- RAM: 128gb recommended, RAM allocation should be enough to store the entire chain *state*(not full blocks, just state) in memory.
-- Networking: Keep RTT to the sequencer sub-millisecond by colocating in the same AZ/cluster (co-scheduling on the same k8s node/pod is ideal). Use a minimum of 10Gbps between the validator and sidecar and VPC-peer them; avoid routing over the public internet. Ensure stable, low-jitter egress to your DA RPC (HTTP) and indexer RPC (WS) endpoints—prefer private endpoints or allowlisted static egress IPs.
 
-For **local testing** unless you are benchmarking performance the sidecar is fairly light-weight and doesnt have hard hardware requirements.
+- CPU: 16 physical cores, AMD Zen 3 performance equivalent or higher
+- Storage: 512gb+ recommended, fast local (not networked) PCIE NVME SSDs preffered to keep I/O latency low. Budget
+  sustained IOPS and 2x storage to keep SSD reads fast.
+- RAM: 128gb recommended, RAM allocation should be enough to store the entire chain *state*(not full blocks, just state)
+  in memory.
+- Networking: Keep RTT to the sequencer sub-millisecond by colocating in the same AZ/cluster (co-scheduling on the same
+  k8s node/pod is ideal). Use a minimum of 10Gbps between the validator and sidecar and VPC-peer them; avoid routing
+  over the public internet. Ensure stable, low-jitter egress to your DA RPC (HTTP) and indexer RPC (WS) endpoints—prefer
+  private endpoints or allowlisted static egress IPs.
+
+For **local testing** unless you are benchmarking performance the sidecar is fairly light-weight and doesnt have hard
+hardware requirements.
