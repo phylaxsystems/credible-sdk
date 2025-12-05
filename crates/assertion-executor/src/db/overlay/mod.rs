@@ -399,7 +399,8 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
                 continue;
             }
 
-            if account.is_created() {
+            if account.is_created() || account.info.code.as_ref().is_some_and(Bytecode::is_eip7702)
+            {
                 self.created_accounts.insert(address);
             }
 
@@ -430,6 +431,10 @@ impl<Db> OverlayDb<Db> {
     pub fn commit_overlay_fork_db(&mut self, fork_db: ForkDb<OverlayDb<Db>>) {
         // Update account info
         for (address, account_info) in fork_db.basic {
+            if account_info.code.as_ref().is_some_and(Bytecode::is_eip7702) {
+                self.created_accounts.insert(address);
+            }
+
             let key = TableKey::Basic(address);
             self.overlay
                 .insert(key, TableValue::Basic(account_info.clone()));
@@ -910,6 +915,43 @@ mod overlay_db_tests {
         // Clearing the cache should also clear created-account tracking so we fall back again.
         overlay_db.invalidate_all();
 
+        assert_eq!(overlay_db.storage_ref(addr, slot).unwrap(), U256::from(5));
+        assert!(mock_db_arc.get_storage_calls() > storage_calls_before);
+    }
+
+    #[test]
+    fn eip7702_account_is_tracked_as_created_for_storage() {
+        let addr = address!("0000000000000000000000000000000000000770");
+        let delegate = address!("0000000000000000000000000000000000000dd1");
+        let slot = U256::from(9);
+
+        let mut mock_db = MockDb::new();
+        mock_db.insert_storage(addr, slot, U256::from(5));
+        let mock_db_arc = Arc::new(mock_db);
+
+        let mut overlay_db = OverlayDb::new(Some(mock_db_arc.clone()));
+
+        let code = Bytecode::new_eip7702(delegate);
+        let account = Account {
+            info: AccountInfo {
+                balance: U256::ZERO,
+                nonce: 0,
+                code_hash: code.hash_slow(),
+                code: Some(code),
+            },
+            transaction_id: 0,
+            storage: EvmStorage::default(),
+            status: AccountStatus::Touched,
+        };
+
+        overlay_db.commit(HashMap::from_iter([(addr, account)]));
+
+        let storage_calls_before = mock_db_arc.get_storage_calls();
+        assert_eq!(overlay_db.storage_ref(addr, slot).unwrap(), U256::ZERO);
+        assert_eq!(mock_db_arc.get_storage_calls(), storage_calls_before);
+
+        // Clearing the cache should also clear created-account tracking.
+        overlay_db.invalidate_all();
         assert_eq!(overlay_db.storage_ref(addr, slot).unwrap(), U256::from(5));
         assert!(mock_db_arc.get_storage_calls() > storage_calls_before);
     }

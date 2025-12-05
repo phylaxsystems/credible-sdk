@@ -123,7 +123,8 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
             if !account.is_touched() {
                 continue;
             }
-            let created_in_fork = account.is_created();
+            let created_in_fork = account.is_created()
+                || account.info.code.as_ref().is_some_and(Bytecode::is_eip7702);
             if account.is_selfdestructed() {
                 self.basic.insert(address, account.info.clone());
 
