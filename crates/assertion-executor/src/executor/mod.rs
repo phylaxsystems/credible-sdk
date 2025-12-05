@@ -685,13 +685,6 @@ impl AssertionExecutor {
         }
 
         tx_fork_db.commit(state);
-        for address in [ASSERTION_CONTRACT, CALLER, PRECOMPILE_ADDRESS] {
-            tx_fork_db
-                .storage
-                .entry(address)
-                .or_default()
-                .dont_read_from_inner_db = true;
-        }
         trace!(
             target: "assertion-executor::insert_persistent_accounts",
             assertion_id = ?id,
