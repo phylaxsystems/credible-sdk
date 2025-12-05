@@ -2018,6 +2018,9 @@ fn test_alternating_future_and_current_events() {
 #[crate::utils::engine_test(all)]
 async fn test_mixed_iteration_reorg_operations(mut instance: LocalInstance<_>) {
     instance.new_block().await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
 
     // Iteration 1
     instance.set_current_iteration_id(1);
@@ -2025,15 +2028,21 @@ async fn test_mixed_iteration_reorg_operations(mut instance: LocalInstance<_>) {
         .send_successful_create_tx_dry(U256::ZERO, Bytes::default())
         .await
         .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
 
     // Iteration 2
     instance.set_current_iteration_id(2);
     instance.new_iteration(2).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
+
     let tx2 = instance
         .send_successful_create_tx_dry(U256::ZERO, Bytes::default())
         .await
         .unwrap();
-
     instance
         .wait_for_processing(Duration::from_millis(10))
         .await;
@@ -2049,6 +2058,9 @@ async fn test_mixed_iteration_reorg_operations(mut instance: LocalInstance<_>) {
         .send_successful_create_tx_dry(U256::ZERO, Bytes::default())
         .await
         .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
 
     // Commit with iteration 2
     instance.set_current_iteration_id(2);

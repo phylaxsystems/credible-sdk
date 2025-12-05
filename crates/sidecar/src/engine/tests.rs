@@ -1330,6 +1330,9 @@ async fn test_iteration_selection_with_transaction_count_mismatch(
 
     // Block 1
     instance.new_block().await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
 
     // Iteration 1: 2 transactions
     instance.new_iteration(1).await.unwrap();
@@ -1337,11 +1340,17 @@ async fn test_iteration_selection_with_transaction_count_mismatch(
         .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
         .await
         .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
 
     let tx2_iter1 = instance
         .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
         .await
         .unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(100))
+        .await;
 
     assert!(
         instance
@@ -1359,11 +1368,17 @@ async fn test_iteration_selection_with_transaction_count_mismatch(
     // Block 2: Select iteration 1 but set the wrong count (3 instead of 2)
     instance.new_iteration(1).await.unwrap();
     instance.transport.set_n_transactions(3);
+    instance
+        .wait_for_processing(Duration::from_millis(10))
+        .await;
 
     instance
         .expect_cache_flush(|instance| {
             Box::pin(async move {
                 instance.new_block().await?;
+                instance
+                    .wait_for_processing(Duration::from_millis(10))
+                    .await;
                 Ok(())
             })
         })
@@ -2379,7 +2394,7 @@ fn test_eip2935_ring_buffer_wraparound() {
         block_number: U256::from(block_number),
         timestamp: U256::from(1234567890),
         block_hash: Some(hash),
-        beacon_block_root: None,
+        parent_beacon_block_root: None,
     };
 
     let result = system_calls.apply_eip2935(&config, &mut db);
@@ -2406,7 +2421,7 @@ fn test_eip4788_ring_buffer_wraparound() {
         block_number: U256::from(100),
         timestamp: U256::from(timestamp),
         block_hash: None,
-        beacon_block_root: Some(beacon_root),
+        parent_beacon_block_root: Some(beacon_root),
     };
 
     let result = system_calls.apply_eip4788(&config, &mut db);
@@ -2445,7 +2460,7 @@ fn test_system_calls_respects_spec_id() {
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
         block_hash: Some(B256::repeat_byte(0x11)),
-        beacon_block_root: Some(B256::repeat_byte(0x22)),
+        parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
     let result = system_calls.apply_system_calls(&config, &mut db);
@@ -2466,7 +2481,7 @@ fn test_cancun_only_applies_eip4788() {
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
         block_hash: Some(B256::repeat_byte(0x11)),
-        beacon_block_root: Some(B256::repeat_byte(0x22)),
+        parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
     let result = system_calls.apply_system_calls(&config, &mut db);
@@ -2487,7 +2502,7 @@ fn test_prague_applies_both() {
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
         block_hash: Some(B256::repeat_byte(0x11)),
-        beacon_block_root: Some(B256::repeat_byte(0x22)),
+        parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
     let result = system_calls.apply_system_calls(&config, &mut db);

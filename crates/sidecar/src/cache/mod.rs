@@ -1626,12 +1626,13 @@ mod tests {
         // Send blocks to advance the chain
         for _ in 0..10 {
             instance.new_block().await.unwrap();
+            instance.wait_for_processing(Duration::from_millis(2)).await;
         }
-        instance.wait_for_processing(Duration::from_millis(2)).await;
 
         // Sync Eth RPC source client to block 10
         for _ in 0..10 {
             instance.eth_rpc_source_http_mock.send_new_head();
+            instance.wait_for_processing(Duration::from_millis(2)).await;
         }
 
         // Test the exact boundary

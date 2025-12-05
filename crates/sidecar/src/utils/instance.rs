@@ -520,7 +520,11 @@ impl<T: TestTransport> LocalInstance<T> {
         // Always provide parent hashes for EIP-2935 and EIP-4788 system calls
         // These are required when running on Cancun+ specs
         let block_hash = Some(Self::generate_random_tx_hash());
-        let beacon_block_root = Some(Self::generate_random_tx_hash());
+        let beacon_block_root = if block_number == U256::ZERO {
+            Some(B256::ZERO)
+        } else {
+            Some(Self::generate_random_tx_hash())
+        };
         self.send_block_with_hashes_internal(block_number, block_hash, beacon_block_root)
             .await
     }
@@ -542,7 +546,7 @@ impl<T: TestTransport> LocalInstance<T> {
             n_transactions,
             block_hash,
             beacon_block_root,
-            U256::random(),
+            U256::from(1234567890),
         );
 
         self.transport.send_commit_head(commit_head).await?;

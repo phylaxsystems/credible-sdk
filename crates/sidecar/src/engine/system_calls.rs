@@ -86,7 +86,7 @@ pub struct SystemCallsConfig {
     pub block_hash: Option<B256>,
     /// Parent beacon block root (required for EIP-4788)
     /// This comes from the consensus layer
-    pub beacon_block_root: Option<B256>,
+    pub parent_beacon_block_root: Option<B256>,
 }
 
 impl SystemCallsConfig {
@@ -103,7 +103,7 @@ impl SystemCallsConfig {
             block_number,
             timestamp,
             block_hash,
-            beacon_block_root,
+            parent_beacon_block_root: beacon_block_root,
         }
     }
 }
@@ -262,7 +262,7 @@ impl SystemCalls {
         // Skip genesis block
         if config.block_number == 0 {
             // Verify genesis has zero beacon root if provided
-            if let Some(root) = config.beacon_block_root
+            if let Some(root) = config.parent_beacon_block_root
                 && !root.is_zero()
             {
                 return Err(SystemCallError::GenesisNonZeroBeaconRoot);
@@ -271,8 +271,8 @@ impl SystemCalls {
             return Ok(());
         }
 
-        let beacon_root = config
-            .beacon_block_root
+        let parent_beacon_root = config
+            .parent_beacon_block_root
             .ok_or(SystemCallError::MissingParentBeaconBlockRoot)?;
 
         let timestamp = config.timestamp;
@@ -287,7 +287,7 @@ impl SystemCalls {
             block_number = %config.block_number,
             %timestamp,
             %timestamp_index,
-            %beacon_root,
+            %parent_beacon_root,
             "Applying EIP-4788 beacon root update"
         );
 
@@ -318,7 +318,7 @@ impl SystemCalls {
         // Store beacon root at root_slot
         storage.insert(
             root_slot,
-            EvmStorageSlot::new_changed(U256::ZERO, U256::from_be_bytes(beacon_root.0), 0),
+            EvmStorageSlot::new_changed(U256::ZERO, U256::from_be_bytes(parent_beacon_root.0), 0),
         );
 
         // Create account with existing info, just adding storage slots
@@ -405,7 +405,7 @@ mod tests {
             block_number: U256::from(99),
             timestamp: U256::from(1234567890),
             block_hash: Some(hash),
-            beacon_block_root: None,
+            parent_beacon_block_root: None,
         };
 
         let result = system_calls.apply_eip2935(&config, &mut db);
@@ -441,7 +441,7 @@ mod tests {
             block_number: U256::from(100),
             timestamp: U256::from(timestamp),
             block_hash: None,
-            beacon_block_root: Some(beacon_root),
+            parent_beacon_block_root: Some(beacon_root),
         };
 
         let result = system_calls.apply_eip4788(&config, &mut db);
@@ -482,7 +482,7 @@ mod tests {
             block_number: U256::from(0),
             timestamp: U256::from(0),
             block_hash: Some(B256::ZERO),
-            beacon_block_root: Some(B256::ZERO),
+            parent_beacon_block_root: Some(B256::ZERO),
         };
 
         // EIP-2935 should succeed but not modify state
@@ -505,7 +505,7 @@ mod tests {
             block_number: U256::from(100),
             timestamp: U256::from(1234567890),
             block_hash: None,
-            beacon_block_root: None,
+            parent_beacon_block_root: None,
         };
 
         let result = system_calls.apply_eip2935(&config, &mut db);
@@ -535,7 +535,7 @@ mod tests {
             block_number: U256::from(100),
             timestamp: U256::from(1700000000),
             block_hash: Some(B256::repeat_byte(0xab)),
-            beacon_block_root: Some(B256::repeat_byte(0xcd)),
+            parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
         let result = system_calls.apply_system_calls(&config, &mut db);
@@ -560,7 +560,7 @@ mod tests {
             block_number: U256::from(block_number),
             timestamp: U256::from(1234567890),
             block_hash: Some(hash),
-            beacon_block_root: None,
+            parent_beacon_block_root: None,
         };
 
         let result = system_calls.apply_eip2935(&config, &mut db);
@@ -601,7 +601,7 @@ mod tests {
             block_number: U256::from(100),
             timestamp: U256::from(1234567890),
             block_hash: Some(hash),
-            beacon_block_root: None,
+            parent_beacon_block_root: None,
         };
 
         let result = system_calls.apply_eip2935(&config, &mut db);
@@ -640,7 +640,7 @@ mod tests {
             block_number: U256::from(100),
             timestamp: U256::from(1700000000),
             block_hash: None,
-            beacon_block_root: Some(beacon_root),
+            parent_beacon_block_root: Some(beacon_root),
         };
 
         let result = system_calls.apply_eip4788(&config, &mut db);

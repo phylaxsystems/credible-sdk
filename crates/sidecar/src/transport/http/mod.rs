@@ -490,7 +490,7 @@ mod tests {
 
         let local_address = instance.local_address.unwrap();
 
-        // Send CommitHead with invalid beacon_block_root (wrong length)
+        // Send CommitHead with invalid parent_beacon_block_root (wrong length)
         let invalid_request = json!({
             "jsonrpc": "2.0",
             "method": "sendEvents",
@@ -502,7 +502,7 @@ mod tests {
                             "selected_iteration_id": 1u64,
                             "last_tx_hash": null,
                             "n_transactions": 0u64,
-                            "beacon_block_root": "0x00000000"  // 4 bytes, should be 32
+                            "parent_beacon_block_root": "0x00000000"  // 4 bytes, should be 32
                         }
                     }
                 ]
@@ -517,7 +517,7 @@ mod tests {
         // Should return an error about invalid hash length
         assert!(
             res.contains("error") || res.contains("invalid"),
-            "expected error for invalid beacon_block_root length: {res}"
+            "expected error for invalid parent_beacon_block_root length: {res}"
         );
     }
 
@@ -545,7 +545,7 @@ mod tests {
                             "last_tx_hash": null,
                             "n_transactions": 0u64,
                             "block_hash": "",
-                            "beacon_block_root": ""
+                            "parent_beacon_block_root": ""
                         }
                     }
                 ]
