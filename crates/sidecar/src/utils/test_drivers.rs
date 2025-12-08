@@ -30,7 +30,6 @@ use crate::{
             pb::{
                 self,
                 Event,
-                GetTransactionRequest,
                 TxExecutionId as GrpcTxExecutionId,
                 event::Event as EventVariant,
                 sidecar_transport_client::SidecarTransportClient,
@@ -72,7 +71,6 @@ use assertion_executor::{
 use futures::StreamExt;
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use revm::{
-    context_interface::block::BlobExcessGasAndPrice,
     database::CacheDB,
     primitives::TxKind,
 };
@@ -301,33 +299,6 @@ pub struct LocalInstanceMockDriver {
 }
 
 impl LocalInstanceMockDriver {
-    fn next_block_metadata(&self, selected_iteration_id: u64) -> (u64, Option<TxHash>) {
-        let iteration_hashes: &[TxHash] = self
-            .block_tx_hashes_by_iteration
-            .get(&selected_iteration_id)
-            .map_or(&[], |v| v.as_slice());
-
-        let n_transactions = self
-            .override_n_transactions
-            .unwrap_or(iteration_hashes.len() as u64);
-
-        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
-
-        (n_transactions, last_tx_hash)
-    }
-
-    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
-        if let Some(value) = &self.override_last_tx_hash {
-            *value
-        } else {
-            let iteration_hashes: &[TxHash] = self
-                .block_tx_hashes_by_iteration
-                .get(&iteration_id)
-                .map_or(&[], |v| v.as_slice());
-            iteration_hashes.last().copied()
-        }
-    }
-
     pub async fn new_with_store(
         assertion_store: AssertionStore,
     ) -> Result<LocalInstance<Self>, String> {
@@ -430,25 +401,43 @@ impl TestTransport for LocalInstanceMockDriver {
         selected_iteration_id: u64,
         _n_transactions: u64,
     ) -> Result<(), String> {
-        info!(target: "test_transport", "LocalInstance finalizing block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
-        let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
+        let n_transactions = self.get_tx_count(selected_iteration_id);
+        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
 
-        self.block_tx_hashes_by_iteration.clear();
-        self.override_n_transactions = None;
-        self.override_last_tx_hash = None;
+        // Use random hashes for EIP-2935 and EIP-4788
+        let block_hash = Some(B256::random());
+        let timestamp = U256::from(1234567890);
+        let mut parent_beacon_block_root = Some(B256::random());
+
+        if block_number == U256::from(0) {
+            parent_beacon_block_root = Some(B256::ZERO);
+        }
 
         let commit_head = CommitHead::new(
             block_number,
             selected_iteration_id,
             last_tx_hash,
             n_transactions,
+            block_hash,
+            parent_beacon_block_root,
+            timestamp,
         );
+
+        self.send_commit_head(commit_head).await
+    }
+
+    async fn send_commit_head(&mut self, commit_head: CommitHead) -> Result<(), String> {
+        info!(target: "test_transport", "LocalInstance sending commit head for block: {:?}", commit_head.block_number);
+
+        self.block_tx_hashes_by_iteration.clear();
+        self.override_n_transactions = None;
+        self.override_last_tx_hash = None;
 
         self.mock_sender
             .send(TxQueueContents::CommitHead(commit_head, Span::current()))
             .map_err(|e| format!("Failed to send commit head: {e}"))?;
 
-        info!(target: "test_transport", "Successfully sent to mock_sender");
+        info!(target: "test_transport", "Successfully sent commit head to mock_sender");
         Ok(())
     }
 
@@ -525,6 +514,24 @@ impl TestTransport for LocalInstanceMockDriver {
     fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>) {
         self.override_last_tx_hash = Some(tx_hash);
     }
+
+    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
+        if let Some(value) = &self.override_last_tx_hash {
+            *value
+        } else {
+            self.block_tx_hashes_by_iteration
+                .get(&iteration_id)
+                .and_then(|v| v.last().copied())
+        }
+    }
+
+    fn get_tx_count(&self, iteration_id: u64) -> u64 {
+        self.override_n_transactions.unwrap_or_else(|| {
+            self.block_tx_hashes_by_iteration
+                .get(&iteration_id)
+                .map_or(0, |v| v.len() as u64)
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -538,33 +545,6 @@ pub struct LocalInstanceHttpDriver {
 }
 
 impl LocalInstanceHttpDriver {
-    fn next_block_metadata(&self, selected_iteration_id: u64) -> (u64, Option<TxHash>) {
-        let iteration_hashes: &[TxHash] = self
-            .block_tx_hashes_by_iteration
-            .get(&selected_iteration_id)
-            .map_or(&[], Vec::as_slice);
-
-        let n_transactions = self
-            .override_n_transactions
-            .unwrap_or(iteration_hashes.len() as u64);
-
-        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
-
-        (n_transactions, last_tx_hash)
-    }
-
-    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
-        if let Some(value) = &self.override_last_tx_hash {
-            *value
-        } else {
-            let iteration_hashes: &[TxHash] = self
-                .block_tx_hashes_by_iteration
-                .get(&iteration_id)
-                .map_or(&[], |v| v.as_slice());
-            iteration_hashes.last().copied()
-        }
-    }
-
     fn block_env_to_json(blockenv: &BlockEnv) -> serde_json::Value {
         json!({
             "number": blockenv.number,
@@ -716,12 +696,58 @@ impl TestTransport for LocalInstanceHttpDriver {
         selected_iteration_id: u64,
         _n_transactions: u64,
     ) -> Result<(), String> {
-        info!(target: "LocalInstanceHttpDriver", "LocalInstance finalizing block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
+        let n_transactions = self.get_tx_count(selected_iteration_id);
+        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
 
-        let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
-        let last_tx_hash = last_tx_hash.map(|hash| hash.to_string());
+        // Use random hashes for EIP-2935 and EIP-4788
+        let block_hash = Some(B256::random());
+        let mut parent_beacon_block_root = Some(B256::random());
 
-        // jsonrpc request for sending commit head + block env events to the sidecar
+        if block_number == U256::from(0) {
+            parent_beacon_block_root = Some(B256::ZERO);
+        }
+
+        let commit_head = CommitHead::new(
+            block_number,
+            selected_iteration_id,
+            last_tx_hash,
+            n_transactions,
+            block_hash,
+            parent_beacon_block_root,
+            U256::from(1234567890),
+        );
+
+        self.send_commit_head(commit_head).await
+    }
+
+    async fn send_commit_head(&mut self, commit_head: CommitHead) -> Result<(), String> {
+        info!(target: "LocalInstanceHttpDriver", "LocalInstance sending commit head for block: {:?}", commit_head.block_number);
+
+        let last_tx_hash = commit_head.last_tx_hash.map(|hash| hash.to_string());
+
+        // Build commit_head JSON with optional parent hashes
+        let mut commit_head_json = json!({
+            "last_tx_hash": last_tx_hash,
+            "n_transactions": commit_head.n_transactions,
+            "block_number": commit_head.block_number,
+            "selected_iteration_id": commit_head.selected_iteration_id,
+            "timestamp": commit_head.timestamp
+        });
+
+        // Add block_hash if provided (EIP-2935)
+        if let Some(hash) = commit_head.block_hash {
+            commit_head_json["block_hash"] = json!(hash.to_string());
+        }
+
+        // Add parent_beacon_block_root if provided (EIP-4788)
+        if let Some(mut root) = commit_head.parent_beacon_block_root {
+            if commit_head.block_number == U256::from(0) {
+                root = B256::ZERO;
+            }
+            commit_head_json["parent_beacon_block_root"] = json!(root.to_string());
+        }
+
+        // jsonrpc request for sending commit head event to the sidecar
         let request = json!({
           "id": 1,
           "jsonrpc": "2.0",
@@ -729,12 +755,7 @@ impl TestTransport for LocalInstanceHttpDriver {
           "params": {
                 "events": [
                     {
-                        "commit_head": {
-                            "last_tx_hash": last_tx_hash,
-                            "n_transactions": n_transactions,
-                            "block_number": block_number,
-                            "selected_iteration_id": selected_iteration_id
-                        }
+                        "commit_head": commit_head_json
                     },
                 ]
           }
@@ -845,6 +866,24 @@ impl TestTransport for LocalInstanceHttpDriver {
     fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>) {
         self.override_last_tx_hash = Some(tx_hash);
     }
+
+    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
+        if let Some(value) = &self.override_last_tx_hash {
+            *value
+        } else {
+            self.block_tx_hashes_by_iteration
+                .get(&iteration_id)
+                .and_then(|v| v.last().copied())
+        }
+    }
+
+    fn get_tx_count(&self, iteration_id: u64) -> u64 {
+        self.override_n_transactions.unwrap_or_else(|| {
+            self.block_tx_hashes_by_iteration
+                .get(&iteration_id)
+                .map_or(0, |v| v.len() as u64)
+        })
+    }
 }
 
 pub struct LocalInstanceGrpcDriver {
@@ -861,34 +900,6 @@ pub struct LocalInstanceGrpcDriver {
 }
 
 impl LocalInstanceGrpcDriver {
-    fn next_block_metadata(&self, selected_iteration_id: u64) -> (u64, Option<TxHash>) {
-        let iteration_hashes: &[TxHash] = self
-            .block_tx_hashes_by_iteration
-            .get(&selected_iteration_id)
-            .map_or(&[], |v| v.as_slice());
-
-        let n_transactions = self
-            .override_n_transactions
-            .unwrap_or(iteration_hashes.len() as u64);
-
-        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
-
-        (n_transactions, last_tx_hash)
-    }
-
-    // FIXME: Avoid code repetition
-    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
-        if let Some(value) = &self.override_last_tx_hash {
-            *value
-        } else {
-            let iteration_hashes: &[TxHash] = self
-                .block_tx_hashes_by_iteration
-                .get(&iteration_id)
-                .map_or(&[], |v| v.as_slice());
-            iteration_hashes.last().copied()
-        }
-    }
-
     fn build_pb_block_env(block_env: &BlockEnv) -> pb::BlockEnv {
         pb::BlockEnv {
             number: block_env.number.to_be_bytes::<32>().to_vec(),
@@ -1129,20 +1140,52 @@ impl TestTransport for LocalInstanceGrpcDriver {
         selected_iteration_id: u64,
         _n_transactions: u64,
     ) -> Result<(), String> {
-        info!(target: "LocalInstanceGrpcDriver", "LocalInstance finalizing block: {:?} with selected_iteration_id: {}", block_number, selected_iteration_id);
+        let n_transactions = self.get_tx_count(selected_iteration_id);
+        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
 
-        let (n_transactions, last_tx_hash) = self.next_block_metadata(selected_iteration_id);
+        // Use random hashes for EIP-2935 and EIP-4788
+        let block_hash = Some(B256::random());
+        let mut parent_beacon_block_root = Some(B256::random());
 
-        let commit_head = pb::CommitHead {
-            last_tx_hash: last_tx_hash.map(grpc_encode::b256),
-            n_transactions,
-            block_number: block_number.to_be_bytes::<32>().to_vec(),
+        if block_number == U256::from(0) {
+            parent_beacon_block_root = Some(B256::ZERO);
+        }
+
+        let commit_head = CommitHead::new(
+            block_number,
             selected_iteration_id,
+            last_tx_hash,
+            n_transactions,
+            block_hash,
+            parent_beacon_block_root,
+            U256::from(1234567890),
+        );
+
+        self.send_commit_head(commit_head).await
+    }
+
+    async fn send_commit_head(&mut self, commit_head: CommitHead) -> Result<(), String> {
+        info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending commit head for block: {:?}", commit_head.block_number);
+
+        let parent_beacon_block_root = if commit_head.block_number == U256::from(0) {
+            Some(B256::ZERO)
+        } else {
+            commit_head.parent_beacon_block_root
+        };
+
+        let pb_commit_head = pb::CommitHead {
+            last_tx_hash: commit_head.last_tx_hash.map(grpc_encode::b256),
+            n_transactions: commit_head.n_transactions,
+            block_number: grpc_encode::u256_be(commit_head.block_number),
+            selected_iteration_id: commit_head.selected_iteration_id,
+            block_hash: commit_head.block_hash.map(grpc_encode::b256),
+            parent_beacon_block_root: parent_beacon_block_root.map(grpc_encode::b256),
+            timestamp: grpc_encode::u256_be(commit_head.timestamp),
         };
 
         let event = Event {
             event_id: rand::random(),
-            event: Some(EventVariant::CommitHead(commit_head)),
+            event: Some(EventVariant::CommitHead(pb_commit_head)),
         };
 
         self.block_tx_hashes_by_iteration.clear();
@@ -1242,5 +1285,23 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
     fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>) {
         self.override_last_tx_hash = Some(tx_hash);
+    }
+
+    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
+        if let Some(value) = &self.override_last_tx_hash {
+            *value
+        } else {
+            self.block_tx_hashes_by_iteration
+                .get(&iteration_id)
+                .and_then(|v| v.last().copied())
+        }
+    }
+
+    fn get_tx_count(&self, iteration_id: u64) -> u64 {
+        self.override_n_transactions.unwrap_or_else(|| {
+            self.block_tx_hashes_by_iteration
+                .get(&iteration_id)
+                .map_or(0, |v| v.len() as u64)
+        })
     }
 }

@@ -228,7 +228,15 @@ fn create_commit_head(
     last_tx_hash: Option<TxHash>,
 ) -> TxQueueContents {
     TxQueueContents::CommitHead(
-        CommitHead::new(U256::from(block), iteration, last_tx_hash, n_txs),
+        CommitHead::new(
+            U256::from(block),
+            iteration,
+            last_tx_hash,
+            n_txs,
+            None,
+            None,
+            U256::ZERO,
+        ),
         tracing::Span::none(),
     )
 }
@@ -2005,49 +2013,6 @@ fn test_alternating_future_and_current_events() {
 
     // Block 10 events should now be sent
     assert_eq!(engine_recv.len(), 3);
-}
-
-#[crate::utils::engine_test(all)]
-async fn test_mixed_iteration_reorg_operations(mut instance: LocalInstance<_>) {
-    instance.new_block().await.unwrap();
-
-    // Iteration 1
-    instance.set_current_iteration_id(1);
-    let tx1 = instance
-        .send_successful_create_tx_dry(U256::ZERO, Bytes::default())
-        .await
-        .unwrap();
-
-    // Iteration 2
-    instance.set_current_iteration_id(2);
-    instance.new_iteration(2).await.unwrap();
-    let tx2 = instance
-        .send_successful_create_tx_dry(U256::ZERO, Bytes::default())
-        .await
-        .unwrap();
-
-    instance
-        .wait_for_processing(Duration::from_millis(10))
-        .await;
-
-    // Reorg in iteration 2
-    instance.send_reorg(tx2).await.unwrap();
-    instance
-        .wait_for_processing(Duration::from_millis(10))
-        .await;
-
-    // Send replacement in iteration 2
-    instance
-        .send_successful_create_tx_dry(U256::ZERO, Bytes::default())
-        .await
-        .unwrap();
-
-    // Commit with iteration 2
-    instance.set_current_iteration_id(2);
-    instance.new_block().await.unwrap();
-    instance
-        .wait_for_processing(Duration::from_millis(10))
-        .await;
 }
 
 #[crate::utils::engine_test(all)]

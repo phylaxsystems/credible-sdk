@@ -19,7 +19,10 @@ use crate::{
         Sources,
         sources::Source,
     },
-    engine::TransactionResult,
+    engine::{
+        TransactionResult,
+        queue::CommitHead,
+    },
     execution_ids::{
         BlockExecutionId,
         TxExecutionId,
@@ -102,6 +105,12 @@ enum WaitError {
 pub trait TestTransport: Sized {
     /// Creates a `LocalInstance` with a specific transport
     async fn new() -> Result<LocalInstance<Self>, String>;
+
+    /// Send a commit head event to finalize a block.
+    /// This is the core method that handles block finalization with all options
+    /// including EIP-2935 `block_hash` and EIP-4788 `beacon_block_root`.
+    async fn send_commit_head(&mut self, commit_head: CommitHead) -> Result<(), String>;
+
     /// Advance the core engine block by finalizing what iteration was selected,
     /// and sending a blockenv for the subsequent block.
     ///
@@ -112,25 +121,36 @@ pub trait TestTransport: Sized {
         selected_iteration_id: u64,
         n_transactions: u64,
     ) -> Result<(), String>;
+
     /// Send a transaction to the core engine via the transport
     async fn send_transaction(
         &mut self,
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
     ) -> Result<(), String>;
+
     /// Send a new iteration event with custom block environment data.
     ///
     /// Should send a `NewIteration` event to the core engine.
     async fn new_iteration(&mut self, iteration_id: u64, block_env: BlockEnv)
     -> Result<(), String>;
+
     /// Send a new transaction reorg event. Removes the last executed transaction.
     /// Transaction hash provided as an argument must match the last executed tx.
     /// If not the call should succeed but the core engine should produce an error.
     async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String>;
+
     /// Set the number of transactions to be sent in the next blockEnv
     fn set_n_transactions(&mut self, n_transactions: u64);
+
     /// Set the last tx hash to be sent in the next blockEnv
     fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>);
+
+    /// Get the last transaction hash for a given iteration
+    fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash>;
+
+    /// Get the transaction count for a given iteration
+    fn get_tx_count(&self, iteration_id: u64) -> u64;
 }
 
 /// `LocalInstance` is used to instantiate the core engine and a transport.
@@ -495,14 +515,41 @@ impl<T: TestTransport> LocalInstance<T> {
         Ok(())
     }
 
+    /// Send a block with default parent hashes for EIP-2935 and EIP-4788
     async fn send_block(&mut self, block_number: U256) -> Result<(), String> {
-        self.transport
-            .new_block(
-                block_number,
-                self.iteration_id,
-                *self.iteration_tx_map.get(&self.iteration_id).unwrap_or(&0),
-            )
-            .await?;
+        // Always provide parent hashes for EIP-2935 and EIP-4788 system calls
+        // These are required when running on Cancun+ specs
+        let block_hash = Some(Self::generate_random_tx_hash());
+        let beacon_block_root = if block_number == U256::ZERO {
+            Some(B256::ZERO)
+        } else {
+            Some(Self::generate_random_tx_hash())
+        };
+        self.send_block_with_hashes_internal(block_number, block_hash, beacon_block_root)
+            .await
+    }
+
+    /// Internal method to send a block finalization with optional parent hashes
+    async fn send_block_with_hashes_internal(
+        &mut self,
+        block_number: U256,
+        block_hash: Option<B256>,
+        beacon_block_root: Option<B256>,
+    ) -> Result<(), String> {
+        let n_transactions = self.transport.get_tx_count(self.iteration_id);
+        let last_tx_hash = self.transport.get_last_tx_hash(self.iteration_id);
+
+        let commit_head = CommitHead::new(
+            block_number,
+            self.iteration_id,
+            last_tx_hash,
+            n_transactions,
+            block_hash,
+            beacon_block_root,
+            U256::from(1234567890),
+        );
+
+        self.transport.send_commit_head(commit_head).await?;
 
         // Update committed nonce snapshot using the iteration we just finalized.
         let selected_iteration_id = self.iteration_id;
@@ -524,6 +571,22 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // TODO: commit tx numbers to this map!
         self.iteration_tx_map.clear();
+        Ok(())
+    }
+
+    /// Public method to create a new block with explicit parent hashes (EIP-2935 and EIP-4788)
+    pub async fn new_block_with_hashes(
+        &mut self,
+        block_hash: Option<B256>,
+        beacon_block_root: Option<B256>,
+    ) -> Result<(), String> {
+        // If None provided, use random hashes as defaults for Cancun+ compatibility
+        let block_hash = block_hash.or_else(|| Some(Self::generate_random_tx_hash()));
+        let beacon_block_root = beacon_block_root.or_else(|| Some(Self::generate_random_tx_hash()));
+
+        self.send_block_with_hashes_internal(self.block_number, block_hash, beacon_block_root)
+            .await?;
+        self.block_number += U256::from(1);
         Ok(())
     }
 

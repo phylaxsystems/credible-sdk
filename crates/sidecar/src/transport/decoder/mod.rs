@@ -27,7 +27,10 @@ use crate::{
         },
     },
 };
-use alloy::primitives::U256;
+use alloy::primitives::{
+    B256,
+    U256,
+};
 use revm::{
     context::BlockEnv,
     primitives::alloy_primitives::TxHash,
@@ -202,6 +205,9 @@ struct CommitHeadEvent {
     n_transactions: u64,
     block_number: U256,
     selected_iteration_id: Option<u64>,
+    block_hash: Option<B256>,
+    parent_beacon_block_root: Option<B256>,
+    timestamp: U256,
 }
 
 #[derive(Debug, Deserialize)]
@@ -250,6 +256,9 @@ fn convert_commit_head_event(
         selected_iteration_id,
         last_tx_hash,
         commit_head.n_transactions,
+        commit_head.block_hash,
+        commit_head.parent_beacon_block_root,
+        commit_head.timestamp,
     ))
 }
 
