@@ -12,7 +12,10 @@ use crate::{
         U256,
     },
 };
-use revm::Database;
+use revm::{
+    Database,
+    state::AccountStatus,
+};
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -22,6 +25,7 @@ use std::{
 #[derive(Debug, Clone, Default)]
 pub struct ForkStorageMap {
     pub map: HashMap<U256, U256>,
+    pub dont_read_from_inner_db: bool,
 }
 
 /// Contains mutations on top of an existing database.
@@ -91,7 +95,11 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
         // Check fork's storage first, then fall back to inner db
         let value = match self.storage.get(&address) {
             Some(s) => {
-                if let Some(v) = s.map.get(&slot) {
+                // If the slot is not present in the fork, we can skip reading from the inner db as it
+                // won't be present either
+                if s.dont_read_from_inner_db {
+                    *s.map.get(&slot).unwrap_or(&U256::ZERO)
+                } else if let Some(v) = s.map.get(&slot) {
                     *v
                 } else {
                     self.inner_db.storage_ref(address, slot)?
@@ -126,16 +134,20 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
 impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
     fn commit(&mut self, changes: EvmState) {
         for (address, account) in changes {
-            if !account.is_touched() {
+            // Note for self-destructed accounts (post-Cancun): if an account is self-destructed, it
+            // means it was created within the same transaction as it was self-destructed.
+            // Therefore, we can skip it from being written into the cache. We explicitly check for
+            // self-destructed accounts here, in case the flag is set without the `Touched` flag
+            if !account.is_touched()
+                || account.status == AccountStatus::SelfDestructed
+                || account.status == AccountStatus::SelfDestructedLocal
+            {
                 continue;
             }
 
-            // Post-Cancun: No special handling for selfdestructed accounts.
-            // SELFDESTRUCT only transfers balance, everything else persists.
-            // The account.info will have balance = 0, which is all we need.
-            if account.info.code.is_some() {
+            if let Some(code) = &account.info.code {
                 self.code_by_hash
-                    .insert(account.info.code_hash, account.info.code.clone().unwrap());
+                    .insert(account.info.code_hash, code.clone());
             }
 
             self.basic.insert(address, account.info.clone());
@@ -158,6 +170,7 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
                                 .into_iter()
                                 .map(|(k, v)| (k, v.present_value()))
                                 .collect(),
+                            dont_read_from_inner_db: false,
                         },
                     );
                 }

@@ -256,61 +256,6 @@ mod tests {
     }
 
     #[test]
-    fn selfdestructed_account_storage_persists_post_cancun() {
-        let mut inner = MockDb::new();
-        let address = address!("0000000000000000000000000000000000000001");
-        let slot = U256::from(1);
-
-        inner.insert_account(address, mock_account_info(uint!(1000_U256), 0, None));
-        inner.insert_storage(address, slot, uint!(5_U256));
-
-        let mut version_db = VersionDb::new(inner);
-
-        // Verify initial storage
-        assert_eq!(
-            version_db.storage_ref(address, slot).unwrap(),
-            uint!(5_U256)
-        );
-
-        // Selfdestruct
-        let mut changes = EvmState::default();
-        changes.insert(
-            address,
-            Account {
-                info: AccountInfo {
-                    balance: U256::ZERO, // Balance transferred
-                    ..Default::default()
-                },
-                transaction_id: 0,
-                storage: EvmStorage::default(),
-                status: AccountStatus::SelfDestructed | AccountStatus::Touched,
-            },
-        );
-        version_db.commit(changes);
-
-        // Post-Cancun: balance is zero, but storage PERSISTS
-        assert_eq!(
-            version_db.basic_ref(address).unwrap().unwrap().balance,
-            U256::ZERO
-        );
-        assert_eq!(
-            version_db.storage_ref(address, slot).unwrap(),
-            uint!(5_U256)
-        );
-
-        // Rollback restores balance
-        version_db.rollback_to(0).unwrap();
-        assert_eq!(
-            version_db.basic_ref(address).unwrap().unwrap().balance,
-            uint!(1000_U256)
-        );
-        assert_eq!(
-            version_db.storage_ref(address, slot).unwrap(),
-            uint!(5_U256)
-        );
-    }
-
-    #[test]
     fn selfdestruct_storage_written_same_tx_persists_post_cancun() {
         let mut version_db = VersionDb::new(MockDb::new());
         let address = address!("0000000000000000000000000000000000000004");

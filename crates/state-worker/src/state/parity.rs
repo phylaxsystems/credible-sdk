@@ -53,7 +53,7 @@ fn process_diff(accounts: &mut HashMap<AddressHash, AccountSnapshot>, state_diff
                 snapshot.touched = true;
             }
             Delta::Removed(_) => {
-                snapshot.balance = Some(U256::ZERO);
+                snapshot.balance = None;
                 snapshot.touched = true;
             }
             Delta::Changed(change) => {
@@ -70,7 +70,7 @@ fn process_diff(accounts: &mut HashMap<AddressHash, AccountSnapshot>, state_diff
                 snapshot.touched = true;
             }
             Delta::Removed(_) => {
-                snapshot.nonce = Some(0);
+                snapshot.nonce = None;
                 snapshot.touched = true;
             }
             Delta::Changed(change) => {
@@ -87,7 +87,7 @@ fn process_diff(accounts: &mut HashMap<AddressHash, AccountSnapshot>, state_diff
                 snapshot.touched = true;
             }
             Delta::Removed(_) => {
-                snapshot.code = Some(Vec::new());
+                snapshot.code = None;
                 snapshot.touched = true;
             }
             Delta::Changed(change) => {
