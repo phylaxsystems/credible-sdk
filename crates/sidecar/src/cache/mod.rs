@@ -1608,7 +1608,8 @@ mod tests {
             .eth_balance_counter
             .get(&address)
             .map_or(0, |r| *r);
-        assert_eq!(eth_rpc_source_db_basic_ref_counter, 0);
+        // The counter is one as the EIP-2935 will try to fetch the account
+        assert_eq!(eth_rpc_source_db_basic_ref_counter, 1);
 
         // The second fallback is hit because the first fallback returned an error
         let cache_sequencer_db_basic_ref_counter = instance
@@ -1616,7 +1617,8 @@ mod tests {
             .eth_balance_counter
             .get(&address)
             .map_or(0, |r| *r);
-        assert_eq!(cache_sequencer_db_basic_ref_counter, 0);
+        // The counter is one as the EIP-2935 will try to fetch the account
+        assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
     }
 
     #[crate::utils::engine_test(all)]
