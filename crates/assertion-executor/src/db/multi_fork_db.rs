@@ -79,6 +79,8 @@ pub enum MultiForkError {
     TargetForkJournalNotFound(ForkId),
     #[error("Target fork's not found.")]
     TargetForkNotFound,
+    #[error("Cannot fork to call {call_id}: call is inside a reverted subtree")]
+    CallInsideRevertedSubtree { call_id: usize },
 }
 
 impl<ExtDb: Clone + DatabaseCommit> MultiForkDb<ExtDb> {
@@ -126,6 +128,16 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         // If the fork is already active, do nothing.
         if fork_id == self.active_fork_id {
             return Ok(());
+        }
+
+        // Check if the call is forkable (not inside a reverted subtree)
+        match fork_id {
+            ForkId::PreCall(call_id) | ForkId::PostCall(call_id) => {
+                if !call_tracer.is_call_forkable(call_id) {
+                    return Err(MultiForkError::CallInsideRevertedSubtree { call_id });
+                }
+            }
+            _ => {}
         }
 
         // Ensure the target fork exists, create if needed
@@ -335,7 +347,9 @@ mod test_multi_fork {
     use revm::{
         database::InMemoryDB,
         interpreter::{
+            CallInput,
             CallInputs,
+            CallScheme,
             CallValue,
         },
     };
@@ -415,7 +429,7 @@ mod test_multi_fork {
         active_journal
             .transfer(&mut pre_tx_fork_db, sender, receiver, uint!(900_U256))
             .unwrap();
-        call_tracer.record_call_end(&mut active_journal);
+        call_tracer.record_call_end(&mut active_journal, false);
         active_journal.checkpoint_commit();
 
         let call_inputs = CallInputs {
@@ -434,7 +448,7 @@ mod test_multi_fork {
             .transfer(&mut pre_tx_fork_db, sender, receiver, uint!(100_U256))
             .unwrap();
 
-        call_tracer.record_call_end(&mut active_journal);
+        call_tracer.record_call_end(&mut active_journal, false);
         active_journal.checkpoint_commit();
 
         let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
@@ -587,5 +601,107 @@ mod test_multi_fork {
             uint!(6900_U256)
         );
         assert_eq!(active_journal.state.len(), 1);
+    }
+
+    #[test]
+    fn test_switch_fork_reverted_call_rejected() {
+        let sender: Address = random_bytes::<20>().into();
+        let pre_tx_fork_db = setup_fork_db(sender);
+        let mut active_journal = JournalInner::new();
+
+        // Create a call tracer with a reverted call
+        let mut call_tracer = CallTracer::default();
+        let call_inputs = CallInputs {
+            caller: sender,
+            target_address: sender,
+            gas_limit: 0,
+            bytecode_address: sender,
+            value: CallValue::default(),
+            scheme: CallScheme::Call,
+            is_static: false,
+            input: CallInput::Bytes(Bytes::from("")),
+            return_memory_offset: 0..0,
+            known_bytecode: None,
+        };
+
+        // Call 0
+        active_journal.depth = 0;
+        call_tracer.record_call_start(call_inputs.clone(), &Bytes::from(""), &mut active_journal);
+
+        // Call 1
+        active_journal.depth = 1;
+        call_tracer.record_call_start(call_inputs.clone(), &Bytes::from(""), &mut active_journal);
+        call_tracer.record_call_end(&mut active_journal, true); // REVERT
+
+        // Call 2
+        active_journal.depth = 1;
+        call_tracer.record_call_start(call_inputs, &Bytes::from(""), &mut active_journal);
+        call_tracer.record_call_end(&mut active_journal, false);
+
+        active_journal.depth = 0;
+        call_tracer.record_call_end(&mut active_journal, false);
+
+        let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
+
+        // Try to fork to reverted call (id=1): should fail
+        let result = db.switch_fork(ForkId::PreCall(1), &mut active_journal, &call_tracer);
+        assert!(matches!(
+            result,
+            Err(MultiForkError::CallInsideRevertedSubtree { call_id: 1 })
+        ));
+
+        // Try to fork to valid call (id=0): should succeed
+        let result = db.switch_fork(ForkId::PreCall(0), &mut active_journal, &call_tracer);
+        assert!(result.is_ok());
+
+        // Try to fork to valid call (id=2): should succeed
+        let result = db.switch_fork(ForkId::PreCall(2), &mut active_journal, &call_tracer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_switch_fork_post_call_reverted_rejected() {
+        let sender: Address = random_bytes::<20>().into();
+        let pre_tx_fork_db = setup_fork_db(sender);
+        let mut active_journal = JournalInner::new();
+
+        let mut call_tracer = CallTracer::default();
+        let call_inputs = CallInputs {
+            caller: sender,
+            target_address: sender,
+            gas_limit: 0,
+            bytecode_address: sender,
+            value: CallValue::default(),
+            scheme: CallScheme::Call,
+            is_static: false,
+            input: CallInput::Bytes(Bytes::from("")),
+            return_memory_offset: 0..0,
+            known_bytecode: None,
+        };
+
+        // Call 0
+        active_journal.depth = 0;
+        call_tracer.record_call_start(call_inputs.clone(), &Bytes::from(""), &mut active_journal);
+
+        // Call 1
+        active_journal.depth = 1;
+        call_tracer.record_call_start(call_inputs, &Bytes::from(""), &mut active_journal);
+        call_tracer.record_call_end(&mut active_journal, true); // REVERT
+
+        active_journal.depth = 0;
+        call_tracer.record_call_end(&mut active_journal, false);
+
+        let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
+
+        // Try to fork to post-call of reverted call (id=1): should fail
+        let result = db.switch_fork(ForkId::PostCall(1), &mut active_journal, &call_tracer);
+        assert!(matches!(
+            result,
+            Err(MultiForkError::CallInsideRevertedSubtree { call_id: 1 })
+        ));
+
+        // Try to fork to post-call of valid call (id=0): should succeed
+        let result = db.switch_fork(ForkId::PostCall(0), &mut active_journal, &call_tracer);
+        assert!(result.is_ok());
     }
 }
