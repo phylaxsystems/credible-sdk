@@ -25,7 +25,7 @@ on:
 jobs:
   rust-base:
     name: Rust Base
-    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
+    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@fix/runner
     with:
       runner: 'big-bois-aarch64'
       rust-channel: 'nightly'
@@ -34,7 +34,6 @@ jobs:
       dind: true
       submodules: true
       foundry-command: 'forge build --root testdata/mock-protocol'
-      test-args: '-- --test-threads=2'
       # [""] means default features
       # Feature matrices are supported as follows: ["", "--features=foo", "--features=bar", "--features=foo,bar"]
       feature-sets: '[
