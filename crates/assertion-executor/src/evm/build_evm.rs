@@ -37,6 +37,10 @@ use revm::{
         instructions::EthInstructions,
     },
     interpreter::{
+        gas::{
+            self,
+            COLD_SLOAD_COST_ADDITIONAL,
+        },
         Gas,
         Host,
         InstructionContext,
@@ -48,6 +52,8 @@ use revm::{
         Precompiles,
     },
 };
+
+use revm::context_interface::host::LoadError;
 
 /// Builds an EVM environment.
 /// The `chain_id` is used to set the chain ID in the EVM environment.
@@ -161,8 +167,8 @@ where
     )
 }
 
-/// Replaces `SSTORE` with functionally equivalent `ph_sstore`, but with
-/// a fixed 100 gas cost.
+/// Replaces `SSTORE` with functionally equivalent `ph_sstore`, but repriced to
+/// use the gas semantics of `SLOAD`.
 /// Used for cheaper storage during assertion execution.
 /// Storage values get thrown out during assertions so no need to bear
 /// the cost of `SSTORE`.
@@ -201,13 +207,61 @@ macro_rules! reprice_gas {
     }};
 }
 
-/// Reprice the SSTORE operation to 100 gas.
+/// Reprice the SSTORE operation to the gas schedule of SLOAD (warm/cold).
 /// Will still run out of gas if the operation spends all gas intentionally.
 pub fn ph_sstore<H>(context: InstructionContext<'_, H, EthInterpreter>)
 where
     H: Host + ?Sized,
 {
-    reprice_gas!(context, sstore::<EthInterpreter, H>, 100);
+    // If the stack underflows, defer to the original implementation to preserve behavior.
+    if context.interpreter.stack.len() < 2 {
+        return sstore::<EthInterpreter, H>(context);
+    }
+
+    let spec_id = context.interpreter.runtime_flag.spec_id;
+    let mut gas_cost = gas::sload_cost(spec_id, false);
+
+    // Bail out early if even the base SLOAD cost cannot be covered.
+    if context.interpreter.gas.remaining() < gas_cost {
+        context.interpreter.halt_oog();
+        return;
+    }
+
+    if spec_id.is_enabled_in(SpecId::BERLIN) {
+        // SLOAD semantics after Berlin depend on whether the storage slot is warm or cold.
+        let slot = match context.interpreter.stack.peek(0) {
+            Ok(slot) => slot,
+            Err(_) => {
+                return sstore::<EthInterpreter, H>(context);
+            }
+        };
+
+        let remaining_after_base =
+            context.interpreter.gas.remaining().saturating_sub(gas_cost);
+        let skip_cold_load = remaining_after_base < COLD_SLOAD_COST_ADDITIONAL;
+
+        let target = context.interpreter.input.target_address;
+        let state_load = match context
+            .host
+            .sload_skip_cold_load(target, slot, skip_cold_load)
+        {
+            Ok(load) => load,
+            Err(LoadError::ColdLoadSkipped) => {
+                context.interpreter.halt_oog();
+                return;
+            }
+            Err(LoadError::DBError) => {
+                context.interpreter.halt_fatal();
+                return;
+            }
+        };
+
+        if state_load.is_cold {
+            gas_cost += COLD_SLOAD_COST_ADDITIONAL;
+        }
+    }
+
+    reprice_gas!(context, sstore::<EthInterpreter, H>, gas_cost);
 }
 
 #[cfg(test)]
@@ -343,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_sstore() {
-        test_diff("StorageGas.sol:SSTOREGas", 22_000);
+        test_diff("StorageGas.sol:SSTOREGas", 20_000);
     }
 
     #[test]
