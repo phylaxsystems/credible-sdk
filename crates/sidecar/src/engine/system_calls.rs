@@ -69,8 +69,6 @@ pub enum SystemCallError {
     MissingParentBeaconBlockRoot,
     #[error("Genesis block cannot have non-zero parent beacon root")]
     GenesisNonZeroBeaconRoot,
-    #[error("Database error: {0}")]
-    DatabaseError(String),
 }
 
 /// Configuration for applying system calls at the start of a block.
@@ -205,7 +203,8 @@ impl SystemCalls {
         // Fetch existing account info, or create default with system contract code
         let existing_info = db
             .basic_ref(HISTORY_STORAGE_ADDRESS)
-            .map_err(|e| SystemCallError::DatabaseError(format!("{e:?}")))?
+            .ok()
+            .flatten()
             .unwrap_or_else(|| {
                 let code = Bytecode::new_raw(HISTORY_STORAGE_CODE.clone());
                 let code_hash = keccak256(HISTORY_STORAGE_CODE.clone());
@@ -294,7 +293,8 @@ impl SystemCalls {
         // Fetch existing account info, or create default with system contract code
         let existing_info = db
             .basic_ref(BEACON_ROOTS_ADDRESS)
-            .map_err(|e| SystemCallError::DatabaseError(format!("{e:?}")))?
+            .ok()
+            .flatten()
             .unwrap_or_else(|| {
                 let code = Bytecode::new_raw(BEACON_ROOTS_CODE.clone());
                 let code_hash = keccak256(BEACON_ROOTS_CODE.clone());
