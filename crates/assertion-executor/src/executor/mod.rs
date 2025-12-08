@@ -394,6 +394,10 @@ impl AssertionExecutor {
         let mut evm = crate::build_evm_by_features!(&mut multi_fork_db, &env, inspector);
         let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
 
+        // Reprice SSTORE for assertions to be 100 gas
+        // We are commiting this value to memory and never on disk
+        // so we dont have to bear the costs, as we are throwing it out
+        // as soon as assertion execution is done.
         reprice_evm_storage!(evm);
 
         trace!(target: "assertion-executor::execute_assertions", "Executing assertion function");

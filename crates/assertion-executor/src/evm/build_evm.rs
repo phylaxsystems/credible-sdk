@@ -40,10 +40,7 @@ use revm::{
         Gas,
         Host,
         InstructionContext,
-        instructions::host::{
-            sload,
-            sstore,
-        },
+        instructions::host::sstore,
         interpreter::EthInterpreter,
     },
     precompile::{
@@ -164,14 +161,18 @@ where
     )
 }
 
+/// Replaces `SSTORE` with functionally equivalent `ph_sstore`, but with
+/// a fixed 100 gas cost.
+/// Used for cheaper storage during assertion execution.
+/// Storage values get thrown out during assertions so no need to bear
+/// the cost of `SSTORE`.
+///
+/// We can potentially `SLOAD` slots which are not in memory, which is why
+/// only `SSTORE` gets repriced.
 #[macro_export]
 macro_rules! reprice_evm_storage {
     ($evm:expr) => {{
         use revm::interpreter::Instruction;
-        $evm.instruction.insert_instruction(
-            revm::bytecode::opcode::SLOAD,
-            Instruction::new($crate::evm::build_evm::ph_sload, 0),
-        );
         $evm.instruction.insert_instruction(
             revm::bytecode::opcode::SSTORE,
             Instruction::new($crate::evm::build_evm::ph_sstore, 0),
@@ -198,15 +199,6 @@ macro_rules! reprice_gas {
 
         unsafe { *gas_ptr = saved_gas };
     }};
-}
-
-/// Reprice the SLOAD operation to 100 gas.
-/// Will still run out of gas if the operation spends all gas intentionally.
-pub fn ph_sload<H>(context: InstructionContext<'_, H, EthInterpreter>)
-where
-    H: Host + ?Sized,
-{
-    reprice_gas!(context, sload::<EthInterpreter, H>, 100);
 }
 
 /// Reprice the SSTORE operation to 100 gas.
@@ -347,21 +339,6 @@ mod tests {
         let with_reprice_result = run_test(contract, false, Some(no_reprice_gas - 1));
         assert!(with_reprice_result.is_halt());
         assert_eq!(with_reprice_result.gas_used(), no_reprice_gas - 1);
-    }
-
-    #[test]
-    fn test_sload() {
-        test_diff("StorageGas.sol:SLOADGas", 2_000);
-    }
-
-    #[test]
-    fn test_sload_at_limit() {
-        test_at_limit("StorageGas.sol:SLOADGas");
-    }
-
-    #[test]
-    fn test_sload_under_limit() {
-        test_under_limit("StorageGas.sol:SLOADGas");
     }
 
     #[test]
