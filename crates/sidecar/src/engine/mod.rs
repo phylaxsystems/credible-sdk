@@ -1132,6 +1132,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             "Processing CommitHead",
         );
 
+        // If we need to check for sources available, then we set the sources required block number
+        // at the previous block number than the commit head. The sources must be synced up to
+        // that block number to be considered valid.
+        if self.check_sources_available {
+            self.sources
+                .set_block_number(commit_head.block_number.saturating_sub(U256::from(1)));
+        }
+
         let block_execution_id = BlockExecutionId::from(commit_head);
 
         // If it is configured to invalidate the cache every block, do so
