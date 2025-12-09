@@ -5,7 +5,7 @@
 //!
 //! ## Post-Cancun SELFDESTRUCT (EIP-6780)
 //!
-//! Post-Cancun, SELFDESTRUCT only transfers balance. Code, storage, and nonce
+//! Post-Cancun, SELFDESTRUCT on an existing account only transfers balance. Code, storage, and nonce
 //! remain intact. The tracer reports only the balance change, no deletion.
 
 use super::AccountSnapshot;
