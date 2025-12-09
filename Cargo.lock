@@ -1437,9 +1437,26 @@ checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
 [[package]]
 name = "assertion-da-client"
 version = "0.7.0"
+source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#c1f9a00133ee3bbf9d595c9ee388dd623acf690a"
 dependencies = [
  "alloy",
  "assertion-da-core 0.7.0",
+ "http 1.4.0",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
+name = "assertion-da-client"
+version = "0.8.0"
+dependencies = [
+ "alloy",
+ "assertion-da-core 0.8.0",
  "assertion-da-server",
  "bincode",
  "bollard",
@@ -1457,25 +1474,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "assertion-da-client"
-version = "0.7.0"
-source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#c1f9a00133ee3bbf9d595c9ee388dd623acf690a"
-dependencies = [
- "alloy",
- "assertion-da-core 0.7.0 (git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm)",
- "http 1.4.0",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.17",
- "tokio",
- "tokio-util",
- "url",
-]
-
-[[package]]
 name = "assertion-da-core"
 version = "0.7.0"
+source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#c1f9a00133ee3bbf9d595c9ee388dd623acf690a"
 dependencies = [
  "alloy",
  "serde",
@@ -1483,8 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-core"
-version = "0.7.0"
-source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#c1f9a00133ee3bbf9d595c9ee388dd623acf690a"
+version = "0.8.0"
 dependencies = [
  "alloy",
  "serde",
@@ -1492,14 +1492,14 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-server"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "alloy",
  "alloy-dyn-abi",
  "alloy-json-abi",
  "anyhow",
- "assertion-da-client 0.7.0",
- "assertion-da-core 0.7.0",
+ "assertion-da-client 0.8.0",
+ "assertion-da-core 0.8.0",
  "bincode",
  "bollard",
  "clap",
@@ -1536,6 +1536,53 @@ dependencies = [
 [[package]]
 name = "assertion-executor"
 version = "0.7.0"
+source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#c1f9a00133ee3bbf9d595c9ee388dd623acf690a"
+dependencies = [
+ "alloy",
+ "alloy-consensus",
+ "alloy-evm",
+ "alloy-network",
+ "alloy-network-primitives",
+ "alloy-node-bindings",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-pubsub",
+ "alloy-rpc-client",
+ "alloy-rpc-types",
+ "alloy-rpc-types-anvil",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
+ "alloy-transport",
+ "alloy-transport-ws",
+ "assertion-da-client 0.7.0",
+ "bincode",
+ "clap",
+ "dashmap",
+ "enum-as-inner",
+ "evm-glue",
+ "futures",
+ "metrics",
+ "moka",
+ "op-revm",
+ "parking_lot",
+ "rayon",
+ "revm",
+ "serde",
+ "serde_json",
+ "sled",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "zerocopy 0.7.35",
+]
+
+[[package]]
+name = "assertion-executor"
+version = "0.8.0"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -1556,9 +1603,9 @@ dependencies = [
  "alloy-transport",
  "alloy-transport-ws",
  "anyhow",
- "assertion-da-client 0.7.0",
+ "assertion-da-client 0.8.0",
  "assertion-da-server",
- "assertion-executor 0.7.0",
+ "assertion-executor 0.8.0",
  "bincode",
  "bollard",
  "clap",
@@ -1573,53 +1620,6 @@ dependencies = [
  "op-revm",
  "parking_lot",
  "rand 0.9.2",
- "rayon",
- "revm",
- "serde",
- "serde_json",
- "sled",
- "tempfile",
- "thiserror 2.0.17",
- "tokio",
- "tokio-util",
- "tracing",
- "url",
- "zerocopy 0.7.35",
-]
-
-[[package]]
-name = "assertion-executor"
-version = "0.7.0"
-source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#c1f9a00133ee3bbf9d595c9ee388dd623acf690a"
-dependencies = [
- "alloy",
- "alloy-consensus",
- "alloy-evm",
- "alloy-network",
- "alloy-network-primitives",
- "alloy-node-bindings",
- "alloy-primitives",
- "alloy-provider",
- "alloy-pubsub",
- "alloy-rpc-client",
- "alloy-rpc-types",
- "alloy-rpc-types-anvil",
- "alloy-signer",
- "alloy-signer-local",
- "alloy-sol-types",
- "alloy-transport",
- "alloy-transport-ws",
- "assertion-da-client 0.7.0 (git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm)",
- "bincode",
- "clap",
- "dashmap",
- "enum-as-inner",
- "evm-glue",
- "futures",
- "metrics",
- "moka",
- "op-revm",
- "parking_lot",
  "rayon",
  "revm",
  "serde",
@@ -3290,7 +3290,7 @@ dependencies = [
 
 [[package]]
 name = "dapp-api-client"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -4527,7 +4527,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
- "assertion-executor 0.7.0 (git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm)",
+ "assertion-executor 0.7.0",
  "base64 0.22.1",
  "dialoguer",
  "ecdsa",
@@ -7025,11 +7025,11 @@ dependencies = [
 
 [[package]]
 name = "int-test-utils"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "alloy",
  "anyhow",
- "assertion-da-client 0.7.0",
+ "assertion-da-client 0.8.0",
  "assertion-da-server",
  "axum 0.8.7",
  "bollard",
@@ -8673,7 +8673,7 @@ dependencies = [
 
 [[package]]
 name = "pcl"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -8688,7 +8688,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-common"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "serde_json",
@@ -8696,12 +8696,12 @@ dependencies = [
 
 [[package]]
 name = "pcl-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "alloy",
  "alloy-primitives",
  "anyhow",
- "assertion-da-client 0.7.0",
+ "assertion-da-client 0.8.0",
  "chrono",
  "clap",
  "color-eyre",
@@ -8726,7 +8726,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-phoundry"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "alloy-json-abi",
  "clap",
@@ -11074,7 +11074,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-driver"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -11124,15 +11124,15 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sidecar"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "alloy",
  "alloy-provider",
  "alloy-rpc-types-trace",
  "anyhow",
  "arrayvec",
- "assertion-da-client 0.7.0",
- "assertion-executor 0.7.0",
+ "assertion-da-client 0.8.0",
+ "assertion-executor 0.8.0",
  "axum 0.8.7",
  "clap",
  "console-subscriber",
@@ -11179,7 +11179,7 @@ dependencies = [
 
 [[package]]
 name = "sidecar-test-macros"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11562,7 +11562,7 @@ dependencies = [
 
 [[package]]
 name = "state-checker"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "alloy",
  "alloy-rpc-types",
@@ -11582,7 +11582,7 @@ dependencies = [
 
 [[package]]
 name = "state-store"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "alloy",
  "anyhow",
@@ -11598,7 +11598,7 @@ dependencies = [
 
 [[package]]
 name = "state-worker"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "alloy",
  "alloy-provider",
