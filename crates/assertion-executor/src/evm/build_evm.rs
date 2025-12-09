@@ -40,6 +40,10 @@ use revm::{
         Gas,
         Host,
         InstructionContext,
+        gas::{
+            self,
+            COLD_SLOAD_COST_ADDITIONAL,
+        },
         instructions::host::sstore,
         interpreter::EthInterpreter,
     },
@@ -48,6 +52,8 @@ use revm::{
         Precompiles,
     },
 };
+
+use revm::context_interface::host::LoadError;
 
 /// Builds an EVM environment.
 /// The `chain_id` is used to set the chain ID in the EVM environment.
@@ -161,8 +167,8 @@ where
     )
 }
 
-/// Replaces `SSTORE` with functionally equivalent `ph_sstore`, but with
-/// a fixed 100 gas cost.
+/// Replaces `SSTORE` with functionally equivalent `ph_sstore`, but repriced to
+/// use the gas semantics of `SLOAD`.
 /// Used for cheaper storage during assertion execution.
 /// Storage values get thrown out during assertions so no need to bear
 /// the cost of `SSTORE`.
@@ -201,13 +207,57 @@ macro_rules! reprice_gas {
     }};
 }
 
-/// Reprice the SSTORE operation to 100 gas.
+/// Reprice the SSTORE operation to the gas schedule of SLOAD (warm/cold).
 /// Will still run out of gas if the operation spends all gas intentionally.
 pub fn ph_sstore<H>(context: InstructionContext<'_, H, EthInterpreter>)
 where
     H: Host + ?Sized,
 {
-    reprice_gas!(context, sstore::<EthInterpreter, H>, 100);
+    // If the stack underflows, defer to the original implementation to preserve behavior.
+    if context.interpreter.stack.len() < 2 {
+        return sstore::<EthInterpreter, H>(context);
+    }
+
+    let spec_id = context.interpreter.runtime_flag.spec_id;
+    let mut gas_cost = gas::sload_cost(spec_id, false);
+
+    // Bail out early if even the base SLOAD cost cannot be covered.
+    if context.interpreter.gas.remaining() < gas_cost {
+        context.interpreter.halt_oog();
+        return;
+    }
+
+    if spec_id.is_enabled_in(SpecId::BERLIN) {
+        // SLOAD semantics after Berlin depend on whether the storage slot is warm or cold.
+        let Ok(slot) = context.interpreter.stack.peek(0) else {
+            return sstore::<EthInterpreter, H>(context);
+        };
+
+        let remaining_after_base = context.interpreter.gas.remaining().saturating_sub(gas_cost);
+        let skip_cold_load = remaining_after_base < COLD_SLOAD_COST_ADDITIONAL;
+
+        let target = context.interpreter.input.target_address;
+        let state_load = match context
+            .host
+            .sload_skip_cold_load(target, slot, skip_cold_load)
+        {
+            Ok(load) => load,
+            Err(LoadError::ColdLoadSkipped) => {
+                context.interpreter.halt_oog();
+                return;
+            }
+            Err(LoadError::DBError) => {
+                context.interpreter.halt_fatal();
+                return;
+            }
+        };
+
+        if state_load.is_cold {
+            gas_cost += COLD_SLOAD_COST_ADDITIONAL;
+        }
+    }
+
+    reprice_gas!(context, sstore::<EthInterpreter, H>, gas_cost);
 }
 
 #[cfg(test)]
@@ -224,6 +274,7 @@ mod tests {
         primitives::{
             AccountInfo,
             Address,
+            B256,
             BlockEnv,
             Bytecode,
             Bytes,
@@ -238,6 +289,10 @@ mod tests {
     use revm::{
         ExecuteEvm,
         context::JournalInner,
+        context_interface::transaction::{
+            AccessList,
+            AccessListItem,
+        },
         database::InMemoryDB,
     };
 
@@ -314,6 +369,113 @@ mod tests {
         evm.transact(tx_env).unwrap().result
     }
 
+    fn storage_bytecode(opcode: u8) -> Bytes {
+        // Push value and key, perform the storage op, then push/pop a dummy to align surrounding gas.
+        Bytes::from(vec![0x60, 0x01, 0x60, 0x00, opcode, 0x60, 0x00, 0x50, 0x00])
+    }
+
+    fn run_storage_bytecode(
+        opcode: u8,
+        with_reprice: bool,
+        access_list: AccessList,
+        address: Address,
+        caller: Address,
+    ) -> u64 {
+        let mut db = InMemoryDB::default();
+        insert_caller(&mut db, caller);
+        insert_test_contract(&mut db, address, storage_bytecode(opcode));
+
+        let tx_env = TxEnv {
+            kind: TxKind::Call(address),
+            caller,
+            gas_price: 1,
+            gas_limit: 1_000_000,
+            access_list,
+            ..Default::default()
+        };
+
+        let mut multi_fork_db = MultiForkDb::new(db, &JournalInner::new());
+
+        let tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let phvem_context = PhEvmContext::new(&logs_and_traces, address);
+
+        let inspector = PhEvmInspector::new(phvem_context);
+
+        #[cfg(feature = "optimism")]
+        let (mut evm, tx_env) = {
+            let env = evm_env(1, SpecId::default(), BlockEnv::default());
+            (
+                build_optimism_evm(&mut multi_fork_db, &env, inspector),
+                OpTransaction::new(tx_env),
+            )
+        };
+        #[cfg(not(feature = "optimism"))]
+        let (mut evm, tx_env) = {
+            let env = evm_env(1, SpecId::default(), BlockEnv::default());
+            (build_eth_evm(&mut multi_fork_db, &env, inspector), tx_env)
+        };
+
+        if with_reprice {
+            crate::reprice_evm_storage!(evm);
+        }
+
+        evm.transact(tx_env).unwrap().result.gas_used()
+    }
+
+    #[test]
+    fn test_ph_sstore_matches_sload_cold_cost() {
+        let address = Address::random();
+        let caller = Address::random();
+
+        let sload_gas = run_storage_bytecode(
+            revm::bytecode::opcode::SLOAD,
+            false,
+            AccessList::default(),
+            address,
+            caller,
+        );
+        let ph_sstore_gas = run_storage_bytecode(
+            revm::bytecode::opcode::SSTORE,
+            true,
+            AccessList::default(),
+            address,
+            caller,
+        );
+
+        assert_eq!(ph_sstore_gas, sload_gas);
+    }
+
+    #[test]
+    fn test_ph_sstore_matches_sload_warm_cost() {
+        let address = Address::random();
+        let caller = Address::random();
+        let access_list = AccessList(vec![AccessListItem {
+            address,
+            storage_keys: vec![B256::ZERO],
+        }]);
+
+        let sload_gas = run_storage_bytecode(
+            revm::bytecode::opcode::SLOAD,
+            false,
+            access_list.clone(),
+            address,
+            caller,
+        );
+        let ph_sstore_gas = run_storage_bytecode(
+            revm::bytecode::opcode::SSTORE,
+            true,
+            access_list,
+            address,
+            caller,
+        );
+
+        assert_eq!(ph_sstore_gas, sload_gas);
+    }
+
     fn test_diff(contract: &str, expected_gas: u64) {
         let with_reprice_result = run_test(contract, true, None);
         let without_reprice_result = run_test(contract, false, None);
@@ -343,7 +505,7 @@ mod tests {
 
     #[test]
     fn test_sstore() {
-        test_diff("StorageGas.sol:SSTOREGas", 22_000);
+        test_diff("StorageGas.sol:SSTOREGas", 20_000);
     }
 
     #[test]
