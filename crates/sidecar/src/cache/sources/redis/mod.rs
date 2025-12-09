@@ -139,6 +139,42 @@ impl RedisSource {
     fn u256_to_u64(value: U256) -> u64 {
         value.try_into().expect("block number overflow u64")
     }
+
+    /// Computes the intersection of two block ranges and returns the target block.
+    ///
+    /// Given the required range `[min_synced_block, latest_head]` and the Redis
+    /// available range `[redis_oldest_block, redis_observed_head]`, this function
+    /// returns the most recent block in the intersection (upper bound), or `None`
+    /// if the ranges do not overlap.
+    #[inline]
+    fn calculate_target_block(
+        min_synced_block: U256,
+        latest_head: U256,
+        redis_oldest_block: U256,
+        redis_observed_head: U256,
+    ) -> Option<U256> {
+        let lower_bound = min_synced_block.max(redis_oldest_block);
+        let upper_bound = latest_head.min(redis_observed_head);
+
+        if lower_bound <= upper_bound {
+            Some(upper_bound)
+        } else {
+            None
+        }
+    }
+
+    /// Checks whether two block ranges have any overlap.
+    #[inline]
+    fn ranges_overlap(
+        min_synced_block: U256,
+        latest_head: U256,
+        redis_oldest_block: U256,
+        redis_observed_head: U256,
+    ) -> bool {
+        let lower_bound = min_synced_block.max(redis_oldest_block);
+        let upper_bound = latest_head.min(redis_observed_head);
+        lower_bound <= upper_bound
+    }
 }
 
 impl DatabaseRef for RedisSource {
@@ -218,11 +254,12 @@ impl Source for RedisSource {
         let redis_observed_head = *self.observed_head.read();
         let redis_oldest_block = *self.oldest_block.read();
 
-        // Find the intersection of the two ranges
-        let lower_bound = min_synced_block.max(redis_oldest_block);
-        let upper_bound = latest_head.min(redis_observed_head);
-
-        lower_bound <= upper_bound
+        Self::ranges_overlap(
+            min_synced_block,
+            latest_head,
+            redis_oldest_block,
+            redis_observed_head,
+        )
     }
 
     /// Updates the current cache status and set the target block
@@ -233,14 +270,13 @@ impl Source for RedisSource {
         let redis_observed_head = *self.observed_head.read();
         let redis_oldest_block = *self.oldest_block.read();
 
-        // Find the intersection of the two ranges
-        let lower_bound = min_synced_block.max(redis_oldest_block);
-        let upper_bound = latest_head.min(redis_observed_head);
-
-        if lower_bound <= upper_bound {
-            // Pick the most recent block in the valid range
-            let block_number = upper_bound;
-            *self.target_block.write() = block_number;
+        if let Some(target) = Self::calculate_target_block(
+            min_synced_block,
+            latest_head,
+            redis_oldest_block,
+            redis_observed_head,
+        ) {
+            *self.target_block.write() = target;
         }
     }
 
@@ -268,6 +304,10 @@ mod tests {
         },
     };
 
+    fn u(n: u64) -> U256 {
+        U256::from(n)
+    }
+
     /// Helper struct to test the cache logic without needing a real Redis backend
     struct TestRedisCache {
         target_block: Arc<RwLock<U256>>,
@@ -287,34 +327,31 @@ mod tests {
         }
 
         fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool {
-            let min_synced_block = U256::from(min_synced_block);
-            let latest_head = U256::from(latest_head);
-
             if !self.sync_status.load(Ordering::Acquire) {
                 return false;
             }
             let redis_observed_head = *self.observed_head.read();
             let redis_oldest_block = *self.oldest_block.read();
 
-            let lower_bound = min_synced_block.max(redis_oldest_block);
-            let upper_bound = latest_head.min(redis_observed_head);
-
-            lower_bound <= upper_bound
+            RedisSource::ranges_overlap(
+                U256::from(min_synced_block),
+                U256::from(latest_head),
+                redis_oldest_block,
+                redis_observed_head,
+            )
         }
 
         fn update_cache_status(&self, min_synced_block: u64, latest_head: u64) {
-            let min_synced_block = U256::from(min_synced_block);
-            let latest_head = U256::from(latest_head);
-
             let redis_observed_head = *self.observed_head.read();
             let redis_oldest_block = *self.oldest_block.read();
 
-            let lower_bound = min_synced_block.max(redis_oldest_block);
-            let upper_bound = latest_head.min(redis_observed_head);
-
-            if lower_bound <= upper_bound {
-                let block_number = upper_bound;
-                *self.target_block.write() = block_number;
+            if let Some(target) = RedisSource::calculate_target_block(
+                U256::from(min_synced_block),
+                U256::from(latest_head),
+                redis_oldest_block,
+                redis_observed_head,
+            ) {
+                *self.target_block.write() = target;
             }
         }
 
@@ -331,6 +368,226 @@ mod tests {
             *self.oldest_block.write() = U256::from(value);
         }
     }
+
+    #[test]
+    fn calculate_perfect_overlap_identical_ranges() {
+        // Redis: [100, 200], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(100), u(200));
+        assert_eq!(result, Some(u(200)));
+    }
+
+    #[test]
+    fn calculate_redis_contains_required_range() {
+        // Redis: [50, 300], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(50), u(300));
+        assert_eq!(result, Some(u(200)));
+    }
+
+    #[test]
+    fn calculate_redis_contains_required_with_same_start() {
+        // Redis: [100, 300], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(100), u(300));
+        assert_eq!(result, Some(u(200)));
+    }
+
+    #[test]
+    fn calculate_redis_contains_required_with_same_end() {
+        // Redis: [50, 200], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(50), u(200));
+        assert_eq!(result, Some(u(200)));
+    }
+
+    #[test]
+    fn calculate_required_contains_redis_range() {
+        // Redis: [150, 180], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(150), u(180));
+        assert_eq!(result, Some(u(180)));
+    }
+
+    #[test]
+    fn calculate_required_contains_redis_with_same_start() {
+        // Redis: [100, 180], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(100), u(180));
+        assert_eq!(result, Some(u(180)));
+    }
+
+    #[test]
+    fn calculate_required_contains_redis_with_same_end() {
+        // Redis: [150, 200], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(150), u(200));
+        assert_eq!(result, Some(u(200)));
+    }
+
+    #[test]
+    fn calculate_partial_overlap_redis_starts_earlier() {
+        // Redis: [50, 150], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(50), u(150));
+        assert_eq!(result, Some(u(150)));
+    }
+
+    #[test]
+    fn calculate_partial_overlap_redis_ends_later() {
+        // Redis: [150, 250], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(150), u(250));
+        assert_eq!(result, Some(u(200)));
+    }
+
+    #[test]
+    fn calculate_touching_at_single_point_redis_ends_at_required_start() {
+        // Redis: [50, 100], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(50), u(100));
+        assert_eq!(result, Some(u(100)));
+    }
+
+    #[test]
+    fn calculate_touching_at_single_point_redis_starts_at_required_end() {
+        // Redis: [200, 300], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(200), u(300));
+        assert_eq!(result, Some(u(200)));
+    }
+
+    #[test]
+    fn calculate_no_overlap_redis_before_required() {
+        // Redis: [50, 99], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(50), u(99));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn calculate_no_overlap_redis_after_required() {
+        // Redis: [201, 300], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(201), u(300));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn calculate_no_overlap_large_gap_redis_before() {
+        // Redis: [10, 50], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(10), u(50));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn calculate_no_overlap_large_gap_redis_after() {
+        // Redis: [500, 600], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(500), u(600));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn calculate_single_block_required_within_redis() {
+        // Redis: [100, 200], Required: [150, 150]
+        let result = RedisSource::calculate_target_block(u(150), u(150), u(100), u(200));
+        assert_eq!(result, Some(u(150)));
+    }
+
+    #[test]
+    fn calculate_single_block_redis_within_required() {
+        // Redis: [150, 150], Required: [100, 200]
+        let result = RedisSource::calculate_target_block(u(100), u(200), u(150), u(150));
+        assert_eq!(result, Some(u(150)));
+    }
+
+    #[test]
+    fn calculate_both_single_block_same() {
+        // Redis: [150, 150], Required: [150, 150]
+        let result = RedisSource::calculate_target_block(u(150), u(150), u(150), u(150));
+        assert_eq!(result, Some(u(150)));
+    }
+
+    #[test]
+    fn calculate_both_single_block_different() {
+        // Redis: [150, 150], Required: [160, 160]
+        let result = RedisSource::calculate_target_block(u(160), u(160), u(150), u(150));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn calculate_single_block_at_redis_start() {
+        // Redis: [100, 200], Required: [100, 100]
+        let result = RedisSource::calculate_target_block(u(100), u(100), u(100), u(200));
+        assert_eq!(result, Some(u(100)));
+    }
+
+    #[test]
+    fn calculate_single_block_at_redis_end() {
+        // Redis: [100, 200], Required: [200, 200]
+        let result = RedisSource::calculate_target_block(u(200), u(200), u(100), u(200));
+        assert_eq!(result, Some(u(200)));
+    }
+
+    #[test]
+    fn calculate_all_zeros() {
+        let result = RedisSource::calculate_target_block(u(0), u(0), u(0), u(0));
+        assert_eq!(result, Some(u(0)));
+    }
+
+    #[test]
+    fn calculate_both_start_at_zero() {
+        // Redis: [0, 100], Required: [0, 50]
+        let result = RedisSource::calculate_target_block(u(0), u(50), u(0), u(100));
+        assert_eq!(result, Some(u(50)));
+    }
+
+    #[test]
+    fn calculate_invalid_required_range() {
+        // Required: [200, 100] (invalid: min > max)
+        let result = RedisSource::calculate_target_block(u(200), u(100), u(50), u(150));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn calculate_invalid_redis_range() {
+        // Redis: [200, 100] (invalid: oldest > observed)
+        let result = RedisSource::calculate_target_block(u(50), u(150), u(200), u(100));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn calculate_large_ethereum_block_numbers() {
+        let result = RedisSource::calculate_target_block(
+            u(18_000_000),
+            u(18_500_000),
+            u(17_900_000),
+            u(18_600_000),
+        );
+        assert_eq!(result, Some(u(18_500_000)));
+    }
+
+    #[test]
+    fn overlap_overlapping_ranges() {
+        assert!(RedisSource::ranges_overlap(u(100), u(200), u(150), u(250)));
+    }
+
+    #[test]
+    fn overlap_non_overlapping_ranges() {
+        assert!(!RedisSource::ranges_overlap(u(100), u(200), u(300), u(400)));
+    }
+
+    #[test]
+    fn overlap_touching_at_boundary() {
+        assert!(RedisSource::ranges_overlap(u(100), u(200), u(200), u(300)));
+    }
+
+    #[test]
+    fn overlap_adjacent_not_touching() {
+        assert!(!RedisSource::ranges_overlap(u(100), u(199), u(200), u(300)));
+    }
+
+    #[test]
+    fn overlap_identical_ranges() {
+        assert!(RedisSource::ranges_overlap(u(100), u(200), u(100), u(200)));
+    }
+
+    #[test]
+    fn overlap_one_contains_other() {
+        assert!(RedisSource::ranges_overlap(u(50), u(250), u(100), u(200)));
+        assert!(RedisSource::ranges_overlap(u(100), u(200), u(50), u(250)));
+    }
+
+    // =========================================================================
+    // Integration tests using TestRedisCache
+    // =========================================================================
 
     #[test]
     fn test_perfect_overlap() {
