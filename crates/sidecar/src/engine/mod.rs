@@ -724,6 +724,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             last_tx_id.is_some() && last_tx_id.map(|id| id.tx_hash) != commit_head.last_tx_hash;
         let count_mismatch = n_transactions != commit_head.n_transactions;
 
+        debug!(
+            head_mismatch = head_mismatch,
+            tx_hash_mismatch = tx_hash_mismatch,
+            count_mismatch = count_mismatch,
+            "Checking cache conditions"
+        );
+
         if head_mismatch {
             warn!(
                 current_head = %self.current_head,
