@@ -256,50 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn selfdestructed_accounts_clear_storage_and_skip_inner_db() {
-        let mut inner = MockDb::new();
-        let address = address!("0000000000000000000000000000000000000001");
-        let slot = U256::from(1);
-
-        inner.insert_account(address, mock_account_info(uint!(1_U256), 0, None));
-        inner.insert_storage(address, slot, uint!(5_U256));
-
-        let mut version_db = VersionDb::new(inner);
-
-        assert_eq!(
-            version_db.storage_ref(address, slot).unwrap(),
-            uint!(5_U256)
-        );
-        let storage_calls_after_first_read = version_db.state.inner_db.get_storage_calls();
-
-        let mut changes = EvmState::default();
-        changes.insert(
-            address,
-            Account {
-                info: AccountInfo::default(),
-                transaction_id: 0,
-                storage: EvmStorage::default(),
-                status: AccountStatus::SelfDestructed | AccountStatus::Touched,
-            },
-        );
-        version_db.commit(changes);
-
-        assert_eq!(version_db.storage_ref(address, slot).unwrap(), U256::ZERO);
-        assert_eq!(
-            version_db.state.inner_db.get_storage_calls(),
-            storage_calls_after_first_read
-        );
-
-        version_db.rollback_to(0).unwrap();
-        assert_eq!(
-            version_db.storage_ref(address, slot).unwrap(),
-            uint!(5_U256)
-        );
-        assert!(version_db.state.inner_db.get_storage_calls() > storage_calls_after_first_read);
-    }
-
-    #[test]
-    fn selfdestruct_clears_storage_written_in_same_commit() {
+    fn selfdestruct_storage_written_same_tx_persists_post_cancun() {
         let mut version_db = VersionDb::new(MockDb::new());
         let address = address!("0000000000000000000000000000000000000004");
         let slot = U256::from(1);
@@ -317,7 +274,10 @@ mod tests {
         changes.insert(
             address,
             Account {
-                info: AccountInfo::default(),
+                info: AccountInfo {
+                    balance: U256::ZERO,
+                    ..Default::default()
+                },
                 transaction_id: 0,
                 storage,
                 status: AccountStatus::SelfDestructed | AccountStatus::Touched,
@@ -326,12 +286,16 @@ mod tests {
 
         version_db.commit(changes);
 
-        assert_eq!(version_db.storage_ref(address, slot).unwrap(), U256::ZERO);
+        // Post-Cancun: storage persists even with selfdestruct
+        assert_eq!(
+            version_db.storage_ref(address, slot).unwrap(),
+            uint!(7_U256)
+        );
         assert_eq!(version_db.depth(), 1);
     }
 
     #[test]
-    fn selfdestruct_clears_prior_storage() {
+    fn selfdestruct_prior_storage_persists_post_cancun() {
         let mut version_db = VersionDb::new(MockDb::new());
         let address = address!("0000000000000000000000000000000000000005");
         let slot = U256::from(7);
@@ -349,7 +313,7 @@ mod tests {
         create.insert(
             address,
             Account {
-                info: AccountInfo::default(),
+                info: mock_account_info(uint!(100_U256), 0, None),
                 transaction_id: 0,
                 storage,
                 status: AccountStatus::Touched,
@@ -357,12 +321,20 @@ mod tests {
         );
         version_db.commit(create);
 
+        assert_eq!(
+            version_db.storage_ref(address, slot).unwrap(),
+            uint!(42_U256)
+        );
+
         // Second commit selfdestructs the same account.
         let mut destroy = EvmState::default();
         destroy.insert(
             address,
             Account {
-                info: AccountInfo::default(),
+                info: AccountInfo {
+                    balance: U256::ZERO,
+                    ..Default::default()
+                },
                 transaction_id: 0,
                 storage: EvmStorage::default(),
                 status: AccountStatus::SelfDestructed | AccountStatus::Touched,
@@ -370,12 +342,20 @@ mod tests {
         );
         version_db.commit(destroy);
 
-        assert_eq!(version_db.storage_ref(address, slot).unwrap(), U256::ZERO);
+        // Post-Cancun: storage PERSISTS after selfdestruct
+        assert_eq!(
+            version_db.storage_ref(address, slot).unwrap(),
+            uint!(42_U256)
+        );
+        assert_eq!(
+            version_db.basic_ref(address).unwrap().unwrap().balance,
+            U256::ZERO
+        );
         assert_eq!(version_db.depth(), 2);
     }
 
     #[test]
-    fn recreated_account_after_selfdestruct_does_not_fallback_to_inner_db() {
+    fn write_to_selfdestructed_account_updates_storage() {
         let mut inner = MockDb::new();
         let address = address!("0000000000000000000000000000000000000001");
         let slot = U256::from(1);
@@ -385,11 +365,15 @@ mod tests {
 
         let mut version_db = VersionDb::new(inner);
 
+        // Selfdestruct
         let mut initial_changes = EvmState::default();
         initial_changes.insert(
             address,
             Account {
-                info: AccountInfo::default(),
+                info: AccountInfo {
+                    balance: U256::ZERO,
+                    ..Default::default()
+                },
                 transaction_id: 0,
                 storage: EvmStorage::default(),
                 status: AccountStatus::SelfDestructed | AccountStatus::Touched,
@@ -397,36 +381,38 @@ mod tests {
         );
         version_db.commit(initial_changes);
 
-        let storage_calls_after_selfdestruct = version_db.state.inner_db.get_storage_calls();
+        // Post-Cancun: storage still readable
+        assert_eq!(
+            version_db.storage_ref(address, slot).unwrap(),
+            uint!(5_U256)
+        );
 
-        let mut recreation_storage = EvmStorage::default();
-        recreation_storage.insert(
+        // Write new storage value
+        let mut new_storage = EvmStorage::default();
+        new_storage.insert(
             slot,
             EvmStorageSlot {
                 present_value: uint!(9_U256),
                 ..Default::default()
             },
         );
-        let mut recreation_state = EvmState::default();
-        recreation_state.insert(
+        let mut new_state = EvmState::default();
+        new_state.insert(
             address,
             Account {
                 info: mock_account_info(uint!(2_U256), 1, None),
                 transaction_id: 0,
-                storage: recreation_storage,
+                storage: new_storage,
                 status: AccountStatus::Touched,
             },
         );
 
-        version_db.commit(recreation_state);
+        version_db.commit(new_state);
 
+        // New value is used
         assert_eq!(
             version_db.storage_ref(address, slot).unwrap(),
             uint!(9_U256)
-        );
-        assert_eq!(
-            version_db.state.inner_db.get_storage_calls(),
-            storage_calls_after_selfdestruct
         );
     }
 
