@@ -87,3 +87,7 @@ harness = false
 [[bench]]
 name = "identity_precompile"
 harness = false
+
+[[bench]]
+name = "sha256_precompile"
+harness = false
