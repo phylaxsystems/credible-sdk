@@ -104,6 +104,17 @@ impl EthRpcSource {
             handler: handler.abort_handle(),
         }))
     }
+
+    /// The target block is the minimum of the requested range and the client's latest head.
+    /// If the client is synced, the target block is the maximum of the requested range and the
+    /// client's latest head.
+    fn calculate_target_block(
+        min_synced_block: U256,
+        latest_head: U256,
+        client_latest_head: U256,
+    ) -> U256 {
+        (client_latest_head.min(latest_head)).max(min_synced_block)
+    }
 }
 
 impl EthRpcSourceInner {
@@ -217,9 +228,13 @@ impl Source for EthRpcSource {
         let client_latest_head = *self.inner.latest_head.read();
         // Update the target block if the client is synced and the latest head is within the
         // range of the client's latest head
-        if min_synced_block <= client_latest_head && latest_head <= client_latest_head {
-            self.inner.json_rpc_db.set_target_block(client_latest_head);
-        }
+        self.inner
+            .json_rpc_db
+            .set_target_block(Self::calculate_target_block(
+                min_synced_block,
+                latest_head,
+                client_latest_head,
+            ));
     }
 }
 
@@ -229,4 +244,99 @@ pub enum EthRpcSourceError {
     Provider(#[source] RpcError<TransportErrorKind>),
     #[error("Failed to parse the HTTP provider URL")]
     HttpUrl(#[from] url::ParseError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::U256;
+
+    fn u(n: u64) -> U256 {
+        U256::from(n)
+    }
+
+    #[test]
+    fn client_behind_and_min_synced_below_client() {
+        // min(50, 100) = 50, max(50, 30) = 50
+        let result = EthRpcSource::calculate_target_block(u(30), u(100), u(50));
+        assert_eq!(result, u(50));
+    }
+
+    #[test]
+    fn client_behind_and_min_synced_equals_client() {
+        // min(50, 100) = 50, max(50, 50) = 50
+        let result = EthRpcSource::calculate_target_block(u(50), u(100), u(50));
+        assert_eq!(result, u(50));
+    }
+
+    #[test]
+    fn client_behind_and_min_synced_above_client() {
+        // min(50, 100) = 50, max(50, 70) = 70
+        // min_synced_block wins because client can't satisfy the minimum requirement
+        let result = EthRpcSource::calculate_target_block(u(70), u(100), u(50));
+        assert_eq!(result, u(70));
+    }
+
+    #[test]
+    fn client_ahead_and_min_synced_below_latest() {
+        // min(100, 50) = 50, max(50, 30) = 50
+        let result = EthRpcSource::calculate_target_block(u(30), u(50), u(100));
+        assert_eq!(result, u(50));
+    }
+
+    #[test]
+    fn client_ahead_and_min_synced_equals_latest() {
+        // min(100, 50) = 50, max(50, 50) = 50
+        let result = EthRpcSource::calculate_target_block(u(50), u(50), u(100));
+        assert_eq!(result, u(50));
+    }
+
+    #[test]
+    fn client_ahead_and_min_synced_above_latest() {
+        // min(100, 50) = 50, max(50, 70) = 70
+        // min_synced_block wins
+        let result = EthRpcSource::calculate_target_block(u(70), u(50), u(100));
+        assert_eq!(result, u(70));
+    }
+
+    #[test]
+    fn client_equals_latest_and_min_synced_below() {
+        // min(50, 50) = 50, max(50, 30) = 50
+        let result = EthRpcSource::calculate_target_block(u(30), u(50), u(50));
+        assert_eq!(result, u(50));
+    }
+
+    #[test]
+    fn client_equals_latest_and_min_synced_above() {
+        // min(50, 50) = 50, max(50, 70) = 70
+        let result = EthRpcSource::calculate_target_block(u(70), u(50), u(50));
+        assert_eq!(result, u(70));
+    }
+
+    #[test]
+    fn all_three_equal() {
+        // min(50, 50) = 50, max(50, 50) = 50
+        let result = EthRpcSource::calculate_target_block(u(50), u(50), u(50));
+        assert_eq!(result, u(50));
+    }
+
+    #[test]
+    fn all_zero() {
+        let result = EthRpcSource::calculate_target_block(u(0), u(0), u(0));
+        assert_eq!(result, u(0));
+    }
+
+    #[test]
+    fn client_at_zero() {
+        // min(0, 100) = 0, max(0, 50) = 50
+        let result = EthRpcSource::calculate_target_block(u(50), u(100), u(0));
+        assert_eq!(result, u(50));
+    }
+
+    #[test]
+    fn min_synced_at_zero() {
+        // min(100, 50) = 50, max(50, 0) = 50
+        let result = EthRpcSource::calculate_target_block(u(0), u(50), u(100));
+        assert_eq!(result, u(50));
+    }
 }
