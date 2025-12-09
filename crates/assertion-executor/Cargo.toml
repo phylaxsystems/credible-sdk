@@ -83,3 +83,7 @@ harness = false
 [[bench]]
 name = "switch_fork"
 harness = false
+
+[[bench]]
+name = "identity_precompile"
+harness = false
