@@ -344,8 +344,11 @@ mod fork_db_tests {
             TableValue::Basic(AccountInfo::default()),
         );
         overlay_db.overlay.insert(
-            TableKey::Storage(Address::ZERO, uint!(0_U256)),
-            TableValue::Storage(uint!(1_U256).into()),
+            TableKey::Storage(Address::ZERO),
+            TableValue::Storage(ForkStorageMap {
+                map: HashMap::from_iter([(uint!(0_U256), uint!(1_U256))]),
+                dont_read_from_inner_db: false,
+            }),
         );
 
         let mut fork_db = overlay_db.fork();
@@ -503,8 +506,11 @@ mod fork_db_tests {
             }),
         );
         overlay_db.overlay.insert(
-            TableKey::Storage(Address::ZERO, uint!(0_U256)),
-            TableValue::Storage(uint!(1_U256).into()),
+            TableKey::Storage(Address::ZERO),
+            TableValue::Storage(ForkStorageMap {
+                map: HashMap::from_iter([(uint!(0_U256), evm_storage_slot.present_value())]),
+                dont_read_from_inner_db: false,
+            }),
         );
 
         let mut fork_db = overlay_db.fork();
