@@ -394,6 +394,8 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
                 continue;
             }
 
+            let is_created = account.is_created();
+
             // Update account info
             let key = TableKey::Basic(address);
             self.overlay
@@ -407,7 +409,7 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
             }
 
             // Update storage slots
-            if !account.storage.is_empty() {
+            if is_created || !account.storage.is_empty() {
                 let storage_key = TableKey::Storage(address);
                 let mut new_storage: HashMap<U256, U256> = account
                     .storage
@@ -418,18 +420,23 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
                 match self.overlay.entry(storage_key) {
                     Entry::Occupied(mut entry) => {
                         if let Some(existing) = entry.get_mut().as_storage_mut() {
-                            existing.map.extend(new_storage.drain());
+                            if is_created {
+                                existing.dont_read_from_inner_db = true;
+                            }
+                            if !new_storage.is_empty() {
+                                existing.map.extend(new_storage.drain());
+                            }
                         } else {
                             entry.insert(TableValue::Storage(ForkStorageMap {
                                 map: new_storage,
-                                dont_read_from_inner_db: false,
+                                dont_read_from_inner_db: is_created,
                             }));
                         }
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(TableValue::Storage(ForkStorageMap {
                             map: new_storage,
-                            dont_read_from_inner_db: false,
+                            dont_read_from_inner_db: is_created,
                         }));
                     }
                 }

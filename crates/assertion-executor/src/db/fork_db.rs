@@ -17,7 +17,10 @@ use revm::{
     state::AccountStatus,
 };
 use std::{
-    collections::HashMap,
+    collections::{
+        HashMap,
+        hash_map::Entry,
+    },
     sync::Arc,
 };
 
@@ -145,6 +148,8 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
                 continue;
             }
 
+            let is_created = account.is_created();
+
             if let Some(code) = &account.info.code {
                 self.code_by_hash
                     .insert(account.info.code_hash, code.clone());
@@ -152,27 +157,27 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
 
             self.basic.insert(address, account.info.clone());
 
-            match self.storage.get_mut(&address) {
-                Some(s) => {
-                    s.map.extend(
-                        account
-                            .storage
-                            .into_iter()
-                            .map(|(k, v)| (k, v.present_value())),
-                    );
-                }
-                None => {
-                    self.storage.insert(
-                        address,
-                        ForkStorageMap {
-                            map: account
-                                .storage
-                                .into_iter()
-                                .map(|(k, v)| (k, v.present_value()))
-                                .collect(),
-                            dont_read_from_inner_db: false,
-                        },
-                    );
+            if is_created || !account.storage.is_empty() {
+                let mut storage_updates = account
+                    .storage
+                    .into_iter()
+                    .map(|(k, v)| (k, v.present_value()))
+                    .collect::<HashMap<_, _>>();
+
+                match self.storage.entry(address) {
+                    Entry::Occupied(mut entry) => {
+                        let storage_map = entry.get_mut();
+                        if is_created {
+                            storage_map.dont_read_from_inner_db = true;
+                        }
+                        storage_map.map.extend(storage_updates.drain());
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(ForkStorageMap {
+                            map: storage_updates,
+                            dont_read_from_inner_db: is_created,
+                        });
+                    }
                 }
             }
         }
