@@ -71,8 +71,8 @@ mod test {
         test_get_assertion_adopter_helper(random_address());
     }
 
-    #[test]
-    fn test_get_assertion_adopter_integration() {
+    #[tokio::test]
+    async fn test_get_assertion_adopter_integration() {
         let result = run_precompile_test("TestGetAdopter");
         assert!(result.is_valid());
         let result_and_state = result.result_and_state;

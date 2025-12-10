@@ -336,8 +336,8 @@ mod test {
         assert_eq!(storage_value2, U256::from(40));
     }
 
-    #[test]
-    fn test_tx_fork_integration() {
+    #[tokio::test]
+    async fn test_tx_fork_integration() {
         let result = run_precompile_test("TestFork");
         println!("result: {result:?}");
         assert!(result.is_valid(), "{result:#?}");
@@ -349,8 +349,8 @@ mod test {
         );
     }
 
-    #[test]
-    fn test_call_fork_integration() {
+    #[tokio::test]
+    async fn test_call_fork_integration() {
         let result = run_precompile_test("TestCallFrameForking");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
@@ -361,8 +361,8 @@ mod test {
         );
     }
 
-    #[test]
-    fn test_call_fork_revert_integration() {
+    #[tokio::test]
+    async fn test_call_fork_revert_integration() {
         let result = run_precompile_test("TestCallFrameForkingRevert");
         assert!(!result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;

@@ -734,8 +734,8 @@ mod test {
         assert_eq!(triggers[&addr].len(), 1);
     }
 
-    #[test]
-    fn call_tracer_records_calldata_only_for_adopters() {
+    #[tokio::test]
+    async fn call_tracer_records_calldata_only_for_adopters() {
         let adopter = address!("1111111111111111111111111111111111111111");
         let non_adopter = address!("2222222222222222222222222222222222222222");
         let adopter_selector = FixedBytes::<4>::from([0xAA, 0xBB, 0xCC, 0xDD]);

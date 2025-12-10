@@ -305,8 +305,8 @@ mod test {
     use crate::inspectors::sol_primitives::Error;
     use alloy_sol_types::SolError;
 
-    #[test]
-    fn test_invalid_selector_error_encoding() {
+    #[tokio::test]
+    async fn test_invalid_selector_error_encoding() {
         let result = run_precompile_test("TestInvalidCall");
         assert!(!result.is_valid());
         assert_eq!(result.assertions_executions.len(), 1);

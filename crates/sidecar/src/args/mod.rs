@@ -129,6 +129,10 @@ pub struct CredibleConfig {
     /// Cache checker client websocket url
     #[cfg(feature = "cache_validation")]
     pub cache_checker_ws_url: String,
+    /// Interval between prune runs in milliseconds for the assertion store
+    pub assertion_store_prune_config_interval_ms: Option<u64>,
+    /// Number of blocks to keep after inactivation (buffer for reorgs) for the assertion store
+    pub assertion_store_prune_config_retention_blocks: Option<u64>,
 }
 
 /// Select which transport protocol to run

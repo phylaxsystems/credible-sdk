@@ -759,8 +759,8 @@ mod test {
     // Define the Fork DB type alias used in tests
     type TestForkDB = ForkDb<TestDB>;
 
-    #[test]
-    fn test_deploy_assertion_contract() {
+    #[tokio::test]
+    async fn test_deploy_assertion_contract() {
         // Use the TestDB type
         let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
         let mut fork_db: TestForkDB = test_db.fork();
@@ -790,8 +790,8 @@ mod test {
         assert_eq!(account_info.code.unwrap(), counter_assertion.deployed_code);
     }
 
-    #[test]
-    fn test_execute_assertion_detects_post_tx_overrides() {
+    #[tokio::test]
+    async fn test_execute_assertion_detects_post_tx_overrides() {
         let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
         let mut fork_db: TestForkDB = test_db.fork();
 
@@ -869,8 +869,8 @@ mod test {
         );
     }
 
-    #[test]
-    fn test_execute_forked_tx() {
+    #[tokio::test]
+    async fn test_execute_forked_tx() {
         // Use the TestDB type
         let shared_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
 
@@ -927,8 +927,8 @@ mod test {
             Ok(U256::ZERO)
         );
     }
-    #[test]
-    fn test_validate_tx() {
+    #[tokio::test]
+    async fn test_validate_tx() {
         // Use the TestDB type
         let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
 

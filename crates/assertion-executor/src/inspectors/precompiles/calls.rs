@@ -218,8 +218,8 @@ mod test {
         call_tracer
     }
 
-    #[test]
-    fn test_get_call_inputs_success() {
+    #[tokio::test]
+    async fn test_get_call_inputs_success() {
         let target = random_address();
         let selector = random_selector();
 
@@ -247,8 +247,8 @@ mod test {
         assert_eq!(decoded_array[0].input, mock_call_input.1.slice(4..));
     }
 
-    #[test]
-    fn test_get_call_inputs_empty_result() {
+    #[tokio::test]
+    async fn test_get_call_inputs_empty_result() {
         let target = random_address();
         let selector = random_selector();
 
@@ -269,8 +269,8 @@ mod test {
         assert_eq!(decoded_array.len(), 0);
     }
 
-    #[test]
-    fn test_get_call_inputs_multiple_results() {
+    #[tokio::test]
+    async fn test_get_call_inputs_multiple_results() {
         let target = random_address();
         let selector = random_selector();
 
@@ -305,8 +305,8 @@ mod test {
         assert_eq!(decoded[1].input, mock_call_inputs[1].1.slice(4..));
     }
 
-    #[test]
-    fn test_get_call_inputs_create() {
+    #[tokio::test]
+    async fn test_get_call_inputs_create() {
         let result = run_precompile_test("TestGetCallInputsCreate");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
@@ -314,8 +314,8 @@ mod test {
         assert_eq!(result.assertions_executions.len(), 1);
     }
 
-    #[test]
-    fn test_get_call_inputs() {
+    #[tokio::test]
+    async fn test_get_call_inputs() {
         let result = run_precompile_test("TestGetCallInputs");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
@@ -323,8 +323,8 @@ mod test {
         assert_eq!(result.assertions_executions.len(), 1);
     }
 
-    #[test]
-    fn test_get_call_inputs_reverts() {
+    #[tokio::test]
+    async fn test_get_call_inputs_reverts() {
         let result = run_precompile_test("TestGetCallInputsReverts");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
@@ -332,8 +332,8 @@ mod test {
         assert!(result_and_state.result.is_success());
     }
 
-    #[test]
-    fn test_get_call_inputs_recursive() {
+    #[tokio::test]
+    async fn test_get_call_inputs_recursive() {
         let result = run_precompile_test("TestGetCallInputsRecursive");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1);
@@ -341,8 +341,8 @@ mod test {
         assert!(result_and_state.result.is_success());
     }
 
-    #[test]
-    fn test_get_call_inputs_static() {
+    #[tokio::test]
+    async fn test_get_call_inputs_static() {
         let result = run_precompile_test("TestGetCallInputsStatic");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
@@ -350,8 +350,8 @@ mod test {
         assert!(result_and_state.result.is_success());
     }
 
-    #[test]
-    fn test_get_call_inputs_proxy() {
+    #[tokio::test]
+    async fn test_get_call_inputs_proxy() {
         let result = run_precompile_test("TestGetCallInputsProxy");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
@@ -359,8 +359,8 @@ mod test {
         assert!(result_and_state.result.is_success());
     }
 
-    #[test]
-    fn test_get_call_inputs_call_code() {
+    #[tokio::test]
+    async fn test_get_call_inputs_call_code() {
         let result = run_precompile_test("TestGetCallInputsCallCode");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
@@ -368,8 +368,8 @@ mod test {
         assert!(result_and_state.result.is_success());
     }
 
-    #[test]
-    fn test_get_call_inputs_delegate() {
+    #[tokio::test]
+    async fn test_get_call_inputs_delegate() {
         let result = run_precompile_test("TestGetCallInputsDelegate");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
@@ -377,8 +377,8 @@ mod test {
         assert!(result_and_state.result.is_success());
     }
 
-    #[test]
-    fn test_get_call_inputs_all_calls() {
+    #[tokio::test]
+    async fn test_get_call_inputs_all_calls() {
         let result = run_precompile_test("TestGetCallInputsAllCalls");
         assert!(result.is_valid(), "{result:#?}");
         assert_eq!(result.assertions_executions.len(), 1, "{result:#?}");
