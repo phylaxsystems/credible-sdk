@@ -604,12 +604,11 @@ mod test_multi_fork {
     }
 
     #[test]
-    fn test_switch_fork_reverted_call_rejected() {
+    fn test_switch_fork_with_truncation() {
         let sender: Address = random_bytes::<20>().into();
         let pre_tx_fork_db = setup_fork_db(sender);
         let mut active_journal = JournalInner::new();
 
-        // Create a call tracer with a reverted call
         let mut call_tracer = CallTracer::default();
         let call_inputs = CallInputs {
             caller: sender,
@@ -624,16 +623,16 @@ mod test_multi_fork {
             known_bytecode: None,
         };
 
-        // Call 0
+        // Call 0 (idx 0)
         active_journal.depth = 0;
         call_tracer.record_call_start(call_inputs.clone(), &Bytes::from(""), &mut active_journal);
 
-        // Call 1
+        // Call 1 reverts -> truncated (no longer exists)
         active_journal.depth = 1;
         call_tracer.record_call_start(call_inputs.clone(), &Bytes::from(""), &mut active_journal);
-        call_tracer.record_call_end(&mut active_journal, true); // REVERT
+        call_tracer.record_call_end(&mut active_journal, true);
 
-        // Call 2
+        // Call 2 succeeds -> takes index 1
         active_journal.depth = 1;
         call_tracer.record_call_start(call_inputs, &Bytes::from(""), &mut active_journal);
         call_tracer.record_call_end(&mut active_journal, false);
@@ -643,20 +642,20 @@ mod test_multi_fork {
 
         let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
 
-        // Try to fork to reverted call (id=1): should fail
-        let result = db.switch_fork(ForkId::PreCall(1), &mut active_journal, &call_tracer);
-        assert!(matches!(
-            result,
-            Err(MultiForkError::CallInsideRevertedSubtree { call_id: 1 })
-        ));
-
-        // Try to fork to valid call (id=0): should succeed
+        // Fork to call id=0 (Call 0): should succeed
         let result = db.switch_fork(ForkId::PreCall(0), &mut active_journal, &call_tracer);
         assert!(result.is_ok());
 
-        // Try to fork to valid call (id=2): should succeed
-        let result = db.switch_fork(ForkId::PreCall(2), &mut active_journal, &call_tracer);
+        // Fork to call id=1 (Call 2, not the reverted one): should succeed
+        let result = db.switch_fork(ForkId::PreCall(1), &mut active_journal, &call_tracer);
         assert!(result.is_ok());
+
+        // Fork to call id=2: out of bounds, should fail
+        let result = db.switch_fork(ForkId::PreCall(2), &mut active_journal, &call_tracer);
+        assert!(matches!(
+            result,
+            Err(MultiForkError::CallInsideRevertedSubtree { call_id: 2 })
+        ));
     }
 
     #[test]

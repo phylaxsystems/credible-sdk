@@ -109,7 +109,6 @@ pub struct CallTracer {
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
     pub result: Result<(), CallTracerError>,
     call_depths: Vec<usize>,
-    call_reverted: Vec<bool>,
 }
 impl Default for CallTracer {
     fn default() -> Self {
@@ -124,7 +123,6 @@ impl Default for CallTracer {
             result: Ok(()),
             adopter_cache: HashMap::new(),
             call_depths: Vec::new(),
-            call_reverted: Vec::new(),
         }
     }
 }
@@ -148,7 +146,6 @@ impl CallTracer {
             result: Ok(()),
             call_depths: Vec::new(),
             adopter_cache: HashMap::new(),
-            call_reverted: Vec::new(),
         }
     }
 
@@ -228,7 +225,6 @@ impl CallTracer {
             .push(index);
 
         self.call_depths.push(depth);
-        self.call_reverted.push(false);
         self.call_inputs.push(inputs);
     }
 
@@ -237,26 +233,19 @@ impl CallTracer {
         journal_inner: &mut JournalInner<JournalEntry>,
         reverted: bool,
     ) {
-        let checkpoint = JournalCheckpoint {
-            log_i: journal_inner.logs.len(),
-            journal_i: journal_inner.journal.len(),
-        };
-
         if let Some(index) = self.pending_post_call_writes.remove(&journal_inner.depth) {
-            if self.post_call_checkpoints.len() <= index {
-                error!(target: "assertion-executor::call_tracer", index, "Post call checkpoint not initialized as None");
-                self.result = Err(CallTracerError::PostCallCheckpointNotInitialized { index });
-                return;
-            }
-            self.post_call_checkpoints[index] = Some(checkpoint);
-
             if reverted {
-                let depth = self.call_depths[index];
-                for i in index..self.call_reverted.len() {
-                    if self.call_depths[i] >= depth {
-                        self.call_reverted[i] = true;
-                    }
+                self.truncate_from(index);
+            } else {
+                if self.post_call_checkpoints.len() <= index {
+                    error!(target: "assertion-executor::call_tracer", index, "Post call checkpoint not initialized as None");
+                    self.result = Err(CallTracerError::PostCallCheckpointNotInitialized { index });
+                    return;
                 }
+                self.post_call_checkpoints[index] = Some(JournalCheckpoint {
+                    log_i: journal_inner.logs.len(),
+                    journal_i: journal_inner.journal.len(),
+                });
             }
         } else {
             error!(target: "assertion-executor::call_tracer", depth = journal_inner.depth, "Pending post call write not found");
@@ -266,18 +255,33 @@ impl CallTracer {
         }
     }
 
+    /// Truncate all call data from the given index onwards.
+    /// Called when a call reverts to remove it and all its descendants.
+    fn truncate_from(&mut self, index: usize) {
+        // Clean up target_and_selector_indices first
+        self.target_and_selector_indices.retain(|_, indices| {
+            indices.retain(|&idx| idx < index);
+            !indices.is_empty()
+        });
+
+        // Clean up any pending writes for children that haven't ended
+        self.pending_post_call_writes
+            .retain(|_, &mut idx| idx < index);
+
+        // Truncate all vectors
+        self.call_inputs.truncate(index);
+        self.pre_call_checkpoints.truncate(index);
+        self.post_call_checkpoints.truncate(index);
+        self.call_depths.truncate(index);
+    }
+
     pub fn calls(&self) -> HashSet<Address> {
         // TODO: Think about storing the call targets in a set in addition to the call inputs
         // to see if it improves performance
+        // No filtering needed since all recorded calls are valid
         self.target_and_selector_indices
-            .iter()
-            .filter(|(_, indices)| {
-                // Only include if at least one non-reverted call exists
-                indices
-                    .iter()
-                    .any(|&idx| idx < self.call_reverted.len() && !self.call_reverted[idx])
-            })
-            .map(|(key, _)| key.target)
+            .keys()
+            .map(|key| key.target)
             .collect()
     }
 
@@ -286,21 +290,21 @@ impl CallTracer {
         target: Address,
         selector: FixedBytes<4>,
     ) -> Vec<CallInputsWithId<'_>> {
+        // No filtering needed since all recorded calls are valid
         match self
             .target_and_selector_indices
             .get(&TargetAndSelector { target, selector })
         {
             Some(indices) => {
-                let mut call_inputs = Vec::with_capacity(indices.len());
-                for &index in indices {
-                    if index < self.call_reverted.len() && !self.call_reverted[index] {
-                        call_inputs.push(CallInputsWithId {
+                indices
+                    .iter()
+                    .map(|&index| {
+                        CallInputsWithId {
                             call_input: &self.call_inputs[index],
                             id: index,
-                        });
-                    }
-                }
-                call_inputs
+                        }
+                    })
+                    .collect()
             }
             None => vec![],
         }
@@ -309,7 +313,7 @@ impl CallTracer {
     /// Check if a call is valid for forking (not inside a reverted subtree)
     #[inline]
     pub fn is_call_forkable(&self, call_id: usize) -> bool {
-        call_id < self.call_reverted.len() && !self.call_reverted[call_id]
+        call_id < self.call_inputs.len()
     }
 
     #[cfg(any(test, feature = "test"))]
@@ -340,7 +344,6 @@ impl CallTracer {
         });
 
         self.call_depths.push(0);
-        self.call_reverted.push(false);
     }
 
     pub fn triggers(&self) -> HashMap<Address, HashSet<TriggerType>> {
@@ -348,31 +351,20 @@ impl CallTracer {
         let journal = &self.journal;
 
         // Record call triggers
-        for (target_and_selector, indices) in &self.target_and_selector_indices {
-            // Check if ANY of the calls with this target+selector are non-reverted
-            let has_valid_call = indices
-                .iter()
-                .any(|&idx| idx < self.call_reverted.len() && !self.call_reverted[idx]);
-
-            if has_valid_call {
-                result
-                    .entry(target_and_selector.target)
-                    .or_default()
-                    .insert(TriggerType::Call {
-                        trigger_selector: target_and_selector.selector,
-                    });
-            }
+        for TargetAndSelector { target, selector } in self.target_and_selector_indices.keys() {
+            result
+                .entry(*target)
+                .or_default()
+                .insert(TriggerType::Call {
+                    trigger_selector: *selector,
+                });
         }
 
         // Process journal entries for balance changes
         // Flatten the two-dimensional journal array
         for entry in &journal.journal {
             match entry {
-                JournalEntry::BalanceTransfer {
-                    from,
-                    to,
-                    balance: _,
-                } => {
+                JournalEntry::BalanceTransfer { from, to, .. } => {
                     // Add balance change trigger for both from and to addresses
                     for addr in [from, to] {
                         result
@@ -381,12 +373,7 @@ impl CallTracer {
                             .insert(TriggerType::BalanceChange);
                     }
                 }
-
-                JournalEntry::StorageChanged {
-                    address,
-                    key,
-                    had_value: _,
-                } => {
+                JournalEntry::StorageChanged { address, key, .. } => {
                     result
                         .entry(*address)
                         .or_default()
@@ -1049,14 +1036,11 @@ mod test {
         journal.depth = 0;
         tracer.record_call_end(&mut journal, false);
 
+        assert_eq!(tracer.call_inputs.len(), 2);
         assert!(tracer.is_call_forkable(0), "Call 0 should be forkable");
         assert!(
-            !tracer.is_call_forkable(1),
-            "Call 1 should NOT be forkable (reverted)"
-        );
-        assert!(
-            tracer.is_call_forkable(2),
-            "Call 2 should be forkable (sibling, not affected)"
+            tracer.is_call_forkable(1),
+            "Call 2 (at index 1) should be forkable"
         );
     }
 
@@ -1196,6 +1180,7 @@ mod test {
     #[test]
     fn test_call_after_revert_at_same_depth_is_forkable() {
         // Call 0 -> Call 1 (reverts), Call 2 (same depth, succeeds)
+        // This is the critical case from the original bug description
 
         let mut tracer = CallTracer::default();
         let addr = address!("1111111111111111111111111111111111111111");
@@ -1235,11 +1220,11 @@ mod test {
         journal.depth = 0;
         tracer.record_call_end(&mut journal, false);
 
+        assert_eq!(tracer.call_inputs.len(), 2);
         assert!(tracer.is_call_forkable(0));
-        assert!(!tracer.is_call_forkable(1), "Call 1 reverted");
         assert!(
-            tracer.is_call_forkable(2),
-            "Call 2 came after revert, should be forkable"
+            tracer.is_call_forkable(1),
+            "Call 2 at index 1 should be forkable"
         );
     }
 
@@ -1414,56 +1399,6 @@ mod test {
                     trigger_selector: selector2
                 })
         );
-    }
-
-    #[test]
-    fn test_get_call_inputs_excludes_reverted() {
-        let mut tracer = CallTracer::default();
-        let addr = address!("1111111111111111111111111111111111111111");
-        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
-        let input_bytes: Bytes = selector.into();
-
-        let make_call_inputs = || {
-            CallInputs {
-                input: CallInput::Bytes(input_bytes.clone()),
-                return_memory_offset: 0..0,
-                gas_limit: 0,
-                bytecode_address: addr,
-                known_bytecode: None,
-                target_address: addr,
-                caller: addr,
-                value: CallValue::default(),
-                scheme: CallScheme::Call,
-                is_static: false,
-            }
-        };
-
-        let mut journal = JournalInner::new();
-
-        // Three calls to same address/selector
-        // Call 0 - succeeds
-        journal.depth = 0;
-        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
-
-        // Call 1 - will revert
-        journal.depth = 1;
-        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
-        tracer.record_call_end(&mut journal, true);
-
-        // Call 2 - succeeds
-        journal.depth = 1;
-        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
-        tracer.record_call_end(&mut journal, false);
-
-        journal.depth = 0;
-        tracer.record_call_end(&mut journal, false);
-
-        let calls = tracer.get_call_inputs(addr, selector);
-
-        // Should only get 2 calls (0 and 2), not the reverted one (1)
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].id, 0);
-        assert_eq!(calls[1].id, 2);
     }
 
     #[test]
