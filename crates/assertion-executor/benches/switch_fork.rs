@@ -40,28 +40,37 @@ fn seeded_state() -> (InMemoryDB, JournalInner<JournalEntry>) {
     let mut pre_tx_db = InMemoryDB::default();
     let mut post_tx_journal = JournalInner::new();
 
-    // Seed some accounts and storage into both the pre-tx DB and the post-tx journal
-    for i in 0u8..8 {
+    // Seed more accounts and storage into both the pre-tx DB and the post-tx journal
+    for i in 0..80000 {
         let mut addr_bytes = [0u8; 20];
-        addr_bytes[19] = i;
+        addr_bytes[18] = (i >> 8) as u8;
+        addr_bytes[19] = i as u8;
         let addr = Address::from(addr_bytes);
 
         pre_tx_db.insert_account_info(
             addr,
             AccountInfo {
-                balance: U256::from(1_000 + i as u64),
+                balance: U256::from(10_000 + i as u64),
                 ..Default::default()
             },
         );
 
         let mut storage = HashMap::with_hasher(DefaultHashBuilder::default());
         storage.insert(U256::from(1), EvmStorageSlot::new(U256::from(i as u64), 0));
+        storage.insert(
+            U256::from(2),
+            EvmStorageSlot::new(U256::from(i as u64 + 1), 0),
+        );
+        storage.insert(
+            U256::from(3),
+            EvmStorageSlot::new(U256::from(i as u64 + 2), 0),
+        );
 
         post_tx_journal.state.insert(
             addr,
             Account {
                 info: AccountInfo {
-                    balance: U256::from(2_000 + i as u64),
+                    balance: U256::from(20_000 + i as u64),
                     ..Default::default()
                 },
                 transaction_id: 0,
@@ -108,22 +117,9 @@ fn prepare_templates() -> (
     CallTracer,
 ) {
     let (pre_tx_db, post_tx_journal) = seeded_state();
-    let mut db = MultiForkDb::new(pre_tx_db, &post_tx_journal);
-    let mut active_journal = post_tx_journal.clone();
+    let db = MultiForkDb::new(pre_tx_db, &post_tx_journal);
+    let active_journal = post_tx_journal.clone();
     let tracer = seeded_tracer();
-
-    // Pre-create forks with the seeded data; return to PostTx as the starting point.
-    for fork in [
-        ForkId::PreTx,
-        ForkId::PostTx,
-        ForkId::PreCall(0),
-        ForkId::PostTx,
-        ForkId::PostCall(0),
-        ForkId::PostTx,
-    ] {
-        db.switch_fork(fork, &mut active_journal, &tracer)
-            .expect("fork creation");
-    }
 
     (db, active_journal, tracer)
 }
@@ -131,6 +127,7 @@ fn prepare_templates() -> (
 fn time_switches(
     c: &mut Criterion,
     name: &str,
+    mut warmup: impl FnMut(&mut MultiForkDb<InMemoryDB>, &mut JournalInner<JournalEntry>, &CallTracer),
     mut body: impl FnMut(&mut MultiForkDb<InMemoryDB>, &mut JournalInner<JournalEntry>, &CallTracer),
 ) {
     c.bench_function(name, |b| {
@@ -142,6 +139,8 @@ fn time_switches(
                 let mut active_journal = journal_template.clone();
                 let tracer = tracer_template.clone();
 
+                warmup(&mut db, &mut active_journal, &tracer);
+
                 let start = Instant::now();
                 body(&mut db, &mut active_journal, &tracer);
                 total += start.elapsed();
@@ -152,26 +151,55 @@ fn time_switches(
 }
 
 fn bench_switch_noop_post_tx(c: &mut Criterion) {
-    time_switches(c, "switch_fork_post_tx_noop_10k", |db, journal, tracer| {
-        for _ in 0..10_000 {
-            db.switch_fork(ForkId::PostTx, journal, tracer).unwrap();
-        }
-    });
+    time_switches(
+        c,
+        "switch_fork_post_tx_noop_10k",
+        |_, _, _| {},
+        |db, journal, tracer| {
+            for _ in 0..10_000 {
+                db.switch_fork(ForkId::PostTx, journal, tracer).unwrap();
+            }
+        },
+    );
 }
 
 fn bench_switch_pre_tx_toggle(c: &mut Criterion) {
-    time_switches(c, "switch_fork_pre_tx_toggle_10k", |db, journal, tracer| {
-        for _ in 0..10_000 {
+    time_switches(
+        c,
+        "switch_fork_pre_tx_toggle_10k",
+        |_, _, _| {},
+        |db, journal, tracer| {
+            for _ in 0..10_000 {
+                db.switch_fork(ForkId::PreTx, journal, tracer).unwrap();
+                db.switch_fork(ForkId::PostTx, journal, tracer).unwrap();
+            }
+        },
+    );
+}
+
+fn bench_switch_pre_tx_toggle_warm(c: &mut Criterion) {
+    time_switches(
+        c,
+        "switch_fork_pre_tx_toggle_warm_10k",
+        |db, journal, tracer| {
+            // ensure fork exists and journals are aligned before measurement
             db.switch_fork(ForkId::PreTx, journal, tracer).unwrap();
             db.switch_fork(ForkId::PostTx, journal, tracer).unwrap();
-        }
-    });
+        },
+        |db, journal, tracer| {
+            for _ in 0..10_000 {
+                db.switch_fork(ForkId::PreTx, journal, tracer).unwrap();
+                db.switch_fork(ForkId::PostTx, journal, tracer).unwrap();
+            }
+        },
+    );
 }
 
 fn bench_switch_pre_call_toggle(c: &mut Criterion) {
     time_switches(
         c,
         "switch_fork_pre_call_toggle_10k",
+        |_, _, _| {},
         |db, journal, tracer| {
             for _ in 0..10_000 {
                 db.switch_fork(ForkId::PreCall(0), journal, tracer).unwrap();
@@ -185,6 +213,7 @@ fn bench_switch_post_call_toggle(c: &mut Criterion) {
     time_switches(
         c,
         "switch_fork_post_call_toggle_10k",
+        |_, _, _| {},
         |db, journal, tracer| {
             for _ in 0..10_000 {
                 db.switch_fork(ForkId::PostCall(0), journal, tracer)
@@ -199,6 +228,7 @@ criterion_group!(
     benches,
     bench_switch_noop_post_tx,
     bench_switch_pre_tx_toggle,
+    bench_switch_pre_tx_toggle_warm,
     bench_switch_pre_call_toggle,
     bench_switch_post_call_toggle
 );
