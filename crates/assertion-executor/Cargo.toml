@@ -52,7 +52,7 @@ moka = { workspace = true }
 enum-as-inner = { workspace = true }
 url = { workspace = true }
 evm-glue = { workspace = true }
-
+rapidhash = "4.1.1"
 
 [features]
 default = ["full-test"]

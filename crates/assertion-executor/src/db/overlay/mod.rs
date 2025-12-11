@@ -13,7 +13,10 @@
 
 #![allow(clippy::double_parens)]
 
-use super::fork_db::{ForkDb, ForkStorageMap};
+use super::fork_db::{
+    ForkDb,
+    ForkStorageMap,
+};
 use crate::{
     db::{
         Database,
@@ -289,28 +292,28 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
     fn storage_ref(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
         let key = TableKey::Storage(address);
 
-        if let Some(mut entry) = self.overlay.get_mut(&key) {
-            if let Some(storage_map) = entry.as_storage_mut() {
-                if let Some(value) = storage_map.map.get(&slot) {
-                    counter!("assex_overlay_db_storage_ref_hits").increment(1);
-                    return Ok(*value);
-                }
+        if let Some(mut entry) = self.overlay.get_mut(&key)
+            && let Some(storage_map) = entry.as_storage_mut()
+        {
+            if let Some(value) = storage_map.map.get(&slot) {
+                counter!("assex_overlay_db_storage_ref_hits").increment(1);
+                return Ok(*value);
+            }
 
-                if storage_map.dont_read_from_inner_db {
-                    counter!("assex_overlay_db_storage_ref_hits").increment(1);
-                    return Ok(U256::ZERO);
-                }
-
-                counter!("assex_overlay_db_storage_ref_misses").increment(1);
-
-                if let Some(db) = self.underlying_db.as_ref() {
-                    let value_u256 = db.storage_ref(address, slot).map_err(|_| NotFoundError)?;
-                    storage_map.map.insert(slot, value_u256);
-                    return Ok(value_u256);
-                }
-
+            if storage_map.dont_read_from_inner_db {
+                counter!("assex_overlay_db_storage_ref_hits").increment(1);
                 return Ok(U256::ZERO);
             }
+
+            counter!("assex_overlay_db_storage_ref_misses").increment(1);
+
+            if let Some(db) = self.underlying_db.as_ref() {
+                let value_u256 = db.storage_ref(address, slot).map_err(|_| NotFoundError)?;
+                storage_map.map.insert(slot, value_u256);
+                return Ok(value_u256);
+            }
+
+            return Ok(U256::ZERO);
         }
 
         counter!("assex_overlay_db_storage_ref_misses").increment(1);
@@ -800,10 +803,12 @@ mod overlay_db_tests {
             .overlay
             .get(&TableKey::Storage(addr))
             .expect("created account should insert storage entry");
-        assert!(storage_entry
-            .as_storage()
-            .expect("storage entry should be ForkStorageMap")
-            .dont_read_from_inner_db);
+        assert!(
+            storage_entry
+                .as_storage()
+                .expect("storage entry should be ForkStorageMap")
+                .dont_read_from_inner_db
+        );
         drop(storage_entry);
 
         assert_eq!(mock_db.get_storage_calls(), 0);

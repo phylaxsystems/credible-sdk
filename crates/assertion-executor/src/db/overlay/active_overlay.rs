@@ -5,8 +5,8 @@ use crate::{
         DatabaseRef,
         NotFoundError,
         overlay::{
-            ForkStorageMap,
             ForkDb,
+            ForkStorageMap,
             TableKey,
             TableValue,
         },
@@ -142,29 +142,29 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
     ) -> Result<U256, <Self as DatabaseRef>::Error> {
         let key = TableKey::Storage(address);
 
-        if let Some(mut entry) = self.overlay.get_mut(&key) {
-            if let Some(storage_map) = entry.as_storage_mut() {
-                if let Some(value) = storage_map.map.get(&slot) {
-                    counter!("assex_active_overlay_db_storage_ref_hits").increment(1);
-                    return Ok(*value);
-                }
-
-                if storage_map.dont_read_from_inner_db {
-                    counter!("assex_active_overlay_db_storage_ref_hits").increment(1);
-                    return Ok(U256::ZERO);
-                }
-
-                counter!("assex_active_overlay_db_storage_ref_misses").increment(1);
-
-                let value_u256 = unsafe {
-                    self.active_db
-                        .as_mut_unchecked()
-                        .storage(address, slot)
-                        .map_err(|_| NotFoundError)?
-                };
-                storage_map.map.insert(slot, value_u256);
-                return Ok(value_u256);
+        if let Some(mut entry) = self.overlay.get_mut(&key)
+            && let Some(storage_map) = entry.as_storage_mut()
+        {
+            if let Some(value) = storage_map.map.get(&slot) {
+                counter!("assex_active_overlay_db_storage_ref_hits").increment(1);
+                return Ok(*value);
             }
+
+            if storage_map.dont_read_from_inner_db {
+                counter!("assex_active_overlay_db_storage_ref_hits").increment(1);
+                return Ok(U256::ZERO);
+            }
+
+            counter!("assex_active_overlay_db_storage_ref_misses").increment(1);
+
+            let value_u256 = unsafe {
+                self.active_db
+                    .as_mut_unchecked()
+                    .storage(address, slot)
+                    .map_err(|_| NotFoundError)?
+            };
+            storage_map.map.insert(slot, value_u256);
+            return Ok(value_u256);
         }
 
         counter!("assex_active_overlay_db_storage_ref_misses").increment(1);
@@ -617,17 +617,16 @@ mod active_overlay_tests {
         let storage_entry = overlay_cache
             .get(&TableKey::Storage(addr))
             .expect("created account should insert storage entry");
-        assert!(storage_entry
-            .as_storage()
-            .expect("storage entry should be ForkStorageMap")
-            .dont_read_from_inner_db);
+        assert!(
+            storage_entry
+                .as_storage()
+                .expect("storage entry should be ForkStorageMap")
+                .dont_read_from_inner_db
+        );
         drop(storage_entry);
 
         assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 0);
-        assert_eq!(
-            active_overlay.storage_ref(addr, slot).unwrap(),
-            U256::ZERO
-        );
+        assert_eq!(active_overlay.storage_ref(addr, slot).unwrap(), U256::ZERO);
         assert_eq!(
             get_mock_db_field!(mock_db_arc, get_storage_calls),
             0,
