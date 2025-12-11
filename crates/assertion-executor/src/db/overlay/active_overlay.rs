@@ -251,7 +251,7 @@ impl<Db> DatabaseCommit for ActiveOverlay<Db> {
             }
 
             // Update storage slots in shared cache
-            if is_created || account.storage.is_some() {
+            if is_created || !account.storage.is_empty() {
                 let storage_key = TableKey::Storage(address);
                 let mut new_storage: HashMap<U256, U256, RandomState> = account
                     .storage
