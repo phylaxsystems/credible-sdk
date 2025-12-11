@@ -191,45 +191,17 @@ impl StateWorker {
     async fn process_block(&mut self, block_number: u64) -> Result<()> {
         info!(block_number, "processing block");
 
-        let mut update = match self.trace_provider.fetch_block_state(block_number).await {
+        if block_number == 0 && self.genesis_state.is_some() {
+            return self.process_genesis_block().await;
+        }
+
+        let update = match self.trace_provider.fetch_block_state(block_number).await {
             Ok(update) => update,
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to trace block");
                 return Err(anyhow!("failed to trace block {block_number}"));
             }
         };
-
-        if block_number == 0 && update.accounts.is_empty() {
-            let already_exists = self
-                .redis
-                .latest_block_number()
-                .context("failed to check if genesis already exists")?
-                .is_some();
-
-            if already_exists {
-                info!("block 0 already exists in redis; skipping genesis hydration");
-            } else {
-                match self.genesis_state.take() {
-                    Some(genesis) => {
-                        let accounts = genesis.into_accounts();
-                        if accounts.is_empty() {
-                            warn!("genesis file contained no accounts; skipping hydration");
-                        } else {
-                            info!("hydrating genesis state from genesis file");
-                            update = BlockStateUpdateBuilder::from_accounts(
-                                block_number,
-                                update.block_hash,
-                                update.state_root,
-                                accounts,
-                            );
-                        }
-                    }
-                    None => {
-                        warn!("no genesis state configured; skipping genesis hydration");
-                    }
-                }
-            }
-        }
 
         match self.redis.commit_block(update) {
             Ok(()) => (),
@@ -240,6 +212,57 @@ impl StateWorker {
         }
 
         info!(block_number, "block persisted to redis");
+        Ok(())
+    }
+
+    /// Process block 0 using the configured genesis state
+    async fn process_genesis_block(&mut self) -> Result<()> {
+        let Some(genesis) = self.genesis_state.take() else {
+            warn!("no genesis state configured; skipping genesis hydration");
+            return Ok(());
+        };
+
+        let already_exists = self
+            .redis
+            .latest_block_number()
+            .context("failed to check if genesis already exists")?
+            .is_some();
+
+        if already_exists {
+            info!("block 0 already exists in redis; skipping genesis hydration");
+            return Ok(());
+        }
+
+        let accounts = genesis.into_accounts();
+        if accounts.is_empty() {
+            warn!("genesis file contained no accounts; skipping hydration");
+            return Ok(());
+        }
+
+        // Fetch genesis block header to get hash and state root
+        let block = self
+            .provider
+            .get_block_by_number(0.into())
+            .await?
+            .context("genesis block not found on chain")?;
+
+        info!("hydrating genesis state from genesis file");
+        let update = BlockStateUpdateBuilder::from_accounts(
+            0,
+            block.header.hash,
+            block.header.state_root,
+            accounts,
+        );
+
+        match self.redis.commit_block(update) {
+            Ok(()) => (),
+            Err(err) => {
+                critical!(error = ?err, block_number = 0, "failed to persist genesis block");
+                return Err(anyhow!("failed to persist genesis block"));
+            }
+        }
+
+        info!(block_number = 0, "genesis block persisted to redis");
         Ok(())
     }
 }
