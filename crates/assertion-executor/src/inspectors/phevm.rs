@@ -63,6 +63,16 @@ use revm::{
 use alloy_evm::eth::EthEvmContext;
 use alloy_sol_types::SolCall;
 
+/// Result of phevm precompile output.
+/// Includes return data and gas deducted.
+#[derive(Debug, Clone)]
+pub struct PhevmOutcome {
+    /// Resulting outcome of calling the precompile.
+    bytes: Bytes,
+    /// Gas spent calling the precompile.
+    gas: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct LogsAndTraces<'a> {
     pub tx_logs: &'a [Log],
