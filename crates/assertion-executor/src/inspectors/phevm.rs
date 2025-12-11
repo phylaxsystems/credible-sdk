@@ -74,10 +74,7 @@ pub struct PhevmOutcome {
 
 impl PhevmOutcome {
     pub fn new(bytes: Bytes, gas: u64) -> Self {
-        Self {
-            bytes,
-            gas,
-        }
+        Self { bytes, gas }
     }
 
     pub fn gas(&self) -> u64 {

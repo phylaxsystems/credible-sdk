@@ -1,5 +1,9 @@
-use crate::{
-    inspectors::phevm::{PhEvmContext, PhevmOutcome},
+use crate::inspectors::{
+    phevm::{
+        PhEvmContext,
+        PhevmOutcome,
+    },
+    precompiles::BASE_COST,
 };
 
 use alloy_sol_types::SolValue;
@@ -7,7 +11,10 @@ use std::convert::Infallible;
 
 /// Returns the assertion adopter as a bytes array
 pub fn get_assertion_adopter(context: &PhEvmContext) -> Result<PhevmOutcome, Infallible> {
-    Ok(PhevmOutcome::new(context.adopter.abi_encode().into(), 9))
+    Ok(PhevmOutcome::new(
+        context.adopter.abi_encode().into(),
+        BASE_COST + 9,
+    ))
 }
 
 #[cfg(test)]
@@ -80,8 +87,7 @@ mod test {
         let outcome = with_adopter_context(adopter, get_assertion_adopter).unwrap();
         let available_gas = 100;
 
-        let call_outcome =
-            inspector_result_to_call_outcome(Ok(outcome), available_gas, 0..0);
+        let call_outcome = inspector_result_to_call_outcome(Ok(outcome), available_gas, 0..0);
 
         assert_eq!(call_outcome.result.gas.remaining(), available_gas - 12);
 
