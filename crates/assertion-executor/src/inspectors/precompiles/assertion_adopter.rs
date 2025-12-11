@@ -1,14 +1,13 @@
 use crate::{
-    inspectors::phevm::PhEvmContext,
-    primitives::Bytes,
+    inspectors::phevm::{PhEvmContext, PhevmOutcome},
 };
 
 use alloy_sol_types::SolValue;
 use std::convert::Infallible;
 
 /// Returns the assertion adopter as a bytes array
-pub fn get_assertion_adopter(context: &PhEvmContext) -> Result<Bytes, Infallible> {
-    Ok(context.adopter.abi_encode().into())
+pub fn get_assertion_adopter(context: &PhEvmContext) -> Result<PhevmOutcome, Infallible> {
+    Ok(PhevmOutcome::new(context.adopter.abi_encode().into(), 12))
 }
 
 #[cfg(test)]

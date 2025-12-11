@@ -23,8 +23,6 @@ pub use trigger_recorder::{
 
 use sol_primitives::Error;
 
-use crate::primitives::Bytes;
-
 pub use revm::inspector::NoOpInspector;
 
 use revm::interpreter::{
@@ -38,20 +36,22 @@ use alloy_sol_types::SolError;
 
 use std::ops::Range;
 
+use crate::inspectors::phevm::PhevmOutcome;
+
 /// Convert a result to a call outcome.
 /// Uses the default require [`Error`] signature for encoding revert messages.
 pub fn inspector_result_to_call_outcome<E: std::fmt::Display>(
-    result: Result<Bytes, E>,
-    gas: Gas,
+    result: Result<PhevmOutcome, E>,
     memory_offset: Range<usize>,
 ) -> CallOutcome {
     match result {
         Ok(output) => {
+            let (output, gas_used) = output.into_parts();
             CallOutcome {
                 result: InterpreterResult {
                     result: InstructionResult::Return,
                     output,
-                    gas,
+                    gas: Gas::new(gas_used),
                 },
                 memory_offset,
                 was_precompile_called: false,
@@ -63,7 +63,7 @@ pub fn inspector_result_to_call_outcome<E: std::fmt::Display>(
                 result: InterpreterResult {
                     result: InstructionResult::Revert,
                     output: Error::abi_encode(&Error(e.to_string())).into(),
-                    gas,
+                    gas: Gas::new(0),
                 },
                 memory_offset,
                 was_precompile_called: false,

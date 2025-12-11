@@ -55,7 +55,6 @@ use revm::{
         CallInputs,
         CallOutcome,
         CallScheme,
-        Gas,
     },
     primitives::Log,
 };
@@ -71,6 +70,29 @@ pub struct PhevmOutcome {
     bytes: Bytes,
     /// Gas spent calling the precompile.
     gas: u64,
+}
+
+impl PhevmOutcome {
+    pub fn new(bytes: Bytes, gas: u64) -> Self {
+        Self {
+            bytes,
+            gas,
+        }
+    }
+
+    pub fn gas(&self) -> u64 {
+        self.gas
+    }
+
+    pub fn into_parts(self) -> (Bytes, u64) {
+        (self.bytes, self.gas)
+    }
+}
+
+impl From<Bytes> for PhevmOutcome {
+    fn from(bytes: Bytes) -> Self {
+        Self::new(bytes, 0)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -137,7 +159,7 @@ impl<'a> PhEvmInspector<'a> {
         &mut self,
         context: &mut CTX,
         inputs: &mut CallInputs,
-    ) -> Result<Bytes, PrecompileError<ExtDb>>
+    ) -> Result<PhevmOutcome, PrecompileError<ExtDb>>
     where
         CTX: ContextTr<
                 Db = &'db mut MultiForkDb<ExtDb>,
@@ -145,7 +167,7 @@ impl<'a> PhEvmInspector<'a> {
             >,
     {
         let input_bytes = inputs.input.bytes(context);
-        let result = match input_bytes
+        let outcome = match input_bytes
             .get(0..4)
             .unwrap_or_default()
             .try_into()
@@ -153,10 +175,12 @@ impl<'a> PhEvmInspector<'a> {
         {
             PhEvm::forkPreTxCall::SELECTOR => {
                 fork_pre_tx(context, self.context.logs_and_traces.call_traces)
+                    .map(PhevmOutcome::from)
                     .map_err(PrecompileError::ForkError)?
             }
             PhEvm::forkPostTxCall::SELECTOR => {
                 fork_post_tx(context, self.context.logs_and_traces.call_traces)
+                    .map(PhevmOutcome::from)
                     .map_err(PrecompileError::ForkError)?
             }
             PhEvm::forkPreCallCall::SELECTOR => {
@@ -165,6 +189,7 @@ impl<'a> PhEvmInspector<'a> {
                     self.context.logs_and_traces.call_traces,
                     &input_bytes,
                 )
+                .map(PhevmOutcome::from)
                 .map_err(PrecompileError::ForkError)?
             }
             PhEvm::forkPostCallCall::SELECTOR => {
@@ -173,14 +198,18 @@ impl<'a> PhEvmInspector<'a> {
                     self.context.logs_and_traces.call_traces,
                     &input_bytes,
                 )
+                .map(PhevmOutcome::from)
                 .map_err(PrecompileError::ForkError)?
             }
             PhEvm::loadCall::SELECTOR => {
                 load_external_slot(context, inputs)
+                    .map(PhevmOutcome::from)
                     .map_err(PrecompileError::LoadExternalSlotError)?
             }
             PhEvm::getLogsCall::SELECTOR => {
-                get_logs(&self.context).map_err(PrecompileError::UnexpectedError)?
+                get_logs(&self.context)
+                    .map(PhevmOutcome::from)
+                    .map_err(PrecompileError::UnexpectedError)?
             }
             PhEvm::getAllCallInputsCall::SELECTOR => {
                 let inputs = PhEvm::getAllCallInputsCall::abi_decode(&inputs.input.bytes(context))
@@ -190,7 +219,8 @@ impl<'a> PhEvmInspector<'a> {
                         )
                     })?;
                 get_call_inputs(&self.context, inputs.target, inputs.selector, None)
-                    .map_err(|err| PrecompileError::GetCallInputsError(err))?
+                    .map(PhevmOutcome::from)
+                    .map_err(PrecompileError::GetCallInputsError)?
             }
             PhEvm::getCallInputsCall::SELECTOR => {
                 let inputs = PhEvm::getCallInputsCall::abi_decode(&inputs.input.bytes(context))
@@ -205,7 +235,8 @@ impl<'a> PhEvmInspector<'a> {
                     inputs.selector,
                     Some(CallScheme::Call),
                 )
-                .map_err(|err| PrecompileError::GetCallInputsError(err))?
+                .map(PhevmOutcome::from)
+                .map_err(PrecompileError::GetCallInputsError)?
             }
             PhEvm::getStaticCallInputsCall::SELECTOR => {
                 let inputs =
@@ -221,7 +252,8 @@ impl<'a> PhEvmInspector<'a> {
                     inputs.selector,
                     Some(CallScheme::StaticCall),
                 )
-                .map_err(|err| PrecompileError::GetCallInputsError(err))?
+                .map(PhevmOutcome::from)
+                .map_err(PrecompileError::GetCallInputsError)?
             }
             PhEvm::getDelegateCallInputsCall::SELECTOR => {
                 let inputs =
@@ -237,7 +269,8 @@ impl<'a> PhEvmInspector<'a> {
                     inputs.selector,
                     Some(CallScheme::DelegateCall),
                 )
-                .map_err(|err| PrecompileError::GetCallInputsError(err))?
+                .map(PhevmOutcome::from)
+                .map_err(PrecompileError::GetCallInputsError)?
             }
             PhEvm::getCallCodeInputsCall::SELECTOR => {
                 let inputs = PhEvm::getCallCodeInputsCall::abi_decode(&inputs.input.bytes(context))
@@ -252,30 +285,35 @@ impl<'a> PhEvmInspector<'a> {
                     inputs.selector,
                     Some(CallScheme::CallCode),
                 )
-                .map_err(|err| PrecompileError::GetCallInputsError(err))?
+                .map(PhevmOutcome::from)
+                .map_err(PrecompileError::GetCallInputsError)?
             }
             PhEvm::getStateChangesCall::SELECTOR => {
                 get_state_changes(&input_bytes, &self.context)
+                    .map(PhevmOutcome::from)
                     .map_err(PrecompileError::GetStateChangesError)?
             }
             PhEvm::getAssertionAdopterCall::SELECTOR => {
-                get_assertion_adopter(&self.context).map_err(PrecompileError::UnexpectedError)?
+                get_assertion_adopter(&self.context)
+                    .map(PhevmOutcome::from)
+                    .map_err(PrecompileError::UnexpectedError)?
             }
             console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
-                return Ok(crate::inspectors::precompiles::console_log::console_log(
+                return crate::inspectors::precompiles::console_log::console_log(
                     &input_bytes,
                     &mut self.context,
                 )
-                .map_err(PrecompileError::ConsoleLogError)?);
+                .map(PhevmOutcome::from)
+                .map_err(PrecompileError::ConsoleLogError);
 
                 #[cfg(not(feature = "phoundry"))]
-                return Ok(Bytes::default());
+                return Ok(PhevmOutcome::from(Bytes::default()));
             }
             selector => Err(PrecompileError::SelectorNotFound(selector.into()))?,
         };
 
-        Ok(result)
+        Ok(outcome)
     }
 }
 
@@ -289,7 +327,6 @@ macro_rules! impl_phevm_inspector {
                     if inputs.target_address == PRECOMPILE_ADDRESS {
                         let call_outcome = inspector_result_to_call_outcome(
                             self.execute_precompile(context, inputs),
-                            Gas::new(inputs.gas_limit),
                             inputs.return_memory_offset.clone(),
                         );
 
