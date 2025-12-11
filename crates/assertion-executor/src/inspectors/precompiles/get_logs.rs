@@ -298,8 +298,8 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_get_logs_integration() {
+    #[tokio::test]
+    async fn test_get_logs_integration() {
         let result = run_precompile_test("TestGetLogs");
         assert!(result.is_valid());
         let result_and_state = result.result_and_state;

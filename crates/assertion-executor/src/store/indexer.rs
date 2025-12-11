@@ -969,15 +969,15 @@ mod test_indexer {
         );
     }
 
-    #[test]
-    fn test_indexer_creation() {
+    #[tokio::test]
+    async fn test_indexer_creation() {
         let (indexer, _temp_dir) = create_test_indexer();
         assert!(!indexer.is_synced);
         assert_eq!(indexer.await_tag, BlockTag::Latest);
     }
 
-    #[test]
-    fn test_write_block_num_hash_batch() {
+    #[tokio::test]
+    async fn test_write_block_num_hash_batch() {
         let (indexer, _temp_dir) = create_test_indexer();
 
         let block_hashes = vec![
@@ -1014,8 +1014,8 @@ mod test_indexer {
         }
     }
 
-    #[test]
-    fn test_last_indexed_block_operations() {
+    #[tokio::test]
+    async fn test_last_indexed_block_operations() {
         let (indexer, _temp_dir) = create_test_indexer();
 
         // Initially should be None
@@ -1037,8 +1037,8 @@ mod test_indexer {
         assert_eq!(retrieved.hash, B256::from([42; 32]));
     }
 
-    #[test]
-    fn test_prune_to() {
+    #[tokio::test]
+    async fn test_prune_to() {
         let (indexer, _temp_dir) = create_test_indexer();
 
         // Add some block hashes
@@ -1083,8 +1083,8 @@ mod test_indexer {
         assert_eq!(indexer.pending_modifications_tree().unwrap().len(), 0);
     }
 
-    #[test]
-    fn test_prune_from() {
+    #[tokio::test]
+    async fn test_prune_from() {
         let (indexer, _temp_dir) = create_test_indexer();
 
         // Add some block hashes
@@ -1303,8 +1303,8 @@ mod test_indexer {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_move_pending_modifications_to_store_genesis_block() {
+    #[tokio::test]
+    async fn test_move_pending_modifications_to_store_genesis_block() {
         let (indexer, _temp_dir) = create_test_indexer();
 
         // Test that genesis block (block 0) doesn't get pruned
@@ -1316,8 +1316,8 @@ mod test_indexer {
         assert_eq!(indexer.block_hash_tree().unwrap().len(), 0);
     }
 
-    #[test]
-    fn test_move_pending_modifications_to_store_with_data() {
+    #[tokio::test]
+    async fn test_move_pending_modifications_to_store_with_data() {
         let (indexer, _temp_dir) = create_test_indexer();
 
         // Add some test data
@@ -1356,16 +1356,14 @@ mod test_indexer {
         assert_eq!(indexer.pending_modifications_tree().unwrap().len(), 0);
     }
 
-    #[test]
-    fn test_new_indexer_sync_state() {
+    #[tokio::test]
+    async fn test_new_indexer_sync_state() {
         let (indexer, _temp_dir) = create_test_indexer();
 
         // New indexer should not be synced
         assert!(!indexer.is_synced);
 
-        // Attempting to run without sync should fail
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(indexer.run());
+        let result = indexer.run().await;
         assert!(matches!(result, Err(IndexerError::StoreNotSynced)));
     }
 }

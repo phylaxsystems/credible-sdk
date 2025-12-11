@@ -416,8 +416,8 @@ mod test {
         assert_eq!(decoded.slot, FixedBytes::<32>::from(slot));
     }
 
-    #[test]
-    fn test_get_state_changes_integration() {
+    #[tokio::test]
+    async fn test_get_state_changes_integration() {
         let result = run_precompile_test("TestGetStateChanges");
         assert!(result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;

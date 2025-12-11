@@ -13,6 +13,7 @@ use assertion_executor::{
         AssertionStore,
         AssertionStoreError,
         IndexerCfg,
+        PruneConfig,
     },
 };
 use tracing::{
@@ -60,7 +61,19 @@ pub fn init_assertion_store(config: &Config) -> Result<AssertionStore, Assertion
         "Initialized persistent AssertionStore"
     );
 
-    Ok(AssertionStore::new(db))
+    Ok(AssertionStore::new(
+        db,
+        PruneConfig {
+            interval_ms: config
+                .credible
+                .assertion_store_prune_config_interval_ms
+                .unwrap_or(60_000),
+            retention_blocks: config
+                .credible
+                .assertion_store_prune_config_retention_blocks
+                .unwrap_or_default(),
+        },
+    ))
 }
 
 /// Initialize `IndexerCfg` from `SidecarArgs`

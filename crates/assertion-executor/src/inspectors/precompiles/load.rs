@@ -210,8 +210,8 @@ mod test {
         assert_eq!(decoded.0, FixedBytes::ZERO);
     }
 
-    #[test]
-    fn test_load_integration() {
+    #[tokio::test]
+    async fn test_load_integration() {
         let result = run_precompile_test("TestLoad");
         assert!(result.is_valid());
         let result_and_state = result.result_and_state;

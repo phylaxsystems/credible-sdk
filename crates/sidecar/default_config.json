@@ -14,7 +14,9 @@
     "block_tag": "latest",
     "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
     "state_oracle_deployment_block": 0,
-    "transaction_results_max_capacity": 1000
+    "transaction_results_max_capacity": 1000,
+    "assertion_store_prune_config_interval_ms": 60000,
+    "assertion_store_prune_config_retention_blocks": 0
   },
   "transport": {
     "protocol": "grpc",

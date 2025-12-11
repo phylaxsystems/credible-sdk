@@ -136,7 +136,9 @@ The configuration file is a JSON file with the following schema:
         "block_tag",
         "state_oracle",
         "state_oracle_deployment_block",
-        "transaction_results_max_capacity"
+        "transaction_results_max_capacity",
+        "assertion_store_prune_config_interval_ms",
+        "assertion_store_prune_config_retention_blocks"
       ],
       "properties": {
         "assertion_gas_limit": {
@@ -249,6 +251,22 @@ The configuration file is a JSON file with the following schema:
           "pattern": "^wss?://",
           "examples": [
             "ws://localhost:8549"
+          ]
+        },
+        "assertion_store_prune_config_interval_ms": {
+          "type": "integer",
+          "description": "Interval between prune runs in milliseconds for the assertion store",
+          "examples": [
+            60000,
+            120000
+          ]
+        },
+        "assertion_store_prune_config_retention_blocks": {
+          "type": "integer",
+          "description": "Number of blocks to keep after inactivation (buffer for reorgs) for the assertion store",
+          "examples": [
+            0,
+            10
           ]
         }
       },
