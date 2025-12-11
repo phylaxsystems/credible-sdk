@@ -225,12 +225,16 @@ mod fork_db_tests {
         OverlayDb,
         TableKey,
         TableValue,
+        test_utils::MockDb,
     };
     use revm::database::{
         CacheDB,
         EmptyDBTyped,
     };
-    use std::convert::Infallible;
+    use std::{
+        convert::Infallible,
+        sync::Arc,
+    };
 
     use crate::{
         db::DatabaseRef,
@@ -573,6 +577,42 @@ mod fork_db_tests {
                 .unwrap()
                 .balance,
             uint!(1000_U256)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_commit_created_account_sets_dont_read_flag() {
+        let mock_db = Arc::new(MockDb::new());
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(Some(mock_db.clone()));
+        let mut fork_db = overlay_db.fork();
+
+        let mut evm_state = EvmState::default();
+        evm_state.insert(
+            Address::ZERO,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage: HashMap::default(),
+                status: AccountStatus::Created | AccountStatus::Touched,
+            },
+        );
+
+        fork_db.commit(evm_state);
+
+        let storage_entry = fork_db
+            .storage
+            .get(&Address::ZERO)
+            .expect("storage entry inserted for created account");
+        assert!(storage_entry.dont_read_from_inner_db);
+
+        assert_eq!(
+            fork_db.storage_ref(Address::ZERO, U256::from(5)).unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(
+            mock_db.get_storage_calls(),
+            0,
+            "inner db should not be read when dont_read flag is set"
         );
     }
 }

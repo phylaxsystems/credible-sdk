@@ -380,7 +380,13 @@ mod active_overlay_tests {
 
     use crate::{
         db::overlay::TableKey,
-        primitives::Bytecode,
+        primitives::{
+            Account,
+            AccountInfo,
+            AccountStatus,
+            Bytecode,
+            EvmStorage,
+        },
     };
 
     use std::collections::HashMap;
@@ -582,6 +588,51 @@ mod active_overlay_tests {
         assert_eq!(get_mock_db_field!(mock_db_arc, get_block_hash_calls), 2);
         // Error/absence not cached
         assert!(!active_overlay.is_cached(&key_non_existent));
+    }
+
+    #[test]
+    fn test_commit_created_account_sets_dont_read_flag() {
+        let addr = address!("c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1");
+        let slot = U256::from(33);
+
+        let mock_db = MockDb::new();
+        #[allow(clippy::arc_with_non_send_sync)]
+        let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
+        let overlay_cache = Arc::new(DashMap::new());
+        let mut active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache.clone());
+
+        let mut evm_state = EvmState::default();
+        evm_state.insert(
+            addr,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Created | AccountStatus::Touched,
+            },
+        );
+
+        active_overlay.commit(evm_state);
+
+        let storage_entry = overlay_cache
+            .get(&TableKey::Storage(addr))
+            .expect("created account should insert storage entry");
+        assert!(storage_entry
+            .as_storage()
+            .expect("storage entry should be ForkStorageMap")
+            .dont_read_from_inner_db);
+        drop(storage_entry);
+
+        assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 0);
+        assert_eq!(
+            active_overlay.storage_ref(addr, slot).unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(
+            get_mock_db_field!(mock_db_arc, get_storage_calls),
+            0,
+            "inner db should not be read when dont_read flag is set"
+        );
     }
 
     // Test interaction with a shared cache

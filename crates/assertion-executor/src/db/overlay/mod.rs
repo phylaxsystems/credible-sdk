@@ -584,7 +584,12 @@ mod overlay_db_tests {
             MockDb,
             mock_account_info,
         },
-        primitives::Bytecode,
+        primitives::{
+            Account,
+            AccountStatus,
+            Bytecode,
+            EvmStorage,
+        },
     };
     use alloy_primitives::{
         address,
@@ -770,6 +775,47 @@ mod overlay_db_tests {
         assert!(result3.is_err());
         assert_eq!(mock_db_arc.get_block_hash_calls(), 2);
         assert!(!overlay_db.is_cached(&key_non_existent)); // Errors/absence not cached
+    }
+
+    #[test]
+    fn test_commit_marks_created_accounts_to_skip_inner_reads() {
+        let addr = address!("00000000000000000000000000000000000000c1");
+        let mock_db = Arc::new(MockDb::new());
+        let mut overlay_db: OverlayDb<MockDb> = OverlayDb::new(Some(mock_db.clone()));
+
+        let mut evm_state = EvmState::default();
+        evm_state.insert(
+            addr,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Created | AccountStatus::Touched,
+            },
+        );
+
+        overlay_db.commit(evm_state);
+
+        let storage_entry = overlay_db
+            .overlay
+            .get(&TableKey::Storage(addr))
+            .expect("created account should insert storage entry");
+        assert!(storage_entry
+            .as_storage()
+            .expect("storage entry should be ForkStorageMap")
+            .dont_read_from_inner_db);
+        drop(storage_entry);
+
+        assert_eq!(mock_db.get_storage_calls(), 0);
+        assert_eq!(
+            overlay_db.storage_ref(addr, U256::from(7)).unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(
+            mock_db.get_storage_calls(),
+            0,
+            "inner db should not be read when dont_read flag is set"
+        );
     }
 
     #[test]
