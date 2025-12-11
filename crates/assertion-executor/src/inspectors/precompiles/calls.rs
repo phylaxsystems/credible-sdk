@@ -212,7 +212,7 @@ mod test {
             call_tracer.record_call_start(input, &input_bytes, &mut JournalInner::new());
             call_tracer.result.clone().unwrap();
 
-            call_tracer.record_call_end(&mut JournalInner::new());
+            call_tracer.record_call_end(&mut JournalInner::new(), false);
             call_tracer.result.clone().unwrap();
         }
         call_tracer
@@ -326,7 +326,7 @@ mod test {
     #[test]
     fn test_get_call_inputs_reverts() {
         let result = run_precompile_test("TestGetCallInputsReverts");
-        assert!(result.is_valid(), "{result:#?}");
+        assert!(!result.is_valid(), "{result:#?}");
         let result_and_state = result.result_and_state;
         assert_eq!(result.assertions_executions.len(), 1);
         assert!(result_and_state.result.is_success());

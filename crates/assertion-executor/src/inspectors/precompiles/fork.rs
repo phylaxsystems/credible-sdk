@@ -21,7 +21,10 @@ use crate::{
     },
 };
 
-use alloy_primitives::ruint::FromUintError;
+use alloy_primitives::{
+    U256,
+    ruint::FromUintError,
+};
 use alloy_sol_types::SolCall;
 use revm::context::ContextTr;
 
@@ -39,6 +42,10 @@ pub enum ForkError {
     DecodeError(#[source] alloy_sol_types::Error),
     #[error("ID exceeds usize")]
     IdExceedsUsize(#[source] FromUintError<usize>),
+    #[error("Cannot fork to call {call_id}: call is inside a reverted subtree")]
+    CallInsideRevertedSubtree { call_id: usize },
+    #[error("Call ID {call_id} is too large to be a valid index")]
+    CallIdOverflow { call_id: U256 },
 }
 
 /// Fork to the state before the transaction.
@@ -89,6 +96,16 @@ where
         .map_err(ForkError::DecodeError)?
         .id;
 
+    let call_id_usize: usize = call_id
+        .try_into()
+        .map_err(|_| ForkError::CallIdOverflow { call_id })?;
+
+    if !call_tracer.is_call_forkable(call_id_usize) {
+        return Err(ForkError::CallInsideRevertedSubtree {
+            call_id: call_id_usize,
+        });
+    }
+
     let journal = context.journal_mut();
     journal
         .database
@@ -114,6 +131,16 @@ where
     let call_id = forkPostCallCall::abi_decode(input_bytes)
         .map_err(ForkError::DecodeError)?
         .id;
+
+    let call_id_usize: usize = call_id
+        .try_into()
+        .map_err(|_| ForkError::CallIdOverflow { call_id })?;
+
+    if !call_tracer.is_call_forkable(call_id_usize) {
+        return Err(ForkError::CallInsideRevertedSubtree {
+            call_id: call_id_usize,
+        });
+    }
 
     let journal = context.journal_mut();
     journal

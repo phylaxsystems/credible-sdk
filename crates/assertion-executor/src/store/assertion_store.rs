@@ -1104,7 +1104,7 @@ mod tests {
         );
         tracer.result.clone().unwrap();
 
-        tracer.record_call_end(&mut JournalInner::new());
+        tracer.record_call_end(&mut JournalInner::new(), false);
         tracer.result.clone().unwrap();
 
         for entry in journal_entries {

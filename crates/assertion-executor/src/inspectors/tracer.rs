@@ -46,9 +46,10 @@ macro_rules! impl_call_tracer_inspector {
                     self.record_call_start(inputs.clone(), &input_bytes, &mut context.journaled_state.inner);
                     None
                 }
-                fn call_end(&mut self, context: &mut $context_type, _inputs: &CallInputs, _outcome: &mut CallOutcome) {
+                fn call_end(&mut self, context: &mut $context_type, _inputs: &CallInputs, outcome: &mut CallOutcome) {
                     self.journal = context.journaled_state.clone();
-                    self.record_call_end(&mut context.journaled_state.inner);
+                    let reverted = !outcome.result.result.is_ok();
+                    self.record_call_end(&mut context.journaled_state.inner, reverted);
                 }
                 fn create_end(&mut self, context: &mut $context_type, _inputs: &CreateInputs, _outcome: &mut CreateOutcome) {
                     self.journal = context.journaled_state.clone();
@@ -223,19 +224,25 @@ impl CallTracer {
         self.call_inputs.push(inputs);
     }
 
-    pub fn record_call_end(&mut self, journal_inner: &mut JournalInner<JournalEntry>) {
-        let checkpoint = JournalCheckpoint {
-            log_i: journal_inner.logs.len(),
-            journal_i: journal_inner.journal.len(),
-        };
-
+    pub fn record_call_end(
+        &mut self,
+        journal_inner: &mut JournalInner<JournalEntry>,
+        reverted: bool,
+    ) {
         if let Some(index) = self.pending_post_call_writes.remove(&journal_inner.depth) {
-            if self.post_call_checkpoints.len() <= index {
-                error!(target: "assertion-executor::call_tracer", index, "Post call checkpoint not initialized as None");
-                self.result = Err(CallTracerError::PostCallCheckpointNotInitialized { index });
-                return;
+            if reverted {
+                self.truncate_from(index);
+            } else {
+                if self.post_call_checkpoints.len() <= index {
+                    error!(target: "assertion-executor::call_tracer", index, "Post call checkpoint not initialized as None");
+                    self.result = Err(CallTracerError::PostCallCheckpointNotInitialized { index });
+                    return;
+                }
+                self.post_call_checkpoints[index] = Some(JournalCheckpoint {
+                    log_i: journal_inner.logs.len(),
+                    journal_i: journal_inner.journal.len(),
+                });
             }
-            self.post_call_checkpoints[index] = Some(checkpoint);
         } else {
             error!(target: "assertion-executor::call_tracer", depth = journal_inner.depth, "Pending post call write not found");
             self.result = Err(CallTracerError::PendingPostCallWriteNotFound {
@@ -244,9 +251,29 @@ impl CallTracer {
         }
     }
 
+    /// Truncate all call data from the given index onwards.
+    /// Called when a call reverts to remove it and all its descendants.
+    fn truncate_from(&mut self, index: usize) {
+        // Clean up target_and_selector_indices first
+        self.target_and_selector_indices.retain(|_, indices| {
+            indices.retain(|&idx| idx < index);
+            !indices.is_empty()
+        });
+
+        // Clean up any pending writes for children that haven't ended
+        self.pending_post_call_writes
+            .retain(|_, &mut idx| idx < index);
+
+        // Truncate all vectors
+        self.call_inputs.truncate(index);
+        self.pre_call_checkpoints.truncate(index);
+        self.post_call_checkpoints.truncate(index);
+    }
+
     pub fn calls(&self) -> HashSet<Address> {
         // TODO: Think about storing the call targets in a set in addition to the call inputs
         // to see if it improves performance
+        // No filtering needed since all recorded calls are valid
         self.target_and_selector_indices
             .keys()
             .map(|key| key.target)
@@ -258,22 +285,30 @@ impl CallTracer {
         target: Address,
         selector: FixedBytes<4>,
     ) -> Vec<CallInputsWithId<'_>> {
+        // No filtering needed since all recorded calls are valid
         match self
             .target_and_selector_indices
             .get(&TargetAndSelector { target, selector })
         {
             Some(indices) => {
-                let mut call_inputs = Vec::with_capacity(indices.len());
-                for index in indices {
-                    call_inputs.push(CallInputsWithId {
-                        call_input: &self.call_inputs[*index],
-                        id: *index,
-                    });
-                }
-                call_inputs
+                indices
+                    .iter()
+                    .map(|&index| {
+                        CallInputsWithId {
+                            call_input: &self.call_inputs[index],
+                            id: index,
+                        }
+                    })
+                    .collect()
             }
             None => vec![],
         }
+    }
+
+    /// Check if a call is valid for forking (not inside a reverted subtree)
+    #[inline]
+    pub fn is_call_forkable(&self, call_id: usize) -> bool {
+        call_id < self.call_inputs.len()
     }
 
     #[cfg(any(test, feature = "test"))]
@@ -322,11 +357,7 @@ impl CallTracer {
         // Flatten the two-dimensional journal array
         for entry in &journal.journal {
             match entry {
-                JournalEntry::BalanceTransfer {
-                    from,
-                    to,
-                    balance: _,
-                } => {
+                JournalEntry::BalanceTransfer { from, to, .. } => {
                     // Add balance change trigger for both from and to addresses
                     for addr in [from, to] {
                         result
@@ -335,12 +366,7 @@ impl CallTracer {
                             .insert(TriggerType::BalanceChange);
                     }
                 }
-
-                JournalEntry::StorageChanged {
-                    address,
-                    key,
-                    had_value: _,
-                } => {
+                JournalEntry::StorageChanged { address, key, .. } => {
                     result
                         .entry(*address)
                         .or_default()
@@ -628,7 +654,7 @@ mod test {
                 &mut JournalInner::new(),
             );
             tracer.result.clone().unwrap();
-            tracer.record_call_end(&mut JournalInner::new());
+            tracer.record_call_end(&mut JournalInner::new(), false);
             tracer.result.clone().unwrap();
         }
 
@@ -718,7 +744,7 @@ mod test {
         );
         tracer.result.clone().unwrap();
 
-        tracer.record_call_end(&mut JournalInner::new());
+        tracer.record_call_end(&mut JournalInner::new(), false);
         tracer.result.clone().unwrap();
 
         println!("Tracer: {tracer:#?}");
@@ -774,7 +800,7 @@ mod test {
             &mut JournalInner::new(),
         );
         tracer.result.clone().unwrap();
-        tracer.record_call_end(&mut JournalInner::new());
+        tracer.record_call_end(&mut JournalInner::new(), false);
         tracer.result.clone().unwrap();
 
         let non_adopter_input_bytes: Bytes = non_adopter_selector.into();
@@ -795,7 +821,7 @@ mod test {
             &mut JournalInner::new(),
         );
         tracer.result.clone().unwrap();
-        tracer.record_call_end(&mut JournalInner::new());
+        tracer.record_call_end(&mut JournalInner::new(), false);
         tracer.result.clone().unwrap();
 
         let adopter_calls = tracer.get_call_inputs(adopter, adopter_selector);
@@ -811,5 +837,622 @@ mod test {
             CallInput::Bytes(bytes) => assert!(bytes.is_empty()),
             CallInput::SharedBuffer(_) => panic!("unexpected shared buffer for non-adopter call"),
         }
+    }
+
+    #[test]
+    fn test_no_reverts_all_forkable() {
+        let mut tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let input_bytes: Bytes = selector.into();
+
+        let make_call_inputs = || {
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                known_bytecode: None,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            }
+        };
+
+        let mut journal = JournalInner::new();
+
+        // Simple chain: Call 0 -> Call 1 -> Call 2, all succeed
+        for depth in 0..3 {
+            journal.depth = depth;
+            tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+            tracer.result.clone().unwrap();
+        }
+
+        // End in reverse order (LIFO)
+        for depth in (0..3).rev() {
+            journal.depth = depth;
+            tracer.record_call_end(&mut journal, false);
+            tracer.result.clone().unwrap();
+        }
+
+        // All should be forkable
+        assert!(tracer.is_call_forkable(0));
+        assert!(tracer.is_call_forkable(1));
+        assert!(tracer.is_call_forkable(2));
+        // Out of bounds
+        assert!(!tracer.is_call_forkable(3));
+    }
+
+    #[test]
+    fn test_leaf_call_reverts() {
+        // Call 0 -> Call 1 -> Call 2 (reverts)
+        // Only Call 2 should be marked reverted
+
+        let mut tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let input_bytes: Bytes = selector.into();
+
+        let make_call_inputs = || {
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                known_bytecode: None,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            }
+        };
+
+        let mut journal = JournalInner::new();
+
+        // Start calls
+        journal.depth = 0;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        journal.depth = 1;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        journal.depth = 2;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // End calls - Call 2 reverts
+        journal.depth = 2;
+        tracer.record_call_end(&mut journal, true); // REVERT
+        journal.depth = 1;
+        tracer.record_call_end(&mut journal, false);
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        assert!(tracer.is_call_forkable(0), "Call 0 should be forkable");
+        assert!(tracer.is_call_forkable(1), "Call 1 should be forkable");
+        assert!(
+            !tracer.is_call_forkable(2),
+            "Call 2 should NOT be forkable (reverted)"
+        );
+    }
+
+    #[test]
+    fn test_root_call_reverts_marks_all() {
+        // Call 0 (reverts) -> Call 1 -> Call 2
+        // All calls should be marked reverted
+
+        let mut tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let input_bytes: Bytes = selector.into();
+
+        let make_call_inputs = || {
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                known_bytecode: None,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            }
+        };
+
+        let mut journal = JournalInner::new();
+
+        // Start calls
+        journal.depth = 0;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        journal.depth = 1;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        journal.depth = 2;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // End calls - all succeed internally but root reverts
+        journal.depth = 2;
+        tracer.record_call_end(&mut journal, false);
+        journal.depth = 1;
+        tracer.record_call_end(&mut journal, false);
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, true); // ROOT REVERTS
+
+        assert!(!tracer.is_call_forkable(0), "Call 0 should NOT be forkable");
+        assert!(!tracer.is_call_forkable(1), "Call 1 should NOT be forkable");
+        assert!(!tracer.is_call_forkable(2), "Call 2 should NOT be forkable");
+    }
+
+    #[test]
+    fn test_sibling_calls_independent() {
+        // Call 0 -> Call 1 (reverts), Call 2 (succeeds)
+        // Call 1 reverted, Call 2 should still be forkable
+
+        let mut tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let input_bytes: Bytes = selector.into();
+
+        let make_call_inputs = || {
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                known_bytecode: None,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            }
+        };
+
+        let mut journal = JournalInner::new();
+
+        // Call 0 starts
+        journal.depth = 0;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // Call 1 starts and reverts
+        journal.depth = 1;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, true); // REVERT
+
+        // Call 2 starts and succeeds (sibling of Call 1)
+        journal.depth = 1;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        // Call 0 ends
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        assert_eq!(tracer.call_inputs.len(), 2);
+        assert!(tracer.is_call_forkable(0), "Call 0 should be forkable");
+        assert!(
+            tracer.is_call_forkable(1),
+            "Call 2 (at index 1) should be forkable"
+        );
+    }
+
+    #[test]
+    fn test_multiple_reverts_at_different_depths() {
+        // Call 0 -> Call 1 -> Call 2 (reverts)
+        //        -> Call 3 (reverts) -> Call 4
+        // Calls 2, 3, 4 should be reverted; 0, 1 should be fine
+
+        let mut tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let input_bytes: Bytes = selector.into();
+
+        let make_call_inputs = || {
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                known_bytecode: None,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            }
+        };
+
+        let mut journal = JournalInner::new();
+
+        // Call 0
+        journal.depth = 0;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // Call 1
+        journal.depth = 1;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // Call 2 (child of 1, will revert)
+        journal.depth = 2;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, true); // REVERT
+
+        // Call 1 ends successfully
+        journal.depth = 1;
+        tracer.record_call_end(&mut journal, false);
+
+        // Call 3 (sibling of 1, will revert)
+        journal.depth = 1;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // Call 4 (child of 3)
+        journal.depth = 2;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        // Call 3 reverts
+        journal.depth = 1;
+        tracer.record_call_end(&mut journal, true); // REVERT
+
+        // Call 0 ends
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        assert!(tracer.is_call_forkable(0), "Call 0 should be forkable");
+        assert!(tracer.is_call_forkable(1), "Call 1 should be forkable");
+        assert!(
+            !tracer.is_call_forkable(2),
+            "Call 2 should NOT be forkable (reverted)"
+        );
+        assert!(
+            !tracer.is_call_forkable(3),
+            "Call 3 should NOT be forkable (reverted)"
+        );
+        assert!(
+            !tracer.is_call_forkable(4),
+            "Call 4 should NOT be forkable (parent reverted)"
+        );
+    }
+
+    #[test]
+    fn test_deep_nesting_revert_in_middle() {
+        // Call 0 -> Call 1 -> Call 2 -> Call 3 (reverts) -> Call 4
+        // Calls 3, 4 reverted; 0, 1, 2 fine
+
+        let mut tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let input_bytes: Bytes = selector.into();
+
+        let make_call_inputs = || {
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                known_bytecode: None,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            }
+        };
+
+        let mut journal = JournalInner::new();
+
+        // Start all calls
+        for depth in 0..5 {
+            journal.depth = depth;
+            tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        }
+
+        // End calls - Call 3 reverts
+        journal.depth = 4;
+        tracer.record_call_end(&mut journal, false);
+        journal.depth = 3;
+        tracer.record_call_end(&mut journal, true); // REVERT at depth 3
+        journal.depth = 2;
+        tracer.record_call_end(&mut journal, false);
+        journal.depth = 1;
+        tracer.record_call_end(&mut journal, false);
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        assert!(tracer.is_call_forkable(0));
+        assert!(tracer.is_call_forkable(1));
+        assert!(tracer.is_call_forkable(2));
+        assert!(!tracer.is_call_forkable(3), "Call 3 reverted");
+        assert!(
+            !tracer.is_call_forkable(4),
+            "Call 4 is child of reverted Call 3"
+        );
+    }
+
+    #[test]
+    fn test_call_after_revert_at_same_depth_is_forkable() {
+        // Call 0 -> Call 1 (reverts), Call 2 (same depth, succeeds)
+        // This is the critical case from the original bug description
+
+        let mut tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let input_bytes: Bytes = selector.into();
+
+        let make_call_inputs = || {
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                known_bytecode: None,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            }
+        };
+
+        let mut journal = JournalInner::new();
+
+        journal.depth = 0;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // Call 1 at depth 1 - reverts
+        journal.depth = 1;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, true);
+
+        // Call 2 at depth 1 - succeeds
+        journal.depth = 1;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        assert_eq!(tracer.call_inputs.len(), 2);
+        assert!(tracer.is_call_forkable(0));
+        assert!(
+            tracer.is_call_forkable(1),
+            "Call 2 at index 1 should be forkable"
+        );
+    }
+
+    #[test]
+    fn test_is_call_forkable_out_of_bounds() {
+        let tracer = CallTracer::default();
+
+        // Empty tracer - all indices should return false
+        assert!(!tracer.is_call_forkable(0));
+        assert!(!tracer.is_call_forkable(1));
+        assert!(!tracer.is_call_forkable(usize::MAX));
+    }
+
+    #[test]
+    fn test_complex_tree_with_multiple_branches() {
+        //          Call 0
+        //         /      \
+        //     Call 1    Call 4
+        //     /    \       |
+        // Call 2  Call 3  Call 5 (reverts)
+        //                   |
+        //                 Call 6
+        //
+        // Execution order: 0, 1, 2, 2 ends, 3, 3 ends, 1 ends, 4, 5, 6, 6 ends, 5 reverts, 4 ends, 0 ends
+        // Expected: 0,1,2,3,4 forkable; 5,6 not forkable
+
+        let mut tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let input_bytes: Bytes = selector.into();
+
+        let make_call_inputs = || {
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                known_bytecode: None,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            }
+        };
+
+        let mut journal = JournalInner::new();
+
+        // Call 0
+        journal.depth = 0;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // Call 1
+        journal.depth = 1;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // Call 2
+        journal.depth = 2;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        // Call 3
+        journal.depth = 2;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        // Call 1 ends
+        journal.depth = 1;
+        tracer.record_call_end(&mut journal, false);
+
+        // Call 4
+        journal.depth = 1;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // Call 5
+        journal.depth = 2;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+
+        // Call 6
+        journal.depth = 3;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        // Call 5 reverts
+        journal.depth = 2;
+        tracer.record_call_end(&mut journal, true);
+
+        // Call 4 ends
+        journal.depth = 1;
+        tracer.record_call_end(&mut journal, false);
+
+        // Call 0 ends
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        assert!(tracer.is_call_forkable(0), "Call 0");
+        assert!(tracer.is_call_forkable(1), "Call 1");
+        assert!(tracer.is_call_forkable(2), "Call 2");
+        assert!(tracer.is_call_forkable(3), "Call 3");
+        assert!(tracer.is_call_forkable(4), "Call 4");
+        assert!(!tracer.is_call_forkable(5), "Call 5 reverted");
+        assert!(!tracer.is_call_forkable(6), "Call 6 child of reverted");
+    }
+
+    #[test]
+    fn test_triggers_excludes_reverted_calls() {
+        let mut tracer = CallTracer::default();
+        let addr1 = address!("1111111111111111111111111111111111111111");
+        let addr2 = address!("2222222222222222222222222222222222222222");
+        let selector1 = FixedBytes::<4>::from([0x11, 0x11, 0x11, 0x11]);
+        let selector2 = FixedBytes::<4>::from([0x22, 0x22, 0x22, 0x22]);
+
+        let mut journal = JournalInner::new();
+
+        // Call to addr1 - will succeed
+        journal.depth = 0;
+        let input1: Bytes = selector1.into();
+        tracer.record_call_start(
+            CallInputs {
+                input: CallInput::Bytes(input1.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr1,
+                known_bytecode: None,
+                target_address: addr1,
+                caller: addr1,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            },
+            &input1,
+            &mut journal,
+        );
+
+        // Nested call to addr2 - will revert
+        journal.depth = 1;
+        let input2: Bytes = selector2.into();
+        tracer.record_call_start(
+            CallInputs {
+                input: CallInput::Bytes(input2.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr2,
+                known_bytecode: None,
+                target_address: addr2,
+                caller: addr1,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            },
+            &input2,
+            &mut journal,
+        );
+        tracer.record_call_end(&mut journal, true); // REVERT
+
+        // End outer call
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        let triggers = tracer.triggers();
+
+        // addr1 should have a call trigger
+        assert!(triggers.contains_key(&addr1));
+        assert!(triggers[&addr1].contains(&TriggerType::Call {
+            trigger_selector: selector1
+        }));
+
+        // addr2 should NOT have a call trigger (reverted)
+        assert!(
+            !triggers.contains_key(&addr2)
+                || !triggers[&addr2].contains(&TriggerType::Call {
+                    trigger_selector: selector2
+                })
+        );
+    }
+
+    #[test]
+    fn test_calls_excludes_addresses_with_only_reverted() {
+        let mut tracer = CallTracer::default();
+        let addr1 = address!("1111111111111111111111111111111111111111");
+        let addr2 = address!("2222222222222222222222222222222222222222");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+
+        let mut journal = JournalInner::new();
+
+        // Call to addr1 - succeeds
+        journal.depth = 0;
+        let input: Bytes = selector.into();
+        tracer.record_call_start(
+            CallInputs {
+                input: CallInput::Bytes(input.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr1,
+                known_bytecode: None,
+                target_address: addr1,
+                caller: addr1,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            },
+            &input,
+            &mut journal,
+        );
+
+        // Call to addr2 - reverts
+        journal.depth = 1;
+        tracer.record_call_start(
+            CallInputs {
+                input: CallInput::Bytes(input.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr2,
+                known_bytecode: None,
+                target_address: addr2,
+                caller: addr1,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            },
+            &input,
+            &mut journal,
+        );
+        tracer.record_call_end(&mut journal, true); // REVERT
+
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        let called_addresses = tracer.calls();
+
+        // Only addr1 should be in the set
+        assert!(called_addresses.contains(&addr1));
+        assert!(
+            !called_addresses.contains(&addr2),
+            "addr2 only has reverted calls"
+        );
     }
 }
