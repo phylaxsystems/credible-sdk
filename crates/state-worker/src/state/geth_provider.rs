@@ -60,8 +60,9 @@ impl GethTraceProvider {
                 alloy_rpc_types_trace::geth::GethDebugBuiltInTracerType::PreStateTracer,
             )),
             tracer_config: prestate_config.into(),
-            timeout: Some(self.trace_timeout.as_secs().to_string()),
+            timeout: None,
         }
+        .with_timeout(self.trace_timeout)
     }
 }
 
