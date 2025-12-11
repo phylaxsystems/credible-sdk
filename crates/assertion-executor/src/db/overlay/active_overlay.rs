@@ -158,6 +158,9 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
 
             counter!("assex_active_overlay_db_storage_ref_misses").increment(1);
 
+            // We are not actually mutating the storage, and are using this to downgrade
+            // from database to databaseref therefore this is safe.
+            // See above comment for proper activedb usage.
             let value_u256 = unsafe {
                 self.active_db
                     .as_mut_unchecked()
@@ -387,6 +390,7 @@ mod active_overlay_tests {
             AccountStatus,
             Bytecode,
             EvmStorage,
+            EvmStorageSlot,
         },
     };
 
@@ -595,8 +599,13 @@ mod active_overlay_tests {
     fn test_commit_created_account_sets_dont_read_flag() {
         let addr = address!("c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1");
         let slot = U256::from(33);
+        let non_created_addr = address!("d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1");
+        let non_created_slot = U256::from(44);
+        let fallback_slot = U256::from(45);
+        let fallback_value = U256::from(1234);
 
-        let mock_db = MockDb::new();
+        let mut mock_db = MockDb::new();
+        mock_db.insert_storage(non_created_addr, fallback_slot, fallback_value);
         #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
         let overlay_cache = Arc::new(DashMap::new());
@@ -632,6 +641,46 @@ mod active_overlay_tests {
             get_mock_db_field!(mock_db_arc, get_storage_calls),
             0,
             "inner db should not be read when dont_read flag is set"
+        );
+
+        let mut evm_state = EvmState::default();
+        evm_state.insert(
+            non_created_addr,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage: HashMap::from_iter([(
+                    non_created_slot,
+                    EvmStorageSlot::new(U256::from(1), 0),
+                )]),
+                status: AccountStatus::Touched,
+            },
+        );
+
+        active_overlay.commit(evm_state);
+
+        let storage_entry = overlay_cache
+            .get(&TableKey::Storage(non_created_addr))
+            .expect("touched account should insert storage entry");
+        assert!(
+            !storage_entry
+                .as_storage()
+                .expect("storage entry should be ForkStorageMap")
+                .dont_read_from_inner_db,
+            "dont_read flag should not be set for existing accounts"
+        );
+        drop(storage_entry);
+
+        assert_eq!(
+            active_overlay
+                .storage_ref(non_created_addr, fallback_slot)
+                .unwrap(),
+            fallback_value
+        );
+        assert_eq!(
+            get_mock_db_field!(mock_db_arc, get_storage_calls),
+            1,
+            "inner db should be read when dont_read flag is not set"
         );
     }
 

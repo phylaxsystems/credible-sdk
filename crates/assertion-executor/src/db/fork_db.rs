@@ -243,6 +243,7 @@ mod fork_db_tests {
             Account,
             AccountStatus,
             BlockChanges,
+            address,
             EvmStorageSlot,
             U256,
             uint,
@@ -583,7 +584,14 @@ mod fork_db_tests {
 
     #[tokio::test]
     async fn test_commit_created_account_sets_dont_read_flag() {
-        let mock_db = Arc::new(MockDb::new());
+        let non_created_address = address!("0000000000000000000000000000000000000001");
+        let non_created_slot = U256::from(7);
+        let fallback_slot = U256::from(8);
+        let fallback_value = U256::from(9);
+
+        let mut mock_db = MockDb::new();
+        mock_db.insert_storage(non_created_address, fallback_slot, fallback_value);
+        let mock_db = Arc::new(mock_db);
         let overlay_db: OverlayDb<MockDb> = OverlayDb::new(Some(mock_db.clone()));
         let mut fork_db = overlay_db.fork();
 
@@ -614,6 +622,43 @@ mod fork_db_tests {
             mock_db.get_storage_calls(),
             0,
             "inner db should not be read when dont_read flag is set"
+        );
+
+        let mut evm_state = EvmState::default();
+        evm_state.insert(
+            non_created_address,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage: HashMap::from_iter([(
+                    non_created_slot,
+                    EvmStorageSlot::new(U256::from(1), 0),
+                )]),
+                status: AccountStatus::Touched,
+            },
+        );
+
+        fork_db.commit(evm_state);
+
+        let storage_entry = fork_db
+            .storage
+            .get(&non_created_address)
+            .expect("storage entry inserted for touched account");
+        assert!(
+            !storage_entry.dont_read_from_inner_db,
+            "dont_read flag should not be set for existing accounts"
+        );
+
+        assert_eq!(
+            fork_db
+                .storage_ref(non_created_address, fallback_slot)
+                .unwrap(),
+            fallback_value,
+        );
+        assert_eq!(
+            mock_db.get_storage_calls(),
+            1,
+            "inner db should be read when dont_read flag is not set"
         );
     }
 }
