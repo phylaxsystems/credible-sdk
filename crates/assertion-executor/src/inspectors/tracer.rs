@@ -108,7 +108,6 @@ pub struct CallTracer {
     pending_post_call_writes: HashMap<usize, usize>,
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
     pub result: Result<(), CallTracerError>,
-    call_depths: Vec<usize>,
 }
 impl Default for CallTracer {
     fn default() -> Self {
@@ -122,7 +121,6 @@ impl Default for CallTracer {
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
-            call_depths: Vec::new(),
         }
     }
 }
@@ -144,7 +142,6 @@ impl CallTracer {
             pending_post_call_writes: HashMap::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
-            call_depths: Vec::new(),
             adopter_cache: HashMap::new(),
         }
     }
@@ -224,7 +221,6 @@ impl CallTracer {
             .or_default()
             .push(index);
 
-        self.call_depths.push(depth);
         self.call_inputs.push(inputs);
     }
 
@@ -272,7 +268,6 @@ impl CallTracer {
         self.call_inputs.truncate(index);
         self.pre_call_checkpoints.truncate(index);
         self.post_call_checkpoints.truncate(index);
-        self.call_depths.truncate(index);
     }
 
     pub fn calls(&self) -> HashSet<Address> {
@@ -342,8 +337,6 @@ impl CallTracer {
             scheme: revm::interpreter::CallScheme::Call,
             value: CallValue::default(),
         });
-
-        self.call_depths.push(0);
     }
 
     pub fn triggers(&self) -> HashMap<Address, HashSet<TriggerType>> {
