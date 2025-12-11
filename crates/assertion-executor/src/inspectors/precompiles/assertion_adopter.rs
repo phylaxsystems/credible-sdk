@@ -11,9 +11,10 @@ use std::convert::Infallible;
 
 /// Returns the assertion adopter as a bytes array
 pub fn get_assertion_adopter(context: &PhEvmContext) -> Result<PhevmOutcome, Infallible> {
+    const AA_RET_COST: u64 = 9;
     Ok(PhevmOutcome::new(
         context.adopter.abi_encode().into(),
-        BASE_COST + 9,
+        BASE_COST + AA_RET_COST,
     ))
 }
 
@@ -60,13 +61,13 @@ mod test {
         assert!(result.is_ok());
 
         let outcome = result.unwrap();
-        assert_eq!(outcome.gas(), 12);
+        assert_eq!(outcome.gas(), 24);
 
         let encoded = outcome.bytes();
         assert!(!encoded.is_empty());
 
         // Verify we can decode the result back to the original address
-        let decoded = Address::abi_decode(&encoded);
+        let decoded = Address::abi_decode(encoded);
         assert!(decoded.is_ok());
         assert_eq!(decoded.unwrap(), adopter);
     }
@@ -87,9 +88,10 @@ mod test {
         let outcome = with_adopter_context(adopter, get_assertion_adopter).unwrap();
         let available_gas = 100;
 
-        let call_outcome = inspector_result_to_call_outcome(Ok(outcome), available_gas, 0..0);
+        let call_outcome =
+            inspector_result_to_call_outcome::<Infallible>(Ok(outcome), available_gas, 0..0);
 
-        assert_eq!(call_outcome.result.gas.remaining(), available_gas - 12);
+        assert_eq!(call_outcome.result.gas.remaining(), available_gas - 24);
 
         let decoded = Address::abi_decode(&call_outcome.result.output);
         assert!(decoded.is_ok());

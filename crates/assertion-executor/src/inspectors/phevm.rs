@@ -299,9 +299,7 @@ impl<'a> PhEvmInspector<'a> {
                     .map_err(PrecompileError::GetStateChangesError)?
             }
             PhEvm::getAssertionAdopterCall::SELECTOR => {
-                get_assertion_adopter(&self.context)
-                    .map(PhevmOutcome::from)
-                    .map_err(PrecompileError::UnexpectedError)?
+                get_assertion_adopter(&self.context).map_err(PrecompileError::UnexpectedError)?
             }
             console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
