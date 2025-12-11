@@ -7,7 +7,7 @@ use std::convert::Infallible;
 
 /// Returns the assertion adopter as a bytes array
 pub fn get_assertion_adopter(context: &PhEvmContext) -> Result<PhevmOutcome, Infallible> {
-    Ok(PhevmOutcome::new(context.adopter.abi_encode().into(), 12))
+    Ok(PhevmOutcome::new(context.adopter.abi_encode().into(), 9))
 }
 
 #[cfg(test)]
@@ -15,6 +15,7 @@ mod test {
     use super::*;
     use crate::{
         inspectors::{
+            inspector_result_to_call_outcome,
             phevm::{
                 LogsAndTraces,
                 PhEvmContext,
@@ -51,7 +52,10 @@ mod test {
         let result = with_adopter_context(adopter, get_assertion_adopter);
         assert!(result.is_ok());
 
-        let encoded = result.unwrap();
+        let outcome = result.unwrap();
+        assert_eq!(outcome.gas(), 12);
+
+        let encoded = outcome.bytes();
         assert!(!encoded.is_empty());
 
         // Verify we can decode the result back to the original address
@@ -70,8 +74,24 @@ mod test {
         test_get_assertion_adopter_helper(random_address());
     }
 
-    #[tokio::test]
-    async fn test_get_assertion_adopter_integration() {
+    #[test]
+    fn test_get_assertion_adopter_gas_decremented_by_inspector() {
+        let adopter = random_address();
+        let outcome = with_adopter_context(adopter, get_assertion_adopter).unwrap();
+        let available_gas = 100;
+
+        let call_outcome =
+            inspector_result_to_call_outcome(Ok(outcome), available_gas, 0..0);
+
+        assert_eq!(call_outcome.result.gas.remaining(), available_gas - 12);
+
+        let decoded = Address::abi_decode(&call_outcome.result.output);
+        assert!(decoded.is_ok());
+        assert_eq!(decoded.unwrap(), adopter);
+    }
+
+    #[test]
+    fn test_get_assertion_adopter_integration() {
         let result = run_precompile_test("TestGetAdopter");
         assert!(result.is_valid());
         let result_and_state = result.result_and_state;

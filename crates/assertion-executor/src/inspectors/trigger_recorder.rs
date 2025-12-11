@@ -165,6 +165,7 @@ macro_rules! impl_trigger_recorder_inspector {
                             self.record_trigger(&input_bytes).map(PhevmOutcome::from);
                         return Some(inspector_result_to_call_outcome(
                             record_result,
+                            inputs.gas_limit,
                             inputs.return_memory_offset.clone(),
                         ));
                     }

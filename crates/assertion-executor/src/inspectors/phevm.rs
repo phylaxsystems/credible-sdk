@@ -84,6 +84,14 @@ impl PhevmOutcome {
         self.gas
     }
 
+    pub fn bytes(&self) -> &Bytes {
+        &self.bytes
+    }
+
+    pub fn into_bytes(self) -> Bytes {
+        self.bytes
+    }
+
     pub fn into_parts(self) -> (Bytes, u64) {
         (self.bytes, self.gas)
     }
@@ -327,6 +335,7 @@ macro_rules! impl_phevm_inspector {
                     if inputs.target_address == PRECOMPILE_ADDRESS {
                         let call_outcome = inspector_result_to_call_outcome(
                             self.execute_precompile(context, inputs),
+                            inputs.gas_limit,
                             inputs.return_memory_offset.clone(),
                         );
 

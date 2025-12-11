@@ -42,16 +42,17 @@ use crate::inspectors::phevm::PhevmOutcome;
 /// Uses the default require [`Error`] signature for encoding revert messages.
 pub fn inspector_result_to_call_outcome<E: std::fmt::Display>(
     result: Result<PhevmOutcome, E>,
+    available_gas: u64,
     memory_offset: Range<usize>,
 ) -> CallOutcome {
     match result {
         Ok(output) => {
-            let (output, gas_used) = output.into_parts();
+            let gas_remaining = available_gas.saturating_sub(output.gas());
             CallOutcome {
                 result: InterpreterResult {
                     result: InstructionResult::Return,
-                    output,
-                    gas: Gas::new(gas_used),
+                    output: output.into_bytes(),
+                    gas: Gas::new(gas_remaining),
                 },
                 memory_offset,
                 was_precompile_called: false,
@@ -63,7 +64,7 @@ pub fn inspector_result_to_call_outcome<E: std::fmt::Display>(
                 result: InterpreterResult {
                     result: InstructionResult::Revert,
                     output: Error::abi_encode(&Error(e.to_string())).into(),
-                    gas: Gas::new(0),
+                    gas: Gas::new(available_gas),
                 },
                 memory_offset,
                 was_precompile_called: false,
