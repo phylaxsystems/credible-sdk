@@ -45,6 +45,7 @@ use metrics::{
     counter,
     gauge,
 };
+use rapidhash::fast::RandomState;
 use std::{
     cell::UnsafeCell,
     collections::HashMap,
@@ -414,7 +415,7 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
             // Update storage slots
             if is_created || !account.storage.is_empty() {
                 let storage_key = TableKey::Storage(address);
-                let mut new_storage: HashMap<U256, U256> = account
+                let mut new_storage: HashMap<U256, U256, RandomState> = account
                     .storage
                     .into_iter()
                     .map(|(slot, storage_slot)| (slot, storage_slot.present_value()))

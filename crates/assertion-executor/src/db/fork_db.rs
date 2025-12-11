@@ -12,6 +12,7 @@ use crate::{
         U256,
     },
 };
+use rapidhash::fast::RandomState;
 use revm::{
     Database,
     state::AccountStatus,
@@ -27,7 +28,7 @@ use std::{
 /// Maps storage slots to their values.
 #[derive(Debug, Clone, Default)]
 pub struct ForkStorageMap {
-    pub map: HashMap<U256, U256>,
+    pub map: HashMap<U256, U256, RandomState>,
     pub dont_read_from_inner_db: bool,
 }
 
@@ -35,11 +36,11 @@ pub struct ForkStorageMap {
 #[derive(Debug)]
 pub struct ForkDb<ExtDb> {
     /// Maps addresses to storage slots and their history indexed by block.
-    pub storage: HashMap<Address, ForkStorageMap, rapidhash::fast::RandomState>,
+    pub storage: HashMap<Address, ForkStorageMap, RandomState>,
     /// Maps addresses to their account info and indexes it by block.
-    pub(super) basic: HashMap<Address, AccountInfo>,
+    pub(super) basic: HashMap<Address, AccountInfo, RandomState>,
     /// Maps bytecode hashes to bytecode.
-    pub(super) code_by_hash: HashMap<B256, Bytecode>,
+    pub(super) code_by_hash: HashMap<B256, Bytecode, RandomState>,
     /// Inner database.
     pub(super) inner_db: Arc<ExtDb>,
 }
@@ -162,7 +163,7 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
                     .storage
                     .into_iter()
                     .map(|(k, v)| (k, v.present_value()))
-                    .collect::<HashMap<_, _>>();
+                    .collect::<HashMap<_, _, RandomState>>();
 
                 match self.storage.entry(address) {
                     Entry::Occupied(mut entry) => {
