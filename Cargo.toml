@@ -14,6 +14,7 @@ members = [
     "crates/dapp-api-client",
     "crates/sidecar",
     "crates/sidecar/src/utils/test-macros",
+    "crates/rpc-proxy",
     "crates/state-worker",
     "crates/shadow-driver",
     "crates/state-store",
