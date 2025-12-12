@@ -57,21 +57,10 @@ impl RpcProxy {
         let path = self.config.rpc_path.clone();
         info!(%addr, %path, "credible rpc proxy ready to listen");
 
-        // TODO(integration): Complete axum integration for serving the router.
-        // The ajj Router can be converted to an axum Router via into_axum(),
-        // but the exact serving mechanism depends on axum version and features.
-        // For now, this is a placeholder that will be completed when integrating
-        // with the actual sequencer.
-        //
-        // Expected flow:
-        // let listener = TcpListener::bind(addr).await?;
-        // let app = self.router.into_axum(&path);
-        // // Convert app to proper service and serve
-        //
-        // For testing, see the unit tests in fingerprint.rs which validate
-        // the core cache and normalization logic.
-
-        info!("Proxy serving is a TODO - implement axum integration");
+        // TODO: Once the axum router is wired, bind TcpListener here and serve
+        // self.router.into_axum(&path). For now we only log readiness so tests
+        // can still invoke ProxyState directly.
+        info!("Proxy serving is pending axum integration (see README TODO #1)");
         Ok(())
     }
 }

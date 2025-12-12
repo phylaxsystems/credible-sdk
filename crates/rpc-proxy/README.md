@@ -15,18 +15,20 @@ A JSON-RPC proxy that sits in front of the sequencer to prevent assertion-invali
 - **Comprehensive tests**: Unit tests for value/gas bucketing, fingerprint determinism, and cache state transitions
 - **Error handling**: Proper JSON-RPC error codes with descriptive messages
 
-### 🚧 TODO
+### 🚧 TODO (in planned order)
 
-- **gRPC integration**: Protobuf definitions and client implementation for:
-  - `StreamInvalidations`: long-lived subscription to receive invalidated fingerprints from sidecar
-  - `ShouldForward`: on-demand check for fingerprints not in local cache
-- **Upstream forwarding**: Currently echoes transactions; needs HTTP client to forward to actual sequencer
-- **Sender/IP backpressure**: Rate limiting per origin (IP/API token/address) with exponential backoff
-- **Assertion-level cooldowns**: When many distinct fingerprints fail under the same assertion, throttle the assertion globally (with trickle-through for recovery)
-- **Priority score adjustment**: Penalize gas price for banned fingerprints so sequencer doesn't select them solely based on tips
-- **Pending timeout**: Evict fingerprints from pending set if they don't get a verdict within a reasonable time
-- **Cache persistence**: Optional sled/SQLite backend to survive restarts
-- **Observability dashboard**: Grafana panels for metrics
+1. **Axum/HTTP serving + upstream forwarding**
+   - Finish wiring `Router::into_axum` and forward accepted payloads to the sequencer HTTP endpoint (currently a placeholder echo).
+2. **Sidecar gRPC integration**
+   - Define protobuf messages, implement `StreamInvalidations` subscription, and add the `ShouldForward` probe to enrich the cache.
+3. **Pending-state timeout + backpressure**
+   - Add configurable TTL for the pending set so stuck fingerprints clear automatically and introduce sender/IP rate limiting.
+4. **Assertion-level cooldowns + priority scoring**
+   - Track assertion-level failure rates and apply global throttles when multiple fingerprints fail; adjust gas-price priority to penalize banned fingerprints.
+5. **Benchmark harness**
+   - Add Criterion/contender suites to measure normalization + cache latency; run Samply for wall-clock profiling once full pipeline is implemented.
+6. **Persistence & observability**
+   - Optional sled-backed cache to survive restarts, Prometheus/Grafana dashboards for cache stats, and documentation of benchmark results.
 
 ## Usage
 
