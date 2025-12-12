@@ -23,10 +23,16 @@ pub enum ProxyError {
     AddrParse(#[from] AddrParseError),
     #[error("HTTP server error: {0}")]
     Hyper(#[from] hyper::Error),
+    #[error("upstream request error: {0}")]
+    Reqwest(#[from] reqwest::Error),
+    #[error("sidecar transport error: {0}")]
+    SidecarTransport(String),
     #[error("fingerprint error: {0}")]
     Fingerprint(#[from] crate::fingerprint::FingerprintError),
     #[error("fingerprint {0:#x} is currently pending validation; retry after a short delay")]
     PendingFingerprint(B256),
     #[error("fingerprint {0:#x} is denied by assertions: {1:?}")]
     DeniedFingerprint(B256, HashSet<AssertionInfo>),
+    #[error("upstream RPC error: {0}")]
+    Upstream(String),
 }

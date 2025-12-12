@@ -36,3 +36,14 @@ alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = "0.3.12"
 parking_lot = { workspace = true }
+async-trait = "0.1"
+futures = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+tokio-stream = { workspace = true }
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+prost-types = "0.13"
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"

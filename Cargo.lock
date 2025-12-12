@@ -9417,6 +9417,26 @@ dependencies = [
 
 [[package]]
 name = "prost-build"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
+dependencies = [
+ "heck",
+ "itertools 0.14.0",
+ "log",
+ "multimap",
+ "once_cell",
+ "petgraph 0.7.1",
+ "prettyplease",
+ "prost 0.13.5",
+ "prost-types 0.13.5",
+ "regex",
+ "syn 2.0.111",
+ "tempfile",
+]
+
+[[package]]
+name = "prost-build"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac6c3320f9abac597dcbc668774ef006702672474aad53c6d596b62e487b40b1"
@@ -10407,17 +10427,26 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "anyhow",
+ "async-trait",
  "axum 0.8.7",
  "clap",
  "dashmap",
+ "futures",
  "hyper 1.8.1",
  "metrics",
  "moka",
  "parking_lot",
+ "prost 0.13.5",
+ "prost-types 0.13.5",
+ "protoc-bin-vendored",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-stream",
+ "tonic 0.12.3",
+ "tonic-build 0.12.3",
  "tracing",
  "tracing-subscriber 0.3.22",
  "url",
@@ -11251,7 +11280,7 @@ dependencies = [
  "moka",
  "parking_lot",
  "prost 0.14.1",
- "prost-build",
+ "prost-build 0.14.1",
  "protoc-bin-vendored",
  "rand 0.9.2",
  "redis 0.32.7",
@@ -12619,6 +12648,20 @@ dependencies = [
 
 [[package]]
 name = "tonic-build"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9557ce109ea773b399c9b9e5dca39294110b74f1f342cb347a80d1fce8c26a11"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "prost-build 0.13.5",
+ "prost-types 0.13.5",
+ "quote",
+ "syn 2.0.111",
+]
+
+[[package]]
+name = "tonic-build"
 version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c40aaccc9f9eccf2cd82ebc111adc13030d23e887244bc9cfa5d1d636049de3"
@@ -12648,12 +12691,12 @@ checksum = "b4a16cba4043dc3ff43fcb3f96b4c5c154c64cbd18ca8dce2ab2c6a451d058a2"
 dependencies = [
  "prettyplease",
  "proc-macro2",
- "prost-build",
+ "prost-build 0.14.1",
  "prost-types 0.14.1",
  "quote",
  "syn 2.0.111",
  "tempfile",
- "tonic-build",
+ "tonic-build 0.14.2",
 ]
 
 [[package]]

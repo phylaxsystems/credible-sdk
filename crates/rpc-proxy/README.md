@@ -14,13 +14,15 @@ A JSON-RPC proxy that sits in front of the sequencer to prevent assertion-invali
 - **Configurable cache**: Cache TTL and capacity can be configured via `ProxyConfig`
 - **Comprehensive tests**: Unit tests for value/gas bucketing, fingerprint determinism, and cache state transitions
 - **Error handling**: Proper JSON-RPC error codes with descriptive messages
+- **HTTP forwarding**: Raw transactions are forwarded to the configured sequencer endpoint via `reqwest`, reusing the JSON-RPC envelope
+- **Sidecar transport abstraction**: A `SidecarTransport` trait powers both the default in-process/noop transport and the new gRPC client (defined in `proto/heuristics.proto`)
 
 ### 🚧 TODO (in planned order)
 
-1. **Axum/HTTP serving + upstream forwarding**
-   - Finish wiring `Router::into_axum` and forward accepted payloads to the sequencer HTTP endpoint (currently a placeholder echo).
-2. **Sidecar gRPC integration**
-   - Define protobuf messages, implement `StreamInvalidations` subscription, and add the `ShouldForward` probe to enrich the cache.
+1. **Axum/HTTP serving**
+   - The HTTP router is instantiated, but we still need to bind it to a listener using axum’s server utilities so the proxy can run as a standalone daemon.
+2. **Sidecar gRPC integration polish**
+   - Hook `GrpcSidecarTransport` into the runtime (spawn the invalidation stream, add retries/backoff, and surface health metrics).
 3. **Pending-state timeout + backpressure**
    - Add configurable TTL for the pending set so stuck fingerprints clear automatically and introduce sender/IP rate limiting.
 4. **Assertion-level cooldowns + priority scoring**

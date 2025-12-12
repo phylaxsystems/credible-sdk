@@ -16,6 +16,7 @@ pub mod config;
 pub mod error;
 pub mod fingerprint;
 pub mod server;
+pub mod sidecar;
 
 pub use config::ProxyConfig;
 pub use error::{

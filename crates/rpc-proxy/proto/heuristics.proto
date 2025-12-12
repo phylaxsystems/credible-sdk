@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package rpcproxy.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message Fingerprint {
+  bytes hash = 1;
+  bytes target = 2;
+  bytes selector = 3;
+  bytes arg_hash16 = 4;
+  uint64 value_bucket = 5;
+  uint32 gas_bucket = 6;
+}
+
+message Assertion {
+  bytes assertion_id = 1;
+  uint64 assertion_version = 2;
+}
+
+message Invalidation {
+  Fingerprint fingerprint = 1;
+  Assertion assertion = 2;
+  string adopter = 3;
+  uint64 l2_block_number = 4;
+  google.protobuf.Timestamp observed_at = 5;
+}
+
+message ShouldForwardRequest {
+  Fingerprint fingerprint = 1;
+}
+
+message ShouldForwardResponse {
+  enum Verdict {
+    UNKNOWN = 0;
+    DENY = 1;
+    ALLOW = 2;
+  }
+  Verdict verdict = 1;
+  Assertion assertion = 2;
+}
+
+message Empty {}
+
+service RpcProxyHeuristics {
+  rpc StreamInvalidations(Empty) returns (stream Invalidation);
+  rpc ShouldForward(ShouldForwardRequest) returns (ShouldForwardResponse);
+}

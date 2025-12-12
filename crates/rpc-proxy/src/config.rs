@@ -1,7 +1,4 @@
-use std::{
-    net::SocketAddr,
-    time::Duration,
-};
+use std::net::SocketAddr;
 
 use serde::{
     Deserialize,

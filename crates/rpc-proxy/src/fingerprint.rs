@@ -58,6 +58,24 @@ impl Fingerprint {
             gas_bucket,
         })
     }
+
+    pub fn from_parts(
+        hash: B256,
+        target: Address,
+        selector: [u8; 4],
+        arg_hash: [u8; 16],
+        value_bucket: u64,
+        gas_bucket: u32,
+    ) -> Self {
+        Self {
+            hash,
+            target,
+            selector,
+            arg_hash,
+            value_bucket,
+            gas_bucket,
+        }
+    }
 }
 
 fn selector_bytes(input: &Bytes) -> [u8; 4] {
@@ -200,14 +218,16 @@ impl FingerprintCache {
     pub fn observe(&self, fingerprint: &Fingerprint) -> CacheDecision {
         // Check if already denied
         if let Some(entry) = self.denied.get(&fingerprint.hash) {
-            metrics::counter!("rpc_proxy_fingerprint_reject_total", "reason" => "denied").increment(1);
+            metrics::counter!("rpc_proxy_fingerprint_reject_total", "reason" => "denied")
+                .increment(1);
             return CacheDecision::Reject(entry.assertions.clone());
         }
 
         // Check if pending validation
         let mut pending = self.pending.write();
         if pending.contains(&fingerprint.hash) {
-            metrics::counter!("rpc_proxy_fingerprint_reject_total", "reason" => "pending").increment(1);
+            metrics::counter!("rpc_proxy_fingerprint_reject_total", "reason" => "pending")
+                .increment(1);
             return CacheDecision::AwaitVerdict;
         }
 
@@ -297,8 +317,15 @@ pub enum FingerprintError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{SignableTransaction, TxEip1559};
-    use alloy_primitives::{address, bytes, PrimitiveSignature};
+    use alloy_consensus::{
+        SignableTransaction,
+        TxEip1559,
+    };
+    use alloy_primitives::{
+        PrimitiveSignature,
+        address,
+        bytes,
+    };
 
     fn create_test_tx(to: Address, value: U256, calldata: Bytes, gas_limit: u64) -> TxEnvelope {
         let tx = TxEip1559 {
@@ -318,15 +345,15 @@ mod tests {
 
     #[test]
     fn test_value_bucketing() {
-        assert_eq!(bucket_value(&U256::ZERO), 0, "Zero value should be bucket 0");
+        assert_eq!(
+            bucket_value(&U256::ZERO),
+            0,
+            "Zero value should be bucket 0"
+        );
 
         // Small values - bucketing is logarithmic (bit_len / 10)
         // 1 has 1 bit, so bucket = 1/10 + 1 = 1
-        assert_eq!(
-            bucket_value(&U256::from(1)),
-            1,
-            "1 wei should be bucket 1"
-        );
+        assert_eq!(bucket_value(&U256::from(1)), 1, "1 wei should be bucket 1");
 
         // 1000 has ~10 bits, so bucket = 10/10 + 1 = 2
         assert_eq!(
@@ -337,11 +364,7 @@ mod tests {
 
         // 1 ETH = 1e18 = ~2^60 = 60 bits, bucket = 60/10 + 1 = 7
         let one_eth = U256::from(1_000_000_000_000_000_000u128);
-        assert_eq!(
-            bucket_value(&one_eth),
-            7,
-            "1 ETH should be in bucket 7"
-        );
+        assert_eq!(bucket_value(&one_eth), 7, "1 ETH should be in bucket 7");
 
         // 1000 ETH should be in a higher bucket
         let thousand_eth = one_eth * U256::from(1000);
@@ -371,17 +394,15 @@ mod tests {
         assert_eq!(bucket_gas(50_000), 1);
         assert_eq!(bucket_gas(100_000), 2);
         assert_eq!(bucket_gas(51_000), 1, "51k should round down to bucket 1");
-        assert_eq!(
-            bucket_gas(99_999),
-            1,
-            "99,999 should still be bucket 1"
-        );
+        assert_eq!(bucket_gas(99_999), 1, "99,999 should still be bucket 1");
     }
 
     #[test]
     fn test_fingerprint_determinism() {
         let to = address!("1111111111111111111111111111111111111111");
-        let calldata = bytes!("a9059cbb00000000000000000000000022222222222222222222222222222222222222220000000000000000000000000000000000000000000000000000000000000064");
+        let calldata = bytes!(
+            "a9059cbb00000000000000000000000022222222222222222222222222222222222222220000000000000000000000000000000000000000000000000000000000000064"
+        );
 
         let tx1 = create_test_tx(to, U256::from(1000), calldata.clone(), 100_000);
         let tx2 = create_test_tx(to, U256::from(1000), calldata.clone(), 100_000);
@@ -398,8 +419,10 @@ mod tests {
     #[test]
     fn test_fingerprint_different_calldata() {
         let to = address!("1111111111111111111111111111111111111111");
-        let calldata1 = bytes!("a9059cbb0000000000000000000000002222222222222222222222222222222222222222");
-        let calldata2 = bytes!("a9059cbb0000000000000000000000003333333333333333333333333333333333333333");
+        let calldata1 =
+            bytes!("a9059cbb0000000000000000000000002222222222222222222222222222222222222222");
+        let calldata2 =
+            bytes!("a9059cbb0000000000000000000000003333333333333333333333333333333333333333");
 
         let tx1 = create_test_tx(to, U256::ZERO, calldata1, 100_000);
         let tx2 = create_test_tx(to, U256::ZERO, calldata2, 100_000);
@@ -423,7 +446,11 @@ mod tests {
         let tx = create_test_tx(to, U256::from(1000), Bytes::new(), 21_000);
         let fp = Fingerprint::from_envelope(&tx).unwrap();
 
-        assert_eq!(fp.selector, [0, 0, 0, 0], "Empty calldata should have zero selector");
+        assert_eq!(
+            fp.selector,
+            [0, 0, 0, 0],
+            "Empty calldata should have zero selector"
+        );
         assert_eq!(fp.arg_hash, [0u8; 16], "Empty args should hash to zero");
     }
 
@@ -509,4 +536,3 @@ mod tests {
         assert!(matches!(cache.observe(&fp), CacheDecision::Forward));
     }
 }
-
