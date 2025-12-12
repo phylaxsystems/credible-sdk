@@ -158,6 +158,40 @@ mod test {
 
     const TEST_GAS: u64 = 1_000_000;
 
+    fn expected_gas_after_get_differences(
+        starting_gas: u64,
+        journal: &JournalInner<JournalEntry>,
+        contract_address: Address,
+        slot: U256,
+    ) -> u64 {
+        const JOURNAL_PROCESSING_COST: u64 = 16;
+        const MEMORY_COST: u64 = 3;
+        const PUSH_LAST: u64 = 6;
+
+        let journal_entries = journal.journal.len() as u64;
+        let matching_storage_changes = journal
+            .journal
+            .iter()
+            .filter(|entry| match entry {
+                JournalEntry::StorageChanged { address, key, .. } => {
+                    *address == contract_address && *key == slot
+                }
+                _ => false,
+            })
+            .count() as u64;
+
+        let push_last_cost = if matching_storage_changes > 0 {
+            PUSH_LAST
+        } else {
+            0
+        };
+
+        starting_gas
+            - (journal_entries * JOURNAL_PROCESSING_COST)
+            - (matching_storage_changes * MEMORY_COST)
+            - push_last_cost
+    }
+
     fn create_call_inputs_for_state_changes(contract_address: Address, slot: U256) -> Bytes {
         PhEvm::getStateChangesCall {
             contractAddress: contract_address,
@@ -225,12 +259,19 @@ mod test {
             value_updates.clone(),
             &mut db,
         );
+        let expected_gas_left = expected_gas_after_get_differences(
+            TEST_GAS - BASE_COST,
+            &journal,
+            contract_address,
+            slot,
+        );
         let result = with_journal_context(journal, |context| {
             get_state_changes(&call_inputs, context, TEST_GAS)
         });
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
+        assert_eq!(encoded.gas(), expected_gas_left);
         let decoded = Vec::<U256>::abi_decode(encoded.bytes().as_ref());
         assert!(decoded.is_ok());
 
@@ -256,6 +297,7 @@ mod test {
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
+        assert_eq!(encoded.gas(), TEST_GAS - BASE_COST);
         let decoded = Vec::<U256>::abi_decode(encoded.bytes().as_ref());
         assert!(decoded.is_ok());
 
@@ -438,6 +480,10 @@ mod test {
         assert_eq!(differences[0], current_value);
         assert_eq!(differences[1], value_updates[0]);
         assert_eq!(differences[2], value_updates[1]);
+        assert_eq!(
+            gas_left,
+            expected_gas_after_get_differences(TEST_GAS, &journal, contract_address, slot)
+        );
     }
 
     #[test]
@@ -454,6 +500,101 @@ mod test {
 
         assert_eq!(decoded.contractAddress, contract_address);
         assert_eq!(decoded.slot, FixedBytes::<32>::from(slot));
+    }
+
+    #[test]
+    fn test_get_state_changes_oog_base_cost() {
+        let contract_address = random_address();
+        let slot = random_u256();
+        let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
+
+        let journal = JournalInner::new();
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, BASE_COST - 1)
+        });
+        assert!(result.is_ok());
+
+        let outcome = result.unwrap();
+        assert_eq!(outcome.gas(), 0);
+        assert!(outcome.bytes().is_empty());
+    }
+
+    #[test]
+    fn test_get_state_changes_oog_journal_processing() {
+        let contract_address = random_address();
+        let slot = random_u256();
+        let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
+
+        let mut journal = JournalInner::new();
+        journal.journal.push(JournalEntry::StorageChanged {
+            address: contract_address,
+            key: slot,
+            had_value: U256::from(1),
+        });
+
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, BASE_COST + 15)
+        });
+        let outcome = match result {
+            Err(GetStateChangesError::OutOfGas(outcome)) => outcome,
+            Ok(_) => panic!("Expected OutOfGas error, got Ok"),
+            Err(other) => panic!("Expected OutOfGas error, got {other:?}"),
+        };
+
+        assert_eq!(outcome.gas(), 0);
+        assert!(outcome.bytes().is_empty());
+    }
+
+    #[test]
+    fn test_get_state_changes_oog_memory_cost() {
+        let contract_address = random_address();
+        let slot = random_u256();
+        let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
+
+        let mut journal = JournalInner::new();
+        journal.journal.push(JournalEntry::StorageChanged {
+            address: contract_address,
+            key: slot,
+            had_value: U256::from(1),
+        });
+
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, BASE_COST + 16 + 2)
+        });
+        let outcome = match result {
+            Err(GetStateChangesError::OutOfGas(outcome)) => outcome,
+            Ok(_) => panic!("Expected OutOfGas error, got Ok"),
+            Err(other) => panic!("Expected OutOfGas error, got {other:?}"),
+        };
+
+        assert_eq!(outcome.gas(), 0);
+        assert!(outcome.bytes().is_empty());
+    }
+
+    #[test]
+    fn test_get_state_changes_oog_push_last() {
+        let contract_address = random_address();
+        let slot = random_u256();
+        let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
+
+        let mut journal = JournalInner::new();
+        journal.journal.push(JournalEntry::StorageChanged {
+            address: contract_address,
+            key: slot,
+            had_value: U256::from(1),
+        });
+
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, BASE_COST + 16 + 3 + 5)
+        });
+        let outcome = match result {
+            Err(GetStateChangesError::OutOfGas(outcome)) => outcome,
+            Ok(_) => panic!("Expected OutOfGas error, got Ok"),
+            Err(other) => panic!("Expected OutOfGas error, got {other:?}"),
+        };
+
+        assert_eq!(outcome.gas(), 0);
+        assert!(outcome.bytes().is_empty());
     }
 
     #[tokio::test]
