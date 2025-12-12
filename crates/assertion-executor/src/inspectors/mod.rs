@@ -48,6 +48,19 @@ pub fn inspector_result_to_call_outcome<E: std::fmt::Display>(
     match result {
         Ok(output) => {
             let gas_remaining = available_gas.saturating_sub(output.gas());
+            if gas_remaining == 0 {
+                return CallOutcome {
+                    result: InterpreterResult {
+                        result: InstructionResult::PrecompileOOG,
+                        output: output.into_bytes(),
+                        gas: Gas::new(gas_remaining),
+                    },
+                    memory_offset,
+                    was_precompile_called: false,
+                    precompile_call_logs: vec![],
+                };
+            }
+
             CallOutcome {
                 result: InterpreterResult {
                     result: InstructionResult::Return,
