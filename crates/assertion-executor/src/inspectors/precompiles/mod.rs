@@ -26,12 +26,17 @@ pub mod state_changes;
 pub(crate) const BASE_COST: u64 = 15;
 
 /// Deduct gas from the gas limit and check if we have OOG.
-pub(super) fn deduct_gas_and_check(gas_left: &mut u64, gas_cost: u64) -> Option<PhevmOutcome> {
-	if *gas_left < gas_cost {
-		return Some(PhevmOutcome::new(Bytes::default(), 0));
-	}
+pub(super) fn deduct_gas_and_check(
+    gas_left: &mut u64,
+    gas_cost: u64,
+    gas_limit: u64,
+) -> Option<PhevmOutcome> {
+    if *gas_left < gas_cost {
+        *gas_left = 0;
+        return Some(PhevmOutcome::new(Bytes::default(), gas_limit));
+    }
 
-	*gas_left = *gas_left - gas_cost;
+    *gas_left -= gas_cost;
 
-	None
+    None
 }
