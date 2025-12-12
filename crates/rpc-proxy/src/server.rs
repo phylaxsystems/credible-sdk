@@ -57,10 +57,11 @@ impl RpcProxy {
         let path = self.config.rpc_path.clone();
         info!(%addr, %path, "credible rpc proxy ready to listen");
 
-        // TODO: Once the axum router is wired, bind TcpListener here and serve
-        // self.router.into_axum(&path). For now we only log readiness so tests
-        // can still invoke ProxyState directly.
-        info!("Proxy serving is pending axum integration (see README TODO #1)");
+        let listener = TcpListener::bind(addr).await?;
+        let app = self.router.into_axum(&path);
+
+        info!(%addr, %path, "credible rpc proxy listening");
+        axum::serve(listener, app).await?;
         Ok(())
     }
 }
@@ -101,14 +102,12 @@ impl ProxyState {
                     Err(err) => {
                         warn!(fingerprint = ?fingerprint.hash, %err, "forwarding failed");
                         // Keep in pending - will be cleared when sidecar reports back
-                        // or by TTL expiration of pending set (TODO: implement timeout)
+                        // or by the pending-state timeout planned in README TODO #3.
                     }
                 }
                 result
             }
-            CacheDecision::AwaitVerdict => {
-                Err(ProxyError::PendingFingerprint(fingerprint.hash))
-            }
+            CacheDecision::AwaitVerdict => Err(ProxyError::PendingFingerprint(fingerprint.hash)),
             CacheDecision::Reject(assertions) => {
                 Err(ProxyError::DeniedFingerprint(fingerprint.hash, assertions))
             }
@@ -153,9 +152,9 @@ impl From<ProxyError> for RpcResponseError {
         let code = match err {
             ProxyError::PendingFingerprint(_) => -32001, // Custom: pending validation
             ProxyError::DeniedFingerprint(_, _) => -32002, // Custom: denied by assertion
-            ProxyError::InvalidParams(_) => -32602,        // Standard: invalid params
-            ProxyError::InvalidConfig(_) => -32600,        // Standard: invalid request
-            _ => -32000,                                   // Standard: server error
+            ProxyError::InvalidParams(_) => -32602,      // Standard: invalid params
+            ProxyError::InvalidConfig(_) => -32600,      // Standard: invalid request
+            _ => -32000,                                 // Standard: server error
         };
         Self {
             code,
