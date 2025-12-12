@@ -1,6 +1,7 @@
 use crate::{
     inspectors::{
         inspector_result_to_call_outcome,
+        phevm::PhevmOutcome,
         sol_primitives::ITriggerRecorder,
     },
     primitives::{
@@ -23,7 +24,6 @@ use revm::{
     interpreter::{
         CallInputs,
         CallOutcome,
-        Gas,
     },
 };
 
@@ -161,11 +161,11 @@ macro_rules! impl_trigger_recorder_inspector {
                 ) -> Option<CallOutcome> {
                     if inputs.target_address == TRIGGER_RECORDER {
                         let input_bytes = inputs.input.bytes(context);
-                        let record_result = self.record_trigger(&input_bytes);
-                        let gas = Gas::new(inputs.gas_limit);
+                        let record_result =
+                            self.record_trigger(&input_bytes).map(PhevmOutcome::from);
                         return Some(inspector_result_to_call_outcome(
                             record_result,
-                            gas,
+                            inputs.gas_limit,
                             inputs.return_memory_offset.clone(),
                         ));
                     }

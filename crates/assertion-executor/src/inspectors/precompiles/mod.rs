@@ -17,3 +17,6 @@ pub mod fork;
 pub mod get_logs;
 pub mod load;
 pub mod state_changes;
+
+/// Base cost of calling phevm precompiles
+pub(crate) const BASE_COST: u64 = 15;
