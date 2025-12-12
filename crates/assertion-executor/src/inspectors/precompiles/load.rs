@@ -3,7 +3,10 @@ use crate::{
         DatabaseRef,
         multi_fork_db::MultiForkDb,
     },
-    inspectors::sol_primitives::PhEvm::loadCall,
+    inspectors::{
+        phevm::PhevmOutcome,
+        sol_primitives::PhEvm::loadCall,
+    },
     primitives::{
         Address,
         Bytes,
@@ -23,21 +26,28 @@ use alloy_sol_types::{
     SolValue,
 };
 
+use super::{
+    BASE_COST,
+    COLD_SLOAD_COST,
+};
+
 #[derive(Debug, thiserror::Error)]
 #[error("Error loading external slot: {0}")]
 pub struct LoadExternalSlotError<ExtDb: DatabaseRef>(pub ExtDb::Error);
 
 /// Returns a storage slot for a given address. Will return `0x0` if slot empty.
+///
+/// Deducts cold sload cost + base phevm cost gas cost. Only base cost if invalid input.
 pub fn load_external_slot<'db, ExtDb: DatabaseRef + 'db, CTX>(
     context: &mut CTX,
     call_inputs: &CallInputs,
-) -> Result<Bytes, LoadExternalSlotError<ExtDb>>
+) -> Result<PhevmOutcome, LoadExternalSlotError<ExtDb>>
 where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     let Ok(call) = loadCall::abi_decode(&call_inputs.input.bytes(context)) else {
-        return Ok(Bytes::default());
+        return Ok(PhevmOutcome::new(Bytes::default(), BASE_COST));
     };
     let address: Address = call.target;
 
@@ -51,8 +61,9 @@ where
 
     let value_opt = context.sload(address, call.slot.into());
     let slot_value = value_opt.unwrap_or_default().data;
+    let slot_bytes = SolValue::abi_encode(&slot_value).into();
 
-    Ok(SolValue::abi_encode(&slot_value).into())
+    Ok(PhevmOutcome::new(slot_bytes, BASE_COST + COLD_SLOAD_COST))
 }
 
 #[cfg(test)]
@@ -62,7 +73,10 @@ mod test {
             fork_db::ForkDb,
             overlay::test_utils::MockDb,
         },
-        inspectors::sol_primitives::PhEvm::loadCall,
+        inspectors::{
+            inspector_result_to_call_outcome,
+            sol_primitives::PhEvm::loadCall,
+        },
         primitives::{
             AccountInfo,
             Bytecode,
@@ -87,6 +101,7 @@ mod test {
             CallInputs,
             CallScheme,
             CallValue,
+            InstructionResult,
         },
         primitives::{
             KECCAK_EMPTY,
@@ -166,7 +181,9 @@ mod test {
         let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
         let result = load_external_slot(&mut context, &call_inputs);
-        let decoded = loadCall::abi_decode_returns(&result.unwrap()).unwrap();
+        let outcome = result.unwrap();
+        assert_eq!(outcome.gas(), BASE_COST + COLD_SLOAD_COST);
+        let decoded = loadCall::abi_decode_returns(outcome.bytes().as_ref()).unwrap();
         assert_eq!(decoded.0, FixedBytes::from(expected_value.to_be_bytes()));
     }
 
@@ -185,7 +202,9 @@ mod test {
         let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
         let result = load_external_slot(&mut context, &call_inputs);
-        let decoded = loadCall::abi_decode_returns(&result.unwrap()).unwrap();
+        let outcome = result.unwrap();
+        assert_eq!(outcome.gas(), BASE_COST + COLD_SLOAD_COST);
+        let decoded = loadCall::abi_decode_returns(outcome.bytes().as_ref()).unwrap();
         assert_eq!(decoded.0, FixedBytes::ZERO);
     }
 
@@ -206,8 +225,76 @@ mod test {
         let result = load_external_slot(&mut context, &call_inputs);
 
         // parse the result
-        let decoded = loadCall::abi_decode_returns(&result.unwrap()).unwrap();
+        let outcome = result.unwrap();
+        assert_eq!(outcome.gas(), BASE_COST + COLD_SLOAD_COST);
+        let decoded = loadCall::abi_decode_returns(outcome.bytes().as_ref()).unwrap();
         assert_eq!(decoded.0, FixedBytes::ZERO);
+    }
+
+    #[test]
+    fn test_load_call_deducts_gas_in_call_outcome() {
+        let target = random_address();
+        let slot = random_u256();
+        let call_inputs = create_call_inputs_for_load(target, slot);
+
+        let mock_db = create_mock_db_with_storage(target, slot, random_u256());
+        let mut multi_fork = MultiForkDb::new(ForkDb::new(mock_db), &JournalInner::new());
+        let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
+
+        let outcome = load_external_slot(&mut context, &call_inputs).unwrap();
+
+        let available_gas = 1_000_000;
+        let call_outcome =
+            inspector_result_to_call_outcome::<&'static str>(Ok(outcome), available_gas, 0..0);
+
+        assert_eq!(
+            call_outcome.gas().remaining(),
+            available_gas - (BASE_COST + COLD_SLOAD_COST)
+        );
+        assert_eq!(call_outcome.result.result, InstructionResult::Return);
+    }
+
+    #[test]
+    fn test_load_call_oog_when_gas_exactly_cost() {
+        let target = random_address();
+        let slot = random_u256();
+        let call_inputs = create_call_inputs_for_load(target, slot);
+
+        let mock_db = create_mock_db_with_storage(target, slot, random_u256());
+        let mut multi_fork = MultiForkDb::new(ForkDb::new(mock_db), &JournalInner::new());
+        let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
+
+        let outcome = load_external_slot(&mut context, &call_inputs).unwrap();
+
+        let call_outcome = inspector_result_to_call_outcome::<&'static str>(
+            Ok(outcome),
+            BASE_COST + COLD_SLOAD_COST,
+            0..0,
+        );
+        assert_eq!(call_outcome.result.result, InstructionResult::PrecompileOOG);
+    }
+
+    #[test]
+    fn test_load_call_invalid_input_charges_base_cost() {
+        let call_inputs = CallInputs {
+            input: CallInput::Bytes(Bytes::from_static(b"not-abi")),
+            gas_limit: 1_000_000,
+            bytecode_address: Address::ZERO,
+            known_bytecode: None,
+            target_address: Address::ZERO,
+            caller: Address::ZERO,
+            value: CallValue::Transfer(U256::ZERO),
+            scheme: CallScheme::Call,
+            is_static: false,
+            return_memory_offset: 0..0,
+        };
+
+        let mock_db = create_mock_db_with_storage(Address::ZERO, random_u256(), random_u256());
+        let mut multi_fork = MultiForkDb::new(ForkDb::new(mock_db), &JournalInner::new());
+        let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
+
+        let outcome = load_external_slot(&mut context, &call_inputs).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST);
     }
 
     #[tokio::test]
