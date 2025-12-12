@@ -33,6 +33,7 @@ use std::{
 };
 
 use metrics::counter;
+
 #[derive(Debug)]
 /// An active overlay is a wrapper around the `overlaydb` meant to be used
 /// when temporarily needing to change what database to use as the underlying.
@@ -235,11 +236,21 @@ impl<Db> DatabaseCommit for ActiveOverlay<Db> {
                 continue;
             }
 
+            let key = TableKey::Basic(address);
+
+            if account.is_selfdestructed() {
+                if let Some(mut db_account) = self.overlay.get_mut(&key)
+                    && let Some(basic) = db_account.as_basic_mut()
+                {
+                    *basic = AccountInfo::default();
+                }
+                continue;
+            }
+
             let is_created = account.is_created();
 
             // Update account info in shared cache
             // This will be visible to the parent OverlayDb and other ActiveOverlays
-            let key = TableKey::Basic(address);
             self.overlay
                 .insert(key, TableValue::Basic(account.info.clone()));
 

@@ -13,10 +13,7 @@ use crate::{
     },
 };
 use rapidhash::fast::RandomState;
-use revm::{
-    Database,
-    state::AccountStatus,
-};
+use revm::Database;
 use std::{
     collections::{
         HashMap,
@@ -138,14 +135,19 @@ impl<ExtDb: DatabaseRef> DatabaseRef for ForkDb<ExtDb> {
 impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
     fn commit(&mut self, changes: EvmState) {
         for (address, account) in changes {
+            if !account.is_touched() {
+                continue;
+            }
+
             // Note for self-destructed accounts (post-Cancun): if an account is self-destructed, it
             // means it was created within the same transaction as it was self-destructed.
             // Therefore, we can skip it from being written into the cache. We explicitly check for
             // self-destructed accounts here, in case the flag is set without the `Touched` flag
-            if !account.is_touched()
-                || account.status == AccountStatus::SelfDestructed
-                || account.status == AccountStatus::SelfDestructedLocal
-            {
+            if account.is_selfdestructed() {
+                let db_account = self.basic.entry(address).or_default();
+                *db_account = AccountInfo::default();
+                let db_storage = self.storage.entry(address).or_default();
+                *db_storage = ForkStorageMap::default();
                 continue;
             }
 
