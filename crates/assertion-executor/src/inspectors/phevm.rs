@@ -293,9 +293,10 @@ impl<'a> PhEvmInspector<'a> {
                 .map_err(PrecompileError::GetCallInputsError)?
             }
             PhEvm::getStateChangesCall::SELECTOR => {
-                get_state_changes(&input_bytes, &self.context)
-                    .map(PhevmOutcome::from)
-                    .map_err(PrecompileError::GetStateChangesError)?
+                match get_state_changes(&input_bytes, &self.context, inputs.gas_limit) {
+                    Ok(rax) | Err(GetStateChangesError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::GetStateChangesError(err)),
+                }
             }
             PhEvm::getAssertionAdopterCall::SELECTOR => {
                 get_assertion_adopter(&self.context).map_err(PrecompileError::UnexpectedError)?
