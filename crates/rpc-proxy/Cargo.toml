@@ -22,6 +22,8 @@ anyhow = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
+moka = { workspace = true, features = ["sync"] }
+metrics = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -33,3 +35,4 @@ hyper = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = "0.3.12"
+parking_lot = { workspace = true }

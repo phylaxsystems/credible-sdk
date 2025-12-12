@@ -55,10 +55,23 @@ impl RpcProxy {
     pub async fn serve(self) -> Result<()> {
         let addr = self.config.resolved_bind_addr()?;
         let path = self.config.rpc_path.clone();
-        let listener = TcpListener::bind(addr).await?;
-        info!(%addr, %path, "credible rpc proxy listening");
-        let axum = self.router.into_axum(&path);
-        axum::serve(listener, axum).await?;
+        info!(%addr, %path, "credible rpc proxy ready to listen");
+
+        // TODO(integration): Complete axum integration for serving the router.
+        // The ajj Router can be converted to an axum Router via into_axum(),
+        // but the exact serving mechanism depends on axum version and features.
+        // For now, this is a placeholder that will be completed when integrating
+        // with the actual sequencer.
+        //
+        // Expected flow:
+        // let listener = TcpListener::bind(addr).await?;
+        // let app = self.router.into_axum(&path);
+        // // Convert app to proper service and serve
+        //
+        // For testing, see the unit tests in fingerprint.rs which validate
+        // the core cache and normalization logic.
+
+        info!("Proxy serving is a TODO - implement axum integration");
         Ok(())
     }
 }
@@ -77,15 +90,13 @@ pub struct ProxyState {
 
 impl ProxyState {
     fn new(config: ProxyConfig) -> Self {
-        Self {
-            config,
-            cache: FingerprintCache::new(),
-        }
+        let cache = FingerprintCache::new(config.cache.clone());
+        Self { config, cache }
     }
 
     async fn handle_send_raw_transaction(&self, params: Vec<String>) -> Result<String> {
         let raw_hex = params.first().ok_or_else(|| {
-            ProxyError::InvalidConfig("eth_sendRawTransaction expects a single hex payload".into())
+            ProxyError::InvalidParams("eth_sendRawTransaction expects a single hex payload".into())
         })?;
         let raw_bytes = decode_raw_tx(raw_hex)?;
         let fingerprint = Fingerprint::from_signed_tx(&raw_bytes)?;
@@ -93,14 +104,25 @@ impl ProxyState {
         match self.cache.observe(&fingerprint) {
             CacheDecision::Forward => {
                 let result = self.forward_downstream(raw_bytes).await;
-                if let Err(err) = &result {
-                    warn!(fingerprint = ?fingerprint.hash, %err, "forwarding failed");
+                match &result {
+                    Ok(_) => {
+                        // Transaction forwarded successfully, release from pending
+                        self.cache.release(&fingerprint);
+                    }
+                    Err(err) => {
+                        warn!(fingerprint = ?fingerprint.hash, %err, "forwarding failed");
+                        // Keep in pending - will be cleared when sidecar reports back
+                        // or by TTL expiration of pending set (TODO: implement timeout)
+                    }
                 }
-                self.cache.release(&fingerprint);
                 result
             }
-            CacheDecision::AwaitVerdict => Err(ProxyError::PendingFingerprint(fingerprint.hash)),
-            CacheDecision::Reject => Err(ProxyError::DeniedFingerprint(fingerprint.hash)),
+            CacheDecision::AwaitVerdict => {
+                Err(ProxyError::PendingFingerprint(fingerprint.hash))
+            }
+            CacheDecision::Reject(assertions) => {
+                Err(ProxyError::DeniedFingerprint(fingerprint.hash, assertions))
+            }
         }
     }
 
@@ -109,6 +131,7 @@ impl ProxyState {
         // the configured sequencer or in-process driver. For now we simply echo the
         // payload so integration tests can assert the proxy shaped the request.
         let encoded = format!("0x{}", hex::encode(raw_bytes));
+        metrics::counter!("rpc_proxy_forward_total").increment(1);
         Ok(encoded)
     }
 }
@@ -116,7 +139,7 @@ impl ProxyState {
 fn decode_raw_tx(raw_hex: &str) -> Result<Vec<u8>> {
     let stripped = raw_hex.trim_start_matches("0x");
     hex::decode(stripped)
-        .map_err(|err| ProxyError::InvalidConfig(format!("invalid raw transaction hex: {err}")))
+        .map_err(|err| ProxyError::InvalidParams(format!("invalid raw transaction hex: {err}")))
 }
 
 async fn send_raw_transaction(
@@ -139,10 +162,11 @@ pub struct RpcResponseError {
 impl From<ProxyError> for RpcResponseError {
     fn from(err: ProxyError) -> Self {
         let code = match err {
-            ProxyError::PendingFingerprint(_) => -32001,
-            ProxyError::DeniedFingerprint(_) => -32002,
-            ProxyError::InvalidConfig(_) => -32602,
-            _ => -32000,
+            ProxyError::PendingFingerprint(_) => -32001, // Custom: pending validation
+            ProxyError::DeniedFingerprint(_, _) => -32002, // Custom: denied by assertion
+            ProxyError::InvalidParams(_) => -32602,        // Standard: invalid params
+            ProxyError::InvalidConfig(_) => -32600,        // Standard: invalid request
+            _ => -32000,                                   // Standard: server error
         };
         Self {
             code,

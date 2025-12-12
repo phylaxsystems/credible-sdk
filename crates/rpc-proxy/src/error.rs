@@ -1,7 +1,12 @@
-use std::net::AddrParseError;
+use std::{
+    collections::HashSet,
+    net::AddrParseError,
+};
 
 use alloy_primitives::B256;
 use thiserror::Error;
+
+use crate::fingerprint::AssertionInfo;
 
 pub type Result<T, E = ProxyError> = std::result::Result<T, E>;
 
@@ -10,6 +15,8 @@ pub type Result<T, E = ProxyError> = std::result::Result<T, E>;
 pub enum ProxyError {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+    #[error("invalid JSON-RPC parameters: {0}")]
+    InvalidParams(String),
     #[error("bind or socket error: {0}")]
     Io(#[from] std::io::Error),
     #[error("address parse error: {0}")]
@@ -18,8 +25,8 @@ pub enum ProxyError {
     Hyper(#[from] hyper::Error),
     #[error("fingerprint error: {0}")]
     Fingerprint(#[from] crate::fingerprint::FingerprintError),
-    #[error("fingerprint {0:#x} is currently pending evaluation")]
+    #[error("fingerprint {0:#x} is currently pending validation; retry after a short delay")]
     PendingFingerprint(B256),
-    #[error("fingerprint {0:#x} is currently denied")]
-    DeniedFingerprint(B256),
+    #[error("fingerprint {0:#x} is denied by assertions: {1:?}")]
+    DeniedFingerprint(B256, HashSet<AssertionInfo>),
 }

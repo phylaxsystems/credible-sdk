@@ -1,4 +1,7 @@
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    time::Duration,
+};
 
 use serde::{
     Deserialize,
@@ -6,9 +9,12 @@ use serde::{
 };
 use url::Url;
 
-use crate::error::{
-    ProxyError,
-    Result,
+use crate::{
+    error::{
+        ProxyError,
+        Result,
+    },
+    fingerprint::CacheConfig,
 };
 
 /// Runtime configuration for the RPC proxy.
@@ -24,6 +30,9 @@ pub struct ProxyConfig {
     pub upstream_http: Url,
     /// Optional gRPC endpoint for communicating with the sidecar.
     pub sidecar_endpoint: Option<Url>,
+    /// Fingerprint cache configuration.
+    #[serde(default)]
+    pub cache: CacheConfig,
 }
 
 impl Default for ProxyConfig {
@@ -33,6 +42,7 @@ impl Default for ProxyConfig {
             rpc_path: "/rpc".into(),
             upstream_http: Url::parse("http://127.0.0.1:8545").expect("static URL"),
             sidecar_endpoint: None,
+            cache: CacheConfig::default(),
         }
     }
 }

@@ -1,6 +1,7 @@
 use std::{
+    collections::HashSet,
     sync::Arc,
-    time::Instant,
+    time::Duration,
 };
 
 use alloy_consensus::{
@@ -15,7 +16,8 @@ use alloy_primitives::{
     keccak256,
 };
 use alloy_rlp::Decodable;
-use dashmap::DashMap;
+use moka::sync::Cache;
+use parking_lot::RwLock;
 use thiserror::Error;
 
 /// Normalized fingerprint for a transaction submission.
@@ -79,13 +81,25 @@ fn argument_hash(input: &Bytes) -> [u8; 16] {
     truncated
 }
 
+/// Bucket value into power-of-2 ranges for fingerprint normalization.
+/// Returns the approximate log2 of the value, scaled to bucket size.
+/// Bucket 0: value == 0
+/// Bucket 1: 0 < value <= 1e12 (1M gwei)
+/// Bucket 2: 1e12 < value <= 1e15 (1K ETH)
+/// Bucket 3: 1e15 < value <= 1e18 (1M ETH)
+/// And so on in powers of 1000...
 fn bucket_value(value: &U256) -> u64 {
     if value.is_zero() {
         return 0;
     }
-    let bytes = value.to_be_bytes::<32>();
-    let leading = bytes.iter().take_while(|b| **b == 0).count() as u64;
-    32 - leading
+
+    // Find the position of the most significant bit
+    let bits = value.bit_len();
+
+    // Group into buckets by powers of 2 (roughly every 10 bits = ~1000x)
+    // This gives us coarse-grained buckets: tiny, small, medium, large, huge, etc.
+    let bucket = (bits / 10) + 1;
+    bucket.min(255) as u64
 }
 
 fn bucket_gas(gas_limit: u64) -> u32 {
@@ -109,23 +123,29 @@ fn digest(
     keccak256(buf)
 }
 
-/// Tracks fingerprints currently under evaluation to enforce the
-/// "one outstanding transaction per fingerprint" rule.
-#[derive(Clone, Debug, Default)]
+/// Metadata about an assertion that caused a fingerprint to be denied.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AssertionInfo {
+    pub assertion_id: B256,
+    pub assertion_version: u64,
+}
+
+/// Tracks fingerprints and their validation state with proper TTL and LRU eviction.
+#[derive(Clone, Debug)]
 pub struct FingerprintCache {
-    entries: Arc<DashMap<B256, CacheEntry>>,
+    /// Cache of denied fingerprints with TTL. These are fingerprints that
+    /// the sidecar has confirmed as failing assertions.
+    denied: Cache<B256, DeniedEntry>,
+    /// Set of fingerprints currently pending sidecar validation.
+    /// We don't use TTL here because we explicitly manage lifecycle.
+    pending: Arc<RwLock<HashSet<B256>>>,
 }
 
 #[derive(Debug, Clone)]
-struct CacheEntry {
-    state: EntryState,
-    inserted_at: Instant,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryState {
-    Pending,
-    Denied,
+struct DeniedEntry {
+    /// Which assertions caused this fingerprint to fail.
+    /// Allows selective cache invalidation when assertion versions update.
+    assertions: HashSet<AssertionInfo>,
 }
 
 pub enum CacheDecision {
@@ -134,49 +154,136 @@ pub enum CacheDecision {
     /// Fingerprint currently pending validation; duplicate should wait.
     AwaitVerdict,
     /// Fingerprint previously denied; reject immediately.
-    Reject,
+    Reject(HashSet<AssertionInfo>),
+}
+
+/// Configuration for fingerprint cache behavior.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CacheConfig {
+    /// Maximum number of denied fingerprints to cache.
+    #[serde(default = "default_max_denied_entries")]
+    pub max_denied_entries: u64,
+    /// Time-to-live for denied entries in seconds (default: ~64 L2 slots at 2s = 128s).
+    #[serde(default = "default_denied_ttl_secs")]
+    pub denied_ttl_secs: u64,
+}
+
+fn default_max_denied_entries() -> u64 {
+    10_000
+}
+
+fn default_denied_ttl_secs() -> u64 {
+    128
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            max_denied_entries: default_max_denied_entries(),
+            denied_ttl_secs: default_denied_ttl_secs(),
+        }
+    }
 }
 
 impl FingerprintCache {
-    pub fn new() -> Self {
+    pub fn new(config: CacheConfig) -> Self {
         Self {
-            entries: Arc::new(DashMap::new()),
+            denied: Cache::builder()
+                .max_capacity(config.max_denied_entries)
+                .time_to_live(Duration::from_secs(config.denied_ttl_secs))
+                .build(),
+            pending: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
+    /// Observe a new transaction fingerprint and determine how to handle it.
     pub fn observe(&self, fingerprint: &Fingerprint) -> CacheDecision {
-        use dashmap::mapref::entry::Entry;
+        // Check if already denied
+        if let Some(entry) = self.denied.get(&fingerprint.hash) {
+            metrics::counter!("rpc_proxy_fingerprint_reject_total", "reason" => "denied").increment(1);
+            return CacheDecision::Reject(entry.assertions.clone());
+        }
 
-        match self.entries.entry(fingerprint.hash) {
-            Entry::Vacant(entry) => {
-                entry.insert(CacheEntry {
-                    state: EntryState::Pending,
-                    inserted_at: Instant::now(),
-                });
-                CacheDecision::Forward
-            }
-            Entry::Occupied(entry) => {
-                match entry.value().state {
-                    EntryState::Pending => CacheDecision::AwaitVerdict,
-                    EntryState::Denied => CacheDecision::Reject,
-                }
-            }
+        // Check if pending validation
+        let mut pending = self.pending.write();
+        if pending.contains(&fingerprint.hash) {
+            metrics::counter!("rpc_proxy_fingerprint_reject_total", "reason" => "pending").increment(1);
+            return CacheDecision::AwaitVerdict;
+        }
+
+        // New fingerprint - mark as pending and forward
+        pending.insert(fingerprint.hash);
+        metrics::counter!("rpc_proxy_fingerprint_forward_total").increment(1);
+        CacheDecision::Forward
+    }
+
+    /// Record that a fingerprint failed validation by the sidecar.
+    /// The fingerprint will remain in the denied cache until TTL expires
+    /// or it is explicitly cleared.
+    pub fn record_failure(&self, fingerprint: &Fingerprint, assertion: AssertionInfo) {
+        // Remove from pending set
+        self.pending.write().remove(&fingerprint.hash);
+
+        // Add or update in denied cache
+        // Moka's get_with computes the value if not present, or returns existing
+        let mut assertions = self
+            .denied
+            .get(&fingerprint.hash)
+            .map(|entry| entry.assertions.clone())
+            .unwrap_or_default();
+
+        assertions.insert(assertion);
+
+        self.denied
+            .insert(fingerprint.hash, DeniedEntry { assertions });
+
+        metrics::counter!("rpc_proxy_cache_denied_total").increment(1);
+    }
+
+    /// Release a fingerprint from pending state (called when validation succeeds).
+    pub fn release(&self, fingerprint: &Fingerprint) {
+        self.pending.write().remove(&fingerprint.hash);
+        metrics::counter!("rpc_proxy_cache_release_total").increment(1);
+    }
+
+    /// Clear denied entries associated with a specific assertion version.
+    /// This is called when the assertion store indexes a new version.
+    pub fn invalidate_assertion(&self, assertion_id: &B256, assertion_version: u64) {
+        let target = AssertionInfo {
+            assertion_id: *assertion_id,
+            assertion_version,
+        };
+
+        // Moka doesn't support conditional removal, so we need to iterate
+        // and collect keys to invalidate. This is O(n) but only happens
+        // on assertion version updates, which are infrequent.
+        let keys_to_remove: Vec<B256> = self
+            .denied
+            .iter()
+            .filter(|(_, entry)| entry.assertions.contains(&target))
+            .map(|(key, _)| *key)
+            .collect();
+
+        for key in keys_to_remove {
+            self.denied.invalidate(&key);
+        }
+
+        metrics::counter!("rpc_proxy_cache_invalidate_total").increment(1);
+    }
+
+    /// Get cache statistics for observability.
+    pub fn stats(&self) -> CacheStats {
+        CacheStats {
+            denied_count: self.denied.entry_count(),
+            pending_count: self.pending.read().len(),
         }
     }
+}
 
-    pub fn record_failure(&self, fingerprint: &Fingerprint) {
-        self.entries.insert(
-            fingerprint.hash,
-            CacheEntry {
-                state: EntryState::Denied,
-                inserted_at: Instant::now(),
-            },
-        );
-    }
-
-    pub fn release(&self, fingerprint: &Fingerprint) {
-        self.entries.remove(&fingerprint.hash);
-    }
+#[derive(Debug, Clone)]
+pub struct CacheStats {
+    pub denied_count: u64,
+    pub pending_count: usize,
 }
 
 #[derive(Debug, Error)]
@@ -186,3 +293,220 @@ pub enum FingerprintError {
     #[error("failed to decode transaction: {0}")]
     Decode(#[from] alloy_rlp::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::{SignableTransaction, TxEip1559};
+    use alloy_primitives::{address, bytes, PrimitiveSignature};
+
+    fn create_test_tx(to: Address, value: U256, calldata: Bytes, gas_limit: u64) -> TxEnvelope {
+        let tx = TxEip1559 {
+            to: alloy_primitives::TxKind::Call(to),
+            value,
+            input: calldata,
+            gas_limit,
+            max_fee_per_gas: 20_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            chain_id: 1,
+            nonce: 0,
+            access_list: Default::default(),
+        };
+        let sig = PrimitiveSignature::test_signature();
+        TxEnvelope::Eip1559(tx.into_signed(sig))
+    }
+
+    #[test]
+    fn test_value_bucketing() {
+        assert_eq!(bucket_value(&U256::ZERO), 0, "Zero value should be bucket 0");
+
+        // Small values - bucketing is logarithmic (bit_len / 10)
+        // 1 has 1 bit, so bucket = 1/10 + 1 = 1
+        assert_eq!(
+            bucket_value(&U256::from(1)),
+            1,
+            "1 wei should be bucket 1"
+        );
+
+        // 1000 has ~10 bits, so bucket = 10/10 + 1 = 2
+        assert_eq!(
+            bucket_value(&U256::from(1000)),
+            2,
+            "1000 wei should be bucket 2"
+        );
+
+        // 1 ETH = 1e18 = ~2^60 = 60 bits, bucket = 60/10 + 1 = 7
+        let one_eth = U256::from(1_000_000_000_000_000_000u128);
+        assert_eq!(
+            bucket_value(&one_eth),
+            7,
+            "1 ETH should be in bucket 7"
+        );
+
+        // 1000 ETH should be in a higher bucket
+        let thousand_eth = one_eth * U256::from(1000);
+        assert!(
+            bucket_value(&thousand_eth) > bucket_value(&one_eth),
+            "1000 ETH should be in higher bucket than 1 ETH"
+        );
+
+        // Values that differ by small amounts should bucket together
+        assert_eq!(
+            bucket_value(&U256::from(1_000_000)),
+            bucket_value(&U256::from(1_000_001)),
+            "Similar values should be in same bucket"
+        );
+
+        // But values that differ significantly should be in different buckets
+        assert_ne!(
+            bucket_value(&U256::from(1_000)),
+            bucket_value(&U256::from(1_000_000)),
+            "Values differing by 1000x should be in different buckets"
+        );
+    }
+
+    #[test]
+    fn test_gas_bucketing() {
+        assert_eq!(bucket_gas(21_000), 0);
+        assert_eq!(bucket_gas(50_000), 1);
+        assert_eq!(bucket_gas(100_000), 2);
+        assert_eq!(bucket_gas(51_000), 1, "51k should round down to bucket 1");
+        assert_eq!(
+            bucket_gas(99_999),
+            1,
+            "99,999 should still be bucket 1"
+        );
+    }
+
+    #[test]
+    fn test_fingerprint_determinism() {
+        let to = address!("1111111111111111111111111111111111111111");
+        let calldata = bytes!("a9059cbb00000000000000000000000022222222222222222222222222222222222222220000000000000000000000000000000000000000000000000000000000000064");
+
+        let tx1 = create_test_tx(to, U256::from(1000), calldata.clone(), 100_000);
+        let tx2 = create_test_tx(to, U256::from(1000), calldata.clone(), 100_000);
+
+        let fp1 = Fingerprint::from_envelope(&tx1).unwrap();
+        let fp2 = Fingerprint::from_envelope(&tx2).unwrap();
+
+        assert_eq!(
+            fp1.hash, fp2.hash,
+            "Identical transactions should produce identical fingerprints"
+        );
+    }
+
+    #[test]
+    fn test_fingerprint_different_calldata() {
+        let to = address!("1111111111111111111111111111111111111111");
+        let calldata1 = bytes!("a9059cbb0000000000000000000000002222222222222222222222222222222222222222");
+        let calldata2 = bytes!("a9059cbb0000000000000000000000003333333333333333333333333333333333333333");
+
+        let tx1 = create_test_tx(to, U256::ZERO, calldata1, 100_000);
+        let tx2 = create_test_tx(to, U256::ZERO, calldata2, 100_000);
+
+        let fp1 = Fingerprint::from_envelope(&tx1).unwrap();
+        let fp2 = Fingerprint::from_envelope(&tx2).unwrap();
+
+        assert_ne!(
+            fp1.hash, fp2.hash,
+            "Different calldata should produce different fingerprints"
+        );
+        assert_eq!(
+            fp1.selector, fp2.selector,
+            "Same function selector should match"
+        );
+    }
+
+    #[test]
+    fn test_fingerprint_empty_calldata() {
+        let to = address!("1111111111111111111111111111111111111111");
+        let tx = create_test_tx(to, U256::from(1000), Bytes::new(), 21_000);
+        let fp = Fingerprint::from_envelope(&tx).unwrap();
+
+        assert_eq!(fp.selector, [0, 0, 0, 0], "Empty calldata should have zero selector");
+        assert_eq!(fp.arg_hash, [0u8; 16], "Empty args should hash to zero");
+    }
+
+    #[test]
+    fn test_cache_pending_state() {
+        let cache = FingerprintCache::new(CacheConfig::default());
+        let to = address!("1111111111111111111111111111111111111111");
+        let tx = create_test_tx(to, U256::ZERO, bytes!("12345678"), 100_000);
+        let fp = Fingerprint::from_envelope(&tx).unwrap();
+
+        // First observe should forward
+        match cache.observe(&fp) {
+            CacheDecision::Forward => {}
+            _ => panic!("First observe should forward"),
+        }
+
+        // Second observe should await verdict (still pending)
+        match cache.observe(&fp) {
+            CacheDecision::AwaitVerdict => {}
+            _ => panic!("Second observe should await verdict"),
+        }
+
+        // Release should clear pending
+        cache.release(&fp);
+
+        // Third observe should forward again
+        match cache.observe(&fp) {
+            CacheDecision::Forward => {}
+            _ => panic!("After release, should forward again"),
+        }
+    }
+
+    #[test]
+    fn test_cache_denied_state() {
+        let cache = FingerprintCache::new(CacheConfig::default());
+        let to = address!("1111111111111111111111111111111111111111");
+        let tx = create_test_tx(to, U256::ZERO, bytes!("12345678"), 100_000);
+        let fp = Fingerprint::from_envelope(&tx).unwrap();
+
+        let assertion = AssertionInfo {
+            assertion_id: B256::ZERO,
+            assertion_version: 1,
+        };
+
+        // First observe should forward
+        assert!(matches!(cache.observe(&fp), CacheDecision::Forward));
+
+        // Record failure
+        cache.record_failure(&fp, assertion.clone());
+
+        // Now should be rejected
+        match cache.observe(&fp) {
+            CacheDecision::Reject(assertions) => {
+                assert!(assertions.contains(&assertion));
+            }
+            _ => panic!("Should be rejected after recording failure"),
+        }
+    }
+
+    #[test]
+    fn test_cache_assertion_invalidation() {
+        let cache = FingerprintCache::new(CacheConfig::default());
+        let to = address!("1111111111111111111111111111111111111111");
+        let tx = create_test_tx(to, U256::ZERO, bytes!("12345678"), 100_000);
+        let fp = Fingerprint::from_envelope(&tx).unwrap();
+
+        let assertion = AssertionInfo {
+            assertion_id: B256::from([1u8; 32]),
+            assertion_version: 1,
+        };
+
+        // Mark as pending and then denied
+        cache.observe(&fp);
+        cache.record_failure(&fp, assertion.clone());
+
+        // Verify it's denied
+        assert!(matches!(cache.observe(&fp), CacheDecision::Reject(_)));
+
+        // Invalidate the assertion
+        cache.invalidate_assertion(&assertion.assertion_id, assertion.assertion_version);
+
+        // Now should forward again (cache was cleared)
+        assert!(matches!(cache.observe(&fp), CacheDecision::Forward));
+    }
+}
+

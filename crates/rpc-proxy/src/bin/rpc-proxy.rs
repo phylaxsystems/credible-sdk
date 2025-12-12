@@ -2,6 +2,7 @@ use clap::Parser;
 use rpc_proxy::{
     ProxyConfig,
     RpcProxyBuilder,
+    fingerprint::CacheConfig,
 };
 use tracing_subscriber::{
     EnvFilter,
@@ -47,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
         rpc_path: cli.rpc_path,
         upstream_http,
         sidecar_endpoint,
+        cache: CacheConfig::default(),
     }
     .validate()?;
 
