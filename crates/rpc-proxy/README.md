@@ -16,20 +16,22 @@ A JSON-RPC proxy that sits in front of the sequencer to prevent assertion-invali
 - **Error handling**: Proper JSON-RPC error codes with descriptive messages
 - **HTTP forwarding**: Raw transactions are forwarded to the configured sequencer endpoint via `reqwest`, reusing the JSON-RPC envelope
 - **Sidecar transport abstraction**: A `SidecarTransport` trait powers both the default in-process/noop transport and the new gRPC client (defined in `proto/heuristics.proto`)
+- **Exponential backoff**: Invalidation listener reconnects with exponential backoff (1s → 60s max) on sidecar failures
+- **Pending timeout**: Automatic cleanup of stuck pending entries (default: 30s timeout, swept every 15s)
+- **Dry-run mode**: `--dry-run` flag logs rejections but forwards everything for production validation
+- **Integration tests**: Wiremock-based tests for HTTP forwarding, cache behavior, and dry-run mode
 
 ### 🚧 TODO (in planned order)
 
-1. **Axum/HTTP serving**
-   - The HTTP router is instantiated, but we still need to bind it to a listener using axum’s server utilities so the proxy can run as a standalone daemon.
-2. **Sidecar gRPC integration polish**
-   - Hook `GrpcSidecarTransport` into the runtime (spawn the invalidation stream, add retries/backoff, and surface health metrics).
-3. **Pending-state timeout + backpressure**
-   - Add configurable TTL for the pending set so stuck fingerprints clear automatically and introduce sender/IP rate limiting.
-4. **Assertion-level cooldowns + priority scoring**
+1. **Axum/HTTP serving integration**
+   - Complete the ajj → axum integration. Current TODO at server.rs:115 blocks actual HTTP traffic serving.
+2. **Sender/IP backpressure**
+   - Add per-origin rate limiting (IP/API token/address) with token bucket and exponential backoff.
+3. **Assertion-level cooldowns + priority scoring**
    - Track assertion-level failure rates and apply global throttles when multiple fingerprints fail; adjust gas-price priority to penalize banned fingerprints.
-5. **Benchmark harness**
+4. **Benchmark harness**
    - Add Criterion/contender suites to measure normalization + cache latency; run Samply for wall-clock profiling once full pipeline is implemented.
-6. **Persistence & observability**
+5. **Persistence & observability**
    - Optional sled-backed cache to survive restarts, Prometheus/Grafana dashboards for cache stats, and documentation of benchmark results.
 
 ## Usage
@@ -41,8 +43,18 @@ cargo run --bin rpc-proxy -- \
   --upstream http://127.0.0.1:8545 \
   --sidecar-endpoint http://127.0.0.1:50051
 
+# Run in dry-run mode (logs rejections but forwards everything)
+cargo run --bin rpc-proxy -- \
+  --listen 0.0.0.0:9547 \
+  --upstream http://127.0.0.1:8545 \
+  --sidecar-endpoint http://127.0.0.1:50051 \
+  --dry-run
+
 # Run tests
 cargo test -p rpc-proxy
+
+# Run integration tests
+cargo test -p rpc-proxy --test integration
 ```
 
 ## Configuration
@@ -53,7 +65,9 @@ The proxy accepts configuration via CLI flags or environment variables:
 - `--rpc-path`: JSON-RPC path (default: `/rpc`)
 - `--upstream`: Upstream sequencer HTTP endpoint (default: `http://127.0.0.1:8545`)
 - `--sidecar-endpoint`: Optional gRPC endpoint for sidecar communication
+- `--dry-run`: Enable dry-run mode (logs rejections but forwards all transactions)
 
 Cache behavior can be tuned via the `cache` field in `ProxyConfig`:
 - `max_denied_entries`: Maximum fingerprints in denied cache (default: 10,000)
 - `denied_ttl_secs`: Time-to-live for denied entries in seconds (default: 128s ≈ 64 L2 slots)
+- `pending_timeout_secs`: Timeout for pending fingerprints in seconds (default: 30s)

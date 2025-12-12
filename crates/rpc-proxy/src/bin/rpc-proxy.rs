@@ -26,6 +26,9 @@ struct Cli {
     /// Optional gRPC endpoint exposed by the sidecar
     #[arg(long = "sidecar-endpoint")]
     sidecar_endpoint: Option<String>,
+    /// Dry-run mode: log rejections but forward everything (for validation)
+    #[arg(long = "dry-run")]
+    dry_run: bool,
 }
 
 #[tokio::main]
@@ -49,8 +52,13 @@ async fn main() -> anyhow::Result<()> {
         upstream_http,
         sidecar_endpoint,
         cache: CacheConfig::default(),
+        dry_run: cli.dry_run,
     }
     .validate()?;
+
+    if config.dry_run {
+        tracing::warn!("DRY-RUN MODE ENABLED: Will log rejections but forward all transactions");
+    }
 
     RpcProxyBuilder::new(config).build()?.serve().await?;
     Ok(())

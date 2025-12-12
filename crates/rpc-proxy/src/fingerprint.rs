@@ -1,7 +1,13 @@
 use std::{
-    collections::HashSet,
+    collections::{
+        HashMap,
+        HashSet,
+    },
     sync::Arc,
-    time::Duration,
+    time::{
+        Duration,
+        Instant,
+    },
 };
 
 use alloy_consensus::{
@@ -157,6 +163,9 @@ pub struct FingerprintCache {
     /// Set of fingerprints currently pending sidecar validation.
     /// We don't use TTL here because we explicitly manage lifecycle.
     pending: Arc<RwLock<HashSet<B256>>>,
+    /// Timestamps for when each fingerprint was marked as pending.
+    /// Used to detect and clean up stuck entries.
+    pending_timestamps: Arc<RwLock<HashMap<B256, Instant>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +175,7 @@ struct DeniedEntry {
     assertions: HashSet<AssertionInfo>,
 }
 
+#[derive(Debug)]
 pub enum CacheDecision {
     /// First time we observe this fingerprint; forward it immediately.
     Forward,
@@ -184,6 +194,10 @@ pub struct CacheConfig {
     /// Time-to-live for denied entries in seconds (default: ~64 L2 slots at 2s = 128s).
     #[serde(default = "default_denied_ttl_secs")]
     pub denied_ttl_secs: u64,
+    /// Timeout for pending fingerprints in seconds (default: 30s).
+    /// After this duration, pending entries are automatically cleared.
+    #[serde(default = "default_pending_timeout_secs")]
+    pub pending_timeout_secs: u64,
 }
 
 fn default_max_denied_entries() -> u64 {
@@ -194,11 +208,16 @@ fn default_denied_ttl_secs() -> u64 {
     128
 }
 
+fn default_pending_timeout_secs() -> u64 {
+    30
+}
+
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             max_denied_entries: default_max_denied_entries(),
             denied_ttl_secs: default_denied_ttl_secs(),
+            pending_timeout_secs: default_pending_timeout_secs(),
         }
     }
 }
@@ -211,6 +230,7 @@ impl FingerprintCache {
                 .time_to_live(Duration::from_secs(config.denied_ttl_secs))
                 .build(),
             pending: Arc::new(RwLock::new(HashSet::new())),
+            pending_timestamps: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -233,6 +253,13 @@ impl FingerprintCache {
 
         // New fingerprint - mark as pending and forward
         pending.insert(fingerprint.hash);
+        drop(pending); // Release lock before acquiring timestamps lock
+
+        // Record timestamp for pending timeout tracking
+        self.pending_timestamps
+            .write()
+            .insert(fingerprint.hash, Instant::now());
+
         metrics::counter!("rpc_proxy_fingerprint_forward_total").increment(1);
         CacheDecision::Forward
     }
@@ -241,8 +268,9 @@ impl FingerprintCache {
     /// The fingerprint will remain in the denied cache until TTL expires
     /// or it is explicitly cleared.
     pub fn record_failure(&self, fingerprint: &Fingerprint, assertion: AssertionInfo) {
-        // Remove from pending set
+        // Remove from pending set and timestamps
         self.pending.write().remove(&fingerprint.hash);
+        self.pending_timestamps.write().remove(&fingerprint.hash);
 
         // Add or update in denied cache
         // Moka's get_with computes the value if not present, or returns existing
@@ -263,6 +291,7 @@ impl FingerprintCache {
     /// Release a fingerprint from pending state (called when validation succeeds).
     pub fn release(&self, fingerprint: &Fingerprint) {
         self.pending.write().remove(&fingerprint.hash);
+        self.pending_timestamps.write().remove(&fingerprint.hash);
         metrics::counter!("rpc_proxy_cache_release_total").increment(1);
     }
 
@@ -289,6 +318,36 @@ impl FingerprintCache {
         }
 
         metrics::counter!("rpc_proxy_cache_invalidate_total").increment(1);
+    }
+
+    /// Sweep stale pending entries that have exceeded the timeout.
+    /// Should be called periodically by a background task.
+    pub fn sweep_stale_pending(&self, timeout: Duration) {
+        let now = Instant::now();
+        let mut pending = self.pending.write();
+        let mut timestamps = self.pending_timestamps.write();
+
+        // Collect fingerprints that have timed out
+        let stale: Vec<B256> = timestamps
+            .iter()
+            .filter_map(|(fp, inserted_at)| {
+                if now.duration_since(*inserted_at) > timeout {
+                    Some(*fp)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Remove stale entries
+        for fp in &stale {
+            pending.remove(fp);
+            timestamps.remove(fp);
+        }
+
+        if !stale.is_empty() {
+            metrics::counter!("rpc_proxy_pending_timeout_total").increment(stale.len() as u64);
+        }
     }
 
     /// Get cache statistics for observability.
@@ -322,7 +381,7 @@ mod tests {
         TxEip1559,
     };
     use alloy_primitives::{
-        PrimitiveSignature,
+        Signature,
         address,
         bytes,
     };
@@ -339,7 +398,7 @@ mod tests {
             nonce: 0,
             access_list: Default::default(),
         };
-        let sig = PrimitiveSignature::test_signature();
+        let sig = Signature::test_signature();
         TxEnvelope::Eip1559(tx.into_signed(sig))
     }
 

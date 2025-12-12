@@ -94,16 +94,39 @@ impl RpcProxy {
     pub async fn serve(self) -> Result<()> {
         let addr = self.config.resolved_bind_addr()?;
         let path = self.config.rpc_path.clone();
-        info!(%addr, %path, "credible rpc proxy ready to listen");
+        let pending_timeout = Duration::from_secs(self.config.cache.pending_timeout_secs);
+        info!(%addr, %path, "credible rpc proxy starting");
 
+        // Spawn background task to listen for invalidations from sidecar
         let cache = self.cache.clone();
         let sidecar = self.sidecar_transport.clone();
         tokio::spawn(async move {
             run_invalidation_listener(sidecar, cache).await;
         });
 
-        let _router = self.router.into_axum(&path);
-        info!(%addr, %path, "credible rpc proxy listening (HTTP transport TODO)");
+        // Spawn background task to sweep stale pending entries
+        let cache_for_sweep = self.cache.clone();
+        tokio::spawn(async move {
+            run_pending_sweep(cache_for_sweep, pending_timeout).await;
+        });
+
+        // Convert ajj router to axum and serve
+        // TODO: Complete HTTP serving integration.
+        // The ajj Router type system doesn't directly convert to axum's serve expectations.
+        // Options:
+        // 1. Use ajj's built-in HTTP server if available
+        // 2. Manually wrap the router in a tower Service
+        // 3. Use a different HTTP framework (hyper directly)
+        //
+        // For now, spawn a task that would serve if the integration were complete.
+        let _app = self.router.into_axum(&path);
+        let _listener = tokio::net::TcpListener::bind(addr).await?;
+        info!(%addr, %path, "credible rpc proxy would be listening (HTTP TODO)");
+
+        // Keep the process running
+        tokio::signal::ctrl_c().await?;
+        info!("shutdown signal received");
+
         Ok(())
     }
 }
@@ -115,9 +138,17 @@ fn build_router(state: ProxyState) -> Router<ProxyState> {
 }
 
 async fn run_invalidation_listener(sidecar: SharedSidecarTransport, cache: FingerprintCache) {
+    let mut retry_delay = Duration::from_secs(1);
+    const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
+
     loop {
         match sidecar.subscribe_invalidations().await {
             Ok(mut stream) => {
+                info!("sidecar invalidation stream connected");
+                // Reset backoff on successful connection
+                retry_delay = Duration::from_secs(1);
+                metrics::counter!("rpc_proxy_sidecar_reconnect_total").increment(1);
+
                 while let Some(event) = stream.next().await {
                     match event {
                         Ok(invalidation) => {
@@ -128,23 +159,39 @@ async fn run_invalidation_listener(sidecar: SharedSidecarTransport, cache: Finge
                             metrics::counter!("rpc_proxy_invalidations_total").increment(1);
                         }
                         Err(err) => {
-                            warn!(%err, "failed to process invalidation stream");
+                            warn!(%err, "failed to process invalidation event");
                             break;
                         }
                     }
                 }
+
+                warn!("sidecar invalidation stream disconnected, reconnecting");
             }
             Err(err) => {
-                warn!(%err, "sidecar invalidation subscription failed");
+                warn!(%err, delay=?retry_delay, "sidecar subscription failed, retrying with backoff");
+                metrics::counter!("rpc_proxy_sidecar_connection_errors_total").increment(1);
             }
         }
-        sleep(Duration::from_secs(5)).await;
+
+        // Exponential backoff with cap
+        sleep(retry_delay).await;
+        retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
+    }
+}
+
+async fn run_pending_sweep(cache: FingerprintCache, timeout: Duration) {
+    // Run sweep at half the timeout interval to catch stuck entries promptly
+    let sweep_interval = timeout / 2;
+
+    loop {
+        sleep(sweep_interval).await;
+        cache.sweep_stale_pending(timeout);
     }
 }
 
 pub struct ProxyState {
-    config: ProxyConfig,
-    cache: FingerprintCache,
+    pub config: ProxyConfig,
+    pub cache: FingerprintCache,
     sidecar: SharedSidecarTransport,
     http: Client,
     request_id: Arc<AtomicU64>,
@@ -163,7 +210,7 @@ impl Clone for ProxyState {
 }
 
 impl ProxyState {
-    fn new(config: ProxyConfig, sidecar: SharedSidecarTransport) -> Self {
+    pub fn new(config: ProxyConfig, sidecar: SharedSidecarTransport) -> Self {
         let cache = FingerprintCache::new(config.cache.clone());
         let http = Client::new();
         Self {
@@ -175,7 +222,7 @@ impl ProxyState {
         }
     }
 
-    async fn handle_send_raw_transaction(&self, params: Vec<String>) -> Result<String> {
+    pub async fn handle_send_raw_transaction(&self, params: Vec<String>) -> Result<String> {
         let raw_hex = params
             .first()
             .ok_or_else(|| {
@@ -190,7 +237,17 @@ impl ProxyState {
         match self.cache.observe(&fingerprint) {
             CacheDecision::Forward => {
                 if let Err(err) = self.maybe_short_circuit(&fingerprint).await {
-                    return Err(err);
+                    if self.config.dry_run {
+                        warn!(
+                            fingerprint = ?fingerprint.hash,
+                            %err,
+                            "DRY-RUN: would reject but forwarding anyway"
+                        );
+                        metrics::counter!("rpc_proxy_dry_run_rejections_total", "reason" => "short_circuit")
+                            .increment(1);
+                    } else {
+                        return Err(err);
+                    }
                 }
 
                 let result = self.forward_downstream(&raw_hex).await;
@@ -202,14 +259,39 @@ impl ProxyState {
                     Err(err) => {
                         warn!(fingerprint = ?fingerprint.hash, %err, "forwarding failed");
                         // Keep in pending - will be cleared when sidecar reports back
-                        // or by the pending-state timeout planned in README TODO #3.
+                        // or by the pending-state timeout.
                     }
                 }
                 result
             }
-            CacheDecision::AwaitVerdict => Err(ProxyError::PendingFingerprint(fingerprint.hash)),
+            CacheDecision::AwaitVerdict => {
+                if self.config.dry_run {
+                    warn!(
+                        fingerprint = ?fingerprint.hash,
+                        "DRY-RUN: would reject (pending) but forwarding anyway"
+                    );
+                    metrics::counter!("rpc_proxy_dry_run_rejections_total", "reason" => "pending")
+                        .increment(1);
+                    // In dry-run, still forward to upstream
+                    self.forward_downstream(&raw_hex).await
+                } else {
+                    Err(ProxyError::PendingFingerprint(fingerprint.hash))
+                }
+            }
             CacheDecision::Reject(assertions) => {
-                Err(ProxyError::DeniedFingerprint(fingerprint.hash, assertions))
+                if self.config.dry_run {
+                    warn!(
+                        fingerprint = ?fingerprint.hash,
+                        ?assertions,
+                        "DRY-RUN: would reject (denied) but forwarding anyway"
+                    );
+                    metrics::counter!("rpc_proxy_dry_run_rejections_total", "reason" => "denied")
+                        .increment(1);
+                    // In dry-run, still forward to upstream
+                    self.forward_downstream(&raw_hex).await
+                } else {
+                    Err(ProxyError::DeniedFingerprint(fingerprint.hash, assertions))
+                }
             }
         }
     }
