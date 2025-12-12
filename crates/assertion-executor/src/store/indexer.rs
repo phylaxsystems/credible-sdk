@@ -395,6 +395,7 @@ impl Indexer {
             {
                 let pending_mods: Vec<PendingModification> =
                     de(&pending_mods).map_err(IndexerError::BincodeError)?;
+                pending_modifications.reserve(pending_mods.len());
                 pending_modifications.extend(pending_mods);
             }
         }
