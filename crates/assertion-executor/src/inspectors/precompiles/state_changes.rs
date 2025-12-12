@@ -56,7 +56,7 @@ pub fn get_state_changes(
         event.slot.into(),
         &mut gas_left,
     )?;
-    let dif_bytes = Vec::<U256>::abi_encode(&differences).into();
+    let dif_bytes: Bytes = Vec::<U256>::abi_encode(&differences).into();
 
     Ok(PhevmOutcome::new(dif_bytes, gas_left))
 }
@@ -156,6 +156,8 @@ mod test {
     };
     use revm::JournalEntry;
 
+    const TEST_GAS: u64 = 1_000_000;
+
     fn create_call_inputs_for_state_changes(contract_address: Address, slot: U256) -> Bytes {
         PhEvm::getStateChangesCall {
             contractAddress: contract_address,
@@ -223,12 +225,13 @@ mod test {
             value_updates.clone(),
             &mut db,
         );
-        let result =
-            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, TEST_GAS)
+        });
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
-        let decoded = Vec::<U256>::abi_decode(&encoded);
+        let decoded = Vec::<U256>::abi_decode(encoded.bytes().as_ref());
         assert!(decoded.is_ok());
 
         let differences = decoded.unwrap();
@@ -247,12 +250,13 @@ mod test {
 
         // Create empty journaled state with no changes
         let journal = JournalInner::new();
-        let result =
-            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, TEST_GAS)
+        });
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
-        let decoded = Vec::<U256>::abi_decode(&encoded);
+        let decoded = Vec::<U256>::abi_decode(encoded.bytes().as_ref());
         assert!(decoded.is_ok());
 
         let differences = decoded.unwrap();
@@ -265,7 +269,7 @@ mod test {
 
         let journal = JournalInner::new();
         let result = with_journal_context(journal, |context| {
-            get_state_changes(&invalid_input, context)
+            get_state_changes(&invalid_input, context, TEST_GAS)
         });
         assert!(result.is_err());
 
@@ -291,8 +295,9 @@ mod test {
             had_value: U256::from(100),
         });
 
-        let result =
-            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, TEST_GAS)
+        });
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -328,8 +333,9 @@ mod test {
 
         journal.load_account(&mut db, contract_address).unwrap();
 
-        let result =
-            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, TEST_GAS)
+        });
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -359,12 +365,13 @@ mod test {
             value_updates.clone(),
             &mut db,
         );
-        let result =
-            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, TEST_GAS)
+        });
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
-        let decoded = Vec::<U256>::abi_decode(&encoded);
+        let decoded = Vec::<U256>::abi_decode(encoded.bytes().as_ref());
         assert!(decoded.is_ok());
 
         let differences = decoded.unwrap();
@@ -393,12 +400,13 @@ mod test {
             .sstore(&mut db, other_address, slot, U256::from(50), false)
             .unwrap();
 
-        let result =
-            with_journal_context(journal, |context| get_state_changes(&call_inputs, context));
+        let result = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, TEST_GAS)
+        });
         assert!(result.is_ok());
 
         let encoded = result.unwrap();
-        let decoded = Vec::<U256>::abi_decode(&encoded);
+        let decoded = Vec::<U256>::abi_decode(encoded.bytes().as_ref());
         assert!(decoded.is_ok());
 
         let differences = decoded.unwrap();
@@ -421,7 +429,8 @@ mod test {
             &mut db,
         );
 
-        let result = get_differences(&journal, contract_address, slot);
+        let mut gas_left = TEST_GAS;
+        let result = get_differences(&journal, contract_address, slot, &mut gas_left);
         assert!(result.is_ok());
 
         let differences = result.unwrap();
