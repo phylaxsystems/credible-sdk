@@ -30,6 +30,7 @@ use revm::{
     InspectEvm,
     database::InMemoryDB,
     inspector::NoOpInspector,
+    primitives::eip7825,
 };
 
 use alloy_sol_types::{
@@ -66,7 +67,7 @@ pub enum FnSelectorExtractorError {
     AssertionContractNoCode,
 }
 
-const DEPLOYMENT_GAS_LIMIT: u64 = 20_000_000;
+const DEPLOYMENT_GAS_LIMIT: u64 = eip7825::TX_GAS_LIMIT_CAP;
 
 /// Extracts [`AssertionContract`] and [`TriggerRecorder`] from a given assertion contract's deployment bytecode
 #[allow(clippy::result_large_err)]
