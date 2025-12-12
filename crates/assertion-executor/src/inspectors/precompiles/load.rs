@@ -3,7 +3,10 @@ use crate::{
         DatabaseRef,
         multi_fork_db::MultiForkDb,
     },
-    inspectors::sol_primitives::PhEvm::loadCall,
+    inspectors::{
+        phevm::PhevmOutcome,
+        sol_primitives::PhEvm::loadCall,
+    },
     primitives::{
         Address,
         Bytes,
@@ -23,21 +26,28 @@ use alloy_sol_types::{
     SolValue,
 };
 
+use super::{
+    BASE_COST,
+    COLD_SLOAD_COST,
+};
+
 #[derive(Debug, thiserror::Error)]
 #[error("Error loading external slot: {0}")]
 pub struct LoadExternalSlotError<ExtDb: DatabaseRef>(pub ExtDb::Error);
 
 /// Returns a storage slot for a given address. Will return `0x0` if slot empty.
+///
+/// Deducts cold sload cost + base phevm cost gas cost. Only base cost if invalid input.
 pub fn load_external_slot<'db, ExtDb: DatabaseRef + 'db, CTX>(
     context: &mut CTX,
     call_inputs: &CallInputs,
-) -> Result<Bytes, LoadExternalSlotError<ExtDb>>
+) -> Result<PhevmOutcome, LoadExternalSlotError<ExtDb>>
 where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     let Ok(call) = loadCall::abi_decode(&call_inputs.input.bytes(context)) else {
-        return Ok(Bytes::default());
+        return Ok(PhevmOutcome::new(Bytes::default(), BASE_COST));
     };
     let address: Address = call.target;
 
@@ -51,8 +61,9 @@ where
 
     let value_opt = context.sload(address, call.slot.into());
     let slot_value = value_opt.unwrap_or_default().data;
+    let slot_bytes = SolValue::abi_encode(&slot_value).into();
 
-    Ok(SolValue::abi_encode(&slot_value).into())
+    Ok(PhevmOutcome::new(slot_bytes, BASE_COST + COLD_SLOAD_COST))
 }
 
 #[cfg(test)]
@@ -166,7 +177,8 @@ mod test {
         let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
         let result = load_external_slot(&mut context, &call_inputs);
-        let decoded = loadCall::abi_decode_returns(&result.unwrap()).unwrap();
+        let outcome = result.unwrap();
+        let decoded = loadCall::abi_decode_returns(outcome.bytes().as_ref()).unwrap();
         assert_eq!(decoded.0, FixedBytes::from(expected_value.to_be_bytes()));
     }
 
@@ -185,7 +197,8 @@ mod test {
         let mut context = EthEvmContext::new(&mut multi_fork, SpecId::default());
 
         let result = load_external_slot(&mut context, &call_inputs);
-        let decoded = loadCall::abi_decode_returns(&result.unwrap()).unwrap();
+        let outcome = result.unwrap();
+        let decoded = loadCall::abi_decode_returns(outcome.bytes().as_ref()).unwrap();
         assert_eq!(decoded.0, FixedBytes::ZERO);
     }
 
@@ -206,7 +219,8 @@ mod test {
         let result = load_external_slot(&mut context, &call_inputs);
 
         // parse the result
-        let decoded = loadCall::abi_decode_returns(&result.unwrap()).unwrap();
+        let outcome = result.unwrap();
+        let decoded = loadCall::abi_decode_returns(outcome.bytes().as_ref()).unwrap();
         assert_eq!(decoded.0, FixedBytes::ZERO);
     }
 

@@ -18,5 +18,7 @@ pub mod get_logs;
 pub mod load;
 pub mod state_changes;
 
+pub use revm::interpreter::gas::COLD_SLOAD_COST;
+
 /// Base cost of calling phevm precompiles
 pub(crate) const BASE_COST: u64 = 15;
