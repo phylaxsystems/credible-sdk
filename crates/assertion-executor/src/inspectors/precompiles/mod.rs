@@ -10,6 +10,10 @@
 //! - `logs`: Returns the logs of a transaction.
 //! - `state_changes`: Returns the state changes of a transaction.
 
+use alloy_primitives::Bytes;
+
+use super::phevm::PhevmOutcome;
+
 pub mod assertion_adopter;
 pub mod calls;
 pub mod console_log;
@@ -20,3 +24,14 @@ pub mod state_changes;
 
 /// Base cost of calling phevm precompiles
 pub(crate) const BASE_COST: u64 = 15;
+
+/// Deduct gas from the gas limit and check if we have OOG.
+pub(super) fn deduct_gas_and_check(gas_left: &mut u64, gas_cost: u64) -> Option<PhevmOutcome> {
+	if *gas_left < gas_cost {
+		return Some(PhevmOutcome::new(Bytes::default(), 0));
+	}
+
+	*gas_left = *gas_left - gas_cost;
+
+	None
+}

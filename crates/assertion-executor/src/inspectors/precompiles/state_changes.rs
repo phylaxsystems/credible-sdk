@@ -1,6 +1,7 @@
+use crate::inspectors::precompiles::deduct_gas_and_check;
 use crate::{
     inspectors::{
-        phevm::PhEvmContext,
+        phevm::{PhEvmContext, PhevmOutcome},
         sol_primitives::PhEvm,
     },
     primitives::{
@@ -17,6 +18,8 @@ use alloy_sol_types::{
     SolValue,
 };
 
+use super::BASE_COST;
+
 #[derive(Debug, thiserror::Error)]
 pub enum GetStateChangesError {
     #[error("Error decoding call inputs")]
@@ -27,6 +30,8 @@ pub enum GetStateChangesError {
     SlotNotFound,
     #[error("Account not found in journal, but differences were found.")]
     AccountNotFound,
+    #[error("Out of gas")]
+    OutOfGas(PhevmOutcome),
 }
 
 /// Function for getting state changes for the `PhEvm` precompile.
@@ -34,7 +39,14 @@ pub enum GetStateChangesError {
 pub fn get_state_changes(
     input_bytes: &[u8],
     context: &PhEvmContext,
-) -> Result<Bytes, GetStateChangesError> {
+    gas: u64,
+) -> Result<PhevmOutcome, GetStateChangesError> {
+    let mut gas_left = gas;
+
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST) {
+        return Ok(rax);
+    }
+
     let event = PhEvm::getStateChangesCall::abi_decode(input_bytes)
         .map_err(GetStateChangesError::CallDecodeError)?;
 
@@ -42,9 +54,11 @@ pub fn get_state_changes(
         &context.logs_and_traces.call_traces.journal,
         event.contractAddress,
         event.slot.into(),
+        &mut gas_left,
     )?;
+    let dif_bytes = Vec::<U256>::abi_encode(&differences).into();
 
-    Ok(Vec::<U256>::abi_encode(&differences).into())
+    Ok(PhevmOutcome::new(dif_bytes, gas_left))
 }
 
 /// Returns an array of different values for an account and slot, from the `JournaledState` passed.
@@ -52,10 +66,19 @@ fn get_differences(
     journal: &JournalInner<JournalEntry>,
     contract_address: Address,
     slot: U256,
+    gas_left: &mut u64,
 ) -> Result<Vec<U256>, GetStateChangesError> {
+    const JOURNAL_PROCESSING_COST: u64 = 16;
+    const MEMORY_COST: u64 = 3;
+    const PUSH_LAST: u64 = 6;
+
     let mut differences = Vec::new();
 
     for entry in &journal.journal {
+        if let Some(rax) = deduct_gas_and_check(gas_left, JOURNAL_PROCESSING_COST) {
+            return Err(GetStateChangesError::OutOfGas(rax));
+        }
+
         if let JournalEntry::StorageChanged {
             address,
             had_value,
@@ -64,6 +87,10 @@ fn get_differences(
             && *address == contract_address
             && key == &slot
         {
+            if let Some(rax) = deduct_gas_and_check(gas_left, MEMORY_COST) {
+                return Err(GetStateChangesError::OutOfGas(rax));
+            }
+
             differences.push(*had_value);
         }
     }
@@ -71,6 +98,10 @@ fn get_differences(
     // If any differences were found in the journal, check the state to get the current value.
     // The account should always exist in state if differences were found in the journal.
     if !differences.is_empty() {
+        if let Some(rax) = deduct_gas_and_check(gas_left, PUSH_LAST) {
+            return Err(GetStateChangesError::OutOfGas(rax));
+        }
+
         let journal_account = journal
             .state
             .get(&contract_address)
