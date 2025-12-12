@@ -6,6 +6,7 @@ use crate::{
         NotFoundError,
         overlay::{
             ForkDb,
+            ForkStorageMap,
             TableKey,
             TableValue,
         },
@@ -19,10 +20,15 @@ use crate::{
         U256,
     },
 };
-use dashmap::DashMap;
+use dashmap::{
+    DashMap,
+    mapref::entry::Entry,
+};
 
+use rapidhash::fast::RandomState;
 use std::{
     cell::UnsafeCell,
+    collections::HashMap,
     sync::Arc,
 };
 
@@ -135,24 +141,48 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
         address: Address,
         slot: U256,
     ) -> Result<U256, <Self as DatabaseRef>::Error> {
-        let key = TableKey::Storage(address, slot);
-        if let Some(value) = self.overlay.get(&key) {
-            // Found in cache, convert B256 back to U256
-            counter!("assex_active_overlay_db_storage_ref_hits").increment(1);
-            let value_u256: U256 = (*value.as_storage().unwrap()).into();
-            return Ok(value_u256); // unwrap safe
+        let key = TableKey::Storage(address);
+
+        if let Some(mut entry) = self.overlay.get_mut(&key)
+            && let Some(storage_map) = entry.as_storage_mut()
+        {
+            if let Some(value) = storage_map.map.get(&slot) {
+                counter!("assex_active_overlay_db_storage_ref_hits").increment(1);
+                return Ok(*value);
+            }
+
+            if storage_map.dont_read_from_inner_db {
+                counter!("assex_active_overlay_db_storage_ref_hits").increment(1);
+                return Ok(U256::ZERO);
+            }
+
+            counter!("assex_active_overlay_db_storage_ref_misses").increment(1);
+
+            // We are not actually mutating the storage, and are using this to downgrade
+            // from database to databaseref therefore this is safe.
+            // See above comment for proper activedb usage.
+            let value_u256 = unsafe {
+                self.active_db
+                    .as_mut_unchecked()
+                    .storage(address, slot)
+                    .map_err(|_| NotFoundError)?
+            };
+            storage_map.map.insert(slot, value_u256);
+            return Ok(value_u256);
         }
 
-        // Not in cache, query mandatory underlying DB
+        counter!("assex_active_overlay_db_storage_ref_misses").increment(1);
+
         let value_u256 = unsafe {
             self.active_db
                 .as_mut_unchecked()
                 .storage(address, slot)
                 .map_err(|_| NotFoundError)?
         };
-        // Found in DB (even if zero), cache it as B256
-        let value_b256: B256 = value_u256.to_be_bytes().into();
-        self.overlay.insert(key, TableValue::Storage(value_b256));
+
+        let mut storage_map = ForkStorageMap::default();
+        storage_map.map.insert(slot, value_u256);
+        self.overlay.insert(key, TableValue::Storage(storage_map));
         Ok(value_u256) // Return the U256 value
     }
 
@@ -205,6 +235,8 @@ impl<Db> DatabaseCommit for ActiveOverlay<Db> {
                 continue;
             }
 
+            let is_created = account.is_created();
+
             // Update account info in shared cache
             // This will be visible to the parent OverlayDb and other ActiveOverlays
             let key = TableKey::Basic(address);
@@ -219,11 +251,37 @@ impl<Db> DatabaseCommit for ActiveOverlay<Db> {
             }
 
             // Update storage slots in shared cache
-            for (slot, storage_slot) in account.storage {
-                let storage_key = TableKey::Storage(address, slot);
-                let value_b256: B256 = storage_slot.present_value().to_be_bytes().into();
-                self.overlay
-                    .insert(storage_key, TableValue::Storage(value_b256));
+            if is_created || !account.storage.is_empty() {
+                let storage_key = TableKey::Storage(address);
+                let mut new_storage: HashMap<U256, U256, RandomState> = account
+                    .storage
+                    .into_iter()
+                    .map(|(slot, storage_slot)| (slot, storage_slot.present_value()))
+                    .collect();
+
+                match self.overlay.entry(storage_key) {
+                    Entry::Occupied(mut entry) => {
+                        if let Some(existing) = entry.get_mut().as_storage_mut() {
+                            if is_created {
+                                existing.dont_read_from_inner_db = true;
+                            }
+                            if !new_storage.is_empty() {
+                                existing.map.extend(new_storage.drain());
+                            }
+                        } else {
+                            entry.insert(TableValue::Storage(ForkStorageMap {
+                                map: new_storage,
+                                dont_read_from_inner_db: is_created,
+                            }));
+                        }
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(TableValue::Storage(ForkStorageMap {
+                            map: new_storage,
+                            dont_read_from_inner_db: is_created,
+                        }));
+                    }
+                }
             }
         }
     }
@@ -286,24 +344,7 @@ impl<Db: Database> Database for ActiveOverlay<Db> {
     }
 
     fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        let key = TableKey::Storage(address, index);
-        if let Some(value) = self.overlay.get(&key) {
-            // Found in cache, convert B256 back to U256
-            return Ok((*value.as_storage().unwrap()).into()); // unwrap safe
-        }
-
-        // Not in cache, query mandatory underlying DB
-        unsafe {
-            let value_u256 = self
-                .active_db
-                .as_mut_unchecked()
-                .storage(address, index)
-                .map_err(|_| NotFoundError)?;
-            // Found in DB (even if zero), cache it as B256
-            let value_b256: B256 = value_u256.to_be_bytes().into();
-            self.overlay.insert(key, TableValue::Storage(value_b256));
-            Ok(value_u256) // Return the U256 value
-        }
+        self.storage_ref(address, index)
     }
 
     fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
@@ -343,7 +384,14 @@ mod active_overlay_tests {
 
     use crate::{
         db::overlay::TableKey,
-        primitives::Bytecode,
+        primitives::{
+            Account,
+            AccountInfo,
+            AccountStatus,
+            Bytecode,
+            EvmStorage,
+            EvmStorageSlot,
+        },
     };
 
     use std::collections::HashMap;
@@ -422,10 +470,9 @@ mod active_overlay_tests {
         let addr1 = address!("b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1");
         let slot1 = U256::from(1);
         let value1 = U256::from(98765);
-        let key1 = TableKey::Storage(addr1, slot1);
+        let key = TableKey::Storage(addr1);
 
         let slot2 = U256::from(2); // Non-existent slot -> defaults to 0
-        let key2 = TableKey::Storage(addr1, slot2);
 
         let mut mock_db = MockDb::new();
         mock_db.insert_storage(addr1, slot1, value1);
@@ -435,14 +482,14 @@ mod active_overlay_tests {
         let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache);
 
         // 1. Initial state
-        assert!(!active_overlay.is_cached(&key1));
+        assert!(!active_overlay.is_cached(&key));
         assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 0);
 
         // 2. First read (miss)
         let result = active_overlay.storage_ref(addr1, slot1).unwrap();
         assert_eq!(result, value1);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 1);
-        assert!(active_overlay.is_cached(&key1));
+        assert!(active_overlay.is_cached(&key));
 
         // 3. Second read (hit)
         let result2 = active_overlay.storage_ref(addr1, slot1).unwrap();
@@ -454,7 +501,7 @@ mod active_overlay_tests {
         assert_eq!(result3, U256::ZERO);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 2);
         // Zero value IS cached
-        assert!(active_overlay.is_cached(&key2));
+        assert!(active_overlay.is_cached(&key));
 
         // 5. Read non-existent slot again (hit)
         let result4 = active_overlay.storage_ref(addr1, slot2).unwrap();
@@ -546,6 +593,95 @@ mod active_overlay_tests {
         assert_eq!(get_mock_db_field!(mock_db_arc, get_block_hash_calls), 2);
         // Error/absence not cached
         assert!(!active_overlay.is_cached(&key_non_existent));
+    }
+
+    #[test]
+    fn test_commit_created_account_sets_dont_read_flag() {
+        let addr = address!("c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1");
+        let slot = U256::from(33);
+        let non_created_addr = address!("d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1");
+        let non_created_slot = U256::from(44);
+        let fallback_slot = U256::from(45);
+        let fallback_value = U256::from(1234);
+
+        let mut mock_db = MockDb::new();
+        mock_db.insert_storage(non_created_addr, fallback_slot, fallback_value);
+        #[allow(clippy::arc_with_non_send_sync)]
+        let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
+        let overlay_cache = Arc::new(DashMap::new());
+        let mut active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache.clone());
+
+        let mut evm_state = EvmState::default();
+        evm_state.insert(
+            addr,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Created | AccountStatus::Touched,
+            },
+        );
+
+        active_overlay.commit(evm_state);
+
+        let storage_entry = overlay_cache
+            .get(&TableKey::Storage(addr))
+            .expect("created account should insert storage entry");
+        assert!(
+            storage_entry
+                .as_storage()
+                .expect("storage entry should be ForkStorageMap")
+                .dont_read_from_inner_db
+        );
+        drop(storage_entry);
+
+        assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 0);
+        assert_eq!(active_overlay.storage_ref(addr, slot).unwrap(), U256::ZERO);
+        assert_eq!(
+            get_mock_db_field!(mock_db_arc, get_storage_calls),
+            0,
+            "inner db should not be read when dont_read flag is set"
+        );
+
+        let mut evm_state = EvmState::default();
+        evm_state.insert(
+            non_created_addr,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage: HashMap::from_iter([(
+                    non_created_slot,
+                    EvmStorageSlot::new(U256::from(1), 0),
+                )]),
+                status: AccountStatus::Touched,
+            },
+        );
+
+        active_overlay.commit(evm_state);
+
+        let storage_entry = overlay_cache
+            .get(&TableKey::Storage(non_created_addr))
+            .expect("touched account should insert storage entry");
+        assert!(
+            !storage_entry
+                .as_storage()
+                .expect("storage entry should be ForkStorageMap")
+                .dont_read_from_inner_db,
+            "dont_read flag should not be set for existing accounts"
+        );
+        drop(storage_entry);
+
+        assert_eq!(
+            active_overlay
+                .storage_ref(non_created_addr, fallback_slot)
+                .unwrap(),
+            fallback_value
+        );
+        assert_eq!(
+            get_mock_db_field!(mock_db_arc, get_storage_calls),
+            1,
+            "inner db should be read when dont_read flag is not set"
+        );
     }
 
     // Test interaction with a shared cache
@@ -727,8 +863,7 @@ mod active_overlay_tests {
         );
 
         // Verify storage was committed
-        assert!(active_overlay.is_cached(&TableKey::Storage(addr1, U256::from(5))));
-        assert!(active_overlay.is_cached(&TableKey::Storage(addr1, U256::from(6))));
+        assert!(active_overlay.is_cached(&TableKey::Storage(addr1)));
         assert_eq!(
             active_overlay.storage_ref(addr1, U256::from(5)).unwrap(),
             U256::from(500)
@@ -744,7 +879,7 @@ mod active_overlay_tests {
             active_overlay.basic_ref(addr2).unwrap().unwrap().balance,
             U256::from(2500)
         );
-        assert!(active_overlay.is_cached(&TableKey::Storage(addr2, U256::from(20))));
+        assert!(active_overlay.is_cached(&TableKey::Storage(addr2)));
         assert_eq!(
             active_overlay.storage_ref(addr2, U256::from(20)).unwrap(),
             U256::from(2000)
@@ -758,8 +893,8 @@ mod active_overlay_tests {
         assert_eq!(get_mock_db_field!(mock_db_arc, get_storage_calls), 0);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_code_calls), 0);
 
-        // Verify correct number of cache entries (2 accounts + 1 code + 3 storage slots)
-        assert_eq!(cache.iter().count(), 6);
+        // Verify correct number of cache entries (2 accounts + 1 code + 2 storage maps)
+        assert_eq!(cache.iter().count(), 5);
     }
 
     // Test DatabaseCommit with shared cache across multiple overlays

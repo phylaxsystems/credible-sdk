@@ -12,19 +12,23 @@ use crate::{
         U256,
     },
 };
+use rapidhash::fast::RandomState;
 use revm::{
     Database,
     state::AccountStatus,
 };
 use std::{
-    collections::HashMap,
+    collections::{
+        HashMap,
+        hash_map::Entry,
+    },
     sync::Arc,
 };
 
 /// Maps storage slots to their values.
 #[derive(Debug, Clone, Default)]
 pub struct ForkStorageMap {
-    pub map: HashMap<U256, U256>,
+    pub map: HashMap<U256, U256, RandomState>,
     pub dont_read_from_inner_db: bool,
 }
 
@@ -32,11 +36,11 @@ pub struct ForkStorageMap {
 #[derive(Debug)]
 pub struct ForkDb<ExtDb> {
     /// Maps addresses to storage slots and their history indexed by block.
-    pub storage: HashMap<Address, ForkStorageMap>,
+    pub storage: HashMap<Address, ForkStorageMap, RandomState>,
     /// Maps addresses to their account info and indexes it by block.
-    pub(super) basic: HashMap<Address, AccountInfo>,
+    pub(super) basic: HashMap<Address, AccountInfo, RandomState>,
     /// Maps bytecode hashes to bytecode.
-    pub(super) code_by_hash: HashMap<B256, Bytecode>,
+    pub(super) code_by_hash: HashMap<B256, Bytecode, RandomState>,
     /// Inner database.
     pub(super) inner_db: Arc<ExtDb>,
 }
@@ -145,6 +149,8 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
                 continue;
             }
 
+            let is_created = account.is_created();
+
             if let Some(code) = &account.info.code {
                 self.code_by_hash
                     .insert(account.info.code_hash, code.clone());
@@ -152,27 +158,27 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
 
             self.basic.insert(address, account.info.clone());
 
-            match self.storage.get_mut(&address) {
-                Some(s) => {
-                    s.map.extend(
-                        account
-                            .storage
-                            .into_iter()
-                            .map(|(k, v)| (k, v.present_value())),
-                    );
-                }
-                None => {
-                    self.storage.insert(
-                        address,
-                        ForkStorageMap {
-                            map: account
-                                .storage
-                                .into_iter()
-                                .map(|(k, v)| (k, v.present_value()))
-                                .collect(),
-                            dont_read_from_inner_db: false,
-                        },
-                    );
+            if is_created || !account.storage.is_empty() {
+                let mut storage_updates = account
+                    .storage
+                    .into_iter()
+                    .map(|(k, v)| (k, v.present_value()))
+                    .collect::<HashMap<_, _, RandomState>>();
+
+                match self.storage.entry(address) {
+                    Entry::Occupied(mut entry) => {
+                        let storage_map = entry.get_mut();
+                        if is_created {
+                            storage_map.dont_read_from_inner_db = true;
+                        }
+                        storage_map.map.extend(storage_updates.drain());
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(ForkStorageMap {
+                            map: storage_updates,
+                            dont_read_from_inner_db: is_created,
+                        });
+                    }
                 }
             }
         }
@@ -220,12 +226,16 @@ mod fork_db_tests {
         OverlayDb,
         TableKey,
         TableValue,
+        test_utils::MockDb,
     };
     use revm::database::{
         CacheDB,
         EmptyDBTyped,
     };
-    use std::convert::Infallible;
+    use std::{
+        convert::Infallible,
+        sync::Arc,
+    };
 
     use crate::{
         db::DatabaseRef,
@@ -235,6 +245,7 @@ mod fork_db_tests {
             BlockChanges,
             EvmStorageSlot,
             U256,
+            address,
             uint,
         },
         test_utils::random_bytes,
@@ -344,8 +355,11 @@ mod fork_db_tests {
             TableValue::Basic(AccountInfo::default()),
         );
         overlay_db.overlay.insert(
-            TableKey::Storage(Address::ZERO, uint!(0_U256)),
-            TableValue::Storage(uint!(1_U256).into()),
+            TableKey::Storage(Address::ZERO),
+            TableValue::Storage(ForkStorageMap {
+                map: HashMap::from_iter([(uint!(0_U256), uint!(1_U256))]),
+                dont_read_from_inner_db: false,
+            }),
         );
 
         let mut fork_db = overlay_db.fork();
@@ -503,8 +517,11 @@ mod fork_db_tests {
             }),
         );
         overlay_db.overlay.insert(
-            TableKey::Storage(Address::ZERO, uint!(0_U256)),
-            TableValue::Storage(uint!(1_U256).into()),
+            TableKey::Storage(Address::ZERO),
+            TableValue::Storage(ForkStorageMap {
+                map: HashMap::from_iter([(uint!(0_U256), evm_storage_slot.present_value())]),
+                dont_read_from_inner_db: false,
+            }),
         );
 
         let mut fork_db = overlay_db.fork();
@@ -562,6 +579,86 @@ mod fork_db_tests {
                 .unwrap()
                 .balance,
             uint!(1000_U256)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_commit_created_account_sets_dont_read_flag() {
+        let non_created_address = address!("0000000000000000000000000000000000000001");
+        let non_created_slot = U256::from(7);
+        let fallback_slot = U256::from(8);
+        let fallback_value = U256::from(9);
+
+        let mut mock_db = MockDb::new();
+        mock_db.insert_storage(non_created_address, fallback_slot, fallback_value);
+        let mock_db = Arc::new(mock_db);
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(Some(mock_db.clone()));
+        let mut fork_db = overlay_db.fork();
+
+        let mut evm_state = EvmState::default();
+        evm_state.insert(
+            Address::ZERO,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage: HashMap::default(),
+                status: AccountStatus::Created | AccountStatus::Touched,
+            },
+        );
+
+        fork_db.commit(evm_state);
+
+        let storage_entry = fork_db
+            .storage
+            .get(&Address::ZERO)
+            .expect("storage entry inserted for created account");
+        assert!(storage_entry.dont_read_from_inner_db);
+
+        assert_eq!(
+            fork_db.storage_ref(Address::ZERO, U256::from(5)).unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(
+            mock_db.get_storage_calls(),
+            0,
+            "inner db should not be read when dont_read flag is set"
+        );
+
+        let mut evm_state = EvmState::default();
+        evm_state.insert(
+            non_created_address,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage: HashMap::from_iter([(
+                    non_created_slot,
+                    EvmStorageSlot::new(U256::from(1), 0),
+                )]),
+                status: AccountStatus::Touched,
+            },
+        );
+
+        fork_db.commit(evm_state);
+
+        let storage_entry = fork_db
+            .storage
+            .get(&non_created_address)
+            .expect("storage entry inserted for touched account");
+        assert!(
+            !storage_entry.dont_read_from_inner_db,
+            "dont_read flag should not be set for existing accounts"
+        );
+
+        assert_eq!(
+            fork_db
+                .storage_ref(non_created_address, fallback_slot)
+                .unwrap(),
+            fallback_value,
+        );
+        assert_eq!(
+            mock_db.get_storage_calls(),
+            1,
+            "inner db should be read when dont_read flag is not set"
         );
     }
 }
