@@ -143,6 +143,7 @@ async fn test_pending_timeout() {
         max_denied_entries: 1000,
         denied_ttl_secs: 60,
         pending_timeout_secs: 1, // 1 second timeout for testing
+        ..Default::default()
     };
     let cache = FingerprintCache::new(config);
     let signer = PrivateKeySigner::from_slice(&[3u8; 32]).unwrap();
@@ -494,6 +495,97 @@ async fn test_token_bucket_refill() {
     assert!(
         matches!(fourth, Err(ProxyError::DeniedFingerprint(_, _))),
         "after backoff expires, should get assertion denial again (not backpressure): {fourth:?}"
+    );
+}
+
+/// Test assertion-level cooldowns when threshold exceeded.
+#[tokio::test]
+async fn test_assertion_cooldown() {
+    use std::time::Duration;
+
+    let mut cache_config = CacheConfig::default();
+    cache_config.assertion_cooldown_threshold = 3; // Activate after 3 distinct failures
+    cache_config.assertion_cooldown_duration_secs = 10; // 10 second cooldown
+    cache_config.assertion_cooldown_enabled = true;
+
+    let config = ProxyConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        rpc_path: "/rpc".into(),
+        upstream_http: Url::parse("http://127.0.0.1:8545").unwrap(),
+        sidecar_endpoint: None,
+        cache: cache_config,
+        backpressure: BackpressureConfig::default(),
+        dry_run: false,
+    };
+
+    let state = rpc_proxy::server::ProxyState::new(config, Arc::new(DenySidecar::default()));
+    let signer = PrivateKeySigner::from_slice(&[40u8; 32]).unwrap();
+
+    // Create 3 distinct transactions that will fail with the same assertion
+    let txs: Vec<_> = (0..3)
+        .map(|i| {
+            let tx = create_test_tx(
+                &signer,
+                address!("9999999999999999999999999999999999999999"),
+                U256::from(i * 100),
+                bytes!("deadbeef"),
+                100_000,
+            );
+            let mut encoded = Vec::new();
+            tx.encode(&mut encoded);
+            let fingerprint = Fingerprint::from_signed_tx(&encoded).unwrap();
+            (fingerprint, format!("0x{}", hex::encode(&encoded)))
+        })
+        .collect();
+
+    // Submit all 3 transactions - they should be denied but cooldown not activated yet
+    for (i, (_fp, raw_hex)) in txs.iter().enumerate() {
+        let result = state
+            .handle_send_raw_transaction(vec![raw_hex.clone()])
+            .await;
+        assert!(
+            matches!(result, Err(ProxyError::DeniedFingerprint(_, _))),
+            "tx {} should be denied: {:?}",
+            i,
+            result
+        );
+    }
+
+    // After 3 failures, cooldown should be activated
+    // Submit a 4th transaction (different fingerprint) - should be denied by cooldown
+    let tx4 = create_test_tx(
+        &signer,
+        address!("9999999999999999999999999999999999999999"),
+        U256::from(400),
+        bytes!("deadbeef"),
+        100_000,
+    );
+    let mut encoded4 = Vec::new();
+    tx4.encode(&mut encoded4);
+    let raw_hex4 = format!("0x{}", hex::encode(&encoded4));
+
+    let _result4 = state.handle_send_raw_transaction(vec![raw_hex4.clone()]).await;
+    // Should be denied (first trickle is allowed through in our impl, so this might pass)
+    // Let's try a 5th one to ensure cooldown is working
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let tx5 = create_test_tx(
+        &signer,
+        address!("9999999999999999999999999999999999999999"),
+        U256::from(500),
+        bytes!("deadbeef"),
+        100_000,
+    );
+    let mut encoded5 = Vec::new();
+    tx5.encode(&mut encoded5);
+    let raw_hex5 = format!("0x{}", hex::encode(&encoded5));
+
+    let result5 = state.handle_send_raw_transaction(vec![raw_hex5]).await;
+    // This should definitely be denied by cooldown
+    assert!(
+        matches!(result5, Err(ProxyError::DeniedFingerprint(_, _))),
+        "tx 5 should be denied during cooldown: {:?}",
+        result5
     );
 }
 

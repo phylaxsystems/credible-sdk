@@ -23,15 +23,14 @@ A JSON-RPC proxy that sits in front of the sequencer to prevent assertion-invali
 - **Sender backpressure**: Token-bucket throttling per recovered sender activates only after repeated assertion invalidations, keeping spammy EOAs from monopolizing the proxy without touching honest traffic
 - **Sender recovery cache**: Moka-based cache mapping tx hash → sender address to avoid expensive ECDSA recovery (~500µs) on duplicate/retry submissions
 - **Performance-optimized hot path**: Sub-microsecond backpressure checks, cache lookups via lock-free DashMap/moka operations
-- **Comprehensive test coverage**: 7 integration tests covering forwarding, caching, dry-run mode, backpressure token buckets, independent sender isolation, and timeout behavior
+- **Assertion-level cooldowns**: When many distinct fingerprints fail for the same assertion (default: 10), activate a per-assertion cooldown (default: 5 minutes) while still allowing trickle traffic (1 per block) to detect fixes
+- **Comprehensive test coverage**: 8 integration tests covering forwarding, caching, dry-run mode, backpressure token buckets, independent sender isolation, timeout behavior, and assertion cooldowns
 
 ### 🚧 TODO (in planned order)
 
-1. **Assertion-level cooldowns + priority scoring**
-   - Track assertion-level failure rates and apply global throttles when multiple fingerprints fail; adjust gas-price priority to penalize banned fingerprints.
-2. **Benchmark harness**
-   - Add Criterion/contender suites to measure normalization + cache latency; run Samply for wall-clock profiling once full pipeline is implemented.
-3. **Persistence & observability**
+1. **Benchmark harness**
+   - Add Criterion/contender suites to measure normalization + cache latency; run Samply for wall-clock profiling.
+2. **Persistence & observability**
    - Optional sled-backed cache to survive restarts, Prometheus/Grafana dashboards for cache stats, and documentation of benchmark results.
 
 ## Usage
@@ -71,6 +70,9 @@ Cache behavior can be tuned via the `cache` field in `ProxyConfig`:
 - `max_denied_entries`: Maximum fingerprints in denied cache (default: 10,000)
 - `denied_ttl_secs`: Time-to-live for denied entries in seconds (default: 128s ≈ 64 L2 slots)
 - `pending_timeout_secs`: Timeout for pending fingerprints in seconds (default: 30s)
+- `assertion_cooldown_threshold`: Number of distinct fingerprints that must fail before activating assertion-level cooldown (default: 10)
+- `assertion_cooldown_duration_secs`: Duration of assertion cooldown in seconds (default: 300s = 5 minutes)
+- `assertion_cooldown_enabled`: Enable/disable assertion-level cooldowns (default: true)
 
 Backpressure is configured via the `backpressure` block:
 - `max_tokens`: Number of assertion invalidations per origin before throttling (default: 20)
@@ -105,8 +107,17 @@ The proxy is designed for microsecond-level latency on the hot path (every trans
 5. After backoff expires and tokens refill, sender can submit again
 6. If sender recovery fails (invalid signature), backpressure is bypassed (transaction forwarded to sequencer which will reject it)
 
+**Assertion cooldown behavior**:
+1. Track distinct fingerprints failing per assertion
+2. When threshold exceeded (default: 10 distinct failures), activate cooldown for that assertion
+3. During cooldown, new fingerprints that would trigger the assertion are still checked but can pass as "trickle" traffic
+4. Trickle rate: approximately 1 transaction per L2 block (2 seconds)
+5. This allows legitimate fixes to propagate while preventing overwhelming spam
+6. Cooldown automatically expires after configured duration (default: 5 minutes)
+
 **Cache cleanup**:
 - Denied fingerprints: TTL + LRU eviction (default 128s TTL)
 - Pending fingerprints: Timeout sweep every 15s (default 30s timeout)
 - Sender cache: 5min TTL, 100k max entries
 - Backpressure buckets: Naive FIFO eviction when exceeding `max_origins`
+- Assertion cooldowns: Automatically cleaned up on expiration

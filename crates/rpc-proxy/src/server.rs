@@ -423,6 +423,28 @@ impl ProxyState {
     ) -> Result<()> {
         match self.sidecar.should_forward(fingerprint).await {
             Ok(ShouldForwardVerdict::Deny(assertion)) => {
+                // Check if this assertion is in cooldown
+                if self.cache.is_assertion_in_cooldown(&assertion) {
+                    // Assertion is in cooldown - check if we should allow trickle traffic
+                    if self.cache.should_allow_trickle(&assertion) {
+                        info!(
+                            assertion_id = ?assertion.assertion_id,
+                            fingerprint = ?fingerprint.hash,
+                            "allowing trickle traffic during assertion cooldown"
+                        );
+                        // Allow this transaction through as trickle
+                        return Ok(());
+                    } else {
+                        // Cooldown active and no trickle slot available
+                        metrics::counter!(
+                            "rpc_proxy_assertion_cooldown_reject_total",
+                            "assertion_id" => format!("{:?}", assertion.assertion_id)
+                        )
+                        .increment(1);
+                    }
+                }
+
+                // Normal denial flow
                 self.backpressure.record_failure(origin);
                 self.cache.record_failure(fingerprint, assertion.clone());
                 let mut assertions = HashSet::new();

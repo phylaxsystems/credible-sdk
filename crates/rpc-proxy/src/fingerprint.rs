@@ -171,6 +171,16 @@ pub struct FingerprintCache {
     /// Timestamps for when each fingerprint was marked as pending.
     /// Used to detect and clean up stuck entries.
     pending_timestamps: Arc<RwLock<HashMap<B256, Instant>>>,
+    /// Tracks distinct fingerprints that have failed per assertion.
+    /// When threshold exceeded, assertion goes into cooldown.
+    assertion_failures: Arc<RwLock<HashMap<AssertionInfo, HashSet<B256>>>>,
+    /// Assertions currently in cooldown with their expiration time.
+    assertion_cooldowns: Arc<RwLock<HashMap<AssertionInfo, Instant>>>,
+    /// Last time we allowed a transaction through during assertion cooldown.
+    /// Used to enforce "1 per block" trickle rate.
+    assertion_last_trickle: Arc<RwLock<HashMap<AssertionInfo, Instant>>>,
+    /// Configuration for assertion cooldowns.
+    config: CacheConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +213,16 @@ pub struct CacheConfig {
     /// After this duration, pending entries are automatically cleared.
     #[serde(default = "default_pending_timeout_secs")]
     pub pending_timeout_secs: u64,
+    /// Assertion-level cooldown: minimum distinct fingerprints that must fail
+    /// for the same assertion before activating a global cooldown.
+    #[serde(default = "default_assertion_cooldown_threshold")]
+    pub assertion_cooldown_threshold: usize,
+    /// Duration of assertion-level cooldown in seconds (default: 300s = 5 minutes).
+    #[serde(default = "default_assertion_cooldown_duration_secs")]
+    pub assertion_cooldown_duration_secs: u64,
+    /// Enable assertion-level cooldowns.
+    #[serde(default = "default_assertion_cooldown_enabled")]
+    pub assertion_cooldown_enabled: bool,
 }
 
 fn default_max_denied_entries() -> u64 {
@@ -217,12 +237,27 @@ fn default_pending_timeout_secs() -> u64 {
     30
 }
 
+fn default_assertion_cooldown_threshold() -> usize {
+    10
+}
+
+fn default_assertion_cooldown_duration_secs() -> u64 {
+    300
+}
+
+fn default_assertion_cooldown_enabled() -> bool {
+    true
+}
+
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             max_denied_entries: default_max_denied_entries(),
             denied_ttl_secs: default_denied_ttl_secs(),
             pending_timeout_secs: default_pending_timeout_secs(),
+            assertion_cooldown_threshold: default_assertion_cooldown_threshold(),
+            assertion_cooldown_duration_secs: default_assertion_cooldown_duration_secs(),
+            assertion_cooldown_enabled: default_assertion_cooldown_enabled(),
         }
     }
 }
@@ -236,6 +271,10 @@ impl FingerprintCache {
                 .build(),
             pending: Arc::new(RwLock::new(HashSet::new())),
             pending_timestamps: Arc::new(RwLock::new(HashMap::new())),
+            assertion_failures: Arc::new(RwLock::new(HashMap::new())),
+            assertion_cooldowns: Arc::new(RwLock::new(HashMap::new())),
+            assertion_last_trickle: Arc::new(RwLock::new(HashMap::new())),
+            config,
         }
     }
 
@@ -285,10 +324,15 @@ impl FingerprintCache {
             .map(|entry| entry.assertions.clone())
             .unwrap_or_default();
 
-        assertions.insert(assertion);
+        assertions.insert(assertion.clone());
 
         self.denied
             .insert(fingerprint.hash, DeniedEntry { assertions });
+
+        // Track assertion-level failures for cooldown detection
+        if self.config.assertion_cooldown_enabled {
+            self.track_assertion_failure(&assertion, &fingerprint.hash);
+        }
 
         metrics::counter!("rpc_proxy_cache_denied_total").increment(1);
     }
@@ -356,6 +400,93 @@ impl FingerprintCache {
         }
 
         stale
+    }
+
+    /// Track a failure for an assertion and activate cooldown if threshold exceeded.
+    fn track_assertion_failure(&self, assertion: &AssertionInfo, fingerprint_hash: &B256) {
+        let mut failures = self.assertion_failures.write();
+        let fingerprints = failures.entry(assertion.clone()).or_insert_with(HashSet::new);
+        fingerprints.insert(*fingerprint_hash);
+
+        let distinct_count = fingerprints.len();
+        drop(failures); // Release lock before checking cooldown
+
+        // Check if we've exceeded the threshold and should activate cooldown
+        if distinct_count >= self.config.assertion_cooldown_threshold {
+            let mut cooldowns = self.assertion_cooldowns.write();
+            if !cooldowns.contains_key(assertion) {
+                let expires_at =
+                    Instant::now() + Duration::from_secs(self.config.assertion_cooldown_duration_secs);
+                cooldowns.insert(assertion.clone(), expires_at);
+
+                metrics::counter!(
+                    "rpc_proxy_assertion_cooldown_activated_total",
+                    "assertion_id" => format!("{:?}", assertion.assertion_id)
+                )
+                .increment(1);
+
+                tracing::warn!(
+                    assertion_id = ?assertion.assertion_id,
+                    assertion_version = assertion.assertion_version,
+                    distinct_failures = distinct_count,
+                    "assertion cooldown activated"
+                );
+            }
+        }
+    }
+
+    /// Check if an assertion is currently in cooldown.
+    /// Returns true if the assertion should be throttled (cooldown active).
+    pub fn is_assertion_in_cooldown(&self, assertion: &AssertionInfo) -> bool {
+        self.cleanup_expired_cooldowns();
+
+        let cooldowns = self.assertion_cooldowns.read();
+        cooldowns.contains_key(assertion)
+    }
+
+    /// Determine if we should allow a "trickle" transaction through during cooldown.
+    /// Returns true if enough time has passed since last trickle (approximately 1 per block).
+    pub fn should_allow_trickle(&self, assertion: &AssertionInfo) -> bool {
+        const BLOCK_TIME_SECS: u64 = 2; // L2 block time
+
+        let mut last_trickle = self.assertion_last_trickle.write();
+        let now = Instant::now();
+
+        if let Some(last) = last_trickle.get(assertion) {
+            if now.duration_since(*last) >= Duration::from_secs(BLOCK_TIME_SECS) {
+                last_trickle.insert(assertion.clone(), now);
+                metrics::counter!(
+                    "rpc_proxy_assertion_trickle_total",
+                    "assertion_id" => format!("{:?}", assertion.assertion_id)
+                )
+                .increment(1);
+                true
+            } else {
+                false
+            }
+        } else {
+            // First trickle for this assertion
+            last_trickle.insert(assertion.clone(), now);
+            true
+        }
+    }
+
+    /// Remove expired cooldowns from tracking.
+    fn cleanup_expired_cooldowns(&self) {
+        let now = Instant::now();
+        let mut cooldowns = self.assertion_cooldowns.write();
+
+        cooldowns.retain(|assertion, expires_at| {
+            let keep = *expires_at > now;
+            if !keep {
+                metrics::counter!(
+                    "rpc_proxy_assertion_cooldown_expired_total",
+                    "assertion_id" => format!("{:?}", assertion.assertion_id)
+                )
+                .increment(1);
+            }
+            keep
+        });
     }
 
     /// Get cache statistics for observability.
