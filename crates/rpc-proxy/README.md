@@ -20,16 +20,15 @@ A JSON-RPC proxy that sits in front of the sequencer to prevent assertion-invali
 - **Pending timeout**: Automatic cleanup of stuck pending entries (default: 30s timeout, swept every 15s)
 - **Dry-run mode**: `--dry-run` flag logs rejections but forwards everything for production validation
 - **Integration tests**: Wiremock-based tests for HTTP forwarding, cache behavior, and dry-run mode
+- **Sender backpressure**: Token-bucket throttling per recovered sender with exponential cooldown keeps spammy EOAs from monopolizing the proxy while still allowing normal bursts
 
 ### 🚧 TODO (in planned order)
 
-1. **Sender/IP backpressure**
-   - Add per-origin rate limiting (IP/API token/address) with token bucket and exponential backoff.
-2. **Assertion-level cooldowns + priority scoring**
+1. **Assertion-level cooldowns + priority scoring**
    - Track assertion-level failure rates and apply global throttles when multiple fingerprints fail; adjust gas-price priority to penalize banned fingerprints.
-3. **Benchmark harness**
+2. **Benchmark harness**
    - Add Criterion/contender suites to measure normalization + cache latency; run Samply for wall-clock profiling once full pipeline is implemented.
-4. **Persistence & observability**
+3. **Persistence & observability**
    - Optional sled-backed cache to survive restarts, Prometheus/Grafana dashboards for cache stats, and documentation of benchmark results.
 
 ## Usage
@@ -69,3 +68,10 @@ Cache behavior can be tuned via the `cache` field in `ProxyConfig`:
 - `max_denied_entries`: Maximum fingerprints in denied cache (default: 10,000)
 - `denied_ttl_secs`: Time-to-live for denied entries in seconds (default: 128s ≈ 64 L2 slots)
 - `pending_timeout_secs`: Timeout for pending fingerprints in seconds (default: 30s)
+
+Backpressure is configured via the `backpressure` block:
+- `max_tokens`: Burst size per origin before throttling (default: 20)
+- `refill_tokens_per_second`: Sustained rate per origin (default: 5 tx/s)
+- `base_backoff_ms` / `max_backoff_ms`: Exponential cooldown window applied when buckets run dry (default: 1s → 30s max)
+- `max_origins`: Maximum unique origins tracked before old entries are evicted (default: 20k)
+- `enabled`: Toggle enforcement without changing other thresholds

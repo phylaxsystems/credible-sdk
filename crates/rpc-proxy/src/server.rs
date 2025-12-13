@@ -30,6 +30,10 @@ use tracing::{
 };
 
 use crate::{
+    backpressure::{
+        OriginBackpressure,
+        OriginMetadata,
+    },
     config::ProxyConfig,
     error::{
         ProxyError,
@@ -39,6 +43,7 @@ use crate::{
         CacheDecision,
         Fingerprint,
         FingerprintCache,
+        decode_envelope,
     },
     sidecar::{
         GrpcSidecarTransport,
@@ -204,6 +209,7 @@ async fn shutdown_signal() {
 pub struct ProxyState {
     pub config: ProxyConfig,
     pub cache: FingerprintCache,
+    backpressure: OriginBackpressure,
     sidecar: SharedSidecarTransport,
     http: Client,
     request_id: Arc<AtomicU64>,
@@ -214,6 +220,7 @@ impl Clone for ProxyState {
         Self {
             config: self.config.clone(),
             cache: self.cache.clone(),
+            backpressure: self.backpressure.clone(),
             sidecar: self.sidecar.clone(),
             http: self.http.clone(),
             request_id: self.request_id.clone(),
@@ -224,10 +231,12 @@ impl Clone for ProxyState {
 impl ProxyState {
     pub fn new(config: ProxyConfig, sidecar: SharedSidecarTransport) -> Self {
         let cache = FingerprintCache::new(config.cache.clone());
+        let backpressure = OriginBackpressure::new(config.backpressure.clone());
         let http = Client::new();
         Self {
             config,
             cache,
+            backpressure,
             sidecar,
             http,
             request_id: Arc::new(AtomicU64::new(1)),
@@ -244,7 +253,26 @@ impl ProxyState {
             })?
             .to_string();
         let raw_bytes = decode_raw_tx(&raw_hex)?;
-        let fingerprint = Fingerprint::from_signed_tx(&raw_bytes)?;
+        let envelope = decode_envelope(&raw_bytes)?;
+        let fingerprint = Fingerprint::from_envelope(&envelope)?;
+        let origin = OriginMetadata::from_envelope(&envelope);
+
+        if let Err(throttled) = self.backpressure.check(&origin) {
+            if self.config.dry_run {
+                warn!(
+                    origin = %throttled.origin,
+                    retry_after = ?throttled.retry_after,
+                    "DRY-RUN: would rate limit origin but forwarding anyway"
+                );
+                metrics::counter!("rpc_proxy_dry_run_rejections_total", "reason" => "backpressure")
+                    .increment(1);
+            } else {
+                return Err(ProxyError::Backpressure {
+                    origin: throttled.origin,
+                    retry_after: throttled.retry_after,
+                });
+            }
+        }
 
         match self.cache.observe(&fingerprint) {
             CacheDecision::Forward => {
@@ -398,6 +426,7 @@ impl From<ProxyError> for RpcResponseError {
         let code = match err {
             ProxyError::PendingFingerprint(_) => -32001, // Custom: pending validation
             ProxyError::DeniedFingerprint(_, _) => -32002, // Custom: denied by assertion
+            ProxyError::Backpressure { .. } => -32003,   // Custom: rate limited
             ProxyError::InvalidParams(_) => -32602,      // Standard: invalid params
             ProxyError::InvalidConfig(_) => -32600,      // Standard: invalid request
             _ => -32000,                                 // Standard: server error

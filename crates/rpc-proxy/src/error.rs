@@ -1,12 +1,16 @@
 use std::{
     collections::HashSet,
     net::AddrParseError,
+    time::Duration,
 };
 
 use alloy_primitives::B256;
 use thiserror::Error;
 
-use crate::fingerprint::AssertionInfo;
+use crate::{
+    backpressure::OriginKey,
+    fingerprint::AssertionInfo,
+};
 
 pub type Result<T, E = ProxyError> = std::result::Result<T, E>;
 
@@ -33,6 +37,11 @@ pub enum ProxyError {
     PendingFingerprint(B256),
     #[error("fingerprint {0:#x} is denied by assertions: {1:?}")]
     DeniedFingerprint(B256, HashSet<AssertionInfo>),
+    #[error("{origin} is temporarily rate limited; retry after {retry_after:?}")]
+    Backpressure {
+        origin: OriginKey,
+        retry_after: Duration,
+    },
     #[error("upstream RPC error: {0}")]
     Upstream(String),
 }

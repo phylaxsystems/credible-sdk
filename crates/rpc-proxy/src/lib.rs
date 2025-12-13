@@ -12,6 +12,7 @@
 //! the JSON-RPC router we use to share logic between HTTP clients and any
 //! in-process integrations.
 
+pub mod backpressure;
 pub mod config;
 pub mod error;
 pub mod fingerprint;

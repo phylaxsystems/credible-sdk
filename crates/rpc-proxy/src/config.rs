@@ -7,6 +7,7 @@ use serde::{
 use url::Url;
 
 use crate::{
+    backpressure::BackpressureConfig,
     error::{
         ProxyError,
         Result,
@@ -30,6 +31,9 @@ pub struct ProxyConfig {
     /// Fingerprint cache configuration.
     #[serde(default)]
     pub cache: CacheConfig,
+    /// Sender/IP backpressure configuration.
+    #[serde(default)]
+    pub backpressure: BackpressureConfig,
     /// Dry-run mode: log what would be rejected but forward everything.
     /// Useful for validating cache hit rates in production without breaking traffic.
     #[serde(default)]
@@ -44,6 +48,7 @@ impl Default for ProxyConfig {
             upstream_http: Url::parse("http://127.0.0.1:8545").expect("static URL"),
             sidecar_endpoint: None,
             cache: CacheConfig::default(),
+            backpressure: BackpressureConfig::default(),
             dry_run: false,
         }
     }

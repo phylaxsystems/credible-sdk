@@ -40,8 +40,7 @@ pub struct Fingerprint {
 impl Fingerprint {
     /// Derive a fingerprint from a signed raw transaction (RLP encoded).
     pub fn from_signed_tx(raw_tx: &[u8]) -> Result<Self, FingerprintError> {
-        let mut buf = raw_tx;
-        let envelope = TxEnvelope::decode(&mut buf)?;
+        let envelope = decode_envelope(raw_tx)?;
         Self::from_envelope(&envelope)
     }
 
@@ -82,6 +81,12 @@ impl Fingerprint {
             gas_bucket,
         }
     }
+}
+
+/// Decode a raw RLP-encoded transaction into an envelope for downstream analysis.
+pub fn decode_envelope(raw_tx: &[u8]) -> Result<TxEnvelope, FingerprintError> {
+    let mut buf = raw_tx;
+    TxEnvelope::decode(&mut buf).map_err(FingerprintError::from)
 }
 
 fn selector_bytes(input: &Bytes) -> [u8; 4] {

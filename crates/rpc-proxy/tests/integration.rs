@@ -13,6 +13,8 @@ use alloy_primitives::{
 use alloy_rlp::Encodable;
 use rpc_proxy::{
     ProxyConfig,
+    backpressure::BackpressureConfig,
+    error::ProxyError,
     fingerprint::{
         AssertionInfo,
         CacheConfig,
@@ -57,11 +59,11 @@ async fn test_forward_to_upstream() {
         upstream_http: Url::parse(&mock_server.uri()).unwrap(),
         sidecar_endpoint: None,
         cache: CacheConfig::default(),
+        backpressure: BackpressureConfig::default(),
         dry_run: false,
     };
 
-    // Test forwarding by directly calling the internal state
-    // (HTTP serving is TODO, so we test the forwarding logic directly)
+    // Test forwarding by directly calling the internal state to isolate heuristics
     let state =
         rpc_proxy::server::ProxyState::new(config, Arc::new(NoopSidecarTransport::default()));
 
@@ -184,6 +186,7 @@ async fn test_dry_run_mode() {
         upstream_http: Url::parse(&mock_server.uri()).unwrap(),
         sidecar_endpoint: None,
         cache: CacheConfig::default(),
+        backpressure: BackpressureConfig::default(),
         dry_run: true, // Enable dry-run
     };
 
@@ -221,6 +224,64 @@ async fn test_dry_run_mode() {
         "Dry-run should forward even denied transactions: {:?}",
         result
     );
+}
+
+/// Test that per-sender backpressure throttles repeated submissions.
+#[tokio::test]
+async fn test_sender_backpressure() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": "0xfeedface"
+        })))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let mut backpressure = BackpressureConfig::default();
+    backpressure.max_tokens = 1;
+    backpressure.refill_tokens_per_second = 0.0;
+    backpressure.base_backoff_ms = 1_000;
+    backpressure.max_backoff_ms = 1_000;
+
+    let config = ProxyConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        rpc_path: "/rpc".into(),
+        upstream_http: Url::parse(&mock_server.uri()).unwrap(),
+        sidecar_endpoint: None,
+        cache: CacheConfig::default(),
+        backpressure,
+        dry_run: false,
+    };
+
+    let state =
+        rpc_proxy::server::ProxyState::new(config, Arc::new(NoopSidecarTransport::default()));
+
+    let tx = create_test_tx(
+        address!("5555555555555555555555555555555555555555"),
+        U256::from(100),
+        bytes!("deadbeef"),
+        100_000,
+    );
+    let mut encoded = Vec::new();
+    tx.encode(&mut encoded);
+    let raw_hex = format!("0x{}", hex::encode(&encoded));
+    let params = vec![raw_hex.clone()];
+
+    // First submission should pass
+    let first = state.handle_send_raw_transaction(params.clone()).await;
+    assert!(first.is_ok(), "first send should succeed: {first:?}");
+
+    // Second submission should be throttled
+    let second = state.handle_send_raw_transaction(params).await;
+    match second {
+        Err(ProxyError::Backpressure { .. }) => {}
+        other => panic!("expected backpressure error, got {other:?}"),
+    }
 }
 
 fn create_test_tx(
