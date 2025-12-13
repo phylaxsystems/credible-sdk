@@ -682,7 +682,7 @@ impl Indexer {
             .into_iter()
             .map(|(number, hash)| BlockNumHash { number, hash })
             .collect();
-        block_hashes.sort_by_key(|b| b.number);
+        block_hashes.sort_unstable_by_key(|b| b.number);
 
         if let Some(last_indexed_block_num_hash) = block_hashes.last() {
             trace!(
