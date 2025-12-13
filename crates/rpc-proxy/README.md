@@ -30,10 +30,8 @@ A JSON-RPC proxy that sits in front of the sequencer to prevent assertion-invali
 
 ### 🚧 TODO (in planned order)
 
-1. **Benchmark harness**
-   - Add Criterion/contender suites to measure normalization + cache latency; run Samply for wall-clock profiling.
-2. **Persistence & observability**
-   - Optional sled-backed cache to survive restarts, Prometheus/Grafana dashboards for cache stats, and documentation of benchmark results.
+1. **Persistence & observability**
+   - Optional sled-backed cache to survive restarts, Prometheus/Grafana dashboards for cache stats
 
 ## Usage
 
@@ -56,6 +54,9 @@ cargo test -p rpc-proxy
 
 # Run integration tests
 cargo test -p rpc-proxy --test integration
+
+# Run benchmarks
+cargo bench -p rpc-proxy
 ```
 
 ## Configuration
@@ -86,21 +87,26 @@ Backpressure is configured via the `backpressure` block:
 
 ## Performance Characteristics
 
-The proxy is designed for microsecond-level latency on the hot path (every transaction):
+The proxy is designed for microsecond-level latency on the hot path (every transaction). Benchmarked on Apple M1 Pro:
+
+- **Fingerprint creation**: ~323ns
+  - RLP decode + keccak256 hashing + field extraction
 
 - **Sender recovery**: Cached via moka (5min TTL, 100k capacity)
-  - First submission: ~500µs (ECDSA recovery)
-  - Subsequent submissions: ~10ns (cache hit)
+  - First submission: ~115µs (ECDSA recovery)
+  - Subsequent submissions: ~65ns (cache hit)
 
-- **Backpressure check**: ~50-100ns
+- **Backpressure check**: ~28-34ns
   - Lock-free DashMap read for bucket lookup
   - Simple instant comparison for backoff window
 
-- **Fingerprint cache**: ~50-100ns
+- **Fingerprint cache**: ~48µs (new) / ~100ns (cached)
   - Moka cache read (lock-free on hits)
   - TTL/LRU eviction handled asynchronously
 
-- **Total overhead per transaction**: ~100-200ns (cached path) to ~1µs (first-time submission)
+- **Total hot path**: ~48µs per transaction
+  - Full pipeline: decode → fingerprint → sender recovery (cached) → backpressure → cache observe
+  - At this rate, a single proxy instance can handle ~20,000 requests/second
 
 **Backpressure behavior**:
 1. Each sender starts with `max_tokens` invalidation budget

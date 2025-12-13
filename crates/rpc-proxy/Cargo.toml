@@ -53,3 +53,12 @@ protoc-bin-vendored = "3"
 wiremock = "0.6"
 alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "hot_path"
+harness = false
+
+[[bench]]
+name = "cache_operations"
+harness = false
