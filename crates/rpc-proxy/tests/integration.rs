@@ -3,7 +3,6 @@ use alloy_consensus::{
     TxEip1559,
 };
 use alloy_primitives::{
-    Signature,
     TxKind,
     U256,
     address,
@@ -11,17 +10,32 @@ use alloy_primitives::{
     hex,
 };
 use alloy_rlp::Encodable;
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
+use async_trait::async_trait;
+use futures::stream;
 use rpc_proxy::{
     ProxyConfig,
-    backpressure::BackpressureConfig,
-    error::ProxyError,
+    backpressure::{
+        BackpressureConfig,
+        OriginMetadata,
+    },
+    error::{
+        ProxyError,
+        Result as ProxyResult,
+    },
     fingerprint::{
         AssertionInfo,
         CacheConfig,
         Fingerprint,
         FingerprintCache,
     },
-    sidecar::NoopSidecarTransport,
+    sidecar::{
+        InvalidationStream,
+        NoopSidecarTransport,
+        ShouldForwardVerdict,
+        SidecarTransport,
+    },
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -39,6 +53,7 @@ use wiremock::{
 /// Test that transactions are correctly forwarded to the upstream sequencer
 #[tokio::test]
 async fn test_forward_to_upstream() {
+    let signer = PrivateKeySigner::from_slice(&[1u8; 32]).unwrap();
     // Start a mock upstream sequencer
     let mock_server = MockServer::start().await;
 
@@ -68,6 +83,7 @@ async fn test_forward_to_upstream() {
         rpc_proxy::server::ProxyState::new(config, Arc::new(NoopSidecarTransport::default()));
 
     let tx = create_test_tx(
+        &signer,
         address!("1111111111111111111111111111111111111111"),
         U256::from(1000),
         bytes!("a9059cbb"),
@@ -87,8 +103,10 @@ async fn test_forward_to_upstream() {
 #[tokio::test]
 async fn test_denied_fingerprint_rejection() {
     let cache = FingerprintCache::new(CacheConfig::default());
+    let signer = PrivateKeySigner::from_slice(&[2u8; 32]).unwrap();
 
     let tx = create_test_tx(
+        &signer,
         address!("2222222222222222222222222222222222222222"),
         U256::ZERO,
         bytes!("12345678"),
@@ -127,8 +145,10 @@ async fn test_pending_timeout() {
         pending_timeout_secs: 1, // 1 second timeout for testing
     };
     let cache = FingerprintCache::new(config);
+    let signer = PrivateKeySigner::from_slice(&[3u8; 32]).unwrap();
 
     let tx = create_test_tx(
+        &signer,
         address!("3333333333333333333333333333333333333333"),
         U256::ZERO,
         bytes!("87654321"),
@@ -154,7 +174,7 @@ async fn test_pending_timeout() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Sweep stale entries
-    cache.sweep_stale_pending(Duration::from_secs(1));
+    let _ = cache.sweep_stale_pending(Duration::from_secs(1));
 
     // Should now be able to forward again
     match cache.observe(&fingerprint) {
@@ -194,8 +214,10 @@ async fn test_dry_run_mode() {
         rpc_proxy::server::ProxyState::new(config, Arc::new(NoopSidecarTransport::default()));
 
     let cache = state.cache.clone();
+    let signer = PrivateKeySigner::from_slice(&[4u8; 32]).unwrap();
 
     let tx = create_test_tx(
+        &signer,
         address!("4444444444444444444444444444444444444444"),
         U256::ZERO,
         bytes!("aaaaaaaa"),
@@ -229,21 +251,8 @@ async fn test_dry_run_mode() {
 /// Test that per-sender backpressure throttles repeated submissions.
 #[tokio::test]
 async fn test_sender_backpressure() {
-    let mock_server = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": "0xfeedface"
-        })))
-        .expect(1)
-        .mount(&mock_server)
-        .await;
-
     let mut backpressure = BackpressureConfig::default();
-    backpressure.max_tokens = 1;
+    backpressure.max_tokens = 0;
     backpressure.refill_tokens_per_second = 0.0;
     backpressure.base_backoff_ms = 1_000;
     backpressure.max_backoff_ms = 1_000;
@@ -251,17 +260,18 @@ async fn test_sender_backpressure() {
     let config = ProxyConfig {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         rpc_path: "/rpc".into(),
-        upstream_http: Url::parse(&mock_server.uri()).unwrap(),
+        upstream_http: Url::parse("http://127.0.0.1:8545").unwrap(),
         sidecar_endpoint: None,
         cache: CacheConfig::default(),
         backpressure,
         dry_run: false,
     };
 
-    let state =
-        rpc_proxy::server::ProxyState::new(config, Arc::new(NoopSidecarTransport::default()));
+    let state = rpc_proxy::server::ProxyState::new(config, Arc::new(DenySidecar::default()));
 
+    let signer = PrivateKeySigner::from_slice(&[5u8; 32]).unwrap();
     let tx = create_test_tx(
+        &signer,
         address!("5555555555555555555555555555555555555555"),
         U256::from(100),
         bytes!("deadbeef"),
@@ -270,21 +280,62 @@ async fn test_sender_backpressure() {
     let mut encoded = Vec::new();
     tx.encode(&mut encoded);
     let raw_hex = format!("0x{}", hex::encode(&encoded));
-    let params = vec![raw_hex.clone()];
+    let params = vec![raw_hex];
+    let origin = OriginMetadata::from_envelope(&tx);
+    assert!(
+        origin.sender.is_some(),
+        "expected recovered sender for test tx"
+    );
 
-    // First submission should pass
+    // First submission should be denied by the sidecar but not throttled yet
     let first = state.handle_send_raw_transaction(params.clone()).await;
-    assert!(first.is_ok(), "first send should succeed: {first:?}");
+    assert!(
+        matches!(first, Err(ProxyError::DeniedFingerprint(_, _))),
+        "first send should be denied by assertion: {first:?}"
+    );
 
-    // Second submission should be throttled
-    let second = state.handle_send_raw_transaction(params).await;
+    // Second submission (different fingerprint) should hit backpressure
+    let tx2 = create_test_tx(
+        &signer,
+        address!("5555555555555555555555555555555555555555"),
+        U256::from(100),
+        bytes!("deadbe00"),
+        100_000,
+    );
+    let mut encoded2 = Vec::new();
+    tx2.encode(&mut encoded2);
+    let raw_hex2 = format!("0x{}", hex::encode(&encoded2));
+    let params2 = vec![raw_hex2];
+
+    let second = state.handle_send_raw_transaction(params2).await;
     match second {
         Err(ProxyError::Backpressure { .. }) => {}
         other => panic!("expected backpressure error, got {other:?}"),
     }
 }
 
+#[derive(Default)]
+struct DenySidecar;
+
+#[async_trait]
+impl SidecarTransport for DenySidecar {
+    async fn subscribe_invalidations(&self) -> ProxyResult<InvalidationStream> {
+        Ok(Box::pin(stream::empty()))
+    }
+
+    async fn should_forward(
+        &self,
+        _fingerprint: &Fingerprint,
+    ) -> ProxyResult<ShouldForwardVerdict> {
+        Ok(ShouldForwardVerdict::Deny(AssertionInfo {
+            assertion_id: alloy_primitives::B256::ZERO,
+            assertion_version: 1,
+        }))
+    }
+}
+
 fn create_test_tx(
+    signer: &PrivateKeySigner,
     to: alloy_primitives::Address,
     value: U256,
     calldata: alloy_primitives::Bytes,
@@ -301,6 +352,8 @@ fn create_test_tx(
         nonce: 0,
         access_list: Default::default(),
     };
-    let sig = Signature::test_signature();
-    alloy_consensus::TxEnvelope::Eip1559(tx.into_signed(sig))
+    let signature = signer
+        .sign_hash_sync(&tx.signature_hash())
+        .expect("sign hash");
+    alloy_consensus::TxEnvelope::Eip1559(tx.into_signed(signature))
 }

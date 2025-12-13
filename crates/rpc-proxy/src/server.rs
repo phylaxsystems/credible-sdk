@@ -11,8 +11,12 @@ use std::{
 };
 
 use ajj::Router;
-use alloy_primitives::hex;
+use alloy_primitives::{
+    B256,
+    hex,
+};
 use axum::Router as AxumRouter;
+use dashmap::DashMap;
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{
@@ -112,6 +116,8 @@ impl RpcProxy {
             sidecar_transport,
         } = self;
 
+        let backpressure = state.backpressure.clone();
+        let pending_origins = state.pending_origins.clone();
         let path = config.rpc_path.clone();
         let pending_timeout = Duration::from_secs(config.cache.pending_timeout_secs);
         let addr = config.resolved_bind_addr()?;
@@ -120,14 +126,23 @@ impl RpcProxy {
         // Spawn background task to listen for invalidations from sidecar
         let cache_for_listener = cache.clone();
         let sidecar = sidecar_transport.clone();
+        let backpressure_for_listener = backpressure.clone();
+        let pending_for_listener = pending_origins.clone();
         tokio::spawn(async move {
-            run_invalidation_listener(sidecar, cache_for_listener).await;
+            run_invalidation_listener(
+                sidecar,
+                cache_for_listener,
+                backpressure_for_listener,
+                pending_for_listener,
+            )
+            .await;
         });
 
         // Spawn background task to sweep stale pending entries
         let cache_for_sweep = cache.clone();
+        let pending_for_sweep = pending_origins.clone();
         tokio::spawn(async move {
-            run_pending_sweep(cache_for_sweep, pending_timeout).await;
+            run_pending_sweep(cache_for_sweep, pending_timeout, pending_for_sweep).await;
         });
 
         // Convert ajj router to axum and serve on the configured listener.
@@ -148,7 +163,12 @@ fn build_router() -> Router<ProxyState> {
     Router::new().route("eth_sendRawTransaction", send_raw_transaction)
 }
 
-async fn run_invalidation_listener(sidecar: SharedSidecarTransport, cache: FingerprintCache) {
+async fn run_invalidation_listener(
+    sidecar: SharedSidecarTransport,
+    cache: FingerprintCache,
+    backpressure: OriginBackpressure,
+    pending_origins: Arc<DashMap<B256, OriginMetadata>>,
+) {
     let mut retry_delay = Duration::from_secs(1);
     const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
@@ -167,6 +187,11 @@ async fn run_invalidation_listener(sidecar: SharedSidecarTransport, cache: Finge
                                 &invalidation.fingerprint,
                                 invalidation.assertion.clone(),
                             );
+                            if let Some((_, origin)) =
+                                pending_origins.remove(&invalidation.fingerprint.hash)
+                            {
+                                backpressure.record_failure(&origin);
+                            }
                             metrics::counter!("rpc_proxy_invalidations_total").increment(1);
                         }
                         Err(err) => {
@@ -190,13 +215,20 @@ async fn run_invalidation_listener(sidecar: SharedSidecarTransport, cache: Finge
     }
 }
 
-async fn run_pending_sweep(cache: FingerprintCache, timeout: Duration) {
+async fn run_pending_sweep(
+    cache: FingerprintCache,
+    timeout: Duration,
+    pending_origins: Arc<DashMap<B256, OriginMetadata>>,
+) {
     // Run sweep at half the timeout interval to catch stuck entries promptly
     let sweep_interval = timeout / 2;
 
     loop {
         sleep(sweep_interval).await;
-        cache.sweep_stale_pending(timeout);
+        let stale = cache.sweep_stale_pending(timeout);
+        for hash in stale {
+            pending_origins.remove(&hash);
+        }
     }
 }
 
@@ -210,6 +242,7 @@ pub struct ProxyState {
     pub config: ProxyConfig,
     pub cache: FingerprintCache,
     backpressure: OriginBackpressure,
+    pending_origins: Arc<DashMap<B256, OriginMetadata>>,
     sidecar: SharedSidecarTransport,
     http: Client,
     request_id: Arc<AtomicU64>,
@@ -221,6 +254,7 @@ impl Clone for ProxyState {
             config: self.config.clone(),
             cache: self.cache.clone(),
             backpressure: self.backpressure.clone(),
+            pending_origins: self.pending_origins.clone(),
             sidecar: self.sidecar.clone(),
             http: self.http.clone(),
             request_id: self.request_id.clone(),
@@ -232,11 +266,13 @@ impl ProxyState {
     pub fn new(config: ProxyConfig, sidecar: SharedSidecarTransport) -> Self {
         let cache = FingerprintCache::new(config.cache.clone());
         let backpressure = OriginBackpressure::new(config.backpressure.clone());
+        let pending_origins = Arc::new(DashMap::new());
         let http = Client::new();
         Self {
             config,
             cache,
             backpressure,
+            pending_origins,
             sidecar,
             http,
             request_id: Arc::new(AtomicU64::new(1)),
@@ -257,7 +293,7 @@ impl ProxyState {
         let fingerprint = Fingerprint::from_envelope(&envelope)?;
         let origin = OriginMetadata::from_envelope(&envelope);
 
-        if let Err(throttled) = self.backpressure.check(&origin) {
+        if let Some(throttled) = self.backpressure.check(&origin) {
             if self.config.dry_run {
                 warn!(
                     origin = %throttled.origin,
@@ -276,7 +312,7 @@ impl ProxyState {
 
         match self.cache.observe(&fingerprint) {
             CacheDecision::Forward => {
-                if let Err(err) = self.maybe_short_circuit(&fingerprint).await {
+                if let Err(err) = self.maybe_short_circuit(&fingerprint, &origin).await {
                     if self.config.dry_run {
                         warn!(
                             fingerprint = ?fingerprint.hash,
@@ -290,11 +326,14 @@ impl ProxyState {
                     }
                 }
 
+                self.pending_origins
+                    .insert(fingerprint.hash, origin.clone());
                 let result = self.forward_downstream(&raw_hex).await;
                 match &result {
                     Ok(_) => {
                         // Transaction forwarded successfully, release from pending
                         self.cache.release(&fingerprint);
+                        self.pending_origins.remove(&fingerprint.hash);
                     }
                     Err(err) => {
                         warn!(fingerprint = ?fingerprint.hash, %err, "forwarding failed");
@@ -336,9 +375,14 @@ impl ProxyState {
         }
     }
 
-    async fn maybe_short_circuit(&self, fingerprint: &Fingerprint) -> Result<()> {
+    async fn maybe_short_circuit(
+        &self,
+        fingerprint: &Fingerprint,
+        origin: &OriginMetadata,
+    ) -> Result<()> {
         match self.sidecar.should_forward(fingerprint).await {
             Ok(ShouldForwardVerdict::Deny(assertion)) => {
+                self.backpressure.record_failure(origin);
                 self.cache.record_failure(fingerprint, assertion.clone());
                 let mut assertions = HashSet::new();
                 assertions.insert(assertion);

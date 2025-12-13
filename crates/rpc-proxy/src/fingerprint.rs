@@ -327,7 +327,8 @@ impl FingerprintCache {
 
     /// Sweep stale pending entries that have exceeded the timeout.
     /// Should be called periodically by a background task.
-    pub fn sweep_stale_pending(&self, timeout: Duration) {
+    /// Returns the hashes that were cleared so callers can drop auxiliary metadata.
+    pub fn sweep_stale_pending(&self, timeout: Duration) -> Vec<B256> {
         let now = Instant::now();
         let mut pending = self.pending.write();
         let mut timestamps = self.pending_timestamps.write();
@@ -353,6 +354,8 @@ impl FingerprintCache {
         if !stale.is_empty() {
             metrics::counter!("rpc_proxy_pending_timeout_total").increment(stale.len() as u64);
         }
+
+        stale
     }
 
     /// Get cache statistics for observability.

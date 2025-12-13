@@ -36,9 +36,9 @@ The overarching design principle is *zero collateral damage*. Every control belo
 - Operators can opt individual assertions out of cooldowns or raise thresholds if their UX expects frequent, benign reverts. The proxy records the assertion metadata for transparency but does not block a whole assertion unless data proves it is universally failing.
 
 ### 3. Sender/IP backpressure
-- Per the docs, assertions do not care which EOA called the target, so we combine per-IP, per-auth token, and per-address counters. After `N` invalidations or `M` RPC submissions/minute, the proxy exponentially backs off further sends (HTTP 429) even if fingerprints differ. Honest users rarely trip this because valid assertions will never revert repeatedly.
+- Per the docs, assertions do not care which EOA called the target, so we combine per-IP, per-auth token, and per-address counters. Once a sender trips `N` assertion invalidations over a short period the proxy exponentially backs off further sends (HTTP 429) even if fingerprints differ. Honest users never trip this because valid assertions will never revert repeatedly.
 - Keep counters in a time-decaying structure (token bucket) so legitimate traffic recovers automatically.
-- The first shipped version enforces the bucket on the recovered sender address (derived from the raw transaction). Future iterations will also key on IP/API tokens once the transport surfaces those attributes.
+- The first shipped version enforces the bucket on the recovered sender address (derived from the raw transaction) and only increments it when the sidecar reports an invalidation. Future iterations will also key on IP/API tokens once the transport surfaces those attributes.
 
 ### 4. Gas-price normalization & queue shaping
 - Before forwarding to the sequencer’s mempool, we compute a "priority score" that subtracts a large penalty for fingerprints present in the ban/cooldown maps, regardless of stated `maxFeePerGas`. That ensures the driver does not keep selecting spam solely due to high tips.

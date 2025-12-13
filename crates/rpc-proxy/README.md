@@ -20,7 +20,7 @@ A JSON-RPC proxy that sits in front of the sequencer to prevent assertion-invali
 - **Pending timeout**: Automatic cleanup of stuck pending entries (default: 30s timeout, swept every 15s)
 - **Dry-run mode**: `--dry-run` flag logs rejections but forwards everything for production validation
 - **Integration tests**: Wiremock-based tests for HTTP forwarding, cache behavior, and dry-run mode
-- **Sender backpressure**: Token-bucket throttling per recovered sender with exponential cooldown keeps spammy EOAs from monopolizing the proxy while still allowing normal bursts
+- **Sender backpressure**: Token-bucket throttling per recovered sender activates only after repeated assertion invalidations, keeping spammy EOAs from monopolizing the proxy without touching honest traffic
 
 ### 🚧 TODO (in planned order)
 
@@ -70,8 +70,8 @@ Cache behavior can be tuned via the `cache` field in `ProxyConfig`:
 - `pending_timeout_secs`: Timeout for pending fingerprints in seconds (default: 30s)
 
 Backpressure is configured via the `backpressure` block:
-- `max_tokens`: Burst size per origin before throttling (default: 20)
-- `refill_tokens_per_second`: Sustained rate per origin (default: 5 tx/s)
-- `base_backoff_ms` / `max_backoff_ms`: Exponential cooldown window applied when buckets run dry (default: 1s → 30s max)
+- `max_tokens`: Number of assertion invalidations per origin before throttling (default: 20)
+- `refill_tokens_per_second`: Rate at which the invalidation budget refills (default: 5 / sec)
+- `base_backoff_ms` / `max_backoff_ms`: Exponential cooldown window applied once the invalidation budget hits zero (default: 1s → 30s max)
 - `max_origins`: Maximum unique origins tracked before old entries are evicted (default: 20k)
 - `enabled`: Toggle enforcement without changing other thresholds

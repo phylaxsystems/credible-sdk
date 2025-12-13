@@ -12,7 +12,11 @@ use alloy_consensus::{
     TxEnvelope,
     transaction::SignerRecoverable,
 };
-use alloy_primitives::Address;
+use alloy_primitives::{
+    Address,
+    keccak256,
+};
+use alloy_rlp::Encodable;
 use dashmap::DashMap;
 use serde::{
     Deserialize,
@@ -102,7 +106,16 @@ pub struct OriginMetadata {
 
 impl OriginMetadata {
     pub fn from_envelope(envelope: &TxEnvelope) -> Self {
-        let sender = envelope.recover_signer().ok();
+        let sender = envelope
+            .recover_signer()
+            .ok()
+            .or_else(|| envelope.recover_signer_unchecked().ok())
+            .or_else(|| {
+                let mut buf = Vec::new();
+                envelope.encode(&mut buf);
+                let hash = keccak256(buf);
+                Some(Address::from_slice(&hash.as_slice()[12..]))
+            });
         Self { sender, ip: None }
     }
 
@@ -164,62 +177,63 @@ impl OriginBackpressure {
         }
     }
 
-    pub fn check(&self, metadata: &OriginMetadata) -> Result<(), ThrottledOrigin> {
+    pub fn check(&self, metadata: &OriginMetadata) -> Option<ThrottledOrigin> {
         if !self.config.enabled || metadata.is_empty() {
-            return Ok(());
-        }
-
-        for origin in metadata.keys() {
-            if let Some(throttled) = self.evaluate_origin(origin.clone()) {
-                metrics::counter!(
-                    "rpc_proxy_backpressure_reject_total",
-                    "dimension" => throttled.origin.dimension()
-                )
-                .increment(1);
-                return Err(throttled);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn evaluate_origin(&self, origin: OriginKey) -> Option<ThrottledOrigin> {
-        if self.config.max_tokens == 0 {
             return None;
         }
 
         let now = Instant::now();
-        let decision = {
+        for origin in metadata.keys() {
+            if let Some(entry) = self.buckets.get(&origin) {
+                if let Some(retry_after) = entry.remaining_backoff(now) {
+                    metrics::counter!(
+                        "rpc_proxy_backpressure_reject_total",
+                        "dimension" => origin.dimension()
+                    )
+                    .increment(1);
+                    return Some(ThrottledOrigin {
+                        origin,
+                        retry_after,
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn record_failure(&self, metadata: &OriginMetadata) {
+        if !self.config.enabled || metadata.is_empty() {
+            return;
+        }
+
+        let now = Instant::now();
+        for origin in metadata.keys() {
             let mut entry = self
                 .buckets
                 .entry(origin.clone())
                 .or_insert_with(|| OriginBucket::new(now, self.config.bucket_capacity()));
             entry.refill(now, &self.config);
 
-            if let Some(until) = entry.backoff_until {
-                if until > now {
-                    Some(ThrottledOrigin {
-                        origin,
-                        retry_after: until - now,
-                    })
-                } else {
-                    entry.backoff_until = None;
-                    None
-                }
-            } else if entry.tokens >= 1.0 {
+            if entry.tokens >= 1.0 {
                 entry.tokens -= 1.0;
-                entry.relax();
-                None
-            } else {
-                let retry_after = entry.apply_penalty(now, &self.config);
-                Some(ThrottledOrigin {
-                    origin,
-                    retry_after,
-                })
+                continue;
             }
-        };
+
+            let retry_after = entry.apply_penalty(now, &self.config);
+            metrics::counter!(
+                "rpc_proxy_backpressure_failure_total",
+                "dimension" => origin.dimension()
+            )
+            .increment(1);
+            tracing::warn!(
+                origin = %origin,
+                ?retry_after,
+                "origin exceeded invalidation budget; applying cooldown"
+            );
+        }
+
         self.evict_if_needed();
-        decision
     }
 
     fn evict_if_needed(&self) {
@@ -253,8 +267,15 @@ impl OriginBucket {
     }
 
     fn refill(&mut self, now: Instant, config: &BackpressureConfig) {
-        if self.tokens >= config.bucket_capacity() {
-            self.tokens = config.bucket_capacity();
+        let capacity = config.bucket_capacity();
+        if capacity <= 0.0 {
+            self.tokens = 0.0;
+            self.last_refill = now;
+            return;
+        }
+
+        if self.tokens >= capacity {
+            self.tokens = capacity;
             self.last_refill = now;
             self.penalty_level = 0;
             return;
@@ -267,16 +288,11 @@ impl OriginBucket {
             return;
         }
 
-        self.tokens =
-            (self.tokens + elapsed * config.refill_tokens_per_second).min(config.bucket_capacity());
+        self.tokens = (self.tokens + elapsed * config.refill_tokens_per_second).min(capacity);
         self.last_refill = now;
         if (self.tokens - config.bucket_capacity()).abs() < f64::EPSILON {
             self.penalty_level = 0;
         }
-    }
-
-    fn relax(&mut self) {
-        self.penalty_level = self.penalty_level.saturating_sub(1);
     }
 
     fn apply_penalty(&mut self, now: Instant, config: &BackpressureConfig) -> Duration {
@@ -291,5 +307,39 @@ impl OriginBucket {
         let until = now + delay;
         self.backoff_until = Some(until);
         delay
+    }
+
+    fn remaining_backoff(&self, now: Instant) -> Option<Duration> {
+        self.backoff_until
+            .and_then(|until| if until > now { Some(until - now) } else { None })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::address;
+
+    #[test]
+    fn throttles_after_first_failure_when_no_tokens() {
+        let mut config = BackpressureConfig::default();
+        config.max_tokens = 0;
+        config.base_backoff_ms = 1_000;
+        config.max_backoff_ms = 1_000;
+        let backpressure = OriginBackpressure::new(config);
+        let origin = OriginMetadata {
+            sender: Some(address!("000000000000000000000000000000000000dead")),
+            ip: None,
+        };
+
+        assert!(
+            backpressure.check(&origin).is_none(),
+            "first check should allow traffic"
+        );
+        backpressure.record_failure(&origin);
+        assert!(
+            backpressure.check(&origin).is_some(),
+            "origin should be throttled after failure"
+        );
     }
 }

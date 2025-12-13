@@ -10426,6 +10426,8 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
  "anyhow",
  "async-trait",
  "axum 0.8.7",
