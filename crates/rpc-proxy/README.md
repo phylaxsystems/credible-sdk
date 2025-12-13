@@ -49,6 +49,9 @@ cargo run --bin rpc-proxy -- \
   --sidecar-endpoint http://127.0.0.1:50051 \
   --dry-run
 
+# Run example sidecar server (for testing)
+cargo run --example sidecar_server
+
 # Run tests
 cargo test -p rpc-proxy
 
@@ -58,6 +61,21 @@ cargo test -p rpc-proxy --test integration
 # Run benchmarks
 cargo bench -p rpc-proxy
 ```
+
+## Sidecar Integration
+
+The proxy connects to a sidecar gRPC service that streams invalidation events when transactions fail assertions.
+
+**For sidecar implementers:**
+- See [SIDECAR_API.md](SIDECAR_API.md) for complete API documentation
+- Run `cargo run --example sidecar_server` for a working example
+- Protocol defined in [proto/heuristics.proto](proto/heuristics.proto)
+
+**Quick start:**
+1. Implement the `RpcProxyHeuristics` gRPC service
+2. Stream `Invalidation` messages when transactions fail assertions
+3. Start your sidecar on port 50051 (or configure via `--sidecar-endpoint`)
+4. The proxy will automatically connect and cache denied fingerprints
 
 ## Configuration
 

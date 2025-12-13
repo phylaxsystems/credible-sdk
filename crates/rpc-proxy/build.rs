@@ -6,7 +6,7 @@ fn main() {
 
     tonic_build::configure()
         .build_client(true)
-        .build_server(false)
+        .build_server(true) // Enable server for examples
         .compile_protos(&["proto/heuristics.proto"], &["proto"])
         .expect("compile proto");
 }

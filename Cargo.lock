@@ -10438,6 +10438,7 @@ dependencies = [
  "dashmap",
  "fastrand",
  "futures",
+ "hex",
  "hyper 1.8.1",
  "metrics",
  "moka",
