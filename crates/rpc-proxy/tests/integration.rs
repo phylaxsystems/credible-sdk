@@ -334,6 +334,169 @@ impl SidecarTransport for DenySidecar {
     }
 }
 
+/// Test that different senders have independent backpressure buckets.
+#[tokio::test]
+async fn test_independent_sender_buckets() {
+    let mut backpressure = BackpressureConfig::default();
+    backpressure.max_tokens = 0;
+    backpressure.refill_tokens_per_second = 0.0;
+    backpressure.base_backoff_ms = 5_000;
+    backpressure.max_backoff_ms = 5_000;
+
+    let config = ProxyConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        rpc_path: "/rpc".into(),
+        upstream_http: Url::parse("http://127.0.0.1:8545").unwrap(),
+        sidecar_endpoint: None,
+        cache: CacheConfig::default(),
+        backpressure,
+        dry_run: false,
+    };
+
+    let state = rpc_proxy::server::ProxyState::new(config, Arc::new(DenySidecar::default()));
+
+    // Two different signers
+    let signer1 = PrivateKeySigner::from_slice(&[10u8; 32]).unwrap();
+    let signer2 = PrivateKeySigner::from_slice(&[20u8; 32]).unwrap();
+
+    // Sender 1 gets throttled
+    let tx1 = create_test_tx(
+        &signer1,
+        address!("6666666666666666666666666666666666666666"),
+        U256::from(100),
+        bytes!("11111111"),
+        100_000,
+    );
+    let mut encoded1 = Vec::new();
+    tx1.encode(&mut encoded1);
+    let raw_hex1 = format!("0x{}", hex::encode(&encoded1));
+
+    let first = state
+        .handle_send_raw_transaction(vec![raw_hex1.clone()])
+        .await;
+    assert!(
+        matches!(first, Err(ProxyError::DeniedFingerprint(_, _))),
+        "first send should be denied"
+    );
+
+    // Sender 2 should NOT be throttled (different sender, independent bucket)
+    let tx2 = create_test_tx(
+        &signer2,
+        address!("7777777777777777777777777777777777777777"),
+        U256::from(200),
+        bytes!("22222222"),
+        100_000,
+    );
+    let mut encoded2 = Vec::new();
+    tx2.encode(&mut encoded2);
+    let raw_hex2 = format!("0x{}", hex::encode(&encoded2));
+
+    let second = state
+        .handle_send_raw_transaction(vec![raw_hex2])
+        .await;
+    assert!(
+        matches!(second, Err(ProxyError::DeniedFingerprint(_, _))),
+        "sender2 first attempt should be denied by assertion, not backpressure"
+    );
+}
+
+/// Test that token bucket refills over time.
+#[tokio::test]
+async fn test_token_bucket_refill() {
+    use std::time::Duration;
+
+    let mut backpressure = BackpressureConfig::default();
+    backpressure.max_tokens = 1;
+    backpressure.refill_tokens_per_second = 10.0; // Refill 1 token every 100ms
+    backpressure.base_backoff_ms = 1_000;
+    backpressure.max_backoff_ms = 1_000;
+
+    let config = ProxyConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        rpc_path: "/rpc".into(),
+        upstream_http: Url::parse("http://127.0.0.1:8545").unwrap(),
+        sidecar_endpoint: None,
+        cache: CacheConfig::default(),
+        backpressure,
+        dry_run: false,
+    };
+
+    let state = rpc_proxy::server::ProxyState::new(config, Arc::new(DenySidecar::default()));
+    let signer = PrivateKeySigner::from_slice(&[30u8; 32]).unwrap();
+
+    // First failure consumes the 1 token
+    let tx1 = create_test_tx(
+        &signer,
+        address!("8888888888888888888888888888888888888888"),
+        U256::from(100),
+        bytes!("aaaaaaaa"),
+        100_000,
+    );
+    let mut encoded1 = Vec::new();
+    tx1.encode(&mut encoded1);
+    let raw_hex1 = format!("0x{}", hex::encode(&encoded1));
+
+    let first = state
+        .handle_send_raw_transaction(vec![raw_hex1])
+        .await;
+    assert!(
+        matches!(first, Err(ProxyError::DeniedFingerprint(_, _))),
+        "first should be denied by assertion"
+    );
+
+    // Second failure exhausts tokens and applies backoff penalty
+    let tx2 = create_test_tx(
+        &signer,
+        address!("8888888888888888888888888888888888888888"),
+        U256::from(200),
+        bytes!("bbbbbbbb"),
+        100_000,
+    );
+    let mut encoded2 = Vec::new();
+    tx2.encode(&mut encoded2);
+    let raw_hex2 = format!("0x{}", hex::encode(&encoded2));
+
+    let second = state
+        .handle_send_raw_transaction(vec![raw_hex2.clone()])
+        .await;
+    assert!(
+        matches!(second, Err(ProxyError::DeniedFingerprint(_, _))),
+        "second should still be denied by assertion (penalty applied but not checked yet): {second:?}"
+    );
+
+    // Third attempt should hit backpressure (backoff is active now)
+    let tx3 = create_test_tx(
+        &signer,
+        address!("8888888888888888888888888888888888888888"),
+        U256::from(300),
+        bytes!("cccccccc"),
+        100_000,
+    );
+    let mut encoded3 = Vec::new();
+    tx3.encode(&mut encoded3);
+    let raw_hex3 = format!("0x{}", hex::encode(&encoded3));
+
+    let third = state
+        .handle_send_raw_transaction(vec![raw_hex3])
+        .await;
+    assert!(
+        matches!(third, Err(ProxyError::Backpressure { .. })),
+        "third should hit backpressure: {third:?}"
+    );
+
+    // Wait for backoff to expire (1s)
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+
+    // After backoff expires, should be allowed again (no longer in cooldown)
+    let fourth = state
+        .handle_send_raw_transaction(vec![raw_hex2])
+        .await;
+    assert!(
+        matches!(fourth, Err(ProxyError::DeniedFingerprint(_, _))),
+        "after backoff expires, should get assertion denial again (not backpressure): {fourth:?}"
+    );
+}
+
 fn create_test_tx(
     signer: &PrivateKeySigner,
     to: alloy_primitives::Address,

@@ -10,8 +10,12 @@ use std::{
     time::Duration,
 };
 
+use moka::sync::Cache;
+
 use ajj::Router;
+use alloy_consensus::transaction::SignerRecoverable;
 use alloy_primitives::{
+    Address,
     B256,
     hex,
 };
@@ -246,6 +250,9 @@ pub struct ProxyState {
     sidecar: SharedSidecarTransport,
     http: Client,
     request_id: Arc<AtomicU64>,
+    /// Cache mapping transaction hash to recovered sender address.
+    /// Avoids expensive ECDSA recovery (~500µs) on every request.
+    sender_cache: Cache<B256, Option<Address>>,
 }
 
 impl Clone for ProxyState {
@@ -258,6 +265,7 @@ impl Clone for ProxyState {
             sidecar: self.sidecar.clone(),
             http: self.http.clone(),
             request_id: self.request_id.clone(),
+            sender_cache: self.sender_cache.clone(),
         }
     }
 }
@@ -268,6 +276,14 @@ impl ProxyState {
         let backpressure = OriginBackpressure::new(config.backpressure.clone());
         let pending_origins = Arc::new(DashMap::new());
         let http = Client::new();
+
+        // Sender recovery cache: 5 min TTL, 100k max entries (~8MB memory)
+        // Avoids expensive ECDSA recovery (~500µs) on duplicate/retry submissions
+        let sender_cache = Cache::builder()
+            .max_capacity(100_000)
+            .time_to_live(Duration::from_secs(300))
+            .build();
+
         Self {
             config,
             cache,
@@ -276,6 +292,7 @@ impl ProxyState {
             sidecar,
             http,
             request_id: Arc::new(AtomicU64::new(1)),
+            sender_cache,
         }
     }
 
@@ -291,7 +308,34 @@ impl ProxyState {
         let raw_bytes = decode_raw_tx(&raw_hex)?;
         let envelope = decode_envelope(&raw_bytes)?;
         let fingerprint = Fingerprint::from_envelope(&envelope)?;
-        let origin = OriginMetadata::from_envelope(&envelope);
+
+        // Use cached sender recovery to avoid expensive ECDSA operations (~500µs).
+        // Cache key is the transaction hash, which is cheap to compute.
+        let tx_hash = *envelope.tx_hash();
+        let sender = self
+            .sender_cache
+            .get_with(tx_hash, || {
+                envelope
+                    .recover_signer()
+                    .ok()
+                    .or_else(|| envelope.recover_signer_unchecked().ok())
+            });
+
+        // Track sender recovery failures for observability.
+        // Note: If sender recovery fails, backpressure will not apply to this transaction
+        // since OriginMetadata.is_empty() returns true. This is acceptable because:
+        // 1. Invalid signatures are rare in production (wallets sign correctly)
+        // 2. The sequencer will reject invalid transactions anyway
+        // 3. We avoid false-positive rate limiting of legitimate edge cases
+        if sender.is_none() {
+            metrics::counter!("rpc_proxy_sender_recovery_failure_total").increment(1);
+            warn!(fingerprint = ?fingerprint.hash, "sender recovery failed; backpressure bypassed");
+        }
+
+        let origin = OriginMetadata {
+            sender,
+            ip: None,
+        };
 
         if let Some(throttled) = self.backpressure.check(&origin) {
             if self.config.dry_run {
@@ -329,17 +373,14 @@ impl ProxyState {
                 self.pending_origins
                     .insert(fingerprint.hash, origin.clone());
                 let result = self.forward_downstream(&raw_hex).await;
-                match &result {
-                    Ok(_) => {
-                        // Transaction forwarded successfully, release from pending
-                        self.cache.release(&fingerprint);
-                        self.pending_origins.remove(&fingerprint.hash);
-                    }
-                    Err(err) => {
-                        warn!(fingerprint = ?fingerprint.hash, %err, "forwarding failed");
-                        // Keep in pending - will be cleared when sidecar reports back
-                        // or by the pending-state timeout.
-                    }
+
+                // Keep in pending regardless of forward result.
+                // Cleanup happens via:
+                // 1. Invalidation listener on sidecar failure (records backpressure)
+                // 2. Pending timeout sweep on success/timeout (no invalidation = valid)
+                // Do NOT release early - we need to wait for sidecar verdict.
+                if let Err(err) = &result {
+                    warn!(fingerprint = ?fingerprint.hash, %err, "forwarding failed");
                 }
                 result
             }
