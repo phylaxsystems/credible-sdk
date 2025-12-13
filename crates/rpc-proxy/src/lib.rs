@@ -15,6 +15,7 @@
 pub mod backpressure;
 pub mod config;
 pub mod error;
+pub mod fast_reject;
 pub mod fingerprint;
 pub mod server;
 pub mod sidecar;

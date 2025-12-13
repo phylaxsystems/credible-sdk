@@ -49,6 +49,7 @@ use crate::{
         ProxyError,
         Result,
     },
+    fast_reject::{FastReject, FastRejectConfig},
     fingerprint::{
         CacheDecision,
         Fingerprint,
@@ -134,12 +135,16 @@ impl RpcProxy {
         let sidecar = sidecar_transport.clone();
         let backpressure_for_listener = backpressure.clone();
         let pending_for_listener = pending_origins.clone();
+        let pending_tx_hashes_for_listener = state.pending_tx_hashes.clone();
+        let fast_reject_for_listener = state.fast_reject.clone();
         tokio::spawn(async move {
             run_invalidation_listener(
                 sidecar,
                 cache_for_listener,
                 backpressure_for_listener,
                 pending_for_listener,
+                pending_tx_hashes_for_listener,
+                fast_reject_for_listener,
             )
             .await;
         });
@@ -147,8 +152,15 @@ impl RpcProxy {
         // Spawn background task to sweep stale pending entries
         let cache_for_sweep = cache.clone();
         let pending_for_sweep = pending_origins.clone();
+        let pending_tx_hashes_for_sweep = state.pending_tx_hashes.clone();
         tokio::spawn(async move {
-            run_pending_sweep(cache_for_sweep, pending_timeout, pending_for_sweep).await;
+            run_pending_sweep(
+                cache_for_sweep,
+                pending_timeout,
+                pending_for_sweep,
+                pending_tx_hashes_for_sweep,
+            )
+            .await;
         });
 
         // Convert ajj router to axum and serve on the configured listener.
@@ -187,6 +199,8 @@ async fn run_invalidation_listener(
     cache: FingerprintCache,
     backpressure: OriginBackpressure,
     pending_origins: Arc<DashMap<B256, OriginMetadata>>,
+    pending_tx_hashes: Arc<DashMap<B256, B256>>,
+    fast_reject: Arc<FastReject>,
 ) {
     let mut retry_delay = Duration::from_secs(1);
     const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
@@ -206,6 +220,14 @@ async fn run_invalidation_listener(
                                 &invalidation.fingerprint,
                                 invalidation.assertion.clone(),
                             );
+
+                            // Record the tx_hash in fast-reject cache for future fast rejection
+                            if let Some((_, tx_hash)) =
+                                pending_tx_hashes.remove(&invalidation.fingerprint.hash)
+                            {
+                                fast_reject.recent_failures.record_failure(tx_hash);
+                            }
+
                             if let Some((_, origin)) =
                                 pending_origins.remove(&invalidation.fingerprint.hash)
                             {
@@ -238,6 +260,7 @@ async fn run_pending_sweep(
     cache: FingerprintCache,
     timeout: Duration,
     pending_origins: Arc<DashMap<B256, OriginMetadata>>,
+    pending_tx_hashes: Arc<DashMap<B256, B256>>,
 ) {
     // Run sweep at half the timeout interval to catch stuck entries promptly
     let sweep_interval = timeout / 2;
@@ -247,6 +270,7 @@ async fn run_pending_sweep(
         let stale = cache.sweep_stale_pending(timeout);
         for hash in stale {
             pending_origins.remove(&hash);
+            pending_tx_hashes.remove(&hash);
         }
     }
 }
@@ -262,16 +286,22 @@ pub struct ProxyState {
     pub cache: FingerprintCache,
     backpressure: OriginBackpressure,
     pending_origins: Arc<DashMap<B256, OriginMetadata>>,
+    /// Maps fingerprint hash → tx hash for pending transactions.
+    /// Used to record tx_hash in fast_reject cache when invalidation received.
+    pending_tx_hashes: Arc<DashMap<B256, B256>>,
     sidecar: SharedSidecarTransport,
     http: Client,
     request_id: Arc<AtomicU64>,
     /// Cache mapping transaction hash to recovered sender address.
-    /// Avoids expensive ECDSA recovery (~500µs) on every request.
+    /// Avoids expensive ECDSA recovery (~115µs) on every request.
     sender_cache: Cache<B256, Option<Address>>,
     /// Queue shaping: limit one outstanding RPC call per fingerprint.
     /// Prevents parallel spam of the same fingerprint from monopolizing
     /// downstream resources.
     in_flight_fingerprints: Arc<DashMap<B256, Arc<Semaphore>>>,
+    /// Fast-reject mechanisms: checks BEFORE expensive ECDSA recovery.
+    /// Prevents re-processing of recently-failed transactions.
+    fast_reject: Arc<FastReject>,
 }
 
 impl Clone for ProxyState {
@@ -281,11 +311,13 @@ impl Clone for ProxyState {
             cache: self.cache.clone(),
             backpressure: self.backpressure.clone(),
             pending_origins: self.pending_origins.clone(),
+            pending_tx_hashes: self.pending_tx_hashes.clone(),
             sidecar: self.sidecar.clone(),
             http: self.http.clone(),
             request_id: self.request_id.clone(),
             sender_cache: self.sender_cache.clone(),
             in_flight_fingerprints: self.in_flight_fingerprints.clone(),
+            fast_reject: self.fast_reject.clone(),
         }
     }
 }
@@ -295,25 +327,31 @@ impl ProxyState {
         let cache = FingerprintCache::new(config.cache.clone());
         let backpressure = OriginBackpressure::new(config.backpressure.clone());
         let pending_origins = Arc::new(DashMap::new());
+        let pending_tx_hashes = Arc::new(DashMap::new());
         let http = Client::new();
 
         // Sender recovery cache: 5 min TTL, 100k max entries (~8MB memory)
-        // Avoids expensive ECDSA recovery (~500µs) on duplicate/retry submissions
+        // Avoids expensive ECDSA recovery (~115µs) on duplicate/retry submissions
         let sender_cache = Cache::builder()
             .max_capacity(100_000)
             .time_to_live(Duration::from_secs(300))
             .build();
+
+        // Fast-reject mechanisms: check BEFORE expensive ECDSA
+        let fast_reject = Arc::new(FastReject::new(FastRejectConfig::default()));
 
         Self {
             config,
             cache,
             backpressure,
             pending_origins,
+            pending_tx_hashes,
             sidecar,
             http,
             request_id: Arc::new(AtomicU64::new(1)),
             sender_cache,
             in_flight_fingerprints: Arc::new(DashMap::new()),
+            fast_reject,
         }
     }
 
@@ -330,9 +368,26 @@ impl ProxyState {
         let envelope = decode_envelope(&raw_bytes)?;
         let fingerprint = Fingerprint::from_envelope(&envelope)?;
 
-        // Use cached sender recovery to avoid expensive ECDSA operations (~500µs).
-        // Cache key is the transaction hash, which is cheap to compute.
+        // Fast reject: Check if this tx_hash recently failed BEFORE expensive ECDSA.
+        // This saves ~115µs per re-submission of a failed transaction.
         let tx_hash = *envelope.tx_hash();
+        if let Some(age) = self.fast_reject.recent_failures.check(&tx_hash) {
+            metrics::counter!("rpc_proxy_fast_reject_recent_failure_total").increment(1);
+            if self.config.dry_run {
+                warn!(
+                    ?tx_hash,
+                    ?age,
+                    "DRY-RUN: would fast-reject recently-failed tx but forwarding anyway"
+                );
+            } else {
+                // Use empty assertions set - we don't know which assertions failed,
+                // just that this tx_hash recently failed
+                return Err(ProxyError::DeniedFingerprint(fingerprint.hash, HashSet::new()));
+            }
+        }
+
+        // Use cached sender recovery to avoid expensive ECDSA operations (~115µs).
+        // Cache key is the transaction hash, which is cheap to compute.
         let sender = self
             .sender_cache
             .get_with(tx_hash, || {
@@ -393,6 +448,10 @@ impl ProxyState {
 
                 self.pending_origins
                     .insert(fingerprint.hash, origin.clone());
+
+                // Track tx_hash for fast-reject on invalidation
+                self.pending_tx_hashes
+                    .insert(fingerprint.hash, tx_hash);
 
                 // Queue shaping: limit one outstanding RPC per fingerprint.
                 // Acquire a permit from the semaphore for this fingerprint.

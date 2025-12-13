@@ -16,6 +16,10 @@ path = "src/lib.rs"
 name = "rpc-proxy"
 path = "src/bin/rpc-proxy.rs"
 
+[[bin]]
+name = "profile_hot_path"
+path = "benches/profile_hot_path.rs"
+
 [dependencies]
 ajj = { version = "0.4.1", features = ["axum"] }
 anyhow = { workspace = true }
@@ -44,6 +48,9 @@ tonic = { version = "0.12", features = ["transport"] }
 prost = "0.13"
 prost-types = "0.13"
 tower = { version = "0.5", features = ["limit", "timeout"] }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
+fastrand = "2.3"
 
 [build-dependencies]
 tonic-build = "0.12"

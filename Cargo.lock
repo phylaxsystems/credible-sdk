@@ -10436,6 +10436,7 @@ dependencies = [
  "clap",
  "criterion 0.5.1",
  "dashmap",
+ "fastrand",
  "futures",
  "hyper 1.8.1",
  "metrics",
