@@ -280,7 +280,7 @@ mod tests {
                 },
                 transaction_id: 0,
                 storage,
-                status: AccountStatus::SelfDestructed | AccountStatus::Touched,
+                status: AccountStatus::Touched,
             },
         );
 
@@ -337,7 +337,7 @@ mod tests {
                 },
                 transaction_id: 0,
                 storage: EvmStorage::default(),
-                status: AccountStatus::SelfDestructed | AccountStatus::Touched,
+                status: AccountStatus::Touched,
             },
         );
         version_db.commit(destroy);
