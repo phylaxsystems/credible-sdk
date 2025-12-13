@@ -24,7 +24,9 @@ A JSON-RPC proxy that sits in front of the sequencer to prevent assertion-invali
 - **Sender recovery cache**: Moka-based cache mapping tx hash → sender address to avoid expensive ECDSA recovery (~500µs) on duplicate/retry submissions
 - **Performance-optimized hot path**: Sub-microsecond backpressure checks, cache lookups via lock-free DashMap/moka operations
 - **Assertion-level cooldowns**: When many distinct fingerprints fail for the same assertion (default: 10), activate a per-assertion cooldown (default: 5 minutes) while still allowing trickle traffic (1 per block) to detect fixes
-- **Comprehensive test coverage**: 8 integration tests covering forwarding, caching, dry-run mode, backpressure token buckets, independent sender isolation, timeout behavior, and assertion cooldowns
+- **Queue shaping**: Limit one outstanding RPC call per fingerprint to prevent parallel spam of the same payload from monopolizing downstream resources
+- **Connection-level rate limiting**: Global concurrency limit (default: 1000 concurrent requests) prevents resource exhaustion during floods
+- **Comprehensive test coverage**: 9 integration tests covering forwarding, caching, dry-run mode, backpressure token buckets, independent sender isolation, timeout behavior, assertion cooldowns, and queue shaping
 
 ### 🚧 TODO (in planned order)
 
@@ -65,6 +67,7 @@ The proxy accepts configuration via CLI flags or environment variables:
 - `--upstream`: Upstream sequencer HTTP endpoint (default: `http://127.0.0.1:8545`)
 - `--sidecar-endpoint`: Optional gRPC endpoint for sidecar communication
 - `--dry-run`: Enable dry-run mode (logs rejections but forwards all transactions)
+- `max_concurrent_requests`: Global concurrency limit for the proxy (default: 1000, configured via `ProxyConfig`)
 
 Cache behavior can be tuned via the `cache` field in `ProxyConfig`:
 - `max_denied_entries`: Maximum fingerprints in denied cache (default: 10,000)

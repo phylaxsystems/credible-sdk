@@ -38,6 +38,14 @@ pub struct ProxyConfig {
     /// Useful for validating cache hit rates in production without breaking traffic.
     #[serde(default)]
     pub dry_run: bool,
+    /// Maximum number of concurrent requests the proxy will handle globally.
+    /// Prevents resource exhaustion during floods.
+    #[serde(default = "default_max_concurrent_requests")]
+    pub max_concurrent_requests: usize,
+}
+
+fn default_max_concurrent_requests() -> usize {
+    1000
 }
 
 impl Default for ProxyConfig {
@@ -50,6 +58,7 @@ impl Default for ProxyConfig {
             cache: CacheConfig::default(),
             backpressure: BackpressureConfig::default(),
             dry_run: false,
+            max_concurrent_requests: default_max_concurrent_requests(),
         }
     }
 }

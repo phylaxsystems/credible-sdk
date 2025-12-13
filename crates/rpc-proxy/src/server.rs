@@ -11,6 +11,7 @@ use std::{
 };
 
 use moka::sync::Cache;
+use tokio::sync::Semaphore;
 
 use ajj::Router;
 use alloy_consensus::transaction::SignerRecoverable;
@@ -32,6 +33,7 @@ use tokio::{
     signal,
     time::sleep,
 };
+use tower::limit::ConcurrencyLimitLayer;
 use tracing::{
     info,
     warn,
@@ -151,8 +153,21 @@ impl RpcProxy {
 
         // Convert ajj router to axum and serve on the configured listener.
         let router: AxumRouter<_> = router.into_axum(&path).with_state(state);
+
+        // Apply tower middleware for transport fairness (HEURISTICS.md §6):
+        // Global concurrency limit prevents resource exhaustion during floods.
+        // Note: TimeoutLayer not applied here because it requires error handling;
+        // instead, we rely on the underlying HTTP server's timeouts and the
+        // upstream's timeout enforcement.
+        let router = router.layer(ConcurrencyLimitLayer::new(config.max_concurrent_requests));
+
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        info!(%addr, %path, "credible rpc proxy listening");
+        info!(
+            %addr,
+            %path,
+            max_concurrent = config.max_concurrent_requests,
+            "credible rpc proxy listening"
+        );
 
         axum::serve(listener, router.into_make_service())
             .with_graceful_shutdown(shutdown_signal())
@@ -253,6 +268,10 @@ pub struct ProxyState {
     /// Cache mapping transaction hash to recovered sender address.
     /// Avoids expensive ECDSA recovery (~500µs) on every request.
     sender_cache: Cache<B256, Option<Address>>,
+    /// Queue shaping: limit one outstanding RPC call per fingerprint.
+    /// Prevents parallel spam of the same fingerprint from monopolizing
+    /// downstream resources.
+    in_flight_fingerprints: Arc<DashMap<B256, Arc<Semaphore>>>,
 }
 
 impl Clone for ProxyState {
@@ -266,6 +285,7 @@ impl Clone for ProxyState {
             http: self.http.clone(),
             request_id: self.request_id.clone(),
             sender_cache: self.sender_cache.clone(),
+            in_flight_fingerprints: self.in_flight_fingerprints.clone(),
         }
     }
 }
@@ -293,6 +313,7 @@ impl ProxyState {
             http,
             request_id: Arc::new(AtomicU64::new(1)),
             sender_cache,
+            in_flight_fingerprints: Arc::new(DashMap::new()),
         }
     }
 
@@ -372,7 +393,26 @@ impl ProxyState {
 
                 self.pending_origins
                     .insert(fingerprint.hash, origin.clone());
+
+                // Queue shaping: limit one outstanding RPC per fingerprint.
+                // Acquire a permit from the semaphore for this fingerprint.
+                // If another request with the same fingerprint is in-flight,
+                // this will block until it completes.
+                let semaphore = self
+                    .in_flight_fingerprints
+                    .entry(fingerprint.hash)
+                    .or_insert_with(|| Arc::new(Semaphore::new(1)))
+                    .clone();
+
+                let _permit = semaphore.acquire().await.map_err(|_| {
+                    ProxyError::Internal("semaphore closed unexpectedly".into())
+                })?;
+
+                metrics::counter!("rpc_proxy_queue_wait_total").increment(1);
+
                 let result = self.forward_downstream(&raw_hex).await;
+
+                // Permit is automatically released when _permit drops
 
                 // Keep in pending regardless of forward result.
                 // Cleanup happens via:

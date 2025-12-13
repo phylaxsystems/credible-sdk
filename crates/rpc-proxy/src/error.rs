@@ -44,4 +44,6 @@ pub enum ProxyError {
     },
     #[error("upstream RPC error: {0}")]
     Upstream(String),
+    #[error("internal proxy error: {0}")]
+    Internal(String),
 }

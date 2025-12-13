@@ -76,6 +76,7 @@ async fn test_forward_to_upstream() {
         cache: CacheConfig::default(),
         backpressure: BackpressureConfig::default(),
         dry_run: false,
+        ..Default::default()
     };
 
     // Test forwarding by directly calling the internal state to isolate heuristics
@@ -209,6 +210,7 @@ async fn test_dry_run_mode() {
         cache: CacheConfig::default(),
         backpressure: BackpressureConfig::default(),
         dry_run: true, // Enable dry-run
+        ..Default::default()
     };
 
     let state =
@@ -266,6 +268,7 @@ async fn test_sender_backpressure() {
         cache: CacheConfig::default(),
         backpressure,
         dry_run: false,
+        ..Default::default()
     };
 
     let state = rpc_proxy::server::ProxyState::new(config, Arc::new(DenySidecar::default()));
@@ -352,6 +355,7 @@ async fn test_independent_sender_buckets() {
         cache: CacheConfig::default(),
         backpressure,
         dry_run: false,
+        ..Default::default()
     };
 
     let state = rpc_proxy::server::ProxyState::new(config, Arc::new(DenySidecar::default()));
@@ -420,6 +424,7 @@ async fn test_token_bucket_refill() {
         cache: CacheConfig::default(),
         backpressure,
         dry_run: false,
+        ..Default::default()
     };
 
     let state = rpc_proxy::server::ProxyState::new(config, Arc::new(DenySidecar::default()));
@@ -516,6 +521,7 @@ async fn test_assertion_cooldown() {
         cache: cache_config,
         backpressure: BackpressureConfig::default(),
         dry_run: false,
+        ..Default::default()
     };
 
     let state = rpc_proxy::server::ProxyState::new(config, Arc::new(DenySidecar::default()));
@@ -586,6 +592,71 @@ async fn test_assertion_cooldown() {
         matches!(result5, Err(ProxyError::DeniedFingerprint(_, _))),
         "tx 5 should be denied during cooldown: {:?}",
         result5
+    );
+}
+
+/// Test queue shaping doesn't break normal operation.
+/// Queue shaping serializes submissions with the same fingerprint that arrive
+/// in the narrow window before the first one marks the fingerprint as pending.
+#[tokio::test]
+async fn test_queue_shaping() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": "0xabcdef"
+        })))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = ProxyConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        rpc_path: "/rpc".into(),
+        upstream_http: Url::parse(&mock_server.uri()).unwrap(),
+        sidecar_endpoint: None,
+        cache: CacheConfig::default(),
+        backpressure: BackpressureConfig::default(),
+        dry_run: false,
+        ..Default::default()
+    };
+
+    let state =
+        rpc_proxy::server::ProxyState::new(config, Arc::new(NoopSidecarTransport::default()));
+    let signer = PrivateKeySigner::from_slice(&[50u8; 32]).unwrap();
+
+    // Submit a transaction - should succeed
+    let tx = create_test_tx(
+        &signer,
+        address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        U256::from(100),
+        bytes!("cafebabe"),
+        100_000,
+    );
+    let mut encoded = Vec::new();
+    tx.encode(&mut encoded);
+    let raw_hex = format!("0x{}", hex::encode(&encoded));
+
+    let result = state
+        .handle_send_raw_transaction(vec![raw_hex.clone()])
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "queue shaping should not break normal operation: {:?}",
+        result
+    );
+
+    // Second submission of same fingerprint should be rejected as pending
+    // (the first one is still in pending state)
+    let result2 = state.handle_send_raw_transaction(vec![raw_hex]).await;
+    assert!(
+        matches!(result2, Err(ProxyError::PendingFingerprint(_))),
+        "duplicate fingerprint should be rejected as pending: {:?}",
+        result2
     );
 }
 

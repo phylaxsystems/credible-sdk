@@ -55,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
         cache: CacheConfig::default(),
         backpressure: BackpressureConfig::default(),
         dry_run: cli.dry_run,
+        ..Default::default()
     }
     .validate()?;
 
