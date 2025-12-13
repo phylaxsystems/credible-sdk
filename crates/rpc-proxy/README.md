@@ -23,15 +23,13 @@ A JSON-RPC proxy that sits in front of the sequencer to prevent assertion-invali
 
 ### 🚧 TODO (in planned order)
 
-1. **Axum/HTTP serving integration**
-   - Complete the ajj → axum integration. Current TODO at server.rs:115 blocks actual HTTP traffic serving.
-2. **Sender/IP backpressure**
+1. **Sender/IP backpressure**
    - Add per-origin rate limiting (IP/API token/address) with token bucket and exponential backoff.
-3. **Assertion-level cooldowns + priority scoring**
+2. **Assertion-level cooldowns + priority scoring**
    - Track assertion-level failure rates and apply global throttles when multiple fingerprints fail; adjust gas-price priority to penalize banned fingerprints.
-4. **Benchmark harness**
+3. **Benchmark harness**
    - Add Criterion/contender suites to measure normalization + cache latency; run Samply for wall-clock profiling once full pipeline is implemented.
-5. **Persistence & observability**
+4. **Persistence & observability**
    - Optional sled-backed cache to survive restarts, Prometheus/Grafana dashboards for cache stats, and documentation of benchmark results.
 
 ## Usage

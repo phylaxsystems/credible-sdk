@@ -12,6 +12,7 @@ use std::{
 
 use ajj::Router;
 use alloy_primitives::hex;
+use axum::Router as AxumRouter;
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{
@@ -19,7 +20,10 @@ use serde::{
     Serialize,
 };
 use serde_json::Value;
-use tokio::time::sleep;
+use tokio::{
+    signal,
+    time::sleep,
+};
 use tracing::{
     info,
     warn,
@@ -73,11 +77,13 @@ impl RpcProxyBuilder {
             Arc::new(NoopSidecarTransport::default())
         };
         let state = ProxyState::new(config.clone(), sidecar.clone());
-        let router = build_router(state.clone());
+        let cache = state.cache.clone();
+        let router = build_router();
         Ok(RpcProxy {
             config,
             router,
-            cache: state.cache.clone(),
+            state,
+            cache,
             sidecar_transport: sidecar,
         })
     }
@@ -86,55 +92,55 @@ impl RpcProxyBuilder {
 pub struct RpcProxy {
     config: ProxyConfig,
     router: Router<ProxyState>,
+    state: ProxyState,
     cache: FingerprintCache,
     sidecar_transport: SharedSidecarTransport,
 }
 
 impl RpcProxy {
     pub async fn serve(self) -> Result<()> {
-        let addr = self.config.resolved_bind_addr()?;
-        let path = self.config.rpc_path.clone();
-        let pending_timeout = Duration::from_secs(self.config.cache.pending_timeout_secs);
+        let RpcProxy {
+            config,
+            router,
+            state,
+            cache,
+            sidecar_transport,
+        } = self;
+
+        let path = config.rpc_path.clone();
+        let pending_timeout = Duration::from_secs(config.cache.pending_timeout_secs);
+        let addr = config.resolved_bind_addr()?;
         info!(%addr, %path, "credible rpc proxy starting");
 
         // Spawn background task to listen for invalidations from sidecar
-        let cache = self.cache.clone();
-        let sidecar = self.sidecar_transport.clone();
+        let cache_for_listener = cache.clone();
+        let sidecar = sidecar_transport.clone();
         tokio::spawn(async move {
-            run_invalidation_listener(sidecar, cache).await;
+            run_invalidation_listener(sidecar, cache_for_listener).await;
         });
 
         // Spawn background task to sweep stale pending entries
-        let cache_for_sweep = self.cache.clone();
+        let cache_for_sweep = cache.clone();
         tokio::spawn(async move {
             run_pending_sweep(cache_for_sweep, pending_timeout).await;
         });
 
-        // Convert ajj router to axum and serve
-        // TODO: Complete HTTP serving integration.
-        // The ajj Router type system doesn't directly convert to axum's serve expectations.
-        // Options:
-        // 1. Use ajj's built-in HTTP server if available
-        // 2. Manually wrap the router in a tower Service
-        // 3. Use a different HTTP framework (hyper directly)
-        //
-        // For now, spawn a task that would serve if the integration were complete.
-        let _app = self.router.into_axum(&path);
-        let _listener = tokio::net::TcpListener::bind(addr).await?;
-        info!(%addr, %path, "credible rpc proxy would be listening (HTTP TODO)");
+        // Convert ajj router to axum and serve on the configured listener.
+        let router: AxumRouter<_> = router.into_axum(&path).with_state(state);
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        info!(%addr, %path, "credible rpc proxy listening");
 
-        // Keep the process running
-        tokio::signal::ctrl_c().await?;
-        info!("shutdown signal received");
+        axum::serve(listener, router.into_make_service())
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+        info!("credible rpc proxy shutdown complete");
 
         Ok(())
     }
 }
 
-fn build_router(state: ProxyState) -> Router<ProxyState> {
-    Router::new()
-        .route("eth_sendRawTransaction", send_raw_transaction)
-        .with_state(state)
+fn build_router() -> Router<ProxyState> {
+    Router::new().route("eth_sendRawTransaction", send_raw_transaction)
 }
 
 async fn run_invalidation_listener(sidecar: SharedSidecarTransport, cache: FingerprintCache) {
@@ -186,6 +192,12 @@ async fn run_pending_sweep(cache: FingerprintCache, timeout: Duration) {
     loop {
         sleep(sweep_interval).await;
         cache.sweep_stale_pending(timeout);
+    }
+}
+
+async fn shutdown_signal() {
+    if let Err(err) = signal::ctrl_c().await {
+        warn!(%err, "failed to listen for shutdown signal");
     }
 }
 
