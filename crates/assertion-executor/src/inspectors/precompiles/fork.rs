@@ -32,6 +32,7 @@ use revm::context::ContextTr;
 const PERSISTENT_WRITE: u64 = 20;
 const SET_FORK: u64 = 20;
 const MEM_WRITE_COST: u64 = 3;
+const EVM_WORD_BYTES: u64 = 32;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ForkError {
@@ -74,6 +75,11 @@ where
 
     let journal = context.journal_mut();
 
+    // No-op fork can be amortized in the base cost.
+    if journal.database.is_active_fork(ForkId::PreTx) {
+        return Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left));
+    }
+
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
         return Err(ForkError::OutOfGas(rax));
     }
@@ -104,6 +110,11 @@ where
     }
 
     let journal = context.journal_mut();
+
+    // No-op fork can be amortized in the base cost.
+    if journal.database.is_active_fork(ForkId::PostTx) {
+        return Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left));
+    }
 
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
         return Err(ForkError::OutOfGas(rax));
@@ -152,12 +163,22 @@ where
     let journal = context.journal_mut();
 
     let fork_id = ForkId::PreCall(call_id.try_into().map_err(ForkError::IdExceedsUsize)?);
+
+    // No-op fork can be amortized in the base cost.
+    if journal.database.is_active_fork(fork_id) {
+        return Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left));
+    }
     
     // if the fork does not exist, price memory for creating it
     if !journal.database.fork_exists(&fork_id) {
-        let journal_size = journal.database.post_tx_journal_size() as u64;
-        let jouranl_words = journal_size.div_ceil(32);
-        if let Some(rax) = deduct_gas_and_check(&mut gas_left, jouranl_words * MEM_WRITE_COST, gas_limit) {
+        let bytes_written = journal
+            .database
+            .estimated_create_fork_bytes(fork_id, &journal.inner, call_tracer)
+            .map_err(ForkError::MultiForkPreCallDbError)?;
+        let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
+        if let Some(rax) =
+            deduct_gas_and_check(&mut gas_left, words_written * MEM_WRITE_COST, gas_limit)
+        {
             return Err(ForkError::OutOfGas(rax));
         }
     }
@@ -214,11 +235,21 @@ where
 
     let fork_id = ForkId::PostCall(call_id.try_into().map_err(ForkError::IdExceedsUsize)?);
 
+    // No-op fork can be amortized in the base cost.
+    if journal.database.is_active_fork(fork_id) {
+        return Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left));
+    }
+
     // if the fork does not exist, price memory for creating it
     if !journal.database.fork_exists(&fork_id) {
-        let journal_size = journal.database.post_tx_journal_size() as u64;
-        let jouranl_words = journal_size.div_ceil(32);
-        if let Some(rax) = deduct_gas_and_check(&mut gas_left, jouranl_words * MEM_WRITE_COST, gas_limit) {
+        let bytes_written = journal
+            .database
+            .estimated_create_fork_bytes(fork_id, &journal.inner, call_tracer)
+            .map_err(ForkError::MultiForkPostCallDbError)?;
+        let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
+        if let Some(rax) =
+            deduct_gas_and_check(&mut gas_left, words_written * MEM_WRITE_COST, gas_limit)
+        {
             return Err(ForkError::OutOfGas(rax));
         }
     }
@@ -250,6 +281,7 @@ mod test {
         },
         primitives::{
             AccountInfo,
+            Bytes,
             SpecId,
         },
         test_utils::{
@@ -273,6 +305,8 @@ mod test {
         interpreter::Host,
         primitives::KECCAK_EMPTY,
     };
+
+    const TEST_GAS: u64 = 1_000_000;
 
     fn create_test_context_with_mock_db(
         pre_tx_storage: Vec<(Address, U256, U256)>,
@@ -328,9 +362,8 @@ mod test {
         });
 
         // Test fork_pre_state function
-        let result = fork_pre_tx(&mut context, &CallTracer::default());
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Bytes::default());
+        let outcome = fork_pre_tx(&mut context, &CallTracer::default(), TEST_GAS).unwrap();
+        assert_eq!(outcome.bytes(), &Bytes::default());
 
         context.journal_mut().load_account(address).unwrap();
 
@@ -358,9 +391,9 @@ mod test {
         });
 
         // Test fork_post_state function
-        let result = fork_post_tx(&mut context, &CallTracer::default());
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Bytes::default());
+        let outcome = fork_post_tx(&mut context, &CallTracer::default(), TEST_GAS).unwrap();
+        assert_eq!(outcome.bytes(), &Bytes::default());
+        assert_eq!(outcome.gas(), BASE_COST);
 
         // Verify that we're now on the post-tx fork
         let storage_value = context.journal_mut().sload(address, slot).unwrap().data;
@@ -386,20 +419,20 @@ mod test {
         });
 
         // Start with pre-tx state
-        let result = fork_pre_tx(&mut context, &CallTracer::default());
-        assert!(result.is_ok());
+        let result = fork_pre_tx(&mut context, &CallTracer::default(), TEST_GAS);
+        assert!(result.is_ok(), "{result:?}");
         let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, pre_value);
 
         // Switch to post-tx state
-        let result = fork_post_tx(&mut context, &CallTracer::default());
-        assert!(result.is_ok());
+        let result = fork_post_tx(&mut context, &CallTracer::default(), TEST_GAS);
+        assert!(result.is_ok(), "{result:?}");
         let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, post_value);
 
         // Switch back to pre-tx state
-        let result = fork_pre_tx(&mut context, &CallTracer::default());
-        assert!(result.is_ok());
+        let result = fork_pre_tx(&mut context, &CallTracer::default(), TEST_GAS);
+        assert!(result.is_ok(), "{result:?}");
         let storage_value = context.db().storage_ref(address, slot).unwrap();
         assert_eq!(storage_value, pre_value);
     }
@@ -430,8 +463,8 @@ mod test {
         });
 
         // Test pre-tx state
-        let result = fork_pre_tx(&mut context, &CallTracer::default());
-        assert!(result.is_ok());
+        let result = fork_pre_tx(&mut context, &CallTracer::default(), TEST_GAS);
+        assert!(result.is_ok(), "{result:?}");
 
         let storage_value1 = context.db().storage_ref(address1, slot1).unwrap();
         let storage_value2 = context.db().storage_ref(address2, slot2).unwrap();
@@ -439,8 +472,8 @@ mod test {
         assert_eq!(storage_value2, U256::from(20));
 
         // Test post-tx state
-        let result = fork_post_tx(&mut context, &CallTracer::default());
-        assert!(result.is_ok());
+        let result = fork_post_tx(&mut context, &CallTracer::default(), TEST_GAS);
+        assert!(result.is_ok(), "{result:?}");
 
         let storage_value1 = context.db().storage_ref(address1, slot1).unwrap();
         let storage_value2 = context.db().storage_ref(address2, slot2).unwrap();
@@ -483,5 +516,55 @@ mod test {
             "{:#?}",
             result_and_state.result
         );
+    }
+
+    #[test]
+    fn test_fork_post_call_gas_includes_create_fork_write_cost() {
+        use crate::inspectors::sol_primitives::PhEvm::forkPostCallCall;
+        use revm::context::journaled_state::JournalCheckpoint;
+
+        let address = random_address();
+        let slot = random_u256();
+        let post_value = U256::from(123);
+
+        let (mut multi_fork_db, test_journal) =
+            create_test_context_with_mock_db(vec![], vec![(address, slot, post_value)]);
+
+        // Prepare a tracer with a valid call id=0 and a post-call checkpoint that keeps the full
+        // post-tx journal (checkpoint at the end).
+        let mut call_tracer = CallTracer::default();
+        call_tracer.insert_trace(address);
+        call_tracer.pre_call_checkpoints = vec![JournalCheckpoint {
+            log_i: 0,
+            journal_i: 0,
+        }];
+        call_tracer.post_call_checkpoints = vec![Some(JournalCheckpoint {
+            log_i: test_journal.logs.len(),
+            journal_i: test_journal.journal.len(),
+        })];
+
+        let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        context.modify_journal(|journal| {
+            journal.inner = test_journal;
+        });
+
+        let calldata: Bytes = forkPostCallCall { id: U256::ZERO }.abi_encode().into();
+
+        let expected_bytes = {
+            let journal = context.journal_mut();
+            journal
+                .database
+                .estimated_create_fork_bytes(ForkId::PostCall(0), &journal.inner, &call_tracer)
+                .unwrap()
+        };
+        let expected_words = expected_bytes.div_ceil(EVM_WORD_BYTES);
+        let expected_gas = BASE_COST + PERSISTENT_WRITE + SET_FORK + expected_words * MEM_WRITE_COST;
+
+        let outcome = fork_post_call(&mut context, &call_tracer, &calldata, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), expected_gas);
+
+        // No-op on the already-active fork should be base-only.
+        let outcome = fork_post_call(&mut context, &call_tracer, &calldata, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST);
     }
 }
