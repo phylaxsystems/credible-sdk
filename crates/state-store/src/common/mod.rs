@@ -8,6 +8,7 @@ use alloy::primitives::{
     U256,
     keccak256,
 };
+use chrono::Utc;
 use error::{
     StateError,
     StateResult,
@@ -79,6 +80,9 @@ pub mod keys {
 
     /// Key for recording the configured namespace rotation length
     pub const STATE_DUMP_INDICES: &str = "state_dump_indices";
+
+    /// Key for storing the write lock for a namespace
+    pub const WRITE_LOCK: &str = "write_lock";
 }
 
 /// Configuration for the circular buffer of states in Redis.
@@ -100,6 +104,71 @@ impl CircularBufferConfig {
 impl Default for CircularBufferConfig {
     fn default() -> Self {
         Self { buffer_size: 3 }
+    }
+}
+
+/// Configuration for chunked write operations.
+#[derive(Clone, Debug)]
+pub struct ChunkedWriteConfig {
+    /// Number of account operations per chunk (default: 10000)
+    pub chunk_size: usize,
+    /// Timeout in seconds for stale lock detection (default: 60)
+    pub stale_lock_timeout_secs: i64,
+}
+
+impl Default for ChunkedWriteConfig {
+    fn default() -> Self {
+        Self {
+            chunk_size: 10000,
+            stale_lock_timeout_secs: 60,
+        }
+    }
+}
+
+impl ChunkedWriteConfig {
+    pub fn new(chunk_size: usize, stale_lock_timeout_secs: i64) -> Self {
+        Self {
+            chunk_size: chunk_size.max(1),
+            stale_lock_timeout_secs,
+        }
+    }
+}
+
+/// Namespace write lock data structure.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NamespaceLock {
+    /// Block number being written
+    pub target_block: u64,
+    /// Unix timestamp when lock was acquired
+    pub started_at: i64,
+    /// Unique identifier for the writer process
+    pub writer_id: String,
+}
+
+impl NamespaceLock {
+    /// Create a new lock for a write operation.
+    pub fn new(target_block: u64, writer_id: String) -> Self {
+        Self {
+            target_block,
+            started_at: Utc::now().timestamp(),
+            writer_id,
+        }
+    }
+
+    /// Check if this lock is stale based on the timeout.
+    pub fn is_stale(&self, timeout_secs: i64) -> bool {
+        let now = Utc::now().timestamp();
+        now - self.started_at > timeout_secs
+    }
+
+    /// Serialize lock to JSON string.
+    pub fn to_json(&self) -> StateResult<String> {
+        serde_json::to_string(self).map_err(StateError::SerializeLock)
+    }
+
+    /// Deserialize lock from JSON string.
+    pub fn from_json(json: &str) -> StateResult<Self> {
+        serde_json::from_str(json).map_err(StateError::DeserializeLock)
     }
 }
 
@@ -214,6 +283,11 @@ pub fn get_state_dump_indices_key(base_namespace: &str) -> String {
     )
 }
 
+/// Get the key for namespace write lock.
+pub fn get_write_lock_key(namespace: &str) -> String {
+    format!("{}{}{}", namespace, keys::SEPARATOR, keys::WRITE_LOCK)
+}
+
 /// Read the latest block number from top-level metadata (O(1) operation).
 /// Falls back to scanning all namespaces if metadata is not available.
 pub fn read_latest_block_number<C>(conn: &mut C, base_namespace: &str) -> StateResult<Option<u64>>
@@ -292,6 +366,17 @@ where
     value
         .map(|v| v.parse::<u64>().map_err(|e| StateError::ParseInt(v, e)))
         .transpose()
+}
+
+/// Read the write lock for a namespace.
+pub fn read_namespace_lock<C>(conn: &mut C, namespace: &str) -> StateResult<Option<NamespaceLock>>
+where
+    C: redis::ConnectionLike,
+{
+    let lock_key = get_write_lock_key(namespace);
+    let value: Option<String> = redis::cmd("GET").arg(&lock_key).query(conn)?;
+
+    value.map(|v| NamespaceLock::from_json(&v)).transpose()
 }
 
 /// Account info without storage slots.
@@ -526,6 +611,7 @@ mod tests {
         );
         assert_eq!(get_block_hash_key(base, 100), "test:block_hash:100");
         assert_eq!(get_state_root_key(base, 100), "test:state_root:100");
+        assert_eq!(get_write_lock_key(namespace), "test:0:write_lock");
     }
 
     #[test]
@@ -570,7 +656,6 @@ mod tests {
     #[test]
     fn test_metadata_key_generation() {
         let base = "chain";
-
         assert_eq!(
             get_latest_block_metadata_key(base),
             "chain:meta:latest_block"
@@ -630,5 +715,16 @@ mod tests {
         assert_eq!(update.accounts[0].balance, U256::from(200));
         assert_eq!(update.accounts[0].nonce, 2);
         assert_eq!(update.accounts[0].storage.len(), 2);
+    }
+
+    #[test]
+    fn test_namespace_lock_serialization() {
+        let lock = NamespaceLock::new(100, "writer-123".to_string());
+
+        let json = lock.to_json().unwrap();
+        let parsed = NamespaceLock::from_json(&json).unwrap();
+
+        assert_eq!(parsed.target_block, 100);
+        assert_eq!(parsed.writer_id, "writer-123");
     }
 }
