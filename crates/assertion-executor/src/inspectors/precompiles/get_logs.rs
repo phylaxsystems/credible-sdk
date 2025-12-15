@@ -9,10 +9,7 @@ use crate::{
 };
 
 use alloy_sol_types::SolType;
-use std::{
-    convert::Infallible,
-    mem::size_of_val,
-};
+use std::convert::Infallible;
 
 use super::BASE_COST;
 
@@ -24,16 +21,17 @@ pub enum GetLogsError {
 
 /// Get the log outputs.
 pub fn get_logs(context: &PhEvmContext, gas: u64) -> Result<PhevmOutcome, Infallible> {
+    const RESULT_ENCODING: u64 = 15;
     const LOG_COST_PER_WORD: u64 = 8;
     const ABI_ENCODE_COST: u64 = 6;
 
     let gas_limit = gas;
     let mut gas_left = gas;
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST + RESULT_ENCODING, gas_limit) {
         return Ok(rax);
     }
 
-    let mut sol_log_size: usize = 0;
+    let mut vec_size_bytes: usize = 0;
     let sol_logs: Vec<PhEvm::Log> = context
         .logs_and_traces
         .tx_logs
@@ -44,13 +42,15 @@ pub fn get_logs(context: &PhEvmContext, gas: u64) -> Result<PhevmOutcome, Infall
                 data: log.data.data.clone(),
                 emitter: log.address,
             };
-            sol_log_size += size_of_val(&log);
+            vec_size_bytes += 20; // emitter
+            vec_size_bytes += log.topics.len() * 32; // topics (bytes32)
+            vec_size_bytes += log.data.len(); // data (bytes)
 
             log
         })
         .collect();
 
-    let sol_log_words: u64 = (sol_log_size as u64).div_ceil(32);
+    let sol_log_words: u64 = (vec_size_bytes as u64).div_ceil(32);
     let sol_log_cost = sol_log_words * LOG_COST_PER_WORD;
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, sol_log_cost, gas_limit) {
         return Ok(rax);
@@ -59,8 +59,7 @@ pub fn get_logs(context: &PhEvmContext, gas: u64) -> Result<PhevmOutcome, Infall
     let encoded: Bytes =
         <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_encode(&sol_logs).into();
 
-    let encoded_size = size_of_val(encoded.0.iter().as_slice());
-    let encoded_words: u64 = (encoded_size as u64).div_ceil(32);
+    let encoded_words: u64 = (encoded.len() as u64).div_ceil(32);
     let encoded_cost = encoded_words * ABI_ENCODE_COST;
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, encoded_cost, gas_limit) {
         return Ok(rax);
@@ -95,6 +94,36 @@ mod test {
         LogData,
     };
 
+    fn expected_gas_for_logs(logs: &[Log]) -> u64 {
+        const RESULT_ENCODING: u64 = 15;
+        const LOG_COST_PER_WORD: u64 = 8;
+        const ABI_ENCODE_COST: u64 = 6;
+
+        let mut vec_size_bytes: u64 = 0;
+        let sol_logs: Vec<PhEvm::Log> = logs
+            .iter()
+            .map(|log| {
+                let sol_log = PhEvm::Log {
+                    topics: log.topics().to_vec(),
+                    data: log.data.data.clone(),
+                    emitter: log.address,
+                };
+                vec_size_bytes += 20;
+                vec_size_bytes += (sol_log.topics.len() as u64) * 32;
+                vec_size_bytes += sol_log.data.len() as u64;
+                sol_log
+            })
+            .collect();
+
+        let encoded: Bytes =
+            <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_encode(&sol_logs).into();
+
+        BASE_COST
+            + RESULT_ENCODING
+            + LOG_COST_PER_WORD * vec_size_bytes.div_ceil(32)
+            + ABI_ENCODE_COST * (encoded.len() as u64).div_ceil(32)
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     fn with_logs_context<F, R>(logs: Vec<Log>, f: F) -> R
     where
@@ -126,6 +155,52 @@ mod test {
         assert!(decoded.is_ok());
         let decoded_array = decoded.unwrap();
         assert_eq!(decoded_array.len(), 0);
+    }
+
+    #[test]
+    fn test_get_logs_gas_empty() {
+        let logs = vec![];
+        let expected_gas = expected_gas_for_logs(&logs);
+
+        let outcome = with_logs_context(logs, |context| get_logs(context, u64::MAX)).unwrap();
+
+        assert_eq!(outcome.gas(), expected_gas);
+    }
+
+    #[test]
+    fn test_get_logs_gas_single_log_rounding() {
+        let address = random_address();
+        let topic = random_bytes32();
+        let data = random_bytes::<1>();
+
+        let log = Log {
+            address,
+            data: LogData::new(vec![topic], Bytes::from(data)).unwrap(),
+        };
+
+        let expected_gas = expected_gas_for_logs(std::slice::from_ref(&log));
+        let outcome = with_logs_context(vec![log], |context| get_logs(context, u64::MAX)).unwrap();
+
+        assert_eq!(outcome.gas(), expected_gas);
+    }
+
+    #[test]
+    fn test_get_logs_gas_out_of_gas_returns_all_gas() {
+        let address = random_address();
+        let topic = random_bytes32();
+        let data = random_bytes::<33>();
+
+        let log = Log {
+            address,
+            data: LogData::new(vec![topic], Bytes::from(data)).unwrap(),
+        };
+
+        let expected_gas = expected_gas_for_logs(std::slice::from_ref(&log));
+        let gas_limit = expected_gas - 1;
+
+        let outcome = with_logs_context(vec![log], |context| get_logs(context, gas_limit)).unwrap();
+        assert_eq!(outcome.gas(), gas_limit);
+        assert!(outcome.bytes().is_empty());
     }
 
     #[test]
