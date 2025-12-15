@@ -78,6 +78,12 @@ impl DualProtocolMockServer {
         Ok(server)
     }
 
+    /// Generate a mock parent beacon block root for a given block number
+    fn mock_parent_beacon_block_root(block_number: u64) -> String {
+        // Generate a deterministic beacon root based on the block number
+        format!("0x{:064x}", block_number.wrapping_mul(0xbeac_0000) + 0xbeef)
+    }
+
     /// Send a new head with a specific block number
     /// This does NOT increment the current block number
     pub fn send_new_head_with_block_number(&self, new_block: u64) {
@@ -100,6 +106,7 @@ impl DualProtocolMockServer {
             "extraData": "0x",
             "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
             "nonce": "0x0000000000000000",
+            "parentBeaconBlockRoot": Self::mock_parent_beacon_block_root(new_block),
 
             // Block body fields (required by Alloy)
             "totalDifficulty": "0x0",
@@ -151,6 +158,7 @@ impl DualProtocolMockServer {
             "extraData": "0x",
             "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
             "nonce": "0x0000000000000000",
+            "parentBeaconBlockRoot": Self::mock_parent_beacon_block_root(new_block),
 
             // Block body fields (required by Alloy)
             "totalDifficulty": "0x0",
@@ -258,14 +266,17 @@ impl DualProtocolMockServer {
                 "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
                 "logsBloom": format!("0x{:0512}", 0),
                 "difficulty": "0x0",
-                "number": "0x0",
                 "timestamp": "0x0",
                 "extraData": "0x",
                 "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
                 "nonce": "0x0000000000000000",
                 "gasLimit": "0x1c9c380",
                 "gasUsed": "0x0",
-                "transactions": []
+                "transactions": [],
+                "totalDifficulty": "0x0",
+                "baseFeePerGas": "0x7",
+                "size": "0x21c",
+                "uncles": []
             }
         });
         self.responses
@@ -309,6 +320,7 @@ impl DualProtocolMockServer {
                 "extraData": "0x",
                 "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
                 "nonce": "0x0000000000000000",
+                "parentBeaconBlockRoot": Self::mock_parent_beacon_block_root(current_block),
                 "totalDifficulty": "0x0",
                 "baseFeePerGas": "0x7",
                 "size": "0x21c",
@@ -592,13 +604,14 @@ impl DualProtocolMockServer {
                             "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
                             "logsBloom": format!("0x{:0512}", 0),
                             "difficulty": "0x0",
-                            "number": "0x0",
-                            "timestamp": "0x0",
+                            "number": "0x1",
+                            "timestamp": "0xc",
                             "extraData": "0x",
                             "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
                             "nonce": "0x0000000000000000",
                             "gasLimit": "0x1c9c380",
                             "gasUsed": "0x0",
+                            "parentBeaconBlockRoot": Self::mock_parent_beacon_block_root(1),
                             "totalDifficulty": "0x0",
                             "baseFeePerGas": "0x7",
                             "size": "0x21c",

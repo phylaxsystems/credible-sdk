@@ -188,7 +188,7 @@ impl SystemCalls {
         let block_number = config.block_number;
 
         // Calculate storage slot using ring buffer modulo
-        // EIP-2935: slot = (block.number - 1) % HISTORY_SERVE_WINDOW
+        // EIP-2935: slot = block.number % HISTORY_SERVE_WINDOW
         let slot = U256::from(block_number % U256::from(HISTORY_SERVE_WINDOW));
 
         debug!(

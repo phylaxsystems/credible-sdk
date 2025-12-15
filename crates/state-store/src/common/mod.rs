@@ -143,7 +143,7 @@ pub fn get_account_key(namespace: &str, address_hash: &AddressHash) -> String {
 }
 
 /// Returns the pattern for all accounts in a namespace.
-pub fn get_all_accounts_patter(namespace: &str) -> String {
+pub fn get_all_accounts_pattern(namespace: &str) -> String {
     format!(
         "{namespace}{}{}{}*",
         keys::SEPARATOR,
@@ -151,6 +151,7 @@ pub fn get_all_accounts_patter(namespace: &str) -> String {
         keys::SEPARATOR,
     )
 }
+
 /// Get the key for storage data in a namespace.
 pub fn get_storage_key(namespace: &str, address_hash: &AddressHash) -> String {
     format!(
@@ -326,6 +327,44 @@ pub struct BlockStateUpdate {
     pub block_hash: B256,
     pub state_root: B256,
     pub accounts: Vec<AccountState>,
+}
+
+impl BlockStateUpdate {
+    /// Create a new block state update.
+    pub fn new(block_number: u64, block_hash: B256, state_root: B256) -> Self {
+        Self {
+            block_number,
+            block_hash,
+            state_root,
+            accounts: Vec::new(),
+        }
+    }
+
+    /// Merge an account state into the update.
+    /// If the account already exists, merge the storage slots and update fields.
+    /// If the account doesn't exist, add it.
+    pub fn merge_account_state(&mut self, state: AccountState) {
+        if let Some(existing) = self
+            .accounts
+            .iter_mut()
+            .find(|a| a.address_hash == state.address_hash)
+        {
+            // Merge storage slots
+            for (slot, value) in state.storage {
+                existing.storage.insert(slot, value);
+            }
+            // Update other fields
+            existing.balance = state.balance;
+            existing.nonce = state.nonce;
+            existing.code_hash = state.code_hash;
+            if state.code.is_some() {
+                existing.code = state.code;
+            }
+            existing.deleted = state.deleted;
+        } else {
+            self.accounts.push(state);
+        }
+    }
 }
 
 /// Block metadata.
@@ -536,5 +575,60 @@ mod tests {
             get_latest_block_metadata_key(base),
             "chain:meta:latest_block"
         );
+    }
+
+    #[test]
+    fn test_merge_account_state_new_account() {
+        let mut update = BlockStateUpdate::new(1, B256::ZERO, B256::ZERO);
+        let state = AccountState {
+            address_hash: AddressHash::new([0x42u8; 20]),
+            balance: U256::from(100),
+            nonce: 1,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: HashMap::new(),
+            deleted: false,
+        };
+        update.merge_account_state(state);
+        assert_eq!(update.accounts.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_account_state_existing_account() {
+        let mut update = BlockStateUpdate::new(1, B256::ZERO, B256::ZERO);
+        let address_hash = AddressHash::new([0x42u8; 20]);
+
+        let mut storage1 = HashMap::new();
+        storage1.insert(U256::from(1), U256::from(100));
+
+        let state1 = AccountState {
+            address_hash: address_hash.clone(),
+            balance: U256::from(100),
+            nonce: 1,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: storage1,
+            deleted: false,
+        };
+        update.merge_account_state(state1);
+
+        let mut storage2 = HashMap::new();
+        storage2.insert(U256::from(2), U256::from(200));
+
+        let state2 = AccountState {
+            address_hash,
+            balance: U256::from(200),
+            nonce: 2,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: storage2,
+            deleted: false,
+        };
+        update.merge_account_state(state2);
+
+        assert_eq!(update.accounts.len(), 1);
+        assert_eq!(update.accounts[0].balance, U256::from(200));
+        assert_eq!(update.accounts[0].nonce, 2);
+        assert_eq!(update.accounts[0].storage.len(), 2);
     }
 }

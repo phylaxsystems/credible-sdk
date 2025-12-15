@@ -17,7 +17,7 @@ use crate::{
             StateResult,
         },
         get_account_key,
-        get_all_accounts_patter,
+        get_all_accounts_pattern,
         get_block_hash_key,
         get_block_key,
         get_code_key,
@@ -558,7 +558,7 @@ where
     verify_namespace_block(namespace_block, block_number)?;
 
     // Scan for all account keys in this namespace
-    let pattern = get_all_accounts_patter(&namespace);
+    let pattern = get_all_accounts_pattern(&namespace);
     let mut cursor = 0u64;
     let mut hashes = Vec::new();
 

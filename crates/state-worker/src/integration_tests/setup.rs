@@ -9,6 +9,7 @@ use crate::{
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use state_store::{
     CircularBufferConfig,
+    StateReader,
     StateWriter,
 };
 use std::time::Duration;
@@ -80,9 +81,16 @@ impl LocalInstance {
 
         let redis_url = format!("redis://{host}:{port}");
 
-        let redis = StateWriter::new(
+        let writer = StateWriter::new(
             &redis_url,
-            Self::NAMESPACE.to_string(),
+            Self::NAMESPACE,
+            CircularBufferConfig::new(3).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("Failed to initialize redis client: {e}"))?;
+
+        let reader = StateReader::new(
+            &redis_url,
+            Self::NAMESPACE,
             CircularBufferConfig::new(3).map_err(|e| e.to_string())?,
         )
         .map_err(|e| format!("Failed to initialize redis client: {e}"))?;
@@ -94,7 +102,7 @@ impl LocalInstance {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, redis, genesis_state);
+        let mut worker = StateWorker::new(provider, trace_provider, writer, reader, genesis_state);
         let (shutdown_tx, _) = broadcast::channel(1);
         let handle_worker = tokio::spawn(async move {
             if let Err(e) = worker.run(Some(0), shutdown_tx.subscribe()).await {

@@ -3,13 +3,16 @@
 //! The worker bootstraps from the last persisted block, catches up to head via
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
 //! is traced with the pre-state tracer and written into Redis.
-
 use crate::{
     critical,
     genesis::GenesisState,
     state::{
         BlockStateUpdateBuilder,
         TraceProvider,
+    },
+    system_calls::{
+        self,
+        SystemCallConfig,
     },
 };
 use alloy::rpc::types::Header;
@@ -23,7 +26,11 @@ use anyhow::{
     anyhow,
 };
 use futures::StreamExt;
-use state_store::StateWriter;
+use state_store::{
+    StateReader,
+    StateWriter,
+    common::BlockStateUpdate,
+};
 use std::{
     sync::Arc,
     time::Duration,
@@ -44,7 +51,8 @@ const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 pub struct StateWorker {
     provider: Arc<RootProvider>,
     trace_provider: Box<dyn TraceProvider>,
-    redis: StateWriter,
+    writer: StateWriter,
+    reader: StateReader,
     genesis_state: Option<GenesisState>,
 }
 
@@ -53,13 +61,15 @@ impl StateWorker {
     pub fn new(
         provider: Arc<RootProvider>,
         trace_provider: Box<dyn TraceProvider>,
-        redis: StateWriter,
+        writer: StateWriter,
+        reader: StateReader,
         genesis_state: Option<GenesisState>,
     ) -> Self {
         Self {
             provider,
             trace_provider,
-            redis,
+            writer,
+            reader,
             genesis_state,
         }
     }
@@ -93,7 +103,6 @@ impl StateWorker {
                 }
                 Err(err) => {
                     warn!(error = %err, "block subscription ended, retrying");
-
                     tokio::select! {
                         _ = shutdown_rx.recv() => {
                             info!("Shutdown signal received during retry sleep");
@@ -114,7 +123,7 @@ impl StateWorker {
         }
 
         let current = self
-            .redis
+            .writer
             .latest_block_number()
             .context("failed to read current block from redis")?;
 
@@ -129,6 +138,7 @@ impl StateWorker {
     ) -> Result<bool> {
         loop {
             let head = self.provider.get_block_number().await?;
+
             if *next_block > head {
                 return Ok(false);
             }
@@ -206,7 +216,7 @@ impl StateWorker {
             return self.process_genesis_block().await;
         }
 
-        let update = match self.trace_provider.fetch_block_state(block_number).await {
+        let mut update = match self.trace_provider.fetch_block_state(block_number).await {
             Ok(update) => update,
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to trace block");
@@ -214,7 +224,10 @@ impl StateWorker {
             }
         };
 
-        match self.redis.commit_block(update) {
+        // Apply system call state changes (EIP-2935 & EIP-4788)
+        self.apply_system_calls(&mut update, block_number).await?;
+
+        match self.writer.commit_block(update) {
             Ok(()) => (),
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to persist block");
@@ -226,6 +239,57 @@ impl StateWorker {
         Ok(())
     }
 
+    /// Apply EIP-2935 and EIP-4788 system call state changes
+    async fn apply_system_calls(
+        &self,
+        update: &mut BlockStateUpdate,
+        block_number: u64,
+    ) -> Result<()> {
+        // Fetch block header for system call data
+        let block = self
+            .provider
+            .get_block_by_number(block_number.into())
+            .await?
+            .context(format!("block {block_number} not found"))?;
+
+        // Get parent block hash (current block's parent_hash field)
+        let parent_block_hash = if block_number > 0 {
+            Some(block.header.parent_hash)
+        } else {
+            None
+        };
+
+        // Get parent beacon block root from block header (EIP-4788)
+        let parent_beacon_block_root = block.header.parent_beacon_block_root;
+
+        let config = SystemCallConfig {
+            block_number,
+            timestamp: block.header.timestamp,
+            parent_block_hash,
+            parent_beacon_block_root,
+        };
+
+        // Pass the reader to fetch existing account state
+        match system_calls::compute_system_call_states(&config, Some(&self.reader)) {
+            Ok(states) => {
+                for state in states {
+                    update.merge_account_state(state);
+                }
+                debug!(block_number, "applied system call state changes");
+                Ok(())
+            }
+            Err(err) => {
+                // Log but don't fail
+                warn!(
+                    block_number,
+                    error = %err,
+                    "failed to compute system call states, traces may already include them"
+                );
+                Ok(())
+            }
+        }
+    }
+
     /// Process block 0 using the configured genesis state
     async fn process_genesis_block(&mut self) -> Result<()> {
         let Some(genesis) = self.genesis_state.take() else {
@@ -234,7 +298,7 @@ impl StateWorker {
         };
 
         let already_exists = self
-            .redis
+            .writer
             .latest_block_number()
             .context("failed to check if genesis already exists")?
             .is_some();
@@ -245,6 +309,7 @@ impl StateWorker {
         }
 
         let accounts = genesis.into_accounts();
+
         if accounts.is_empty() {
             warn!("genesis file contained no accounts; skipping hydration");
             return Ok(());
@@ -258,6 +323,7 @@ impl StateWorker {
             .context("genesis block not found on chain")?;
 
         info!("hydrating genesis state from genesis file");
+
         let update = BlockStateUpdateBuilder::from_accounts(
             0,
             block.header.hash,
@@ -265,7 +331,7 @@ impl StateWorker {
             accounts,
         );
 
-        match self.redis.commit_block(update) {
+        match self.writer.commit_block(update) {
             Ok(()) => (),
             Err(err) => {
                 critical!(error = ?err, block_number = 0, "failed to persist genesis block");
