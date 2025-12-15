@@ -215,34 +215,45 @@ impl<'a> PhEvmInspector<'a> {
                     .map_err(PrecompileError::UnexpectedError)?
             }
             PhEvm::getAllCallInputsCall::SELECTOR => {
-                let inputs = PhEvm::getAllCallInputsCall::abi_decode(&inputs.input.bytes(context))
-                    .map_err(|err| {
-                        PrecompileError::GetCallInputsError(
-                            GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
-                        )
-                    })?;
-                get_call_inputs(&self.context, inputs.target, inputs.selector, None)
-                    .map(PhevmOutcome::from)
-                    .map_err(PrecompileError::GetCallInputsError)?
-            }
-            PhEvm::getCallInputsCall::SELECTOR => {
-                let inputs = PhEvm::getCallInputsCall::abi_decode(&inputs.input.bytes(context))
-                    .map_err(|err| {
-                        PrecompileError::GetCallInputsError(
-                            GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
-                        )
-                    })?;
+                let call_inputs = PhEvm::getAllCallInputsCall::abi_decode(
+                    &inputs.input.bytes(context),
+                )
+                .map_err(|err| {
+                    PrecompileError::GetCallInputsError(
+                        GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
+                    )
+                })?;
                 get_call_inputs(
                     &self.context,
-                    inputs.target,
-                    inputs.selector,
+                    call_inputs.target,
+                    call_inputs.selector,
+                    None,
+                    inputs.gas_limit,
+                )
+                .map(PhevmOutcome::from)
+                .map_err(PrecompileError::GetCallInputsError)?
+            }
+            PhEvm::getCallInputsCall::SELECTOR => {
+                let call_inputs = PhEvm::getCallInputsCall::abi_decode(
+                    &inputs.input.bytes(context),
+                )
+                .map_err(|err| {
+                    PrecompileError::GetCallInputsError(
+                        GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
+                    )
+                })?;
+                get_call_inputs(
+                    &self.context,
+                    call_inputs.target,
+                    call_inputs.selector,
                     Some(CallScheme::Call),
+                    inputs.gas_limit,
                 )
                 .map(PhevmOutcome::from)
                 .map_err(PrecompileError::GetCallInputsError)?
             }
             PhEvm::getStaticCallInputsCall::SELECTOR => {
-                let inputs =
+                let call_inputs =
                     PhEvm::getStaticCallInputsCall::abi_decode(&inputs.input.bytes(context))
                         .map_err(|err| {
                             PrecompileError::GetCallInputsError(
@@ -251,15 +262,16 @@ impl<'a> PhEvmInspector<'a> {
                         })?;
                 get_call_inputs(
                     &self.context,
-                    inputs.target,
-                    inputs.selector,
+                    call_inputs.target,
+                    call_inputs.selector,
                     Some(CallScheme::StaticCall),
+                    inputs.gas_limit,
                 )
                 .map(PhevmOutcome::from)
                 .map_err(PrecompileError::GetCallInputsError)?
             }
             PhEvm::getDelegateCallInputsCall::SELECTOR => {
-                let inputs =
+                let call_inputs =
                     PhEvm::getDelegateCallInputsCall::abi_decode(&inputs.input.bytes(context))
                         .map_err(|err| {
                             PrecompileError::GetCallInputsError(
@@ -268,25 +280,28 @@ impl<'a> PhEvmInspector<'a> {
                         })?;
                 get_call_inputs(
                     &self.context,
-                    inputs.target,
-                    inputs.selector,
+                    call_inputs.target,
+                    call_inputs.selector,
                     Some(CallScheme::DelegateCall),
+                    inputs.gas_limit,
                 )
                 .map(PhevmOutcome::from)
                 .map_err(PrecompileError::GetCallInputsError)?
             }
             PhEvm::getCallCodeInputsCall::SELECTOR => {
-                let inputs = PhEvm::getCallCodeInputsCall::abi_decode(&inputs.input.bytes(context))
-                    .map_err(|err| {
-                        PrecompileError::GetCallInputsError(
-                            GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
-                        )
-                    })?;
+                let call_inputs =
+                    PhEvm::getCallCodeInputsCall::abi_decode(&inputs.input.bytes(context))
+                        .map_err(|err| {
+                            PrecompileError::GetCallInputsError(
+                                GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
+                            )
+                        })?;
                 get_call_inputs(
                     &self.context,
-                    inputs.target,
-                    inputs.selector,
+                    call_inputs.target,
+                    call_inputs.selector,
                     Some(CallScheme::CallCode),
+                    inputs.gas_limit,
                 )
                 .map(PhevmOutcome::from)
                 .map_err(PrecompileError::GetCallInputsError)?

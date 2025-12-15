@@ -1,6 +1,11 @@
 use crate::{
     inspectors::{
+        PhevmOutcome,
         phevm::PhEvmContext,
+        precompiles::{
+            BASE_COST,
+            deduct_gas_and_check,
+        },
         sol_primitives::PhEvm::CallInputs as PhEvmCallInputs,
         tracer::CallInputsWithId,
     },
@@ -24,6 +29,8 @@ pub enum GetCallInputsError {
         "Expected Bytes in CallInput input. This should be restricted to only CallInput::Bytes by the call tracer."
     )]
     ExpectedBytes,
+    #[error("Out of gas")]
+    OutOfGas(PhevmOutcome),
 }
 
 /// Returns the call inputs of a transaction.
@@ -32,7 +39,17 @@ pub fn get_call_inputs(
     target: Address,
     selector: FixedBytes<4>,
     scheme_filter: Option<CallScheme>,
-) -> Result<Bytes, GetCallInputsError> {
+    gas: u64,
+) -> Result<PhevmOutcome, GetCallInputsError> {
+    const BASE_CALL_COST: u64 = 20;
+    const DYNAMIC_CALL_COST: u64 = 3;
+
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(GetCallInputsError::OutOfGas(rax));
+    }
+
     let mut call_inputs = ph_context
         .logs_and_traces
         .call_traces
@@ -44,6 +61,10 @@ pub fn get_call_inputs(
 
     let mut sol_call_inputs = Vec::new();
     for CallInputsWithId { call_input, id } in call_inputs {
+        if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_CALL_COST, gas_limit) {
+            return Err(GetCallInputsError::OutOfGas(rax));
+        }
+
         let original_input_data = match &call_input.input {
             revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
             revm::interpreter::CallInput::SharedBuffer(_) => {
@@ -68,8 +89,13 @@ pub fn get_call_inputs(
 
     let encoded: Bytes =
         <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_encode(&sol_call_inputs).into();
+    let encoded_words: u64 = (encoded.len() as u64).div_ceil(32);
+    let encoded_cost = encoded_words * DYNAMIC_CALL_COST;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, encoded_cost, gas_limit) {
+        return Err(GetCallInputsError::OutOfGas(rax));
+    }
 
-    Ok(encoded)
+    Ok(PhevmOutcome::new(encoded, gas_limit - gas_left))
 }
 
 #[cfg(test)]
