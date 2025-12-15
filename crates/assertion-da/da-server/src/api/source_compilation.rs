@@ -13,8 +13,10 @@ use futures_util::stream::StreamExt;
 use metrics;
 use regex::Regex;
 use serde_json::Value;
-use std::env;
-use std::sync::Arc;
+use std::{
+    env,
+    sync::Arc,
+};
 use tempfile::TempDir;
 use tokio::time::{
     Duration,

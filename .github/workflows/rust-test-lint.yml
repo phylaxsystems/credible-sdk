@@ -27,7 +27,7 @@ jobs:
     name: Rust Base
     uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@fix/runner
     with:
-      runner-group: 'big-bois-aarch64'
+      runner-group: 'big-bois-amd64'
       rust-channel: 'nightly'
       require-lockfile: true
       install-foundry: true
