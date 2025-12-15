@@ -1,5 +1,3 @@
-use crate::inspectors::precompiles::deduct_gas_and_check;
-use crate::inspectors::precompiles::BASE_COST;
 use crate::{
     db::{
         DatabaseCommit,
@@ -11,10 +9,16 @@ use crate::{
         },
     },
     inspectors::{
-        CallTracer, phevm::PhevmOutcome, sol_primitives::PhEvm::{
+        CallTracer,
+        phevm::PhevmOutcome,
+        precompiles::{
+            BASE_COST,
+            deduct_gas_and_check,
+        },
+        sol_primitives::PhEvm::{
             forkPostCallCall,
             forkPreCallCall,
-        }
+        },
     },
     primitives::{
         Bytes,
@@ -110,7 +114,7 @@ where
 pub fn fork_post_tx<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
-    gas: u64
+    gas: u64,
 ) -> Result<PhevmOutcome, ForkError>
 where
     CTX:
@@ -161,7 +165,7 @@ pub fn fork_pre_call<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX
     context: &mut CTX,
     call_tracer: &CallTracer,
     input_bytes: &Bytes,
-    gas: u64
+    gas: u64,
 ) -> Result<PhevmOutcome, ForkError>
 where
     CTX:
@@ -196,7 +200,7 @@ where
     if journal.database.is_active_fork(fork_id) {
         return Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left));
     }
-    
+
     // if the fork does not exist, price memory for creating it
     if !journal.database.fork_exists(&fork_id) {
         let bytes_written = journal
@@ -218,11 +222,7 @@ where
 
     journal
         .database
-        .switch_fork(
-            fork_id,
-            &mut journal.inner,
-            call_tracer,
-        )
+        .switch_fork(fork_id, &mut journal.inner, call_tracer)
         .map_err(ForkError::MultiForkPreCallDbError)?;
     Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left))
 }
@@ -289,11 +289,7 @@ where
 
     journal
         .database
-        .switch_fork(
-            fork_id,
-            &mut journal.inner,
-            call_tracer,
-        )
+        .switch_fork(fork_id, &mut journal.inner, call_tracer)
         .map_err(ForkError::MultiForkPostCallDbError)?;
     Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left))
 }
@@ -693,17 +689,15 @@ mod test {
         assert_eq!(outcome.gas(), BASE_COST);
     }
 
-    fn assert_oog(
-        result: Result<PhevmOutcome, ForkError>,
-        gas_limit: u64,
-        context: &str,
-    ) {
+    fn assert_oog(result: Result<PhevmOutcome, ForkError>, gas_limit: u64, context: &str) {
         match result {
-            Err(ForkError::OutOfGas(outcome)) => assert_eq!(
-                outcome.gas(),
-                gas_limit,
-                "expected all gas consumed for OOG ({context})"
-            ),
+            Err(ForkError::OutOfGas(outcome)) => {
+                assert_eq!(
+                    outcome.gas(),
+                    gas_limit,
+                    "expected all gas consumed for OOG ({context})"
+                );
+            }
             other => panic!("expected OutOfGas for {context}, got {other:?}"),
         }
     }
@@ -738,7 +732,11 @@ mod test {
         });
 
         let gas_limit = BASE_COST - 1;
-        assert_oog(fork_pre_tx(&mut context, &call_tracer, gas_limit), gas_limit, "pre_tx base");
+        assert_oog(
+            fork_pre_tx(&mut context, &call_tracer, gas_limit),
+            gas_limit,
+            "pre_tx base",
+        );
 
         // Reset to a known state (PostTx is active by default, but pre_tx above may have mutated).
         let gas_limit = BASE_COST - 1;
