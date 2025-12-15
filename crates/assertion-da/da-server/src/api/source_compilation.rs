@@ -38,10 +38,10 @@ const INITIAL_DELAY: Duration = Duration::from_secs(1);
 const SOLC_DOCKER_PLATFORM_ENV: &str = "ASSERTION_DA_SOLC_DOCKER_PLATFORM";
 
 fn solc_docker_platform() -> String {
-    if let Ok(platform) = env::var(SOLC_DOCKER_PLATFORM_ENV) {
-        if !platform.trim().is_empty() {
-            return platform;
-        }
+    if let Ok(platform) = env::var(SOLC_DOCKER_PLATFORM_ENV)
+        && !platform.trim().is_empty()
+    {
+        return platform;
     }
 
     if cfg!(target_arch = "aarch64") {
