@@ -74,14 +74,16 @@ impl StateWorker {
         let mut next_block = self.compute_start_block(start_override)?;
 
         loop {
-            tokio::select! {
-                _ = shutdown_rx.recv() => {
-                    info!("Shutdown signal received");
-                    return Ok(());
-                }
-                result = self.catch_up(&mut next_block) => {
-                    result?;
-                }
+            // Check for shutdown before starting catch-up
+            if shutdown_rx.try_recv().is_ok() {
+                info!("Shutdown signal received");
+                return Ok(());
+            }
+
+            // Catch up block-by-block, checking shutdown between each
+            if self.catch_up(&mut next_block, &mut shutdown_rx).await? {
+                info!("Shutdown signal received during catch-up");
+                return Ok(());
             }
 
             match self.stream_blocks(&mut next_block, &mut shutdown_rx).await {
@@ -120,19 +122,28 @@ impl StateWorker {
     }
 
     /// Sequentially replay blocks until we reach the node's current head.
-    async fn catch_up(&mut self, next_block: &mut u64) -> Result<()> {
+    async fn catch_up(
+        &mut self,
+        next_block: &mut u64,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<bool> {
         loop {
             let head = self.provider.get_block_number().await?;
             if *next_block > head {
-                break;
+                return Ok(false);
             }
 
             while *next_block <= head {
+                // Process the block fully before checking shutdown
                 self.process_block(*next_block).await?;
                 *next_block += 1;
+
+                // Check for shutdown after the block is complete
+                if shutdown_rx.try_recv().is_ok() {
+                    return Ok(true);
+                }
             }
         }
-        Ok(())
     }
 
     /// Follow the `newHeads` stream and process new blocks in order, tolerating
