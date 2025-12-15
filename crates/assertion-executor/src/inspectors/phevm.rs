@@ -211,8 +211,7 @@ impl<'a> PhEvmInspector<'a> {
                     .map_err(PrecompileError::LoadExternalSlotError)?
             }
             PhEvm::getLogsCall::SELECTOR => {
-                get_logs(&self.context)
-                    .map(PhevmOutcome::from)
+                get_logs(&self.context, inputs.gas_limit)
                     .map_err(PrecompileError::UnexpectedError)?
             }
             PhEvm::getAllCallInputsCall::SELECTOR => {
