@@ -1,33 +1,72 @@
 use crate::{
     inspectors::{
+        PhevmOutcome,
         phevm::PhEvmContext,
+        precompiles::deduct_gas_and_check,
         sol_primitives::PhEvm,
     },
     primitives::Bytes,
 };
 
 use alloy_sol_types::SolType;
-use std::convert::Infallible;
+use std::{
+    convert::Infallible,
+    mem::size_of_val,
+};
+
+use super::BASE_COST;
+
+#[derive(Debug, thiserror::Error)]
+pub enum GetLogsError {
+    #[error("Out of gas")]
+    OutOfGas(PhevmOutcome),
+}
 
 /// Get the log outputs.
-pub fn get_logs(context: &PhEvmContext) -> Result<Bytes, Infallible> {
+pub fn get_logs(context: &PhEvmContext, gas: u64) -> Result<PhevmOutcome, Infallible> {
+    const LOG_COST_PER_WORD: u64 = 8;
+    const ABI_ENCODE_COST: u64 = 6;
+
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Ok(rax);
+    }
+
+    let mut sol_log_size: usize = 0;
     let sol_logs: Vec<PhEvm::Log> = context
         .logs_and_traces
         .tx_logs
         .iter()
         .map(|log| {
-            PhEvm::Log {
+            let log = PhEvm::Log {
                 topics: log.topics().to_vec(),
                 data: log.data.data.clone(),
                 emitter: log.address,
-            }
+            };
+            sol_log_size += size_of_val(&log);
+
+            log
         })
         .collect();
+
+    let sol_log_words: u64 = (sol_log_size as u64).div_ceil(32);
+    let sol_log_cost = sol_log_words * LOG_COST_PER_WORD;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, sol_log_cost, gas_limit) {
+        return Ok(rax);
+    }
 
     let encoded: Bytes =
         <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_encode(&sol_logs).into();
 
-    Ok(encoded)
+    let encoded_size = size_of_val(encoded.0.iter().as_slice());
+    let encoded_words: u64 = (encoded_size as u64).div_ceil(32);
+    let encoded_cost = encoded_words * ABI_ENCODE_COST;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, encoded_cost, gas_limit) {
+        return Ok(rax);
+    }
+
+    Ok(PhevmOutcome::new(encoded, gas_limit - gas_left))
 }
 
 #[cfg(test)]
@@ -76,10 +115,10 @@ mod test {
 
     #[test]
     fn test_get_logs_empty() {
-        let result = with_logs_context(vec![], get_logs);
+        let result = with_logs_context(vec![], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
-        let encoded = result.unwrap();
+        let encoded = result.unwrap().into_bytes();
         assert!(!encoded.is_empty());
 
         // Verify we can decode the result
@@ -100,10 +139,10 @@ mod test {
             data: LogData::new(vec![topic], Bytes::from(data)).unwrap(),
         };
 
-        let result = with_logs_context(vec![log.clone()], get_logs);
+        let result = with_logs_context(vec![log.clone()], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
-        let encoded = result.unwrap();
+        let encoded = result.unwrap().into_bytes();
 
         // Verify we can decode the result
         let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
@@ -138,10 +177,10 @@ mod test {
             },
         ];
 
-        let result = with_logs_context(logs, get_logs);
+        let result = with_logs_context(logs, |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
-        let encoded = result.unwrap();
+        let encoded = result.unwrap().into_bytes();
 
         // Verify we can decode the result
         let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
@@ -177,10 +216,10 @@ mod test {
             data: LogData::new(vec![topic1, topic2, topic3], Bytes::from(data)).unwrap(),
         };
 
-        let result = with_logs_context(vec![log], get_logs);
+        let result = with_logs_context(vec![log], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
-        let encoded = result.unwrap();
+        let encoded = result.unwrap().into_bytes();
 
         // Verify we can decode the result
         let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
@@ -207,10 +246,10 @@ mod test {
             data: LogData::new(vec![], Bytes::from(data)).unwrap(),
         };
 
-        let result = with_logs_context(vec![log], get_logs);
+        let result = with_logs_context(vec![log], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
-        let encoded = result.unwrap();
+        let encoded = result.unwrap().into_bytes();
 
         // Verify we can decode the result
         let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
@@ -234,10 +273,10 @@ mod test {
             data: LogData::new(vec![topic], Bytes::new()).unwrap(),
         };
 
-        let result = with_logs_context(vec![log], get_logs);
+        let result = with_logs_context(vec![log], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
-        let encoded = result.unwrap();
+        let encoded = result.unwrap().into_bytes();
 
         // Verify we can decode the result
         let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
@@ -263,10 +302,10 @@ mod test {
             data: LogData::new(vec![topic], Bytes::from(large_data)).unwrap(),
         };
 
-        let result = with_logs_context(vec![log], get_logs);
+        let result = with_logs_context(vec![log], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
-        let encoded = result.unwrap();
+        let encoded = result.unwrap().into_bytes();
 
         // Verify we can decode the result
         let decoded = <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_decode(&encoded);
@@ -281,7 +320,7 @@ mod test {
 
     #[test]
     fn test_get_logs_never_fails() {
-        // The function signature indicates it returns Result<Bytes, Infallible>
+        // The function signature indicates it returns Result<_, Infallible>
         // This means it should never fail, so let's verify that with edge cases
 
         let test_cases = vec![
@@ -293,7 +332,7 @@ mod test {
         ];
 
         for logs in test_cases {
-            let result = with_logs_context(logs, get_logs);
+            let result = with_logs_context(logs, |context| get_logs(context, u64::MAX));
             assert!(result.is_ok(), "get_logs should never fail");
         }
     }
