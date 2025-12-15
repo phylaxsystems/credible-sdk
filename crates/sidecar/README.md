@@ -333,16 +333,6 @@ The configuration file is a JSON file with the following schema:
         "sources_monitoring_period_ms"
       ],
       "properties": {
-        "sequencer_url": {
-          "type": "string",
-          "description": "Sequencer bind address and port (optional)",
-          "format": "uri",
-          "pattern": "^https?://",
-          "examples": [
-            "http://localhost:8547",
-            "http://sequencer-service:8547"
-          ]
-        },
         "eth_rpc_source_ws_url": {
           "type": "string",
           "description": "Eth RPC source WebSocket bind address and port (optional)",
@@ -456,7 +446,6 @@ The default configuration can be found in [default_config.json](default_config.j
     "health_bind_addr": "0.0.0.0:9547"
   },
   "state": {
-    "sequencer_url": "http://127.0.0.1:8545",
     "eth_rpc_source_ws_url": "ws://127.0.0.1:8546",
     "eth_rpc_source_http_url": "http://127.0.0.1:8545",
     "redis_namespace": "sidecar",

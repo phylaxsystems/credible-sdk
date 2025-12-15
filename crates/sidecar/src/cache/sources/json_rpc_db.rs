@@ -74,7 +74,7 @@ impl JsonRpcDb {
         *self.target_block.write() = block_number;
     }
 
-    fn target_block(&self) -> U256 {
+    pub fn target_block(&self) -> U256 {
         *self.target_block.read()
     }
 

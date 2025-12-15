@@ -173,10 +173,10 @@ pub struct LocalInstance<T: TestTransport> {
     sources: Arc<Sources>,
     /// List of cache sources
     pub list_of_sources: Vec<Arc<dyn Source>>,
-    /// The mock HTTP representing the sequencer
-    pub sequencer_http_mock: DualProtocolMockServer,
     /// The mock HTTP representing the Eth RPC source
     pub eth_rpc_source_http_mock: DualProtocolMockServer,
+    /// The mock HTTP representing the fallback Eth RPC source
+    pub fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
     /// The assertion store
     assertion_store: Arc<AssertionStore>,
     /// Transport task handle
@@ -220,8 +220,8 @@ impl<T: TestTransport> LocalInstance<T> {
     pub(crate) fn new_internal(
         db: Arc<CacheDB<Arc<Sources>>>,
         sources: Arc<Sources>,
-        sequencer_http_mock: DualProtocolMockServer,
         eth_rpc_source_http_mock: DualProtocolMockServer,
+        fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
         assertion_store: Arc<AssertionStore>,
         transport_handle: Option<JoinHandle<()>>,
         engine_handle: Option<JoinHandle<()>>,
@@ -235,8 +235,8 @@ impl<T: TestTransport> LocalInstance<T> {
         Self {
             db,
             sources,
-            sequencer_http_mock,
             eth_rpc_source_http_mock,
+            fallback_eth_rpc_source_http_mock,
             assertion_store,
             transport_handle,
             engine_handle,
@@ -265,7 +265,7 @@ impl<T: TestTransport> LocalInstance<T> {
         transactions: Vec<(B256, TxEnv)>,
     ) -> Result<(), String> {
         // Send the block environment first
-        self.send_block(self.block_number).await?;
+        self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
         // Then send all transactions
@@ -516,7 +516,7 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Send a block with default parent hashes for EIP-2935 and EIP-4788
-    async fn send_block(&mut self, block_number: U256) -> Result<(), String> {
+    async fn send_block(&mut self, block_number: U256, send_rpc_node: bool) -> Result<(), String> {
         // Always provide parent hashes for EIP-2935 and EIP-4788 system calls
         // These are required when running on Cancun+ specs
         let block_hash = Some(Self::generate_random_tx_hash());
@@ -525,8 +525,13 @@ impl<T: TestTransport> LocalInstance<T> {
         } else {
             Some(Self::generate_random_tx_hash())
         };
-        self.send_block_with_hashes_internal(block_number, block_hash, beacon_block_root)
-            .await
+        self.send_block_with_hashes_internal(
+            block_number,
+            block_hash,
+            beacon_block_root,
+            send_rpc_node,
+        )
+        .await
     }
 
     /// Internal method to send a block finalization with optional parent hashes
@@ -535,6 +540,7 @@ impl<T: TestTransport> LocalInstance<T> {
         block_number: U256,
         block_hash: Option<B256>,
         beacon_block_root: Option<B256>,
+        send_rpc_node: bool,
     ) -> Result<(), String> {
         let n_transactions = self.transport.get_tx_count(self.iteration_id);
         let last_tx_hash = self.transport.get_last_tx_hash(self.iteration_id);
@@ -548,6 +554,11 @@ impl<T: TestTransport> LocalInstance<T> {
             beacon_block_root,
             U256::from(1234567890),
         );
+
+        if send_rpc_node {
+            self.eth_rpc_source_http_mock
+                .send_new_head_with_block_number(u64::try_from(block_number).unwrap());
+        }
 
         self.transport.send_commit_head(commit_head).await?;
 
@@ -584,8 +595,13 @@ impl<T: TestTransport> LocalInstance<T> {
         let block_hash = block_hash.or_else(|| Some(Self::generate_random_tx_hash()));
         let beacon_block_root = beacon_block_root.or_else(|| Some(Self::generate_random_tx_hash()));
 
-        self.send_block_with_hashes_internal(self.block_number, block_hash, beacon_block_root)
-            .await?;
+        self.send_block_with_hashes_internal(
+            self.block_number,
+            block_hash,
+            beacon_block_root,
+            true,
+        )
+        .await?;
         self.block_number += U256::from(1);
         Ok(())
     }
@@ -597,7 +613,7 @@ impl<T: TestTransport> LocalInstance<T> {
         data: Bytes,
     ) -> Result<TxExecutionId, String> {
         // Ensure we have a block
-        self.send_block(self.block_number).await?;
+        self.send_block(self.block_number, true).await?;
 
         self.block_number += U256::from(1);
 
@@ -713,7 +729,7 @@ impl<T: TestTransport> LocalInstance<T> {
         &mut self,
     ) -> Result<(Address, TxExecutionId), String> {
         // Ensure we have a block
-        self.send_block(self.block_number).await?;
+        self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
         // Generate transaction hash
@@ -726,6 +742,36 @@ impl<T: TestTransport> LocalInstance<T> {
         let nonce = self.next_nonce(caller, tx_execution_id.as_block_execution_id());
 
         // Create transaction
+        let tx_env = TxEnvBuilder::new()
+            .caller(caller)
+            .gas_limit(100_000)
+            .gas_price(0)
+            .kind(TxKind::Create)
+            .value(U256::ZERO)
+            .data(Bytes::from(vec![0xff, 0xff, 0xff, 0xff, 0xff]))
+            .nonce(nonce)
+            .build()
+            .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
+
+        self.transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await?;
+        self.iteration_tx_map
+            .entry(self.iteration_id)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
+
+        Ok((caller, tx_execution_id))
+    }
+
+    pub async fn send_create_tx_with_cache_miss_dry(
+        &mut self,
+    ) -> Result<(Address, TxExecutionId), String> {
+        let tx_hash = Self::generate_random_tx_hash();
+        let tx_execution_id = self.build_tx_id(tx_hash);
+        let caller = Self::generate_random_address();
+        let nonce = self.next_nonce(caller, tx_execution_id.as_block_execution_id());
+
         let tx_env = TxEnvBuilder::new()
             .caller(caller)
             .gas_limit(100_000)
@@ -830,7 +876,7 @@ impl<T: TestTransport> LocalInstance<T> {
         data: Bytes,
     ) -> Result<TxExecutionId, String> {
         // Ensure we have a block
-        self.send_block(self.block_number).await?;
+        self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
         // Generate transaction hash
@@ -885,7 +931,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // type 1, eip-2930 optional access lists
         // verify that we spend less gas on storage reads
         // interact with the pre-loaded counter contract so the access list actually matters
-        self.send_block(self.block_number).await?;
+        self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
         // Generate transaction hash
@@ -935,7 +981,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // according to eip-1559 rules
         // TODO: send blockenv with base fee of 2 and verify we include the
         // tx below and properly decrement gas
-        self.send_block(self.block_number).await?;
+        self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
         // Generate transaction hash
@@ -975,7 +1021,7 @@ impl<T: TestTransport> LocalInstance<T> {
         let _ = self.wait_for_transaction_processed(&tx_id_eip1559).await?;
 
         // type3, eip-4844
-        self.send_block(self.block_number).await?;
+        self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
         let tx_hash = Self::generate_random_tx_hash();
@@ -1017,7 +1063,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // type4, eip-7702
         // Authorization list present, should derive EIP-7702
         // TODO: check if the account has code
-        self.send_block(self.block_number).await?;
+        self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
         let auth = RecoveredAuthorization::new_unchecked(
@@ -1200,7 +1246,7 @@ impl<T: TestTransport> LocalInstance<T> {
     /// be called once due to subsequent assertions invalidating.
     pub async fn send_assertion_passing_failing_pair(&mut self) -> Result<(), String> {
         // Ensure we have a block
-        self.send_block(self.block_number).await?;
+        self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
         let basefee = 10u64;
@@ -1290,7 +1336,16 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Advance the chain by 1 block by sending a new `BlockEnv` to the core engine.
     pub async fn new_block(&mut self) -> Result<(), String> {
-        self.send_block(self.block_number).await?;
+        self.send_block(self.block_number, true).await?;
+        self.block_number += U256::from(1);
+
+        Ok(())
+    }
+
+    /// Advance the chain by 1 block by sending a new `BlockEnv` to the core engine but without
+    /// advancing the rpc node client
+    pub async fn new_block_unsynced(&mut self) -> Result<(), String> {
+        self.send_block(self.block_number, false).await?;
         self.block_number += U256::from(1);
 
         Ok(())

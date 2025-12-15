@@ -21,7 +21,6 @@ use sidecar::{
             Source,
             eth_rpc_source::EthRpcSource,
             redis::RedisSource,
-            sequencer::Sequencer,
         },
     },
     config::{
@@ -181,11 +180,6 @@ async fn main() -> anyhow::Result<()> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
         let mut sources: Vec<Arc<dyn Source>> = vec![];
-        if let Some(sequencer_url) = &config.state.sequencer_url
-            && let Ok(sequencer) = Sequencer::try_new(sequencer_url).await
-        {
-            sources.push(Arc::new(sequencer));
-        }
         if let (Some(redis_url), Some(redis_namespace), Some(redis_depth)) = (
             config.state.redis_url.as_ref(),
             config.state.redis_namespace.as_ref(),

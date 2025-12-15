@@ -22,7 +22,6 @@
     "health_bind_addr": "0.0.0.0:9547"
   },
   "state": {
-    "sequencer_url": "http://localhost:8545",
     "eth_rpc_source_ws_url": "ws://localhost:8546",
     "eth_rpc_source_http_url": "http://localhost:8545",
     "redis_namespace": "sidecar",

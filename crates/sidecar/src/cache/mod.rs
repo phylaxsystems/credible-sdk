@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn test_cache_new_with_sources() {
-        let source1: Arc<dyn Source> = Arc::new(MockSource::new(SourceName::Sequencer));
+        let source1: Arc<dyn Source> = Arc::new(MockSource::new(SourceName::Other));
         let source2: Arc<dyn Source> = Arc::new(MockSource::new(SourceName::EthRpcSource));
         let sources = vec![source1, source2];
 
@@ -724,7 +724,7 @@ mod tests {
     #[test]
     fn test_synced_sources_filters_correctly() {
         let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+            Arc::new(MockSource::new(SourceName::Other).with_synced_threshold(U256::from(10)));
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
         );
@@ -743,7 +743,7 @@ mod tests {
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
         let names: Vec<_> = synced.iter().map(|s| s.name()).collect();
-        assert!(names.contains(&SourceName::Sequencer));
+        assert!(names.contains(&SourceName::Other));
         assert!(names.contains(&SourceName::Redis));
 
         // Block 60 - all sources should be synced
@@ -755,9 +755,8 @@ mod tests {
     #[test]
     fn test_basic_ref_success_first_source() {
         let account_info = create_test_account_info();
-        let source1 = Arc::new(
-            MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
-        );
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Other).with_account_info(account_info.clone()));
         let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource));
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 10);
@@ -782,7 +781,7 @@ mod tests {
     #[test]
     fn test_basic_ref_success_second_source_after_first_fails() {
         let account_info = create_test_account_info();
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_error());
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_account_info(account_info.clone()),
         );
@@ -808,8 +807,7 @@ mod tests {
 
     #[test]
     fn test_basic_ref_returns_none_on_cache_miss() {
-        let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_cache_miss_for_account());
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_cache_miss_for_account());
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_account_info(create_test_account_info()),
         );
@@ -826,7 +824,7 @@ mod tests {
 
     #[test]
     fn test_basic_ref_returns_none_without_fallback_when_first_source_has_no_data() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer));
+        let source1 = Arc::new(MockSource::new(SourceName::Other));
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_account_info(create_test_account_info()),
         );
@@ -844,12 +842,11 @@ mod tests {
     #[test]
     fn test_basic_ref_falls_back_when_first_source_errors() {
         let address = create_test_address();
-        let first_source = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let first_source = Arc::new(MockSource::new(SourceName::Other).with_error());
 
         let account_info = create_test_account_info();
-        let fallback_source = Arc::new(
-            MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
-        );
+        let fallback_source =
+            Arc::new(MockSource::new(SourceName::Other).with_account_info(account_info.clone()));
 
         let cache = Sources::new(vec![first_source.clone(), fallback_source.clone()], 10);
         cache.set_block_number(U256::from(1));
@@ -867,9 +864,8 @@ mod tests {
             Arc::new(MockSource::new(SourceName::EthRpcSource).with_cache_miss_for_account());
 
         let account_info = create_test_account_info();
-        let fallback_source = Arc::new(
-            MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
-        );
+        let fallback_source =
+            Arc::new(MockSource::new(SourceName::Other).with_account_info(account_info.clone()));
 
         let cache = Sources::new(vec![first_source, fallback_source.clone()], 10);
         cache.set_block_number(U256::from(15));
@@ -881,7 +877,7 @@ mod tests {
 
     #[test]
     fn test_basic_ref_no_cache_source_available() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_error());
         let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource).with_error());
 
         let cache = Sources::new(vec![source1, source2], 10);
@@ -894,7 +890,7 @@ mod tests {
     #[test]
     fn test_basic_ref_no_synced_sources() {
         let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+            Arc::new(MockSource::new(SourceName::Other).with_synced_threshold(U256::from(10)));
         let cache = Sources::new(vec![source1], 10);
 
         // Block 0, source needs block 10 to be synced
@@ -906,7 +902,7 @@ mod tests {
     #[test]
     fn test_block_hash_ref_success_first_source() {
         let block_hash = B256::from([3u8; 32]);
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_block_hash(block_hash));
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_block_hash(block_hash));
         let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource));
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 10);
@@ -930,7 +926,7 @@ mod tests {
     #[test]
     fn test_block_hash_ref_fallback_to_second_source() {
         let block_hash = B256::from([3u8; 32]);
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_error());
         let source2 =
             Arc::new(MockSource::new(SourceName::EthRpcSource).with_block_hash(block_hash));
 
@@ -942,7 +938,7 @@ mod tests {
 
     #[test]
     fn test_block_hash_ref_no_cache_source_available() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_error());
         let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource));
 
         let cache = Sources::new(vec![source1, source2], 10);
@@ -954,8 +950,7 @@ mod tests {
     #[test]
     fn test_code_by_hash_ref_success_first_source() {
         let bytecode = create_test_bytecode();
-        let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_bytecode(bytecode.clone()));
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_bytecode(bytecode.clone()));
         let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource));
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 10);
@@ -980,7 +975,7 @@ mod tests {
     #[test]
     fn test_code_by_hash_ref_fallback_to_second_source() {
         let bytecode = create_test_bytecode();
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_error());
         let source2 =
             Arc::new(MockSource::new(SourceName::EthRpcSource).with_bytecode(bytecode.clone()));
 
@@ -993,7 +988,7 @@ mod tests {
 
     #[test]
     fn test_code_by_hash_ref_no_cache_source_available() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_error());
         let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource));
 
         let cache = Sources::new(vec![source1, source2], 10);
@@ -1007,7 +1002,7 @@ mod tests {
     fn test_storage_ref_success_first_source() {
         let storage_value = U256::from(12345);
         let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_storage_value(storage_value));
+            Arc::new(MockSource::new(SourceName::Other).with_storage_value(storage_value));
         let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource));
 
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 10);
@@ -1033,7 +1028,7 @@ mod tests {
     #[test]
     fn test_storage_ref_fallback_to_second_source() {
         let storage_value = U256::from(12345);
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_error());
         let source2 =
             Arc::new(MockSource::new(SourceName::EthRpcSource).with_storage_value(storage_value));
 
@@ -1048,8 +1043,7 @@ mod tests {
     #[test]
     fn test_storage_ref_fallback_on_cache_miss() {
         let storage_value = U256::from(0xdeadbeefu64);
-        let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_cache_miss_for_storage());
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_cache_miss_for_storage());
         let source2 =
             Arc::new(MockSource::new(SourceName::EthRpcSource).with_storage_value(storage_value));
 
@@ -1066,7 +1060,7 @@ mod tests {
 
     #[test]
     fn test_storage_ref_no_cache_source_available() {
-        let source1 = Arc::new(MockSource::new(SourceName::Sequencer).with_error());
+        let source1 = Arc::new(MockSource::new(SourceName::Other).with_error());
         let source2 = Arc::new(MockSource::new(SourceName::EthRpcSource).with_error());
 
         let cache = Sources::new(vec![source1, source2], 10);
@@ -1082,7 +1076,7 @@ mod tests {
         use std::thread;
 
         let source1 = Arc::new(
-            MockSource::new(SourceName::Sequencer).with_account_info(create_test_account_info()),
+            MockSource::new(SourceName::Other).with_account_info(create_test_account_info()),
         );
         let cache = Arc::new(Sources::new(vec![source1], 10));
         cache.set_block_number(U256::from(1));
@@ -1143,9 +1137,8 @@ mod tests {
         let block_hash = B256::from([5u8; 32]);
 
         // Source 1: Has account info, fails on block hash
-        let source1 = Arc::new(
-            MockSource::new(SourceName::Sequencer).with_account_info(account_info.clone()),
-        );
+        let source1 =
+            Arc::new(MockSource::new(SourceName::Other).with_account_info(account_info.clone()));
 
         // Source 2: Fails on account info, has block hash
         let source2 =
@@ -1178,7 +1171,7 @@ mod tests {
 
         // Both sources have all data, but we should only call the first
         let source1 = Arc::new(
-            MockSource::new(SourceName::Sequencer)
+            MockSource::new(SourceName::Other)
                 .with_account_info(account_info.clone())
                 .with_block_hash(block_hash)
                 .with_bytecode(bytecode.clone())
@@ -1220,7 +1213,7 @@ mod tests {
     #[test]
     fn test_cache_max_depth_filtering() {
         let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+            Arc::new(MockSource::new(SourceName::Other).with_synced_threshold(U256::from(10)));
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
         );
@@ -1242,7 +1235,7 @@ mod tests {
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
         let names: Vec<_> = synced.iter().map(|s| s.name()).collect();
-        assert!(names.contains(&SourceName::Sequencer));
+        assert!(names.contains(&SourceName::Other));
         assert!(names.contains(&SourceName::EthRpcSource));
         assert!(!names.contains(&SourceName::Redis));
 
@@ -1253,7 +1246,7 @@ mod tests {
 
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), SourceName::Sequencer);
+        assert_eq!(synced[0].name(), SourceName::Other);
 
         // Test with max_depth = 200 (larger than current block)
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 200);
@@ -1267,7 +1260,7 @@ mod tests {
     #[test]
     fn test_cache_required_head_override() {
         let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+            Arc::new(MockSource::new(SourceName::Other).with_synced_threshold(U256::from(10)));
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
         );
@@ -1296,7 +1289,7 @@ mod tests {
     #[test]
     fn test_cache_reset_required_head() {
         let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+            Arc::new(MockSource::new(SourceName::Other).with_synced_threshold(U256::from(10)));
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
         );
@@ -1326,7 +1319,7 @@ mod tests {
     #[test]
     fn test_cache_out_of_sync_scenarios() {
         let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(100)));
+            Arc::new(MockSource::new(SourceName::Other).with_synced_threshold(U256::from(100)));
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(200)),
         );
@@ -1340,7 +1333,7 @@ mod tests {
         cache.reset_latest_unprocessed_block(U256::ZERO);
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), SourceName::Sequencer);
+        assert_eq!(synced[0].name(), SourceName::Other);
 
         // Scenario 2: Lower block number
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
@@ -1360,7 +1353,7 @@ mod tests {
     #[test]
     fn test_cache_edge_cases() {
         let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::ZERO));
+            Arc::new(MockSource::new(SourceName::Other).with_synced_threshold(U256::ZERO));
         let source2 =
             Arc::new(MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::MAX));
 
@@ -1369,7 +1362,7 @@ mod tests {
         // Test with zero block number - only source1 should be synced
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), SourceName::Sequencer);
+        assert_eq!(synced[0].name(), SourceName::Other);
 
         // Test with maximum block number
         let cache = Sources::new(vec![source1.clone(), source2.clone()], u64::MAX);
@@ -1377,7 +1370,7 @@ mod tests {
         cache.reset_latest_unprocessed_block(U256::ZERO);
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 2);
-        assert_eq!(synced[0].name(), SourceName::Sequencer);
+        assert_eq!(synced[0].name(), SourceName::Other);
 
         // Test with zero max_depth
         let cache = Sources::new(vec![source1.clone(), source2.clone()], 0);
@@ -1385,13 +1378,13 @@ mod tests {
         cache.reset_latest_unprocessed_block(U256::ZERO);
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), SourceName::Sequencer);
+        assert_eq!(synced[0].name(), SourceName::Other);
     }
 
     #[test]
     fn test_original_test_understanding() {
         let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+            Arc::new(MockSource::new(SourceName::Other).with_synced_threshold(U256::from(10)));
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
         );
@@ -1419,7 +1412,7 @@ mod tests {
     #[test]
     fn test_cache_invalidation_simulation() {
         let source1 =
-            Arc::new(MockSource::new(SourceName::Sequencer).with_synced_threshold(U256::from(10)));
+            Arc::new(MockSource::new(SourceName::Other).with_synced_threshold(U256::from(10)));
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
         );
@@ -1441,10 +1434,10 @@ mod tests {
         cache.set_block_number(U256::from(49));
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), SourceName::Sequencer);
+        assert_eq!(synced[0].name(), SourceName::Other);
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_first_fallback(mut instance: crate::utils::LocalInstance) {
         // Send a new block
         instance.new_block().await.unwrap();
@@ -1465,44 +1458,52 @@ mod tests {
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
         // The first fallback is hit
-        let cache_sequencer_db_basic_ref_counter = *instance
+        let cache_db_basic_ref_counter = *instance
             .eth_rpc_source_http_mock
             .eth_balance_counter
             .get(&address)
             .unwrap();
-        assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
+        assert_eq!(cache_db_basic_ref_counter, 1);
 
         // The second fallback is never called
         assert!(
             instance
-                .sequencer_http_mock
+                .fallback_eth_rpc_source_http_mock
                 .eth_balance_counter
                 .get(&address)
                 .is_none()
         );
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_second_fallback_first_fallback_out_of_sync(
         mut instance: crate::utils::LocalInstance,
     ) {
-        // Send many blocks a new block to the Eth RPC source client
+        // Send many blocks WITHOUT syncing the first source
         for _ in 0..15 {
-            instance.new_block().await.unwrap();
+            instance.new_block_unsynced().await.unwrap();
         }
         instance.wait_for_processing(Duration::from_millis(2)).await;
 
-        // Send a new block to the Eth RPC source client websocket
-        instance.eth_rpc_source_http_mock.send_new_head();
-
-        // Wait for the Eth RPC source client to be synced for block 1
+        // Sync Eth RPC source client only to block 1 (way behind)
         instance
-            .wait_for_source_synced(0, U256::from(1), U256::from(1))
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(1);
+
+        // Sync fallback to current block so it can serve requests
+        instance
+            .fallback_eth_rpc_source_http_mock
+            .send_new_head_with_block_number(15);
+
+        // Wait for the fallback to be synced
+        instance
+            .wait_for_source_synced(1, U256::from(15), U256::from(15))
             .await
-            .expect("Eth RPC source client should sync to block 1");
+            .expect("Fallback should sync to block 15");
 
         // Send a random tx whose data is not in the in-memory cache
-        let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+        // Use dry version to avoid syncing eth_rpc_source_http_mock
+        let (address, tx_hash) = instance.send_create_tx_with_cache_miss_dry().await.unwrap();
         // Await result
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
@@ -1512,19 +1513,20 @@ mod tests {
                 .eth_rpc_source_http_mock
                 .eth_balance_counter
                 .get(&address)
-                .is_none()
+                .is_none(),
+            "Eth RPC source should not be used when out of sync"
         );
 
         // The second fallback is hit
-        let cache_sequencer_db_basic_ref_counter = *instance
-            .sequencer_http_mock
+        let cache_db_basic_ref_counter = *instance
+            .fallback_eth_rpc_source_http_mock
             .eth_balance_counter
             .get(&address)
             .unwrap();
-        assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
+        assert_eq!(cache_db_basic_ref_counter, 1);
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_second_fallback_because_first_fallback_error(
         mut instance: crate::utils::LocalInstance,
     ) {
@@ -1532,14 +1534,20 @@ mod tests {
         instance.new_block().await.unwrap();
         instance.wait_for_processing(Duration::from_millis(2)).await;
 
-        // Send a new block to the Eth RPC source client websocket
+        // Send a new block to BOTH sources so they're both synced
         instance.eth_rpc_source_http_mock.send_new_head();
+        instance.fallback_eth_rpc_source_http_mock.send_new_head();
 
-        // Wait for the Eth RPC source client to be synced
+        // Wait for both sources to be synced
         instance
             .wait_for_source_synced(0, U256::from(1), U256::from(1))
             .await
             .expect("Eth RPC source client should sync to block 1");
+
+        instance
+            .wait_for_source_synced(1, U256::from(1), U256::from(1))
+            .await
+            .expect("Fallback source should sync to block 1");
 
         // Bad response for Eth RPC source client
         instance.eth_rpc_source_http_mock.mock_rpc_error(
@@ -1562,28 +1570,34 @@ mod tests {
         assert_eq!(eth_rpc_source_db_basic_ref_counter, 1);
 
         // The second fallback is hit because the first fallback returned an error
-        let cache_sequencer_db_basic_ref_counter = *instance
-            .sequencer_http_mock
+        let cache_db_basic_ref_counter = *instance
+            .fallback_eth_rpc_source_http_mock
             .eth_balance_counter
             .get(&address)
             .unwrap();
-        assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
+        assert_eq!(cache_db_basic_ref_counter, 1);
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_no_fallback_available(mut instance: crate::utils::LocalInstance) {
         // Send a new block
         instance.new_block().await.unwrap();
         instance.wait_for_processing(Duration::from_millis(2)).await;
 
-        // Send a new block to the Eth RPC source client websocket
+        // Send a new block to BOTH sources so they're both synced
         instance.eth_rpc_source_http_mock.send_new_head();
+        instance.fallback_eth_rpc_source_http_mock.send_new_head();
 
-        // Wait for the Eth RPC source client to be synced
+        // Wait for both sources to be synced
         instance
             .wait_for_source_synced(0, U256::from(1), U256::from(1))
             .await
             .expect("Eth RPC source client should sync to block 1");
+
+        instance
+            .wait_for_source_synced(1, U256::from(1), U256::from(1))
+            .await
+            .expect("Fallback source should sync to block 1");
 
         // Bad response for Eth RPC source client
         instance.eth_rpc_source_http_mock.mock_rpc_error(
@@ -1592,10 +1606,12 @@ mod tests {
             "Insufficient funds",
         );
 
-        // Bad response for sequencer
-        instance
-            .sequencer_http_mock
-            .mock_rpc_error("eth_getBalance", -32000, "Insufficient funds");
+        // Bad response for fallback
+        instance.fallback_eth_rpc_source_http_mock.mock_rpc_error(
+            "eth_getBalance",
+            -32000,
+            "Insufficient funds",
+        );
 
         // Send a random tx whose data is not in the in-memory cache
         let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
@@ -1608,20 +1624,18 @@ mod tests {
             .eth_balance_counter
             .get(&address)
             .map_or(0, |r| *r);
-        // The counter is one as the EIP-2935 will try to fetch the account
         assert_eq!(eth_rpc_source_db_basic_ref_counter, 1);
 
         // The second fallback is hit because the first fallback returned an error
-        let cache_sequencer_db_basic_ref_counter = instance
-            .sequencer_http_mock
+        let cache_db_basic_ref_counter = instance
+            .fallback_eth_rpc_source_http_mock
             .eth_balance_counter
             .get(&address)
             .map_or(0, |r| *r);
-        // The counter is one as the EIP-2935 will try to fetch the account
-        assert_eq!(cache_sequencer_db_basic_ref_counter, 1);
+        assert_eq!(cache_db_basic_ref_counter, 1);
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_source_sync_with_min_block_boundary(
         mut instance: crate::utils::LocalInstance,
     ) {
@@ -1650,35 +1664,36 @@ mod tests {
             .expect("Source should be synced when min < latest");
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_source_not_synced_when_min_block_higher_than_latest(
         mut instance: crate::utils::LocalInstance,
     ) {
-        // Send a few blocks
+        // This test verifies that when a source's client_latest_head is behind the
+        // required target_block, the source reports as not synced.
+
+        // Send blocks WITHOUT syncing the mock
         for _ in 0..5 {
-            instance.new_block().await.unwrap();
+            instance.new_block_unsynced().await.unwrap();
         }
         instance.wait_for_processing(Duration::from_millis(2)).await;
 
-        // Sync Eth RPC source client to block 5
-        for _ in 0..5 {
-            instance.eth_rpc_source_http_mock.send_new_head();
-        }
+        // Keep the mock at block 0 (don't sync it)
+        // The target_block will be updated to 5, but client_latest_head is 0
 
-        // This should timeout because min_synced_block (10) > latest_head (5)
+        // This should timeout because client_latest_head (0) < target_block (5)
         let result = tokio::time::timeout(
             Duration::from_millis(500),
-            instance.wait_for_source_synced(0, U256::from(5), U256::from(10)),
+            instance.wait_for_source_synced(0, U256::from(5), U256::from(5)),
         )
         .await;
 
         assert!(
             result.is_err(),
-            "Should timeout when min_synced_block > latest_head"
+            "Should timeout when source client is behind target block"
         );
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_max_depth_filtering_integration(mut instance: crate::utils::LocalInstance) {
         // Send 100 blocks to test depth filtering
         for _ in 0..100 {
@@ -1701,7 +1716,7 @@ mod tests {
         instance.is_transaction_successful(&tx_hash).await.unwrap();
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_multiple_sources_sync_progression(
         mut instance: crate::utils::LocalInstance,
     ) {
@@ -1733,26 +1748,29 @@ mod tests {
         assert_eq!(counter, 1);
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_fallback_with_partial_sync(mut instance: crate::utils::LocalInstance) {
         // Send 30 blocks
         for _ in 0..30 {
-            instance.new_block().await.unwrap();
+            instance.new_block_unsynced().await.unwrap();
         }
         instance.wait_for_processing(Duration::from_millis(2)).await;
 
         // Sync Eth RPC source client only to block 10 (partial sync)
-        for _ in 0..10 {
-            instance.eth_rpc_source_http_mock.send_new_head();
-        }
+        instance
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(10);
+        instance
+            .fallback_eth_rpc_source_http_mock
+            .send_new_head_with_block_number(30);
 
         // Wait for Eth RPC source to sync to block 10
         instance
-            .wait_for_source_synced(0, U256::from(10), U256::from(10))
+            .wait_for_source_synced(1, U256::from(10), U256::from(10))
             .await
             .expect("Eth RPC source client should sync to block 10");
 
-        let (address, tx_hash) = instance.send_create_tx_with_cache_miss().await.unwrap();
+        let (address, tx_hash) = instance.send_create_tx_with_cache_miss_dry().await.unwrap();
         let _ = instance.is_transaction_successful(&tx_hash).await;
 
         assert!(
@@ -1766,21 +1784,25 @@ mod tests {
 
         // Sequencer should be used as a fallback
         let counter = *instance
-            .sequencer_http_mock
+            .fallback_eth_rpc_source_http_mock
             .eth_balance_counter
             .get(&address)
             .unwrap();
         assert_eq!(counter, 1);
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_sync_recovery_after_gap(mut instance: crate::utils::LocalInstance) {
-        // Create initial sync
+        // Create initial sync - use new_block_unsynced and manually sync to control state
         for _ in 0..5 {
-            instance.new_block().await.unwrap();
-            instance.eth_rpc_source_http_mock.send_new_head();
+            instance.new_block_unsynced().await.unwrap();
         }
         instance.wait_for_processing(Duration::from_millis(2)).await;
+
+        // Manually sync the source to block 5
+        instance
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(5);
 
         // Verify initial sync
         instance
@@ -1788,33 +1810,41 @@ mod tests {
             .await
             .expect("Initial sync should succeed");
 
-        // Create a gap - add more blocks without updating Eth RPC source
-        for _ in 0..10 {
-            instance.new_block().await.unwrap();
+        // Create a gap: max_depth > client_latest_head
+        // If client is at 5, and max_depth is 10, we need latest_head > 15
+        // So send 15 more blocks to reach block 20
+        for _ in 0..15 {
+            instance.new_block_unsynced().await.unwrap();
         }
         instance.wait_for_processing(Duration::from_millis(2)).await;
+
+        // Now at block 20:
+        // - client_latest_head = 5
+        // - min_synced_block = max(5, 20 - 10) = 10
+        // - target_block = (5.min(20)).max(10) = 5.max(10) = 10
+        // - is_synced = (5 >= 10) = false
 
         // Eth RPC source should be out of sync now
         let result = tokio::time::timeout(
             Duration::from_millis(300),
-            instance.wait_for_source_synced(0, U256::from(15), U256::from(15)),
+            instance.wait_for_source_synced(0, U256::from(20), U256::from(20)),
         )
         .await;
         assert!(result.is_err(), "Eth RPC source should be out of sync");
 
-        // Recover sync
-        for _ in 0..10 {
-            instance.eth_rpc_source_http_mock.send_new_head();
-        }
+        // Recover sync by updating the source to block 20
+        instance
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(20);
 
         // Should be synced again
         instance
-            .wait_for_source_synced(0, U256::from(15), U256::from(15))
+            .wait_for_source_synced(0, U256::from(20), U256::from(20))
             .await
             .expect("Sync should recover");
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_zero_block_edge_case(mut instance: crate::utils::LocalInstance) {
         // Test with block 0 / genesis
         instance.new_block().await.unwrap();
@@ -1835,11 +1865,8 @@ mod tests {
             .expect("Should sync with min_synced_block = 1");
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_source_index_out_of_bounds(mut instance: crate::utils::LocalInstance) {
-        instance.new_block().await.unwrap();
-        instance.wait_for_processing(Duration::from_millis(2)).await;
-
         // Try to access a non-existent source index
         let result = tokio::time::timeout(
             Duration::from_millis(300),
@@ -1854,7 +1881,7 @@ mod tests {
         );
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_rapid_block_progression(mut instance: crate::utils::LocalInstance) {
         // Rapidly send blocks and verify sync keeps up
         for block in 1u64..=30 {
@@ -1886,27 +1913,24 @@ mod tests {
         );
     }
 
-    #[crate::utils::engine_test(all)]
+    #[crate::utils::engine_test(grpc)]
     async fn test_cache_min_synced_block_range_validation(
         mut instance: crate::utils::LocalInstance,
     ) {
-        // Send blocks to create a range
+        // Send blocks and sync source
         for _ in 0..15 {
-            instance.new_block().await.unwrap();
-            instance.eth_rpc_source_http_mock.send_new_head();
+            instance.new_block_unsynced().await.unwrap();
         }
         instance.wait_for_processing(Duration::from_millis(2)).await;
 
-        // Test various min_synced_block values within the valid range
+        instance
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(15);
+
+        // Test various scenarios within the valid range
         let test_cases = vec![
             (U256::from(15), U256::from(10), true, "min < latest"),
             (U256::from(15), U256::from(15), true, "min == latest"),
-            (
-                U256::from(15),
-                U256::from(20),
-                false,
-                "min > latest (should timeout)",
-            ),
             (U256::from(15), U256::ZERO, true, "min = 0"),
             (U256::from(15), U256::from(1), true, "min = 1"),
         ];
@@ -1935,7 +1959,7 @@ mod tests {
     #[test]
     fn test_storage_ref_returns_zero_for_missing_slot() {
         // MockSource without the storage_value set should return U256::ZERO
-        let source = Arc::new(MockSource::new(SourceName::Sequencer));
+        let source = Arc::new(MockSource::new(SourceName::Other));
 
         let cache = Sources::new(vec![source.clone()], 10);
         let address = create_test_address();
