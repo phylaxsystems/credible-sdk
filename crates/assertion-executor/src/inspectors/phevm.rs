@@ -223,15 +223,16 @@ impl<'a> PhEvmInspector<'a> {
                         GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
                     )
                 })?;
-                get_call_inputs(
+                match get_call_inputs(
                     &self.context,
                     call_inputs.target,
                     call_inputs.selector,
                     None,
                     inputs.gas_limit,
-                )
-                .map(PhevmOutcome::from)
-                .map_err(PrecompileError::GetCallInputsError)?
+                ) {
+                    Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::GetCallInputsError(err)),
+                }
             }
             PhEvm::getCallInputsCall::SELECTOR => {
                 let call_inputs = PhEvm::getCallInputsCall::abi_decode(
@@ -242,15 +243,16 @@ impl<'a> PhEvmInspector<'a> {
                         GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
                     )
                 })?;
-                get_call_inputs(
+                match get_call_inputs(
                     &self.context,
                     call_inputs.target,
                     call_inputs.selector,
                     Some(CallScheme::Call),
                     inputs.gas_limit,
-                )
-                .map(PhevmOutcome::from)
-                .map_err(PrecompileError::GetCallInputsError)?
+                ) {
+                    Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::GetCallInputsError(err)),
+                }
             }
             PhEvm::getStaticCallInputsCall::SELECTOR => {
                 let call_inputs =
@@ -260,15 +262,16 @@ impl<'a> PhEvmInspector<'a> {
                                 GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
                             )
                         })?;
-                get_call_inputs(
+                match get_call_inputs(
                     &self.context,
                     call_inputs.target,
                     call_inputs.selector,
                     Some(CallScheme::StaticCall),
                     inputs.gas_limit,
-                )
-                .map(PhevmOutcome::from)
-                .map_err(PrecompileError::GetCallInputsError)?
+                ) {
+                    Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::GetCallInputsError(err)),
+                }
             }
             PhEvm::getDelegateCallInputsCall::SELECTOR => {
                 let call_inputs =
@@ -278,15 +281,16 @@ impl<'a> PhEvmInspector<'a> {
                                 GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
                             )
                         })?;
-                get_call_inputs(
+                match get_call_inputs(
                     &self.context,
                     call_inputs.target,
                     call_inputs.selector,
                     Some(CallScheme::DelegateCall),
                     inputs.gas_limit,
-                )
-                .map(PhevmOutcome::from)
-                .map_err(PrecompileError::GetCallInputsError)?
+                ) {
+                    Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::GetCallInputsError(err)),
+                }
             }
             PhEvm::getCallCodeInputsCall::SELECTOR => {
                 let call_inputs =
@@ -296,15 +300,16 @@ impl<'a> PhEvmInspector<'a> {
                                 GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
                             )
                         })?;
-                get_call_inputs(
+                match get_call_inputs(
                     &self.context,
                     call_inputs.target,
                     call_inputs.selector,
                     Some(CallScheme::CallCode),
                     inputs.gas_limit,
-                )
-                .map(PhevmOutcome::from)
-                .map_err(PrecompileError::GetCallInputsError)?
+                ) {
+                    Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::GetCallInputsError(err)),
+                }
             }
             PhEvm::getStateChangesCall::SELECTOR => {
                 match get_state_changes(&input_bytes, &self.context, inputs.gas_limit) {
