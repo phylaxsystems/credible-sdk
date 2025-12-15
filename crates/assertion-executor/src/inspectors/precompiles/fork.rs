@@ -1,3 +1,5 @@
+use crate::inspectors::precompiles::deduct_gas_and_check;
+use crate::inspectors::precompiles::BASE_COST;
 use crate::{
     db::{
         DatabaseCommit,
@@ -9,11 +11,10 @@ use crate::{
         },
     },
     inspectors::{
-        CallTracer,
-        sol_primitives::PhEvm::{
+        CallTracer, phevm::PhevmOutcome, sol_primitives::PhEvm::{
             forkPostCallCall,
             forkPreCallCall,
-        },
+        }
     },
     primitives::{
         Bytes,
@@ -27,6 +28,10 @@ use alloy_primitives::{
 };
 use alloy_sol_types::SolCall;
 use revm::context::ContextTr;
+
+const PERSISTENT_WRITE: u64 = 20;
+const SET_FORK: u64 = 20;
+const MEM_WRITE_COST: u64 = 3;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ForkError {
@@ -46,40 +51,70 @@ pub enum ForkError {
     CallInsideRevertedSubtree { call_id: usize },
     #[error("Call ID {call_id} is too large to be a valid index")]
     CallIdOverflow { call_id: U256 },
+    #[error("Out of gas")]
+    OutOfGas(PhevmOutcome),
 }
 
 /// Fork to the state before the transaction.
 pub fn fork_pre_tx<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
-) -> Result<Bytes, ForkError>
+    gas: u64,
+) -> Result<PhevmOutcome, ForkError>
 where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(ForkError::OutOfGas(rax));
+    }
+
     let journal = context.journal_mut();
+
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
+        return Err(ForkError::OutOfGas(rax));
+    }
+
     journal
         .database
         .switch_fork(ForkId::PreTx, &mut journal.inner, call_tracer)
         .map_err(ForkError::MultiForkPreTxDbError)?;
-    Ok(Bytes::default())
+
+    Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left))
 }
 
 /// Fork to the state after the transaction.
 pub fn fork_post_tx<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
-) -> Result<Bytes, ForkError>
+    gas: u64
+) -> Result<PhevmOutcome, ForkError>
 where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(ForkError::OutOfGas(rax));
+    }
+
     let journal = context.journal_mut();
+
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
+        return Err(ForkError::OutOfGas(rax));
+    }
+
     journal
         .database
         .switch_fork(ForkId::PostTx, &mut journal.inner, call_tracer)
         .map_err(ForkError::MultiForkPostTxDbError)?;
-    Ok(Bytes::default())
+
+    Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left))
 }
 
 /// Fork to the state before the call.
@@ -87,11 +122,19 @@ pub fn fork_pre_call<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX
     context: &mut CTX,
     call_tracer: &CallTracer,
     input_bytes: &Bytes,
-) -> Result<Bytes, ForkError>
+    gas: u64
+) -> Result<PhevmOutcome, ForkError>
 where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(ForkError::OutOfGas(rax));
+    }
+
     let call_id = forkPreCallCall::abi_decode(input_bytes)
         .map_err(ForkError::DecodeError)?
         .id;
@@ -107,15 +150,32 @@ where
     }
 
     let journal = context.journal_mut();
+
+    let fork_id = ForkId::PreCall(call_id.try_into().map_err(ForkError::IdExceedsUsize)?);
+    
+    // if the fork does not exist, price memory for creating it
+    if !journal.database.fork_exists(&fork_id) {
+        let journal_size = journal.database.post_tx_journal_size() as u64;
+        let jouranl_words = journal_size.div_ceil(32);
+        if let Some(rax) = deduct_gas_and_check(&mut gas_left, jouranl_words * MEM_WRITE_COST, gas_limit) {
+            return Err(ForkError::OutOfGas(rax));
+        }
+    }
+
+    // deduct gas for switching forks
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
+        return Err(ForkError::OutOfGas(rax));
+    }
+
     journal
         .database
         .switch_fork(
-            ForkId::PreCall(call_id.try_into().map_err(ForkError::IdExceedsUsize)?),
+            fork_id,
             &mut journal.inner,
             call_tracer,
         )
         .map_err(ForkError::MultiForkPreCallDbError)?;
-    Ok(Bytes::default())
+    Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left))
 }
 
 /// Fork to the state after the call.
@@ -123,11 +183,19 @@ pub fn fork_post_call<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CT
     context: &mut CTX,
     call_tracer: &CallTracer,
     input_bytes: &Bytes,
-) -> Result<Bytes, ForkError>
+    gas: u64,
+) -> Result<PhevmOutcome, ForkError>
 where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(ForkError::OutOfGas(rax));
+    }
+
     let call_id = forkPostCallCall::abi_decode(input_bytes)
         .map_err(ForkError::DecodeError)?
         .id;
@@ -143,15 +211,32 @@ where
     }
 
     let journal = context.journal_mut();
+
+    let fork_id = ForkId::PostCall(call_id.try_into().map_err(ForkError::IdExceedsUsize)?);
+
+    // if the fork does not exist, price memory for creating it
+    if !journal.database.fork_exists(&fork_id) {
+        let journal_size = journal.database.post_tx_journal_size() as u64;
+        let jouranl_words = journal_size.div_ceil(32);
+        if let Some(rax) = deduct_gas_and_check(&mut gas_left, jouranl_words * MEM_WRITE_COST, gas_limit) {
+            return Err(ForkError::OutOfGas(rax));
+        }
+    }
+
+    // deduct gas for switching forks
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
+        return Err(ForkError::OutOfGas(rax));
+    }
+
     journal
         .database
         .switch_fork(
-            ForkId::PostCall(call_id.try_into().map_err(ForkError::IdExceedsUsize)?),
+            fork_id,
             &mut journal.inner,
             call_tracer,
         )
         .map_err(ForkError::MultiForkPostCallDbError)?;
-    Ok(Bytes::default())
+    Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left))
 }
 
 #[cfg(test)]

@@ -198,6 +198,18 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         Ok(())
     }
 
+    /// Checks if a fork id exists.
+    /// Used to see if a fork needs to be created for gas accounting.
+    pub fn fork_exists(&self, fork_id: &ForkId) -> bool {
+        self.forks.contains_key(fork_id)
+    }
+
+    /// Returns the size in bytes of the post tx journal.
+    /// Used to price how much memory we need within the precompiles.
+    pub fn post_tx_journal_size(&self) -> usize {
+        std::mem::size_of_val(&self.post_tx_journal)
+    }
+
     fn create_fork(&mut self, journal: &JournalInner<JournalEntry>) -> InternalFork<ExtDb>
     where
         ExtDb: Clone + DatabaseCommit,
