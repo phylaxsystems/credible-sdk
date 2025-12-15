@@ -7,13 +7,17 @@ mod genesis;
 mod integration_tests;
 mod macros;
 mod state;
+mod system_calls;
 mod worker;
 
 use crate::{
     cli::Args,
     worker::StateWorker,
 };
-use state_store::CircularBufferConfig;
+use state_store::{
+    CircularBufferConfig,
+    StateReader,
+};
 
 use rust_tracing::trace;
 use tracing::{
@@ -52,13 +56,19 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let provider = connect_provider(&args.ws_url).await?;
-    let redis = StateWriter::new(
+    let writer = StateWriter::new(
         args.redis_url.as_str(),
-        args.redis_namespace.clone(),
+        &args.redis_namespace,
         CircularBufferConfig::new(args.state_depth)?,
     )
     .context("failed to initialize redis client")?;
-    redis
+    let reader = StateReader::new(
+        args.redis_url.as_str(),
+        &args.redis_namespace,
+        CircularBufferConfig::new(args.state_depth)?,
+    )
+    .context("failed to initialize redis client")?;
+    writer
         .ensure_dump_index_metadata()
         .context("failed to ensure redis namespace index metadata")?;
     // Load genesis from file (required to seed initial state)
@@ -95,7 +105,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut worker = StateWorker::new(provider, trace_provider, redis, genesis_state);
+    let mut worker = StateWorker::new(provider, trace_provider, writer, reader, genesis_state);
 
     match worker.run(args.start_block, shutdown_rx).await {
         Ok(()) => {

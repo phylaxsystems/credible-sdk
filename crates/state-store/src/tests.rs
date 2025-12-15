@@ -161,7 +161,7 @@ async fn test_cumulative_state_with_different_accounts() -> Result<()> {
 
     let namespace = "cumulative_accounts".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
-    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     // Block 0: Account 0x11 with balance 1000
     let addr_0x11 = Address::repeat_byte(0x11);
@@ -247,7 +247,7 @@ async fn test_cumulative_state_with_account_updates() -> Result<()> {
 
     let namespace = "cumulative_updates".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
-    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let address = Address::repeat_byte(0x55);
 
@@ -318,7 +318,7 @@ async fn test_cumulative_storage_updates() -> Result<()> {
 
     let namespace = "cumulative_storage".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
-    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let address = Address::repeat_byte(0x66);
 
@@ -416,7 +416,7 @@ async fn test_single_block_only_one_state_available() -> Result<()> {
 
     let namespace = "single_block".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
-    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let latest = writer.latest_block_number()?;
     assert_eq!(latest, None, "Should have no blocks initially");
@@ -496,7 +496,7 @@ async fn test_large_scale_rotation() -> Result<()> {
 
     let namespace = "large_scale".to_string();
     let config = CircularBufferConfig { buffer_size: 5 };
-    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace.clone(), config)?;
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let address = Address::repeat_byte(0xcc);
 
@@ -555,7 +555,7 @@ async fn test_zero_storage_values_are_deleted() -> Result<()> {
 
     let writer = StateWriter::new(
         &format!("redis://{host}:{port}"),
-        namespace.clone(),
+        &namespace,
         config.clone(),
     )?;
     let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
@@ -636,7 +636,7 @@ async fn test_roundtrip_basic_account_read() -> Result<()> {
 
     let writer = StateWriter::new(
         &format!("redis://{host}:{port}"),
-        namespace.clone(),
+        &namespace,
         config.clone(),
     )?;
     let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
@@ -682,7 +682,7 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
 
     let writer = StateWriter::new(
         &format!("redis://{host}:{port}"),
-        namespace.clone(),
+        &namespace,
         config.clone(),
     )?;
     let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
@@ -748,7 +748,7 @@ async fn test_roundtrip_account_with_code() -> Result<()> {
 
     let writer = StateWriter::new(
         &format!("redis://{host}:{port}"),
-        namespace.clone(),
+        &namespace,
         config.clone(),
     )?;
     let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
@@ -795,7 +795,7 @@ async fn test_roundtrip_circular_buffer_rotation() -> Result<()> {
 
     let writer = StateWriter::new(
         &format!("redis://{host}:{port}"),
-        namespace.clone(),
+        &namespace,
         config.clone(),
     )?;
     let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
@@ -862,7 +862,7 @@ async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
 
     let writer = StateWriter::new(
         &format!("redis://{host}:{port}"),
-        namespace.clone(),
+        &namespace,
         config.clone(),
     )?;
     let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
@@ -938,7 +938,7 @@ async fn test_roundtrip_block_metadata() -> Result<()> {
 
     let writer = StateWriter::new(
         &format!("redis://{host}:{port}"),
-        namespace.clone(),
+        &namespace,
         config.clone(),
     )?;
     let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
@@ -1013,7 +1013,7 @@ async fn test_roundtrip_storage_evolution() -> Result<()> {
 
     let writer = StateWriter::new(
         &format!("redis://{host}:{port}"),
-        namespace.clone(),
+        &namespace,
         config.clone(),
     )?;
     let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;
@@ -1091,7 +1091,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
 
     let writer = StateWriter::new(
         &format!("redis://{host}:{port}"),
-        namespace.clone(),
+        &namespace,
         config.clone(),
     )?;
     let reader = StateReader::new(&format!("redis://{host}:{port}"), &namespace, config)?;

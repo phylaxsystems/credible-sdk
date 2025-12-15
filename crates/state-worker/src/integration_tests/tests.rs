@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_lines)]
+#![allow(clippy::manual_range_contains)]
 use crate::{
     cli::ProviderType,
     connect_provider,
@@ -775,9 +776,16 @@ async fn test_restart_continues_from_last_block() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = StateWriter::new(
+        let writer = StateWriter::new(
             &redis_url,
-            "restart_test".to_string(),
+            "restart_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let reader = StateReader::new(
+            &redis_url,
+            "restart_test",
             CircularBufferConfig::new(3).unwrap(),
         )
         .unwrap();
@@ -788,7 +796,7 @@ async fn test_restart_continues_from_last_block() {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, redis.clone(), None);
+        let mut worker = StateWorker::new(provider, trace_provider, writer.clone(), reader, None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         // Start worker in background
@@ -836,15 +844,22 @@ async fn test_restart_continues_from_last_block() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = StateWriter::new(
+        let writer = StateWriter::new(
             &redis_url,
-            "restart_test".to_string(),
+            "restart_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let reader = StateReader::new(
+            &redis_url,
+            "restart_test",
             CircularBufferConfig::new(3).unwrap(),
         )
         .unwrap();
 
         // Verify it starts from the correct block
-        let start_block = redis.latest_block_number().unwrap();
+        let start_block = writer.latest_block_number().unwrap();
         assert_eq!(start_block, Some(3), "Should resume from block 3");
 
         let trace_provider = state::create_trace_provider(
@@ -853,7 +868,7 @@ async fn test_restart_continues_from_last_block() {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, redis.clone(), None);
+        let mut worker = StateWorker::new(provider, trace_provider, writer.clone(), reader, None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move {
@@ -937,9 +952,16 @@ async fn test_restart_with_buffer_wrap_applies_diffs() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = StateWriter::new(
+        let writer = StateWriter::new(
             &redis_url,
-            "wrap_test".to_string(),
+            "wrap_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let reader = StateReader::new(
+            &redis_url,
+            "wrap_test",
             CircularBufferConfig::new(3).unwrap(),
         )
         .unwrap();
@@ -950,7 +972,7 @@ async fn test_restart_with_buffer_wrap_applies_diffs() {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, redis, None);
+        let mut worker = StateWorker::new(provider, trace_provider, writer, reader, None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
@@ -999,9 +1021,16 @@ async fn test_restart_with_buffer_wrap_applies_diffs() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = StateWriter::new(
+        let writer = StateWriter::new(
             &redis_url,
-            "wrap_test".to_string(),
+            "wrap_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let reader = StateReader::new(
+            &redis_url,
+            "wrap_test",
             CircularBufferConfig::new(3).unwrap(),
         )
         .unwrap();
@@ -1012,7 +1041,7 @@ async fn test_restart_with_buffer_wrap_applies_diffs() {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, redis, None);
+        let mut worker = StateWorker::new(provider, trace_provider, writer, reader, None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
@@ -1087,9 +1116,16 @@ async fn test_restart_after_mid_block_crash() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = StateWriter::new(
+        let writer = StateWriter::new(
             &redis_url,
-            "crash_test".to_string(),
+            "crash_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let reader = StateReader::new(
+            &redis_url,
+            "crash_test",
             CircularBufferConfig::new(3).unwrap(),
         )
         .unwrap();
@@ -1100,7 +1136,7 @@ async fn test_restart_after_mid_block_crash() {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, redis, None);
+        let mut worker = StateWorker::new(provider, trace_provider, writer, reader, None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
@@ -1138,15 +1174,22 @@ async fn test_restart_after_mid_block_crash() {
             .await
             .expect("Failed to connect to provider");
 
-        let redis = StateWriter::new(
+        let writer = StateWriter::new(
             &redis_url,
-            "crash_test".to_string(),
+            "crash_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let reader = StateReader::new(
+            &redis_url,
+            "crash_test",
             CircularBufferConfig::new(3).unwrap(),
         )
         .unwrap();
 
         // Verify it detects the correct resume point
-        let start_block = redis.latest_block_number().unwrap();
+        let start_block = writer.latest_block_number().unwrap();
         assert_eq!(start_block, Some(2), "Should detect last completed block");
 
         let trace_provider = state::create_trace_provider(
@@ -1155,7 +1198,7 @@ async fn test_restart_after_mid_block_crash() {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, redis, None);
+        let mut worker = StateWorker::new(provider, trace_provider, writer, reader, None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
@@ -1605,4 +1648,221 @@ async fn test_get_storage_returns_individual_slot() {
         .expect("Failed to get storage");
 
     assert!(missing.is_none(), "Non-existent slot should return None");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_eip2935_and_eip4788_system_contracts() {
+    use crate::system_calls::HISTORY_BUFFER_LENGTH;
+    use alloy::eips::{
+        eip2935::{
+            HISTORY_STORAGE_ADDRESS,
+            HISTORY_STORAGE_CODE,
+        },
+        eip4788::{
+            BEACON_ROOTS_ADDRESS,
+            BEACON_ROOTS_CODE,
+        },
+    };
+
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+
+    let test_address = "0xdddddddddddddddddddddddddddddddddddddddd";
+
+    // Process 3 blocks with a regular transaction to verify system calls merge with trace state
+    for i in 1..=3 {
+        let parity_trace = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": [{
+                "transactionHash": format!("0x{:064x}", i),
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {
+                    test_address: {
+                        "balance": { "+": format!("0x{:x}", i * 0x100) },
+                        "nonce": { "+": format!("0x{:x}", i) },
+                        "code": { "+": "0x" },
+                        "storage": {}
+                    }
+                },
+                "output": "0x"
+            }]
+        });
+        instance
+            .http_server_mock
+            .add_response("trace_replayBlockTransactions", parity_trace);
+        instance.http_server_mock.send_new_head();
+        sleep(Duration::from_millis(150)).await;
+    }
+
+    sleep(Duration::from_millis(300)).await;
+
+    // Wait for block 3 to be processed
+    let client =
+        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
+    let mut conn = client
+        .get_connection()
+        .expect("Failed to get Redis connection");
+
+    let mut latest: Option<u64> = None;
+    for _ in 0..30 {
+        latest = get_latest_block_from_redis(&mut conn, "state_worker_test", 3);
+        if latest == Some(3) {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(latest, Some(3), "Should process 3 blocks");
+
+    let reader = StateReader::new(
+        &instance.redis_url,
+        "state_worker_test",
+        CircularBufferConfig::new(3).unwrap(),
+    )
+    .expect("Failed to create reader");
+
+    // Verify the regular account from trace exists (system calls merge with trace state)
+    let test_address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
+    let test_account = reader
+        .get_account(test_address_hash.into(), 3)
+        .expect("Failed to get test account")
+        .expect("Test account should exist");
+    assert_eq!(test_account.balance, U256::from(0x300));
+
+    // EIP-2935 Verification
+    let eip2935_address_hash = keccak256(HISTORY_STORAGE_ADDRESS);
+    let eip2935_account = reader
+        .get_full_account(eip2935_address_hash.into(), 3)
+        .expect("Failed to get EIP-2935 account")
+        .expect("EIP-2935 account should exist");
+
+    // Verify code hash
+    let expected_eip2935_code_hash = keccak256(&HISTORY_STORAGE_CODE);
+    assert_eq!(
+        eip2935_account.code_hash, expected_eip2935_code_hash,
+        "EIP-2935 should have correct code hash"
+    );
+    assert_eq!(eip2935_account.nonce, 1, "EIP-2935 nonce should be 1");
+    assert_eq!(
+        eip2935_account.balance,
+        U256::ZERO,
+        "EIP-2935 balance should be 0"
+    );
+
+    // Verify storage contains parent block hashes (slot = block_number % 8191)
+    assert!(
+        !eip2935_account.storage.is_empty(),
+        "EIP-2935 should have storage slots for parent hashes"
+    );
+
+    // EIP-4788 Verification
+    let eip4788_address_hash = keccak256(BEACON_ROOTS_ADDRESS);
+    let eip4788_account = reader
+        .get_full_account(eip4788_address_hash.into(), 3)
+        .expect("Failed to get EIP-4788 account")
+        .expect("EIP-4788 account should exist");
+
+    // Verify code hash
+    let expected_eip4788_code_hash = keccak256(&BEACON_ROOTS_CODE);
+    assert_eq!(
+        eip4788_account.code_hash, expected_eip4788_code_hash,
+        "EIP-4788 should have correct code hash"
+    );
+    assert_eq!(eip4788_account.nonce, 1, "EIP-4788 nonce should be 1");
+    assert_eq!(
+        eip4788_account.balance,
+        U256::ZERO,
+        "EIP-4788 balance should be 0"
+    );
+
+    // Verify the dual ring buffer pattern: timestamp at slot N, root at slot N + 8191
+    assert!(
+        eip4788_account.storage.len() >= 2,
+        "EIP-4788 should have at least 2 storage slots (timestamp + root)"
+    );
+
+    let mut has_low_slot = false;
+    let mut has_high_slot = false;
+    for slot in eip4788_account.storage.keys() {
+        let slot_u64 = slot.to::<u64>();
+        if slot_u64 < HISTORY_BUFFER_LENGTH {
+            has_low_slot = true;
+        } else if slot_u64 >= HISTORY_BUFFER_LENGTH && slot_u64 < 2 * HISTORY_BUFFER_LENGTH {
+            has_high_slot = true;
+        }
+    }
+    assert!(
+        has_low_slot,
+        "EIP-4788 should have timestamp slot (< HISTORY_BUFFER_LENGTH)"
+    );
+    assert!(
+        has_high_slot,
+        "EIP-4788 should have root slot (>= HISTORY_BUFFER_LENGTH)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_genesis_block_skips_system_calls() {
+    use alloy::eips::{
+        eip2935::HISTORY_STORAGE_ADDRESS,
+        eip4788::BEACON_ROOTS_ADDRESS,
+    };
+
+    // Create genesis with a test account
+    let genesis_json = r#"{
+        "alloc": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+                "balance": "0x100",
+                "nonce": "0x0"
+            }
+        }
+    }"#;
+
+    let genesis_state =
+        genesis::parse_from_str(genesis_json).expect("failed to parse test genesis json");
+
+    let instance = LocalInstance::new_with_setup_and_genesis(|_| {}, Some(genesis_state))
+        .await
+        .expect("Failed to start instance");
+
+    sleep(Duration::from_millis(500)).await;
+
+    let reader = StateReader::new(
+        &instance.redis_url,
+        "state_worker_test",
+        CircularBufferConfig::new(3).unwrap(),
+    )
+    .expect("Failed to create reader");
+
+    // Verify genesis account exists
+    let genesis_address_hash =
+        keccak256(hex::decode("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap());
+    let genesis_account = reader
+        .get_account(genesis_address_hash.into(), 0)
+        .expect("Failed to get genesis account");
+    assert!(
+        genesis_account.is_some(),
+        "Genesis account should exist at block 0"
+    );
+
+    // Verify system contracts do NOT exist at block 0 (system calls skip genesis)
+    let eip2935_address_hash = keccak256(HISTORY_STORAGE_ADDRESS);
+    let eip2935_account = reader
+        .get_account(eip2935_address_hash.into(), 0)
+        .expect("Failed to get EIP-2935 account");
+    assert!(
+        eip2935_account.is_none(),
+        "EIP-2935 should NOT exist at genesis block (block 0)"
+    );
+
+    let eip4788_address_hash = keccak256(BEACON_ROOTS_ADDRESS);
+    let eip4788_account = reader
+        .get_account(eip4788_address_hash.into(), 0)
+        .expect("Failed to get EIP-4788 account");
+    assert!(
+        eip4788_account.is_none(),
+        "EIP-4788 should NOT exist at genesis block (block 0)"
+    );
 }

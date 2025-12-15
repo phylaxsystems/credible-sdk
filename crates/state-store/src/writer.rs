@@ -40,10 +40,10 @@ impl StateWriter {
     /// Build a new writer with circular buffer support.
     pub fn new(
         redis_url: &str,
-        base_namespace: String,
+        base_namespace: &str,
         buffer_config: CircularBufferConfig,
     ) -> StateResult<Self> {
-        let client = RedisStateClient::new(redis_url, base_namespace, buffer_config)?;
+        let client = RedisStateClient::new(redis_url, base_namespace.to_string(), buffer_config)?;
         Ok(Self { client })
     }
 
