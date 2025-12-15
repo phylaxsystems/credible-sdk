@@ -25,7 +25,7 @@ on:
 jobs:
   rust-base:
     name: Rust Base
-    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@fix/runner
+    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
     with:
       runner-group: "big-bois-x86"
       rust-channel: "nightly"
