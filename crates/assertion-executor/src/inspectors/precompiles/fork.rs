@@ -80,6 +80,20 @@ where
         return Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left));
     }
 
+    // If the fork does not exist, price memory for creating it.
+    if !journal.database.fork_exists(&ForkId::PreTx) {
+        let bytes_written = journal
+            .database
+            .estimated_create_fork_bytes(ForkId::PreTx, &journal.inner, call_tracer)
+            .map_err(ForkError::MultiForkPreTxDbError)?;
+        let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
+        if let Some(rax) =
+            deduct_gas_and_check(&mut gas_left, words_written * MEM_WRITE_COST, gas_limit)
+        {
+            return Err(ForkError::OutOfGas(rax));
+        }
+    }
+
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
         return Err(ForkError::OutOfGas(rax));
     }
@@ -114,6 +128,20 @@ where
     // No-op fork can be amortized in the base cost.
     if journal.database.is_active_fork(ForkId::PostTx) {
         return Ok(PhevmOutcome::new(Bytes::default(), gas_limit - gas_left));
+    }
+
+    // If the fork does not exist, price memory for creating it.
+    if !journal.database.fork_exists(&ForkId::PostTx) {
+        let bytes_written = journal
+            .database
+            .estimated_create_fork_bytes(ForkId::PostTx, &journal.inner, call_tracer)
+            .map_err(ForkError::MultiForkPostTxDbError)?;
+        let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
+        if let Some(rax) =
+            deduct_gas_and_check(&mut gas_left, words_written * MEM_WRITE_COST, gas_limit)
+        {
+            return Err(ForkError::OutOfGas(rax));
+        }
     }
 
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
@@ -300,6 +328,7 @@ mod test {
             ContextTr,
             JournalInner,
             JournalTr,
+            journaled_state::JournalCheckpoint,
         },
         handler::MainnetContext,
         interpreter::Host,
@@ -519,9 +548,8 @@ mod test {
     }
 
     #[test]
-    fn test_fork_post_call_gas_includes_create_fork_write_cost() {
+    fn test_fork_post_call_gas_pricing_missing_existing_and_noop() {
         use crate::inspectors::sol_primitives::PhEvm::forkPostCallCall;
-        use revm::context::journaled_state::JournalCheckpoint;
 
         let address = random_address();
         let slot = random_u256();
@@ -550,21 +578,260 @@ mod test {
 
         let calldata: Bytes = forkPostCallCall { id: U256::ZERO }.abi_encode().into();
 
-        let expected_bytes = {
+        let expected_bytes_create = {
             let journal = context.journal_mut();
             journal
                 .database
                 .estimated_create_fork_bytes(ForkId::PostCall(0), &journal.inner, &call_tracer)
                 .unwrap()
         };
-        let expected_words = expected_bytes.div_ceil(EVM_WORD_BYTES);
-        let expected_gas = BASE_COST + PERSISTENT_WRITE + SET_FORK + expected_words * MEM_WRITE_COST;
+        let expected_words_create = expected_bytes_create.div_ceil(EVM_WORD_BYTES);
+        let expected_gas_create =
+            BASE_COST + PERSISTENT_WRITE + SET_FORK + expected_words_create * MEM_WRITE_COST;
 
         let outcome = fork_post_call(&mut context, &call_tracer, &calldata, TEST_GAS).unwrap();
-        assert_eq!(outcome.gas(), expected_gas);
+        assert_eq!(outcome.gas(), expected_gas_create);
 
         // No-op on the already-active fork should be base-only.
         let outcome = fork_post_call(&mut context, &call_tracer, &calldata, TEST_GAS).unwrap();
         assert_eq!(outcome.gas(), BASE_COST);
+
+        // Switching away and back to an existing fork should not include create_fork memory cost.
+        let outcome = fork_post_tx(&mut context, &call_tracer, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST + PERSISTENT_WRITE + SET_FORK);
+
+        let outcome = fork_post_call(&mut context, &call_tracer, &calldata, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST + PERSISTENT_WRITE + SET_FORK);
+    }
+
+    #[test]
+    fn test_fork_pre_call_gas_pricing_missing_existing_and_noop() {
+        use crate::inspectors::sol_primitives::PhEvm::forkPreCallCall;
+
+        let address = random_address();
+        let slot = random_u256();
+        let post_value = U256::from(456);
+
+        let (mut multi_fork_db, test_journal) =
+            create_test_context_with_mock_db(vec![], vec![(address, slot, post_value)]);
+
+        let mut call_tracer = CallTracer::default();
+        call_tracer.insert_trace(address);
+        call_tracer.pre_call_checkpoints = vec![JournalCheckpoint {
+            log_i: test_journal.logs.len(),
+            journal_i: test_journal.journal.len(),
+        }];
+        call_tracer.post_call_checkpoints = vec![Some(JournalCheckpoint {
+            log_i: test_journal.logs.len(),
+            journal_i: test_journal.journal.len(),
+        })];
+
+        let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        context.modify_journal(|journal| {
+            journal.inner = test_journal;
+        });
+
+        let calldata: Bytes = forkPreCallCall { id: U256::ZERO }.abi_encode().into();
+
+        let expected_bytes_create = {
+            let journal = context.journal_mut();
+            journal
+                .database
+                .estimated_create_fork_bytes(ForkId::PreCall(0), &journal.inner, &call_tracer)
+                .unwrap()
+        };
+        let expected_words_create = expected_bytes_create.div_ceil(EVM_WORD_BYTES);
+        let expected_gas_create =
+            BASE_COST + PERSISTENT_WRITE + SET_FORK + expected_words_create * MEM_WRITE_COST;
+
+        let outcome = fork_pre_call(&mut context, &call_tracer, &calldata, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), expected_gas_create);
+
+        let outcome = fork_pre_call(&mut context, &call_tracer, &calldata, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST);
+
+        let outcome = fork_post_tx(&mut context, &call_tracer, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST + PERSISTENT_WRITE + SET_FORK);
+
+        let outcome = fork_pre_call(&mut context, &call_tracer, &calldata, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST + PERSISTENT_WRITE + SET_FORK);
+    }
+
+    #[test]
+    fn test_fork_tx_gas_pricing_noop_and_switch() {
+        let address = random_address();
+        let slot = random_u256();
+        let post_value = U256::from(999);
+
+        let (mut multi_fork_db, test_journal) =
+            create_test_context_with_mock_db(vec![], vec![(address, slot, post_value)]);
+
+        let call_tracer = CallTracer::default();
+        let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        context.modify_journal(|journal| {
+            journal.inner = test_journal;
+        });
+
+        // Starts on PostTx (active): no-op.
+        let outcome = fork_post_tx(&mut context, &call_tracer, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST);
+
+        // Switch to PreTx.
+        let outcome = fork_pre_tx(&mut context, &call_tracer, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST + PERSISTENT_WRITE + SET_FORK);
+
+        // No-op on PreTx.
+        let outcome = fork_pre_tx(&mut context, &call_tracer, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST);
+
+        // Switch back to PostTx.
+        let outcome = fork_post_tx(&mut context, &call_tracer, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST + PERSISTENT_WRITE + SET_FORK);
+
+        // No-op on PostTx.
+        let outcome = fork_post_tx(&mut context, &call_tracer, TEST_GAS).unwrap();
+        assert_eq!(outcome.gas(), BASE_COST);
+    }
+
+    fn assert_oog(
+        result: Result<PhevmOutcome, ForkError>,
+        gas_limit: u64,
+        context: &str,
+    ) {
+        match result {
+            Err(ForkError::OutOfGas(outcome)) => assert_eq!(
+                outcome.gas(),
+                gas_limit,
+                "expected all gas consumed for OOG ({context})"
+            ),
+            other => panic!("expected OutOfGas for {context}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fork_gas_oog_at_base_cost() {
+        use crate::inspectors::sol_primitives::PhEvm::{
+            forkPostCallCall,
+            forkPreCallCall,
+        };
+
+        let address = random_address();
+        let slot = random_u256();
+        let post_value = U256::from(123);
+        let (mut multi_fork_db, test_journal) =
+            create_test_context_with_mock_db(vec![], vec![(address, slot, post_value)]);
+
+        let mut call_tracer = CallTracer::default();
+        call_tracer.insert_trace(address);
+        call_tracer.pre_call_checkpoints = vec![JournalCheckpoint {
+            log_i: test_journal.logs.len(),
+            journal_i: test_journal.journal.len(),
+        }];
+        call_tracer.post_call_checkpoints = vec![Some(JournalCheckpoint {
+            log_i: test_journal.logs.len(),
+            journal_i: test_journal.journal.len(),
+        })];
+
+        let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        context.modify_journal(|journal| {
+            journal.inner = test_journal;
+        });
+
+        let gas_limit = BASE_COST - 1;
+        assert_oog(fork_pre_tx(&mut context, &call_tracer, gas_limit), gas_limit, "pre_tx base");
+
+        // Reset to a known state (PostTx is active by default, but pre_tx above may have mutated).
+        let gas_limit = BASE_COST - 1;
+        assert_oog(
+            fork_post_tx(&mut context, &call_tracer, gas_limit),
+            gas_limit,
+            "post_tx base",
+        );
+
+        let calldata_pre: Bytes = forkPreCallCall { id: U256::ZERO }.abi_encode().into();
+        let gas_limit = BASE_COST - 1;
+        assert_oog(
+            fork_pre_call(&mut context, &call_tracer, &calldata_pre, gas_limit),
+            gas_limit,
+            "pre_call base",
+        );
+
+        let calldata_post: Bytes = forkPostCallCall { id: U256::ZERO }.abi_encode().into();
+        let gas_limit = BASE_COST - 1;
+        assert_oog(
+            fork_post_call(&mut context, &call_tracer, &calldata_post, gas_limit),
+            gas_limit,
+            "post_call base",
+        );
+    }
+
+    #[test]
+    fn test_fork_gas_oog_at_switch_cost() {
+        let address = random_address();
+        let slot = random_u256();
+        let post_value = U256::from(123);
+        let (mut multi_fork_db, test_journal) =
+            create_test_context_with_mock_db(vec![], vec![(address, slot, post_value)]);
+
+        let call_tracer = CallTracer::default();
+        let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        context.modify_journal(|journal| {
+            journal.inner = test_journal;
+        });
+
+        // Enough for BASE_COST, but not enough for PERSISTENT_WRITE + SET_FORK.
+        let gas_limit = BASE_COST + PERSISTENT_WRITE + SET_FORK - 1;
+        assert_oog(
+            fork_pre_tx(&mut context, &call_tracer, gas_limit),
+            gas_limit,
+            "pre_tx switch",
+        );
+    }
+
+    #[test]
+    fn test_fork_gas_oog_at_create_fork_memory_cost() {
+        use crate::inspectors::sol_primitives::PhEvm::forkPreCallCall;
+
+        let address = random_address();
+        let slot = random_u256();
+        let post_value = U256::from(123);
+        let (mut multi_fork_db, test_journal) =
+            create_test_context_with_mock_db(vec![], vec![(address, slot, post_value)]);
+
+        let mut call_tracer = CallTracer::default();
+        call_tracer.insert_trace(address);
+        call_tracer.pre_call_checkpoints = vec![JournalCheckpoint {
+            log_i: test_journal.logs.len(),
+            journal_i: test_journal.journal.len(),
+        }];
+        call_tracer.post_call_checkpoints = vec![Some(JournalCheckpoint {
+            log_i: test_journal.logs.len(),
+            journal_i: test_journal.journal.len(),
+        })];
+
+        let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        context.modify_journal(|journal| {
+            journal.inner = test_journal;
+        });
+
+        let bytes_written = {
+            let journal = context.journal_mut();
+            journal
+                .database
+                .estimated_create_fork_bytes(ForkId::PreCall(0), &journal.inner, &call_tracer)
+                .unwrap()
+        };
+        let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
+        assert!(words_written > 0, "expected non-zero create_fork write");
+        let mem_cost = words_written * MEM_WRITE_COST;
+
+        // Enough for base, but not enough for create_fork memory write pricing.
+        let gas_limit = BASE_COST + mem_cost - 1;
+        let calldata: Bytes = forkPreCallCall { id: U256::ZERO }.abi_encode().into();
+        assert_oog(
+            fork_pre_call(&mut context, &call_tracer, &calldata, gas_limit),
+            gas_limit,
+            "pre_call create_fork mem",
+        );
     }
 }
