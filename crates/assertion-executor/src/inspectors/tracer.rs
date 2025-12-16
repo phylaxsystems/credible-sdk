@@ -95,8 +95,7 @@ pub struct CallTracer {
     call_inputs: Vec<CallInputs>,
     /// Parallel to `call_inputs`: the `(target, selector)` key used for indexing each recorded call.
     ///
-    /// Invariant: for any `i < call_inputs.len()`, `target_and_selector_by_call[i]` was pushed when
-    /// the call at index `i` was recorded, and `target_and_selector_indices[&key]` contains `i`.
+    /// This lets truncation remove indices without scanning all map entries.
     target_and_selector_by_call: Vec<TargetAndSelector>,
     /// Assertion store, we limit call input recording to AAs when present.
     ///
@@ -264,27 +263,51 @@ impl CallTracer {
     /// Truncate all call data from the given index onwards.
     /// Called when a call reverts to remove it and all its descendants.
     fn truncate_from(&mut self, index: usize) {
-        // Fast-path cleanup for `target_and_selector_indices`:
-        // walk the calls we are about to drop and remove their indices from the per-key vectors.
         let old_len = self.call_inputs.len();
-        for dropped_call_id in (index..old_len).rev() {
-            let key = &self.target_and_selector_by_call[dropped_call_id];
-            let remove_key = match self.target_and_selector_indices.get_mut(key) {
-                Some(indices) => {
-                    // `indices` is monotonically increasing (call ids are appended), so the common case
-                    // is that the dropped id is the last element.
-                    if indices.last().copied() == Some(dropped_call_id) {
-                        indices.pop();
-                    } else if let Ok(pos) = indices.binary_search(&dropped_call_id) {
-                        indices.remove(pos);
-                    }
-                    indices.is_empty()
-                }
-                None => false,
-            };
-            if remove_key {
-                self.target_and_selector_indices.remove(key);
+        if index >= old_len {
+            return;
+        }
+
+        if index == 0 {
+            self.target_and_selector_indices.clear();
+            self.pending_post_call_writes.clear();
+            self.call_inputs.clear();
+            self.pre_call_checkpoints.clear();
+            self.post_call_checkpoints.clear();
+            self.target_and_selector_by_call.clear();
+            return;
+        }
+
+        // Remove indices for the calls we're dropping without scanning the entire map.
+        //
+        // Invariant: each per-key `Vec<usize>` is append-only and sorted, so truncating calls from
+        // `index..old_len` corresponds to removing the last `count` indices for each affected key.
+        // We batch consecutive calls that share the same key to avoid hashing per call.
+        let mut dropped_counts: HashMap<TargetAndSelector, usize> = HashMap::new();
+        let mut end = old_len;
+        while end > index {
+            let mut start = end - 1;
+            let key = &self.target_and_selector_by_call[start];
+            while start > index && &self.target_and_selector_by_call[start - 1] == key {
+                start -= 1;
             }
+            let run_len = end - start;
+            *dropped_counts.entry(key.clone()).or_insert(0) += run_len;
+            end = start;
+        }
+
+        let mut keys_to_remove: Vec<TargetAndSelector> = Vec::new();
+        for (key, count) in dropped_counts {
+            if let Some(indices) = self.target_and_selector_indices.get_mut(&key) {
+                debug_assert!(count <= indices.len());
+                indices.truncate(indices.len().saturating_sub(count));
+                if indices.is_empty() {
+                    keys_to_remove.push(key);
+                }
+            }
+        }
+        for key in keys_to_remove {
+            self.target_and_selector_indices.remove(&key);
         }
 
         // Clean up any pending writes for children that haven't ended
