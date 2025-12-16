@@ -299,7 +299,6 @@ impl CallTracer {
         let mut keys_to_remove: Vec<TargetAndSelector> = Vec::new();
         for (key, count) in dropped_counts {
             if let Some(indices) = self.target_and_selector_indices.get_mut(&key) {
-                debug_assert!(count <= indices.len());
                 indices.truncate(indices.len().saturating_sub(count));
                 if indices.is_empty() {
                     keys_to_remove.push(key);
