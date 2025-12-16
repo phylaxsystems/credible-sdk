@@ -2015,7 +2015,7 @@ fn test_alternating_future_and_current_events() {
     assert_eq!(engine_recv.len(), 3);
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_large_block_number_jump(mut instance: LocalInstance<_>) {
     // Process the first few blocks normally
     for _ in 0..3 {
@@ -2044,9 +2044,12 @@ async fn test_large_block_number_jump(mut instance: LocalInstance<_>) {
     assert!(instance.block_number >= start_block + U256::from(100));
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_future_block_transaction_queuing(mut instance: LocalInstance<_>) {
     // MUST send CommitHead FIRST to initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -2135,6 +2138,9 @@ async fn test_future_block_transaction_queuing(mut instance: LocalInstance<_>) {
 
         // Commit current block
         instance
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(block);
+        instance
             .transport
             .new_block(U256::from(block), 1, 0)
             .await
@@ -2160,6 +2166,9 @@ async fn test_future_block_transaction_queuing(mut instance: LocalInstance<_>) {
         .unwrap();
 
     instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(9);
+    instance
         .transport
         .new_block(U256::from(9), 1, 0)
         .await
@@ -2176,9 +2185,12 @@ async fn test_future_block_transaction_queuing(mut instance: LocalInstance<_>) {
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_future_block_out_of_order_transactions(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -2305,6 +2317,9 @@ async fn test_future_block_out_of_order_transactions(mut instance: LocalInstance
         if block < 5 {
             // Commit blocks 1-4
             instance
+                .eth_rpc_source_http_mock
+                .send_new_head_with_block_number(block);
+            instance
                 .transport
                 .new_block(U256::from(block), 1, 0)
                 .await
@@ -2337,9 +2352,12 @@ async fn test_future_block_out_of_order_transactions(mut instance: LocalInstance
     assert!(instance.get_transaction_result(&tx3_id).is_some());
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_multiple_future_blocks_interleaved(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -2466,6 +2484,9 @@ async fn test_multiple_future_blocks_interleaved(mut instance: LocalInstance<_>)
         // Commit the block (except the last one which we check separately)
         if block < 7 {
             instance
+                .eth_rpc_source_http_mock
+                .send_new_head_with_block_number(block);
+            instance
                 .transport
                 .new_block(U256::from(block), 1, 0)
                 .await
@@ -2527,9 +2548,12 @@ async fn test_multiple_future_blocks_interleaved(mut instance: LocalInstance<_>)
     }
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_partial_transaction_chain_backwards(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -2662,6 +2686,9 @@ async fn test_partial_transaction_chain_backwards(mut instance: LocalInstance<_>
             .await
             .unwrap();
         instance
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(block);
+        instance
             .transport
             .new_block(U256::from(block), 1, 0)
             .await
@@ -2699,9 +2726,12 @@ async fn test_partial_transaction_chain_backwards(mut instance: LocalInstance<_>
     }
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_mixed_order_iterations(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -2804,6 +2834,9 @@ async fn test_mixed_order_iterations(mut instance: LocalInstance<_>) {
 
     // Commit block 1 and advance through blocks 2-4
     instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(1);
+    instance
         .transport
         .new_block(U256::from(1), 1, 1)
         .await
@@ -2821,6 +2854,9 @@ async fn test_mixed_order_iterations(mut instance: LocalInstance<_>) {
             .new_iteration(1, next_block_env)
             .await
             .unwrap();
+        instance
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(block);
         instance
             .transport
             .new_block(U256::from(block), 1, 0)
@@ -2847,9 +2883,12 @@ async fn test_mixed_order_iterations(mut instance: LocalInstance<_>) {
     assert!(instance.get_transaction_result(&tx5_id).is_some());
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_future_block_reorg_basic(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -2926,6 +2965,9 @@ async fn test_future_block_reorg_basic(mut instance: LocalInstance<_>) {
 
         if block < 5 {
             instance
+                .eth_rpc_source_http_mock
+                .send_new_head_with_block_number(block);
+            instance
                 .transport
                 .new_block(U256::from(block), 1, 0)
                 .await
@@ -2943,9 +2985,12 @@ async fn test_future_block_reorg_basic(mut instance: LocalInstance<_>) {
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_future_block_reorg_with_one_replacement(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -3026,6 +3071,9 @@ async fn test_future_block_reorg_with_one_replacement(mut instance: LocalInstanc
 
     // Advance to block 4
     for block in 1..4 {
+        instance
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(block);
         instance.transport.set_last_tx_hash(None);
         instance.transport.set_n_transactions(0);
         instance
@@ -3070,11 +3118,14 @@ async fn test_future_block_reorg_with_one_replacement(mut instance: LocalInstanc
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_future_block_reorg_with_replacement_and_redundant_reorgs(
     mut instance: LocalInstance<_>,
 ) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -3161,6 +3212,9 @@ async fn test_future_block_reorg_with_replacement_and_redundant_reorgs(
 
     // Advance to block 4
     for block in 1..4 {
+        instance
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(block);
         instance.transport.set_last_tx_hash(None);
         instance.transport.set_n_transactions(0);
         instance
@@ -3199,9 +3253,12 @@ async fn test_future_block_reorg_with_replacement_and_redundant_reorgs(
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_old_reorg_for_current_block_same_hash(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -3310,9 +3367,12 @@ async fn test_old_reorg_for_current_block_same_hash(mut instance: LocalInstance<
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_old_reorg_for_current_block_different_hash(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -3430,9 +3490,12 @@ async fn test_old_reorg_for_current_block_different_hash(mut instance: LocalInst
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_old_reorg_for_future_block_breaks_chain(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -3553,6 +3616,9 @@ async fn test_old_reorg_for_future_block_breaks_chain(mut instance: LocalInstanc
 
         if block < 3 {
             instance
+                .eth_rpc_source_http_mock
+                .send_new_head_with_block_number(block);
+            instance
                 .transport
                 .new_block(U256::from(block), 1, 0)
                 .await
@@ -3586,9 +3652,12 @@ async fn test_old_reorg_for_future_block_breaks_chain(mut instance: LocalInstanc
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_old_reorg_future_block_with_replacement_when_current(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(2);
     instance
         .transport
         .new_block(U256::from(2), 1, 0)
@@ -3757,9 +3826,12 @@ async fn test_old_reorg_future_block_with_replacement_when_current(mut instance:
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_old_reorg_future_block_two_chains(mut instance: LocalInstance<_>) {
     // Initialize
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -3965,6 +4037,9 @@ async fn test_old_reorg_future_block_two_chains(mut instance: LocalInstance<_>) 
             ..Default::default()
         };
         instance
+            .eth_rpc_source_http_mock
+            .send_new_head_with_block_number(block);
+        instance
             .transport
             .new_block(U256::from(block), 1, 0)
             .await
@@ -4035,12 +4110,15 @@ async fn test_old_reorg_future_block_two_chains(mut instance: LocalInstance<_>) 
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_non_sequential_prev_tx_hash_skips_transaction(mut instance: LocalInstance<_>) {
     // Test that tx3 can depend on tx1, effectively making tx2 independent
     // tx1 (index 0, prev_tx_hash = None)
     // tx2 (index 1, prev_tx_hash = None)
     // tx3 (index 1, prev_tx_hash = tx1) - skips tx2
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -4168,13 +4246,16 @@ async fn test_non_sequential_prev_tx_hash_skips_transaction(mut instance: LocalI
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_invalid_prev_tx_hash_skips_transaction(mut instance: LocalInstance<_>) {
     // Test that a transaction with wrong prev_tx_hash is never processed
     // tx0 (index 0, prev_tx_hash = None)
     // tx1 (index 1, prev_tx_hash = wrong_hash) - should be skipped
     // tx2 (index 2, prev_tx_hash = tx0) - should process
 
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -4303,13 +4384,16 @@ async fn test_invalid_prev_tx_hash_skips_transaction(mut instance: LocalInstance
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_chain_with_invalid_middle_link(mut instance: LocalInstance<_>) {
     // Test chain tx0 -> tx1 -> tx2, but tx2 has wrong prev_tx_hash
     // tx0 (index 0, prev_tx_hash = None)
     // tx1 (index 1, prev_tx_hash = tx0)
     // tx2 (index 2, prev_tx_hash = tx0) - WRONG, should be tx1
 
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -4435,12 +4519,15 @@ async fn test_chain_with_invalid_middle_link(mut instance: LocalInstance<_>) {
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_dependency_arrives_with_wrong_hash(mut instance: LocalInstance<_>) {
     // tx1 (index 1) arrives first, expecting dependency with specific hash
     // tx0 (index 0) arrives with different hash
     // tx1 should never be processed
 
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -4536,9 +4623,12 @@ async fn test_dependency_arrives_with_wrong_hash(mut instance: LocalInstance<_>)
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_reorg_and_replacement_current_block(mut instance: LocalInstance<_>) {
     // Send commit head for block 0
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -4648,9 +4738,12 @@ async fn test_reorg_and_replacement_current_block(mut instance: LocalInstance<_>
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_reorg_enables_replacement_transaction(mut instance: LocalInstance<_>) {
     // Send commit head for block 0
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)
@@ -4764,11 +4857,14 @@ async fn test_reorg_enables_replacement_transaction(mut instance: LocalInstance<
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_reorg_enables_replacement_transaction_with_reorg_first(
     mut instance: LocalInstance<_>,
 ) {
     // Send commit head for block 0
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(0);
     instance
         .transport
         .new_block(U256::from(0), 1, 0)

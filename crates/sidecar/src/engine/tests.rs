@@ -945,7 +945,7 @@ async fn test_block_env_wrong_last_tx_hash(mut instance: crate::utils::LocalInst
 
     assert!(
         instance
-            .sequencer_http_mock
+            .fallback_eth_rpc_source_http_mock
             .eth_balance_counter
             .get(&instance.default_account)
             .is_none()

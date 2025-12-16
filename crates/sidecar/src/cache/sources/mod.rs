@@ -11,7 +11,6 @@ use thiserror::Error;
 pub mod eth_rpc_source;
 mod json_rpc_db;
 pub mod redis;
-pub mod sequencer;
 
 /// A data source that provides blockchain state information.
 ///
@@ -116,7 +115,8 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
 pub enum SourceName {
     EthRpcSource,
     Redis,
-    Sequencer,
+    #[cfg(test)]
+    Other,
 }
 
 // FIXME: Derive `strum`
@@ -125,7 +125,8 @@ impl Display for SourceName {
         match self {
             SourceName::EthRpcSource => write!(f, "EthRpcSource"),
             SourceName::Redis => write!(f, "Redis"),
-            SourceName::Sequencer => write!(f, "Sequencer"),
+            #[cfg(test)]
+            SourceName::Other => write!(f, "Other"),
         }
     }
 }

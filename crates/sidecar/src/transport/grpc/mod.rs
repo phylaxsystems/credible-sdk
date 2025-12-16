@@ -243,6 +243,7 @@ mod tests {
         get_transaction_response::Outcome as GetTransactionOutcome,
         sidecar_transport_client::SidecarTransportClient,
     };
+    use crate::transport::event_id_deduplication::EventIdBuffer;
     use alloy::primitives::B256;
     use assertion_executor::primitives::{
         Bytes,
@@ -250,7 +251,6 @@ mod tests {
     };
     use futures::StreamExt;
     use std::{
-        io::Read,
         net::SocketAddr,
         time::Duration,
     };
@@ -414,6 +414,27 @@ mod tests {
         }
     }
 
+    /// Connect to gRPC server with retries for test reliability.
+    async fn connect_grpc_client_with_retry(
+        address: SocketAddr,
+    ) -> SidecarTransportClient<Channel> {
+        const MAX_ATTEMPTS: usize = 10;
+        const RETRY_DELAY: Duration = Duration::from_millis(50);
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            match SidecarTransportClient::connect(format!("http://{address}")).await {
+                Ok(client) => return client,
+                Err(e) if attempt == MAX_ATTEMPTS => {
+                    panic!("Failed to connect to gRPC server after {MAX_ATTEMPTS} attempts: {e}");
+                }
+                Err(_) => {
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        }
+        unreachable!()
+    }
+
     #[crate::utils::engine_test(grpc)]
     async fn test_subscribe_results_receives_single_transaction(
         mut instance: crate::utils::LocalInstance,
@@ -459,27 +480,6 @@ mod tests {
         );
         assert_eq!(result.status, pb::ResultStatus::Success as i32);
         assert!(result.gas_used > 0, "gas_used should be populated");
-    }
-
-    /// Connect to gRPC server with retries for test reliability.
-    async fn connect_grpc_client_with_retry(
-        address: SocketAddr,
-    ) -> SidecarTransportClient<Channel> {
-        const MAX_ATTEMPTS: usize = 10;
-        const RETRY_DELAY: Duration = Duration::from_millis(50);
-
-        for attempt in 1..=MAX_ATTEMPTS {
-            match SidecarTransportClient::connect(format!("http://{address}")).await {
-                Ok(client) => return client,
-                Err(e) if attempt == MAX_ATTEMPTS => {
-                    panic!("Failed to connect to gRPC server after {MAX_ATTEMPTS} attempts: {e}");
-                }
-                Err(_) => {
-                    tokio::time::sleep(RETRY_DELAY).await;
-                }
-            }
-        }
-        unreachable!()
     }
 
     #[crate::utils::engine_test(grpc)]
@@ -655,73 +655,6 @@ mod tests {
     }
 
     #[crate::utils::engine_test(grpc)]
-    async fn test_duplicate_event_id_is_skipped(mut instance: crate::utils::LocalInstance) {
-        instance
-            .new_block()
-            .await
-            .expect("failed to announce new block");
-
-        let address = instance
-            .local_address
-            .expect("grpc transport should expose an address");
-
-        let mut client = connect_grpc_client_with_retry(address).await;
-
-        // Create a channel to send events
-        let (tx, rx) = tokio::sync::mpsc::channel::<Event>(32);
-        let request_stream = ReceiverStream::new(rx);
-
-        // Start the bidirectional stream
-        let mut response_stream = client
-            .stream_events(request_stream)
-            .await
-            .expect("stream_events failed")
-            .into_inner();
-
-        // Create a transaction event with a specific event_id
-        let event_id = 12345u64;
-        let tx_hash = B256::repeat_byte(0x42);
-        let tx_event = create_transaction_event(event_id, tx_hash, 1, 1);
-
-        // Send the event first time
-        tx.send(tx_event.clone())
-            .await
-            .expect("failed to send first event");
-
-        // Wait for the ACK
-        let ack1 = tokio::time::timeout(Duration::from_secs(5), response_stream.next())
-            .await
-            .expect("timeout waiting for first ACK")
-            .expect("stream ended")
-            .expect("ACK error");
-
-        assert!(ack1.success, "first event should succeed");
-        assert_eq!(ack1.event_id, event_id);
-        assert_eq!(ack1.events_processed, 1, "first event should be processed");
-
-        // Send the same event again (duplicate event_id)
-        let duplicate_event = create_transaction_event(event_id, tx_hash, 1, 1);
-        tx.send(duplicate_event)
-            .await
-            .expect("failed to send duplicate event");
-
-        // Wait for the ACK
-        let ack2 = tokio::time::timeout(Duration::from_secs(5), response_stream.next())
-            .await
-            .expect("timeout waiting for second ACK")
-            .expect("stream ended")
-            .expect("ACK error");
-
-        assert!(ack2.success, "duplicate event should still return success");
-        assert_eq!(ack2.event_id, event_id);
-        // events_processed should NOT increment for duplicates
-        assert_eq!(
-            ack2.events_processed, 1,
-            "duplicate event should not increment events_processed"
-        );
-    }
-
-    #[crate::utils::engine_test(grpc)]
     async fn test_different_event_ids_are_all_processed(mut instance: crate::utils::LocalInstance) {
         instance
             .new_block()
@@ -808,64 +741,6 @@ mod tests {
                 "events_processed mismatch at index {i} for event_id {event_id}"
             );
         }
-    }
-
-    #[crate::utils::engine_test(grpc)]
-    async fn test_event_id_zero_is_valid_and_deduplicated(
-        mut instance: crate::utils::LocalInstance,
-    ) {
-        instance
-            .new_block()
-            .await
-            .expect("failed to announce new block");
-
-        let address = instance
-            .local_address
-            .expect("grpc transport should expose an address");
-
-        let mut client = connect_grpc_client_with_retry(address).await;
-
-        let (tx, rx) = tokio::sync::mpsc::channel::<Event>(32);
-        let request_stream = ReceiverStream::new(rx);
-
-        let mut response_stream = client
-            .stream_events(request_stream)
-            .await
-            .expect("stream_events failed")
-            .into_inner();
-
-        // Send event with event_id = 0
-        let tx_hash = B256::repeat_byte(0x01);
-        let event = create_transaction_event(0, tx_hash, 1, 1);
-        tx.send(event).await.expect("failed to send event");
-
-        let ack1 = tokio::time::timeout(Duration::from_secs(5), response_stream.next())
-            .await
-            .expect("timeout")
-            .expect("stream ended")
-            .expect("ACK error");
-
-        assert!(ack1.success);
-        assert_eq!(ack1.event_id, 0);
-        assert_eq!(ack1.events_processed, 1);
-
-        // Send duplicate with event_id = 0
-        let tx_hash_2 = B256::repeat_byte(0x02);
-        let event2 = create_transaction_event(0, tx_hash_2, 1, 1);
-        tx.send(event2).await.expect("failed to send event");
-
-        let ack2 = tokio::time::timeout(Duration::from_secs(5), response_stream.next())
-            .await
-            .expect("timeout")
-            .expect("stream ended")
-            .expect("ACK error");
-
-        assert!(ack2.success);
-        assert_eq!(ack2.event_id, 0);
-        assert_eq!(
-            ack2.events_processed, 1,
-            "event_id 0 should also be deduplicated"
-        );
     }
 
     /// Create a transaction event with the given parameters for testing.

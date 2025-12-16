@@ -9,7 +9,6 @@ use crate::{
     cache::sources::{
         Source,
         eth_rpc_source::EthRpcSource,
-        sequencer::Sequencer,
     },
     engine::queue::{
         CommitHead,
@@ -81,7 +80,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::mpsc;
+use tokio::{
+    sync::mpsc,
+    time::sleep,
+};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tracing::{
@@ -174,8 +176,8 @@ const HTTP_RETRY_DELAY_MS: u64 = 100;
 struct CommonSetup {
     underlying_db: Arc<CacheDB<Arc<Sources>>>,
     sources: Arc<Sources>,
-    sequencer_http_mock: DualProtocolMockServer,
     eth_rpc_source_http_mock: DualProtocolMockServer,
+    fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
     assertion_store: Arc<AssertionStore>,
     state_results: Arc<crate::TransactionsState>,
     default_account: Address,
@@ -192,24 +194,25 @@ impl CommonSetup {
         assertion_store: Option<AssertionStore>,
         result_event_sender: Option<flume::Sender<TransactionResultEvent>>,
     ) -> Result<Self, String> {
-        let sequencer_http_mock = DualProtocolMockServer::new()
-            .await
-            .expect("Failed to create sequencer mock");
         let eth_rpc_source_http_mock = DualProtocolMockServer::new()
             .await
             .expect("Failed to create eth rpc source mock");
-        let mock_sequencer_db: Arc<dyn Source> = Arc::new(
-            Sequencer::try_new(&sequencer_http_mock.http_url())
-                .await
-                .expect("Failed to create sequencer mock"),
-        );
+        let fallback_eth_rpc_source_http_mock = DualProtocolMockServer::new()
+            .await
+            .expect("Failed to create eth rpc source mock");
         let eth_rpc_source_db: Arc<dyn Source> = EthRpcSource::try_build(
             eth_rpc_source_http_mock.ws_url(),
             eth_rpc_source_http_mock.http_url(),
         )
         .await
         .expect("Failed to create eth rpc source mock");
-        let sources = vec![eth_rpc_source_db, mock_sequencer_db];
+        let fallback_eth_rpc_source_db: Arc<dyn Source> = EthRpcSource::try_build(
+            fallback_eth_rpc_source_http_mock.ws_url(),
+            fallback_eth_rpc_source_http_mock.http_url(),
+        )
+        .await
+        .expect("Failed to create eth rpc source mock");
+        let sources = vec![eth_rpc_source_db, fallback_eth_rpc_source_db];
         let cache = Arc::new(Sources::new(sources.clone(), 10));
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
@@ -230,8 +233,8 @@ impl CommonSetup {
         Ok(CommonSetup {
             underlying_db,
             sources: cache,
-            sequencer_http_mock,
             eth_rpc_source_http_mock,
+            fallback_eth_rpc_source_http_mock,
             assertion_store,
             state_results,
             default_account,
@@ -328,12 +331,12 @@ impl LocalInstanceMockDriver {
         Ok(LocalInstance::new_internal(
             setup.underlying_db,
             setup.sources.clone(),
-            setup.sequencer_http_mock,
             setup.eth_rpc_source_http_mock,
+            setup.fallback_eth_rpc_source_http_mock,
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
-            U256::from(0),
+            U256::from(1),
             setup.state_results,
             setup.default_account,
             None,
@@ -376,12 +379,12 @@ impl TestTransport for LocalInstanceMockDriver {
         Ok(LocalInstance::new_internal(
             setup.underlying_db,
             setup.sources.clone(),
-            setup.sequencer_http_mock,
             setup.eth_rpc_source_http_mock,
+            setup.fallback_eth_rpc_source_http_mock,
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
-            U256::from(0),
+            U256::from(1),
             setup.state_results,
             setup.default_account,
             None,
@@ -658,12 +661,12 @@ impl LocalInstanceHttpDriver {
         Ok(LocalInstance::new_internal(
             setup.underlying_db,
             setup.sources.clone(),
-            setup.sequencer_http_mock,
             setup.eth_rpc_source_http_mock,
+            setup.fallback_eth_rpc_source_http_mock,
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
-            U256::from(0),
+            U256::from(1),
             setup.state_results,
             setup.default_account,
             Some(&address),
@@ -1102,12 +1105,12 @@ impl LocalInstanceGrpcDriver {
         Ok(LocalInstance::new_internal(
             setup.underlying_db,
             setup.sources.clone(),
-            setup.sequencer_http_mock,
             setup.eth_rpc_source_http_mock,
+            setup.fallback_eth_rpc_source_http_mock,
             setup.assertion_store,
             Some(transport_handle),
             Some(engine_handle),
-            U256::from(0),
+            U256::from(1),
             setup.state_results,
             setup.default_account,
             Some(&address),
