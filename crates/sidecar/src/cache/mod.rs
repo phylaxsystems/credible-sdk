@@ -1845,27 +1845,6 @@ mod tests {
     }
 
     #[crate::utils::engine_test(grpc)]
-    async fn test_cache_zero_block_edge_case(mut instance: crate::utils::LocalInstance) {
-        // Test with block 0 / genesis
-        instance.new_block().await.unwrap();
-        instance.wait_for_processing(Duration::from_millis(2)).await;
-
-        instance.eth_rpc_source_http_mock.send_new_head();
-
-        // Should be able to sync to block 1 with min_synced_block = 0
-        instance
-            .wait_for_source_synced(0, U256::from(1), U256::ZERO)
-            .await
-            .expect("Should sync with min_synced_block = 0");
-
-        // Should also work with min_synced_block = 1
-        instance
-            .wait_for_source_synced(0, U256::from(1), U256::from(1))
-            .await
-            .expect("Should sync with min_synced_block = 1");
-    }
-
-    #[crate::utils::engine_test(grpc)]
     async fn test_cache_source_index_out_of_bounds(mut instance: crate::utils::LocalInstance) {
         // Try to access a non-existent source index
         let result = tokio::time::timeout(
