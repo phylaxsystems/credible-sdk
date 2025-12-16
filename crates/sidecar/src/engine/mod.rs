@@ -180,7 +180,7 @@ impl LastExecutedTx {
     }
 
     #[inline]
-    fn take(&mut self) -> Option<(TxExecutionId, Option<EvmState>)> {
+    fn remove_last(&mut self) -> Option<(TxExecutionId, Option<EvmState>)> {
         self.execution_results.pop()
     }
 
@@ -1259,7 +1259,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         }
 
-        if let Some((_, Some(changes))) = current_block_iteration.last_executed_tx.take() {
+        if let Some((_, Some(changes))) = current_block_iteration.last_executed_tx.remove_last() {
             current_block_iteration.fork_db.commit(changes);
             current_block_iteration.last_executed_tx.clear();
             Ok(())
@@ -1300,7 +1300,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         };
 
-        if let Some((_, Some(changes))) = current_block_iteration.last_executed_tx.take() {
+        if let Some((_, Some(changes))) = current_block_iteration.last_executed_tx.remove_last() {
             self.cache.commit(changes);
         } else {
             return Err(EngineError::NothingToCommit);
@@ -1360,7 +1360,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
 
             // Remove the last transaction from buffer, preserving the previous one if it exists
-            current_block_iteration.last_executed_tx.take();
+            current_block_iteration.last_executed_tx.remove_last();
 
             // Remove transaction from results
             self.transaction_results
