@@ -11668,6 +11668,7 @@ dependencies = [
  "alloy-rpc-types-trace",
  "anyhow",
  "async-trait",
+ "chrono",
  "clap",
  "futures",
  "hex",
@@ -11684,6 +11685,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-test",
+ "uuid 0.8.2",
 ]
 
 [[package]]
