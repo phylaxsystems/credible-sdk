@@ -1,6 +1,11 @@
 use crate::{
     inspectors::{
+        PhevmOutcome,
         phevm::PhEvmContext,
+        precompiles::{
+            BASE_COST,
+            deduct_gas_and_check,
+        },
         sol_primitives::PhEvm::CallInputs as PhEvmCallInputs,
         tracer::CallInputsWithId,
     },
@@ -24,15 +29,30 @@ pub enum GetCallInputsError {
         "Expected Bytes in CallInput input. This should be restricted to only CallInput::Bytes by the call tracer."
     )]
     ExpectedBytes,
+    #[error("Out of gas")]
+    OutOfGas(PhevmOutcome),
 }
 
+const BASE_CALL_COST: u64 = 20;
+const DYNAMIC_CALL_COST: u64 = 3;
+
 /// Returns the call inputs of a transaction.
+///
+/// Gas for this fn is calculated as follows:
+/// `gas = BASE_COST + (CALLS_PROCESSED * BASE_CALL_COST) + (ceil(CALLDATA_SIZE / 32) * DYNAMIC_CALL_COST)`
 pub fn get_call_inputs(
     ph_context: &PhEvmContext,
     target: Address,
     selector: FixedBytes<4>,
     scheme_filter: Option<CallScheme>,
-) -> Result<Bytes, GetCallInputsError> {
+    gas: u64,
+) -> Result<PhevmOutcome, GetCallInputsError> {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(GetCallInputsError::OutOfGas(rax));
+    }
+
     let mut call_inputs = ph_context
         .logs_and_traces
         .call_traces
@@ -42,8 +62,13 @@ pub fn get_call_inputs(
         call_inputs.retain(|call_input| call_input.call_input.scheme == scheme_filter);
     }
 
+    let mut calldata_size: u64 = 0;
     let mut sol_call_inputs = Vec::new();
     for CallInputsWithId { call_input, id } in call_inputs {
+        if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_CALL_COST, gas_limit) {
+            return Err(GetCallInputsError::OutOfGas(rax));
+        }
+
         let original_input_data = match &call_input.input {
             revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
             revm::interpreter::CallInput::SharedBuffer(_) => {
@@ -55,6 +80,9 @@ pub fn get_call_inputs(
         } else {
             Bytes::new()
         };
+
+        calldata_size += input_data_wo_selector.len() as u64;
+
         sol_call_inputs.push(PhEvmCallInputs {
             input: input_data_wo_selector,
             gas_limit: call_input.gas_limit,
@@ -66,10 +94,16 @@ pub fn get_call_inputs(
         });
     }
 
+    let calldata_words: u64 = calldata_size.div_ceil(32);
+    let calldata_cost = calldata_words * DYNAMIC_CALL_COST;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, calldata_cost, gas_limit) {
+        return Err(GetCallInputsError::OutOfGas(rax));
+    }
+
     let encoded: Bytes =
         <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_encode(&sol_call_inputs).into();
 
-    Ok(encoded)
+    Ok(PhevmOutcome::new(encoded, gas_limit - gas_left))
 }
 
 #[cfg(test)]
@@ -109,7 +143,7 @@ mod test {
     fn test_with_inputs_and_tracer(
         call_inputs: &CallInputs,
         call_tracer: &CallTracer,
-    ) -> Result<Bytes, GetCallInputsError> {
+    ) -> Result<PhevmOutcome, GetCallInputsError> {
         let logs_and_traces = LogsAndTraces {
             tx_logs: &[],
             call_traces: call_tracer,
@@ -125,7 +159,13 @@ mod test {
         };
         let input = call_inputs.input.bytes(&context);
         let inputs = getCallInputsCall::abi_decode(&input).unwrap();
-        get_call_inputs(&ph_context, inputs.target, inputs.selector, None)
+        get_call_inputs(
+            &ph_context,
+            inputs.target,
+            inputs.selector,
+            None,
+            call_inputs.gas_limit,
+        )
     }
     use alloy_primitives::{
         Address,
@@ -231,7 +271,7 @@ mod test {
 
         let result = test_with_inputs_and_tracer(&get_call_inputs, &call_tracer);
 
-        let encoded = result.unwrap();
+        let encoded = result.unwrap().into_bytes();
 
         // Verify we can decode the result
         let decoded = <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_decode(&encoded);
@@ -260,7 +300,7 @@ mod test {
         let result = test_with_inputs_and_tracer(&get_call_inputs, &call_tracer);
         assert!(result.is_ok());
 
-        let encoded = result.unwrap();
+        let encoded = result.unwrap().into_bytes();
 
         // Should return empty array
         let decoded = <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_decode(&encoded);
@@ -287,7 +327,7 @@ mod test {
         let result = test_with_inputs_and_tracer(&get_call_inputs, &call_tracer);
         assert!(result.is_ok());
 
-        let encoded = result.unwrap();
+        let encoded = result.unwrap().into_bytes();
         let decoded =
             <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_decode(&encoded).unwrap();
         assert_eq!(decoded.len(), 2);
@@ -303,6 +343,35 @@ mod test {
             mock_call_inputs[1].0.target_address
         );
         assert_eq!(decoded[1].input, mock_call_inputs[1].1.slice(4..));
+    }
+
+    #[tokio::test]
+    async fn test_get_call_inputs_gas_accounting() {
+        let target = random_address();
+        let selector = random_selector();
+
+        let get_call_inputs = create_get_call_input(target, selector);
+
+        let mock_call_inputs = vec![
+            create_random_call_input::<0>(target, selector),
+            create_random_call_input::<31>(target, selector),
+            create_random_call_input::<32>(target, selector),
+            create_random_call_input::<33>(target, selector),
+        ];
+        let call_tracer = create_call_tracer_with_inputs(mock_call_inputs.clone());
+
+        let outcome = test_with_inputs_and_tracer(&get_call_inputs, &call_tracer).unwrap();
+
+        let calls_processed = mock_call_inputs.len() as u64;
+        let calldata_size: u64 = mock_call_inputs
+            .iter()
+            .map(|(_, bytes)| bytes.len().saturating_sub(4) as u64)
+            .sum();
+        let expected_gas = BASE_COST
+            + (calls_processed * BASE_CALL_COST)
+            + (calldata_size.div_ceil(32) * DYNAMIC_CALL_COST);
+
+        assert_eq!(outcome.gas(), expected_gas);
     }
 
     #[tokio::test]
