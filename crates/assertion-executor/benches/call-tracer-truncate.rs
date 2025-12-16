@@ -73,19 +73,18 @@ fn build_tracer_with_deep_pending_calls(
     let mut journal = JournalInner::new();
 
     // Worst-case for `truncate_from`: a large number of simultaneously-pending frames
-    // (one per depth) that all get cleaned up by a single root-level revert.
+    // (one per depth). Could be created by recursive calls.
     for depth in 0..n_entries {
         journal.depth = depth;
         tracer.record_call_start(make_call_inputs(), &SELECTOR, &mut journal);
         tracer.result.clone().unwrap();
     }
 
-    journal.depth = 0;
-
     (tracer, journal)
 }
 
 fn call_tracer_truncate_benchmark(c: &mut Criterion) {
+    // Replicates a series of successful calls ending in a root-level revert.
     c.bench_function("call_tracer_truncate_15k", |b| {
         b.iter_batched(
             || build_tracer_with_entries_to_truncate(N_TRUNCATE_ENTRIES),
@@ -98,18 +97,26 @@ fn call_tracer_truncate_benchmark(c: &mut Criterion) {
         );
     });
 
+    // Replicates a series of recursive calls where the last call reverts and then bubbles up.
     c.bench_function("call_tracer_truncate_15k_deep_pending", |b| {
         b.iter_batched(
             || build_tracer_with_deep_pending_calls(N_TRUNCATE_ENTRIES),
             |(mut tracer, mut journal)| {
-                tracer.record_call_end(&mut journal, true);
-                tracer.result.clone().unwrap();
-                black_box(tracer.is_call_forkable(0));
+                loop {
+                    tracer.record_call_end(&mut journal, true);
+                    tracer.result.clone().unwrap();
+                    black_box(tracer.is_call_forkable(0));
+                    if journal.depth == 0 {
+                        break;
+                    }
+                    journal.depth -= 1;
+                }
             },
             BatchSize::LargeInput,
         );
     });
 
+    // Replicates a series of successful calls ending in a root-level revert.
     c.bench_function("call_tracer_truncate_500", |b| {
         b.iter_batched(
             || build_tracer_with_entries_to_truncate(500),
@@ -122,13 +129,20 @@ fn call_tracer_truncate_benchmark(c: &mut Criterion) {
         );
     });
 
+    // Replicates a series of recursive calls where the last call reverts and then bubbles up.
     c.bench_function("call_tracer_truncate_500_deep_pending", |b| {
         b.iter_batched(
             || build_tracer_with_deep_pending_calls(500),
             |(mut tracer, mut journal)| {
-                tracer.record_call_end(&mut journal, true);
-                tracer.result.clone().unwrap();
-                black_box(tracer.is_call_forkable(0));
+                loop {
+                    tracer.record_call_end(&mut journal, true);
+                    tracer.result.clone().unwrap();
+                    black_box(tracer.is_call_forkable(0));
+                    if journal.depth == 0 {
+                        break;
+                    }
+                    journal.depth -= 1;
+                }
             },
             BatchSize::LargeInput,
         );
