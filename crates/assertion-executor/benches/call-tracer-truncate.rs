@@ -64,10 +64,63 @@ fn build_tracer_with_entries_to_truncate(n_entries: usize) -> (CallTracer, Journ
     (tracer, journal)
 }
 
+fn build_tracer_with_deep_pending_calls(n_entries: usize) -> (CallTracer, JournalInner<JournalEntry>) {
+    let mut tracer = CallTracer::default();
+    let mut journal = JournalInner::new();
+
+    // Worst-case for `truncate_from`: a large number of simultaneously-pending frames
+    // (one per depth) that all get cleaned up by a single root-level revert.
+    for depth in 0..n_entries {
+        journal.depth = depth;
+        tracer.record_call_start(make_call_inputs(), &SELECTOR, &mut journal);
+        tracer.result.clone().unwrap();
+    }
+
+    journal.depth = 0;
+
+    (tracer, journal)
+}
+
 fn call_tracer_truncate_benchmark(c: &mut Criterion) {
     c.bench_function("call_tracer_truncate_15k", |b| {
         b.iter_batched(
             || build_tracer_with_entries_to_truncate(N_TRUNCATE_ENTRIES),
+            |(mut tracer, mut journal)| {
+                tracer.record_call_end(&mut journal, true);
+                tracer.result.clone().unwrap();
+                black_box(tracer.is_call_forkable(0));
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    c.bench_function("call_tracer_truncate_15k_deep_pending", |b| {
+        b.iter_batched(
+            || build_tracer_with_deep_pending_calls(N_TRUNCATE_ENTRIES),
+            |(mut tracer, mut journal)| {
+                tracer.record_call_end(&mut journal, true);
+                tracer.result.clone().unwrap();
+                black_box(tracer.is_call_forkable(0));
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    c.bench_function("call_tracer_truncate_500", |b| {
+        b.iter_batched(
+            || build_tracer_with_entries_to_truncate(500),
+            |(mut tracer, mut journal)| {
+                tracer.record_call_end(&mut journal, true);
+                tracer.result.clone().unwrap();
+                black_box(tracer.is_call_forkable(0));
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    c.bench_function("call_tracer_truncate_500_deep_pending", |b| {
+        b.iter_batched(
+            || build_tracer_with_deep_pending_calls(500),
             |(mut tracer, mut journal)| {
                 tracer.record_call_end(&mut journal, true);
                 tracer.result.clone().unwrap();
