@@ -179,22 +179,28 @@ impl<'a> PhEvmInspector<'a> {
             .unwrap_or_default()
         {
             PhEvm::forkPreTxCall::SELECTOR => {
-                fork_pre_tx(context, self.context.logs_and_traces.call_traces)
-                    .map(PhevmOutcome::from)
-                    .map_err(PrecompileError::ForkError)?
+                fork_pre_tx(
+                    context,
+                    self.context.logs_and_traces.call_traces,
+                    inputs.gas_limit,
+                )
+                .map_err(PrecompileError::ForkError)?
             }
             PhEvm::forkPostTxCall::SELECTOR => {
-                fork_post_tx(context, self.context.logs_and_traces.call_traces)
-                    .map(PhevmOutcome::from)
-                    .map_err(PrecompileError::ForkError)?
+                fork_post_tx(
+                    context,
+                    self.context.logs_and_traces.call_traces,
+                    inputs.gas_limit,
+                )
+                .map_err(PrecompileError::ForkError)?
             }
             PhEvm::forkPreCallCall::SELECTOR => {
                 fork_pre_call(
                     context,
                     self.context.logs_and_traces.call_traces,
                     &input_bytes,
+                    inputs.gas_limit,
                 )
-                .map(PhevmOutcome::from)
                 .map_err(PrecompileError::ForkError)?
             }
             PhEvm::forkPostCallCall::SELECTOR => {
@@ -202,8 +208,8 @@ impl<'a> PhEvmInspector<'a> {
                     context,
                     self.context.logs_and_traces.call_traces,
                     &input_bytes,
+                    inputs.gas_limit,
                 )
-                .map(PhevmOutcome::from)
                 .map_err(PrecompileError::ForkError)?
             }
             PhEvm::loadCall::SELECTOR => {

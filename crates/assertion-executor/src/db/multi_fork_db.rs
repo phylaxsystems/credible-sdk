@@ -142,30 +142,9 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
 
         // Ensure the target fork exists, create if needed
         if !self.forks.contains_key(&fork_id) {
-            let new_fork = match fork_id {
-                ForkId::PreTx => {
-                    self.create_fork(&JournalInner {
-                        spec: active_journal.spec,
-                        ..Default::default()
-                    })
-                }
-                ForkId::PostTx => return Err(MultiForkError::PostTxJournalNotFound),
-                ForkId::PreCall(call_id) => {
-                    let mut pre_call_journal = self.post_tx_journal.clone();
-                    pre_call_journal.depth += 1;
-                    pre_call_journal.checkpoint_revert(call_tracer.pre_call_checkpoints[call_id]);
-                    self.create_fork(&pre_call_journal)
-                }
-                ForkId::PostCall(call_id) => {
-                    let mut post_call_journal = self.post_tx_journal.clone();
-                    post_call_journal.depth += 1;
-                    post_call_journal.checkpoint_revert(
-                        call_tracer.post_call_checkpoints[call_id]
-                            .ok_or(MultiForkError::PostCallCheckpointNotFound)?,
-                    );
-                    self.create_fork(&post_call_journal)
-                }
-            };
+            let fork_journal =
+                self.fork_journal_for_creation(fork_id, active_journal, call_tracer)?;
+            let new_fork = self.create_fork(&fork_journal);
             self.forks.insert(fork_id, new_fork);
         }
 
@@ -198,6 +177,70 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         Ok(())
     }
 
+    /// Checks if a fork id exists.
+    /// Used to see if a fork needs to be created for gas accounting.
+    pub fn fork_exists(&self, fork_id: &ForkId) -> bool {
+        self.forks.contains_key(fork_id)
+    }
+
+    /// Returns true if `fork_id` is the currently active fork.
+    #[inline]
+    pub fn is_active_fork(&self, fork_id: ForkId) -> bool {
+        fork_id == self.active_fork_id
+    }
+
+    fn fork_journal_for_creation(
+        &self,
+        fork_id: ForkId,
+        active_journal: &JournalInner<JournalEntry>,
+        call_tracer: &CallTracer,
+    ) -> Result<JournalInner<JournalEntry>, MultiForkError> {
+        match fork_id {
+            ForkId::PreTx => {
+                Ok(JournalInner {
+                    spec: active_journal.spec,
+                    ..Default::default()
+                })
+            }
+            ForkId::PostTx => Err(MultiForkError::PostTxJournalNotFound),
+            ForkId::PreCall(call_id) => {
+                let mut pre_call_journal = self.post_tx_journal.clone();
+                pre_call_journal.depth += 1;
+                pre_call_journal.checkpoint_revert(call_tracer.pre_call_checkpoints[call_id]);
+                Ok(pre_call_journal)
+            }
+            ForkId::PostCall(call_id) => {
+                let mut post_call_journal = self.post_tx_journal.clone();
+                post_call_journal.depth += 1;
+                post_call_journal.checkpoint_revert(
+                    call_tracer.post_call_checkpoints[call_id]
+                        .ok_or(MultiForkError::PostCallCheckpointNotFound)?,
+                );
+                Ok(post_call_journal)
+            }
+        }
+    }
+
+    /// Estimates how many bytes would be written to a fork DB when creating `fork_id`.
+    ///
+    /// This is used for precompile gas pricing: a missing fork triggers `create_fork`, which
+    /// commits journaled state into the fork DB.
+    ///
+    /// Esitmating fork gas does the same work it would do in `switch_fork`. We cannot commit
+    /// the output of this fn because we might OOG and mutate on state we shouldnt.
+    pub fn estimated_create_fork_bytes(
+        &self,
+        fork_id: ForkId,
+        active_journal: &JournalInner<JournalEntry>,
+        call_tracer: &CallTracer,
+    ) -> Result<u64, MultiForkError> {
+        let fork_journal = self.fork_journal_for_creation(fork_id, active_journal, call_tracer)?;
+
+        // `create_fork` commits the filtered journal state into the fork DB.
+        let changes = filtered_journal_state(&fork_journal);
+        Ok(estimate_forkdb_commit_bytes(&changes))
+    }
+
     fn create_fork(&mut self, journal: &JournalInner<JournalEntry>) -> InternalFork<ExtDb>
     where
         ExtDb: Clone + DatabaseCommit,
@@ -223,6 +266,46 @@ fn filtered_journal_state(journal: &JournalInner<JournalEntry>) -> EvmState {
     }
 
     state
+}
+
+/// Estimate how much bytes we will write to for performing a `ForkDb::commit`.
+/// Accounts for account data. Does not take into consideration keys in KV stores.
+fn estimate_forkdb_commit_bytes(changes: &EvmState) -> u64 {
+    const ADDRESS_BYTES: u64 = 20;
+    const U256_BYTES: u64 = 32;
+    const B256_BYTES: u64 = 32;
+    const NONCE_BYTES: u64 = 8;
+
+    let mut bytes: u64 = 0;
+
+    for account in changes.values() {
+        if !account.is_touched() {
+            continue;
+        }
+
+        // Writes basic account info keyed by address.
+        bytes += ADDRESS_BYTES;
+        bytes += U256_BYTES; // balance
+        bytes += NONCE_BYTES; // nonce
+        bytes += B256_BYTES; // code_hash
+
+        if account.is_selfdestructed() {
+            // ForkDb::commit resets storage for selfdestructed accounts; we conservatively only
+            // account for the basic overwrite above.
+            continue;
+        }
+
+        if let Some(code) = &account.info.code {
+            bytes += code.len() as u64;
+        }
+
+        // Writes storage updates present value.
+        if account.is_created() || !account.storage.is_empty() {
+            bytes += (account.storage.len() as u64) * U256_BYTES;
+        }
+    }
+
+    bytes
 }
 
 /// Clones the data of the given `accounts` from the `active_journal` into the `target_journal`.
