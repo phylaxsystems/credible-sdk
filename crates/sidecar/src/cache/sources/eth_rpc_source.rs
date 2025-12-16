@@ -221,7 +221,9 @@ impl Source for EthRpcSource {
 
     fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool {
         let client_latest_head = *self.inner.latest_head.read();
-        min_synced_block <= client_latest_head && latest_head <= client_latest_head
+        let target_block =
+            Self::calculate_target_block(min_synced_block, latest_head, client_latest_head);
+        client_latest_head >= target_block
     }
 
     fn update_cache_status(&self, min_synced_block: U256, latest_head: U256) {
