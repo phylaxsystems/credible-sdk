@@ -1,24 +1,24 @@
 name: Rust Test, Lint
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/rust-test-lint.yml'
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust-test-lint.yml"
   pull_request:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/rust-test-lint.yml'
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust-test-lint.yml"
   workflow_dispatch:
     inputs:
       debug_enabled:
         type: boolean
-        description: 'Run with debug logging'
+        description: "Run with debug logging"
         required: false
         default: false
 
@@ -27,16 +27,17 @@ jobs:
     name: Rust Base
     uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
     with:
-      rust-channel: 'nightly'
+      runner-group: "big-bois-x86"
+      rust-channel: "nightly"
       require-lockfile: true
       install-foundry: true
       dind: true
       submodules: true
-      foundry-command: 'forge build --root testdata/mock-protocol'
-      test-args: '-- --test-threads=2'
+      foundry-command: "forge build --root testdata/mock-protocol"
+      test-args: "-- --test-threads=2"
       # [""] means default features
       # Feature matrices are supported as follows: ["", "--features=foo", "--features=bar", "--features=foo,bar"]
       feature-sets: '[
-        "--no-default-features --features test", 
+        "--no-default-features --features test",
         "--no-default-features --features test --features optimism"
         ]'

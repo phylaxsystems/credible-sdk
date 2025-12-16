@@ -13,7 +13,10 @@ use futures_util::stream::StreamExt;
 use metrics;
 use regex::Regex;
 use serde_json::Value;
-use std::sync::Arc;
+use std::{
+    env,
+    sync::Arc,
+};
 use tempfile::TempDir;
 use tokio::time::{
     Duration,
@@ -31,6 +34,22 @@ use uuid::Uuid;
 const MAX_ATTEMPTS: u32 = 3;
 /// Initial delay of the exponential backoff for image availability check
 const INITIAL_DELAY: Duration = Duration::from_secs(1);
+
+const SOLC_DOCKER_PLATFORM_ENV: &str = "ASSERTION_DA_SOLC_DOCKER_PLATFORM";
+
+fn solc_docker_platform() -> String {
+    if let Ok(platform) = env::var(SOLC_DOCKER_PLATFORM_ENV)
+        && !platform.trim().is_empty()
+    {
+        return platform;
+    }
+
+    if cfg!(target_arch = "aarch64") {
+        "linux/arm64".to_string()
+    } else {
+        "linux/amd64".to_string()
+    }
+}
 
 /// Command line arguments for the Solidity compiler
 #[derive(Debug, Clone)]
@@ -90,17 +109,30 @@ impl SolcArgs {
 /// Handles Docker image operations
 pub struct DockerImageManager {
     docker: Arc<Docker>,
+    platform: String,
 }
 
 impl DockerImageManager {
     pub fn new(docker: Arc<Docker>) -> Self {
-        #[cfg(target_arch = "aarch64")]
-        debug!(
-            target: "solidity_compilation",
-            "Running on arm64, solc containers will use amd64 emulation"
-        );
+        let platform = solc_docker_platform();
 
-        Self { docker }
+        if cfg!(target_arch = "aarch64") && platform == "linux/amd64" {
+            warn!(
+                target: "solidity_compilation",
+                env = SOLC_DOCKER_PLATFORM_ENV,
+                %platform,
+                "Using amd64 solc containers on arm64 requires Docker emulation/binfmt"
+            );
+        } else {
+            debug!(
+                target: "solidity_compilation",
+                env = SOLC_DOCKER_PLATFORM_ENV,
+                %platform,
+                "Using solc container platform"
+            );
+        }
+
+        Self { docker, platform }
     }
 
     /// Ensures an image is available locally, pulling it if necessary
@@ -150,7 +182,7 @@ impl DockerImageManager {
                 .create_image(
                     Some(bollard::query_parameters::CreateImageOptions {
                         from_image: Some(image_name.to_string()),
-                        platform: "linux/amd64".to_string(), // Force amd64 platform
+                        platform: self.platform.clone(),
                         ..Default::default()
                     }),
                     None,
@@ -169,6 +201,7 @@ pub struct ContainerManager {
     docker: Arc<Docker>,
     container_id: Option<String>,
     container_name: String,
+    platform: String,
     is_cleaned_up: bool, // Track cleanup state
 }
 
@@ -176,10 +209,12 @@ impl ContainerManager {
     /// Create a new container manager
     pub fn new(docker: Arc<Docker>, name_prefix: &str) -> Self {
         let container_name = format!("{}_{}", name_prefix, Uuid::new_v4());
+        let platform = solc_docker_platform();
         Self {
             docker,
             container_id: None,
             container_name,
+            platform,
             is_cleaned_up: false,
         }
     }
@@ -207,7 +242,7 @@ impl ContainerManager {
 
         let create_options = Some(bollard::query_parameters::CreateContainerOptions {
             name: Some(self.container_name.clone()),
-            platform: "linux/amd64".to_string(), // Force amd64 platform
+            platform: self.platform.clone(),
         });
 
         debug!(
