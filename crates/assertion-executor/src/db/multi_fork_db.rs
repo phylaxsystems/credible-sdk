@@ -268,6 +268,8 @@ fn filtered_journal_state(journal: &JournalInner<JournalEntry>) -> EvmState {
     state
 }
 
+/// Estimate how much bytes we will write to for performing a `ForkDb::commit`.
+/// Accounts for account data. Does not take into consideration keys in KV stores.
 fn estimate_forkdb_commit_bytes(changes: &EvmState) -> u64 {
     const ADDRESS_BYTES: u64 = 20;
     const U256_BYTES: u64 = 32;
@@ -294,14 +296,12 @@ fn estimate_forkdb_commit_bytes(changes: &EvmState) -> u64 {
         }
 
         if let Some(code) = &account.info.code {
-            // Writes bytecode keyed by code hash.
-            bytes += B256_BYTES;
             bytes += code.len() as u64;
         }
 
-        // Writes storage updates: slot key + present value.
+        // Writes storage updates resent value.
         if account.is_created() || !account.storage.is_empty() {
-            bytes += (account.storage.len() as u64) * (U256_BYTES + U256_BYTES);
+            bytes += (account.storage.len() as u64) * U256_BYTES;
         }
     }
 
