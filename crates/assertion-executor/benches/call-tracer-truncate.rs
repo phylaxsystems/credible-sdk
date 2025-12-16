@@ -3,8 +3,8 @@ use assertion_executor::{
     primitives::{
         Address,
         Bytes,
-        JournalInner,
         JournalEntry,
+        JournalInner,
         U256,
     },
 };
@@ -40,7 +40,9 @@ fn make_call_inputs() -> CallInputs {
     }
 }
 
-fn build_tracer_with_entries_to_truncate(n_entries: usize) -> (CallTracer, JournalInner<JournalEntry>) {
+fn build_tracer_with_entries_to_truncate(
+    n_entries: usize,
+) -> (CallTracer, JournalInner<JournalEntry>) {
     let mut tracer = CallTracer::default();
     let mut journal = JournalInner::new();
 
@@ -64,7 +66,9 @@ fn build_tracer_with_entries_to_truncate(n_entries: usize) -> (CallTracer, Journ
     (tracer, journal)
 }
 
-fn build_tracer_with_deep_pending_calls(n_entries: usize) -> (CallTracer, JournalInner<JournalEntry>) {
+fn build_tracer_with_deep_pending_calls(
+    n_entries: usize,
+) -> (CallTracer, JournalInner<JournalEntry>) {
     let mut tracer = CallTracer::default();
     let mut journal = JournalInner::new();
 
@@ -91,7 +95,7 @@ fn call_tracer_truncate_benchmark(c: &mut Criterion) {
                 black_box(tracer.is_call_forkable(0));
             },
             BatchSize::LargeInput,
-        )
+        );
     });
 
     c.bench_function("call_tracer_truncate_15k_deep_pending", |b| {
@@ -103,7 +107,7 @@ fn call_tracer_truncate_benchmark(c: &mut Criterion) {
                 black_box(tracer.is_call_forkable(0));
             },
             BatchSize::LargeInput,
-        )
+        );
     });
 
     c.bench_function("call_tracer_truncate_500", |b| {
@@ -115,7 +119,7 @@ fn call_tracer_truncate_benchmark(c: &mut Criterion) {
                 black_box(tracer.is_call_forkable(0));
             },
             BatchSize::LargeInput,
-        )
+        );
     });
 
     c.bench_function("call_tracer_truncate_500_deep_pending", |b| {
@@ -127,7 +131,7 @@ fn call_tracer_truncate_benchmark(c: &mut Criterion) {
                 black_box(tracer.is_call_forkable(0));
             },
             BatchSize::LargeInput,
-        )
+        );
     });
 }
 
