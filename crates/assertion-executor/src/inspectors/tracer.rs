@@ -93,6 +93,11 @@ pub struct CallTracer {
     // you want to read call_inputs from the tracer.
     // Because of this, we coerce the bytes at the time of recording the call.
     call_inputs: Vec<CallInputs>,
+    /// Parallel to `call_inputs`: the `(target, selector)` key used for indexing each recorded call.
+    ///
+    /// Invariant: for any `i < call_inputs.len()`, `target_and_selector_by_call[i]` was pushed when
+    /// the call at index `i` was recorded, and `target_and_selector_indices[&key]` contains `i`.
+    target_and_selector_by_call: Vec<TargetAndSelector>,
     /// Assertion store, we limit call input recording to AAs when present.
     ///
     /// If set to `None`, the `CallTracer` will record data for all addresses
@@ -113,6 +118,7 @@ impl Default for CallTracer {
     fn default() -> Self {
         Self {
             call_inputs: Vec::new(),
+            target_and_selector_by_call: Vec::new(),
             assertion_store: None,
             journal: JournalInner::new(),
             pre_call_checkpoints: Vec::new(),
@@ -135,6 +141,7 @@ impl CallTracer {
     pub fn new(assertion_store: AssertionStore) -> Self {
         Self {
             call_inputs: Vec::new(),
+            target_and_selector_by_call: Vec::new(),
             assertion_store: Some(assertion_store),
             journal: JournalInner::new(),
             pre_call_checkpoints: Vec::new(),
@@ -213,15 +220,18 @@ impl CallTracer {
         self.pre_call_checkpoints.push(checkpoint);
         self.post_call_checkpoints.push(None);
 
+        let key = TargetAndSelector {
+            target: inputs.target_address,
+            selector,
+        };
+
         self.target_and_selector_indices
-            .entry(TargetAndSelector {
-                target: inputs.target_address,
-                selector,
-            })
+            .entry(key.clone())
             .or_default()
             .push(index);
 
         self.call_inputs.push(inputs);
+        self.target_and_selector_by_call.push(key);
     }
 
     pub fn record_call_end(
@@ -254,11 +264,28 @@ impl CallTracer {
     /// Truncate all call data from the given index onwards.
     /// Called when a call reverts to remove it and all its descendants.
     fn truncate_from(&mut self, index: usize) {
-        // Clean up target_and_selector_indices first
-        self.target_and_selector_indices.retain(|_, indices| {
-            indices.retain(|&idx| idx < index);
-            !indices.is_empty()
-        });
+        // Fast-path cleanup for `target_and_selector_indices`:
+        // walk the calls we are about to drop and remove their indices from the per-key vectors.
+        let old_len = self.call_inputs.len();
+        for dropped_call_id in (index..old_len).rev() {
+            let key = &self.target_and_selector_by_call[dropped_call_id];
+            let remove_key = match self.target_and_selector_indices.get_mut(key) {
+                Some(indices) => {
+                    // `indices` is monotonically increasing (call ids are appended), so the common case
+                    // is that the dropped id is the last element.
+                    if indices.last().copied() == Some(dropped_call_id) {
+                        indices.pop();
+                    } else if let Ok(pos) = indices.binary_search(&dropped_call_id) {
+                        indices.remove(pos);
+                    }
+                    indices.is_empty()
+                }
+                None => false,
+            };
+            if remove_key {
+                self.target_and_selector_indices.remove(key);
+            }
+        }
 
         // Clean up any pending writes for children that haven't ended
         self.pending_post_call_writes
@@ -268,6 +295,7 @@ impl CallTracer {
         self.call_inputs.truncate(index);
         self.pre_call_checkpoints.truncate(index);
         self.post_call_checkpoints.truncate(index);
+        self.target_and_selector_by_call.truncate(index);
     }
 
     pub fn calls(&self) -> HashSet<Address> {
@@ -318,11 +346,13 @@ impl CallTracer {
             CallValue,
         };
 
+        let key = TargetAndSelector {
+            target: address,
+            selector: FixedBytes::default(),
+        };
+
         self.target_and_selector_indices
-            .entry(TargetAndSelector {
-                target: address,
-                selector: FixedBytes::default(),
-            })
+            .entry(key.clone())
             .or_default()
             .push(self.call_inputs.len());
         self.call_inputs.push(CallInputs {
@@ -337,6 +367,7 @@ impl CallTracer {
             scheme: revm::interpreter::CallScheme::Call,
             value: CallValue::default(),
         });
+        self.target_and_selector_by_call.push(key);
     }
 
     pub fn triggers(&self) -> HashMap<Address, HashSet<TriggerType>> {
