@@ -38,6 +38,33 @@ const SET_FORK: u64 = 20;
 const MEM_WRITE_COST: u64 = 3;
 const EVM_WORD_BYTES: u64 = 32;
 
+fn price_fork_creation_if_needed<ExtDb>(
+    journal: &mut Journal<&mut MultiForkDb<ExtDb>>,
+    fork_id: ForkId,
+    call_tracer: &CallTracer,
+    gas_left: &mut u64,
+    gas_limit: u64,
+    map_db_err: fn(MultiForkError) -> ForkError,
+) -> Result<(), ForkError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit,
+{
+    if journal.database.fork_exists(&fork_id) {
+        return Ok(());
+    }
+
+    let bytes_written = journal
+        .database
+        .estimated_create_fork_bytes(fork_id, &journal.inner, call_tracer)
+        .map_err(map_db_err)?;
+    let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
+    if let Some(rax) = deduct_gas_and_check(gas_left, words_written * MEM_WRITE_COST, gas_limit) {
+        return Err(ForkError::OutOfGas(rax));
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ForkError {
     #[error("MultiForkDb error: Fork pre call operation")]
@@ -85,18 +112,14 @@ where
     }
 
     // If the fork does not exist, price memory for creating it.
-    if !journal.database.fork_exists(&ForkId::PreTx) {
-        let bytes_written = journal
-            .database
-            .estimated_create_fork_bytes(ForkId::PreTx, &journal.inner, call_tracer)
-            .map_err(ForkError::MultiForkPreTxDbError)?;
-        let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
-        if let Some(rax) =
-            deduct_gas_and_check(&mut gas_left, words_written * MEM_WRITE_COST, gas_limit)
-        {
-            return Err(ForkError::OutOfGas(rax));
-        }
-    }
+    price_fork_creation_if_needed(
+        journal,
+        ForkId::PreTx,
+        call_tracer,
+        &mut gas_left,
+        gas_limit,
+        ForkError::MultiForkPreTxDbError,
+    )?;
 
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
         return Err(ForkError::OutOfGas(rax));
@@ -135,18 +158,14 @@ where
     }
 
     // If the fork does not exist, price memory for creating it.
-    if !journal.database.fork_exists(&ForkId::PostTx) {
-        let bytes_written = journal
-            .database
-            .estimated_create_fork_bytes(ForkId::PostTx, &journal.inner, call_tracer)
-            .map_err(ForkError::MultiForkPostTxDbError)?;
-        let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
-        if let Some(rax) =
-            deduct_gas_and_check(&mut gas_left, words_written * MEM_WRITE_COST, gas_limit)
-        {
-            return Err(ForkError::OutOfGas(rax));
-        }
-    }
+    price_fork_creation_if_needed(
+        journal,
+        ForkId::PostTx,
+        call_tracer,
+        &mut gas_left,
+        gas_limit,
+        ForkError::MultiForkPostTxDbError,
+    )?;
 
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
         return Err(ForkError::OutOfGas(rax));
@@ -202,18 +221,14 @@ where
     }
 
     // if the fork does not exist, price memory for creating it
-    if !journal.database.fork_exists(&fork_id) {
-        let bytes_written = journal
-            .database
-            .estimated_create_fork_bytes(fork_id, &journal.inner, call_tracer)
-            .map_err(ForkError::MultiForkPreCallDbError)?;
-        let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
-        if let Some(rax) =
-            deduct_gas_and_check(&mut gas_left, words_written * MEM_WRITE_COST, gas_limit)
-        {
-            return Err(ForkError::OutOfGas(rax));
-        }
-    }
+    price_fork_creation_if_needed(
+        journal,
+        fork_id,
+        call_tracer,
+        &mut gas_left,
+        gas_limit,
+        ForkError::MultiForkPreCallDbError,
+    )?;
 
     // deduct gas for switching forks
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {
@@ -269,18 +284,14 @@ where
     }
 
     // if the fork does not exist, price memory for creating it
-    if !journal.database.fork_exists(&fork_id) {
-        let bytes_written = journal
-            .database
-            .estimated_create_fork_bytes(fork_id, &journal.inner, call_tracer)
-            .map_err(ForkError::MultiForkPostCallDbError)?;
-        let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
-        if let Some(rax) =
-            deduct_gas_and_check(&mut gas_left, words_written * MEM_WRITE_COST, gas_limit)
-        {
-            return Err(ForkError::OutOfGas(rax));
-        }
-    }
+    price_fork_creation_if_needed(
+        journal,
+        fork_id,
+        call_tracer,
+        &mut gas_left,
+        gas_limit,
+        ForkError::MultiForkPostCallDbError,
+    )?;
 
     // deduct gas for switching forks
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, PERSISTENT_WRITE + SET_FORK, gas_limit) {

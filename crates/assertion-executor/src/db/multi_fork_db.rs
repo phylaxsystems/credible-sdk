@@ -299,7 +299,7 @@ fn estimate_forkdb_commit_bytes(changes: &EvmState) -> u64 {
             bytes += code.len() as u64;
         }
 
-        // Writes storage updates resent value.
+        // Writes storage updates present value.
         if account.is_created() || !account.storage.is_empty() {
             bytes += (account.storage.len() as u64) * U256_BYTES;
         }
