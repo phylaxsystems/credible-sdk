@@ -17,7 +17,7 @@ tracing = { workspace = true }
 alloy-transport-ws = { workspace = true }
 alloy-rpc-types = { workspace = true }
 state-store = { path = "../state-store", features = ["writer"] }
-rustls = { version = "0.23", features = ["aws_lc_rs"] }
+rustls = { workspace = true }
 tokio = { workspace = true }
 hex = { workspace = true }
-log = "0.4.27"
+log = "0.4.29"

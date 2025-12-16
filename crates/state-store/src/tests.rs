@@ -32,7 +32,7 @@ async fn wait_for_redis(host: &str, port: u16) -> Result<()> {
             Err(err) => {
                 // Redis may not be ready yet; retry after brief pause.
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                if err.kind() != redis::ErrorKind::IoError {
+                if err.kind() != redis::ErrorKind::Io {
                     break;
                 }
             }
