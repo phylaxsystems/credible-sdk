@@ -85,5 +85,10 @@ name = "assertion_store_read"
 harness = false
 
 [[bench]]
+name = "validate_transaction"
+required-features = ["test"]
+harness = false
+
+[[bench]]
 name = "call-tracer-truncate"
 harness = false
