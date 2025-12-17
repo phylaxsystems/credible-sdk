@@ -79,8 +79,8 @@ pub enum MultiForkError {
     TargetForkJournalNotFound(ForkId),
     #[error("Target fork's not found.")]
     TargetForkNotFound,
-    #[error("Cannot fork to call {call_id}: call is inside a reverted subtree")]
-    CallInsideRevertedSubtree { call_id: usize },
+    #[error("Cannot fork to call {call_id}: call ID out of bounds")]
+    CallIdOutOfBounds { call_id: usize },
 }
 
 impl<ExtDb: Clone + DatabaseCommit> MultiForkDb<ExtDb> {
@@ -134,7 +134,7 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         match fork_id {
             ForkId::PreCall(call_id) | ForkId::PostCall(call_id) => {
                 if !call_tracer.is_call_forkable(call_id) {
-                    return Err(MultiForkError::CallInsideRevertedSubtree { call_id });
+                    return Err(MultiForkError::CallIdOutOfBounds { call_id });
                 }
             }
             _ => {}
@@ -737,7 +737,7 @@ mod test_multi_fork {
         let result = db.switch_fork(ForkId::PreCall(2), &mut active_journal, &call_tracer);
         assert!(matches!(
             result,
-            Err(MultiForkError::CallInsideRevertedSubtree { call_id: 2 })
+            Err(MultiForkError::CallIdOutOfBounds { call_id: 2 })
         ));
     }
 
@@ -779,7 +779,7 @@ mod test_multi_fork {
         let result = db.switch_fork(ForkId::PostCall(1), &mut active_journal, &call_tracer);
         assert!(matches!(
             result,
-            Err(MultiForkError::CallInsideRevertedSubtree { call_id: 1 })
+            Err(MultiForkError::CallIdOutOfBounds { call_id: 1 })
         ));
 
         // Try to fork to post-call of valid call (id=0): should succeed
