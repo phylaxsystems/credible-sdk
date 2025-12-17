@@ -1,5 +1,7 @@
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::manual_range_contains)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cast_possible_truncation)]
 use crate::{
     cli::ProviderType,
     connect_provider,
@@ -17,12 +19,14 @@ use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use redis::Commands;
 use serde_json::json;
 use state_store::{
+    ChunkedWriteConfig,
     CircularBufferConfig,
     StateReader,
     StateWriter,
     common::{
         AccountInfo,
         AccountState,
+        BlockStateUpdate,
         get_account_key,
         get_storage_key,
     },
@@ -1865,4 +1869,463 @@ async fn test_genesis_block_skips_system_calls() {
         eip4788_account.is_none(),
         "EIP-4788 should NOT exist at genesis block (block 0)"
     );
+}
+
+#[tokio::test]
+async fn test_recover_stale_locks_empty_when_no_locks() {
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+    let base_namespace = format!("test_no_locks_{}", uuid::Uuid::new_v4());
+    let config = CircularBufferConfig::new(3).unwrap();
+
+    let writer = StateWriter::new(&instance.redis_url, &base_namespace, config).unwrap();
+
+    let recoveries = writer.recover_stale_locks().unwrap();
+    assert!(recoveries.is_empty(), "expected no stale locks");
+}
+
+#[tokio::test]
+async fn test_recover_stale_locks_clears_completed_write() {
+    // Test case: crash happened AFTER metadata was updated but BEFORE lock was released
+    // The state is actually consistent, so we just need to release the lock
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+    let base_namespace = format!("test_completed_write_{}", uuid::Uuid::new_v4());
+    let config = CircularBufferConfig::new(3).unwrap();
+
+    let chunked_config = ChunkedWriteConfig::new(1000, 60);
+
+    let writer = StateWriter::with_chunked_config(
+        &instance.redis_url,
+        &base_namespace,
+        config.clone(),
+        chunked_config,
+    )
+    .unwrap();
+
+    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let mut conn = client.get_connection().unwrap();
+
+    let namespace = format!("{base_namespace}:0");
+    let lock_key = format!("{namespace}:write_lock");
+    let block_key = format!("{namespace}:block");
+
+    // Simulate completed write: block number is already set to target
+    redis::cmd("SET")
+        .arg(&block_key)
+        .arg("100")
+        .query::<()>(&mut conn)
+        .unwrap();
+
+    // Insert a stale lock for the same block (crash after metadata, before lock release)
+    let old_timestamp = chrono::Utc::now().timestamp() - 120;
+    let lock_json = serde_json::json!({
+        "target_block": 100,
+        "started_at": old_timestamp,
+        "writer_id": "crashed-writer"
+    })
+    .to_string();
+
+    redis::cmd("SET")
+        .arg(&lock_key)
+        .arg(&lock_json)
+        .query::<()>(&mut conn)
+        .unwrap();
+
+    // Recover - should just release the lock since state is consistent
+    let recoveries = writer.recover_stale_locks().unwrap();
+
+    assert_eq!(recoveries.len(), 1);
+    assert_eq!(recoveries[0].target_block, 100);
+    assert_eq!(recoveries[0].previous_block, Some(100)); // Same as target
+
+    // Verify lock was cleared
+    let exists: bool = redis::cmd("EXISTS")
+        .arg(&lock_key)
+        .query(&mut conn)
+        .unwrap();
+    assert!(!exists, "lock should be cleared after recovery");
+}
+
+#[tokio::test]
+async fn test_recover_stale_locks_repairs_state_with_diffs() {
+    // Test case: crash happened during write, need to re-apply diffs
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+    let base_namespace = format!("test_repair_with_diffs_{}", uuid::Uuid::new_v4());
+    let config = CircularBufferConfig::new(3).unwrap();
+
+    let chunked_config = ChunkedWriteConfig::new(1000, 60);
+
+    let writer = StateWriter::with_chunked_config(
+        &instance.redis_url,
+        &base_namespace,
+        config.clone(),
+        chunked_config,
+    )
+    .unwrap();
+
+    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let mut conn = client.get_connection().unwrap();
+
+    let namespace = format!("{base_namespace}:0");
+    let lock_key = format!("{namespace}:write_lock");
+
+    // Insert a stale lock for block 0 (no previous block)
+    let old_timestamp = chrono::Utc::now().timestamp() - 120;
+    let lock_json = serde_json::json!({
+        "target_block": 0,
+        "started_at": old_timestamp,
+        "writer_id": "crashed-writer"
+    })
+    .to_string();
+
+    redis::cmd("SET")
+        .arg(&lock_key)
+        .arg(&lock_json)
+        .query::<()>(&mut conn)
+        .unwrap();
+
+    // Store the diff that will be needed for recovery
+    let diff_key = format!("{base_namespace}:diff:0");
+    let diff = BlockStateUpdate::new(0, B256::from([1u8; 32]), B256::from([2u8; 32]));
+    let diff_json = serde_json::to_string(&diff).unwrap();
+
+    redis::cmd("SET")
+        .arg(&diff_key)
+        .arg(&diff_json)
+        .query::<()>(&mut conn)
+        .unwrap();
+
+    // Recover
+    let recoveries = writer.recover_stale_locks().unwrap();
+
+    assert_eq!(recoveries.len(), 1);
+    assert_eq!(recoveries[0].target_block, 0);
+    assert_eq!(recoveries[0].previous_block, None);
+
+    // Verify lock was cleared
+    let exists: bool = redis::cmd("EXISTS")
+        .arg(&lock_key)
+        .query(&mut conn)
+        .unwrap();
+    assert!(!exists, "lock should be cleared after recovery");
+
+    // Verify block metadata was written
+    let block_key = format!("{namespace}:block");
+    let block_num: Option<String> = redis::cmd("GET").arg(&block_key).query(&mut conn).unwrap();
+    assert_eq!(block_num, Some("0".to_string()));
+}
+
+#[tokio::test]
+async fn test_recover_stale_locks_fails_without_diff() {
+    // Test case: crash happened during write, but diff is missing - cannot repair
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+    let base_namespace = format!("test_missing_diff_{}", uuid::Uuid::new_v4());
+    let config = CircularBufferConfig::new(3).unwrap();
+
+    let chunked_config = ChunkedWriteConfig::new(1000, 60);
+
+    let writer = StateWriter::with_chunked_config(
+        &instance.redis_url,
+        &base_namespace,
+        config.clone(),
+        chunked_config,
+    )
+    .unwrap();
+
+    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let mut conn = client.get_connection().unwrap();
+
+    let namespace = format!("{base_namespace}:0");
+    let lock_key = format!("{namespace}:write_lock");
+
+    // Insert a stale lock for block 5 (no diff stored)
+    let old_timestamp = chrono::Utc::now().timestamp() - 120;
+    let lock_json = serde_json::json!({
+        "target_block": 5,
+        "started_at": old_timestamp,
+        "writer_id": "crashed-writer"
+    })
+    .to_string();
+
+    redis::cmd("SET")
+        .arg(&lock_key)
+        .arg(&lock_json)
+        .query::<()>(&mut conn)
+        .unwrap();
+
+    // DO NOT store the diff
+
+    // Recover
+    let result = writer.recover_stale_locks();
+
+    assert!(result.is_err(), "recovery should fail without diff");
+    let err = result.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            state_store::common::error::StateError::MissingStateDiff { .. }
+        ),
+        "expected MissingStateDiff error, got: {err:?}",
+    );
+
+    // Verify lock is STILL in place (protecting readers from corrupt state)
+    let exists: bool = redis::cmd("EXISTS")
+        .arg(&lock_key)
+        .query(&mut conn)
+        .unwrap();
+    assert!(exists, "lock should remain when recovery fails");
+}
+
+#[tokio::test]
+async fn test_force_recover_namespace_specific_index() {
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+    let base_namespace = format!("test_force_recover_{}", uuid::Uuid::new_v4());
+    let config = CircularBufferConfig::new(3).unwrap();
+
+    let chunked_config = ChunkedWriteConfig::new(1000, 60);
+
+    let writer = StateWriter::with_chunked_config(
+        &instance.redis_url,
+        &base_namespace,
+        config.clone(),
+        chunked_config,
+    )
+    .unwrap();
+
+    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let mut conn = client.get_connection().unwrap();
+
+    // Insert stale locks in namespaces 0 and 2
+    let old_timestamp = chrono::Utc::now().timestamp() - 120;
+
+    for idx in [0, 2] {
+        let namespace = format!("{base_namespace}:{idx}");
+        let lock_key = format!("{namespace}:write_lock");
+        let block_key = format!("{namespace}:block");
+
+        // Set block to simulate completed write (so recovery doesn't need diffs)
+        let target_block = 100 + idx as u64;
+        redis::cmd("SET")
+            .arg(&block_key)
+            .arg(target_block.to_string())
+            .query::<()>(&mut conn)
+            .unwrap();
+
+        let lock_json = serde_json::json!({
+            "target_block": target_block,
+            "started_at": old_timestamp,
+            "writer_id": format!("writer-{}", idx)
+        })
+        .to_string();
+
+        redis::cmd("SET")
+            .arg(&lock_key)
+            .arg(&lock_json)
+            .query::<()>(&mut conn)
+            .unwrap();
+    }
+
+    // Force recover only namespace 2
+    let recovery = writer.force_recover_namespace(2).unwrap();
+
+    assert!(recovery.is_some());
+    let recovery = recovery.unwrap();
+    assert_eq!(recovery.namespace, format!("{base_namespace}:2"));
+    assert_eq!(recovery.target_block, 102);
+
+    // Verify namespace 0 still has its lock
+    let lock_key_0 = format!("{base_namespace}:0:write_lock");
+    let exists: bool = redis::cmd("EXISTS")
+        .arg(&lock_key_0)
+        .query(&mut conn)
+        .unwrap();
+    assert!(exists, "namespace 0 lock should still exist");
+
+    // Verify namespace 2 lock was cleared
+    let lock_key_2 = format!("{base_namespace}:2:write_lock");
+    let exists: bool = redis::cmd("EXISTS")
+        .arg(&lock_key_2)
+        .query(&mut conn)
+        .unwrap();
+    assert!(!exists, "namespace 2 lock should be cleared");
+}
+
+#[tokio::test]
+async fn test_recovery_applies_multiple_diffs() {
+    // Test case: namespace at block 97, crashed during write of block 100
+    // Recovery needs to apply diffs for blocks 98, 99, and 100
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+    let base_namespace = format!("test_multi_diff_{}", uuid::Uuid::new_v4());
+    let config = CircularBufferConfig::new(3).unwrap();
+
+    let chunked_config = ChunkedWriteConfig::new(1000, 60);
+
+    let writer = StateWriter::with_chunked_config(
+        &instance.redis_url,
+        &base_namespace,
+        config.clone(),
+        chunked_config,
+    )
+    .unwrap();
+
+    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let mut conn = client.get_connection().unwrap();
+
+    // Namespace 1 (100 % 3 = 1)
+    let namespace = format!("{base_namespace}:1");
+    let lock_key = format!("{namespace}:write_lock");
+    let block_key = format!("{namespace}:block");
+
+    // Set namespace to block 97
+    redis::cmd("SET")
+        .arg(&block_key)
+        .arg("97")
+        .query::<()>(&mut conn)
+        .unwrap();
+
+    // Insert stale lock for block 100
+    let old_timestamp = chrono::Utc::now().timestamp() - 120;
+    let lock_json = serde_json::json!({
+        "target_block": 100,
+        "started_at": old_timestamp,
+        "writer_id": "crashed-writer"
+    })
+    .to_string();
+
+    redis::cmd("SET")
+        .arg(&lock_key)
+        .arg(&lock_json)
+        .query::<()>(&mut conn)
+        .unwrap();
+
+    // Store diffs for blocks 98, 99, 100
+    for block_num in 98..=100 {
+        let diff_key = format!("{base_namespace}:diff:{block_num}");
+        let diff = BlockStateUpdate::new(
+            block_num,
+            B256::from([block_num as u8; 32]),
+            B256::from([(block_num + 100) as u8; 32]),
+        );
+        let diff_json = serde_json::to_string(&diff).unwrap();
+
+        redis::cmd("SET")
+            .arg(&diff_key)
+            .arg(&diff_json)
+            .query::<()>(&mut conn)
+            .unwrap();
+    }
+
+    // Recover
+    let recoveries = writer.recover_stale_locks().unwrap();
+
+    assert_eq!(recoveries.len(), 1);
+    assert_eq!(recoveries[0].target_block, 100);
+    assert_eq!(recoveries[0].previous_block, Some(97));
+
+    // Verify namespace is now at block 100
+    let block_num: Option<String> = redis::cmd("GET").arg(&block_key).query(&mut conn).unwrap();
+    assert_eq!(block_num, Some("100".to_string()));
+
+    // Verify lock was cleared
+    let exists: bool = redis::cmd("EXISTS")
+        .arg(&lock_key)
+        .query(&mut conn)
+        .unwrap();
+    assert!(!exists, "lock should be cleared after recovery");
+}
+
+#[tokio::test]
+async fn test_recovery_partial_diff_chain_fails() {
+    // Test case: namespace at block 97, crashed during write of block 100
+    // But only diff for block 98 exists, 99 is missing - should fail
+    let instance = LocalInstance::new()
+        .await
+        .expect("Failed to start instance");
+    let base_namespace = format!("test_partial_diff_{}", uuid::Uuid::new_v4());
+    let config = CircularBufferConfig::new(3).unwrap();
+
+    let chunked_config = ChunkedWriteConfig::new(1000, 60);
+
+    let writer = StateWriter::with_chunked_config(
+        &instance.redis_url,
+        &base_namespace,
+        config.clone(),
+        chunked_config,
+    )
+    .unwrap();
+
+    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let mut conn = client.get_connection().unwrap();
+
+    // Namespace 1 (100 % 3 = 1)
+    let namespace = format!("{base_namespace}:1");
+    let lock_key = format!("{namespace}:write_lock");
+    let block_key = format!("{namespace}:block");
+
+    // Set namespace to block 97
+    redis::cmd("SET")
+        .arg(&block_key)
+        .arg("97")
+        .query::<()>(&mut conn)
+        .unwrap();
+
+    // Insert stale lock for block 100
+    let old_timestamp = chrono::Utc::now().timestamp() - 120;
+    let lock_json = serde_json::json!({
+        "target_block": 100,
+        "started_at": old_timestamp,
+        "writer_id": "crashed-writer"
+    })
+    .to_string();
+
+    redis::cmd("SET")
+        .arg(&lock_key)
+        .arg(&lock_json)
+        .query::<()>(&mut conn)
+        .unwrap();
+
+    // Only store diff for block 98 (missing 99 and 100)
+    let diff_key = format!("{base_namespace}:diff:98");
+    let diff = BlockStateUpdate::new(98, B256::from([98u8; 32]), B256::from([198u8; 32]));
+    let diff_json = serde_json::to_string(&diff).unwrap();
+
+    redis::cmd("SET")
+        .arg(&diff_key)
+        .arg(&diff_json)
+        .query::<()>(&mut conn)
+        .unwrap();
+
+    // Recover - should fail because diff 99 is missing
+    let result = writer.recover_stale_locks();
+
+    assert!(result.is_err(), "recovery should fail with partial diffs");
+    let err = result.unwrap_err();
+    match err {
+        state_store::common::error::StateError::MissingStateDiff {
+            needed_block,
+            target_block,
+        } => {
+            assert_eq!(needed_block, 99);
+            assert_eq!(target_block, 100);
+        }
+        _ => panic!("expected MissingStateDiff error, got: {err:?}"),
+    }
+
+    // Verify lock is STILL in place
+    let exists: bool = redis::cmd("EXISTS")
+        .arg(&lock_key)
+        .query(&mut conn)
+        .unwrap();
+    assert!(exists, "lock should remain when recovery fails");
 }

@@ -37,6 +37,21 @@ use crate::{
 use alloy::primitives::B256;
 use uuid::Uuid;
 
+/// Information about a recovered stale lock.
+#[derive(Debug, Clone)]
+pub struct StaleLockRecovery {
+    /// The namespace that had the stale lock
+    pub namespace: String,
+    /// The block number that was being written when the crash occurred
+    pub target_block: u64,
+    /// The writer ID that held the lock
+    pub writer_id: String,
+    /// When the lock was acquired (unix timestamp)
+    pub started_at: i64,
+    /// The block number the namespace had before the failed write (if any)
+    pub previous_block: Option<u64>,
+}
+
 /// Thin wrapper that writes account/state data into Redis using a circular buffer
 /// approach to maintain multiple historical states.
 ///
@@ -126,6 +141,199 @@ impl StateWriter {
     pub fn writer_id(&self) -> &str {
         &self.writer_id
     }
+
+    /// Check for and recover from stale locks on all namespaces.
+    ///
+    /// Should be called during startup before processing blocks. For each stale lock:
+    /// - If the state can be repaired (diffs exist): completes the write, releases lock
+    /// - If repair fails (missing diffs): returns error, lock remains in place
+    ///
+    /// The lock is NEVER released until the state is consistent, ensuring readers
+    /// cannot access corrupt data.
+    ///
+    /// Returns information about successfully recovered locks.
+    pub fn recover_stale_locks(&self) -> StateResult<Vec<StaleLockRecovery>> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+        let stale_timeout = self.chunked_config.stale_lock_timeout_secs;
+        let chunk_size = self.chunked_config.chunk_size;
+
+        self.client.with_connection(move |conn| {
+            recover_all_stale_locks(
+                conn,
+                &base_namespace,
+                buffer_size,
+                stale_timeout,
+                chunk_size,
+            )
+        })
+    }
+
+    /// Force recovery of a specific namespace by repairing its state and clearing the lock.
+    ///
+    /// This will attempt to complete the interrupted write. If the required diffs
+    /// are not available, returns an error and leaves the lock in place.
+    pub fn force_recover_namespace(
+        &self,
+        namespace_idx: usize,
+    ) -> StateResult<Option<StaleLockRecovery>> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+        let stale_timeout = self.chunked_config.stale_lock_timeout_secs;
+        let chunk_size = self.chunked_config.chunk_size;
+
+        if namespace_idx >= buffer_size {
+            return Err(StateError::InvalidNamespace(
+                namespace_idx as u64,
+                buffer_size,
+            ));
+        }
+
+        self.client.with_connection(move |conn| {
+            let namespace = format!("{base_namespace}:{namespace_idx}");
+            recover_namespace_lock(
+                conn,
+                &base_namespace,
+                &namespace,
+                buffer_size,
+                stale_timeout,
+                chunk_size,
+            )
+        })
+    }
+}
+
+/// Recover all stale locks across all namespaces.
+///
+/// For each stale lock found, attempts to repair the state before releasing the lock.
+/// If any recovery fails, the error is returned and remaining namespaces are not processed.
+fn recover_all_stale_locks<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    buffer_size: usize,
+    stale_timeout_secs: i64,
+    chunk_size: usize,
+) -> StateResult<Vec<StaleLockRecovery>>
+where
+    C: redis::ConnectionLike,
+{
+    let mut recoveries = Vec::new();
+
+    for idx in 0..buffer_size {
+        let namespace = format!("{base_namespace}:{idx}");
+
+        if let Some(recovery) = recover_namespace_lock(
+            conn,
+            base_namespace,
+            &namespace,
+            buffer_size,
+            stale_timeout_secs,
+            chunk_size,
+        )? {
+            recoveries.push(recovery);
+        }
+    }
+
+    Ok(recoveries)
+}
+
+/// Check and recover a single namespace's stale lock.
+///
+/// Recovery process:
+/// 1. Check if the lock exists and is stale
+/// 2. If the namespace block already equals to the target block, then the state is consistent
+/// 3. Otherwise, re-apply all diffs from (`current_block` + 1) to `target_block`
+/// 4. Only release lock after the state is fully repaired
+///
+/// If any required diff is missing, returns an error and DOES NOT release the lock,
+/// ensuring readers cannot access an inconsistent state.
+fn recover_namespace_lock<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    namespace: &str,
+    buffer_size: usize,
+    stale_timeout_secs: i64,
+    chunk_size: usize,
+) -> StateResult<Option<StaleLockRecovery>>
+where
+    C: redis::ConnectionLike,
+{
+    // Check if there's a stale lock
+    let lock = match read_namespace_lock(conn, namespace)? {
+        Some(lock) if lock.is_stale(stale_timeout_secs) => lock,
+        _ => return Ok(None),
+    };
+
+    let current_block = read_namespace_block_number(conn, namespace)?;
+    let target_block = lock.target_block;
+
+    // Case 1: Write already completed (crash happened after metadata update but before lock release)
+    // State is consistent, just release the lock
+    if current_block == Some(target_block) {
+        let lock_key = get_write_lock_key(namespace);
+        redis::cmd("DEL").arg(&lock_key).query::<()>(conn)?;
+
+        return Ok(Some(StaleLockRecovery {
+            namespace: namespace.to_string(),
+            target_block,
+            writer_id: lock.writer_id,
+            started_at: lock.started_at,
+            previous_block: current_block,
+        }));
+    }
+
+    // Case 2: Write did not complete, so need to repair by re-applying diffs
+    let start_block = current_block.map_or(0, |b| b + 1);
+
+    for block_num in start_block..=target_block {
+        let diff_key = get_diff_key(base_namespace, block_num);
+        let diff_json: Option<String> = redis::cmd("GET").arg(&diff_key).query(conn)?;
+
+        match diff_json {
+            Some(json) => {
+                let diff = deserialize_state_diff(&json, block_num)?;
+                let accounts: Vec<&AccountState> = diff.accounts.iter().collect();
+
+                // Apply account changes in chunks
+                for chunk in accounts.chunks(chunk_size) {
+                    write_account_chunk(conn, namespace, chunk)?;
+                }
+
+                // If this is the target block, finalize with metadata
+                if block_num == target_block {
+                    write_block_metadata(
+                        conn,
+                        namespace,
+                        base_namespace,
+                        target_block,
+                        diff.block_hash,
+                        diff.state_root,
+                        buffer_size,
+                    )?;
+                }
+            }
+            None => {
+                // Cannot complete recovery
+                // DO NOT release the lock
+                return Err(StateError::MissingStateDiff {
+                    needed_block: block_num,
+                    target_block,
+                });
+            }
+        }
+    }
+
+    // State is now consistent
+    let lock_key = get_write_lock_key(namespace);
+    redis::cmd("DEL").arg(&lock_key).query::<()>(conn)?;
+
+    Ok(Some(StaleLockRecovery {
+        namespace: namespace.to_string(),
+        target_block,
+        writer_id: lock.writer_id,
+        started_at: lock.started_at,
+        previous_block: current_block,
+    }))
 }
 
 /// Deserialize a state diff from JSON.
@@ -448,5 +656,20 @@ mod tests {
         assert_eq!(deserialized.block_number, 42);
         assert_eq!(deserialized.accounts.len(), 1);
         assert_eq!(deserialized.accounts[0].nonce, 5);
+    }
+
+    #[test]
+    fn test_stale_lock_recovery_struct() {
+        let recovery = StaleLockRecovery {
+            namespace: "chain:0".to_string(),
+            target_block: 100,
+            writer_id: "test-writer".to_string(),
+            started_at: 1_234_567_890,
+            previous_block: Some(97),
+        };
+
+        assert_eq!(recovery.namespace, "chain:0");
+        assert_eq!(recovery.target_block, 100);
+        assert_eq!(recovery.previous_block, Some(97));
     }
 }
