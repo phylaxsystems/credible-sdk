@@ -105,3 +105,8 @@ name = "worst_case_compute"
 path = "benches/worst_case_compute.rs"
 harness = false
 required-features = ["bench-utils"]
+
+[[bench]]
+name = "transactions_results_add_transaction_result"
+path = "benches/transactions_results_add_transaction_result.rs"
+harness = false

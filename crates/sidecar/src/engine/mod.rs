@@ -45,6 +45,8 @@ pub mod system_calls;
 mod tests;
 mod transactions_results;
 
+pub use transactions_results::TransactionsResults;
+
 use self::{
     queue::{
         CommitHead,
@@ -106,10 +108,7 @@ use revm::state::EvmState;
 
 use crate::{
     cache::Sources,
-    engine::{
-        system_calls::SystemCallError,
-        transactions_results::TransactionsResults,
-    },
+    engine::system_calls::SystemCallError,
     execution_ids::{
         BlockExecutionId,
         TxExecutionId,
