@@ -97,6 +97,10 @@ pub struct CallTracer {
     ///
     /// This lets truncation remove indices without scanning all map entries.
     target_and_selector_by_call: Vec<TargetAndSelector>,
+    /// Parallel to `call_inputs`: for each call, its position within the key's Vec in
+    /// `target_and_selector_indices`. This enables O(1) truncation by directly knowing
+    /// where to truncate each key's Vec without binary search.
+    position_in_key_vec: Vec<usize>,
     /// Assertion store, we limit call input recording to AAs when present.
     ///
     /// If set to `None`, the `CallTracer` will record data for all addresses
@@ -108,8 +112,10 @@ pub struct CallTracer {
     pub journal: JournalInner<JournalEntry>,
     pub pre_call_checkpoints: Vec<JournalCheckpoint>,
     pub post_call_checkpoints: Vec<Option<JournalCheckpoint>>,
-    // Map depth to the index of the call input that is awaiting a post_call_checkpoint
-    pending_post_call_writes: HashMap<usize, usize>,
+    /// Stack of call indices awaiting `post_call_checkpoint`, indexed by depth.
+    /// Uses Vec instead of `HashMap` since calls follow strict stack discipline (LIFO).
+    /// Push on `call_start`, pop on `call_end`.
+    pending_post_call_writes: Vec<usize>,
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
     pub result: Result<(), CallTracerError>,
 }
@@ -118,11 +124,12 @@ impl Default for CallTracer {
         Self {
             call_inputs: Vec::new(),
             target_and_selector_by_call: Vec::new(),
+            position_in_key_vec: Vec::new(),
             assertion_store: None,
             journal: JournalInner::new(),
             pre_call_checkpoints: Vec::new(),
             post_call_checkpoints: Vec::new(),
-            pending_post_call_writes: HashMap::new(),
+            pending_post_call_writes: Vec::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
@@ -141,11 +148,12 @@ impl CallTracer {
         Self {
             call_inputs: Vec::new(),
             target_and_selector_by_call: Vec::new(),
+            position_in_key_vec: Vec::new(),
             assertion_store: Some(assertion_store),
             journal: JournalInner::new(),
             pre_call_checkpoints: Vec::new(),
             post_call_checkpoints: Vec::new(),
-            pending_post_call_writes: HashMap::new(),
+            pending_post_call_writes: Vec::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
@@ -202,14 +210,23 @@ impl CallTracer {
 
         let index = self.call_inputs.len();
         let depth = journal_inner.depth;
-        if let Some(existing_index) = self.pending_post_call_writes.insert(depth, index) {
-            error!(target: "assertion-executor::call_tracer", depth, existing_index, "Tried to insert pending_post_call_write, but pending post call write already exists.");
+
+        // Verify stack discipline: depth should equal current stack size
+        if self.pending_post_call_writes.len() != depth {
+            error!(target: "assertion-executor::call_tracer", depth, stack_len = self.pending_post_call_writes.len(), "Pending post call write stack mismatch");
             self.result = Err(CallTracerError::PendingPostCallWriteAlreadyExists {
                 depth,
-                index: existing_index,
+                index: self
+                    .pending_post_call_writes
+                    .get(depth)
+                    .copied()
+                    .unwrap_or(0),
             });
             return;
         }
+
+        // Push to stack (depth is implicitly the index in the Vec)
+        self.pending_post_call_writes.push(index);
 
         let checkpoint = JournalCheckpoint {
             log_i: journal_inner.logs.len(),
@@ -224,6 +241,13 @@ impl CallTracer {
             selector,
         };
 
+        // Track position within the key's Vec for O(1) truncation
+        let position = self
+            .target_and_selector_indices
+            .get(&key)
+            .map_or(0, Vec::len);
+        self.position_in_key_vec.push(position);
+
         self.target_and_selector_indices
             .entry(key.clone())
             .or_default()
@@ -233,35 +257,51 @@ impl CallTracer {
         self.target_and_selector_by_call.push(key);
     }
 
+    /// Records the end of a call, either committing or reverting based on the outcome.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pending writes stack is empty when it shouldn't be (invariant violation).
     pub fn record_call_end(
         &mut self,
         journal_inner: &mut JournalInner<JournalEntry>,
         reverted: bool,
     ) {
-        if let Some(index) = self.pending_post_call_writes.remove(&journal_inner.depth) {
-            if reverted {
-                self.truncate_from(index);
-            } else {
-                if self.post_call_checkpoints.len() <= index {
-                    error!(target: "assertion-executor::call_tracer", index, "Post call checkpoint not initialized as None");
-                    self.result = Err(CallTracerError::PostCallCheckpointNotInitialized { index });
-                    return;
-                }
-                self.post_call_checkpoints[index] = Some(JournalCheckpoint {
-                    log_i: journal_inner.logs.len(),
-                    journal_i: journal_inner.journal.len(),
-                });
-            }
+        let depth = journal_inner.depth;
+
+        // Verify stack discipline: we should be popping at the expected depth
+        if self.pending_post_call_writes.len() != depth + 1 {
+            error!(target: "assertion-executor::call_tracer", depth, stack_len = self.pending_post_call_writes.len(), "Pending post call write stack mismatch on end");
+            self.result = Err(CallTracerError::PendingPostCallWriteNotFound { depth });
+            return;
+        }
+
+        // Pop from stack (O(1))
+        let index = self
+            .pending_post_call_writes
+            .pop()
+            .expect("stack should not be empty");
+
+        if reverted {
+            self.truncate_from(index);
         } else {
-            error!(target: "assertion-executor::call_tracer", depth = journal_inner.depth, "Pending post call write not found");
-            self.result = Err(CallTracerError::PendingPostCallWriteNotFound {
-                depth: journal_inner.depth,
+            if self.post_call_checkpoints.len() <= index {
+                error!(target: "assertion-executor::call_tracer", index, "Post call checkpoint not initialized as None");
+                self.result = Err(CallTracerError::PostCallCheckpointNotInitialized { index });
+                return;
+            }
+            self.post_call_checkpoints[index] = Some(JournalCheckpoint {
+                log_i: journal_inner.logs.len(),
+                journal_i: journal_inner.journal.len(),
             });
         }
     }
 
     /// Truncate all call data from the given index onwards.
     /// Called when a call reverts to remove it and all its descendants.
+    ///
+    /// Uses bidirectional indexing for O(k) truncation where k is the number of entries removed,
+    /// with O(u) `HashMap` operations where u is the number of unique keys in the truncated range.
     fn truncate_from(&mut self, index: usize) {
         let old_len = self.call_inputs.len();
         if index >= old_len {
@@ -275,49 +315,63 @@ impl CallTracer {
             self.pre_call_checkpoints.clear();
             self.post_call_checkpoints.clear();
             self.target_and_selector_by_call.clear();
+            self.position_in_key_vec.clear();
             return;
         }
 
-        // Remove indices for the calls we're dropping without scanning the entire map.
-        //
-        // Invariant: each per-key `Vec<usize>` is append-only and sorted, so truncating calls from
-        // `index..old_len` corresponds to removing the last `count` indices for each affected key.
-        // We batch consecutive calls that share the same key to avoid hashing per call.
-        let mut dropped_counts: HashMap<TargetAndSelector, usize> = HashMap::new();
-        let mut end = old_len;
-        while end > index {
-            let mut start = end - 1;
-            let key = &self.target_and_selector_by_call[start];
-            while start > index && &self.target_and_selector_by_call[start - 1] == key {
-                start -= 1;
-            }
-            let run_len = end - start;
-            *dropped_counts.entry(key.clone()).or_insert(0) += run_len;
-            end = start;
-        }
+        // Use bidirectional indexing: for each entry being removed, we know its position
+        // within its key's Vec, so we can directly truncate without binary search.
+        let entries_to_remove = old_len - index;
 
-        let mut keys_to_remove: Vec<TargetAndSelector> = Vec::new();
-        for (key, count) in dropped_counts {
-            if let Some(indices) = self.target_and_selector_indices.get_mut(&key) {
-                indices.truncate(indices.len().saturating_sub(count));
+        if entries_to_remove == 1 {
+            // Fast path for single-entry removal (common in bubble-up reverts)
+            // O(1) HashMap lookup + O(1) Vec truncate
+            let key = &self.target_and_selector_by_call[index];
+            let pos = self.position_in_key_vec[index];
+            if let Some(indices) = self.target_and_selector_indices.get_mut(key) {
+                indices.truncate(pos);
                 if indices.is_empty() {
-                    keys_to_remove.push(key);
+                    self.target_and_selector_indices.remove(key);
                 }
             }
-        }
-        for key in keys_to_remove {
-            self.target_and_selector_indices.remove(&key);
+        } else {
+            // General path: for each unique key in the truncated range, find the minimum position
+            // (first occurrence), then truncate to that position.
+            let mut truncate_positions: HashMap<&TargetAndSelector, usize> = HashMap::new();
+            for i in index..old_len {
+                let key = &self.target_and_selector_by_call[i];
+                let pos = self.position_in_key_vec[i];
+                truncate_positions
+                    .entry(key)
+                    .and_modify(|min| *min = (*min).min(pos))
+                    .or_insert(pos);
+            }
+
+            // Truncate each affected key's Vec to the minimum position
+            let mut keys_to_remove: Vec<TargetAndSelector> = Vec::new();
+            for (key, pos) in truncate_positions {
+                if let Some(indices) = self.target_and_selector_indices.get_mut(key) {
+                    indices.truncate(pos);
+                    if indices.is_empty() {
+                        keys_to_remove.push(key.clone());
+                    }
+                }
+            }
+            for key in keys_to_remove {
+                self.target_and_selector_indices.remove(&key);
+            }
         }
 
-        // Clean up any pending writes for children that haven't ended
-        self.pending_post_call_writes
-            .retain(|_, &mut idx| idx < index);
+        // No need to clean up pending_post_call_writes here.
+        // With stack discipline, record_call_end already popped the current entry,
+        // and all remaining entries are ancestors with lower indices.
 
         // Truncate all vectors
         self.call_inputs.truncate(index);
         self.pre_call_checkpoints.truncate(index);
         self.post_call_checkpoints.truncate(index);
         self.target_and_selector_by_call.truncate(index);
+        self.position_in_key_vec.truncate(index);
     }
 
     pub fn calls(&self) -> HashSet<Address> {
