@@ -17,8 +17,8 @@ alloy = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-testcontainers = "0.25.0"
-testcontainers-modules = { version = "0.13.0", features = ["redis"] }
+testcontainers = "0.26.0"
+testcontainers-modules = { version = "0.14.0", features = ["redis"] }
 
 [features]
 default = ["writer", "reader"]

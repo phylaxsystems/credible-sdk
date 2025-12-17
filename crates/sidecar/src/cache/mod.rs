@@ -671,7 +671,7 @@ mod tests {
     }
 
     fn redis_io_error(message: &str) -> RedisError {
-        RedisError::from((ErrorKind::IoError, "TEST", message.to_string()))
+        RedisError::from((ErrorKind::Io, "TEST", message.to_string()))
     }
 
     // Helper functions
