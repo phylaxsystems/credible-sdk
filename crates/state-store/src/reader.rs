@@ -25,6 +25,7 @@ use crate::{
         get_state_root_key,
         get_storage_key,
         read_latest_block_number,
+        read_namespace_lock,
     },
 };
 use alloy::primitives::{
@@ -64,6 +65,8 @@ impl StateReader {
     /// Get account info without storage slots (balance, nonce, code hash, code only).
     /// This is the recommended method for most use cases to avoid large data transfers.
     /// Use `get_full_account` or `get_all_storage` separately if storage is needed.
+    ///
+    /// Returns an error if the namespace is locked for writing.
     pub fn get_account(
         &self,
         address_hash: AddressHash,
@@ -86,6 +89,8 @@ impl StateReader {
     /// Get the complete account state including code and all storage slots.
     /// WARNING: This can be expensive for contracts with large storage (millions of slots).
     /// Use `get_account` + `get_storage` for specific slots when possible.
+    ///
+    /// Returns an error if the namespace is locked for writing.
     pub fn get_full_account(
         &self,
         address_hash: AddressHash,
@@ -109,6 +114,8 @@ impl StateReader {
     ///
     /// The `slot` parameter should be the `keccak256` hash of the original 32-byte slot index,
     /// matching the format persisted by the writer (and Nethermind state dumps).
+    ///
+    /// Returns an error if the namespace is locked for writing.
     pub fn get_storage(
         &self,
         address_hash: AddressHash,
@@ -132,6 +139,8 @@ impl StateReader {
 
     /// Scan all account hashes (keccak of addresses) in a namespace for a specific block.
     /// Returns a list of all keccak(address) hashes that have account data stored.
+    ///
+    /// Returns an error if the namespace is locked for writing.
     pub fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
@@ -144,6 +153,8 @@ impl StateReader {
     /// Get all storage slots for an account at a block.
     ///
     /// Returned map keys are `keccak256(slot)` digests corresponding to the original storage slots.
+    ///
+    /// Returns an error if the namespace is locked for writing.
     pub fn get_all_storage(
         &self,
         address_hash: AddressHash,
@@ -164,6 +175,8 @@ impl StateReader {
     }
 
     /// Get contract bytecode by code hash.
+    ///
+    /// Returns an error if the namespace is locked for writing.
     pub fn get_code(&self, code_hash: B256, block_number: u64) -> StateResult<Option<Vec<u8>>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
@@ -174,6 +187,9 @@ impl StateReader {
     }
 
     /// Get block hash for a specific block number.
+    ///
+    /// Note: Block hashes are stored globally, not per-namespace, so this does not
+    /// check namespace locks.
     pub fn get_block_hash(&self, block_number: u64) -> StateResult<Option<B256>> {
         let base_namespace = self.client.base_namespace.clone();
 
@@ -182,6 +198,9 @@ impl StateReader {
     }
 
     /// Get state root for a specific block number.
+    ///
+    /// Note: State roots are stored globally, not per-namespace, so this does not
+    /// check namespace locks.
     pub fn get_state_root(&self, block_number: u64) -> StateResult<Option<B256>> {
         let base_namespace = self.client.base_namespace.clone();
 
@@ -191,6 +210,9 @@ impl StateReader {
 
     /// Get complete block metadata (hash and state root).
     /// Optimized to fetch both in a single roundtrip.
+    ///
+    /// Note: Block metadata is stored globally, not per-namespace, so this does not
+    /// check namespace locks.
     pub fn get_block_metadata(&self, block_number: u64) -> StateResult<Option<BlockMetadata>> {
         let base_namespace = self.client.base_namespace.clone();
 
@@ -230,12 +252,35 @@ impl StateReader {
     }
 
     /// Check if a specific block number is available in the circular buffer.
+    ///
+    /// Note: This checks availability without considering locks.
     pub fn is_block_available(&self, block_number: u64) -> StateResult<bool> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
 
         self.client.with_connection(move |conn| {
             is_block_available(conn, &base_namespace, buffer_size, block_number)
+        })
+    }
+
+    /// Check if a specific block number is available and not locked for writing.
+    pub fn is_block_readable(&self, block_number: u64) -> StateResult<bool> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        self.client.with_connection(move |conn| {
+            // First check if block is available
+            if !is_block_available(conn, &base_namespace, buffer_size, block_number)? {
+                return Ok(false);
+            }
+
+            // Then check if the namespace is locked
+            let namespace = get_namespace_for_block(&base_namespace, block_number, buffer_size)?;
+            if read_namespace_lock(conn, &namespace)?.is_some() {
+                return Ok(false);
+            }
+
+            Ok(true)
         })
     }
 
@@ -277,6 +322,22 @@ fn verify_namespace_block(namespace_block: Option<u64>, expected: u64) -> StateR
     Ok(())
 }
 
+/// Check that namespace is not locked for writing.
+/// Returns an error if the namespace has a write lock.
+fn ensure_namespace_not_locked<C>(conn: &mut C, namespace: &str) -> StateResult<()>
+where
+    C: redis::ConnectionLike,
+{
+    if let Some(lock) = read_namespace_lock(conn, namespace)? {
+        return Err(StateError::NamespaceLocked {
+            namespace: namespace.to_string(),
+            target_block: lock.target_block,
+            started_at: lock.started_at,
+        });
+    }
+    Ok(())
+}
+
 /// Get account info without storage slots.
 /// This is the lightweight version that avoids loading potentially large storage.
 fn get_account_at_block<C>(
@@ -290,6 +351,9 @@ where
     C: redis::ConnectionLike,
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
+
+    // Check lock before reading
+    ensure_namespace_not_locked(conn, &namespace)?;
 
     let block_key = get_block_key(&namespace);
     let account_key = get_account_key(&namespace, address_hash);
@@ -349,6 +413,9 @@ where
     C: redis::ConnectionLike,
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
+
+    // Check lock before reading
+    ensure_namespace_not_locked(conn, &namespace)?;
 
     let block_key = get_block_key(&namespace);
     let account_key = get_account_key(&namespace, address_hash);
@@ -441,6 +508,9 @@ where
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
 
+    // Check lock before reading
+    ensure_namespace_not_locked(conn, &namespace)?;
+
     let block_key = get_block_key(&namespace);
     let storage_key = get_storage_key(&namespace, address_hash);
     let slot_hash = B256::from(slot.to_be_bytes::<32>());
@@ -476,6 +546,9 @@ where
     C: redis::ConnectionLike,
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
+
+    // Check lock before reading
+    ensure_namespace_not_locked(conn, &namespace)?;
 
     let block_key = get_block_key(&namespace);
     let storage_key = get_storage_key(&namespace, address_hash);
@@ -516,6 +589,9 @@ where
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
 
+    // Check lock before reading
+    ensure_namespace_not_locked(conn, &namespace)?;
+
     let block_key = get_block_key(&namespace);
     let code_hash_hex = hex::encode(code_hash);
     let code_key = get_code_key(&namespace, &code_hash_hex);
@@ -550,6 +626,10 @@ where
     C: redis::ConnectionLike,
 {
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
+
+    // Check lock before reading
+    ensure_namespace_not_locked(conn, &namespace)?;
+
     let block_key = get_block_key(&namespace);
 
     // Verify namespace contains the requested block before scanning
@@ -596,6 +676,9 @@ where
     let namespace_block_str: Option<String> = redis::cmd("GET").arg(&block_key).query(conn)?;
     let namespace_block = parse_namespace_block(namespace_block_str)?;
     verify_namespace_block(namespace_block, block_number)?;
+
+    // Re-check lock after scan (writer might have started during scan)
+    ensure_namespace_not_locked(conn, &namespace)?;
 
     Ok(hashes)
 }

@@ -11647,6 +11647,7 @@ version = "0.9.0"
 dependencies = [
  "alloy",
  "anyhow",
+ "chrono",
  "hex",
  "redis",
  "serde",
@@ -11655,6 +11656,7 @@ dependencies = [
  "testcontainers-modules",
  "thiserror 2.0.17",
  "tokio",
+ "uuid 1.19.0",
 ]
 
 [[package]]

@@ -1,15 +1,22 @@
+#![allow(clippy::cast_lossless)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+
 use crate::{
+    ChunkedWriteConfig,
     CircularBufferConfig,
     StateReader,
     StateWriter,
     common::{
         AccountState,
         BlockStateUpdate,
+        NamespaceLock,
         get_account_key,
         get_diff_key,
         get_storage_key,
+        get_write_lock_key,
     },
-    writer::commit_block_atomic,
+    writer::commit_block_chunked,
 };
 use alloy::primitives::{
     Address,
@@ -50,22 +57,14 @@ fn u256_from_u64(value: u64) -> U256 {
     U256::from(value)
 }
 
-// Helper to setup Redis connection for each test (now async!)
 async fn setup_redis() -> Result<(testcontainers::ContainerAsync<Redis>, redis::Connection)> {
     let container = Redis::default()
         .start()
         .await
         .expect("Failed to start Redis container");
 
-    let host = container
-        .get_host()
-        .await
-        .expect("Failed to get host")
-        .to_string();
-    let port = container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get port");
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
 
     wait_for_redis(&host, port).await?;
 
@@ -419,7 +418,7 @@ async fn test_single_block_only_one_state_available() -> Result<()> {
     let writer = StateWriter::new(&format!("redis://{host}:{port}"), &namespace, config)?;
 
     let latest = writer.latest_block_number()?;
-    assert_eq!(latest, None, "Should have no blocks initially");
+    assert_eq!(latest, None);
 
     let address = Address::repeat_byte(0x11);
     let update = create_test_update(
@@ -434,7 +433,7 @@ async fn test_single_block_only_one_state_available() -> Result<()> {
     writer.commit_block(update)?;
 
     let latest = writer.latest_block_number()?;
-    assert_eq!(latest, Some(0), "Should have block 0");
+    assert_eq!(latest, Some(0));
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -450,8 +449,9 @@ async fn test_state_diff_storage_and_cleanup() -> Result<()> {
 
     let base_namespace = "diff_cleanup";
     let buffer_size = 3;
+    let chunked_config = ChunkedWriteConfig::default();
+    let writer_id = "test-writer";
 
-    // Write blocks 0, 1, 2
     for block_num in 0..3 {
         let update = BlockStateUpdate {
             block_number: block_num,
@@ -459,24 +459,35 @@ async fn test_state_diff_storage_and_cleanup() -> Result<()> {
             state_root: B256::repeat_byte(u8::try_from(block_num).unwrap()),
             accounts: vec![],
         };
-        commit_block_atomic(&mut conn, base_namespace, buffer_size, &update)?;
+        commit_block_chunked(
+            &mut conn,
+            base_namespace,
+            buffer_size,
+            &chunked_config,
+            writer_id,
+            &update,
+        )?;
     }
 
-    // Write block 3 (should delete block 0's diff)
     let update3 = BlockStateUpdate {
         block_number: 3,
         block_hash: B256::repeat_byte(3),
-        state_root: B256::repeat_byte(u8::try_from(3).unwrap()),
+        state_root: B256::repeat_byte(3),
         accounts: vec![],
     };
-    commit_block_atomic(&mut conn, base_namespace, buffer_size, &update3)?;
+    commit_block_chunked(
+        &mut conn,
+        base_namespace,
+        buffer_size,
+        &chunked_config,
+        writer_id,
+        &update3,
+    )?;
 
-    // Block 0's diff should be deleted
     let diff_key_0 = get_diff_key(base_namespace, 0);
     let exists_0: bool = redis::cmd("EXISTS").arg(&diff_key_0).query(&mut conn)?;
     assert!(!exists_0, "Diff for block 0 should be deleted");
 
-    // Blocks 1, 2, 3 diffs should exist
     for block_num in 1..=3 {
         let diff_key = get_diff_key(base_namespace, block_num);
         let exists: bool = redis::cmd("EXISTS").arg(&diff_key).query(&mut conn)?;
@@ -571,40 +582,22 @@ async fn test_zero_storage_values_are_deleted() -> Result<()> {
     let update0 = create_test_update(0, B256::ZERO, address, 1000, 0, storage_0, None);
     writer.commit_block(update0)?;
 
-    // Verify all slots exist
     let all_storage = reader.get_all_storage(address.into(), 0)?;
     assert_eq!(all_storage.len(), 3);
 
-    // Block 1: Set slot 2 to zero (should be deleted)
     let storage_1 = HashMap::from([(u256_from_u64(2), U256::ZERO)]);
     let update1 = create_test_update(1, B256::ZERO, address, 1000, 1, storage_1, None);
     writer.commit_block(update1)?;
 
-    // Verify slot 2 is deleted from Redis
     let all_storage = reader.get_all_storage(address.into(), 1)?;
-    assert_eq!(
-        all_storage.len(),
-        2,
-        "Slot 2 should be deleted when set to zero"
-    );
-    assert!(
-        all_storage.contains_key(&hash_slot(u256_from_u64(1))),
-        "Slot 1 should still exist"
-    );
-    assert!(
-        !all_storage.contains_key(&hash_slot(u256_from_u64(2))),
-        "Slot 2 should be deleted"
-    );
-    assert!(
-        all_storage.contains_key(&hash_slot(u256_from_u64(3))),
-        "Slot 3 should still exist"
-    );
+    assert_eq!(all_storage.len(), 2);
+    assert!(all_storage.contains_key(&hash_slot(u256_from_u64(1))));
+    assert!(!all_storage.contains_key(&hash_slot(u256_from_u64(2))));
+    assert!(all_storage.contains_key(&hash_slot(u256_from_u64(3))));
 
-    // Verify individual slot read returns None for deleted slot
     let slot_2_value = reader.get_storage(address.into(), hash_slot(u256_from_u64(2)), 1)?;
-    assert_eq!(slot_2_value, None, "Deleted slot should return None");
+    assert_eq!(slot_2_value, None);
 
-    // Block 2: Set slots 1 and 3 to zero
     let storage_2 = HashMap::from([
         (u256_from_u64(1), U256::ZERO),
         (u256_from_u64(3), U256::ZERO),
@@ -612,16 +605,11 @@ async fn test_zero_storage_values_are_deleted() -> Result<()> {
     let update2 = create_test_update(2, B256::ZERO, address, 1000, 2, storage_2, None);
     writer.commit_block(update2)?;
 
-    // Verify all slots are deleted
     let all_storage = reader.get_all_storage(address.into(), 2)?;
-    assert_eq!(all_storage.len(), 0, "All slots should be deleted");
+    assert_eq!(all_storage.len(), 0);
 
     Ok(())
 }
-
-// ============================================================================
-// NEW ROUNDTRIP TESTS WITH READER + WRITER
-// ============================================================================
 
 #[tokio::test]
 async fn test_roundtrip_basic_account_read() -> Result<()> {
@@ -689,25 +677,15 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
 
     let address = Address::repeat_byte(0xbb);
 
-    // Create storage
     let storage = HashMap::from([
         (u256_from_u64(1), u256_from_u64(100)),
         (u256_from_u64(2), u256_from_u64(200)),
         (u256_from_u64(3), u256_from_u64(300)),
     ]);
 
-    let update = create_test_update(
-        0,
-        B256::repeat_byte(0xBB),
-        address,
-        5000,
-        10,
-        storage.clone(),
-        None,
-    );
+    let update = create_test_update(0, B256::repeat_byte(0xBB), address, 5000, 10, storage, None);
     writer.commit_block(update)?;
 
-    // Read back full account
     let account = reader.get_full_account(address.into(), 0)?;
     assert!(account.is_some());
 
@@ -1045,23 +1023,17 @@ async fn test_roundtrip_storage_evolution() -> Result<()> {
     let update2 = create_test_update(2, B256::ZERO, address, 1000, 2, storage_2, None);
     writer.commit_block(update2)?;
 
-    // Block 3: Add slot 5
     let storage_3 = HashMap::from([(u256_from_u64(5), u256_from_u64(500))]);
     let update3 = create_test_update(3, B256::ZERO, address, 1000, 3, storage_3, None);
     writer.commit_block(update3)?;
 
-    // Read block 3 and verify all storage
     let all_storage = reader.get_all_storage(address.into(), 3)?;
-    assert_eq!(
-        all_storage.len(),
-        4,
-        "Slot 2 should be deleted when set to zero"
-    );
+    assert_eq!(all_storage.len(), 4);
     assert_eq!(
         all_storage.get(&hash_slot(u256_from_u64(1))),
         Some(&u256_from_u64(150).into())
     );
-    assert_eq!(all_storage.get(&hash_slot(u256_from_u64(2))), None,);
+    assert_eq!(all_storage.get(&hash_slot(u256_from_u64(2))), None);
     assert_eq!(
         all_storage.get(&hash_slot(u256_from_u64(3))),
         Some(&u256_from_u64(350).into())
@@ -1141,6 +1113,815 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
         assert_eq!(account.balance, U256::from(u64::from(i) * 1000));
         assert_eq!(account.nonce, u64::from(i));
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_write_lock_prevents_read() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "lock_test";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let address = Address::repeat_byte(0xaa);
+
+    let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
+    writer.commit_block(update)?;
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(1, "test-writer".to_string());
+    let lock_key = get_write_lock_key(&format!("{namespace}:0"));
+    let lock_json = lock.to_json()?;
+    conn.set::<_, _, ()>(&lock_key, &lock_json)?;
+
+    let result = reader.get_account(address.into(), 0);
+    assert!(result.is_err());
+
+    match result {
+        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        _ => panic!("Expected NamespaceLocked error"),
+    }
+
+    conn.del::<_, ()>(&lock_key)?;
+
+    let account = reader.get_account(address.into(), 0)?;
+    assert!(account.is_some());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_stale_lock_blocks_read() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "stale_lock_test";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let address = Address::repeat_byte(0xbb);
+
+    let update = create_test_update(0, B256::ZERO, address, 2000, 2, HashMap::new(), None);
+    writer.commit_block(update)?;
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let mut lock = NamespaceLock::new(1, "crashed-writer".to_string());
+    lock.started_at = 0;
+    let lock_key = get_write_lock_key(&format!("{namespace}:0"));
+    let lock_json = lock.to_json()?;
+    conn.set::<_, _, ()>(&lock_key, &lock_json)?;
+
+    let result = reader.get_account(address.into(), 0);
+    assert!(result.is_err());
+
+    match result {
+        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        _ => panic!("Expected NamespaceLocked error"),
+    }
+
+    conn.del::<_, ()>(&lock_key)?;
+
+    let account = reader.get_account(address.into(), 0)?;
+    assert!(account.is_some());
+    assert_eq!(account.unwrap().balance, U256::from(2000u64));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_is_block_readable() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "is_readable_test";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let address = Address::repeat_byte(0xcc);
+
+    let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
+    writer.commit_block(update)?;
+
+    assert!(reader.is_block_readable(0)?);
+    assert!(!reader.is_block_readable(1)?);
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(1, "test-writer".to_string());
+    let lock_key = get_write_lock_key(&format!("{namespace}:0"));
+    let lock_json = lock.to_json()?;
+    conn.set::<_, _, ()>(&lock_key, &lock_json)?;
+
+    assert!(!reader.is_block_readable(0)?);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_concurrent_writers_lock_contention() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "concurrent_writers";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer1 = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let writer2 = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+
+    let address = Address::repeat_byte(0x11);
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(0, writer1.writer_id().to_string());
+    let lock_key = get_write_lock_key(&format!("{namespace}:0"));
+    conn.set::<_, _, ()>(&lock_key, lock.to_json()?)?;
+
+    let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
+    let result = writer2.commit_block(update);
+
+    assert!(result.is_err());
+    match result {
+        Err(crate::common::error::StateError::LockAcquisitionFailed { .. }) => {}
+        Err(e) => panic!("Expected LockAcquisitionFailed, got: {e:?}"),
+        Ok(()) => panic!("Expected error, got success"),
+    }
+
+    conn.del::<_, ()>(&lock_key)?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_writer_releases_lock_on_success() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "lock_release_success";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+
+    let address = Address::repeat_byte(0x22);
+    let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
+
+    writer.commit_block(update)?;
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock_key = get_write_lock_key(&format!("{namespace}:0"));
+    let exists: bool = conn.exists(&lock_key)?;
+    assert!(!exists, "Lock should be released after successful commit");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_reader_blocked_during_active_write() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "reader_blocked";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+
+    let address = Address::repeat_byte(0x33);
+    let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
+    writer.commit_block(update)?;
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(3, "simulated-writer".to_string());
+    let lock_key = get_write_lock_key(&format!("{namespace}:0"));
+    conn.set::<_, _, ()>(&lock_key, lock.to_json()?)?;
+
+    let result = reader.get_account(address.into(), 0);
+    assert!(result.is_err());
+    match result {
+        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        Err(e) => panic!("Expected NamespaceLocked, got: {e:?}"),
+        Ok(_) => panic!("Expected error, got success"),
+    }
+
+    assert!(!reader.is_block_readable(0)?);
+
+    conn.del::<_, ()>(&lock_key)?;
+
+    let account = reader.get_account(address.into(), 0)?;
+    assert!(account.is_some());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_namespace_isolation_with_locks() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "namespace_isolation";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    for i in 0..3 {
+        let address = Address::repeat_byte(i as u8);
+        let update = create_test_update(i, B256::ZERO, address, 1000, 1, HashMap::new(), None);
+        writer.commit_block(update)?;
+    }
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(3, "writer".to_string());
+    conn.set::<_, _, ()>(
+        &get_write_lock_key(&format!("{namespace}:0")),
+        lock.to_json()?,
+    )?;
+
+    let result = reader.get_account(Address::repeat_byte(0).into(), 0);
+    assert!(result.is_err());
+
+    let account1 = reader.get_account(Address::repeat_byte(1).into(), 1)?;
+    assert!(account1.is_some());
+
+    let account2 = reader.get_account(Address::repeat_byte(2).into(), 2)?;
+    assert!(account2.is_some());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_scan_accounts_respects_lock() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "scan_lock";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let update = BlockStateUpdate {
+        block_number: 0,
+        block_hash: B256::ZERO,
+        state_root: B256::ZERO,
+        accounts: (0..5)
+            .map(|i| {
+                AccountState {
+                    address_hash: Address::repeat_byte(i).into(),
+                    balance: U256::from(i as u64 * 100),
+                    nonce: i as u64,
+                    code_hash: B256::ZERO,
+                    code: None,
+                    storage: HashMap::new(),
+                    deleted: false,
+                }
+            })
+            .collect(),
+    };
+    writer.commit_block(update)?;
+
+    let hashes = reader.scan_account_hashes(0)?;
+    assert_eq!(hashes.len(), 5);
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(3, "writer".to_string());
+    conn.set::<_, _, ()>(
+        &get_write_lock_key(&format!("{namespace}:0")),
+        lock.to_json()?,
+    )?;
+
+    let result = reader.scan_account_hashes(0);
+    assert!(result.is_err());
+    match result {
+        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        Err(e) => panic!("Expected NamespaceLocked, got: {e:?}"),
+        Ok(_) => panic!("Expected error"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_get_all_storage_respects_lock() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "storage_lock";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let address = Address::repeat_byte(0xaa);
+    let storage = HashMap::from([
+        (u256_from_u64(1), u256_from_u64(100)),
+        (u256_from_u64(2), u256_from_u64(200)),
+    ]);
+
+    let update = create_test_update(0, B256::ZERO, address, 1000, 1, storage, None);
+    writer.commit_block(update)?;
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(3, "writer".to_string());
+    conn.set::<_, _, ()>(
+        &get_write_lock_key(&format!("{namespace}:0")),
+        lock.to_json()?,
+    )?;
+
+    let result = reader.get_all_storage(address.into(), 0);
+    assert!(result.is_err());
+
+    let result = reader.get_storage(address.into(), hash_slot(u256_from_u64(1)), 0);
+    assert!(result.is_err());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_get_code_respects_lock() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "code_lock";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let address = Address::repeat_byte(0xbb);
+    let code = vec![0x60, 0x80, 0x60, 0x40, 0x52];
+    let code_hash = keccak256(&code);
+
+    let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), Some(code));
+    writer.commit_block(update)?;
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(3, "writer".to_string());
+    conn.set::<_, _, ()>(
+        &get_write_lock_key(&format!("{namespace}:0")),
+        lock.to_json()?,
+    )?;
+
+    let result = reader.get_code(code_hash, 0);
+    assert!(result.is_err());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sequential_writes_same_namespace() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "sequential_writes";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    for block_num in 0..=6 {
+        let address = Address::repeat_byte(block_num as u8);
+        let update = create_test_update(
+            block_num,
+            B256::ZERO,
+            address,
+            1000,
+            1,
+            HashMap::new(),
+            None,
+        );
+        writer.commit_block(update)?;
+
+        if block_num % 3 == 0 {
+            let lock_key = get_write_lock_key(&format!("{namespace}:0"));
+            let exists: bool = conn.exists(&lock_key)?;
+            assert!(!exists, "Lock should be released after block {block_num}");
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_large_chunked_write_lock_maintained() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "large_chunked";
+    let config = CircularBufferConfig { buffer_size: 3 };
+    let chunked_config = ChunkedWriteConfig::new(5, 300);
+
+    let writer = StateWriter::with_chunked_config(
+        &format!("redis://{host}:{port}"),
+        namespace,
+        config.clone(),
+        chunked_config,
+    )?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let num_accounts = 50;
+    let update = BlockStateUpdate {
+        block_number: 0,
+        block_hash: B256::ZERO,
+        state_root: B256::ZERO,
+        accounts: (0..num_accounts)
+            .map(|i| {
+                AccountState {
+                    address_hash: Address::repeat_byte(i as u8).into(),
+                    balance: U256::from(i as u64 * 100),
+                    nonce: i as u64,
+                    code_hash: B256::ZERO,
+                    code: None,
+                    storage: HashMap::new(),
+                    deleted: false,
+                }
+            })
+            .collect(),
+    };
+
+    writer.commit_block(update)?;
+
+    for i in 0..num_accounts {
+        let account = reader.get_account(Address::repeat_byte(i as u8).into(), 0)?;
+        assert!(account.is_some(), "Account {i} should exist");
+        let account = account.unwrap();
+        assert_eq!(account.balance, U256::from(i as u64 * 100));
+    }
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+    let lock_key = get_write_lock_key(&format!("{namespace}:0"));
+    let exists: bool = conn.exists(&lock_key)?;
+    assert!(!exists);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_stale_lock_blocks_both_reader_and_writer() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "stale_blocks_all";
+    let config = CircularBufferConfig { buffer_size: 3 };
+    let chunked_config = ChunkedWriteConfig::new(100, 1);
+
+    let writer = StateWriter::with_chunked_config(
+        &format!("redis://{host}:{port}"),
+        namespace,
+        config.clone(),
+        chunked_config,
+    )?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let address = Address::repeat_byte(0x44);
+    let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
+    writer.commit_block(update)?;
+
+    for block_num in 1..=2 {
+        let update = create_test_update(
+            block_num,
+            B256::ZERO,
+            address,
+            1000 + block_num * 100,
+            block_num,
+            HashMap::new(),
+            None,
+        );
+        writer.commit_block(update)?;
+    }
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let mut lock = NamespaceLock::new(3, "crashed-writer".to_string());
+    lock.started_at = 0;
+    conn.set::<_, _, ()>(
+        &get_write_lock_key(&format!("{namespace}:0")),
+        lock.to_json()?,
+    )?;
+
+    let read_result = reader.get_account(address.into(), 0);
+    assert!(read_result.is_err());
+    match read_result {
+        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        Err(e) => panic!("Expected NamespaceLocked for reader, got: {e:?}"),
+        Ok(_) => panic!("Expected error"),
+    }
+
+    let update3 = create_test_update(3, B256::ZERO, address, 2000, 3, HashMap::new(), None);
+    let write_result = writer.commit_block(update3);
+    assert!(write_result.is_err());
+    match write_result {
+        Err(crate::common::error::StateError::StaleLockDetected { writer_id, .. }) => {
+            assert_eq!(writer_id, "crashed-writer");
+        }
+        Err(e) => panic!("Expected StaleLockDetected for writer, got: {e:?}"),
+        Ok(()) => panic!("Expected error"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_block_metadata_not_affected_by_namespace_lock() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "metadata_global";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let address = Address::repeat_byte(0x55);
+    let block_hash = B256::repeat_byte(0xAA);
+    let state_root = B256::repeat_byte(0xBB);
+
+    let update = BlockStateUpdate {
+        block_number: 0,
+        block_hash,
+        state_root,
+        accounts: vec![AccountState {
+            address_hash: address.into(),
+            balance: U256::from(1000u64),
+            nonce: 1,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: HashMap::new(),
+            deleted: false,
+        }],
+    };
+    writer.commit_block(update)?;
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(3, "writer".to_string());
+    conn.set::<_, _, ()>(
+        &get_write_lock_key(&format!("{namespace}:0")),
+        lock.to_json()?,
+    )?;
+
+    let fetched_hash = reader.get_block_hash(0)?;
+    assert_eq!(fetched_hash, Some(block_hash));
+
+    let fetched_root = reader.get_state_root(0)?;
+    assert_eq!(fetched_root, Some(state_root));
+
+    let metadata = reader.get_block_metadata(0)?;
+    assert!(metadata.is_some());
+    let metadata = metadata.unwrap();
+    assert_eq!(metadata.block_hash, block_hash);
+    assert_eq!(metadata.state_root, state_root);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_different_writers_different_namespaces_concurrent() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "concurrent_namespaces";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer1 = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let writer2 = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+
+    let update0 = create_test_update(
+        0,
+        B256::ZERO,
+        Address::repeat_byte(0x00),
+        1000,
+        1,
+        HashMap::new(),
+        None,
+    );
+    writer1.commit_block(update0)?;
+
+    let update1 = create_test_update(
+        1,
+        B256::ZERO,
+        Address::repeat_byte(0x01),
+        2000,
+        2,
+        HashMap::new(),
+        None,
+    );
+    writer2.commit_block(update1)?;
+
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let account0 = reader.get_account(Address::repeat_byte(0x00).into(), 0)?;
+    assert!(account0.is_some());
+
+    let account1 = reader.get_account(Address::repeat_byte(0x01).into(), 1)?;
+    assert!(account1.is_some());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_lock_contains_correct_info() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "lock_info".to_string();
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(5, "test-writer".to_string());
+    let lock_key = get_write_lock_key(&format!("{namespace}:2"));
+
+    conn.set::<_, _, ()>(&lock_key, lock.to_json()?)?;
+
+    let lock_json: String = conn.get(&lock_key)?;
+    let parsed_lock = NamespaceLock::from_json(&lock_json)?;
+
+    assert_eq!(parsed_lock.target_block, 5);
+    assert_eq!(parsed_lock.writer_id, "test-writer");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_get_full_account_respects_lock() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "full_account_lock";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let address = Address::repeat_byte(0xcc);
+    let storage = HashMap::from([(u256_from_u64(1), u256_from_u64(100))]);
+
+    let update = create_test_update(0, B256::ZERO, address, 1000, 1, storage, None);
+    writer.commit_block(update)?;
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
+
+    let lock = NamespaceLock::new(3, "writer".to_string());
+    conn.set::<_, _, ()>(
+        &get_write_lock_key(&format!("{namespace}:0")),
+        lock.to_json()?,
+    )?;
+
+    let result = reader.get_full_account(address.into(), 0);
+    assert!(result.is_err());
+    match result {
+        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        Err(e) => panic!("Expected NamespaceLocked, got: {e:?}"),
+        Ok(_) => panic!("Expected error"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_writer_can_write_after_own_successful_write() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "same_writer_consecutive";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let address = Address::repeat_byte(0xdd);
+
+    for block_num in 0..=6 {
+        let update = create_test_update(
+            block_num,
+            B256::ZERO,
+            address,
+            block_num * 100,
+            block_num,
+            HashMap::new(),
+            None,
+        );
+        writer.commit_block(update)?;
+    }
+
+    for block_num in [4u64, 5, 6] {
+        let account = reader.get_account(address.into(), block_num)?;
+        assert!(account.is_some(), "Block {block_num} should be readable");
+        let account = account.unwrap();
+        assert_eq!(account.balance, U256::from(block_num * 100));
+        assert_eq!(account.nonce, block_num);
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_available_block_range() -> Result<()> {
+    let container = Redis::default().start().await?;
+    let host = container.get_host().await?.to_string();
+    let port = container.get_host_port_ipv4(6379).await?;
+    wait_for_redis(&host, port).await?;
+
+    let namespace = "block_range";
+    let config = CircularBufferConfig { buffer_size: 3 };
+
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), namespace, config.clone())?;
+    let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
+
+    let range = reader.get_available_block_range()?;
+    assert!(range.is_none());
+
+    for block_num in 0..6 {
+        let address = Address::repeat_byte(block_num as u8);
+        let update = create_test_update(
+            block_num,
+            B256::ZERO,
+            address,
+            1000,
+            1,
+            HashMap::new(),
+            None,
+        );
+        writer.commit_block(update)?;
+    }
+
+    let range = reader.get_available_block_range()?;
+    assert!(range.is_some());
+    let (oldest, latest) = range.unwrap();
+    assert_eq!(oldest, 3);
+    assert_eq!(latest, 5);
 
     Ok(())
 }

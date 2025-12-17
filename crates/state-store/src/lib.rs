@@ -105,6 +105,15 @@
 //! Nethermind's dumped state format. This provides a consistent 32-byte identifier regardless of
 //! the address format or slot value.
 //!
+//! ## Chunked Commits with Write Locks
+//!
+//! Large state updates use chunked commits:
+//! 1. **Write Lock Acquisition**: Lock is set on target namespace with target block, timestamp, writer ID.
+//! 2. **Chunked Writes**: Account state changes are written in configurable chunks.
+//! 3. **Lock Release**: After all writes complete, the lock is released.
+//!
+//! Readers check for namespace locks before accessing data.
+//!
 //! ## Features
 //!
 //! - `writer` - Enable state writing functionality
@@ -154,11 +163,16 @@ pub mod writer;
 
 #[cfg(feature = "reader")]
 pub mod reader;
+
 #[cfg(test)]
 mod tests;
 
 // Re-export common types at the root
-pub use common::CircularBufferConfig;
+pub use common::{
+    ChunkedWriteConfig,
+    CircularBufferConfig,
+    NamespaceLock,
+};
 
 #[cfg(feature = "writer")]
 pub use writer::StateWriter;
