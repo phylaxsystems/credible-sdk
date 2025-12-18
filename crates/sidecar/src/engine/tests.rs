@@ -2283,7 +2283,7 @@ fn test_spec_id_activation_and_behavior() {
     assert!(db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
 }
 
-#[crate::utils::engine_test(http)]
+#[crate::utils::engine_test(mock)]
 async fn test_transaction_stalls_until_source_synced(mut instance: crate::utils::LocalInstance) {
     use revm::primitives::uint;
     use std::time::Duration;
