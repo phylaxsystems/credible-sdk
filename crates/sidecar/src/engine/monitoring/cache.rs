@@ -10,11 +10,8 @@
 
 use crate::critical;
 use alloy::{
-    eips::BlockId,
-    primitives::{
-        TxHash,
-        U64,
-    },
+    eips::BlockNumberOrTag,
+    primitives::TxHash,
     providers::WsConnect,
     rpc::types::Header,
 };
@@ -22,15 +19,25 @@ use alloy_provider::{
     Provider,
     ProviderBuilder,
     RootProvider,
-    ext::TraceApi,
+    ext::DebugApi,
 };
-use alloy_rpc_types_trace::parity::TraceType;
+use alloy_rpc_types_trace::geth::{
+    GethDebugBuiltInTracerType,
+    GethDebugTracerConfig,
+    GethDebugTracerType,
+    GethDebugTracingOptions,
+    GethTrace,
+    PreStateConfig,
+    PreStateFrame,
+    TraceResult,
+};
 use anyhow::{
     Result,
     anyhow,
 };
 use assertion_executor::primitives::{
     Account,
+    Address,
     B256,
     Bytecode,
     EvmState,
@@ -128,10 +135,26 @@ impl CacheChecker {
     async fn process_block(self: Arc<Self>, block_number: u64) -> Result<()> {
         info!(block_number, "processing block");
 
+        let tracer_config = GethDebugTracerConfig::from(
+            serde_json::to_value(PreStateConfig {
+                diff_mode: Some(true),
+                disable_code: None,
+                disable_storage: None,
+            })
+            .map_err(|e| anyhow!("failed to serialize tracer config: {e}"))?,
+        );
+
+        let tracer_opts = GethDebugTracingOptions {
+            tracer: Some(GethDebugTracerType::BuiltInTracer(
+                GethDebugBuiltInTracerType::PreStateTracer,
+            )),
+            tracer_config,
+            ..Default::default()
+        };
+
         let traces = match self
             .provider
-            .trace_replay_block_transactions(BlockId::Number(block_number.into()))
-            .trace_type(TraceType::StateDiff)
+            .debug_trace_block_by_number(BlockNumberOrTag::Number(block_number), tracer_opts)
             .await
         {
             Ok(traces) => traces,
@@ -141,42 +164,65 @@ impl CacheChecker {
             }
         };
 
-        'main: for trace in traces {
+        // Get block to retrieve transaction hashes
+        let block = self
+            .provider
+            .get_block_by_number(BlockNumberOrTag::Number(block_number))
+            .await?
+            .ok_or_else(|| anyhow!("block {block_number} not found"))?;
+
+        let tx_hashes: Vec<TxHash> = block.transactions.hashes().collect();
+
+        if traces.len() != tx_hashes.len() {
+            warn!(
+                block_number,
+                traces_len = traces.len(),
+                txs_len = tx_hashes.len(),
+                "trace count mismatch with transaction count"
+            );
+        }
+
+        'main: for (trace_result, tx_hash) in traces.into_iter().zip(tx_hashes.iter()) {
             {
                 // We need to add a timeout to skip a transaction check if we don't see it
-                // in the results. It could happen than the engine didn't receive a TX (transport error)
+                // in the results. It could happen that the engine didn't receive a TX (transport error)
                 let mut counter = 100;
-                while self
-                    .processed_transactions
-                    .get(&trace.transaction_hash)
-                    .is_none()
-                {
+                while self.processed_transactions.get(tx_hash).is_none() {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                     counter -= 1;
                     if counter == 0 {
                         warn!(
                             "Transaction {} not found in processed transactions",
-                            trace.transaction_hash
+                            tx_hash
                         );
                         break 'main;
                     }
                 }
             }
 
-            if let Some(engine_tx_state_diff) =
-                self.processed_transactions.get(&trace.transaction_hash)
-                && let Some(client_tx_state_diff) = trace.full_trace.state_diff
-            {
+            // Extract the trace from TraceResult, skipping failed traces
+            let geth_trace = match trace_result {
+                TraceResult::Success { result, .. } => result,
+                TraceResult::Error { error, tx_hash } => {
+                    warn!(tx_hash = ?tx_hash, error = %error, "trace failed for transaction");
+                    continue 'main;
+                }
+            };
+
+            let GethTrace::PreStateTracer(trace) = geth_trace else {
+                warn!(tx_hash = %tx_hash, "unexpected trace type, skipping");
+                continue 'main;
+            };
+
+            if let Some(engine_tx_state_diff) = self.processed_transactions.get(tx_hash) {
                 let Some(engine_tx_state_diff) = engine_tx_state_diff else {
-                    critical!(
-                        "Transaction failed to execute in the engine: {}",
-                        trace.transaction_hash
-                    );
+                    critical!("Transaction failed to execute in the engine: {}", tx_hash);
                     continue 'main;
                 };
+
                 // Compare the two state representations
-                if !Self::compare_state_changes(&engine_tx_state_diff, &client_tx_state_diff) {
-                    critical!("State mismatch for transaction {}", trace.transaction_hash);
+                if !Self::compare_state_changes(&engine_tx_state_diff, &trace) {
+                    critical!("State mismatch for transaction {}", tx_hash);
                     return Ok(());
                 }
             }
@@ -185,24 +231,29 @@ impl CacheChecker {
         Ok(())
     }
 
-    /// Compare `EvmState` (Geth-style) with `StateDiff` (Parity-style)
+    /// Compare `EvmState` (engine) with `PreStateFrame` (Geth debug trace)
     /// Returns true if they match, false otherwise
-    pub fn compare_state_changes(
-        engine_state: &EvmState,
-        client_state_diff: &alloy_rpc_types_trace::parity::StateDiff,
-    ) -> bool {
+    pub fn compare_state_changes(engine_state: &EvmState, client_trace: &PreStateFrame) -> bool {
+        let post_state = match client_trace {
+            PreStateFrame::Diff(diff) => &diff.post,
+            PreStateFrame::Default(_) => {
+                warn!("received default prestate frame instead of diff mode");
+                return false;
+            }
+        };
+
         // Get all unique addresses from both states
         let engine_addrs: std::collections::HashSet<_> = engine_state.keys().collect();
-        let client_addrs: std::collections::HashSet<_> = client_state_diff.0.keys().collect();
+        let client_addrs: std::collections::HashSet<_> = post_state.keys().collect();
 
         // Check if addresses match
         for addr in engine_addrs.union(&client_addrs) {
             let engine_account = engine_state.get(*addr);
-            let client_account_diff = client_state_diff.0.get(*addr);
+            let client_account = post_state.get(*addr);
 
-            match (engine_account, client_account_diff) {
-                (Some(engine_acc), Some(client_diff)) => {
-                    if !Self::account_matches(engine_acc, client_diff) {
+            match (engine_account, client_account) {
+                (Some(engine_acc), Some(client_acc)) => {
+                    if !Self::account_matches(engine_acc, client_acc) {
                         return false;
                     }
                 }
@@ -211,8 +262,8 @@ impl CacheChecker {
                         return false;
                     }
                 }
-                (None, Some(client_diff)) => {
-                    if !Self::is_diff_empty(client_diff) {
+                (None, Some(client_acc)) => {
+                    if !Self::is_client_account_empty(client_acc) {
                         return false;
                     }
                 }
@@ -225,33 +276,59 @@ impl CacheChecker {
 
     fn account_matches(
         engine_account: &Account,
-        client_diff: &alloy_rpc_types_trace::parity::AccountDiff,
+        client_account: &alloy_rpc_types_trace::geth::AccountState,
     ) -> bool {
-        // Extract final values from deltas
-        let client_balance = Self::extract_final_value(&client_diff.balance, U256::ZERO);
-        let client_nonce = Self::extract_final_value(&client_diff.nonce, U64::ZERO).to::<u64>();
-        let client_code =
-            Self::extract_final_value_option(&client_diff.code).map(Bytecode::new_raw);
+        // Compare balance
+        if let Some(client_balance) = client_account.balance {
+            if engine_account.info.balance != client_balance {
+                return false;
+            }
+        } else if engine_account.info.balance != U256::ZERO {
+            return false;
+        }
 
-        // Compare balance, nonce, code
-        if engine_account.info.balance != client_balance {
+        // Compare nonce
+        if let Some(client_nonce) = client_account.nonce {
+            if engine_account.info.nonce != client_nonce {
+                return false;
+            }
+        } else if engine_account.info.nonce != 0 {
             return false;
         }
-        if engine_account.info.nonce != client_nonce {
-            return false;
-        }
-        if engine_account.info.code != client_code {
-            return false;
+
+        // Compare code
+        match (&engine_account.info.code, &client_account.code) {
+            (Some(engine_code), Some(client_code)) => {
+                if engine_code.bytes().as_ref() != client_code.as_ref() {
+                    return false;
+                }
+            }
+            (None, Some(client_code)) => {
+                if !client_code.is_empty() {
+                    return false;
+                }
+            }
+            (Some(engine_code), None) => {
+                if !engine_code.is_empty() {
+                    return false;
+                }
+            }
+            (None, None) => {}
         }
 
         // Compare storage
-        Self::storage_matches(&engine_account.storage, &client_diff.storage)
+        Self::storage_matches(&engine_account.storage, &client_account.storage)
     }
 
-    fn storage_matches(
-        engine_storage: &EvmStorage,
-        client_storage_diff: &BTreeMap<B256, alloy_rpc_types_trace::parity::Delta<B256>>,
-    ) -> bool {
+    fn storage_matches(engine_storage: &EvmStorage, client_storage: &BTreeMap<B256, B256>) -> bool {
+        if client_storage.is_empty() {
+            // Client has no storage, engine should be empty too
+            return engine_storage.is_empty()
+                || engine_storage
+                    .values()
+                    .all(|v| v.present_value() == U256::ZERO);
+        }
+
         // Collect all unique keys as U256
         let mut all_keys = std::collections::HashSet::new();
 
@@ -261,7 +338,7 @@ impl CacheChecker {
         }
 
         // Add client keys
-        for key in client_storage_diff.keys() {
+        for key in client_storage.keys() {
             all_keys.insert(U256::from_be_bytes(key.0));
         }
 
@@ -269,12 +346,9 @@ impl CacheChecker {
             let engine_value = engine_storage.get(&key).cloned().unwrap_or_default();
 
             let key_b256 = B256::from(key.to_be_bytes::<32>());
-            let client_value = client_storage_diff
+            let client_value = client_storage
                 .get(&key_b256)
-                .map_or(U256::ZERO, |delta| {
-                    let val_b256 = Self::extract_final_value(delta, B256::ZERO);
-                    U256::from_be_bytes(val_b256.0)
-                });
+                .map_or(U256::ZERO, |val| U256::from_be_bytes(val.0));
 
             if engine_value.present_value() != client_value {
                 return false;
@@ -291,47 +365,20 @@ impl CacheChecker {
             && account.storage.is_empty()
     }
 
-    fn is_diff_empty(diff: &alloy_rpc_types_trace::parity::AccountDiff) -> bool {
-        matches!(
-            diff.balance,
-            alloy_rpc_types_trace::parity::Delta::Unchanged
-        ) && matches!(diff.nonce, alloy_rpc_types_trace::parity::Delta::Unchanged)
-            && matches!(diff.code, alloy_rpc_types_trace::parity::Delta::Unchanged)
-            && diff.storage.is_empty()
-    }
-
-    fn extract_final_value<T: Clone + Default>(
-        delta: &alloy_rpc_types_trace::parity::Delta<T>,
-        default: T,
-    ) -> T {
-        match delta {
-            alloy_rpc_types_trace::parity::Delta::Added(val) => val.clone(),
-            alloy_rpc_types_trace::parity::Delta::Removed(_)
-            | alloy_rpc_types_trace::parity::Delta::Unchanged => default,
-            alloy_rpc_types_trace::parity::Delta::Changed(change) => change.to.clone(),
-        }
-    }
-
-    fn extract_final_value_option<T: Clone>(
-        delta: &alloy_rpc_types_trace::parity::Delta<T>,
-    ) -> Option<T> {
-        match delta {
-            alloy_rpc_types_trace::parity::Delta::Unchanged
-            | alloy_rpc_types_trace::parity::Delta::Removed(_) => None,
-            alloy_rpc_types_trace::parity::Delta::Added(val) => Some(val.clone()),
-            alloy_rpc_types_trace::parity::Delta::Changed(change) => Some(change.to.clone()),
-        }
+    fn is_client_account_empty(account: &alloy_rpc_types_trace::geth::AccountState) -> bool {
+        account.balance.unwrap_or(U256::ZERO) == U256::ZERO
+            && account.nonce.unwrap_or(0) == 0
+            && account.code.as_ref().is_none_or(|c| c.is_empty())
+            && account.storage.is_empty()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_rpc_types_trace::parity::{
-        AccountDiff,
-        ChangedType,
-        Delta,
-        StateDiff,
+    use alloy_rpc_types_trace::geth::{
+        AccountState,
+        DiffMode,
     };
     use assertion_executor::primitives::{
         Account,
@@ -353,13 +400,30 @@ mod tests {
                 code_hash: B256::ZERO,
                 code: code.map(|c| Bytecode::new_raw(c.into())),
             },
+            transaction_id: 0,
             storage: assertion_executor::primitives::EvmStorage::default(),
             status: AccountStatus::default(),
         }
     }
 
+    fn create_client_account(balance: u64, nonce: u64, code: Option<Vec<u8>>) -> AccountState {
+        AccountState {
+            balance: Some(U256::from(balance)),
+            nonce: Some(nonce),
+            code: code.map(Into::into),
+            storage: BTreeMap::new(),
+        }
+    }
+
     fn create_storage_slot(value: u64) -> EvmStorageSlot {
-        EvmStorageSlot::new(U256::from(value))
+        EvmStorageSlot::new(U256::from(value), 0)
+    }
+
+    fn wrap_in_diff_frame(post: BTreeMap<Address, AccountState>) -> PreStateFrame {
+        PreStateFrame::Diff(DiffMode {
+            pre: BTreeMap::new(),
+            post,
+        })
     }
 
     #[test]
@@ -370,20 +434,14 @@ mod tests {
         let account = create_test_account(1000, 5, None);
         engine_state.insert(addr, account);
 
-        let mut client_diff = BTreeMap::new();
-        let account_diff = AccountDiff {
-            balance: Delta::Added(U256::from(1000)),
-            nonce: Delta::Added(U64::from(5)),
-            code: Delta::Unchanged,
-            storage: BTreeMap::new(),
-        };
-        client_diff.insert(addr, account_diff);
+        let mut post_state = BTreeMap::new();
+        post_state.insert(addr, create_client_account(1000, 5, None));
 
-        let client_state_diff = StateDiff(client_diff);
+        let client_trace = wrap_in_diff_frame(post_state);
 
         assert!(CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -395,20 +453,14 @@ mod tests {
         let account = create_test_account(1000, 5, None);
         engine_state.insert(addr, account);
 
-        let mut client_diff = BTreeMap::new();
-        let account_diff = AccountDiff {
-            balance: Delta::Added(U256::from(2000)), // Different!
-            nonce: Delta::Added(U64::from(5)),
-            code: Delta::Unchanged,
-            storage: BTreeMap::new(),
-        };
-        client_diff.insert(addr, account_diff);
+        let mut post_state = BTreeMap::new();
+        post_state.insert(addr, create_client_account(2000, 5, None)); // Different!
 
-        let client_state_diff = StateDiff(client_diff);
+        let client_trace = wrap_in_diff_frame(post_state);
 
         assert!(!CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -420,20 +472,14 @@ mod tests {
         let account = create_test_account(1000, 5, None);
         engine_state.insert(addr, account);
 
-        let mut client_diff = BTreeMap::new();
-        let account_diff = AccountDiff {
-            balance: Delta::Added(U256::from(1000)),
-            nonce: Delta::Added(U64::from(10)), // Different!
-            code: Delta::Unchanged,
-            storage: BTreeMap::new(),
-        };
-        client_diff.insert(addr, account_diff);
+        let mut post_state = BTreeMap::new();
+        post_state.insert(addr, create_client_account(1000, 10, None)); // Different!
 
-        let client_state_diff = StateDiff(client_diff);
+        let client_trace = wrap_in_diff_frame(post_state);
 
         assert!(!CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -445,20 +491,14 @@ mod tests {
         let account = create_test_account(1000, 5, Some(vec![0x60, 0x80]));
         engine_state.insert(addr, account);
 
-        let mut client_diff = BTreeMap::new();
-        let account_diff = AccountDiff {
-            balance: Delta::Added(U256::from(1000)),
-            nonce: Delta::Added(U64::from(5)),
-            code: Delta::Added(vec![0x60, 0x60].into()), // Different code!
-            storage: BTreeMap::new(),
-        };
-        client_diff.insert(addr, account_diff);
+        let mut post_state = BTreeMap::new();
+        post_state.insert(addr, create_client_account(1000, 5, Some(vec![0x60, 0x60]))); // Different!
 
-        let client_state_diff = StateDiff(client_diff);
+        let client_trace = wrap_in_diff_frame(post_state);
 
         assert!(!CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -474,25 +514,27 @@ mod tests {
             .insert(storage_key, create_storage_slot(100));
         engine_state.insert(addr, account);
 
-        let mut client_diff = BTreeMap::new();
-        let mut storage_diff = BTreeMap::new();
+        let mut post_state = BTreeMap::new();
+        let mut client_storage = BTreeMap::new();
         let key_b256 = B256::from(storage_key.to_be_bytes::<32>());
         let value_b256 = B256::from(U256::from(100).to_be_bytes::<32>());
-        storage_diff.insert(key_b256, Delta::Added(value_b256));
+        client_storage.insert(key_b256, value_b256);
 
-        let account_diff = AccountDiff {
-            balance: Delta::Added(U256::from(1000)),
-            nonce: Delta::Added(U64::from(5)),
-            code: Delta::Unchanged,
-            storage: storage_diff,
-        };
-        client_diff.insert(addr, account_diff);
+        post_state.insert(
+            addr,
+            AccountState {
+                balance: Some(U256::from(1000)),
+                nonce: Some(5),
+                code: None,
+                storage: client_storage,
+            },
+        );
 
-        let client_state_diff = StateDiff(client_diff);
+        let client_trace = wrap_in_diff_frame(post_state);
 
         assert!(CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -508,25 +550,27 @@ mod tests {
             .insert(storage_key, create_storage_slot(100));
         engine_state.insert(addr, account);
 
-        let mut client_diff = BTreeMap::new();
-        let mut storage_diff = BTreeMap::new();
+        let mut post_state = BTreeMap::new();
+        let mut client_storage = BTreeMap::new();
         let key_b256 = B256::from(storage_key.to_be_bytes::<32>());
         let value_b256 = B256::from(U256::from(200).to_be_bytes::<32>()); // Different!
-        storage_diff.insert(key_b256, Delta::Added(value_b256));
+        client_storage.insert(key_b256, value_b256);
 
-        let account_diff = AccountDiff {
-            balance: Delta::Added(U256::from(1000)),
-            nonce: Delta::Added(U64::from(5)),
-            code: Delta::Unchanged,
-            storage: storage_diff,
-        };
-        client_diff.insert(addr, account_diff);
+        post_state.insert(
+            addr,
+            AccountState {
+                balance: Some(U256::from(1000)),
+                nonce: Some(5),
+                code: None,
+                storage: client_storage,
+            },
+        );
 
-        let client_state_diff = StateDiff(client_diff);
+        let client_trace = wrap_in_diff_frame(post_state);
 
         assert!(!CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -539,12 +583,12 @@ mod tests {
         let account = create_test_account(0, 0, None);
         engine_state.insert(addr, account);
 
-        // Client has no diff for this address
-        let client_state_diff = StateDiff(BTreeMap::new());
+        // Client has no entry for this address
+        let client_trace = wrap_in_diff_frame(BTreeMap::new());
 
         assert!(CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -556,12 +600,12 @@ mod tests {
         let account = create_test_account(1000, 5, None);
         engine_state.insert(addr, account);
 
-        // Client has no diff
-        let client_state_diff = StateDiff(BTreeMap::new());
+        // Client has no entry
+        let client_trace = wrap_in_diff_frame(BTreeMap::new());
 
         assert!(!CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -569,49 +613,15 @@ mod tests {
     fn test_account_only_in_client() {
         let engine_state = assertion_executor::primitives::EvmState::default();
 
-        let mut client_diff = BTreeMap::new();
+        let mut post_state = BTreeMap::new();
         let addr = assertion_executor::primitives::Address::ZERO;
-        let account_diff = AccountDiff {
-            balance: Delta::Added(U256::from(1000)),
-            nonce: Delta::Added(U64::from(5)),
-            code: Delta::Unchanged,
-            storage: BTreeMap::new(),
-        };
-        client_diff.insert(addr, account_diff);
+        post_state.insert(addr, create_client_account(1000, 5, None));
 
-        let client_state_diff = StateDiff(client_diff);
+        let client_trace = wrap_in_diff_frame(post_state);
 
         assert!(!CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
-        ));
-    }
-
-    #[test]
-    fn test_delta_changed_type() {
-        let mut engine_state = assertion_executor::primitives::EvmState::default();
-        let addr = assertion_executor::primitives::Address::ZERO;
-
-        let account = create_test_account(2000, 5, None);
-        engine_state.insert(addr, account);
-
-        let mut client_diff = BTreeMap::new();
-        let account_diff = AccountDiff {
-            balance: Delta::Changed(ChangedType {
-                from: U256::from(1000),
-                to: U256::from(2000), // Final value matches
-            }),
-            nonce: Delta::Added(U64::from(5)),
-            code: Delta::Unchanged,
-            storage: BTreeMap::new(),
-        };
-        client_diff.insert(addr, account_diff);
-
-        let client_state_diff = StateDiff(client_diff);
-
-        assert!(CacheChecker::compare_state_changes(
-            &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -624,31 +634,15 @@ mod tests {
         engine_state.insert(addr1, create_test_account(1000, 1, None));
         engine_state.insert(addr2, create_test_account(2000, 2, None));
 
-        let mut client_diff = BTreeMap::new();
-        client_diff.insert(
-            addr1,
-            AccountDiff {
-                balance: Delta::Added(U256::from(1000)),
-                nonce: Delta::Added(U64::from(1)),
-                code: Delta::Unchanged,
-                storage: BTreeMap::new(),
-            },
-        );
-        client_diff.insert(
-            addr2,
-            AccountDiff {
-                balance: Delta::Added(U256::from(2000)),
-                nonce: Delta::Added(U64::from(2)),
-                code: Delta::Unchanged,
-                storage: BTreeMap::new(),
-            },
-        );
+        let mut post_state = BTreeMap::new();
+        post_state.insert(addr1, create_client_account(1000, 1, None));
+        post_state.insert(addr2, create_client_account(2000, 2, None));
 
-        let client_state_diff = StateDiff(client_diff);
+        let client_trace = wrap_in_diff_frame(post_state);
 
         assert!(CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -661,24 +655,26 @@ mod tests {
         // Don't insert any storage (implicitly zero)
         engine_state.insert(addr, account);
 
-        let mut client_diff = BTreeMap::new();
-        let mut storage_diff = BTreeMap::new();
+        let mut post_state = BTreeMap::new();
+        let mut client_storage = BTreeMap::new();
         let key_b256 = B256::from(U256::from(1).to_be_bytes::<32>());
-        storage_diff.insert(key_b256, Delta::Added(B256::ZERO)); // Zero value
+        client_storage.insert(key_b256, B256::ZERO); // Zero value
 
-        let account_diff = AccountDiff {
-            balance: Delta::Added(U256::from(1000)),
-            nonce: Delta::Added(U64::from(5)),
-            code: Delta::Unchanged,
-            storage: storage_diff,
-        };
-        client_diff.insert(addr, account_diff);
+        post_state.insert(
+            addr,
+            AccountState {
+                balance: Some(U256::from(1000)),
+                nonce: Some(5),
+                code: None,
+                storage: client_storage,
+            },
+        );
 
-        let client_state_diff = StateDiff(client_diff);
+        let client_trace = wrap_in_diff_frame(post_state);
 
         assert!(CacheChecker::compare_state_changes(
             &engine_state,
-            &client_state_diff
+            &client_trace
         ));
     }
 
@@ -694,33 +690,20 @@ mod tests {
         // Wait for the engine to process it
         let _ = instance.is_transaction_successful(&tx_iteration_id).await;
 
-        // Step 2: Mock the trace_replayBlockTransactions RPC response with MISMATCHED state
+        // Step 2: Mock the debug_traceBlockByNumber RPC response with MISMATCHED state
         let mock_trace_response = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "result": [{
-                "transactionHash": format!("{:#x}", tx_iteration_id.tx_hash),
-                "output": "0x",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {
-                    format!("{:#x}", tx_address): {
-                        "balance": {
-                            "*": {
-                                "from": "0x0",
-                                "to": "0x989680"  // 10000000 in hex - WRONG VALUE
-                            }
-                        },
-                        "nonce": {
-                            "*": {
-                                "from": "0x0",
-                                "to": "0x2a"  // 42 - WRONG NONCE
-                            }
-                        },
-                        "code": {
-                            "+": "0x6060604052"  // WRONG BYTECODE
-                        },
-                        "storage": {}
+                "result": {
+                    "pre": {},
+                    "post": {
+                        format!("{:#x}", tx_address): {
+                            "balance": "0x989680",  // 10000000 in hex - WRONG VALUE
+                            "nonce": 42,  // WRONG NONCE
+                            "code": "0x6060604052",  // WRONG BYTECODE
+                            "storage": {}
+                        }
                     }
                 }
             }]
@@ -728,7 +711,7 @@ mod tests {
 
         instance
             .eth_rpc_source_http_mock
-            .add_response("trace_replayBlockTransactions", mock_trace_response);
+            .add_response("debug_traceBlockByNumber", mock_trace_response);
 
         // Step 3: Send a newHeads notification for BLOCK 0 (not block 1!)
         // The transaction was processed in block 0, so we need to trigger block 0
