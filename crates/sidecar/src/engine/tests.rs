@@ -2282,3 +2282,55 @@ fn test_spec_id_activation_and_behavior() {
     assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
     assert!(db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
 }
+
+#[crate::utils::engine_test(http)]
+async fn test_transaction_stalls_until_source_synced(mut instance: crate::utils::LocalInstance) {
+    use revm::primitives::uint;
+    use std::time::Duration;
+
+    // Block 1: Just advance the chain
+    // IMPORTANT: Don't send any transactions so check_sources_available stays true
+    instance.new_block().await.unwrap();
+
+    // Advance engine to block 2 WITHOUT syncing the mock RPC
+    // After this: engine's current_head = 2, but sources are still at block 1
+    instance.new_block_unsynced().await.unwrap();
+    instance.new_iteration(1).await.unwrap();
+
+    // The block we need sources to sync to (current_head after new_block_unsynced)
+    // Note: current_head is set to commit_head.block_number in process_commit_head
+    // After new_block() with block_number=1: current_head=1, block_number becomes 2
+    // After new_block_unsynced() with block_number=2: current_head=2, block_number becomes 3
+    let current_head_block: u64 = 2;
+
+    // Execute a transaction - should stall because:
+    // - check_sources_available is still true (no transactions were processed yet)
+    // - sources report synced to block 1, but engine current_head is 2
+    let tx = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+
+    // Verify transaction stalls (short timeout should expire without a result)
+    let stall_result = tokio::time::timeout(
+        Duration::from_millis(50),
+        instance.wait_for_transaction_processed(&tx),
+    )
+    .await;
+
+    assert!(
+        stall_result.is_err(),
+        "Transaction should stall while source is not synced to current block"
+    );
+
+    // Now update mock newHeads to the current head block
+    instance
+        .eth_rpc_source_http_mock
+        .send_new_head_with_block_number(current_head_block);
+
+    // Transaction should now complete successfully
+    assert!(
+        instance.is_transaction_successful(&tx).await.unwrap(),
+        "Transaction should succeed after source syncs to current block"
+    );
+}
