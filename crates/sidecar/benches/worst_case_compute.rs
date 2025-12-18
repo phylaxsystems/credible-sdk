@@ -1,5 +1,4 @@
-//! `worst-case-compute`
-//!
+//! `worst-case-compute` benchmark.
 //! Send 100 transactions targeting the same adopter (500 total assertion executions)
 
 use assertion_executor::{

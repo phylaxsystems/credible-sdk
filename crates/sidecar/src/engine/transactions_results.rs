@@ -23,6 +23,10 @@ pub struct TransactionsResults {
 }
 
 impl TransactionsResults {
+    /// Creates a new `TransactionsResults` with the given capacity.
+    ///
+    /// # Panics
+    /// Panics if `max_capacity` is 0.
     pub fn new(transactions_state: Arc<TransactionsState>, max_capacity: usize) -> Self {
         assert!(
             max_capacity > 0,
@@ -93,6 +97,11 @@ impl TransactionsResults {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.transactions.len()
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.transactions.is_empty()
     }
 
     #[cfg(test)]
