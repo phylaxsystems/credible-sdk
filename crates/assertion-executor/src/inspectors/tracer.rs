@@ -209,23 +209,8 @@ impl CallTracer {
         }
 
         let index = self.call_inputs.len();
-        let depth = journal_inner.depth;
 
-        // Verify stack discipline: depth should equal current stack size
-        if self.pending_post_call_writes.len() != depth {
-            error!(target: "assertion-executor::call_tracer", depth, stack_len = self.pending_post_call_writes.len(), "Pending post call write stack mismatch");
-            self.result = Err(CallTracerError::PendingPostCallWriteAlreadyExists {
-                depth,
-                index: self
-                    .pending_post_call_writes
-                    .get(depth)
-                    .copied()
-                    .unwrap_or(0),
-            });
-            return;
-        }
-
-        // Push to stack (depth is implicitly the index in the Vec)
+        // Push to stack - tracks pending calls awaiting post_call_checkpoint
         self.pending_post_call_writes.push(index);
 
         let checkpoint = JournalCheckpoint {
@@ -258,29 +243,19 @@ impl CallTracer {
     }
 
     /// Records the end of a call, either committing or reverting based on the outcome.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the pending writes stack is empty when it shouldn't be (invariant violation).
     pub fn record_call_end(
         &mut self,
         journal_inner: &mut JournalInner<JournalEntry>,
         reverted: bool,
     ) {
-        let depth = journal_inner.depth;
-
-        // Verify stack discipline: we should be popping at the expected depth
-        if self.pending_post_call_writes.len() != depth + 1 {
-            error!(target: "assertion-executor::call_tracer", depth, stack_len = self.pending_post_call_writes.len(), "Pending post call write stack mismatch on end");
-            self.result = Err(CallTracerError::PendingPostCallWriteNotFound { depth });
-            return;
-        }
-
         // Pop from stack (O(1))
-        let index = self
-            .pending_post_call_writes
-            .pop()
-            .expect("stack should not be empty");
+        let Some(index) = self.pending_post_call_writes.pop() else {
+            error!(target: "assertion-executor::call_tracer", depth = journal_inner.depth, "Pending post call write stack is empty");
+            self.result = Err(CallTracerError::PendingPostCallWriteNotFound {
+                depth: journal_inner.depth,
+            });
+            return;
+        };
 
         if reverted {
             self.truncate_from(index);
@@ -1561,5 +1536,277 @@ mod test {
             !called_addresses.contains(&addr2),
             "addr2 only has reverted calls"
         );
+    }
+
+    /// Tests many serial (sibling) calls at the same depth.
+    /// This is realistic: a contract looping and calling the same function many times.
+    #[test]
+    fn test_many_serial_calls_at_same_depth() {
+        const NUM_CALLS: usize = 100;
+
+        let mut tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let input_bytes: Bytes = selector.into();
+
+        let make_call_inputs = || {
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                known_bytecode: None,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            }
+        };
+
+        let mut journal = JournalInner::new();
+
+        // Root call
+        journal.depth = 0;
+        tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+        tracer.result.clone().unwrap();
+
+        // Many sibling calls at depth 1
+        for i in 0..NUM_CALLS {
+            journal.depth = 1;
+            tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+            tracer.result.clone().unwrap();
+
+            // Revert every 10th call
+            let reverted = i % 10 == 9;
+            tracer.record_call_end(&mut journal, reverted);
+            tracer.result.clone().unwrap();
+        }
+
+        // End root
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+        tracer.result.clone().unwrap();
+
+        // Should have root + 90 successful calls (10 reverted)
+        assert_eq!(tracer.call_inputs.len(), 91);
+
+        // All remaining should be forkable
+        for i in 0..91 {
+            assert!(tracer.is_call_forkable(i), "Call {i} should be forkable");
+        }
+    }
+
+    /// Tests alternating nested and serial calls - a realistic `DeFi` pattern.
+    /// Example: swap -> check price -> swap -> check price
+    #[test]
+    fn test_alternating_nested_and_serial_calls() {
+        let mut tracer = CallTracer::default();
+        let router = address!("1111111111111111111111111111111111111111");
+        let oracle = address!("2222222222222222222222222222222222222222");
+        let pool = address!("3333333333333333333333333333333333333333");
+        let swap_selector = FixedBytes::<4>::from([0x11, 0x11, 0x11, 0x11]);
+        let price_selector = FixedBytes::<4>::from([0x22, 0x22, 0x22, 0x22]);
+        let transfer_selector = FixedBytes::<4>::from([0x33, 0x33, 0x33, 0x33]);
+
+        let make_call = |target: Address, selector: FixedBytes<4>| {
+            let input: Bytes = selector.into();
+            (
+                CallInputs {
+                    input: CallInput::Bytes(input.clone()),
+                    return_memory_offset: 0..0,
+                    gas_limit: 0,
+                    bytecode_address: target,
+                    known_bytecode: None,
+                    target_address: target,
+                    caller: router,
+                    value: CallValue::default(),
+                    scheme: CallScheme::Call,
+                    is_static: false,
+                },
+                input,
+            )
+        };
+
+        let mut journal = JournalInner::new();
+
+        // User calls router.swap()
+        journal.depth = 0;
+        let (inputs, bytes) = make_call(router, swap_selector);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+
+        // Router calls oracle.getPrice()
+        journal.depth = 1;
+        let (inputs, bytes) = make_call(oracle, price_selector);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        // Router calls pool.transfer() - this one reverts (slippage)
+        journal.depth = 1;
+        let (inputs, bytes) = make_call(pool, transfer_selector);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, true); // REVERT
+
+        // Router retries with different params - calls oracle again
+        journal.depth = 1;
+        let (inputs, bytes) = make_call(oracle, price_selector);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        // Router calls pool.transfer() again - succeeds this time
+        journal.depth = 1;
+        let (inputs, bytes) = make_call(pool, transfer_selector);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        // Router returns
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        // Should have: router, oracle, oracle, pool (pool's first call reverted)
+        assert_eq!(tracer.call_inputs.len(), 4);
+
+        // Verify get_call_inputs returns correct data
+        let oracle_calls = tracer.get_call_inputs(oracle, price_selector);
+        assert_eq!(oracle_calls.len(), 2, "Should have 2 oracle calls");
+
+        let pool_calls = tracer.get_call_inputs(pool, transfer_selector);
+        assert_eq!(
+            pool_calls.len(),
+            1,
+            "Should have 1 pool call (other reverted)"
+        );
+    }
+
+    /// Tests a deep recursive call that reverts - the worst case scenario.
+    /// This validates the Vec truncation works correctly.
+    #[test]
+    fn test_deep_recursive_revert() {
+        const DEPTH: usize = 50;
+
+        let mut tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let input_bytes: Bytes = selector.into();
+
+        let make_call_inputs = || {
+            CallInputs {
+                input: CallInput::Bytes(input_bytes.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: addr,
+                known_bytecode: None,
+                target_address: addr,
+                caller: addr,
+                value: CallValue::default(),
+                scheme: CallScheme::Call,
+                is_static: false,
+            }
+        };
+
+        let mut journal = JournalInner::new();
+
+        // Deep recursive calls
+        for d in 0..DEPTH {
+            journal.depth = d;
+            tracer.record_call_start(make_call_inputs(), &input_bytes, &mut journal);
+            tracer.result.clone().unwrap();
+        }
+
+        // The deepest call reverts - should truncate all 50 calls
+        for d in (0..DEPTH).rev() {
+            journal.depth = d;
+            let reverted = d == DEPTH - 1; // Only deepest reverts
+            tracer.record_call_end(&mut journal, reverted);
+            tracer.result.clone().unwrap();
+        }
+
+        // Only calls 0..49 should remain (deepest reverted)
+        assert_eq!(tracer.call_inputs.len(), DEPTH - 1);
+        for i in 0..(DEPTH - 1) {
+            assert!(tracer.is_call_forkable(i), "Call {i} should be forkable");
+        }
+    }
+
+    /// Tests that `get_call_inputs` correctly handles multiple targets/selectors
+    /// after some calls revert.
+    #[test]
+    fn test_get_call_inputs_multiple_targets_with_reverts() {
+        let mut tracer = CallTracer::default();
+        let addr_a = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        let addr_b = address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+        let selector_1 = FixedBytes::<4>::from([0x11, 0x11, 0x11, 0x11]);
+        let selector_2 = FixedBytes::<4>::from([0x22, 0x22, 0x22, 0x22]);
+
+        let make_call = |target: Address, selector: FixedBytes<4>| {
+            let input: Bytes = selector.into();
+            (
+                CallInputs {
+                    input: CallInput::Bytes(input.clone()),
+                    return_memory_offset: 0..0,
+                    gas_limit: 0,
+                    bytecode_address: target,
+                    known_bytecode: None,
+                    target_address: target,
+                    caller: target,
+                    value: CallValue::default(),
+                    scheme: CallScheme::Call,
+                    is_static: false,
+                },
+                input,
+            )
+        };
+
+        let mut journal = JournalInner::new();
+
+        // Call sequence:
+        // 0: A.func1() - succeeds
+        // 1: B.func2() - contains revert
+        //    2: A.func1() - reverted (inside B)
+        //    3: B.func2() - reverted (inside B)
+        // 4: A.func1() - succeeds (after B reverted)
+
+        journal.depth = 0;
+        let (inputs, bytes) = make_call(addr_a, selector_1);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+
+        journal.depth = 1;
+        let (inputs, bytes) = make_call(addr_b, selector_2);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+
+        // Nested calls inside B
+        journal.depth = 2;
+        let (inputs, bytes) = make_call(addr_a, selector_1);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        journal.depth = 2;
+        let (inputs, bytes) = make_call(addr_b, selector_2);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        // B reverts - should remove calls 1, 2, 3
+        journal.depth = 1;
+        tracer.record_call_end(&mut journal, true);
+
+        // New call to A after B reverted
+        journal.depth = 1;
+        let (inputs, bytes) = make_call(addr_a, selector_1);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        // End root
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        // Should have calls: 0 (A.func1), 1 (A.func1 after revert)
+        assert_eq!(tracer.call_inputs.len(), 2);
+
+        // Verify get_call_inputs
+        let a_func1_calls = tracer.get_call_inputs(addr_a, selector_1);
+        assert_eq!(a_func1_calls.len(), 2, "Should have 2 calls to A.func1()");
+
+        let b_func2_calls = tracer.get_call_inputs(addr_b, selector_2);
+        assert_eq!(b_func2_calls.len(), 0, "B.func2() calls all reverted");
     }
 }

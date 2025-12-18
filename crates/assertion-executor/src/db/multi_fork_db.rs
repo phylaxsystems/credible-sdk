@@ -505,7 +505,9 @@ mod test_multi_fork {
         };
         //Call 0
         active_journal.checkpoint();
+        active_journal.depth = 0; // Set depth after checkpoint (which increments it)
         call_tracer.record_call_start(call_inputs.clone(), &Bytes::from(""), &mut active_journal);
+        call_tracer.result.clone().unwrap();
         active_journal
             .load_account(&mut pre_tx_fork_db, sender)
             .unwrap();
@@ -513,6 +515,7 @@ mod test_multi_fork {
             .transfer(&mut pre_tx_fork_db, sender, receiver, uint!(900_U256))
             .unwrap();
         call_tracer.record_call_end(&mut active_journal, false);
+        call_tracer.result.clone().unwrap();
         active_journal.checkpoint_commit();
 
         let call_inputs = CallInputs {
@@ -522,7 +525,9 @@ mod test_multi_fork {
 
         //Call 1
         active_journal.checkpoint();
+        active_journal.depth = 0; // Set depth after checkpoint (which increments it)
         call_tracer.record_call_start(call_inputs, &Bytes::from(""), &mut active_journal);
+        call_tracer.result.clone().unwrap();
 
         active_journal
             .load_account(&mut pre_tx_fork_db, sender)
@@ -532,6 +537,7 @@ mod test_multi_fork {
             .unwrap();
 
         call_tracer.record_call_end(&mut active_journal, false);
+        call_tracer.result.clone().unwrap();
         active_journal.checkpoint_commit();
 
         let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
