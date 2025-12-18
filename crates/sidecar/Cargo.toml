@@ -110,3 +110,8 @@ required-features = ["bench-utils"]
 name = "transactions_results_add_transaction_result"
 path = "benches/transactions_results_add_transaction_result.rs"
 harness = false
+
+[[bench]]
+name = "event_sequencing_latency"
+path = "benches/event_sequencing_latency.rs"
+harness = false

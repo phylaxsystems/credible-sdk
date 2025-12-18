@@ -1,9 +1,9 @@
 use assertion_executor::{
     AssertionExecutor,
     ExecutorConfig,
-    db::DatabaseCommit,
-    db::overlay::{
-        OverlayDb,
+    db::{
+        DatabaseCommit,
+        overlay::OverlayDb,
     },
     primitives::{
         Account,
@@ -36,8 +36,11 @@ use criterion::{
 use revm::database::InMemoryDB;
 use tokio::runtime::Runtime;
 
-fn build_fork_db() -> (assertion_executor::db::fork_db::ForkDb<OverlayDb<InMemoryDB>>, TxEnv, BlockEnv)
-{
+fn build_fork_db() -> (
+    assertion_executor::db::fork_db::ForkDb<OverlayDb<InMemoryDB>>,
+    TxEnv,
+    BlockEnv,
+) {
     let basefee = 10;
     let block_env = BlockEnv {
         number: U256::from(1),
@@ -62,7 +65,7 @@ fn build_fork_db() -> (assertion_executor::db::fork_db::ForkDb<OverlayDb<InMemor
         Account {
             info: counter_acct_info(),
             transaction_id: 0,
-            storage: Default::default(),
+            storage: std::collections::HashMap::default(),
             status: AccountStatus::Touched,
         },
     );
@@ -75,7 +78,7 @@ fn build_fork_db() -> (assertion_executor::db::fork_db::ForkDb<OverlayDb<InMemor
                 ..Default::default()
             },
             transaction_id: 0,
-            storage: Default::default(),
+            storage: std::collections::HashMap::default(),
             status: AccountStatus::Touched,
         },
     );

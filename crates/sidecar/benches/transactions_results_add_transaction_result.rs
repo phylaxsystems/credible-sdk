@@ -39,7 +39,7 @@ fn dummy_result() -> TransactionResult {
 }
 
 fn make_tx_execution_id(i: u64) -> TxExecutionId {
-    let byte = (i % 256) as u8;
+    let byte = u8::try_from(i % 256).expect("i % 256 always fits into u8");
     TxExecutionId::new(U256::from(i), 0, TxHash::from([byte; 32]), i)
 }
 
