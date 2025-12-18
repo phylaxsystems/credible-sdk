@@ -8,10 +8,11 @@ use assertion_executor::{
         U256,
     },
 };
+use std::hint::black_box;
+
 use criterion::{
     BatchSize,
     Criterion,
-    black_box,
     criterion_group,
     criterion_main,
 };
