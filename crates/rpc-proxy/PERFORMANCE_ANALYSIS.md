@@ -6,35 +6,35 @@
 
 | Operation | Latency | Throughput | Impact |
 |-----------|---------|------------|--------|
-| **ECDSA sender recovery** | ~115µs | 8.7k/s | **HIGH - 68% of hot path** |
-| **Cache observe (new)** | ~48µs | 20k/s | **MEDIUM - 28% of hot path** |
+| **ECDSA sender recovery (secp256k1)** | ~22µs | 45k/s | **MEDIUM - 29% of hot path** |
+| **Cache observe (new)** | ~48µs | 20k/s | **HIGH - 63% of hot path** |
 | **Sender cache hit** | ~65ns | 15M/s | Negligible (cached) |
 | **Fingerprint creation** | ~323ns | 3M/s | **LOW - <1% of hot path** |
 | **Backpressure check** | ~28-34ns | 29-35M/s | Negligible |
-| **Full pipeline (uncached sender)** | ~170µs | 5.9k/s | Total |
+| **Full pipeline (uncached sender)** | ~76µs | 13.2k/s | Total |
 | **Full pipeline (cached sender)** | ~48µs | 20k/s | Total (cached) |
 
 ### Performance Breakdown
 
 ```
-Total hot path: ~170µs (with fresh sender)
-├─ ECDSA recovery:      115µs  (68%) ← BIGGEST BOTTLENECK
-├─ Cache observe:        48µs  (28%) ← SECOND BOTTLENECK
+Total hot path: ~76µs (with fresh sender)
+├─ Cache observe:        48µs  (63%) ← BIGGEST BOTTLENECK
+├─ ECDSA recovery:       22µs  (29%) ← SECOND BOTTLENECK (secp256k1)
 ├─ Fingerprint create:  323ns  (<1%)
 └─ Backpressure check:   28ns  (<1%)
 ```
 
 ### Profiling Insights
 
-1. **ECDSA recovery dominates** - 115µs per transaction for unknown senders
-   - Currently cached with 5min TTL, 100k capacity
-   - Cache hit rate depends on transaction patterns
-   - Attackers can trivially bypass by using many EOAs
-
-2. **Cache operations are expensive** - 48µs for new fingerprints
+1. **Cache operations are now the bottleneck** - 48µs for new fingerprints (63% of hot path)
    - Uses moka (concurrent hashmap + LRU)
    - Includes DashMap lookups and lock acquisition
    - Not optimized for write-heavy adversarial workloads
+
+2. **ECDSA recovery (secp256k1) is fast** - 22µs per transaction (29% of hot path)
+   - Optimized using libsecp256k1 C library (5.3x faster than k256)
+   - Cached with 5min TTL, 100k capacity
+   - Attackers can still bypass by using many EOAs, but impact reduced
 
 3. **Lock-free operations are fast** - <100ns for reads
    - Backpressure checks are extremely efficient
@@ -44,18 +44,19 @@ Total hot path: ~170µs (with fresh sender)
 
 ### Scenario 1: Multi-EOA Sender Bypass
 **Attack:** Attacker uses many different EOAs to bypass sender cache
-- Each EOA gets 115µs ECDSA recovery penalty
-- With 1000 EOAs, attacker can send 1000 * 5.9k = 5.9M req/s equivalent load
-- **Impact:** Sender cache useless, DOS via CPU exhaustion
+- Each EOA gets 22µs ECDSA recovery penalty (with secp256k1)
+- With 1000 EOAs, attacker can send 1000 * 13.2k = 13.2M req/s equivalent load
+- **Impact:** Reduced from previous 5.9M req/s (2.2x improvement), but still DOS-able
 
 **Current Mitigations:**
+- secp256k1 ECDSA recovery (5.3x faster than k256)
 - Sender backpressure throttles per-sender after failures
 - Global concurrency limit (1000) prevents unbounded parallelism
 - Queue shaping limits duplicate fingerprints
 
 **Limitations:**
-- Still processes expensive ECDSA for first request from each EOA
-- Attacker can exhaust CPU before backpressure kicks in
+- Still processes ECDSA for first request from each EOA (but 5.3x faster now)
+- Attacker can exhaust CPU before backpressure kicks in (but harder than before)
 
 ### Scenario 2: Cache Exhaustion
 **Attack:** Spam distinct fingerprints to exhaust cache capacity (10k entries)
@@ -101,7 +102,7 @@ Total hot path: ~170µs (with fresh sender)
 
 ### ✅ IMPLEMENTED: Priority 1 - TX-Hash Recent-Failure Cache
 
-**Problem:** Attackers repeatedly submit the same failed transaction, forcing expensive ECDSA recovery (~115µs) each time.
+**Problem:** Attackers repeatedly submit the same failed transaction, forcing expensive ECDSA recovery (~22µs with secp256k1, previously ~116µs with k256) each time.
 
 **Solution: Pre-ECDSA TX-Hash Check**
 
@@ -121,7 +122,8 @@ Add a fast-path check BEFORE ECDSA recovery:
 - Cache automatically expires and cleans up stale entries
 
 **Measured Impact:**
-- Resubmissions of failed tx rejected in ~100ns vs ~115µs = **1150x speedup**
+- Resubmissions of failed tx rejected in ~100ns vs ~22µs (secp256k1) = **220x speedup**
+- Previously vs k256: ~100ns vs ~116µs = **1160x speedup**
 - Zero false positives (exact tx_hash match)
 - Memory overhead: ~32 bytes per entry (~3.2MB for 100k entries)
 - New metric: `rpc_proxy_fast_reject_recent_failure_total`
@@ -131,6 +133,45 @@ Add a fast-path check BEFORE ECDSA recovery:
 - All requests appear to come from same IP (load balancer IP)
 - IP-based throttling would affect all users equally (unacceptable)
 - Instead, rely on sender-based backpressure (existing mechanism)
+
+---
+
+## ✅ IMPLEMENTED: Replace k256 with secp256k1 for ECDSA Recovery
+
+**Problem:** ECDSA sender recovery using alloy's k256 (pure Rust) takes ~116µs per transaction, representing 68% of the hot path for uncached senders. Attackers using many EOAs can bypass sender cache and force expensive recovery.
+
+**Solution: Use libsecp256k1 C library instead of k256**
+
+The `secp256k1` crate wraps the battle-tested libsecp256k1 C library (used by Bitcoin Core), which is significantly faster than pure Rust implementations.
+
+**Benchmark Comparison (Apple M1 Pro):**
+```
+alloy (k256):       116.64 µs per ECDSA recovery
+secp256k1:           22.10 µs per ECDSA recovery
+Speedup:             5.3x (94µs saved per recovery)
+```
+
+**Implementation:**
+- Created `sender_recovery` module using secp256k1 with `global-context` feature
+- Replaced `envelope.recover_signer()` with `sender_recovery::recover_sender()`
+- Added comprehensive tests verifying correctness against alloy's implementation
+- Handles all transaction types: EIP-1559, EIP-2930, and Legacy
+
+**Measured Impact:**
+- ECDSA recovery: **116µs → 22µs** (81% reduction)
+- Total hot path (uncached sender): **~170µs → ~76µs** (55% faster)
+- Throughput (uncached): **5.9k/s → 13.2k/s** (2.2x improvement)
+- Throughput (cached): Unchanged at ~20k/s (cache hit path unaffected)
+
+**Tradeoffs:**
+- ✅ 5.3x faster ECDSA recovery significantly improves DoS resistance
+- ✅ libsecp256k1 is battle-tested and widely deployed
+- ⚠️ Adds C dependency (may complicate cross-compilation to some targets)
+- ⚠️ Slightly larger binary size (~300KB for libsecp256k1)
+
+**Code location:** `crates/rpc-proxy/src/sender_recovery.rs:1`
+
+---
 
 ### Priority 2: Optimize Cache Writes for Spam Resistance
 

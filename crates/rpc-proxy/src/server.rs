@@ -14,7 +14,6 @@ use moka::sync::Cache;
 use tokio::sync::Semaphore;
 
 use ajj::Router;
-use alloy_consensus::transaction::SignerRecoverable;
 use alloy_primitives::{
     Address,
     B256,
@@ -56,6 +55,7 @@ use crate::{
         FingerprintCache,
         decode_envelope,
     },
+    sender_recovery,
     sidecar::{
         GrpcSidecarTransport,
         NoopSidecarTransport,
@@ -386,16 +386,12 @@ impl ProxyState {
             }
         }
 
-        // Use cached sender recovery to avoid expensive ECDSA operations (~115µs).
+        // Use cached sender recovery to avoid expensive ECDSA operations.
+        // With secp256k1: ~22µs (cache miss), ~65ns (cache hit)
         // Cache key is the transaction hash, which is cheap to compute.
         let sender = self
             .sender_cache
-            .get_with(tx_hash, || {
-                envelope
-                    .recover_signer()
-                    .ok()
-                    .or_else(|| envelope.recover_signer_unchecked().ok())
-            });
+            .get_with(tx_hash, || sender_recovery::recover_sender(&envelope));
 
         // Track sender recovery failures for observability.
         // Note: If sender recovery fails, backpressure will not apply to this transaction

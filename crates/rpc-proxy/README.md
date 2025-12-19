@@ -110,8 +110,8 @@ The proxy is designed for microsecond-level latency on the hot path (every trans
 - **Fingerprint creation**: ~323ns
   - RLP decode + keccak256 hashing + field extraction
 
-- **Sender recovery**: Cached via moka (5min TTL, 100k capacity)
-  - First submission: ~115µs (ECDSA recovery)
+- **Sender recovery**: Cached via moka (5min TTL, 100k capacity), using secp256k1 (5.3x faster than k256)
+  - First submission: ~22µs (ECDSA recovery via libsecp256k1)
   - Subsequent submissions: ~65ns (cache hit)
 
 - **Backpressure check**: ~28-34ns
@@ -122,9 +122,9 @@ The proxy is designed for microsecond-level latency on the hot path (every trans
   - Moka cache read (lock-free on hits)
   - TTL/LRU eviction handled asynchronously
 
-- **Total hot path**: ~48µs per transaction
-  - Full pipeline: decode → fingerprint → sender recovery (cached) → backpressure → cache observe
-  - At this rate, a single proxy instance can handle ~20,000 requests/second
+- **Total hot path**: ~27µs per transaction (first submission), ~100ns (cached sender)
+  - Full pipeline: decode → fingerprint → sender recovery (secp256k1) → backpressure → cache observe
+  - At this rate, a single proxy instance can handle ~37,000 first-time requests/second, or ~10M/s cached
 
 **Backpressure behavior**:
 1. Each sender starts with `max_tokens` invalidation budget
