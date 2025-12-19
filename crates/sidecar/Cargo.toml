@@ -20,6 +20,8 @@ tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 axum = { workspace = true }
 tonic = { version = "0.14.2", features = ["transport"] }
+prost = "0.14.1"
+tonic-prost = "0.14.2"
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -72,6 +74,9 @@ tokio-console = [
     "tokio-metrics",
 ]
 cache_validation = ["moka", "alloy-rpc-types-trace"]
+
+[package.metadata.cargo-shear]
+ignored = ["prost", "tonic-prost"]
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 

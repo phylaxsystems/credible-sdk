@@ -29,10 +29,16 @@ chrono = { workspace = true, features = ["serde"] }
 default = []
 regenerate = []
 
+[package.metadata.cargo-shear]
+ignored = ["anyhow", "openapiv3", "progenitor"]
+
 [build-dependencies]
 reqwest = { workspace = true, features = ["blocking", "json"] }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+anyhow = { workspace = true }
+openapiv3 = "2.2"
+progenitor = "0.8"
 
 [dev-dependencies]
 tokio = { workspace = true }
