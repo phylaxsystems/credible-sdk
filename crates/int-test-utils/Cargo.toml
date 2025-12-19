@@ -18,13 +18,11 @@ alloy = { workspace = true, features = [
 ] }
 rand.workspace = true
 assertion-da-server.workspace = true
-sled.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-bollard.workspace = true
 axum = { workspace = true }
 dashmap = { workspace = true }
 serde_json = { workspace = true }
@@ -34,4 +32,3 @@ hex = { workspace = true }
 tempfile.workspace = true
 tracing.workspace = true
 assertion-da-client.workspace = true
-reqwest.workspace = true

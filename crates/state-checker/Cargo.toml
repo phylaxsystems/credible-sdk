@@ -14,8 +14,6 @@ clap = { workspace = true }
 revm = { workspace = true }
 rust-tracing = { workspace = true }
 tracing = { workspace = true }
-alloy-transport-ws = { workspace = true }
-alloy-rpc-types = { workspace = true }
 state-store = { path = "../state-store", features = ["writer"] }
 rustls = { workspace = true }
 tokio = { workspace = true }

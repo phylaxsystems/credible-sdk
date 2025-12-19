@@ -23,13 +23,8 @@ foundry-compilers = { version = "0.19.10", default-features = false }
 
 clap = { workspace = true }
 thiserror = { workspace = true }
-hex = "0.4.3"
-
-serde = { workspace = true }
-serde_json = { workspace = true }
 color-eyre = { workspace = true }
 tempfile = { workspace = true }
-tempdir = { workspace = true }
 tokio = { workspace = true }
 
 alloy-json-abi = { workspace = true }

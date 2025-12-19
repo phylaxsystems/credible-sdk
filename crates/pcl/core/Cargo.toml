@@ -33,7 +33,6 @@ inquire = "0.7.5"
 toml = "0.8.2"
 dirs = "6.0.0"
 indicatif = "0.17"
-anyhow = { version = "1.0.98" }
 
 [features]
 default = ["full-test"]
@@ -43,6 +42,5 @@ full-test = []
 mockito = "1.2"
 tempfile = "3.6.0"
 alloy = { workspace = true, features = ["signer-local"] }
-rand = { workspace = true }
 int-test-utils = { workspace = true }
-libc = "0.2.172"
+anyhow = { version = "1.0.98" }

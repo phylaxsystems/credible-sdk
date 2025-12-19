@@ -20,8 +20,6 @@ tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 axum = { workspace = true }
 tonic = { version = "0.14.2", features = ["transport"] }
-prost = "0.14.1"
-tonic-prost = "0.14.2"
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -39,7 +37,6 @@ redis = { workspace = true }
 hex = { workspace = true }
 moka = { version = "0.12.11", features = ["sync"], optional = true }
 alloy-rpc-types-trace = { workspace = true, optional = true }
-criterion = { workspace = true }
 url = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
 tokio-metrics = { workspace = true, optional = true }
@@ -53,7 +50,6 @@ parking_lot = "0.12.5"
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"
-prost-build = "0.14"
 protoc-bin-vendored = "3"
 
 [features]
@@ -87,6 +83,7 @@ tracing-test = "0.2.5"
 redis-test = { workspace = true }
 int-test-utils = { path = "../int-test-utils" }
 tempfile = "3.23.0"
+criterion = { workspace = true }
 
 [profile.release]
 lto = "fat"
