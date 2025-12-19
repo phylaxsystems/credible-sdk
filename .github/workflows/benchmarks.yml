@@ -3,9 +3,9 @@ name: Benchmarks
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    paths:
-      - "crates/src/**"
-      - "!**/*.md"
+    # paths:
+    #   - "crates/src/**"
+    #   - "!**/*.md"
   workflow_dispatch:
 
 permissions:
