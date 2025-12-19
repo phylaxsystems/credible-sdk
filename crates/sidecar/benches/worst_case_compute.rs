@@ -21,7 +21,6 @@ use criterion::{
 use revm::{
     context::tx::TxEnvBuilder,
     primitives::{
-        B256,
         TxKind,
     },
 };
@@ -40,6 +39,7 @@ use sidecar::utils::{
         LocalInstanceMockDriver,
     },
 };
+use sidecar::execution_ids::TxExecutionId;
 use std::{
     fs::File,
     future::Future,
@@ -140,7 +140,7 @@ async fn setup_iteration<T, F, Fut>(
     bytecodes: Arc<Vec<Bytes>>,
     adopters: Arc<Vec<Address>>,
     builder: F,
-) -> (LocalInstance<T>, Vec<(B256, TxEnv)>, Vec<B256>)
+) -> (LocalInstance<T>, Vec<(TxExecutionId, TxEnv)>)
 where
     T: TestTransport,
     F: FnOnce(AssertionStore) -> Fut,
@@ -152,18 +152,20 @@ where
         .await
         .expect("Failed to create LocalInstance");
 
+    instance.new_block().await.unwrap();
+
     // build 100 transactions all targeting the same adopter
     // each transaction will execute against all 5 assertions for that adopter
     let adopter = adopters[0];
     let mut transactions = Vec::with_capacity(100);
-    let mut hashes = Vec::with_capacity(100);
+    let block_execution_id = instance.current_block_execution_id();
 
     for idx in 0..100 {
         let mut payload = vec![0u8; 32];
         payload[..4].copy_from_slice(&(idx as u32).to_be_bytes());
         let call_data = Bytes::from(payload);
 
-        let nonce = instance.next_nonce();
+        let nonce = instance.next_nonce(instance.default_account(), block_execution_id);
         let tx_env = TxEnvBuilder::new()
             .caller(instance.default_account())
             .gas_limit(GAS_LIMIT_PER_TX)
@@ -176,29 +178,41 @@ where
             .expect("Failed to build transaction");
 
         let tx_hash = LocalInstance::<T>::generate_random_tx_hash();
-        hashes.push(tx_hash);
-        transactions.push((tx_hash, tx_env));
+        let tx_execution_id = TxExecutionId::new(
+            block_execution_id.block_number,
+            block_execution_id.iteration_id,
+            tx_hash,
+            idx as u64,
+        );
+        transactions.push((tx_execution_id, tx_env));
     }
 
-    instance.new_block().await.unwrap();
-
-    (instance, transactions, hashes)
+    (instance, transactions)
 }
 
 // Execution function: sends transactions and waits for completion (measured)
 async fn execute_iteration<T: TestTransport>(
     mut instance: LocalInstance<T>,
-    transactions: Vec<(B256, TxEnv)>,
-    hashes: Vec<B256>,
+    transactions: Vec<(TxExecutionId, TxEnv)>,
 ) {
     // send all 100 transactions to the engine in a single block
     // 100 transactions with 5 assertions, 500 assertion executions
-    for (idx, (tx_hash, tx_env)) in transactions.into_iter().enumerate() {
-        tracing::debug!("Sending transaction {}/{}: {}", idx + 1, 100, tx_hash);
+    let last_tx_execution_id = transactions
+        .last()
+        .map(|(tx_execution_id, _)| *tx_execution_id)
+        .expect("expected at least one transaction");
+
+    for (idx, (tx_execution_id, tx_env)) in transactions.into_iter().enumerate() {
+        tracing::debug!(
+            "Sending transaction {}/{}: {}",
+            idx + 1,
+            100,
+            tx_execution_id
+        );
 
         instance
             .transport
-            .send_transaction(tx_hash, tx_env)
+            .send_transaction(tx_execution_id, tx_env)
             .await
             .unwrap();
     }
@@ -207,12 +221,21 @@ async fn execute_iteration<T: TestTransport>(
     //
     // txs are processed sequentially so the only way this
     // can be successful if all tx before are successful
-    let tx_hash = hashes.last().unwrap();
-    tracing::debug!("Waiting for last transaction {} to complete", tx_hash);
+    tracing::debug!(
+        "Waiting for last transaction {} to complete",
+        last_tx_execution_id
+    );
     loop {
-        match instance.is_transaction_successful(&tx_hash).await {
+        match instance
+            .is_transaction_successful(&last_tx_execution_id)
+            .await
+        {
             Ok(success) => {
-                tracing::debug!("Transaction {} completed with success={}", tx_hash, success);
+                tracing::debug!(
+                    "Transaction {} completed with success={}",
+                    last_tx_execution_id,
+                    success
+                );
                 break;
             }
             Err(e) => {
@@ -220,7 +243,7 @@ async fn execute_iteration<T: TestTransport>(
                     tokio::time::sleep(Duration::from_millis(1)).await;
                     continue;
                 } else {
-                    panic!("error getting hash {tx_hash:?}: {}", e)
+                    panic!("error getting hash {last_tx_execution_id:?}: {}", e)
                 }
             }
         }
@@ -248,9 +271,9 @@ fn run_benchmark_for_driver<T, SetupFn, Fut>(
                 let adopters = Arc::clone(&adopters);
                 runtime.block_on(setup_iteration::<T, _, _>(bytecodes, adopters, setup_fn))
             },
-            |(instance, transactions, hashes)| {
+            |(instance, transactions)| {
                 std::hint::black_box(runtime.block_on(async move {
-                    execute_iteration(instance, transactions, hashes).await
+                    execute_iteration(instance, transactions).await
                 }));
             },
             BatchSize::SmallInput,
