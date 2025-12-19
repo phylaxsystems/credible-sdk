@@ -39,7 +39,6 @@ redis = { workspace = true }
 hex = { workspace = true }
 moka = { version = "0.12.11", features = ["sync"], optional = true }
 alloy-rpc-types-trace = { workspace = true, optional = true }
-criterion = { workspace = true }
 url = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
 tokio-metrics = { workspace = true, optional = true }
@@ -53,7 +52,6 @@ parking_lot = "0.12.5"
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"
-prost-build = "0.14"
 protoc-bin-vendored = "3"
 
 [features]
@@ -76,6 +74,9 @@ tokio-console = [
     "tokio-metrics",
 ]
 cache_validation = ["moka", "alloy-rpc-types-trace"]
+
+[package.metadata.cargo-shear]
+ignored = ["prost", "tonic-prost"]
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
@@ -87,6 +88,7 @@ tracing-test = "0.2.5"
 redis-test = { workspace = true }
 int-test-utils = { path = "../int-test-utils" }
 tempfile = "3.23.0"
+criterion = { workspace = true }
 
 [profile.release]
 lto = "fat"

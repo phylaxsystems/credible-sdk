@@ -18,6 +18,5 @@ tracing = { workspace = true }
 rust-tracing = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
-hex = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -16,15 +16,8 @@ reqwest = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
-# Async runtime
-tokio = { workspace = true }
-
 # Error handling
 thiserror = { workspace = true }
-anyhow = { workspace = true }
-
-# OpenAPI client generation
-progenitor = "0.8"
 progenitor-client = "0.8"
 
 # Dependencies for generated code
@@ -36,16 +29,19 @@ chrono = { workspace = true, features = ["serde"] }
 default = []
 regenerate = []
 
+[package.metadata.cargo-shear]
+ignored = ["anyhow", "openapiv3", "progenitor"]
+
 [build-dependencies]
 reqwest = { workspace = true, features = ["blocking", "json"] }
 serde_json = { workspace = true }
-anyhow = { workspace = true }
 chrono = { workspace = true }
-progenitor = "0.8"
+anyhow = { workspace = true }
 openapiv3 = "2.2"
+progenitor = "0.8"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
+tokio = { workspace = true }
 httpmock = "0.7"
 assert_matches = "1.5"
 rstest = "0.24"
