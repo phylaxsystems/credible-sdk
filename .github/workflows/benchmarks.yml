@@ -1,0 +1,24 @@
+name: Benchmarks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "crates/src/**"
+      - "!**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pages: write
+  id-token: write
+
+jobs:
+  criterion:
+    uses: phylaxsystems/actions/.github/workflows/benchmark.yaml@feat/create-bench-workflow
+    with:
+      rust-channel: stable
+      bench-command: "SIDECAR_BENCH_TRANSPORT=mock RUST_LOG=error cargo bench -p sidecar --features bench-utils --benches && cargo bench -p assertion-executor@0.9.0 --features test --benches"
+      publish-pages: true
+      comment-on-pr: true
