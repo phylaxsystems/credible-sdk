@@ -21,14 +21,9 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let mut listener = Listener::new(
-        &args.ws_url,
-        &args.sidecar_url,
-        args.request_timeout_seconds,
-        args.starting_block,
-    )
-    .await
-    .with_result_querying(true);
+    let mut listener = Listener::new(&args.ws_url, &args.sidecar_url, args.starting_block)
+        .await
+        .with_result_querying(true);
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {

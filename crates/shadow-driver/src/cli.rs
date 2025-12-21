@@ -17,14 +17,6 @@ pub struct Args {
     #[arg(long, env = "SHADOW_DRIVER_SIDECAR_URL")]
     pub sidecar_url: String,
 
-    /// Request timeout in seconds
-    #[arg(
-        long,
-        default_value = "2",
-        env = "SHADOW_DRIVER_REQUEST_TIMEOUT_SECONDS"
-    )]
-    pub request_timeout_seconds: u64,
-
     /// The starting block to start from. If not set, the driver will start from the current block.
     #[arg(long, env = "SHADOW_DRIVER_STARTING_BLOCK")]
     pub starting_block: Option<u64>,

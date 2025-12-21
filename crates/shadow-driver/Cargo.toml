@@ -12,11 +12,10 @@ alloy-provider = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
-revm = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 rust-tracing = { workspace = true }
-serde_json = { workspace = true }
-reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 rustls = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+sidecar = { path = "../sidecar" }
+tonic = { version = "0.14.2", features = ["transport"] }
+tokio-stream = { workspace = true }

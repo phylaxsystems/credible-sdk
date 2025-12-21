@@ -3,20 +3,17 @@
 //! The worker bootstraps from the last persisted block, catches up to head via
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
 //! is traced with the pre-state tracer and written into Redis.
+//!
+//! Uses gRPC bidirectional streaming via `StreamEvents` RPC.
 
 use alloy::{
     consensus::{
         Transaction,
         TxType,
     },
-    primitives::{
-        B256,
-        Bytes,
-        TxHash,
-    },
+    primitives::U256,
     providers::WsConnect,
     rpc::types::Header,
-    signers::Either,
 };
 use alloy_provider::{
     Provider,
@@ -29,25 +26,35 @@ use anyhow::{
     anyhow,
 };
 use futures::StreamExt;
-use reqwest::Client;
-use revm::context::{
-    TxEnv,
-    transaction::AccessListItem,
-    tx::{
-        TxEnvBuildError,
-        TxEnvBuilder,
-    },
+use sidecar::transport::grpc::pb::{
+    AccessListItem as ProtoAccessListItem,
+    Authorization as ProtoAuthorization,
+    BlobExcessGasAndPrice,
+    BlockEnv,
+    CommitHead,
+    Event,
+    GetTransactionsRequest,
+    NewIteration,
+    ResultStatus,
+    StreamAck,
+    Transaction as ProtoTransaction,
+    TransactionEnv,
+    TransactionResult,
+    TxExecutionId as ProtoTxExecutionId,
+    event::Event as EventVariant,
+    sidecar_transport_client::SidecarTransportClient,
 };
-use serde::{
-    Deserialize,
-    Serialize,
-};
-use serde_json::json;
 use std::{
+    collections::HashMap,
     sync::Arc,
     time::Duration,
 };
-use tokio::time;
+use tokio::{
+    sync::Mutex,
+    time,
+};
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::transport::Channel;
 use tracing::{
     debug,
     error,
@@ -57,80 +64,144 @@ use tracing::{
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 const MAX_RETRY_DELAY_SECS: u64 = 300;
-const POOL_IDLE_TIMEOUT_SECS: u64 = 90;
-const POOL_MAX_IDLE_PER_HOST: usize = 100;
-const CONNECT_TIMEOUT_MS: u64 = 500;
-const TCP_KEEPALIVE_SECS: u64 = 60;
+const ACK_TIMEOUT_SECS: u64 = 30;
+const EVENT_CHANNEL_BUFFER_SIZE: usize = 1024;
+const DEFAULT_ITERATION_ID: u64 = 0;
+const MAX_EVENT_RETRIES: u32 = 3;
+const RETRY_DELAY_MS: u64 = 500;
 
-// Transaction retry configuration
-const EVENT_MAX_RETRIES: u32 = 5;
-const EVENT_INITIAL_RETRY_DELAY_MS: u64 = 10;
-const TX_MAX_RETRY_DELAY_MS: u64 = 250;
-
-/// Wrapper for serializing `TxEnv` with the transaction hash
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-struct TransactionPayload {
-    tx_env: TxEnv,
-    tx_execution_id: TxExecutionId,
+/// Pending event awaiting acknowledgment
+struct PendingEvent {
+    event_id: u64,
+    block_number: u64,
+    event_type: &'static str,
+    notify: Arc<tokio::sync::Notify>,
+    result: Arc<Mutex<Option<bool>>>, // Some(true) = success, Some(false) = failed
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct TxExecutionId {
-    pub block_number: u64,
-    pub iteration_id: u64,
-    pub tx_hash: TxHash,
+/// Manages the gRPC bidirectional stream
+struct EventStream {
+    tx: tokio::sync::mpsc::Sender<Event>,
+    pending_acks: Arc<Mutex<HashMap<u64, PendingEvent>>>,
+    next_event_id: u64,
 }
 
-#[derive(Deserialize)]
-struct Response {
-    error: Option<ResponseError>,
+impl EventStream {
+    fn new(tx: tokio::sync::mpsc::Sender<Event>) -> Self {
+        Self {
+            tx,
+            pending_acks: Arc::new(Mutex::new(HashMap::new())),
+            next_event_id: 1,
+        }
+    }
+
+    /// Send an event and wait for its acknowledgment with timeout
+    async fn send_event_and_wait(
+        &mut self,
+        event: Event,
+        block_number: u64,
+        event_type: &'static str,
+    ) -> Result<()> {
+        let event_id = event.event_id;
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let result = Arc::new(Mutex::new(None));
+
+        // Track pending ack
+        self.pending_acks.lock().await.insert(
+            event_id,
+            PendingEvent {
+                event_id,
+                block_number,
+                event_type,
+                notify: notify.clone(),
+                result: result.clone(),
+            },
+        );
+
+        // Send the event, clean up pending_acks on failure
+        if let Err(e) = self.tx.send(event).await {
+            self.pending_acks.lock().await.remove(&event_id);
+            return Err(anyhow!("failed to send event to stream: {e}"));
+        }
+
+        // Wait for ack with timeout
+        let timeout_duration = Duration::from_secs(ACK_TIMEOUT_SECS);
+        if let Ok(()) = time::timeout(timeout_duration, notify.notified()).await {
+            // Check if the ack was successful
+            let ack_result = result.lock().await.take();
+            match ack_result {
+                Some(true) => Ok(()),
+                Some(false) => {
+                    Err(anyhow!(
+                        "event {event_type} (id={event_id}) for block {block_number} was rejected by sidecar"
+                    ))
+                }
+                None => {
+                    Err(anyhow!(
+                        "event {event_type} (id={event_id}) for block {block_number}: notified but no result"
+                    ))
+                }
+            }
+        } else {
+            // Timeout
+            self.pending_acks.lock().await.remove(&event_id);
+            Err(anyhow!(
+                "timeout waiting for ack of {event_type} (id={event_id}) for block {block_number}"
+            ))
+        }
+    }
+
+    /// Send an event with retries, returning error only after all retries exhausted
+    async fn send_event_with_retry<F>(
+        &mut self,
+        event_builder: F,
+        block_number: u64,
+        event_type: &'static str,
+    ) -> Result<()>
+    where
+        F: Fn(u64) -> Event,
+    {
+        let mut last_error = None;
+
+        for attempt in 1..=MAX_EVENT_RETRIES {
+            let event_id = self.next_id();
+            let event = event_builder(event_id);
+
+            match self
+                .send_event_and_wait(event, block_number, event_type)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    warn!(
+                        "Attempt {attempt}/{MAX_EVENT_RETRIES} failed for {event_type} \
+                         on block {block_number}: {e}"
+                    );
+                    last_error = Some(e);
+
+                    if attempt < MAX_EVENT_RETRIES {
+                        time::sleep(Duration::from_millis(RETRY_DELAY_MS * u64::from(attempt)))
+                            .await;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow!("retry failed with no error")))
+    }
+
+    fn next_id(&mut self) -> u64 {
+        let id = self.next_event_id;
+        self.next_event_id += 1;
+        id
+    }
 }
 
-#[derive(Deserialize)]
-struct ResponseError {
-    code: i32,
-    message: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize, Clone)]
-struct TransactionResultResponse {
-    tx_execution_id: TxExecutionId,
-    status: String,
-    gas_used: Option<u64>,
-    error: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct GetTransactionsResponse {
-    jsonrpc: String,
-    result: Option<GetTransactionsResult>,
-    error: Option<JsonRpcErrorResponse>,
-    id: Option<serde_json::Value>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize, Default)]
-struct GetTransactionsResult {
-    results: Vec<TransactionResultResponse>,
-    not_found: Vec<TxExecutionId>,
-}
-
-#[derive(Debug, Deserialize)]
-struct JsonRpcErrorResponse {
-    code: i32,
-    message: String,
-}
-
-/// Coordinates block ingestion, tracing, and persistence.
+/// Coordinates block ingestion, tracing, and persistence via gRPC streaming.
 pub struct Listener {
     ws_url: String,
     provider: Arc<RootProvider>,
-    sidecar_client: Client,
-    sidecar_url: String,
+    grpc_endpoint: String,
     /// Tracks the last block that was fully committed (new iteration + txs + commit head)
     last_committed_block: Option<u64>,
     starting_block: Option<u64>,
@@ -140,29 +211,16 @@ pub struct Listener {
 
 impl Listener {
     /// Build a worker that shares the provider/Redis client across async tasks.
-    pub async fn new(
-        ws_url: &str,
-        sidecar_url: &str,
-        request_timeout_seconds: u64,
-        starting_block: Option<u64>,
-    ) -> Self {
+    pub async fn new(ws_url: &str, grpc_endpoint: &str, starting_block: Option<u64>) -> Self {
         Self {
             ws_url: ws_url.to_string(),
             provider: Self::connect_provider_with_url(ws_url)
                 .await
                 .expect("failed to connect to websocket provider"),
-            sidecar_client: Client::builder()
-                .pool_idle_timeout(Duration::from_secs(POOL_IDLE_TIMEOUT_SECS))
-                .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
-                .timeout(Duration::from_secs(request_timeout_seconds))
-                .connect_timeout(Duration::from_millis(CONNECT_TIMEOUT_MS))
-                .tcp_keepalive(Duration::from_secs(TCP_KEEPALIVE_SECS))
-                .build()
-                .expect("failed to create sidecar HTTP client"),
-            sidecar_url: sidecar_url.to_string(),
+            grpc_endpoint: grpc_endpoint.to_string(),
             last_committed_block: None,
             starting_block,
-            query_results: false, // Disabled by default
+            query_results: false,
         }
     }
 
@@ -188,10 +246,21 @@ impl Listener {
         self
     }
 
+    /// Connect to the gRPC sidecar endpoint
+    async fn connect_grpc(&self) -> Result<SidecarTransportClient<Channel>> {
+        let channel = Channel::from_shared(self.grpc_endpoint.clone())
+            .context("invalid gRPC endpoint")?
+            .connect()
+            .await
+            .context("failed to connect to gRPC endpoint")?;
+        Ok(SidecarTransportClient::new(channel))
+    }
+
     /// We keep retrying the subscription because websocket connections can drop in practice.
     pub async fn run(&mut self) -> Result<()> {
         let mut retry_delay = Duration::from_secs(SUBSCRIPTION_RETRY_DELAY_SECS);
         let max_delay = Duration::from_secs(MAX_RETRY_DELAY_SECS);
+
         loop {
             if let Err(err) = self.stream_blocks().await {
                 warn!(error = %err, "block subscription ended, retrying");
@@ -204,8 +273,134 @@ impl Listener {
         }
     }
 
+    /// Follow the `newHeads` stream and process new blocks in order, tolerating
+    /// duplicate/stale headers after it reconnects.
+    async fn stream_blocks(&mut self) -> Result<()> {
+        // Connect to gRPC and establish bidirectional stream
+        let mut client = self.connect_grpc().await?;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Event>(EVENT_CHANNEL_BUFFER_SIZE);
+
+        let response = client
+            .stream_events(ReceiverStream::new(rx))
+            .await
+            .context("failed to establish event stream")?;
+
+        let mut ack_stream = response.into_inner();
+        let mut event_stream = EventStream::new(tx);
+
+        // Spawn ack handler
+        let pending_acks = event_stream.pending_acks.clone();
+        let ack_handle = tokio::spawn(async move {
+            while let Some(ack_result) = ack_stream.next().await {
+                match ack_result {
+                    Ok(ack) => Self::handle_ack(&pending_acks, ack).await,
+                    Err(e) => {
+                        error!(error = ?e, "Error receiving ack from stream");
+                        break;
+                    }
+                }
+            }
+        });
+
+        // First, catch up on any missed blocks
+        self.catch_up_missed_blocks(&mut event_stream, &mut client)
+            .await
+            .context("failed to catch up on missed blocks")?;
+
+        // Subscribe to new blocks
+        let subscription = self.provider.subscribe_full_blocks().full();
+        let mut block_stream = subscription.into_stream().await?;
+
+        info!("Started block subscription with gRPC streaming");
+
+        while let Some(block_result) = block_stream.next().await {
+            let block = match block_result {
+                Ok(b) => b,
+                Err(e) => {
+                    error!(error = ?e, "Error receiving block from stream");
+                    ack_handle.abort();
+                    return Err(anyhow!("block stream error: {e}"));
+                }
+            };
+
+            let Header {
+                hash: _, ref inner, ..
+            } = block.header;
+            let block_number = inner.number;
+
+            // Check for missing blocks in the stream
+            if let Some(last_committed) = self.last_committed_block {
+                if block_number > last_committed + 1 {
+                    // We've skipped blocks, fill them in
+                    warn!(
+                        "Block skip detected in stream: expected {}, got {block_number}",
+                        last_committed + 1,
+                    );
+
+                    if let Err(e) = self
+                        .fill_missing_blocks(
+                            &mut event_stream,
+                            &mut client,
+                            last_committed,
+                            block_number,
+                        )
+                        .await
+                    {
+                        error!(error = ?e, "Failed to fill missing blocks");
+                        ack_handle.abort();
+                        return Err(e);
+                    }
+                } else if block_number <= last_committed {
+                    // Skip duplicate/stale blocks
+                    debug!("Skipping already processed block {block_number}");
+                    continue;
+                }
+            }
+
+            info!("Processing block {block_number}");
+
+            if let Err(e) = self
+                .process_block(&mut event_stream, &mut client, &block)
+                .await
+            {
+                error!(error = ?e, "Failed to process block {block_number}");
+                ack_handle.abort();
+                // Return error to trigger reconnection and catch-up
+                return Err(e);
+            }
+        }
+
+        ack_handle.abort();
+        Err(anyhow!("block subscription completed"))
+    }
+
+    async fn handle_ack(pending: &Arc<Mutex<HashMap<u64, PendingEvent>>>, ack: StreamAck) {
+        let mut pending = pending.lock().await;
+        if let Some(event) = pending.remove(&ack.event_id) {
+            // Store the result and notify the waiter
+            *event.result.lock().await = Some(ack.success);
+            event.notify.notify_one();
+
+            if ack.success {
+                debug!(
+                    "Ack received for {} event_id={} block={}",
+                    event.event_type, event.event_id, event.block_number
+                );
+            } else {
+                warn!(
+                    "Event failed: {} event_id={} block={}: {}",
+                    event.event_type, event.event_id, event.block_number, ack.message
+                );
+            }
+        }
+    }
+
     /// Catch up on any missed blocks by fetching them via RPC
-    async fn catch_up_missed_blocks(&mut self) -> Result<()> {
+    async fn catch_up_missed_blocks(
+        &mut self,
+        stream: &mut EventStream,
+        client: &mut SidecarTransportClient<Channel>,
+    ) -> Result<()> {
         // Get the current head block
         let current_block = self
             .provider
@@ -232,13 +427,29 @@ impl Listener {
 
             info!("Sending initial CommitHead for block {initial_commit_block}");
 
-            // Send CommitHead with no transactions (we're just marking it as committed)
-            self.send_commit_head_with_retry(initial_commit_block, None, 0)
+            // Fetch the block to get proper timestamp and hash
+            let initial_block = self
+                .provider
+                .get_block_by_number(initial_commit_block.into())
+                .full()
                 .await
-                .context("failed to send initial CommitHead")?;
+                .context("failed to fetch initial commit block")?
+                .ok_or_else(|| anyhow!("initial commit block {initial_commit_block} not found"))?;
+
+            // Send CommitHead with no transactions (we're just marking it as committed)
+            self.send_commit_head_with_retry(
+                stream,
+                initial_commit_block,
+                None,
+                0,
+                initial_block.header.timestamp,
+                Some(initial_block.header.hash),
+                initial_block.header.parent_beacon_block_root,
+            )
+            .await
+            .context("failed to send initial CommitHead")?;
 
             self.last_committed_block = Some(initial_commit_block);
-
             info!("Successfully sent initial CommitHead for block {initial_commit_block}");
         }
 
@@ -251,7 +462,7 @@ impl Listener {
                     last_committed + 1,
                 );
 
-                self.process_and_handle_failures(last_committed + 1, current_block, "Catch-up")
+                self.process_block_range(stream, client, last_committed + 1, current_block)
                     .await?;
             } else {
                 debug!("No missed blocks to catch up on");
@@ -261,56 +472,14 @@ impl Listener {
         Ok(())
     }
 
-    /// Process a range of blocks and handle the case where all fail (sidecar down)
-    async fn process_and_handle_failures(
-        &mut self,
-        start: u64,
-        end: u64,
-        operation_name: &str,
-    ) -> Result<()> {
-        let initial_last_committed = self.last_committed_block;
-
-        self.process_block_range(start, end).await?;
-
-        // If the sidecar was down and no blocks succeeded, skip to the end block
-        if self.last_committed_block == initial_last_committed {
-            warn!("{operation_name} failed (sidecar likely down), will skip to block {end}");
-            self.last_committed_block = Some(end);
-        } else {
-            info!(
-                "{operation_name} complete, now at block {}",
-                self.last_committed_block.unwrap_or(end)
-            );
-        }
-
-        Ok(())
-    }
-
-    /// Fetch a specific block by number and process it
-    async fn fetch_and_process_block(&mut self, block_num: u64) -> Result<()> {
-        match self
-            .provider
-            .get_block_by_number(block_num.into())
-            .full()
-            .await
-        {
-            Ok(Some(block)) => {
-                info!("Processing block {block_num}");
-                self.process_block(&block).await
-            }
-            Ok(None) => {
-                warn!("Block {block_num} not found");
-                Err(anyhow!("Block {block_num} not found"))
-            }
-            Err(e) => {
-                error!(error = ?e, "Failed to fetch block {block_num}");
-                Err(e.into())
-            }
-        }
-    }
-
     /// Fill in missing blocks when WebSocket skips blocks
-    async fn fill_missing_blocks(&mut self, last_block: u64, current_block: u64) -> Result<()> {
+    async fn fill_missing_blocks(
+        &mut self,
+        stream: &mut EventStream,
+        client: &mut SidecarTransportClient<Channel>,
+        last_block: u64,
+        current_block: u64,
+    ) -> Result<()> {
         if current_block <= last_block + 1 {
             return Ok(());
         }
@@ -323,86 +492,90 @@ impl Listener {
             missing_end - missing_start + 1
         );
 
-        self.process_and_handle_failures(missing_start, missing_end, "Gap fill")
-            .await?;
-
-        Ok(())
+        self.process_block_range(stream, client, missing_start, missing_end)
+            .await
     }
 
-    async fn process_block_range(&mut self, start: u64, end: u64) -> Result<()> {
+    async fn process_block_range(
+        &mut self,
+        stream: &mut EventStream,
+        client: &mut SidecarTransportClient<Channel>,
+        start: u64,
+        end: u64,
+    ) -> Result<()> {
+        let mut failed_blocks = Vec::new();
+
         for block_num in start..=end {
             // Don't propagate errors during batch processing
             // If sidecar is down, we skip failed blocks and continue
             // This prevents getting stuck in a retry loop
-            if let Err(e) = self.fetch_and_process_block(block_num).await {
+            if let Err(e) = self
+                .fetch_and_process_block(stream, client, block_num)
+                .await
+            {
                 warn!(
                     error = ?e,
                     "Failed to process block {block_num} during catch-up, continuing to next block"
                 );
+                failed_blocks.push(block_num);
             }
         }
+
+        if !failed_blocks.is_empty() {
+            let total_blocks = end - start + 1;
+            let failed_count = failed_blocks.len();
+            warn!(
+                "Catch-up completed with {failed_count}/{total_blocks} failed blocks: {:?}",
+                failed_blocks
+            );
+        }
+
         Ok(())
     }
 
-    /// Follow the `newHeads` stream and process new blocks in order, tolerating
-    /// duplicate/stale headers after it reconnects.
-    async fn stream_blocks(&mut self) -> Result<()> {
-        // First, catch up on any missed blocks
-        self.catch_up_missed_blocks()
+    /// Fetch a specific block by number and process it
+    async fn fetch_and_process_block(
+        &mut self,
+        stream: &mut EventStream,
+        client: &mut SidecarTransportClient<Channel>,
+        block_num: u64,
+    ) -> Result<()> {
+        match self
+            .provider
+            .get_block_by_number(block_num.into())
+            .full()
             .await
-            .context("failed to catch up on missed blocks")?;
-
-        let subscription = self.provider.subscribe_full_blocks().full();
-        let mut stream = subscription.into_stream().await?;
-
-        info!("Started block subscription");
-
-        while let Some(Ok(block)) = stream.next().await {
-            let Header {
-                hash: _, ref inner, ..
-            } = block.header;
-            let block_number = inner.number;
-
-            // Check for missing blocks in the stream
-            if let Some(last_committed) = self.last_committed_block {
-                if block_number > last_committed + 1 {
-                    // We've skipped blocks, fill them in
-                    warn!(
-                        "Block skip detected in stream: expected {}, got {block_number}",
-                        last_committed + 1,
-                    );
-
-                    if let Err(e) = self.fill_missing_blocks(last_committed, block_number).await {
-                        error!(error = ?e, "Failed to fill missing blocks");
-                        // Return error to trigger reconnection
-                        return Err(e);
-                    }
-                } else if block_number <= last_committed {
-                    // Skip duplicate/stale blocks
-                    debug!("Skipping already processed block {block_number}");
-                    continue;
-                }
+        {
+            Ok(Some(block)) => {
+                info!("Processing block {block_num}");
+                self.process_block(stream, client, &block).await
             }
-
-            info!("Processing block {block_number}");
-
-            if let Err(e) = self.process_block(&block).await {
-                error!(error = ?e, "Failed to process block {block_number}");
-                // Return error to trigger reconnection and catch-up
-                return Err(e);
+            Ok(None) => {
+                warn!("Block {block_num} not found");
+                Err(anyhow!("Block {block_num} not found"))
+            }
+            Err(e) => {
+                error!(error = ?e, "Failed to fetch block {block_num}");
+                Err(e.into())
             }
         }
-
-        Err(anyhow!("block subscription completed"))
     }
 
-    /// Process a single block with the flow using sendEvents:
-    /// 1. Send `NewIteration` event
-    /// 2. Send all transactions (only if `NewIteration` succeeds)
-    /// 3. Send `CommitHead` event to finalize the block
+    /// Process a single block with the flow using `StreamEvents`:
+    /// 1. Send `NewIteration` event (with retries)
+    /// 2. Send all transactions in order (with retries per tx)
+    /// 3. Send `CommitHead` event to finalize the block (with retries)
     /// 4. Mark block as committed only after all steps succeed
-    /// 5. Optionally query and compare transaction results
-    async fn process_block(&mut self, block: &alloy::rpc::types::Block) -> Result<()> {
+    ///
+    /// If `NewIteration` or transactions fail after retries, we skip to `CommitHead`
+    /// to ensure we don't get stuck on a single block.
+    #[allow(clippy::too_many_lines)]
+    async fn process_block(
+        &mut self,
+        stream: &mut EventStream,
+        client: &mut SidecarTransportClient<Channel>,
+        block: &alloy::rpc::types::Block,
+    ) -> Result<()> {
         let block_number = block.header.number;
 
         // Skip already processed blocks (prevent duplicates)
@@ -429,673 +602,441 @@ impl Listener {
             transactions.len()
         );
 
-        // Collect transaction hashes for later querying
-        let mut tx_hashes: Vec<TxHash> = Vec::new();
-
-        // Get the last transaction hash if transactions exist
-        let last_tx_hash = if transactions.is_empty() {
-            None
-        } else {
-            Some(format!("{:#x}", transactions.last().unwrap().inner.hash()))
-        };
-
-        // STEP 1: Send NewIteration event (contains block_env) with retry
+        // STEP 1: Send NewIteration event (contains block_env) with retries
         info!("Step 1/3: Sending NewIteration event for block {block_number}");
-        let new_iteration_succeeded = match self.send_new_iteration_with_retry(block).await {
+        let new_iteration_success = match self.send_new_iteration_with_retry(stream, block).await {
             Ok(()) => {
-                info!("Successfully sent NewIteration for block {block_number}");
+                debug!("Successfully sent NewIteration for block {block_number}");
                 true
             }
             Err(e) => {
                 warn!(
-                    error = ?e,
-                    "Failed to send NewIteration for block {block_number} after all retries, will skip transactions",
+                    "Failed to send NewIteration for block {block_number} after retries: {e}. \
+                     Skipping transactions and moving to CommitHead."
                 );
                 false
             }
         };
 
         // STEP 2: Send all transactions for the current block (only if NewIteration succeeded)
-        if new_iteration_succeeded {
+        let mut last_successful_tx_hash: Option<Vec<u8>> = None;
+        let mut successful_tx_count = 0;
+        let mut successful_tx_hashes: Vec<alloy::primitives::B256> = Vec::new();
+
+        if new_iteration_success && !transactions.is_empty() {
             info!(
                 "Step 2/3: Sending {} transactions for block {block_number}",
                 transactions.len()
             );
-            for (index, tx) in transactions.iter().enumerate() {
-                let tx_hash = *tx.inner.hash();
-                tx_hashes.push(tx_hash);
 
-                // Retry transaction sending with exponential backoff
-                if let Err(e) = self
-                    .send_transaction_with_retry(tx, index as u64, block_number)
+            for (index, tx) in transactions.iter().enumerate() {
+                let prev_hash = last_successful_tx_hash.clone();
+                let tx_hash = tx.inner.hash();
+
+                match self
+                    .send_transaction_with_retry(stream, tx, index as u64, block_number, prev_hash)
                     .await
                 {
-                    warn!(
-                        error = ?e,
-                        "Failed to send transaction {index} in block {block_number} after all retries",
-                    );
-                    // Transaction failed after all retries - still continue to commit head
-                    // The sidecar should handle missing transactions gracefully
+                    Ok(()) => {
+                        last_successful_tx_hash = Some(tx_hash.to_vec());
+                        successful_tx_count += 1;
+                        successful_tx_hashes.push(*tx_hash);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to send tx {index} in block {block_number} after retries: {e}. \
+                             Moving to CommitHead with {successful_tx_count} successful txs."
+                        );
+                        // Stop processing transactions, move to commit
+                        break;
+                    }
                 }
             }
 
-            if !transactions.is_empty() {
+            if successful_tx_count > 0 {
                 debug!(
-                    "Successfully sent {} transactions for block {block_number}",
+                    "Successfully sent {successful_tx_count}/{} transactions for block {block_number}",
                     transactions.len()
                 );
             }
+        } else if !new_iteration_success {
+            info!("Step 2/3: Skipping transactions (NewIteration failed)");
         } else {
-            warn!("Skipping transactions for block {block_number} due to NewIteration failure");
+            info!("Step 2/3: No transactions in block {block_number}");
         }
 
-        // STEP 3: Send CommitHead event to finalize the block (always attempt, with retry)
+        // STEP 3: Send CommitHead event to finalize the block (with retries)
         info!("Step 3/3: Sending CommitHead event for block {block_number}");
-        if let Err(e) = self
-            .send_commit_head_with_retry(block_number, last_tx_hash, transactions.len())
-            .await
-        {
-            warn!(
-                error = ?e,
-                "Failed to send CommitHead for block {block_number} after all retries, will skip this block",
-            );
-            return Ok(());
-        }
+        self.send_commit_head_with_retry(
+            stream,
+            block_number,
+            last_successful_tx_hash,
+            successful_tx_count,
+            block.header.timestamp,
+            Some(block.header.hash),
+            block.header.parent_beacon_block_root,
+        )
+        .await?;
 
         // STEP 4: Mark block as committed ONLY after CommitHead succeeds
         self.last_committed_block = Some(block_number);
 
-        info!("Successfully committed block {block_number}");
+        info!(
+            "Successfully committed block {block_number} ({successful_tx_count}/{} txs)",
+            transactions.len()
+        );
 
-        // STEP 5: Optionally query and compare transaction results
+        // STEP 5: Compare transaction results if enabled
         if self.query_results
-            && !tx_hashes.is_empty()
+            && !successful_tx_hashes.is_empty()
             && let Err(e) = self
-                .compare_transaction_status(block_number, tx_hashes)
+                .compare_transaction_results(client, block_number, &successful_tx_hashes)
                 .await
         {
-            warn!(error = ?e, "Failed to compare transaction results for block {block_number}");
+            warn!("Failed to compare transaction results for block {block_number}: {e}");
         }
 
         Ok(())
     }
 
-    /// Send `NewIteration` with retry logic and exponential backoff
-    async fn send_new_iteration_with_retry(&self, block: &alloy::rpc::types::Block) -> Result<()> {
-        let mut retry_delay = Duration::from_millis(EVENT_INITIAL_RETRY_DELAY_MS);
-        let max_delay = Duration::from_millis(MAX_RETRY_DELAY_SECS);
-        let block_number = block.header.number;
-
-        for attempt in 0..=EVENT_MAX_RETRIES {
-            match self.send_new_iteration(block).await {
-                Ok(()) => {
-                    if attempt > 0 {
-                        info!(
-                            "Successfully sent NewIteration for block {block_number} after {attempt} retries"
-                        );
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    if attempt < EVENT_MAX_RETRIES {
-                        warn!(
-                            error = ?e,
-                            "Failed to send NewIteration for block {block_number} (attempt {}/{EVENT_MAX_RETRIES}), retrying in {}ms",
-                            attempt + 1,
-                            retry_delay.as_millis()
-                        );
-                        time::sleep(retry_delay).await;
-                        // Exponential backoff with cap
-                        retry_delay = std::cmp::min(retry_delay * 2, max_delay);
-                    } else {
-                        // Final attempt failed
-                        error!(
-                            error = ?e,
-                            "Failed to send NewIteration for block {block_number} after {EVENT_MAX_RETRIES} retries, giving up"
-                        );
-                        return Err(e);
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Send `CommitHead` with retry logic and exponential backoff
-    async fn send_commit_head_with_retry(
+    /// Query and compare transaction results between provider and sidecar
+    async fn compare_transaction_results(
         &self,
+        client: &mut SidecarTransportClient<Channel>,
         block_number: u64,
-        last_tx_hash: Option<String>,
-        n_transactions: usize,
-    ) -> Result<()> {
-        let mut retry_delay = Duration::from_millis(EVENT_INITIAL_RETRY_DELAY_MS);
-        let max_delay = Duration::from_millis(MAX_RETRY_DELAY_SECS);
-
-        for attempt in 0..=EVENT_MAX_RETRIES {
-            match self
-                .send_commit_head(block_number, last_tx_hash.clone(), n_transactions)
-                .await
-            {
-                Ok(()) => {
-                    if attempt > 0 {
-                        info!(
-                            "Successfully sent CommitHead for block {block_number} after {attempt} retries"
-                        );
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    if attempt < EVENT_MAX_RETRIES {
-                        warn!(
-                            error = ?e,
-                            "Failed to send CommitHead for block {block_number} (attempt {}/{EVENT_MAX_RETRIES}), retrying in {}ms",
-                            attempt + 1,
-                            retry_delay.as_millis()
-                        );
-                        time::sleep(retry_delay).await;
-                        // Exponential backoff with cap
-                        retry_delay = std::cmp::min(retry_delay * 2, max_delay);
-                    } else {
-                        // Final attempt failed
-                        error!(
-                            error = ?e,
-                            "Failed to send CommitHead for block {block_number} after {EVENT_MAX_RETRIES} retries, giving up"
-                        );
-                        return Err(e);
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Send a transaction with retry logic and exponential backoff
-    async fn send_transaction_with_retry(
-        &self,
-        tx: &alloy::rpc::types::Transaction,
-        tx_index: u64,
-        block_number: u64,
-    ) -> Result<()> {
-        let mut retry_delay = Duration::from_millis(EVENT_INITIAL_RETRY_DELAY_MS);
-        let max_delay = Duration::from_millis(TX_MAX_RETRY_DELAY_MS);
-
-        for attempt in 0..=EVENT_MAX_RETRIES {
-            match self.send_transaction(tx, tx_index, block_number).await {
-                Ok(()) => {
-                    if attempt > 0 {
-                        info!(
-                            "Successfully sent transaction {tx_index} in block {block_number} after {attempt} retries"
-                        );
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    if attempt < EVENT_MAX_RETRIES {
-                        warn!(
-                            error = ?e,
-                            "Failed to send transaction {tx_index} in block {block_number} (attempt {}/{EVENT_MAX_RETRIES}), retrying in {}ms",
-                            attempt + 1,
-                            retry_delay.as_millis()
-                        );
-                        time::sleep(retry_delay).await;
-                        // Exponential backoff with cap
-                        retry_delay = std::cmp::min(retry_delay * 2, max_delay);
-                    } else {
-                        // Final attempt failed
-                        error!(
-                            error = ?e,
-                            "Failed to send transaction {tx_index} in block {block_number} after {EVENT_MAX_RETRIES} retries, giving up"
-                        );
-                        return Err(e);
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Send `NewIteration` event to the sidecar
-    async fn send_new_iteration(&self, block: &alloy::rpc::types::Block) -> Result<()> {
-        let new_iteration_payload = json!({
-            "jsonrpc": "2.0",
-            "method": "sendEvents",
-            "params": {
-                "events": [
-                    {
-                        "new_iteration": {
-                            "iteration_id": 1,
-                            "block_env": {
-                                "number": block.header.number,
-                                "beneficiary": format!("{:#x}", block.header.beneficiary),
-                                "timestamp": block.header.timestamp,
-                                "gas_limit": block.header.gas_limit,
-                                "basefee": block.header.base_fee_per_gas,
-                                "difficulty": block.header.difficulty,
-                                "prevrandao": format!("{:#x}", block.header.mix_hash),
-                                "blob_excess_gas_and_price": {
-                                    "excess_blob_gas": 0,
-                                    "blob_gasprice": 1
-                                },
-                            }
-                        }
-                    }
-                ]
-            },
-            "id": 1
-        });
-
-        debug!("Sending NewIteration for block {}", block.header.number);
-
-        let response = self
-            .sidecar_client
-            .post(format!("{}/tx", self.sidecar_url))
-            .json(&new_iteration_payload)
-            .send()
-            .await
-            .context("failed to send NewIteration request to sidecar")?;
-
-        let response_status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "unknown error".to_string());
-        if !response_status.is_success() {
-            return Err(anyhow!("sidecar returned error {response_status}: {body}",));
-        }
-
-        if let Ok(error_response) = serde_json::from_str::<Response>(&body)
-            && let Some(json_rpc_error) = error_response.error
-        {
-            return Err(anyhow!(
-                "sidecar returned JSON-RPC error (code: {}): {}",
-                json_rpc_error.code,
-                json_rpc_error.message
-            ));
-        }
-
-        debug!(
-            "Successfully sent NewIteration for block {}",
-            block.header.number
-        );
-        Ok(())
-    }
-
-    /// Send `CommitHead` event to finalize the block
-    async fn send_commit_head(
-        &self,
-        block_number: u64,
-        last_tx_hash: Option<String>,
-        n_transactions: usize,
-    ) -> Result<()> {
-        let commit_payload = json!({
-            "jsonrpc": "2.0",
-            "method": "sendEvents",
-            "params": {
-                "events": [
-                    {
-                        "commit_head": {
-                            "block_number": block_number,
-                            "last_tx_hash": last_tx_hash,
-                            "n_transactions": n_transactions,
-                            "selected_iteration_id": 1,
-                        }
-                    }
-                ]
-            },
-            "id": 1
-        });
-
-        debug!("Sending CommitHead for block {block_number}");
-
-        let response = self
-            .sidecar_client
-            .post(format!("{}/tx", self.sidecar_url))
-            .json(&commit_payload)
-            .send()
-            .await
-            .context("failed to send CommitHead request to sidecar")?;
-
-        let response_status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "unknown error".to_string());
-        if !response_status.is_success() {
-            return Err(anyhow!("sidecar returned error {response_status}: {body}",));
-        }
-
-        if let Ok(error_response) = serde_json::from_str::<Response>(&body)
-            && let Some(json_rpc_error) = error_response.error
-        {
-            return Err(anyhow!(
-                "sidecar returned JSON-RPC error (code: {}): {}",
-                json_rpc_error.code,
-                json_rpc_error.message
-            ));
-        }
-
-        debug!("Successfully sent CommitHead for block {block_number}");
-        Ok(())
-    }
-
-    /// Convert an Alloy transaction to REVM `TxEnv`
-    fn to_revm_tx_env(tx: &alloy::rpc::types::Transaction) -> Result<TxEnv, TxEnvBuildError> {
-        let mut tx_env = TxEnvBuilder::new();
-
-        // Set caller (from address)
-        tx_env = tx_env.caller(tx.inner.signer());
-
-        // Set gas limit
-        tx_env = tx_env.gas_limit(tx.inner.gas_limit());
-
-        // Set gas price
-        tx_env = tx_env.gas_price(tx.inner.gas_price().unwrap_or_default());
-
-        // Set transaction kind (Create for contract deployment, Call for regular tx)
-        let kind = if let Some(to) = tx.to() {
-            revm::primitives::TxKind::Call(to)
-        } else {
-            revm::primitives::TxKind::Create
-        };
-        tx_env = tx_env.kind(kind);
-
-        // Set value
-        tx_env = tx_env.value(tx.value());
-
-        // Set input data
-        tx_env = tx_env.data(Bytes::from(tx.input().to_vec()));
-
-        // Set nonce
-        tx_env = tx_env.nonce(tx.nonce());
-
-        // Set chain ID
-        tx_env = tx_env.chain_id(tx.chain_id());
-
-        // Set access list if present
-        if let Some(access_list) = tx.access_list() {
-            tx_env = tx_env.access_list(
-                access_list
-                    .0
-                    .iter()
-                    .map(|item| {
-                        AccessListItem {
-                            address: item.address,
-                            storage_keys: item
-                                .storage_keys
-                                .iter()
-                                .map(|key| B256::from(*key))
-                                .collect(),
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .into(),
-            );
-        }
-
-        // Handle different transaction types
-        match tx.inner.tx_type() {
-            // Legacy transaction
-            TxType::Legacy |
-            // EIP-2930 - Access list transaction
-            TxType::Eip2930
-            => {
-                // gas_price and access_list are already set above
-            }
-            // EIP-1559 - Dynamic fee transaction
-            TxType::Eip1559 => {
-                let max_fee = tx.inner.max_fee_per_gas();
-                let max_priority = tx.inner.max_priority_fee_per_gas();
-
-                tx_env = tx_env.gas_price(max_fee);
-                tx_env = tx_env.gas_priority_fee(max_priority);
-            }
-            // EIP-4844 - Blob transaction
-            TxType::Eip4844 => {
-                let max_fee = tx.inner.max_fee_per_gas();
-                let max_priority = tx.inner.max_priority_fee_per_gas();
-
-                tx_env = tx_env.gas_price(max_fee);
-                tx_env = tx_env.gas_priority_fee(max_priority);
-
-                // Set blob-related fields
-                if let Some(blob_versioned_hashes) = tx.blob_versioned_hashes() {
-                    tx_env = tx_env.blob_hashes(blob_versioned_hashes
-                        .iter()
-                        .map(|hash| B256::from(*hash))
-                        .collect());
-                }
-
-                if let Some(max_fee_per_blob_gas) = tx.max_fee_per_blob_gas() {
-                    tx_env = tx_env.max_fee_per_blob_gas(max_fee_per_blob_gas);
-                }
-            }
-            // EIP-7702 - Account delegation transaction
-            TxType::Eip7702 => {
-                let max_fee = tx.inner.max_fee_per_gas();
-                let max_priority = tx.inner.max_priority_fee_per_gas();
-
-                tx_env = tx_env.gas_price(max_fee);
-                tx_env = tx_env.gas_priority_fee(max_priority);
-
-                if let Some(auth_list) = tx.authorization_list() {
-                    tx_env = tx_env.authorization_list(auth_list
-                        .iter()
-                        .map(|auth| Either::Left(auth.clone()))
-                        .collect());
-                }
-            }
-        }
-
-        tx_env.build()
-    }
-
-    /// Send a transaction to the sidecar
-    async fn send_transaction(
-        &self,
-        tx: &alloy::rpc::types::Transaction,
-        tx_index: u64,
-        block_number: u64,
-    ) -> Result<()> {
-        // Convert Alloy transaction to REVM TxEnv
-        let tx_env = Self::to_revm_tx_env(tx).map_err(|e| anyhow!("{e:?}"))?;
-
-        // Create the transaction payload with REVM TxEnv
-        let transaction_payload = TransactionPayload {
-            tx_env,
-            tx_execution_id: TxExecutionId {
-                block_number,
-                iteration_id: 1,
-                tx_hash: *tx.inner.hash(),
-            },
-        };
-
-        let tx_payload = json!({
-            "jsonrpc": "2.0",
-            "method": "sendTransactions",
-            "params": {
-                "transactions": [transaction_payload]
-            }
-        });
-
-        debug!(
-            "Sending transaction {tx_index} with hash {:#x}",
-            tx.inner.hash()
-        );
-
-        let response = self
-            .sidecar_client
-            .post(format!("{}/tx", self.sidecar_url))
-            .json(&tx_payload)
-            .send()
-            .await
-            .context("failed to send transaction request to sidecar")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(anyhow!(
-                "sidecar returned error {status} for transaction: {body}",
-            ));
-        }
-
-        debug!(
-            "Successfully sent transaction {tx_index} with hash {:#x}",
-            tx.inner.hash()
-        );
-        Ok(())
-    }
-
-    async fn query_transactions_batch(
-        &self,
-        tx_hashes: &[TxHash],
-        block_number: u64,
-    ) -> Result<GetTransactionsResponse> {
-        let tx_execution_ids: Vec<_> = tx_hashes
-            .iter()
-            .map(|tx_hash| {
-                json!({
-                    "block_number": block_number,
-                    "iteration_id": 1,
-                    "tx_hash": format!("{tx_hash:#x}")
-                })
-            })
-            .collect();
-
-        let query_payload = json!({
-            "jsonrpc": "2.0",
-            "method": "getTransactions",
-            "params": tx_execution_ids,
-            "id": 1
-        });
-
-        debug!("Querying batch of {} transaction results", tx_hashes.len());
-
-        let response = self
-            .sidecar_client
-            .post(format!("{}/tx", self.sidecar_url))
-            .json(&query_payload)
-            .timeout(Duration::from_secs(25))
-            .send()
-            .await
-            .context("failed to send batch query request to sidecar")?;
-
-        let response_status = response.status();
-        if !response_status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(anyhow!("sidecar returned error {response_status}: {body}"));
-        }
-
-        let body = response
-            .text()
-            .await
-            .context("failed to read response body")?;
-
-        let query_response: GetTransactionsResponse =
-            serde_json::from_str(&body).context("failed to parse batch query response")?;
-
-        if let Some(error) = query_response.error {
-            return Err(anyhow!(
-                "sidecar returned JSON-RPC error (code: {}): {}",
-                error.code,
-                error.message
-            ));
-        }
-
-        Ok(query_response)
-    }
-
-    /// Simple comparison of transaction results between blockchain and sidecar
-    async fn compare_transaction_status(
-        &self,
-        block_number: u64,
-        tx_hashes: Vec<TxHash>,
+        tx_hashes: &[alloy::primitives::B256],
     ) -> Result<()> {
         if tx_hashes.is_empty() {
             return Ok(());
         }
 
-        // Query all transactions in a single batch
-        let batch_response = match self
-            .query_transactions_batch(&tx_hashes, block_number)
-            .await
-        {
-            Ok(response) => response,
-            Err(e) => {
-                warn!(
-                    "Failed to query sidecar for transaction batch for block {block_number}: {e:?}"
-                );
-                return Ok(());
-            }
-        };
+        info!(
+            "Comparing {} transaction results for block {block_number}",
+            tx_hashes.len()
+        );
 
-        // Extract results and create a lookup map
-        let result = batch_response.result.unwrap_or_default();
-        let sidecar_results: std::collections::HashMap<TxHash, TransactionResultResponse> = result
-            .results
-            .into_iter()
-            .map(|r| (r.tx_execution_id.tx_hash, r))
+        // Build request for sidecar
+        let tx_execution_ids: Vec<ProtoTxExecutionId> = tx_hashes
+            .iter()
+            .enumerate()
+            .map(|(index, hash)| {
+                ProtoTxExecutionId {
+                    block_number: u256_to_bytes(U256::from(block_number)),
+                    iteration_id: DEFAULT_ITERATION_ID,
+                    tx_hash: hash.to_vec(),
+                    index: index as u64,
+                }
+            })
             .collect();
 
-        // Compare each transaction
-        for tx_hash in tx_hashes {
-            // Get blockchain status from the receipt
-            let (gas_used, blockchain_success) =
-                match self.provider.get_transaction_receipt(tx_hash).await {
-                    Ok(Some(receipt)) => (receipt.gas_used, receipt.status()),
-                    Ok(None) => {
-                        warn!("No receipt found for tx {tx_hash:#x}");
-                        continue;
-                    }
-                    Err(e) => {
-                        warn!("Failed to get receipt for tx {tx_hash:#x}: {e:?}");
-                        continue;
-                    }
-                };
+        // Query sidecar for results
+        let sidecar_response = client
+            .get_transactions(GetTransactionsRequest { tx_execution_ids })
+            .await
+            .context("failed to query sidecar for transaction results")?
+            .into_inner();
 
-            // Get sidecar status from batch results
-            let Some(sidecar_result) = sidecar_results.get(&tx_hash) else {
-                warn!("Transaction {tx_hash:#x} not found in sidecar batch response");
+        // Build a map of tx_hash -> sidecar result
+        let sidecar_results: HashMap<Vec<u8>, &TransactionResult> = sidecar_response
+            .results
+            .iter()
+            .filter_map(|r| r.tx_execution_id.as_ref().map(|id| (id.tx_hash.clone(), r)))
+            .collect();
+
+        // Log not found transactions from sidecar
+        if !sidecar_response.not_found.is_empty() {
+            warn!(
+                "Sidecar did not find {} transactions for block {block_number}",
+                sidecar_response.not_found.len()
+            );
+        }
+
+        let mut mismatches = 0;
+        let mut matches = 0;
+
+        // Query provider receipts and compare
+        for tx_hash in tx_hashes {
+            let receipt = match self.provider.get_transaction_receipt(*tx_hash).await {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    warn!("Transaction receipt not found from provider for {tx_hash}");
+                    continue;
+                }
+                Err(e) => {
+                    warn!("Failed to get transaction receipt for {tx_hash}: {e}");
+                    continue;
+                }
+            };
+
+            let provider_success = receipt.status();
+            let provider_gas_used = receipt.gas_used;
+
+            // Get sidecar result
+            let Some(sidecar_result) = sidecar_results.get(&tx_hash.to_vec()) else {
+                warn!("Sidecar result not found for {tx_hash}");
+                mismatches += 1;
                 continue;
             };
 
-            let sidecar_success = sidecar_result.status == "success";
+            // Convert sidecar status to success bool
+            let sidecar_success = sidecar_result.status == ResultStatus::Success as i32;
+            let sidecar_gas_used = sidecar_result.gas_used;
 
-            // Compare and log error if mismatch
-            if blockchain_success != sidecar_success {
-                error!(
-                    "TX STATUS MISMATCH {tx_hash:#x}: blockchain={} sidecar={}{}",
-                    if blockchain_success {
-                        "SUCCESS"
-                    } else {
-                        "FAILED"
-                    },
-                    sidecar_result.status,
-                    sidecar_result
-                        .error
-                        .as_ref()
-                        .map(|e| format!(" (error: {e})"))
-                        .unwrap_or_default()
-                );
-            }
+            // Compare status
+            let status_matches = provider_success == sidecar_success;
 
-            // Compare and log gas if mismatch
-            if Some(gas_used) != sidecar_result.gas_used {
-                error!(
-                    "TX GAS MISMATCH {tx_hash:#x}: blockchain={gas_used} sidecar={:?}",
-                    sidecar_result.gas_used,
+            // Compare gas used
+            let gas_matches = provider_gas_used == sidecar_gas_used;
+
+            if status_matches && gas_matches {
+                matches += 1;
+                debug!(
+                    "TX {tx_hash}: MATCH - status={provider_success}, gas_used={provider_gas_used}"
                 );
+            } else {
+                mismatches += 1;
+                let sidecar_status_str = result_status_to_string(sidecar_result.status);
+                warn!(
+                    "TX {tx_hash}: MISMATCH - \
+                     provider(status={provider_success}, gas={provider_gas_used}) vs \
+                     sidecar(status={sidecar_status_str}, gas={sidecar_gas_used})"
+                );
+
+                if !status_matches {
+                    warn!(
+                        "  Status mismatch: provider={provider_success}, sidecar={sidecar_status_str}"
+                    );
+                }
+                if !gas_matches {
+                    let gas_diff = provider_gas_used.abs_diff(sidecar_gas_used);
+                    warn!(
+                        "  Gas mismatch: provider={provider_gas_used}, sidecar={sidecar_gas_used} (diff={gas_diff})"
+                    );
+                }
+
+                // Log sidecar error if present
+                if !sidecar_result.error.is_empty() {
+                    warn!("  Sidecar error: {}", sidecar_result.error);
+                }
             }
         }
 
+        info!(
+            "Block {block_number} result comparison: {matches} matches, {mismatches} mismatches out of {} transactions",
+            tx_hashes.len()
+        );
+
         Ok(())
+    }
+
+    /// Build the `BlockEnv` protobuf message from an Alloy block
+    fn build_block_env(block: &alloy::rpc::types::Block) -> BlockEnv {
+        BlockEnv {
+            number: u256_to_bytes(U256::from(block.header.number)),
+            beneficiary: block.header.beneficiary.to_vec(),
+            timestamp: u256_to_bytes(U256::from(block.header.timestamp)),
+            gas_limit: block.header.gas_limit,
+            basefee: block.header.base_fee_per_gas.unwrap_or_default(),
+            difficulty: u256_to_bytes(block.header.difficulty),
+            prevrandao: Some(block.header.mix_hash.to_vec()),
+            blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
+                excess_blob_gas: 0,
+                blob_gasprice: u128_to_bytes(1),
+            }),
+        }
+    }
+
+    /// Send `NewIteration` event to the sidecar via gRPC stream with retries
+    async fn send_new_iteration_with_retry(
+        &self,
+        stream: &mut EventStream,
+        block: &alloy::rpc::types::Block,
+    ) -> Result<()> {
+        let block_number = block.header.number;
+        let block_env = Self::build_block_env(block);
+
+        stream
+            .send_event_with_retry(
+                |event_id| {
+                    Event {
+                        event_id,
+                        event: Some(EventVariant::NewIteration(NewIteration {
+                            iteration_id: DEFAULT_ITERATION_ID,
+                            block_env: Some(block_env.clone()),
+                        })),
+                    }
+                },
+                block_number,
+                "NewIteration",
+            )
+            .await
+    }
+
+    /// Send a transaction to the sidecar via gRPC stream with retries
+    async fn send_transaction_with_retry(
+        &self,
+        stream: &mut EventStream,
+        tx: &alloy::rpc::types::Transaction,
+        index: u64,
+        block_number: u64,
+        prev_tx_hash: Option<Vec<u8>>,
+    ) -> Result<()> {
+        let tx_hash = tx.inner.hash();
+        let tx_env = Self::to_proto_tx_env(tx);
+
+        stream
+            .send_event_with_retry(
+                |event_id| {
+                    Event {
+                        event_id,
+                        event: Some(EventVariant::Transaction(ProtoTransaction {
+                            tx_execution_id: Some(ProtoTxExecutionId {
+                                block_number: u256_to_bytes(U256::from(block_number)),
+                                iteration_id: DEFAULT_ITERATION_ID,
+                                tx_hash: tx_hash.to_vec(),
+                                index,
+                            }),
+                            tx_env: Some(tx_env.clone()),
+                            prev_tx_hash: prev_tx_hash.clone(),
+                        })),
+                    }
+                },
+                block_number,
+                "Transaction",
+            )
+            .await
+    }
+
+    /// Send `CommitHead` event to finalize the block with retries
+    #[allow(clippy::too_many_arguments)]
+    async fn send_commit_head_with_retry(
+        &self,
+        stream: &mut EventStream,
+        block_number: u64,
+        last_tx_hash: Option<Vec<u8>>,
+        n_transactions: usize,
+        timestamp: u64,
+        block_hash: Option<alloy::primitives::B256>,
+        parent_beacon_block_root: Option<alloy::primitives::B256>,
+    ) -> Result<()> {
+        let block_hash_bytes = block_hash.map(|h| h.to_vec());
+        let parent_beacon_bytes = parent_beacon_block_root.map(|h| h.to_vec());
+
+        stream
+            .send_event_with_retry(
+                |event_id| {
+                    Event {
+                        event_id,
+                        event: Some(EventVariant::CommitHead(CommitHead {
+                            block_number: u256_to_bytes(U256::from(block_number)),
+                            last_tx_hash: last_tx_hash.clone(),
+                            n_transactions: n_transactions as u64,
+                            selected_iteration_id: DEFAULT_ITERATION_ID,
+                            block_hash: block_hash_bytes.clone(),
+                            parent_beacon_block_root: parent_beacon_bytes.clone(),
+                            timestamp: u256_to_bytes(U256::from(timestamp)),
+                        })),
+                    }
+                },
+                block_number,
+                "CommitHead",
+            )
+            .await
+    }
+
+    /// Convert an Alloy transaction to protobuf `TransactionEnv`
+    fn to_proto_tx_env(tx: &alloy::rpc::types::Transaction) -> TransactionEnv {
+        let tx_type = match tx.inner.tx_type() {
+            TxType::Legacy => 0,
+            TxType::Eip2930 => 1,
+            TxType::Eip1559 => 2,
+            TxType::Eip4844 => 3,
+            TxType::Eip7702 => 4,
+        };
+
+        let transact_to = tx.to().map(|a| a.to_vec()).unwrap_or_default();
+
+        let access_list: Vec<ProtoAccessListItem> = tx
+            .access_list()
+            .map(|al| {
+                al.0.iter()
+                    .map(|item| {
+                        ProtoAccessListItem {
+                            address: item.address.to_vec(),
+                            storage_keys: item.storage_keys.iter().map(|k| k.to_vec()).collect(),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let gas_priority_fee = tx.inner.max_priority_fee_per_gas().map(u128_to_bytes);
+
+        let blob_hashes: Vec<Vec<u8>> = tx
+            .blob_versioned_hashes()
+            .map(|hashes| hashes.iter().map(|h| h.to_vec()).collect())
+            .unwrap_or_default();
+
+        let max_fee_per_blob_gas = tx
+            .max_fee_per_blob_gas()
+            .map_or_else(|| u128_to_bytes(0), u128_to_bytes);
+
+        let authorization_list: Vec<ProtoAuthorization> = tx
+            .authorization_list()
+            .map(|auths| {
+                auths
+                    .iter()
+                    .filter_map(|auth| {
+                        let sig = auth.signature().ok()?;
+                        Some(ProtoAuthorization {
+                            chain_id: U256::from(auth.chain_id).to_be_bytes_vec(),
+                            address: auth.address.to_vec(),
+                            nonce: auth.nonce,
+                            y_parity: u32::from(sig.v()),
+                            r: sig.r().to_be_bytes_vec(),
+                            s: sig.s().to_be_bytes_vec(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        TransactionEnv {
+            tx_type,
+            caller: tx.inner.signer().to_vec(),
+            gas_limit: tx.inner.gas_limit(),
+            gas_price: u128_to_bytes(tx.inner.gas_price().unwrap_or_default()),
+            transact_to,
+            value: u256_to_bytes(tx.value()),
+            data: tx.input().to_vec(),
+            nonce: tx.nonce(),
+            chain_id: tx.chain_id(),
+            access_list,
+            gas_priority_fee,
+            blob_hashes,
+            max_fee_per_blob_gas,
+            authorization_list,
+        }
+    }
+}
+
+// Helper functions for big-endian encoding
+fn u256_to_bytes(val: U256) -> Vec<u8> {
+    val.to_be_bytes_vec()
+}
+
+fn u128_to_bytes(val: u128) -> Vec<u8> {
+    val.to_be_bytes().to_vec()
+}
+
+/// Convert `ResultStatus` enum value to human-readable string
+fn result_status_to_string(status: i32) -> &'static str {
+    match status {
+        x if x == ResultStatus::Success as i32 => "SUCCESS",
+        x if x == ResultStatus::Reverted as i32 => "REVERTED",
+        x if x == ResultStatus::Halted as i32 => "HALTED",
+        x if x == ResultStatus::Failed as i32 => "FAILED",
+        x if x == ResultStatus::AssertionFailed as i32 => "ASSERTION_FAILED",
+        _ => "UNKNOWN",
     }
 }
