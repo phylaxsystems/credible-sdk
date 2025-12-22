@@ -25,3 +25,6 @@ jobs:
       foundry-command: "forge build --root testdata/mock-protocol"
       publish-pages: true
       comment-on-pr: true
+      pr-number: ${{ github.event.pull_request.number || '' }}
+      pr-from-fork: ${{ github.event.pull_request.head.repo.fork || false }}
+      pages-prefix: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref_name) }}
