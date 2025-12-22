@@ -153,37 +153,6 @@ impl EventSequencing {
         }
     }
 
-    /// An asynchronous function that continuously processes events from a transaction queue channel
-    /// and forwards them to a core engine for further handling.
-    #[cfg(any(test, feature = "bench-utils"))]
-    pub async fn run(&mut self) -> Result<(), EventSequencingError> {
-        loop {
-            let event = self.receive_event().await?;
-            self.process_event(event)?;
-        }
-    }
-
-    /// Receives an event from the transaction queue, yielding when empty.
-    #[cfg(any(test, feature = "bench-utils"))]
-    async fn receive_event(&mut self) -> Result<TxQueueContents, EventSequencingError> {
-        loop {
-            match self.tx_receiver.try_recv() {
-                Ok(event) => return Ok(event),
-                Err(flume::TryRecvError::Empty) => {
-                    // Channel is empty, yield to allow other tasks to run
-                    tokio::task::yield_now().await;
-                }
-                Err(flume::TryRecvError::Disconnected) => {
-                    error!(
-                        target = "event_sequencing",
-                        "Transaction queue channel disconnected"
-                    );
-                    return Err(EventSequencingError::ChannelClosed);
-                }
-            }
-        }
-    }
-
     /// Main event processing logic that routes to appropriate handlers.
     fn process_event(&mut self, event: TxQueueContents) -> Result<(), EventSequencingError> {
         let event_block_number = event.block_number();
