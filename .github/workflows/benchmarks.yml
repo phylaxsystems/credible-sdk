@@ -6,13 +6,11 @@ on:
     # paths:
     #   - "crates/src/**"
     #   - "!**/*.md"
+  push:
+    branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  issues: write
-  pages: write
-  id-token: write
+permissions: write-all
 
 jobs:
   criterion:
@@ -30,3 +28,8 @@ jobs:
       pr-number: ${{ github.event.pull_request.number || '' }}
       pr-from-fork: ${{ github.event.pull_request.head.repo.fork || false }}
       pages-prefix: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref_name) }}
+      compare-to-baseline: ${{ github.event_name == 'pull_request' }}
+      save-baseline: ${{ github.ref == 'refs/heads/main' }}
+      baseline-branch: "main"
+      baseline-workflow-file: "benchmarks.yml"
+      baseline-artifact-name: "criterion-baseline"
