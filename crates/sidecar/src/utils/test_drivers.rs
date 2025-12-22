@@ -19,8 +19,10 @@ use crate::{
         TransactionQueueSender,
         TxQueueContents,
     },
-    event_sequencing::EventSequencing,
-    event_sequencing::EventSequencingError,
+    event_sequencing::{
+        EventSequencing,
+        EventSequencingError,
+    },
     execution_ids::TxExecutionId,
     transactions_state::TransactionResultEvent,
     transport::{
