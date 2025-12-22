@@ -20,26 +20,26 @@ use criterion::{
 };
 use revm::{
     context::tx::TxEnvBuilder,
-    primitives::{
-        TxKind,
+    primitives::TxKind,
+};
+use sidecar::{
+    execution_ids::TxExecutionId,
+    utils::{
+        instance::{
+            LocalInstance,
+            TestTransport,
+        },
+        profiling::{
+            self,
+            ProfilingGuard,
+        },
+        test_drivers::{
+            LocalInstanceGrpcDriver,
+            LocalInstanceHttpDriver,
+            LocalInstanceMockDriver,
+        },
     },
 };
-use sidecar::utils::{
-    instance::{
-        LocalInstance,
-        TestTransport,
-    },
-    profiling::{
-        self,
-        ProfilingGuard,
-    },
-    test_drivers::{
-        LocalInstanceGrpcDriver,
-        LocalInstanceHttpDriver,
-        LocalInstanceMockDriver,
-    },
-};
-use sidecar::execution_ids::TxExecutionId;
 use std::{
     fs::File,
     future::Future,
@@ -272,9 +272,10 @@ fn run_benchmark_for_driver<T, SetupFn, Fut>(
                 runtime.block_on(setup_iteration::<T, _, _>(bytecodes, adopters, setup_fn))
             },
             |(instance, transactions)| {
-                std::hint::black_box(runtime.block_on(async move {
-                    execute_iteration(instance, transactions).await
-                }));
+                std::hint::black_box(
+                    runtime
+                        .block_on(async move { execute_iteration(instance, transactions).await }),
+                );
             },
             BatchSize::SmallInput,
         );
