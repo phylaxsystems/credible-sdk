@@ -24,6 +24,8 @@ jobs:
       submodules: true
       foundry-command: "forge build --root testdata/mock-protocol"
       publish-pages: true
+      pages-path: "target/criterion"
+      pages-report-path: "report"
       comment-on-pr: true
       pr-number: ${{ github.event.pull_request.number || '' }}
       pr-from-fork: ${{ github.event.pull_request.head.repo.fork || false }}
