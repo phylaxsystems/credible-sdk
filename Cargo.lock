@@ -185,9 +185,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-dyn-abi"
-version = "1.5.0"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3b1db3281bcaf03cfadb9d125fac55603526cc1d0577da555dc6184f5188f6f"
+checksum = "369f5707b958927176265e8a58627fc6195e5dfa5c55689396e68b241b3a72e6"
 dependencies = [
  "alloy-json-abi",
  "alloy-primitives",
@@ -268,9 +268,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-ens"
-version = "1.1.2"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff97375b7620ef8880f9db29efe7cd65a975ff8d1d0b8d3d60d35c621fd49558"
+checksum = "1a171486ee60b6f98e12451b1eddd1458bc21571f3829f75fcf12bb16ae48e59"
 dependencies = [
  "alloy-contract",
  "alloy-primitives",
@@ -288,8 +288,7 @@ checksum = "01be36ba6f5e6e62563b369e03ca529eac46aea50677f84655084b4750816574"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
- "alloy-hardforks 0.4.4",
- "alloy-op-hardforks",
+ "alloy-hardforks 0.4.5",
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
@@ -310,7 +309,8 @@ checksum = "e6ccc4c702c840148af1ce784cc5c6ed9274a020ef32417c5b1dbeab8c317673"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
- "alloy-hardforks 0.4.4",
+ "alloy-hardforks 0.4.5",
+ "alloy-op-hardforks",
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
@@ -353,9 +353,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-hardforks"
-version = "0.4.4"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e29d7eacf42f89c21d7f089916d0bdb4f36139a31698790e8837d2dbbd4b2c3"
+checksum = "2d9a33550fc21fd77a3f8b63e99969d17660eec8dcc50a95a80f7c9964f7680b"
 dependencies = [
  "alloy-chains",
  "alloy-eip2124",
@@ -366,9 +366,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-json-abi"
-version = "1.5.0"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bfca3dbbcb7498f0f60e67aff2ad6aff57032e22eb2fd03189854be11a22c03"
+checksum = "84e3cf01219c966f95a460c95f1d4c30e12f6c18150c21a30b768af2a2a29142"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-type-parser",
@@ -453,17 +453,17 @@ dependencies = [
 
 [[package]]
 name = "alloy-op-evm"
-version = "0.24.2"
+version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "231262d7e06000f3fb642d32d38ca75e09e78e04977c10be0a07a5ee2c869cfd"
+checksum = "0f640da852f93ddaa3b9a602b7ca41d80e0023f77a67b68aaaf511c32f1fe0ce"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
- "alloy-evm 0.24.2",
+ "alloy-evm 0.25.2",
  "alloy-op-hardforks",
  "alloy-primitives",
  "auto_impl",
- "op-alloy 0.22.4",
+ "op-alloy 0.23.1",
  "op-revm",
  "revm",
  "thiserror 2.0.17",
@@ -471,21 +471,21 @@ dependencies = [
 
 [[package]]
 name = "alloy-op-hardforks"
-version = "0.4.4"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95ac97adaba4c26e17192d81f49186ac20c1e844e35a00e169c8d3d58bc84e6b"
+checksum = "f96fb2fce4024ada5b2c11d4076acf778a0d3e4f011c6dfd2ffce6d0fcf84ee9"
 dependencies = [
  "alloy-chains",
- "alloy-hardforks 0.4.4",
+ "alloy-hardforks 0.4.5",
  "alloy-primitives",
  "auto_impl",
 ]
 
 [[package]]
 name = "alloy-primitives"
-version = "1.5.0"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c850e6ccbd34b8a463a1e934ffc8fc00e1efc5e5489f2ad82d7797949f3bd4e"
+checksum = "f6a0fb18dd5fb43ec5f0f6a20be1ce0287c79825827de5744afaa6c957737c33"
 dependencies = [
  "alloy-rlp",
  "arbitrary",
@@ -778,9 +778,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-signer-ledger"
-version = "1.1.2"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c059a3bbab204a06188ab27efad308b3f549c886a7853eaa64a79f76b453cae"
+checksum = "a54e01fb2228c993c9ef7735043bb22c88a84502628fae820d6469c3bebddb84"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -818,9 +818,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-signer-trezor"
-version = "1.1.2"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a89d36d206d87568ee9547e9e8c47dbd59f62a899e4dcd151c1b85977b3315f6"
+checksum = "119c750dd3d2158c57ab14711dca06cd6dc5db657bd16e6ab46ed11112187958"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -835,9 +835,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-macro"
-version = "1.5.0"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2218e3aeb3ee665d117fdf188db0d5acfdc3f7b7502c827421cb78f26a2aec0"
+checksum = "09eb18ce0df92b4277291bbaa0ed70545d78b02948df756bbd3d6214bf39a218"
 dependencies = [
  "alloy-sol-macro-expander",
  "alloy-sol-macro-input",
@@ -849,9 +849,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-macro-expander"
-version = "1.5.0"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b231cb8cc48e66dd1c6e11a1402f3ac86c3667cbc13a6969a0ac030ba7bb8c88"
+checksum = "95d9fa2daf21f59aa546d549943f10b5cce1ae59986774019fbedae834ffe01b"
 dependencies = [
  "alloy-json-abi",
  "alloy-sol-macro-input",
@@ -868,9 +868,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-macro-input"
-version = "1.5.0"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49a522d79929c1bf0152b07567a38f7eaed3ab149e53e7528afa78ff11994668"
+checksum = "9396007fe69c26ee118a19f4dee1f5d1d6be186ea75b3881adf16d87f8444686"
 dependencies = [
  "alloy-json-abi",
  "const-hex",
@@ -886,9 +886,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-type-parser"
-version = "1.5.0"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0475c459859c8d9428af6ff3736614655a57efda8cc435a3b8b4796fa5ac1dd0"
+checksum = "af67a0b0dcebe14244fc92002cd8d96ecbf65db4639d479f5fcd5805755a4c27"
 dependencies = [
  "serde",
  "winnow",
@@ -896,9 +896,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-types"
-version = "1.5.0"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35287d9d821d5f26011bcd8d9101340898f761c9933cf50fca689bb7ed62fdeb"
+checksum = "09aeea64f09a7483bdcd4193634c7e5cf9fd7775ee767585270cd8ce2d69dc95"
 dependencies = [
  "alloy-json-abi",
  "alloy-primitives",
@@ -1468,7 +1468,7 @@ checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
 [[package]]
 name = "assertion-da-client"
 version = "0.7.0"
-source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#c1f9a00133ee3bbf9d595c9ee388dd623acf690a"
+source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#33c32700e4379cf5878b135f339907c83aa5ce11"
 dependencies = [
  "alloy",
  "assertion-da-core 0.7.0",
@@ -1507,7 +1507,7 @@ dependencies = [
 [[package]]
 name = "assertion-da-core"
 version = "0.7.0"
-source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#c1f9a00133ee3bbf9d595c9ee388dd623acf690a"
+source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#33c32700e4379cf5878b135f339907c83aa5ce11"
 dependencies = [
  "alloy",
  "serde",
@@ -1561,7 +1561,7 @@ dependencies = [
 [[package]]
 name = "assertion-executor"
 version = "0.7.0"
-source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#c1f9a00133ee3bbf9d595c9ee388dd623acf690a"
+source = "git+https://github.com/phylaxsystems/credible-sdk.git?branch=mateo%2Fupdate-revm#33c32700e4379cf5878b135f339907c83aa5ce11"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -4212,8 +4212,8 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "forge"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-chains",
  "alloy-dyn-abi",
@@ -4269,7 +4269,7 @@ dependencies = [
  "strum 0.27.2",
  "thiserror 2.0.17",
  "tokio",
- "toml_edit 0.23.7",
+ "toml_edit 0.24.0+spec-1.1.0",
  "tower-http",
  "tracing",
  "watchexec",
@@ -4280,8 +4280,8 @@ dependencies = [
 
 [[package]]
 name = "forge-doc"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-primitives",
  "derive_more",
@@ -4305,8 +4305,8 @@ dependencies = [
 
 [[package]]
 name = "forge-fmt"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "foundry-common",
  "foundry-config",
@@ -4317,8 +4317,8 @@ dependencies = [
 
 [[package]]
 name = "forge-lint"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "eyre",
  "foundry-common",
@@ -4332,8 +4332,8 @@ dependencies = [
 
 [[package]]
 name = "forge-script"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -4377,8 +4377,8 @@ dependencies = [
 
 [[package]]
 name = "forge-script-sequence"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-network",
  "alloy-primitives",
@@ -4394,8 +4394,8 @@ dependencies = [
 
 [[package]]
 name = "forge-sol-macro-gen"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-sol-macro-expander",
  "alloy-sol-macro-input",
@@ -4410,8 +4410,8 @@ dependencies = [
 
 [[package]]
 name = "forge-verify"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -4437,6 +4437,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "url",
  "yansi",
 ]
 
@@ -4469,14 +4470,14 @@ dependencies = [
 
 [[package]]
 name = "foundry-cheatcodes"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
  "alloy-dyn-abi",
  "alloy-ens",
- "alloy-evm 0.24.2",
+ "alloy-evm 0.25.2",
  "alloy-genesis",
  "alloy-json-abi",
  "alloy-network",
@@ -4519,14 +4520,13 @@ dependencies = [
  "thiserror 2.0.17",
  "toml 0.9.8",
  "tracing",
- "vergen 8.3.2",
  "walkdir",
 ]
 
 [[package]]
 name = "foundry-cheatcodes-spec"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-sol-types",
  "foundry-macros",
@@ -4535,8 +4535,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-cli"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-chains",
  "alloy-dyn-abi",
@@ -4581,8 +4581,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-common"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -4637,8 +4637,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-common-fmt"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -4752,8 +4752,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-config"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -4770,7 +4770,6 @@ dependencies = [
  "heck",
  "itertools 0.14.0",
  "mesc",
- "number_prefix",
  "path-slash",
  "rayon",
  "regex",
@@ -4783,16 +4782,17 @@ dependencies = [
  "soldeer-core",
  "thiserror 2.0.17",
  "toml 0.9.8",
- "toml_edit 0.23.7",
+ "toml_edit 0.24.0+spec-1.1.0",
  "tracing",
+ "unit-prefix",
  "walkdir",
  "yansi",
 ]
 
 [[package]]
 name = "foundry-debugger"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-primitives",
  "crossterm 0.29.0",
@@ -4810,11 +4810,11 @@ dependencies = [
 
 [[package]]
 name = "foundry-evm"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-dyn-abi",
- "alloy-evm 0.24.2",
+ "alloy-evm 0.25.2",
  "alloy-json-abi",
  "alloy-primitives",
  "alloy-rpc-types",
@@ -4843,8 +4843,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-evm-abi"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -4856,18 +4856,19 @@ dependencies = [
 
 [[package]]
 name = "foundry-evm-core"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
  "alloy-dyn-abi",
- "alloy-evm 0.24.2",
+ "alloy-evm 0.25.2",
  "alloy-genesis",
- "alloy-hardforks 0.4.4",
+ "alloy-hardforks 0.4.5",
  "alloy-json-abi",
  "alloy-network",
  "alloy-op-evm",
+ "alloy-op-hardforks",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rpc-types",
@@ -4896,8 +4897,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-evm-coverage"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-primitives",
  "eyre",
@@ -4913,8 +4914,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-evm-fuzz"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -4939,11 +4940,11 @@ dependencies = [
 
 [[package]]
 name = "foundry-evm-networks"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-chains",
- "alloy-evm 0.24.2",
+ "alloy-evm 0.25.2",
  "alloy-primitives",
  "clap",
  "revm",
@@ -4952,8 +4953,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-evm-traces"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -4991,7 +4992,7 @@ checksum = "8df2fd495cf7337b247d960f90355329cc625fe27fe7da9fe5e598c42df21526"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
- "alloy-hardforks 0.4.4",
+ "alloy-hardforks 0.4.5",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rpc-types",
@@ -5009,8 +5010,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-linking"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-primitives",
  "foundry-compilers",
@@ -5021,8 +5022,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-macros"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "proc-macro-error2",
  "proc-macro2",
@@ -5046,8 +5047,8 @@ dependencies = [
 
 [[package]]
 name = "foundry-wallets"
-version = "1.5.0"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#b80bc61a156b009b7f280c79804b335502ea6eb3"
+version = "1.5.1"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#04fd8ffdfcd1b8335b85c9928a3963a9c666b41d"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -10216,9 +10217,9 @@ dependencies = [
 
 [[package]]
 name = "revm-inspectors"
-version = "0.33.0"
+version = "0.33.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a91cee0a75ef5f96b7e86f6c6a8bd4fda86eb37b57d501df6790418ee2b03c18"
+checksum = "01def7351cd9af844150b8e88980bcd11304f33ce23c3d7c25f2a8dab87c1345"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-eth",
@@ -11513,9 +11514,9 @@ dependencies = [
 
 [[package]]
 name = "soldeer-commands"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10a1bc149a9ed3d12d652161f3391135858f3205add0dcc59d00966fa0368810"
+checksum = "dfd18a52d398ab7defa85ea5a3f94ca335e8ae0b40c76e8f7d5cc1ea0924e356"
 dependencies = [
  "bon",
  "clap",
@@ -11532,9 +11533,9 @@ dependencies = [
 
 [[package]]
 name = "soldeer-core"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d3cc77f4a8e3c18148e5907b1fbd5de20c05669a3f0497fe37e1ef72b887fd2"
+checksum = "295509f269318c6e3f11ea3bd09b29c974d00403bdf5291577c0bc6adaa9c2fd"
 dependencies = [
  "bon",
  "chrono",
@@ -11917,9 +11918,9 @@ dependencies = [
 
 [[package]]
 name = "syn-solidity"
-version = "1.5.0"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60ceeb7c95a4536de0c0e1649bd98d1a72a4bb9590b1f3e45a8a0bfdb7c188c0"
+checksum = "5f92d01b5de07eaf324f7fca61cc6bd3d82bbc1de5b6c963e6fe79e86f36580d"
 dependencies = [
  "paste",
  "proc-macro2",
@@ -12418,7 +12419,7 @@ dependencies = [
  "indexmap 2.12.1",
  "serde_core",
  "serde_spanned 1.0.3",
- "toml_datetime 0.7.3",
+ "toml_datetime 0.7.5+spec-1.1.0",
  "toml_parser",
  "toml_writer",
  "winnow",
@@ -12435,9 +12436,9 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "0.7.3"
+version = "0.7.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2cdb639ebbc97961c51720f858597f7f24c4fc295327923af55b74c3c724533"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
 dependencies = [
  "serde_core",
 ]
@@ -12465,7 +12466,20 @@ dependencies = [
  "indexmap 2.12.1",
  "serde_core",
  "serde_spanned 1.0.3",
- "toml_datetime 0.7.3",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
+]
+
+[[package]]
+name = "toml_edit"
+version = "0.24.0+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c740b185920170a6d9191122cafef7010bd6270a3824594bff6784c04d7f09e"
+dependencies = [
+ "indexmap 2.12.1",
+ "toml_datetime 0.7.5+spec-1.1.0",
  "toml_parser",
  "toml_writer",
  "winnow",
@@ -12473,9 +12487,9 @@ dependencies = [
 
 [[package]]
 name = "toml_parser"
-version = "1.0.4"
+version = "1.0.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0cbe268d35bdb4bb5a56a2de88d0ad0eb70af5384a99d648cd4b3d04039800e"
+checksum = "a3198b4b0a8e11f09dd03e133c0280504d0801269e9afa46362ffde1cbeebf44"
 dependencies = [
  "winnow",
 ]
@@ -12488,9 +12502,9 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toml_writer"
-version = "1.0.4"
+version = "1.0.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df8b2b54733674ad286d16267dcfc7a71ed5c776e4ac7aa3c3e2561f7c637bf2"
+checksum = "ab16f14aed21ee8bfd8ec22513f7287cd4a91aa92e44edfe2c17ddd004e92607"
 
 [[package]]
 name = "tonic"
