@@ -44,7 +44,7 @@ use tracing::{
 };
 
 use std::collections::{
-    BTreeMap,
+    BTreeSet,
     HashMap,
     HashSet,
 };
@@ -64,17 +64,17 @@ pub enum AssertionStoreError {
 /// Storage backend for the assertion store.
 /// Supports both in-memory (ephemeral) and persistent (sled) storage.
 enum StoreBackend {
-    /// In-memory storage using HashMap and BTreeMap.
+    /// In-memory storage using `HashMap` and `BTreeSet`.
     /// Data is lost when the store is dropped.
     InMemory {
         assertions: HashMap<Address, Vec<AssertionState>>,
-        expiry_index: BTreeMap<[u8; 60], ()>,
+        expiry_index: BTreeSet<[u8; 60]>,
     },
     /// Persistent storage using sled database.
     /// Data survives restarts.
     Sled {
-        db: sled::Db,
-        expiry_tree: sled::Tree,
+        db: Box<sled::Db>,
+        expiry_tree: Box<sled::Tree>,
     },
 }
 
@@ -83,7 +83,7 @@ impl StoreBackend {
     fn new_in_memory() -> Self {
         Self::InMemory {
             assertions: HashMap::new(),
-            expiry_index: BTreeMap::new(),
+            expiry_index: BTreeSet::new(),
         }
     }
 
@@ -95,7 +95,10 @@ impl StoreBackend {
         let expiry_tree = db
             .open_tree(EXPIRY_INDEX_TREE)
             .expect("Failed to open expiry index tree");
-        Self::Sled { db, expiry_tree }
+        Self::Sled {
+            db: Box::new(db),
+            expiry_tree: Box::new(expiry_tree),
+        }
     }
 
     /// Gets assertions for an adopter.
@@ -160,7 +163,7 @@ impl StoreBackend {
     }
 
     /// Performs a compare-and-swap operation.
-    /// For InMemory backend, this always succeeds since we hold the mutex.
+    /// For `InMemory` backend, this always succeeds since we hold the mutex.
     /// For Sled backend, this uses native CAS.
     fn compare_and_swap(
         &mut self,
@@ -191,7 +194,7 @@ impl StoreBackend {
     fn insert_expiry(&mut self, key: [u8; 60]) -> Result<(), AssertionStoreError> {
         match self {
             Self::InMemory { expiry_index, .. } => {
-                expiry_index.insert(key, ());
+                expiry_index.insert(key);
                 Ok(())
             }
             Self::Sled { expiry_tree, .. } => {
@@ -220,29 +223,20 @@ impl StoreBackend {
     }
 
     /// Gets all expiry keys before the given upper bound.
-    fn expired_keys_before(
-        &self,
-        upper_bound: [u8; 60],
-    ) -> Result<Vec<[u8; 60]>, AssertionStoreError> {
+    fn expired_keys_before(&self, upper_bound: [u8; 60]) -> Vec<[u8; 60]> {
         match self {
             Self::InMemory { expiry_index, .. } => {
-                Ok(expiry_index
-                    .range(..upper_bound)
-                    .map(|(k, _)| *k)
-                    .collect())
+                expiry_index.range(..upper_bound).copied().collect()
             }
-            Self::Sled { expiry_tree, .. } => {
-                let keys: Vec<[u8; 60]> = expiry_tree
-                    .range(..upper_bound)
-                    .filter_map(|r| {
-                        r.ok().and_then(|(k, _)| {
-                            let arr: [u8; 60] = k.as_ref().try_into().ok()?;
-                            Some(arr)
-                        })
+            Self::Sled { expiry_tree, .. } => expiry_tree
+                .range(..upper_bound)
+                .filter_map(|r| {
+                    r.ok().and_then(|(k, _v)| {
+                        let arr: [u8; 60] = k.as_ref().try_into().ok()?;
+                        Some(arr)
                     })
-                    .collect();
-                Ok(keys)
-            }
+                })
+                .collect(),
         }
     }
 
@@ -604,7 +598,7 @@ impl AssertionStore {
         let upper_bound = build_expiry_key(prune_before_block + 1, &Address::ZERO, &B256::ZERO);
 
         // Collect keys to remove
-        let expired_keys = inner_guard.backend.expired_keys_before(upper_bound)?;
+        let expired_keys = inner_guard.backend.expired_keys_before(upper_bound);
 
         let pruned_count = expired_keys.len();
         if pruned_count == 0 {
