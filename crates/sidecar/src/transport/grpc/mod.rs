@@ -445,6 +445,10 @@ mod tests {
             .await
             .expect("failed to announce new block");
 
+        // Wait for commit head to be processed before sending events
+        // This prevents race conditions when running tests in parallel
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
         let address = instance
             .local_address
             .expect("grpc transport should expose an address");
@@ -490,6 +494,10 @@ mod tests {
             .new_block()
             .await
             .expect("failed to announce new block");
+
+        // Wait for commit head to be processed before sending events
+        // This prevents race conditions when running tests in parallel
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let address = instance
             .local_address
@@ -607,6 +615,10 @@ mod tests {
             .await
             .expect("failed to announce new block");
 
+        // Wait for commit head to be processed before sending events
+        // This prevents race conditions when running tests in parallel
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
         let address = instance
             .local_address
             .expect("grpc transport should expose an address");
@@ -661,6 +673,10 @@ mod tests {
             .await
             .expect("failed to announce new block");
 
+        // Wait for commit head to be processed before sending events
+        // This prevents race conditions when running tests in parallel
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
         let address = instance
             .local_address
             .expect("grpc transport should expose an address");
@@ -703,6 +719,10 @@ mod tests {
             .new_block()
             .await
             .expect("failed to announce new block");
+
+        // Wait for commit head to be processed before sending events
+        // This prevents race conditions when running tests in parallel
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let address = instance
             .local_address
