@@ -27,26 +27,8 @@ use alloy::primitives::{
 use anyhow::Result;
 use redis::Commands;
 use std::collections::HashMap;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
-use tokio::time::Duration;
 
-async fn wait_for_redis(host: &str, port: u16) -> Result<()> {
-    let url = format!("redis://{host}:{port}");
-    for _ in 0..20 {
-        match redis::Client::open(url.as_str()).and_then(|client| client.get_connection()) {
-            Ok(_) => return Ok(()),
-            Err(err) => {
-                // Redis may not be ready yet; retry after brief pause.
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                if err.kind() != redis::ErrorKind::Io {
-                    break;
-                }
-            }
-        }
-    }
-    Err(anyhow::anyhow!("Redis at {url} was not ready in time"))
-}
+use crate::redis_test_fixture::{get_shared_redis, get_test_redis_connection};
 
 /// Helper to render U256 in `0x`-prefixed hex for Redis.
 fn encode_u256(value: U256) -> String {
@@ -57,21 +39,8 @@ fn u256_from_u64(value: u64) -> U256 {
     U256::from(value)
 }
 
-async fn setup_redis() -> Result<(testcontainers::ContainerAsync<Redis>, redis::Connection)> {
-    let container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis container");
-
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
-
-    let client = redis::Client::open(format!("redis://{host}:{port}")).unwrap();
-    let connection = client.get_connection().unwrap();
-
-    Ok((container, connection))
+async fn setup_redis() -> Result<redis::Connection> {
+    get_test_redis_connection().await
 }
 
 // Helper to create a test update with specific account data
@@ -152,11 +121,8 @@ fn verify_storage(
 
 #[tokio::test]
 async fn test_cumulative_state_with_different_accounts() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "cumulative_accounts".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -238,11 +204,8 @@ async fn test_cumulative_state_with_different_accounts() -> Result<()> {
 
 #[tokio::test]
 async fn test_cumulative_state_with_account_updates() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "cumulative_updates".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -309,11 +272,8 @@ async fn test_cumulative_state_with_account_updates() -> Result<()> {
 
 #[tokio::test]
 async fn test_cumulative_storage_updates() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "cumulative_storage".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -407,11 +367,8 @@ async fn test_cumulative_storage_updates() -> Result<()> {
 
 #[tokio::test]
 async fn test_single_block_only_one_state_available() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "single_block".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -445,7 +402,7 @@ async fn test_single_block_only_one_state_available() -> Result<()> {
 
 #[tokio::test]
 async fn test_state_diff_storage_and_cleanup() -> Result<()> {
-    let (_container, mut conn) = setup_redis().await?;
+    let mut conn = setup_redis().await?;
 
     let base_namespace = "diff_cleanup";
     let buffer_size = 3;
@@ -499,11 +456,8 @@ async fn test_state_diff_storage_and_cleanup() -> Result<()> {
 
 #[tokio::test]
 async fn test_large_scale_rotation() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "large_scale".to_string();
     let config = CircularBufferConfig { buffer_size: 5 };
@@ -555,11 +509,8 @@ async fn test_large_scale_rotation() -> Result<()> {
 
 #[tokio::test]
 async fn test_zero_storage_values_are_deleted() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "zero_storage_deletion".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -613,11 +564,8 @@ async fn test_zero_storage_values_are_deleted() -> Result<()> {
 
 #[tokio::test]
 async fn test_roundtrip_basic_account_read() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "roundtrip_basic".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -659,11 +607,8 @@ async fn test_roundtrip_basic_account_read() -> Result<()> {
 
 #[tokio::test]
 async fn test_roundtrip_account_with_storage() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "roundtrip_storage".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -715,11 +660,8 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
 
 #[tokio::test]
 async fn test_roundtrip_account_with_code() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "roundtrip_code".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -762,11 +704,8 @@ async fn test_roundtrip_account_with_code() -> Result<()> {
 
 #[tokio::test]
 async fn test_roundtrip_circular_buffer_rotation() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "roundtrip_rotation".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -829,11 +768,8 @@ async fn test_roundtrip_circular_buffer_rotation() -> Result<()> {
 
 #[tokio::test]
 async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "roundtrip_cumulative".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -905,11 +841,8 @@ async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
 
 #[tokio::test]
 async fn test_roundtrip_block_metadata() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "roundtrip_metadata".to_string();
     let config = CircularBufferConfig { buffer_size: 5 };
@@ -980,11 +913,8 @@ async fn test_roundtrip_block_metadata() -> Result<()> {
 
 #[tokio::test]
 async fn test_roundtrip_storage_evolution() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "roundtrip_storage_evo".to_string();
     let config = CircularBufferConfig { buffer_size: 4 };
@@ -1052,11 +982,8 @@ async fn test_roundtrip_storage_evolution() -> Result<()> {
 
 #[tokio::test]
 async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "roundtrip_multi_acct".to_string();
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1119,11 +1046,8 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
 
 #[tokio::test]
 async fn test_write_lock_prevents_read() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "lock_test";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1162,11 +1086,8 @@ async fn test_write_lock_prevents_read() -> Result<()> {
 
 #[tokio::test]
 async fn test_stale_lock_blocks_read() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "stale_lock_test";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1207,11 +1128,8 @@ async fn test_stale_lock_blocks_read() -> Result<()> {
 
 #[tokio::test]
 async fn test_is_block_readable() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "is_readable_test";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1242,10 +1160,8 @@ async fn test_is_block_readable() -> Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_writers_lock_contention() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "concurrent_writers";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1279,10 +1195,8 @@ async fn test_concurrent_writers_lock_contention() -> Result<()> {
 
 #[tokio::test]
 async fn test_writer_releases_lock_on_success() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "lock_release_success";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1306,10 +1220,8 @@ async fn test_writer_releases_lock_on_success() -> Result<()> {
 
 #[tokio::test]
 async fn test_reader_blocked_during_active_write() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "reader_blocked";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1348,10 +1260,8 @@ async fn test_reader_blocked_during_active_write() -> Result<()> {
 
 #[tokio::test]
 async fn test_namespace_isolation_with_locks() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "namespace_isolation";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1388,10 +1298,8 @@ async fn test_namespace_isolation_with_locks() -> Result<()> {
 
 #[tokio::test]
 async fn test_scan_accounts_respects_lock() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "scan_lock";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1444,10 +1352,8 @@ async fn test_scan_accounts_respects_lock() -> Result<()> {
 
 #[tokio::test]
 async fn test_get_all_storage_respects_lock() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "storage_lock";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1484,10 +1390,8 @@ async fn test_get_all_storage_respects_lock() -> Result<()> {
 
 #[tokio::test]
 async fn test_get_code_respects_lock() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "code_lock";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1519,10 +1423,8 @@ async fn test_get_code_respects_lock() -> Result<()> {
 
 #[tokio::test]
 async fn test_sequential_writes_same_namespace() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "sequential_writes";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1557,10 +1459,8 @@ async fn test_sequential_writes_same_namespace() -> Result<()> {
 
 #[tokio::test]
 async fn test_large_chunked_write_lock_maintained() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "large_chunked";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1614,10 +1514,8 @@ async fn test_large_chunked_write_lock_maintained() -> Result<()> {
 
 #[tokio::test]
 async fn test_stale_lock_blocks_both_reader_and_writer() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "stale_blocks_all";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1682,10 +1580,8 @@ async fn test_stale_lock_blocks_both_reader_and_writer() -> Result<()> {
 
 #[tokio::test]
 async fn test_block_metadata_not_affected_by_namespace_lock() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "metadata_global";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1739,10 +1635,8 @@ async fn test_block_metadata_not_affected_by_namespace_lock() -> Result<()> {
 
 #[tokio::test]
 async fn test_different_writers_different_namespaces_concurrent() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "concurrent_namespaces";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1785,10 +1679,8 @@ async fn test_different_writers_different_namespaces_concurrent() -> Result<()> 
 
 #[tokio::test]
 async fn test_lock_contains_correct_info() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "lock_info".to_string();
 
@@ -1811,10 +1703,8 @@ async fn test_lock_contains_correct_info() -> Result<()> {
 
 #[tokio::test]
 async fn test_get_full_account_respects_lock() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "full_account_lock";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1850,10 +1740,8 @@ async fn test_get_full_account_respects_lock() -> Result<()> {
 
 #[tokio::test]
 async fn test_writer_can_write_after_own_successful_write() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "same_writer_consecutive";
     let config = CircularBufferConfig { buffer_size: 3 };
@@ -1889,10 +1777,8 @@ async fn test_writer_can_write_after_own_successful_write() -> Result<()> {
 
 #[tokio::test]
 async fn test_available_block_range() -> Result<()> {
-    let container = Redis::default().start().await?;
-    let host = container.get_host().await?.to_string();
-    let port = container.get_host_port_ipv4(6379).await?;
-    wait_for_redis(&host, port).await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let namespace = "block_range";
     let config = CircularBufferConfig { buffer_size: 3 };

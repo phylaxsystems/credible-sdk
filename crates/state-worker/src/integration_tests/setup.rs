@@ -3,6 +3,7 @@ use crate::{
     cli::ProviderType,
     connect_provider,
     genesis::GenesisState,
+    integration_tests::redis_fixture::get_shared_redis,
     state,
     worker::StateWorker,
 };
@@ -13,11 +14,6 @@ use state_store::{
     StateWriter,
 };
 use std::time::Duration;
-use testcontainers::{
-    ContainerAsync,
-    runners::AsyncRunner,
-};
-use testcontainers_modules::redis::Redis;
 use tokio::sync::broadcast;
 use tracing::error;
 
@@ -25,8 +21,6 @@ pub(in crate::integration_tests) struct LocalInstance {
     pub http_server_mock: DualProtocolMockServer,
     pub handle_worker: tokio::task::JoinHandle<()>,
     pub redis_url: String,
-    // Keep the container alive for the duration of the test
-    _redis_container: ContainerAsync<Redis>,
 }
 
 impl LocalInstance {
@@ -63,23 +57,9 @@ impl LocalInstance {
             .await
             .expect("Failed to connect to provider");
 
-        // Start Redis container
-        let redis_container = Redis::default()
-            .start()
-            .await
-            .map_err(|e| format!("Failed to start Redis container: {e}"))?;
-
-        let host = redis_container
-            .get_host()
-            .await
-            .map_err(|e| format!("Failed to get Redis host: {e}"))?;
-
-        let port = redis_container
-            .get_host_port_ipv4(6379)
-            .await
-            .map_err(|e| format!("Failed to get Redis port: {e}"))?;
-
-        let redis_url = format!("redis://{host}:{port}");
+        // Get shared Redis container (reused across all tests)
+        let redis = get_shared_redis().await;
+        let redis_url = redis.url.clone();
 
         let writer = StateWriter::new(
             &redis_url,
@@ -114,7 +94,6 @@ impl LocalInstance {
             http_server_mock,
             handle_worker,
             redis_url,
-            _redis_container: redis_container,
         })
     }
 }
