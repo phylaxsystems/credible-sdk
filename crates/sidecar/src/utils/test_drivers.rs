@@ -154,7 +154,6 @@ fn populate_test_database(underlying_db: &mut CacheDB<Arc<Sources>>) -> Address 
 fn setup_assertion_store() -> Result<Arc<AssertionStore>, String> {
     let assertion_store = Arc::new(
         AssertionStore::new_ephemeral()
-            .map_err(|e| format!("Failed to create assertion store: {e}"))?,
     );
 
     // Insert counter assertion into store

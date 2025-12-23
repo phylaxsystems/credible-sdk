@@ -57,7 +57,7 @@ impl<DB> CoreEngine<DB> {
             tx_receiver,
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
-                AssertionStore::new_ephemeral().expect("REASON"),
+                AssertionStore::new_ephemeral()
             ),
             sources: sources.clone(),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
@@ -160,7 +160,7 @@ async fn create_test_engine_with_timeout(
     let underlying_db = CacheDB::new(EmptyDBTyped::default());
     let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)));
     let assertion_store =
-        AssertionStore::new_ephemeral().expect("Failed to create assertion store");
+        AssertionStore::new_ephemeral();
     let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
     let state_results = TransactionsState::new();
