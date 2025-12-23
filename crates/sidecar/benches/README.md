@@ -9,6 +9,8 @@ SIDECAR_BENCH_TRANSPORT=mock \
 ```
 where `SIDECAR_BENCH_TRANSPORT` can be set to whatever transport you want to run benchmarks for.
 
+For debugging, you can add the `RUSTFLAGS="-C opt-level=0" cargo bench...` option for fast compile times. Do not interpret these results as representative, as the build will be very unoptimized.
+
 ## profiling with tokio-console
 
 the benchmarks can be profiled via tokio console by running
