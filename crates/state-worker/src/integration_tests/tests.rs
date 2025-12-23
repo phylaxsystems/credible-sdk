@@ -73,19 +73,20 @@ async fn wait_for_block(
     expected_block: u64,
     timeout_secs: u64,
 ) -> Result<(), String> {
-    let client = redis::Client::open(redis_url)
-        .map_err(|e| format!("Failed to connect to Redis: {e}"))?;
-    let mut conn = client.get_connection()
+    let client =
+        redis::Client::open(redis_url).map_err(|e| format!("Failed to connect to Redis: {e}"))?;
+    let mut conn = client
+        .get_connection()
         .map_err(|e| format!("Failed to get Redis connection: {e}"))?;
 
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
     loop {
-        if let Some(latest) = get_latest_block_from_redis(&mut conn, base_namespace, buffer_size) {
-            if latest >= expected_block {
-                return Ok(());
-            }
+        if let Some(latest) = get_latest_block_from_redis(&mut conn, base_namespace, buffer_size)
+            && latest >= expected_block
+        {
+            return Ok(());
         }
 
         if start.elapsed() > timeout {

@@ -28,7 +28,10 @@ use anyhow::Result;
 use redis::Commands;
 use std::collections::HashMap;
 
-use crate::redis_test_fixture::{get_shared_redis, get_test_redis_connection};
+use crate::redis_test_fixture::{
+    get_shared_redis,
+    get_test_redis_connection,
+};
 
 /// Helper to render U256 in `0x`-prefixed hex for Redis.
 fn encode_u256(value: U256) -> String {

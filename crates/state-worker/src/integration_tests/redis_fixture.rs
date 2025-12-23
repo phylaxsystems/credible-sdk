@@ -6,7 +6,10 @@
 //! Each test still gets complete isolation through unique namespaces.
 
 use std::sync::Arc;
-use testcontainers::{ContainerAsync, runners::AsyncRunner};
+use testcontainers::{
+    ContainerAsync,
+    runners::AsyncRunner,
+};
 use testcontainers_modules::redis::Redis;
 use tokio::sync::OnceCell;
 
@@ -54,12 +57,13 @@ impl SharedRedisContainer {
     }
 
     async fn wait_for_ready(url: &str) -> Result<(), String> {
-        use tokio::time::{Duration, sleep};
+        use tokio::time::{
+            Duration,
+            sleep,
+        };
 
         for attempt in 1..=30 {
-            match redis::Client::open(url)
-                .and_then(|client| client.get_connection())
-            {
+            match redis::Client::open(url).and_then(|client| client.get_connection()) {
                 Ok(_) => {
                     tracing::debug!("Redis ready after {} attempts", attempt);
                     return Ok(());
@@ -72,7 +76,9 @@ impl SharedRedisContainer {
                 }
             }
         }
-        Err(format!("Redis at {url} was not ready after 30 attempts (3s)"))
+        Err(format!(
+            "Redis at {url} was not ready after 30 attempts (3s)"
+        ))
     }
 }
 
@@ -82,12 +88,14 @@ impl SharedRedisContainer {
 /// for the entire test suite. The container is initialized on first call.
 pub async fn get_shared_redis() -> Arc<SharedRedisContainer> {
     REDIS_CONTAINER
-        .get_or_init(|| async {
-            Arc::new(
-                SharedRedisContainer::new()
-                    .await
-                    .expect("Failed to initialize shared Redis container"),
-            )
+        .get_or_init(|| {
+            async {
+                Arc::new(
+                    SharedRedisContainer::new()
+                        .await
+                        .expect("Failed to initialize shared Redis container"),
+                )
+            }
         })
         .await
         .clone()

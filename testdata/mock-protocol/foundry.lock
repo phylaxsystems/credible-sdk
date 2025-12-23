@@ -1,0 +1,14 @@
+{
+  "../../lib/credible-layer-contracts": {
+    "rev": "bb18e6eb14e3629a7d147965ea08ce3c127cc22c"
+  },
+  "lib/credible-std": {
+    "rev": "c100c70a5c2ed062c14d8a93adb0afe846b77c4c"
+  },
+  "lib/forge-std": {
+    "rev": "975c10cefa409308d49ffb81c07396b437bba4e4"
+  },
+  "lib/openzeppelin-contracts": {
+    "rev": "49882a3d8b6c48068d9c988876d164b48dde5ca3"
+  }
+}

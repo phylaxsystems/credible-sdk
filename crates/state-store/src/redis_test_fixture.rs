@@ -4,7 +4,10 @@
 //! to avoid the overhead of starting multiple containers in parallel.
 
 use std::sync::Arc;
-use testcontainers::{ContainerAsync, runners::AsyncRunner};
+use testcontainers::{
+    ContainerAsync,
+    runners::AsyncRunner,
+};
 use testcontainers_modules::redis::Redis;
 use tokio::sync::OnceCell;
 
@@ -27,14 +30,9 @@ impl SharedRedisContainer {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to start Redis container: {e}"))?;
 
-        let host = container
-            .get_host()
-            .await?
-            .to_string();
+        let host = container.get_host().await?.to_string();
 
-        let port = container
-            .get_host_port_ipv4(6379)
-            .await?;
+        let port = container.get_host_port_ipv4(6379).await?;
 
         let url = format!("redis://{host}:{port}");
 
@@ -50,12 +48,13 @@ impl SharedRedisContainer {
     }
 
     async fn wait_for_ready(url: &str) -> anyhow::Result<()> {
-        use tokio::time::{Duration, sleep};
+        use tokio::time::{
+            Duration,
+            sleep,
+        };
 
         for _ in 0..30 {
-            match redis::Client::open(url)
-                .and_then(|client| client.get_connection())
-            {
+            match redis::Client::open(url).and_then(|client| client.get_connection()) {
                 Ok(_) => return Ok(()),
                 Err(err) => {
                     if err.kind() != redis::ErrorKind::Io {
@@ -65,19 +64,23 @@ impl SharedRedisContainer {
                 }
             }
         }
-        Err(anyhow::anyhow!("Redis at {url} was not ready after 30 attempts (3s)"))
+        Err(anyhow::anyhow!(
+            "Redis at {url} was not ready after 30 attempts (3s)"
+        ))
     }
 }
 
 /// Get or initialize the shared Redis container
 pub async fn get_shared_redis() -> Arc<SharedRedisContainer> {
     REDIS_CONTAINER
-        .get_or_init(|| async {
-            Arc::new(
-                SharedRedisContainer::new()
-                    .await
-                    .expect("Failed to initialize shared Redis container"),
-            )
+        .get_or_init(|| {
+            async {
+                Arc::new(
+                    SharedRedisContainer::new()
+                        .await
+                        .expect("Failed to initialize shared Redis container"),
+                )
+            }
         })
         .await
         .clone()
