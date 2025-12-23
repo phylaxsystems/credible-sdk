@@ -50,7 +50,10 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::Mutex,
+    sync::{
+        Mutex,
+        watch,
+    },
     time,
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -69,6 +72,8 @@ const EVENT_CHANNEL_BUFFER_SIZE: usize = 1024;
 const DEFAULT_ITERATION_ID: u64 = 0;
 const MAX_EVENT_RETRIES: u32 = 3;
 const RETRY_DELAY_MS: u64 = 500;
+const MAX_GRPC_CONNECTION_RETRIES: u32 = 3;
+const GRPC_RETRY_DELAY_SECS: u64 = 2;
 
 /// Pending event awaiting acknowledgment
 struct PendingEvent {
@@ -84,15 +89,23 @@ struct EventStream {
     tx: tokio::sync::mpsc::Sender<Event>,
     pending_acks: Arc<Mutex<HashMap<u64, PendingEvent>>>,
     next_event_id: u64,
+    /// Watch channel receiver to detect stream death
+    stream_dead_rx: watch::Receiver<bool>,
 }
 
 impl EventStream {
-    fn new(tx: tokio::sync::mpsc::Sender<Event>) -> Self {
+    fn new(tx: tokio::sync::mpsc::Sender<Event>, stream_dead_rx: watch::Receiver<bool>) -> Self {
         Self {
             tx,
             pending_acks: Arc::new(Mutex::new(HashMap::new())),
             next_event_id: 1,
+            stream_dead_rx,
         }
+    }
+
+    /// Check if the stream is still alive
+    fn is_stream_dead(&self) -> bool {
+        *self.stream_dead_rx.borrow()
     }
 
     /// Send an event and wait for its acknowledgment with timeout
@@ -102,6 +115,13 @@ impl EventStream {
         block_number: u64,
         event_type: &'static str,
     ) -> Result<()> {
+        // Check if stream is already dead before attempting to send
+        if self.is_stream_dead() {
+            return Err(anyhow!(
+                "stream is dead, cannot send {event_type} for block {block_number}"
+            ));
+        }
+
         let event_id = event.event_id;
         let notify = Arc::new(tokio::sync::Notify::new());
         let result = Arc::new(Mutex::new(None));
@@ -124,30 +144,43 @@ impl EventStream {
             return Err(anyhow!("failed to send event to stream: {e}"));
         }
 
-        // Wait for ack with timeout
+        // Wait for ack with timeout, also checking for stream death
         let timeout_duration = Duration::from_secs(ACK_TIMEOUT_SECS);
-        if let Ok(()) = time::timeout(timeout_duration, notify.notified()).await {
-            // Check if the ack was successful
-            let ack_result = result.lock().await.take();
-            match ack_result {
-                Some(true) => Ok(()),
-                Some(false) => {
-                    Err(anyhow!(
-                        "event {event_type} (id={event_id}) for block {block_number} was rejected by sidecar"
-                    ))
-                }
-                None => {
-                    Err(anyhow!(
-                        "event {event_type} (id={event_id}) for block {block_number}: notified but no result"
-                    ))
+        let mut stream_dead_rx = self.stream_dead_rx.clone();
+
+        tokio::select! {
+            // Wait for the ack notification
+            () = notify.notified() => {
+                // Check if the ack was successful
+                let ack_result = result.lock().await.take();
+                match ack_result {
+                    Some(true) => Ok(()),
+                    Some(false) => {
+                        Err(anyhow!(
+                            "event {event_type} (id={event_id}) for block {block_number} was rejected by sidecar"
+                        ))
+                    }
+                    None => {
+                        Err(anyhow!(
+                            "event {event_type} (id={event_id}) for block {block_number}: notified but no result"
+                        ))
+                    }
                 }
             }
-        } else {
+            // Watch for stream death
+            _ = stream_dead_rx.changed() => {
+                self.pending_acks.lock().await.remove(&event_id);
+                Err(anyhow!(
+                    "stream died while waiting for ack of {event_type} (id={event_id}) for block {block_number}"
+                ))
+            }
             // Timeout
-            self.pending_acks.lock().await.remove(&event_id);
-            Err(anyhow!(
-                "timeout waiting for ack of {event_type} (id={event_id}) for block {block_number}"
-            ))
+            () = time::sleep(timeout_duration) => {
+                self.pending_acks.lock().await.remove(&event_id);
+                Err(anyhow!(
+                    "timeout waiting for ack of {event_type} (id={event_id}) for block {block_number}"
+                ))
+            }
         }
     }
 
@@ -164,6 +197,13 @@ impl EventStream {
         let mut last_error = None;
 
         for attempt in 1..=MAX_EVENT_RETRIES {
+            // Check if stream is dead before each attempt
+            if self.is_stream_dead() {
+                return Err(anyhow!(
+                    "stream is dead, aborting retries for {event_type} on block {block_number}"
+                ));
+            }
+
             let event_id = self.next_id();
             let event = event_builder(event_id);
 
@@ -173,6 +213,13 @@ impl EventStream {
             {
                 Ok(()) => return Ok(()),
                 Err(e) => {
+                    // If stream is dead, don't bother retrying
+                    if self.is_stream_dead() {
+                        return Err(anyhow!(
+                            "stream died during {event_type} on block {block_number}: {e}"
+                        ));
+                    }
+
                     warn!(
                         "Attempt {attempt}/{MAX_EVENT_RETRIES} failed for {event_type} \
                          on block {block_number}: {e}"
@@ -256,6 +303,41 @@ impl Listener {
         Ok(SidecarTransportClient::new(channel))
     }
 
+    /// Connect to gRPC with retry logic. Retries up to `MAX_GRPC_CONNECTION_RETRIES` times
+    /// before returning an error that triggers a full restart.
+    async fn connect_grpc_with_retry(&self) -> Result<SidecarTransportClient<Channel>> {
+        let mut last_error = None;
+
+        for attempt in 1..=MAX_GRPC_CONNECTION_RETRIES {
+            info!(
+                "Attempting gRPC connection (attempt {}/{})",
+                attempt, MAX_GRPC_CONNECTION_RETRIES
+            );
+
+            match self.connect_grpc().await {
+                Ok(client) => {
+                    info!("Successfully connected to gRPC endpoint");
+                    return Ok(client);
+                }
+                Err(e) => {
+                    warn!(
+                        "gRPC connection attempt {}/{} failed: {}",
+                        attempt, MAX_GRPC_CONNECTION_RETRIES, e
+                    );
+                    last_error = Some(e);
+
+                    if attempt < MAX_GRPC_CONNECTION_RETRIES {
+                        let delay = Duration::from_secs(GRPC_RETRY_DELAY_SECS * u64::from(attempt));
+                        info!("Retrying gRPC connection in {:?}", delay);
+                        time::sleep(delay).await;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow!("gRPC connection failed with no error")))
+    }
+
     /// We keep retrying the subscription because websocket connections can drop in practice.
     pub async fn run(&mut self) -> Result<()> {
         let mut retry_delay = Duration::from_secs(SUBSCRIPTION_RETRY_DELAY_SECS);
@@ -276,8 +358,58 @@ impl Listener {
     /// Follow the `newHeads` stream and process new blocks in order, tolerating
     /// duplicate/stale headers after it reconnects.
     async fn stream_blocks(&mut self) -> Result<()> {
-        // Connect to gRPC and establish bidirectional stream
-        let mut client = self.connect_grpc().await?;
+        // Connect to gRPC with retry logic (tries 3 times before full restart)
+        let mut client = self.connect_grpc_with_retry().await?;
+
+        // Inner loop to handle gRPC stream reconnection without full restart
+        loop {
+            match self.run_stream_loop(&mut client).await {
+                Ok(()) => {
+                    // Stream completed normally (shouldn't happen in practice)
+                    return Ok(());
+                }
+                Err(e) => {
+                    // Check if this is a gRPC stream error that we should retry
+                    let error_str = e.to_string();
+                    let is_grpc_stream_error = error_str.contains("stream died")
+                        || error_str.contains("gRPC stream died")
+                        || error_str.contains("stream is dead");
+
+                    if is_grpc_stream_error {
+                        warn!("gRPC stream died, attempting to reconnect...");
+
+                        // Try to reconnect gRPC with retry logic
+                        match self.connect_grpc_with_retry().await {
+                            Ok(new_client) => {
+                                info!("Successfully reconnected to gRPC after stream death");
+                                client = new_client;
+                                // Continue the loop with the new client
+                                continue;
+                            }
+                            Err(reconnect_err) => {
+                                error!(
+                                    "Failed to reconnect gRPC after {MAX_GRPC_CONNECTION_RETRIES} attempts: {reconnect_err}",
+                                );
+                                // Return error to trigger full restart in run()
+                                return Err(anyhow!(
+                                    "gRPC reconnection failed after {MAX_GRPC_CONNECTION_RETRIES} attempts, triggering full restart: {reconnect_err}",
+                                ));
+                            }
+                        }
+                    }
+                    // Non-gRPC error (e.g., block stream error), trigger full restart
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    /// Run the main stream processing loop.
+    /// to allow for gRPC reconnection without full restart.
+    async fn run_stream_loop(
+        &mut self,
+        client: &mut SidecarTransportClient<Channel>,
+    ) -> Result<()> {
         let (tx, rx) = tokio::sync::mpsc::channel::<Event>(EVENT_CHANNEL_BUFFER_SIZE);
 
         let response = client
@@ -286,9 +418,13 @@ impl Listener {
             .context("failed to establish event stream")?;
 
         let mut ack_stream = response.into_inner();
-        let mut event_stream = EventStream::new(tx);
 
-        // Spawn ack handler
+        // Create watch channel to signal stream death
+        let (stream_dead_tx, stream_dead_rx) = watch::channel(false);
+
+        let mut event_stream = EventStream::new(tx, stream_dead_rx.clone());
+
+        // Spawn ack handler with stream death signaling
         let pending_acks = event_stream.pending_acks.clone();
         let ack_handle = tokio::spawn(async move {
             while let Some(ack_result) = ack_stream.next().await {
@@ -300,10 +436,26 @@ impl Listener {
                     }
                 }
             }
+
+            // Signal that the stream is dead
+            let _ = stream_dead_tx.send(true);
+
+            // Wake up all pending waiters with failure
+            let mut pending = pending_acks.lock().await;
+            for (_, event) in pending.drain() {
+                *event.result.lock().await = Some(false);
+                event.notify.notify_one();
+                debug!(
+                    "Notified pending event {} (id={}) of stream death",
+                    event.event_type, event.event_id
+                );
+            }
+
+            info!("Ack handler exited, stream marked as dead");
         });
 
         // First, catch up on any missed blocks
-        self.catch_up_missed_blocks(&mut event_stream, &mut client)
+        self.catch_up_missed_blocks(&mut event_stream, client)
             .await
             .context("failed to catch up on missed blocks")?;
 
@@ -314,6 +466,13 @@ impl Listener {
         info!("Started block subscription with gRPC streaming");
 
         while let Some(block_result) = block_stream.next().await {
+            // Check if stream died before processing
+            if event_stream.is_stream_dead() {
+                warn!("Detected dead stream before processing block, triggering reconnect");
+                ack_handle.abort();
+                return Err(anyhow!("gRPC stream died, reconnecting"));
+            }
+
             let block = match block_result {
                 Ok(b) => b,
                 Err(e) => {
@@ -340,7 +499,7 @@ impl Listener {
                     if let Err(e) = self
                         .fill_missing_blocks(
                             &mut event_stream,
-                            &mut client,
+                            client,
                             last_committed,
                             block_number,
                         )
@@ -359,10 +518,7 @@ impl Listener {
 
             info!("Processing block {block_number}");
 
-            if let Err(e) = self
-                .process_block(&mut event_stream, &mut client, &block)
-                .await
-            {
+            if let Err(e) = self.process_block(&mut event_stream, client, &block).await {
                 error!(error = ?e, "Failed to process block {block_number}");
                 ack_handle.abort();
                 // Return error to trigger reconnection and catch-up
@@ -401,6 +557,11 @@ impl Listener {
         stream: &mut EventStream,
         client: &mut SidecarTransportClient<Channel>,
     ) -> Result<()> {
+        // Check stream health before starting catch-up
+        if stream.is_stream_dead() {
+            return Err(anyhow!("stream is dead, cannot catch up on missed blocks"));
+        }
+
         // Get the current head block
         let current_block = self
             .provider
@@ -486,6 +647,11 @@ impl Listener {
             return Ok(());
         }
 
+        // Check stream health before filling
+        if stream.is_stream_dead() {
+            return Err(anyhow!("stream is dead, cannot fill missing blocks"));
+        }
+
         let missing_start = last_block + 1;
         let missing_end = current_block - 1;
 
@@ -508,6 +674,12 @@ impl Listener {
         let mut failed_blocks = Vec::new();
 
         for block_num in start..=end {
+            // Check stream health before each block
+            if stream.is_stream_dead() {
+                warn!("Stream died during block range processing at block {block_num}");
+                return Err(anyhow!("stream died during block range processing"));
+            }
+
             // Don't propagate errors during batch processing
             // If sidecar is down, we skip failed blocks and continue
             // This prevents getting stuck in a retry loop
@@ -520,6 +692,12 @@ impl Listener {
                     "Failed to process block {block_num} during catch-up, continuing to next block"
                 );
                 failed_blocks.push(block_num);
+
+                // If stream is dead, stop processing the range
+                if stream.is_stream_dead() {
+                    warn!("Stream died, aborting block range processing");
+                    return Err(anyhow!("stream died during block range processing"));
+                }
             }
         }
 
@@ -580,6 +758,13 @@ impl Listener {
     ) -> Result<()> {
         let block_number = block.header.number;
 
+        // Check stream health at the start
+        if stream.is_stream_dead() {
+            return Err(anyhow!(
+                "stream is dead, cannot process block {block_number}"
+            ));
+        }
+
         // Skip already processed blocks (prevent duplicates)
         if let Some(last_committed) = self.last_committed_block
             && block_number <= last_committed
@@ -612,6 +797,12 @@ impl Listener {
                 true
             }
             Err(e) => {
+                // If stream is dead, propagate the error immediately
+                if stream.is_stream_dead() {
+                    return Err(anyhow!(
+                        "stream died while sending NewIteration for block {block_number}: {e}"
+                    ));
+                }
                 warn!(
                     "Failed to send NewIteration for block {block_number} after retries: {e}. \
                      Skipping transactions and moving to CommitHead."
@@ -632,6 +823,14 @@ impl Listener {
             );
 
             for (index, tx) in transactions.iter().enumerate() {
+                // Check stream health before each transaction
+                if stream.is_stream_dead() {
+                    warn!("Stream died while sending transactions for block {block_number}");
+                    return Err(anyhow!(
+                        "stream died while sending transactions for block {block_number}"
+                    ));
+                }
+
                 let prev_hash = last_successful_tx_hash.clone();
                 let tx_hash = tx.inner.hash();
 
@@ -645,6 +844,12 @@ impl Listener {
                         successful_tx_hashes.push(*tx_hash);
                     }
                     Err(e) => {
+                        // If stream is dead, propagate immediately
+                        if stream.is_stream_dead() {
+                            return Err(anyhow!(
+                                "stream died while sending tx {index} for block {block_number}: {e}"
+                            ));
+                        }
                         warn!(
                             "Failed to send tx {index} in block {block_number} after retries: {e}. \
                              Moving to CommitHead with {successful_tx_count} successful txs."
@@ -668,6 +873,13 @@ impl Listener {
         }
 
         // STEP 3: Send CommitHead event to finalize the block (with retries)
+        // Check stream health before commit
+        if stream.is_stream_dead() {
+            return Err(anyhow!(
+                "stream died before sending CommitHead for block {block_number}"
+            ));
+        }
+
         info!("Step 3/3: Sending CommitHead event for block {block_number}");
         self.send_commit_head_with_retry(
             stream,
@@ -689,13 +901,27 @@ impl Listener {
         );
 
         // STEP 5: Compare transaction results if enabled
-        if self.query_results
-            && !successful_tx_hashes.is_empty()
-            && let Err(e) = self
-                .compare_transaction_results(client, block_number, &successful_tx_hashes)
+        // Spawn this as a separate task to not block the main loop
+        if self.query_results && !successful_tx_hashes.is_empty() {
+            let client_clone = client.clone();
+            let tx_hashes = successful_tx_hashes.clone();
+            let provider = self.provider.clone();
+
+            tokio::spawn(async move {
+                // Small delay to allow sidecar to process results
+                time::sleep(Duration::from_millis(100)).await;
+
+                if let Err(e) = Self::compare_transaction_results(
+                    client_clone,
+                    provider,
+                    block_number,
+                    tx_hashes,
+                )
                 .await
-        {
-            warn!("Failed to compare transaction results for block {block_number}: {e}");
+                {
+                    warn!("Failed to compare transaction results for block {block_number}: {e}");
+                }
+            });
         }
 
         Ok(())
@@ -703,10 +929,10 @@ impl Listener {
 
     /// Query and compare transaction results between provider and sidecar
     async fn compare_transaction_results(
-        &self,
-        client: &mut SidecarTransportClient<Channel>,
+        mut client: SidecarTransportClient<Channel>,
+        provider: Arc<RootProvider>,
         block_number: u64,
-        tx_hashes: &[alloy::primitives::B256],
+        tx_hashes: Vec<alloy::primitives::B256>,
     ) -> Result<()> {
         if tx_hashes.is_empty() {
             return Ok(());
@@ -757,8 +983,8 @@ impl Listener {
         let mut matches = 0;
 
         // Query provider receipts and compare
-        for tx_hash in tx_hashes {
-            let receipt = match self.provider.get_transaction_receipt(*tx_hash).await {
+        for tx_hash in &tx_hashes {
+            let receipt = match provider.get_transaction_receipt(*tx_hash).await {
                 Ok(Some(r)) => r,
                 Ok(None) => {
                     warn!("Transaction receipt not found from provider for {tx_hash}");
