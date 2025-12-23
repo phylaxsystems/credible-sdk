@@ -158,13 +158,9 @@ rustflags = [
 ]
 debug = "line-tables-only"
 
-[profile.bench-ci]
-inherits = "release"
-opt-level = 2
+[profile.bench]
+opt-level = 1
 lto = "off"
-codegen-units = 16
-debug = 0
-incremental = true
 
 # Temporary due to a requirement in phoundry
 [patch.crates-io]

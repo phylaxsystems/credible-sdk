@@ -33,9 +33,3 @@ testcontainers = "0.26.0"
 testcontainers-modules = { version = "0.14.0", features = ["redis"] }
 uuid = "0.8.2"
 chrono = "0.4.42"
-
-[profile.release]
-lto = "fat"
-opt-level = 3
-codegen-units = 1
-strip = true
