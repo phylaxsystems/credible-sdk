@@ -970,8 +970,6 @@ impl Listener {
             })
             .unwrap_or_default();
 
-        let gas_priority_fee = tx.inner.max_priority_fee_per_gas().map(u128_to_bytes);
-
         let blob_hashes: Vec<Vec<u8>> = tx
             .blob_versioned_hashes()
             .map(|hashes| hashes.iter().map(|h| h.to_vec()).collect())
@@ -1001,11 +999,40 @@ impl Listener {
             })
             .unwrap_or_default();
 
+        // Handle gas_price and gas_priority_fee based on transaction type
+        let (gas_price, gas_priority_fee) = match tx.inner.tx_type() {
+            // Legacy transaction
+            TxType::Legacy |
+            // EIP-2930 - Access list transaction
+            TxType::Eip2930 => {
+                // Use gas_price directly, no priority fee
+                (
+                    u128_to_bytes(tx.inner.gas_price().unwrap_or_default()),
+                    None,
+                )
+            }
+            // EIP-1559 - Dynamic fee transaction
+            TxType::Eip1559 |
+            // EIP-4844 - Blob transaction
+            TxType::Eip4844 |
+            // EIP-7702 - Account delegation transaction
+            TxType::Eip7702 => {
+                // Use max_fee_per_gas as gas_price, and set priority fee
+                let max_fee = tx.inner.max_fee_per_gas();
+                let max_priority = tx.inner.max_priority_fee_per_gas();
+
+                (
+                    u128_to_bytes(max_fee),
+                    max_priority.map(u128_to_bytes),
+                )
+            }
+        };
+
         TransactionEnv {
             tx_type,
             caller: tx.inner.signer().to_vec(),
             gas_limit: tx.inner.gas_limit(),
-            gas_price: u128_to_bytes(tx.inner.gas_price().unwrap_or_default()),
+            gas_price,
             transact_to,
             value: u256_to_bytes(tx.value()),
             data: tx.input().to_vec(),
