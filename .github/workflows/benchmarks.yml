@@ -17,7 +17,8 @@ jobs:
     uses: phylaxsystems/actions/.github/workflows/benchmark.yaml@feat/create-bench-workflow
     with:
       rust-channel: stable
-      bench-command: "SIDECAR_BENCH_TRANSPORT=mock RUST_LOG=error cargo bench -p sidecar --features bench-utils --benches && cargo bench -p assertion-executor@0.9.0 --features test --benches"
+<<<<<<< HEAD
+      bench-command: "RUSTFLAGS=\"-C opt-level=1\" SIDECAR_BENCH_TRANSPORT=mock RUST_LOG=error cargo bench -p sidecar --features bench-utils --benches && cargo bench --manifest-path crates/assertion-executor/Cargo.toml --features test --benches"
       install-foundry: true
       submodules: true
       foundry-command: "forge build --root testdata/mock-protocol"
