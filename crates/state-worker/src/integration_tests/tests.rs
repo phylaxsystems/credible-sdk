@@ -6,7 +6,10 @@ use crate::{
     cli::ProviderType,
     connect_provider,
     genesis,
-    integration_tests::setup::LocalInstance,
+    integration_tests::{
+        redis_fixture::get_shared_redis,
+        setup::LocalInstance,
+    },
     state,
     worker::StateWorker,
 };
@@ -60,6 +63,40 @@ fn get_latest_block_from_redis(
     }
 
     max_block
+}
+
+/// Wait for a specific block to be processed in Redis (with polling and timeout).
+async fn wait_for_block(
+    redis_url: &str,
+    base_namespace: &str,
+    buffer_size: usize,
+    expected_block: u64,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    let client = redis::Client::open(redis_url)
+        .map_err(|e| format!("Failed to connect to Redis: {e}"))?;
+    let mut conn = client.get_connection()
+        .map_err(|e| format!("Failed to get Redis connection: {e}"))?;
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        if let Some(latest) = get_latest_block_from_redis(&mut conn, base_namespace, buffer_size) {
+            if latest >= expected_block {
+                return Ok(());
+            }
+        }
+
+        if start.elapsed() > timeout {
+            let latest = get_latest_block_from_redis(&mut conn, base_namespace, buffer_size);
+            return Err(format!(
+                "Timeout waiting for block {expected_block}. Latest block: {latest:?}"
+            ));
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// Helper to get the namespace for a given block number.
@@ -737,21 +774,9 @@ async fn test_circular_buffer_rotation_with_state_diffs() {
 /// Test basic restart: process blocks, stop, restart, verify continuation
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_restart_continues_from_last_block() {
-    // Start Redis container
-    let redis_container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis container");
-
-    let host = redis_container
-        .get_host()
-        .await
-        .expect("Failed to get Redis host");
-    let port = redis_container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-    let redis_url = format!("redis://{host}:{port}");
+    // Use shared Redis container
+    let redis = get_shared_redis().await;
+    let redis_url = redis.url.clone();
 
     // Setup mock server
     let http_server_mock = DualProtocolMockServer::new()
@@ -812,14 +837,10 @@ async fn test_restart_continues_from_last_block() {
             sleep(Duration::from_millis(100)).await;
         }
 
-        // Wait for blocks to be processed
-        sleep(Duration::from_millis(300)).await;
-
-        // Verify blocks 1-3 are processed
-        let client = redis::Client::open(redis_url.as_str()).unwrap();
-        let mut conn = client.get_connection().unwrap();
-        let latest = get_latest_block_from_redis(&mut conn, "restart_test", 3);
-        assert_eq!(latest, Some(3), "Should have processed 3 blocks");
+        // Wait for blocks to be processed (with polling and 5 second timeout)
+        wait_for_block(&redis_url, "restart_test", 3, 3, 5)
+            .await
+            .expect("Should have processed 3 blocks");
 
         // Shutdown first worker
         shutdown_tx.send(()).unwrap();
@@ -886,19 +907,14 @@ async fn test_restart_continues_from_last_block() {
             sleep(Duration::from_millis(100)).await;
         }
 
-        sleep(Duration::from_millis(300)).await;
-
-        // Verify all blocks are processed
-        let client = redis::Client::open(redis_url.as_str()).unwrap();
-        let mut conn = client.get_connection().unwrap();
-        let latest = get_latest_block_from_redis(&mut conn, "restart_test", 3);
-        assert_eq!(
-            latest,
-            Some(6),
-            "Should have processed blocks 4-6 after restart"
-        );
+        // Wait for blocks to be processed (with polling and 5 second timeout)
+        wait_for_block(&redis_url, "restart_test", 3, 6, 5)
+            .await
+            .expect("Should have processed blocks 4-6 after restart");
 
         // Verify block hashes for all blocks exist
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
         for block_num in 1..=6 {
             let key = format!("restart_test:block_hash:{block_num}");
             let hash: Option<String> = conn.get(&key).ok();
