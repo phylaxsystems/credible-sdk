@@ -108,7 +108,7 @@ sol! {
 ///    let state_oracle = Address::new([0; 20]);
 ///    let state_oracle_deployment_block = 0;
 ///    let db = Config::tmp().unwrap().open().unwrap();
-///    let store = AssertionStore::new_ephemeral().unwrap();
+///    let store = AssertionStore::new_ephemeral();
 ///    let da_client = DaClient::new(&format!("http://127.0.0.1:0000")).unwrap();
 ///
 ///
@@ -930,7 +930,7 @@ mod test_indexer {
             .open()
             .unwrap();
 
-        let store = AssertionStore::new_ephemeral().unwrap();
+        let store = AssertionStore::new_ephemeral();
 
         // Create mock provider and DA client (will be mocked in tests)
         let provider = alloy_provider::ProviderBuilder::new()
@@ -1191,7 +1191,7 @@ mod test_indexer {
             .open()
             .unwrap();
 
-        let store = AssertionStore::new_ephemeral().unwrap();
+        let store = AssertionStore::new_ephemeral();
 
         let provider = alloy_provider::ProviderBuilder::new()
             .connect_mocked_client(Asserter::default())

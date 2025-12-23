@@ -92,7 +92,6 @@ fn store_no_prune() -> AssertionStore {
         interval_ms: 60_000_000,
         retention_blocks: u64::MAX,
     })
-    .expect("create assertion store")
 }
 
 fn bench_validate_transaction(c: &mut Criterion) {

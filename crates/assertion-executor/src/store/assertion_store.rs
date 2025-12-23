@@ -44,6 +44,7 @@ use tracing::{
 };
 
 use std::collections::{
+    BTreeSet,
     HashMap,
     HashSet,
 };
@@ -58,6 +59,196 @@ pub enum AssertionStoreError {
     BincodeError(#[source] bincode::Error),
     #[error("Block number exceeds u64")]
     BlockNumberExceedsU64,
+}
+
+/// Storage backend for the assertion store.
+/// Supports both in-memory (ephemeral) and persistent (sled) storage.
+enum StoreBackend {
+    /// In-memory storage using `HashMap` and `BTreeSet`.
+    /// Data is lost when the store is dropped.
+    InMemory {
+        assertions: HashMap<Address, Vec<AssertionState>>,
+        expiry_index: BTreeSet<[u8; 60]>,
+    },
+    /// Persistent storage using sled database.
+    /// Data survives restarts.
+    Sled {
+        db: Box<sled::Db>,
+        expiry_tree: Box<sled::Tree>,
+    },
+}
+
+impl StoreBackend {
+    /// Creates a new in-memory backend.
+    fn new_in_memory() -> Self {
+        Self::InMemory {
+            assertions: HashMap::new(),
+            expiry_index: BTreeSet::new(),
+        }
+    }
+
+    /// Creates a new sled backend.
+    ///
+    /// # Panics
+    /// Panics if the expiry tree cannot be opened.
+    fn new_sled(db: sled::Db) -> Self {
+        let expiry_tree = db
+            .open_tree(EXPIRY_INDEX_TREE)
+            .expect("Failed to open expiry index tree");
+        Self::Sled {
+            db: Box::new(db),
+            expiry_tree: Box::new(expiry_tree),
+        }
+    }
+
+    /// Gets assertions for an adopter.
+    fn get(&self, adopter: &Address) -> Result<Option<Vec<AssertionState>>, AssertionStoreError> {
+        match self {
+            Self::InMemory { assertions, .. } => Ok(assertions.get(adopter).cloned()),
+            Self::Sled { db, .. } => {
+                db.get(adopter)
+                    .map_err(AssertionStoreError::SledError)?
+                    .map(|bytes| de(&bytes))
+                    .transpose()
+                    .map_err(AssertionStoreError::BincodeError)
+            }
+        }
+    }
+
+    /// Inserts assertions for an adopter.
+    fn insert(
+        &mut self,
+        adopter: Address,
+        assertions_list: Vec<AssertionState>,
+    ) -> Result<(), AssertionStoreError> {
+        match self {
+            Self::InMemory { assertions, .. } => {
+                assertions.insert(adopter, assertions_list);
+                Ok(())
+            }
+            Self::Sled { db, .. } => {
+                db.insert(
+                    adopter,
+                    ser(&assertions_list).map_err(AssertionStoreError::BincodeError)?,
+                )
+                .map_err(AssertionStoreError::SledError)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Removes an adopter entry.
+    fn remove(&mut self, adopter: &Address) -> Result<(), AssertionStoreError> {
+        match self {
+            Self::InMemory { assertions, .. } => {
+                assertions.remove(adopter);
+                Ok(())
+            }
+            Self::Sled { db, .. } => {
+                db.remove(adopter).map_err(AssertionStoreError::SledError)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Checks if an adopter has assertions.
+    fn contains_key(&self, adopter: &Address) -> Result<bool, AssertionStoreError> {
+        match self {
+            Self::InMemory { assertions, .. } => Ok(assertions.contains_key(adopter)),
+            Self::Sled { db, .. } => {
+                db.contains_key(adopter)
+                    .map_err(AssertionStoreError::SledError)
+            }
+        }
+    }
+
+    /// Performs a compare-and-swap operation.
+    /// For `InMemory` backend, this always succeeds since we hold the mutex.
+    /// For Sled backend, this uses native CAS.
+    fn compare_and_swap(
+        &mut self,
+        adopter: Address,
+        expected: Option<&[u8]>,
+        new: Vec<AssertionState>,
+    ) -> Result<bool, AssertionStoreError> {
+        match self {
+            Self::InMemory { assertions, .. } => {
+                // InMemory backend: mutex is held, so just update directly
+                assertions.insert(adopter, new);
+                Ok(true)
+            }
+            Self::Sled { db, .. } => {
+                let new_serialized = ser(&new).map_err(AssertionStoreError::BincodeError)?;
+                let result = db.compare_and_swap(adopter, expected, Some(new_serialized));
+                match result {
+                    Ok(Ok(_)) => Ok(true),
+                    Ok(Err(_)) => Ok(false), // CAS failed, need to retry
+                    Err(e) => Err(AssertionStoreError::SledError(e)),
+                }
+            }
+        }
+    }
+
+    /// Inserts an expiry index entry.
+    fn insert_expiry(&mut self, key: [u8; 60]) -> Result<(), AssertionStoreError> {
+        match self {
+            Self::InMemory { expiry_index, .. } => {
+                expiry_index.insert(key);
+                Ok(())
+            }
+            Self::Sled { expiry_tree, .. } => {
+                expiry_tree
+                    .insert(key, [])
+                    .map_err(AssertionStoreError::SledError)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Removes an expiry index entry.
+    fn remove_expiry(&mut self, key: &[u8; 60]) -> Result<(), AssertionStoreError> {
+        match self {
+            Self::InMemory { expiry_index, .. } => {
+                expiry_index.remove(key);
+                Ok(())
+            }
+            Self::Sled { expiry_tree, .. } => {
+                expiry_tree
+                    .remove(key)
+                    .map_err(AssertionStoreError::SledError)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Gets all expiry keys before the given upper bound.
+    fn expired_keys_before(&self, upper_bound: [u8; 60]) -> Vec<[u8; 60]> {
+        match self {
+            Self::InMemory { expiry_index, .. } => {
+                expiry_index.range(..upper_bound).copied().collect()
+            }
+            Self::Sled { expiry_tree, .. } => {
+                expiry_tree
+                    .range(..upper_bound)
+                    .filter_map(|r| {
+                        r.ok().and_then(|(k, _v)| {
+                            let arr: [u8; 60] = k.as_ref().try_into().ok()?;
+                            Some(arr)
+                        })
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// Returns the number of entries in the expiry index (for testing).
+    #[cfg(any(test, feature = "test"))]
+    fn expiry_index_len(&self) -> usize {
+        match self {
+            Self::InMemory { expiry_index, .. } => expiry_index.len(),
+            Self::Sled { expiry_tree, .. } => expiry_tree.len(),
+        }
+    }
 }
 
 /// Struct representing an assertion contract, matched fn selectors, and the adopter.
@@ -176,8 +367,7 @@ fn parse_expiry_key(key: &[u8]) -> (u64, Address, B256) {
 
 /// Inner state shared between the store and background task
 struct AssertionStoreInner {
-    db: sled::Db,
-    expiry_tree: sled::Tree,
+    backend: StoreBackend,
 }
 
 #[derive(Debug, Clone)]
@@ -195,25 +385,41 @@ pub struct AssertionStore {
 
 impl std::fmt::Debug for AssertionStoreInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let backend_name = match &self.backend {
+            StoreBackend::InMemory { .. } => "InMemory",
+            StoreBackend::Sled { .. } => "Sled",
+        };
         f.debug_struct("AssertionStoreInner")
-            .field("db", &"sled::Db")
-            .field("expiry_tree", &"sled::Tree")
+            .field("backend", &backend_name)
             .finish()
     }
 }
 
 impl AssertionStore {
-    /// Create a new assertion store
+    /// Create a new assertion store with a sled backend for persistence.
     ///
     /// # Panics
     ///
-    /// Will panics if the expiry tree cannot be opened in the sled DB
+    /// Will panic if the expiry tree cannot be opened in the sled DB
     pub fn new(db: sled::Db, prune_config: PruneConfig) -> Self {
-        let expiry_tree = db
-            .open_tree(EXPIRY_INDEX_TREE)
-            .expect("Failed to open expiry index tree");
+        let backend = StoreBackend::new_sled(db);
+        Self::with_backend(backend, prune_config)
+    }
 
-        let inner = Arc::new(Mutex::new(AssertionStoreInner { db, expiry_tree }));
+    /// Creates a new assertion store without persistence (in-memory).
+    pub fn new_ephemeral() -> Self {
+        Self::new_ephemeral_with_config(PruneConfig::default())
+    }
+
+    /// Creates a new assertion store without persistence (in-memory) with custom prune config.
+    pub fn new_ephemeral_with_config(prune_config: PruneConfig) -> Self {
+        let backend = StoreBackend::new_in_memory();
+        Self::with_backend(backend, prune_config)
+    }
+
+    /// Creates a new assertion store with the given backend.
+    fn with_backend(backend: StoreBackend, prune_config: PruneConfig) -> Self {
+        let inner = Arc::new(Mutex::new(AssertionStoreInner { backend }));
         let current_block = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -235,26 +441,6 @@ impl AssertionStore {
             current_block,
             prune_config,
         }
-    }
-
-    /// Creates a new assertion store without persistence.
-    pub fn new_ephemeral() -> Result<Self, AssertionStoreError> {
-        let db = sled::Config::tmp()
-            .map_err(AssertionStoreError::SledError)?
-            .open()
-            .map_err(AssertionStoreError::SledError)?;
-        Ok(Self::new(db, PruneConfig::default()))
-    }
-
-    /// Creates a new assertion store without persistence with custom prune config.
-    pub fn new_ephemeral_with_config(
-        prune_config: PruneConfig,
-    ) -> Result<Self, AssertionStoreError> {
-        let db = sled::Config::tmp()
-            .map_err(AssertionStoreError::SledError)?
-            .open()
-            .map_err(AssertionStoreError::SledError)?;
-        Ok(Self::new(db, prune_config))
     }
 
     /// Updates the current block number used for pruning decisions
@@ -320,19 +506,13 @@ impl AssertionStore {
             "Inserting assertion into store"
         );
 
-        let inner = self
+        let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let mut assertions: Vec<AssertionState> = inner
-            .db
-            .get(assertion_adopter)
-            .map_err(AssertionStoreError::SledError)?
-            .map(|a| de(&a))
-            .transpose()
-            .map_err(AssertionStoreError::BincodeError)?
-            .unwrap_or_default();
+        let mut assertions: Vec<AssertionState> =
+            inner.backend.get(&assertion_adopter)?.unwrap_or_default();
 
         let assertion_id = assertion.assertion_contract_id();
         let position = assertions
@@ -346,7 +526,7 @@ impl AssertionStore {
             // Remove the old expiry index if it had an inactivation block
             if let Some(old_inactivation) = old.inactivation_block {
                 let old_key = build_expiry_key(old_inactivation, &assertion_adopter, &assertion_id);
-                let _ = inner.expiry_tree.remove(old_key);
+                let _ = inner.backend.remove_expiry(&old_key);
             }
             Some(old)
         } else {
@@ -357,19 +537,10 @@ impl AssertionStore {
         // Add a new expiry index if assertion has an inactivation block
         if let Some(inactivation_block) = assertion_inactivation_block {
             let key = build_expiry_key(inactivation_block, &assertion_adopter, &assertion_id);
-            inner
-                .expiry_tree
-                .insert(key, [])
-                .map_err(AssertionStoreError::SledError)?;
+            inner.backend.insert_expiry(key)?;
         }
 
-        inner
-            .db
-            .insert(
-                assertion_adopter,
-                ser(&assertions).map_err(AssertionStoreError::BincodeError)?,
-            )
-            .map_err(AssertionStoreError::SledError)?;
+        inner.backend.insert(assertion_adopter, assertions)?;
 
         // Opportunistic prune on insert
         drop(inner);
@@ -418,7 +589,7 @@ impl AssertionStore {
         inner: &Arc<Mutex<AssertionStoreInner>>,
         prune_before_block: u64,
     ) -> Result<usize, AssertionStoreError> {
-        let inner_guard = inner
+        let mut inner_guard = inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
@@ -426,11 +597,7 @@ impl AssertionStore {
         let upper_bound = build_expiry_key(prune_before_block + 1, &Address::ZERO, &B256::ZERO);
 
         // Collect keys to remove
-        let expired_keys: Vec<_> = inner_guard
-            .expiry_tree
-            .range(..upper_bound)
-            .filter_map(|r| r.ok().map(|(k, _)| k))
-            .collect();
+        let expired_keys = inner_guard.backend.expired_keys_before(upper_bound);
 
         let pruned_count = expired_keys.len();
         if pruned_count == 0 {
@@ -451,32 +618,15 @@ impl AssertionStore {
         // Remove from the main store and expiry index
         for (adopter, assertion_ids) in adopter_removals {
             // Remove assertions from the adopter's list
-            let assertions_serialized = inner_guard
-                .db
-                .get(adopter)
-                .map_err(AssertionStoreError::SledError)?;
-
-            if let Some(serialized) = assertions_serialized {
-                let mut assertions: Vec<AssertionState> =
-                    de(&serialized).map_err(AssertionStoreError::BincodeError)?;
-
+            if let Some(mut assertions) = inner_guard.backend.get(&adopter)? {
                 let original_len = assertions.len();
                 assertions.retain(|a| !assertion_ids.contains(&a.assertion_contract_id()));
 
                 if assertions.len() != original_len {
                     if assertions.is_empty() {
-                        inner_guard
-                            .db
-                            .remove(adopter)
-                            .map_err(AssertionStoreError::SledError)?;
+                        inner_guard.backend.remove(&adopter)?;
                     } else {
-                        inner_guard
-                            .db
-                            .insert(
-                                adopter,
-                                ser(&assertions).map_err(AssertionStoreError::BincodeError)?,
-                            )
-                            .map_err(AssertionStoreError::SledError)?;
+                        inner_guard.backend.insert(adopter, assertions)?;
                     }
                 }
             }
@@ -484,7 +634,7 @@ impl AssertionStore {
 
         // Remove all expired keys from the expiry index
         for key in expired_keys {
-            let _ = inner_guard.expiry_tree.remove(key);
+            let _ = inner_guard.backend.remove_expiry(&key);
         }
 
         debug!(
@@ -570,24 +720,11 @@ impl AssertionStore {
         level = "trace"
     )]
     pub fn has_assertions(&self, assertion_adopter: Address) -> Result<bool, AssertionStoreError> {
-        match self
-            .inner
+        self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .db
-            .contains_key(assertion_adopter)
-        {
-            Ok(has_assertions) => Ok(has_assertions),
-            Err(err) => {
-                error!(
-                    target: "assertion_store::has_assertions",
-                    ?err,
-                    ?assertion_adopter,
-                    "Failed to check if assertion adopter has active assertions"
-                );
-                Err(AssertionStoreError::SledError(err))
-            }
-        }
+            .backend
+            .contains_key(&assertion_adopter)
     }
 
     /// Reads the assertions for the given assertion adopter at the given block.
@@ -618,12 +755,9 @@ impl AssertionStore {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .db
-                .get(assertion_adopter)?
-                .map(|a| de::<Vec<AssertionState>>(&a))
-                .transpose()
-        })
-        .map_err(AssertionStoreError::BincodeError)?
+                .backend
+                .get(assertion_adopter)
+        })?
         .unwrap_or_default();
 
         debug!(
@@ -711,22 +845,23 @@ impl AssertionStore {
         modifications: &[PendingModification],
     ) -> Result<(), AssertionStoreError> {
         loop {
-            let inner = self
+            let mut inner = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-            let assertions_serialized = inner
-                .db
-                .get(assertion_adopter)
-                .map_err(AssertionStoreError::SledError)?;
+            // For Sled backend, we need the serialized form for CAS
+            let assertions_serialized: Option<Vec<u8>> = match &inner.backend {
+                StoreBackend::InMemory { .. } => None,
+                StoreBackend::Sled { db, .. } => {
+                    db.get(assertion_adopter)
+                        .map_err(AssertionStoreError::SledError)?
+                        .map(|ivec| ivec.to_vec())
+                }
+            };
 
-            let mut assertions: Vec<AssertionState> = assertions_serialized
-                .clone()
-                .map(|a| de(&a))
-                .transpose()
-                .map_err(AssertionStoreError::BincodeError)?
-                .unwrap_or_default();
+            let mut assertions: Vec<AssertionState> =
+                inner.backend.get(&assertion_adopter)?.unwrap_or_default();
 
             debug!(
                 target: "assertion-executor::assertion_store",
@@ -816,27 +951,26 @@ impl AssertionStore {
                 }
             }
 
-            let result = inner.db.compare_and_swap(
+            let cas_succeeded = inner.backend.compare_and_swap(
                 assertion_adopter,
-                assertions_serialized,
-                Some(ser(&assertions).map_err(AssertionStoreError::BincodeError)?),
-            );
+                assertions_serialized.as_deref(),
+                assertions,
+            )?;
 
-            if let Ok(Ok(_)) = result {
+            if cas_succeeded {
                 // Update expiry index after successful CAS
                 for (block, id) in expiry_removals {
                     let key = build_expiry_key(block, &assertion_adopter, &id);
-                    let _ = inner.expiry_tree.remove(key);
+                    let _ = inner.backend.remove_expiry(&key);
                 }
                 for (block, id) in expiry_additions {
                     let key = build_expiry_key(block, &assertion_adopter, &id);
-                    let _ = inner.expiry_tree.insert(key, []);
+                    let _ = inner.backend.insert_expiry(key);
                 }
                 break;
             }
             tracing::debug!(
                 target: "assertion-executor::assertion_store",
-                ?result,
                 "Assertion store Compare and Swap failed, retrying"
             );
         }
@@ -857,20 +991,13 @@ impl AssertionStore {
 
     #[cfg(any(test, feature = "test"))]
     pub fn get_assertions_for_contract(&self, assertion_adopter: Address) -> Vec<AssertionState> {
-        let assertions_serialized = self
-            .inner
+        self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .db
-            .get(assertion_adopter)
-            .unwrap_or(None);
-
-        if let Some(assertions_serialized) = assertions_serialized {
-            let assertions: Vec<AssertionState> = de(&assertions_serialized).unwrap_or_default();
-            assertions
-        } else {
-            vec![]
-        }
+            .backend
+            .get(&assertion_adopter)
+            .unwrap_or(None)
+            .unwrap_or_default()
     }
 
     #[cfg(any(test, feature = "test"))]
@@ -878,8 +1005,8 @@ impl AssertionStore {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .expiry_tree
-            .len()
+            .backend
+            .expiry_index_len()
     }
 }
 
@@ -954,7 +1081,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_has_assertions_false_when_absent() -> Result<(), AssertionStoreError> {
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let aa = Address::random();
 
         assert!(!store.has_assertions(aa).unwrap());
@@ -963,7 +1090,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_has_assertions_true_when_present() -> Result<(), AssertionStoreError> {
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let aa = Address::random();
 
         let assertion = create_test_assertion(0, None);
@@ -975,7 +1102,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_insert_and_read() -> Result<(), AssertionStoreError> {
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let aa = Address::random();
 
         // Create a test assertion
@@ -1003,7 +1130,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_pending_modifications() -> Result<(), AssertionStoreError> {
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let aa = Address::random();
 
         // Create two modifications
@@ -1034,7 +1161,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_removal_modification() -> Result<(), AssertionStoreError> {
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let aa = Address::random();
 
         // Add an assertion
@@ -1066,7 +1193,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_assertion_adopters() -> Result<(), AssertionStoreError> {
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let aa1 = Address::random();
         let aa2 = Address::random();
 
@@ -1103,7 +1230,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_same_assertion() -> Result<(), AssertionStoreError> {
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let aa = Address::random();
 
         let a_state = create_test_assertion(100, None);
@@ -1134,7 +1261,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_block_number_exceeds_u64() {
-        let store = AssertionStore::new_ephemeral().unwrap();
+        let store = AssertionStore::new_ephemeral();
         let mut tracer = CallTracer::default();
         tracer.insert_trace(Address::random());
 
@@ -1151,7 +1278,7 @@ mod tests {
         journal_entries: Vec<JournalEntry>,
         assertion_adopter: Address,
     ) -> Result<Vec<AssertionsForExecution>, AssertionStoreError> {
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let mut trigger_recorder = TriggerRecorder::default();
 
         for (trigger, selectors) in &recorded_triggers {
@@ -1391,7 +1518,7 @@ mod tests {
             },
         ];
 
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let mut trigger_recorder = TriggerRecorder::default();
 
         for (trigger, selectors) in &recorded_triggers {
@@ -1563,7 +1690,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_expiry_index_created_on_removal() -> Result<(), AssertionStoreError> {
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let aa = Address::random();
 
         // Add an assertion
@@ -1590,7 +1717,7 @@ mod tests {
             interval_ms: 100_000, // Long interval so background task doesn't interfere
             retention_blocks: 0,  // No retention for this test
         };
-        let store = AssertionStore::new_ephemeral_with_config(config)?;
+        let store = AssertionStore::new_ephemeral_with_config(config);
         let aa = Address::random();
 
         // Add and then remove an assertion (inactivation at block 100)
@@ -1625,7 +1752,7 @@ mod tests {
             interval_ms: 100_000,
             retention_blocks: 0,
         };
-        let store = AssertionStore::new_ephemeral_with_config(config)?;
+        let store = AssertionStore::new_ephemeral_with_config(config);
         let aa = Address::random();
 
         // Add an assertion with no inactivation block (always active)
@@ -1649,7 +1776,7 @@ mod tests {
             interval_ms: 100_000,
             retention_blocks: 0,
         };
-        let store = AssertionStore::new_ephemeral_with_config(config)?;
+        let store = AssertionStore::new_ephemeral_with_config(config);
         let aa = Address::random();
 
         // Add three assertions
@@ -1691,7 +1818,7 @@ mod tests {
             interval_ms: 100_000,
             retention_blocks: 0,
         };
-        let store = AssertionStore::new_ephemeral_with_config(config)?;
+        let store = AssertionStore::new_ephemeral_with_config(config);
         let aa = Address::random();
 
         // Add and remove a single assertion
@@ -1719,7 +1846,7 @@ mod tests {
             interval_ms: 100_000,
             retention_blocks: 0,
         };
-        let store = AssertionStore::new_ephemeral_with_config(config)?;
+        let store = AssertionStore::new_ephemeral_with_config(config);
         let aa1 = Address::random();
         let aa2 = Address::random();
 
@@ -1782,7 +1909,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_insert_updates_expiry_index() -> Result<(), AssertionStoreError> {
-        let store = AssertionStore::new_ephemeral()?;
+        let store = AssertionStore::new_ephemeral();
         let aa = Address::random();
 
         // Insert assertion with inactivation block
@@ -1817,7 +1944,7 @@ mod tests {
             interval_ms: 100_000,
             retention_blocks: 0,
         };
-        let store = AssertionStore::new_ephemeral_with_config(config)?;
+        let store = AssertionStore::new_ephemeral_with_config(config);
         let aa = Address::random();
         let id = B256::random();
 
@@ -1851,7 +1978,7 @@ mod tests {
             interval_ms: 50, // Very short interval for testing
             retention_blocks: 10,
         };
-        let store = AssertionStore::new_ephemeral_with_config(config)?;
+        let store = AssertionStore::new_ephemeral_with_config(config);
         let aa = Address::random();
 
         // Add and remove an assertion
@@ -1884,7 +2011,7 @@ mod tests {
         };
 
         let task_handle = {
-            let store = AssertionStore::new_ephemeral_with_config(config).unwrap();
+            let store = AssertionStore::new_ephemeral_with_config(config);
             // Clone the task handle to check its state after drop
             Arc::clone(&store._prune_task)
         };
@@ -1895,5 +2022,168 @@ mod tests {
 
         // Task should have finished
         assert!(task_handle.is_finished());
+    }
+
+    // Backend-specific tests
+
+    #[tokio::test]
+    async fn test_in_memory_backend_basic_operations() {
+        // This test verifies the InMemory backend works correctly
+        let store = AssertionStore::new_ephemeral();
+        let aa = Address::random();
+
+        // Test insert and get
+        let assertion = create_test_assertion(100, None);
+        let assertion_id = assertion.assertion_contract_id();
+        store.insert(aa, assertion).unwrap();
+
+        // Verify assertion exists
+        assert!(store.has_assertions(aa).unwrap());
+
+        // Verify assertion can be retrieved
+        let assertions = store.get_assertions_for_contract(aa);
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].assertion_contract_id(), assertion_id);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_backend_expiry_index_range_query() {
+        // Test that range queries work correctly on the BTreeMap-based expiry index
+        let config = PruneConfig {
+            interval_ms: 100_000,
+            retention_blocks: 0,
+        };
+        let store = AssertionStore::new_ephemeral_with_config(config);
+        let aa = Address::random();
+
+        // Add multiple assertions with different inactivation blocks
+        let id1 = B256::random();
+        let id2 = B256::random();
+        let id3 = B256::random();
+
+        let mod1 = create_test_modification_with_id(10, aa, 0, id1);
+        let mod2 = create_test_modification_with_id(10, aa, 1, id2);
+        let mod3 = create_test_modification_with_id(10, aa, 2, id3);
+        store
+            .apply_pending_modifications(vec![mod1, mod2, mod3])
+            .unwrap();
+
+        // Set inactivation blocks at different blocks
+        let remove1 = create_test_modification_remove(50, aa, 3, id1);
+        let remove2 = create_test_modification_remove(100, aa, 4, id2);
+        let remove3 = create_test_modification_remove(150, aa, 5, id3);
+        store
+            .apply_pending_modifications(vec![remove1, remove2, remove3])
+            .unwrap();
+
+        assert_eq!(store.expiry_index_count(), 3);
+
+        // Prune at block 75 - should only remove assertion 1
+        let pruned = store.prune_now(75).unwrap();
+        assert_eq!(pruned, 1);
+        assert_eq!(store.expiry_index_count(), 2);
+
+        // Prune at block 125 - should remove assertion 2
+        let pruned = store.prune_now(125).unwrap();
+        assert_eq!(pruned, 1);
+        assert_eq!(store.expiry_index_count(), 1);
+
+        // Prune at block 175 - should remove assertion 3
+        let pruned = store.prune_now(175).unwrap();
+        assert_eq!(pruned, 1);
+        assert_eq!(store.expiry_index_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_sled_backend_basic_operations() {
+        // This test verifies the Sled backend works correctly
+        let db = sled::Config::tmp().unwrap().open().unwrap();
+        let store = AssertionStore::new(db, PruneConfig::default());
+        let aa = Address::random();
+
+        // Test insert and get
+        let assertion = create_test_assertion(100, None);
+        let assertion_id = assertion.assertion_contract_id();
+        store.insert(aa, assertion).unwrap();
+
+        // Verify assertion exists
+        assert!(store.has_assertions(aa).unwrap());
+
+        // Verify assertion can be retrieved
+        let assertions = store.get_assertions_for_contract(aa);
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].assertion_contract_id(), assertion_id);
+    }
+
+    #[tokio::test]
+    async fn test_sled_backend_expiry_and_prune() {
+        let db = sled::Config::tmp().unwrap().open().unwrap();
+        let config = PruneConfig {
+            interval_ms: 100_000,
+            retention_blocks: 0,
+        };
+        let store = AssertionStore::new(db, config);
+        let aa = Address::random();
+
+        // Add and remove an assertion
+        let add_mod = create_test_modification(10, aa, 0);
+        let assertion_id = add_mod.assertion_contract_id();
+        store.apply_pending_modifications(vec![add_mod]).unwrap();
+
+        let remove_mod = create_test_modification_remove(100, aa, 1, assertion_id);
+        store.apply_pending_modifications(vec![remove_mod]).unwrap();
+
+        // Verify expiry index has entry
+        assert_eq!(store.expiry_index_count(), 1);
+
+        // Prune
+        let pruned = store.prune_now(150).unwrap();
+        assert_eq!(pruned, 1);
+        assert_eq!(store.expiry_index_count(), 0);
+        assert!(!store.has_assertions(aa).unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_backends_produce_same_results() {
+        // Verify both backends produce the same results for the same operations
+        let in_memory_store = AssertionStore::new_ephemeral();
+        let db = sled::Config::tmp().unwrap().open().unwrap();
+        let sled_store = AssertionStore::new(db, PruneConfig::default());
+
+        let aa = Address::random();
+        let assertion = create_test_assertion(100, Some(200));
+        let assertion_id = assertion.assertion_contract_id();
+
+        // Insert into both
+        in_memory_store.insert(aa, assertion.clone()).unwrap();
+        sled_store.insert(aa, assertion).unwrap();
+
+        // Verify both have the same state
+        assert_eq!(
+            in_memory_store.has_assertions(aa).unwrap(),
+            sled_store.has_assertions(aa).unwrap()
+        );
+        assert_eq!(
+            in_memory_store.assertion_contract_count(aa),
+            sled_store.assertion_contract_count(aa)
+        );
+        assert_eq!(
+            in_memory_store.expiry_index_count(),
+            sled_store.expiry_index_count()
+        );
+
+        // Get assertions and compare
+        let in_memory_assertions = in_memory_store.get_assertions_for_contract(aa);
+        let sled_assertions = sled_store.get_assertions_for_contract(aa);
+
+        assert_eq!(in_memory_assertions.len(), sled_assertions.len());
+        assert_eq!(
+            in_memory_assertions[0].assertion_contract_id(),
+            sled_assertions[0].assertion_contract_id()
+        );
+        assert_eq!(
+            in_memory_assertions[0].assertion_contract_id(),
+            assertion_id
+        );
     }
 }

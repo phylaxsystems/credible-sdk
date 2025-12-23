@@ -849,7 +849,7 @@ mod test {
         let adopter_selector = FixedBytes::<4>::from([0xAA, 0xBB, 0xCC, 0xDD]);
         let non_adopter_selector = FixedBytes::<4>::from([0x11, 0x22, 0x33, 0x44]);
 
-        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        let assertion_store = AssertionStore::new_ephemeral();
         assertion_store
             .insert(
                 adopter,

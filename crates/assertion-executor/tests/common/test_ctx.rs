@@ -106,7 +106,7 @@ pub async fn setup_int_test_indexer(block_tag: BlockTag, time_lock_blocks: u64) 
     let da_server_addr = format!("http://{da_server_addr}");
     let da_client = DaClient::new(da_server_addr.as_str()).unwrap();
 
-    let store = AssertionStore::new_ephemeral().unwrap();
+    let store = AssertionStore::new_ephemeral();
 
     // Create provider from anvil ws endpoint
     let provider = provider_from_anvil(&anvil).await;

@@ -192,7 +192,7 @@ pub fn run_precompile_test(artifact: &str) -> TxValidationResult {
     // bytecode of GetLogsTest.sol:GetLogsTest
     let assertion_code = bytecode(&format!("{artifact}.sol:{artifact}"));
 
-    let assertion_store = AssertionStore::new_ephemeral().unwrap();
+    let assertion_store = AssertionStore::new_ephemeral();
     assertion_store
         .insert(target, AssertionState::new_test(&assertion_code))
         .unwrap();
