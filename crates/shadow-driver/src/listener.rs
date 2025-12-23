@@ -408,50 +408,52 @@ impl Listener {
             .await
             .context("failed to get current block number")?;
 
-        // If this is the first run (no blocks committed yet), send an initial CommitHead
-        if self.last_committed_block.is_none() {
-            let initial_commit_block = if let Some(start_block) = self.starting_block {
-                // Commit the block before the starting block
-                if start_block == 0 {
-                    warn!(
-                        "Starting block is 0, cannot commit previous block. Committing block 0 instead."
-                    );
-                    0
-                } else {
-                    start_block.saturating_sub(1)
-                }
+        // Determine which block to use for the initial CommitHead.
+        // This must be sent on EVERY new gRPC connection to sync state with the sidecar.
+        let initial_commit_block = if let Some(last_committed) = self.last_committed_block {
+            // We have a previously committed block, use it to re-sync with sidecar
+            last_committed
+        } else if let Some(start_block) = self.starting_block {
+            // First run with a specified starting block - commit the block before it
+            if start_block == 0 {
+                warn!(
+                    "Starting block is 0, cannot commit previous block. Committing block 0 instead."
+                );
+                0
             } else {
-                // No starting block specified, commit the current block
-                current_block
-            };
+                start_block.saturating_sub(1)
+            }
+        } else {
+            // First run with no starting block specified - commit the current block
+            current_block
+        };
 
-            info!("Sending initial CommitHead for block {initial_commit_block}");
+        info!("Sending initial CommitHead for block {initial_commit_block} to sync with sidecar");
 
-            // Fetch the block to get proper timestamp and hash
-            let initial_block = self
-                .provider
-                .get_block_by_number(initial_commit_block.into())
-                .full()
-                .await
-                .context("failed to fetch initial commit block")?
-                .ok_or_else(|| anyhow!("initial commit block {initial_commit_block} not found"))?;
-
-            // Send CommitHead with no transactions (we're just marking it as committed)
-            self.send_commit_head_with_retry(
-                stream,
-                initial_commit_block,
-                None,
-                0,
-                initial_block.header.timestamp,
-                Some(initial_block.header.hash),
-                initial_block.header.parent_beacon_block_root,
-            )
+        // Fetch the block to get proper timestamp and hash
+        let initial_block = self
+            .provider
+            .get_block_by_number(initial_commit_block.into())
+            .full()
             .await
-            .context("failed to send initial CommitHead")?;
+            .context("failed to fetch initial commit block")?
+            .ok_or_else(|| anyhow!("initial commit block {initial_commit_block} not found"))?;
 
-            self.last_committed_block = Some(initial_commit_block);
-            info!("Successfully sent initial CommitHead for block {initial_commit_block}");
-        }
+        // Send CommitHead with no transactions (we're just syncing state with sidecar)
+        self.send_commit_head_with_retry(
+            stream,
+            initial_commit_block,
+            None,
+            0,
+            initial_block.header.timestamp,
+            Some(initial_block.header.hash),
+            initial_block.header.parent_beacon_block_root,
+        )
+        .await
+        .context("failed to send initial CommitHead")?;
+
+        self.last_committed_block = Some(initial_commit_block);
+        info!("Successfully sent initial CommitHead for block {initial_commit_block}");
 
         // Now check if we need to catch up on any blocks
         if let Some(last_committed) = self.last_committed_block {
