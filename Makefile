@@ -6,11 +6,11 @@ build-contracts:
 
 # Run the rust tests for optimism
 test-optimism: build-contracts
-	cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features optimism --features test
+	ASSERTION_DA_SOLC_DOCKER_PLATFORM=linux/amd64 cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features optimism --features test
 
 # Run the rust tests for default evm
 test-default: build-contracts
-	cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features test
+	ASSERTION_DA_SOLC_DOCKER_PLATFORM=linux/amd64 cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features test
 
 make test: test-optimism test-default
 
