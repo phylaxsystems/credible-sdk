@@ -117,3 +117,8 @@ harness = false
 name = "event_sequencing_latency"
 path = "benches/event_sequencing_latency.rs"
 harness = false
+
+[[bench]]
+name = "average_block"
+path = "benches/avg_block.rs"
+harness = false
