@@ -233,7 +233,7 @@ mod test {
     }
 
     fn empty_call_tracer() -> CallTracer {
-        CallTracer::new(AssertionStore::new_ephemeral().unwrap())
+        CallTracer::new(AssertionStore::new_ephemeral())
     }
 
     fn insert_adopter(store: &AssertionStore, adopter: Address) {
@@ -245,7 +245,7 @@ mod test {
     where
         I: IntoIterator<Item = (CallInputs, Bytes)>,
     {
-        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        let assertion_store = AssertionStore::new_ephemeral();
         let mut call_tracer = CallTracer::new(assertion_store.clone());
         for (input, input_bytes) in call_inputs {
             insert_adopter(&assertion_store, input.target_address);

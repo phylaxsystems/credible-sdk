@@ -765,7 +765,7 @@ mod test {
         let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
         let mut fork_db: TestForkDB = test_db.fork();
 
-        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        let assertion_store = AssertionStore::new_ephemeral();
 
         // Build uses TestDB
         let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
@@ -813,7 +813,7 @@ mod test {
         );
         fork_db.commit(counter_state);
 
-        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        let assertion_store = AssertionStore::new_ephemeral();
         let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
         assertion_store
             .insert(
@@ -877,7 +877,7 @@ mod test {
         let mut mock_db = MockDb::new();
         mock_db.insert_account(COUNTER_ADDRESS, counter_acct_info());
 
-        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        let assertion_store = AssertionStore::new_ephemeral();
 
         // Build uses TestDB
         let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
@@ -936,7 +936,7 @@ mod test {
 
         mock_db.insert_account(COUNTER_ADDRESS, counter_acct_info());
 
-        let assertion_store = AssertionStore::new_ephemeral().unwrap();
+        let assertion_store = AssertionStore::new_ephemeral();
 
         // Insert requires Bytes, use helper from test_utils
         let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
