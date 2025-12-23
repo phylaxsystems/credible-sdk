@@ -92,8 +92,8 @@ pub mod pb {
 }
 
 #[cfg(not(test))]
-pub(crate) mod pb {
-    pub(crate) use super::pb_inner::*;
+pub mod pb {
+    pub use super::pb_inner::*;
 }
 
 #[derive(thiserror::Error, Debug)]

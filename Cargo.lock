@@ -11120,13 +11120,12 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
- "reqwest",
- "revm",
  "rust-tracing",
  "rustls",
- "serde",
- "serde_json",
+ "sidecar",
  "tokio",
+ "tokio-stream",
+ "tonic 0.14.2",
  "tracing",
 ]
 
