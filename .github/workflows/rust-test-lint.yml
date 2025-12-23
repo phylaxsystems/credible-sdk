@@ -33,6 +33,7 @@ jobs:
       install-foundry: true
       dind: true
       submodules: true
+      use-nextest: true
       foundry-command: "forge build --root testdata/mock-protocol"
       # [""] means default features
       # Feature matrices are supported as follows: ["", "--features=foo", "--features=bar", "--features=foo,bar"]
