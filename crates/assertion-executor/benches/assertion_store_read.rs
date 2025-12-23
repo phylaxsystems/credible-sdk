@@ -86,7 +86,7 @@ fn bench_assertion_store_read(c: &mut Criterion) {
         let runtime = Runtime::new().expect("create tokio runtime");
         let _enter_guard = runtime.enter();
 
-        let store = AssertionStore::new_ephemeral().expect("create ephemeral store");
+        let store = AssertionStore::new_ephemeral();
         store
             .insert(
                 adopter,
@@ -107,7 +107,7 @@ fn bench_assertion_store_read(c: &mut Criterion) {
         let runtime = Runtime::new().expect("create tokio runtime");
         let _enter_guard = runtime.enter();
 
-        let store = AssertionStore::new_ephemeral().expect("create ephemeral store");
+        let store = AssertionStore::new_ephemeral();
         let traces = build_traces(adopter, trigger_selector);
 
         b.iter(|| {

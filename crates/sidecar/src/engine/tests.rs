@@ -57,7 +57,7 @@ impl<DB> CoreEngine<DB> {
             tx_receiver,
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
-                AssertionStore::new_ephemeral()
+                AssertionStore::new_ephemeral(),
             ),
             sources: sources.clone(),
             transaction_results: TransactionsResults::new(TransactionsState::new(), 10),
@@ -159,8 +159,7 @@ async fn create_test_engine_with_timeout(
     let (tx_sender, tx_receiver) = flume::unbounded();
     let underlying_db = CacheDB::new(EmptyDBTyped::default());
     let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)));
-    let assertion_store =
-        AssertionStore::new_ephemeral();
+    let assertion_store = AssertionStore::new_ephemeral();
     let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
 
     let state_results = TransactionsState::new();

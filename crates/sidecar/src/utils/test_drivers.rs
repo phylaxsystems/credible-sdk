@@ -151,10 +151,8 @@ fn populate_test_database(underlying_db: &mut CacheDB<Arc<Sources>>) -> Address 
 }
 
 /// Setup assertion store with test assertions pre-loaded
-fn setup_assertion_store() -> Result<Arc<AssertionStore>, String> {
-    let assertion_store = Arc::new(
-        AssertionStore::new_ephemeral()
-    );
+fn setup_assertion_store() -> Arc<AssertionStore> {
+    let assertion_store = Arc::new(AssertionStore::new_ephemeral());
 
     // Insert counter assertion into store
     let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
@@ -165,7 +163,7 @@ fn setup_assertion_store() -> Result<Arc<AssertionStore>, String> {
         )
         .unwrap();
 
-    Ok(assertion_store)
+    assertion_store
 }
 
 const MAX_HTTP_RETRY_ATTEMPTS: usize = 10;
@@ -220,7 +218,7 @@ impl CommonSetup {
 
         let assertion_store = match assertion_store {
             Some(store) => Arc::new(store),
-            None => setup_assertion_store()?,
+            None => setup_assertion_store(),
         };
 
         // Create state with or without result sender
