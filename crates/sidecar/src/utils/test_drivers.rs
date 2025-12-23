@@ -995,9 +995,18 @@ impl LocalInstanceGrpcDriver {
     }
 
     async fn send_event(&self, event: Event) -> Result<(), String> {
-        self.event_sender
-            .send(event)
+        use tokio::time::{
+            Duration,
+            timeout,
+        };
+
+        // Add timeout to prevent indefinite blocking when channel is full
+        // This can happen when tests run in parallel and gRPC server is slow
+        timeout(Duration::from_secs(10), self.event_sender.send(event))
             .await
+            .map_err(|_| {
+                "Timeout sending event to gRPC stream - server may be overloaded".to_string()
+            })?
             .map_err(|e| format!("Failed to send event to stream: {e}"))
     }
 
@@ -1072,7 +1081,9 @@ impl LocalInstanceGrpcDriver {
             }
         };
 
-        let (event_tx, event_rx) = mpsc::channel(256);
+        // Use larger buffer to prevent blocking when running tests in parallel
+        // Tests can send bursts of events that need to be queued
+        let (event_tx, event_rx) = mpsc::channel(2048);
         let stream = ReceiverStream::new(event_rx);
 
         let mut client_clone = client.clone();
