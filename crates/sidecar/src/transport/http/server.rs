@@ -375,7 +375,17 @@ pub async fn handle_transaction_rpc(
     State(state): State<ServerState>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Result<ResponseJson<JsonRpcResponse>, StatusCode> {
-    debug!(request = ?request, "Processing JSON-RPC request");
+    let params_len = request
+        .params
+        .as_ref()
+        .and_then(|params| params.as_array().map(|items| items.len()));
+    debug!(
+        method = %request.method,
+        id = ?request.id,
+        has_params = request.params.is_some(),
+        params_len = ?params_len,
+        "Processing JSON-RPC request"
+    );
 
     let response = match request.method.as_str() {
         METHOD_SEND_TRANSACTIONS => handle_send_transactions(&state, &request).await?,

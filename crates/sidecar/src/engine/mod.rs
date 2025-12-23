@@ -536,6 +536,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let tx_hash = tx_execution_id.tx_hash;
         let is_valid = rax.is_valid();
         let execution_result = &rax.result_and_state.result;
+        let status = match execution_result {
+            ExecutionResult::Success { .. } => "success",
+            ExecutionResult::Revert { .. } => "reverted",
+            ExecutionResult::Halt { .. } => "halt",
+        };
 
         info!(
             target = "engine",
@@ -543,7 +548,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             block_number = %tx_execution_id.block_number,
             iteration_id = tx_execution_id.iteration_id,
             is_valid,
-            execution_result = ?execution_result,
+            status,
+            gas_used = execution_result.gas_used(),
             "Transaction processed"
         );
 
@@ -601,7 +607,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         trace!(
             target = "engine",
             tx_hash = %tx_execution_id.tx_hash,
-            tx_env = ?tx_env,
+            caller = %tx_env.caller,
+            gas_limit = tx_env.gas_limit,
             block_number = %current_block_iteration.block_env.number,
             "Executing transaction with environment"
         );
@@ -1197,7 +1204,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let tx_env = queue_transaction.tx_env;
         self.block_metrics.transactions_considered += 1;
 
-        info!(
+        debug!(
             target = "engine",
             tx_execution_id = ?tx_execution_id,
             tx_hash = ?tx_hash,

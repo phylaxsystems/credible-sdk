@@ -87,19 +87,6 @@ impl AssertionExecutor {
     }
 }
 
-/// Used for tracing outputs about state changes
-#[derive(Debug)]
-struct StateChangeMetadata<'a> {
-    #[allow(dead_code)]
-    address: &'a Address,
-    #[allow(dead_code)]
-    balance: &'a U256,
-    #[allow(dead_code)]
-    has_code: bool,
-    #[allow(dead_code)]
-    storage: &'a EvmStorage,
-}
-
 #[derive(Debug)]
 struct AssertionExecutionParams<'a, Active> {
     assertion_contract: &'a AssertionContract,
@@ -206,9 +193,13 @@ impl AssertionExecutor {
                 target: "assertion-executor::validate_tx",
                 gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(),
                 ?invalid_assertions,
-                tx_env = ?tx_env,
-                result_and_state =?forked_tx_result.result_and_state,
                 "Tx invalidated by assertions"
+            );
+            debug!(
+                target: "assertion-executor::validate_tx",
+                tx_env = ?tx_env,
+                result_and_state = ?forked_tx_result.result_and_state,
+                "Tx invalidated by assertions details"
             );
         }
 
@@ -449,7 +440,7 @@ impl AssertionExecutor {
 
         let exec_result = &forked_tx_result.result_and_state.result;
         if !exec_result.is_success() {
-            error!(target: "assertion-executor::validate_tx", "Transaction execution failed, skipping assertions");
+            debug!(target: "assertion-executor::validate_tx", "Transaction execution failed, skipping assertions");
             return Ok(TxValidationResult::new(
                 true,
                 forked_tx_result.result_and_state,
@@ -510,8 +501,7 @@ impl AssertionExecutor {
     #[instrument(
         level = "trace",
         skip_all,
-        target = "assertion-executor::execute_tx",
-        fields(tx_env, block_env)
+        target = "assertion-executor::execute_tx"
     )]
     fn execute_forked_tx_fork_db<Active>(
         &self,
@@ -552,8 +542,7 @@ impl AssertionExecutor {
     #[instrument(
         level = "trace",
         skip_all,
-        target = "assertion-executor::execute_tx",
-        fields(tx_env, block_env)
+        target = "assertion-executor::execute_tx"
     )]
     pub fn execute_forked_tx_ext_db<ExtDb>(
         &self,
@@ -574,21 +563,6 @@ impl AssertionExecutor {
             debug!(target: "assertion-executor::execute_tx", error = ?e, "Evm error in execute_forked_tx");
             e
         }).map_err(TxExecutionError::TxEvmError)?;
-
-        debug!(
-            target: "assertion-executor::execute_tx",
-            state_changes = ?{
-                result_and_state.state.iter().map(|(address, state_change)| {
-                    format!("{:?}", StateChangeMetadata {
-                        address,
-                        storage: &state_change.storage,
-                        balance: &state_change.info.balance,
-                        has_code: state_change.info.code.is_some(),
-                    })
-                }).collect::<Vec<_>>()
-            },
-            "Forked transaction state changes"
-        );
 
         let call_tracer = std::mem::take(evm.inspector);
         std::mem::drop(evm);
