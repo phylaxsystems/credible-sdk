@@ -105,12 +105,13 @@ impl StoreBackend {
     fn get(&self, adopter: &Address) -> Result<Option<Vec<AssertionState>>, AssertionStoreError> {
         match self {
             Self::InMemory { assertions, .. } => Ok(assertions.get(adopter).cloned()),
-            Self::Sled { db, .. } => db
-                .get(adopter)
-                .map_err(AssertionStoreError::SledError)?
-                .map(|bytes| de(&bytes))
-                .transpose()
-                .map_err(AssertionStoreError::BincodeError),
+            Self::Sled { db, .. } => {
+                db.get(adopter)
+                    .map_err(AssertionStoreError::SledError)?
+                    .map(|bytes| de(&bytes))
+                    .transpose()
+                    .map_err(AssertionStoreError::BincodeError)
+            }
         }
     }
 
@@ -144,8 +145,7 @@ impl StoreBackend {
                 Ok(())
             }
             Self::Sled { db, .. } => {
-                db.remove(adopter)
-                    .map_err(AssertionStoreError::SledError)?;
+                db.remove(adopter).map_err(AssertionStoreError::SledError)?;
                 Ok(())
             }
         }
@@ -178,8 +178,7 @@ impl StoreBackend {
                 Ok(true)
             }
             Self::Sled { db, .. } => {
-                let new_serialized =
-                    ser(&new).map_err(AssertionStoreError::BincodeError)?;
+                let new_serialized = ser(&new).map_err(AssertionStoreError::BincodeError)?;
                 let result = db.compare_and_swap(adopter, expected, Some(new_serialized));
                 match result {
                     Ok(Ok(_)) => Ok(true),
@@ -228,15 +227,17 @@ impl StoreBackend {
             Self::InMemory { expiry_index, .. } => {
                 expiry_index.range(..upper_bound).copied().collect()
             }
-            Self::Sled { expiry_tree, .. } => expiry_tree
-                .range(..upper_bound)
-                .filter_map(|r| {
-                    r.ok().and_then(|(k, _v)| {
-                        let arr: [u8; 60] = k.as_ref().try_into().ok()?;
-                        Some(arr)
+            Self::Sled { expiry_tree, .. } => {
+                expiry_tree
+                    .range(..upper_bound)
+                    .filter_map(|r| {
+                        r.ok().and_then(|(k, _v)| {
+                            let arr: [u8; 60] = k.as_ref().try_into().ok()?;
+                            Some(arr)
+                        })
                     })
-                })
-                .collect(),
+                    .collect()
+            }
         }
     }
 
@@ -510,10 +511,8 @@ impl AssertionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let mut assertions: Vec<AssertionState> = inner
-            .backend
-            .get(&assertion_adopter)?
-            .unwrap_or_default();
+        let mut assertions: Vec<AssertionState> =
+            inner.backend.get(&assertion_adopter)?.unwrap_or_default();
 
         let assertion_id = assertion.assertion_contract_id();
         let position = assertions
@@ -854,16 +853,15 @@ impl AssertionStore {
             // For Sled backend, we need the serialized form for CAS
             let assertions_serialized: Option<Vec<u8>> = match &inner.backend {
                 StoreBackend::InMemory { .. } => None,
-                StoreBackend::Sled { db, .. } => db
-                    .get(assertion_adopter)
-                    .map_err(AssertionStoreError::SledError)?
-                    .map(|ivec| ivec.to_vec()),
+                StoreBackend::Sled { db, .. } => {
+                    db.get(assertion_adopter)
+                        .map_err(AssertionStoreError::SledError)?
+                        .map(|ivec| ivec.to_vec())
+                }
             };
 
-            let mut assertions: Vec<AssertionState> = inner
-                .backend
-                .get(&assertion_adopter)?
-                .unwrap_or_default();
+            let mut assertions: Vec<AssertionState> =
+                inner.backend.get(&assertion_adopter)?.unwrap_or_default();
 
             debug!(
                 target: "assertion-executor::assertion_store",
