@@ -14,7 +14,7 @@ permissions: write-all
 
 jobs:
   criterion:
-    uses: phylaxsystems/actions/.github/workflows/benchmark.yaml@feat/create-bench-workflow
+    uses: phylaxsystems/actions/.github/workflows/benchmark.yaml@main
     with:
       rust-channel: stable
 <<<<<<< HEAD
