@@ -28,7 +28,9 @@ jobs:
     uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
     with:
       runner-group: "big-bois-x86"
-      rust-channel: "nightly"
+      # Pin nightly to a specific version for consistent caching across workflow runs
+      # Update this monthly or when new Rust features are needed
+      rust-channel: "nightly-2024-12-15"
       require-lockfile: true
       install-foundry: true
       dind: true
@@ -36,25 +38,37 @@ jobs:
       use-nextest: true
       foundry-command: "forge build --root testdata/mock-protocol"
       test-args: "--exclude state-store --exclude state-worker --no-tests=warn"
-      # [""] means default features
-      # Feature matrices are supported as follows: ["", "--features=foo", "--features=bar", "--features=foo,bar"]
       feature-sets: '[
         "--no-default-features --features test",
         "--no-default-features --features test --features optimism"
         ]'
 
-  rust-base-state-worker:
-    name: Rust Base State Worker
-    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
-    with:
-      rust-channel: "nightly"
-      require-lockfile: true
-      install-foundry: true
-      foundry-command: "forge build --root testdata/mock-protocol"
-      dind: true
-      test-args: "--package state-store --package state-worker -- --test-threads=1"
-      # [""] means default features
-      # Feature matrices are supported as follows: ["", "--features=foo", "--features=bar", "--features=foo,bar"]
-      feature-sets: '[
-        "--no-default-features"
-        ]'
+  # FIXME: State worker tests need special handling (single-threaded execution).
+  # Ideally, rust-base.yaml should support a test-matrix input with clean package selection
+  # (e.g., packages: ["state-store", "state-worker"]) to avoid this duplication.
+  # For now, we run these tests inline to avoid duplicate lint jobs.
+  state-worker-tests:
+    name: State Worker Tests (single-threaded)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-state-worker-test
+
+      - uses: taiki-e/install-action@nextest
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Build Foundry contracts
+        run: forge build --root testdata/mock-protocol
+
+      - name: Run state-worker tests
+        run: cargo nextest run --package state-store --package state-worker --locked --cargo-profile release --no-default-features --test-threads=2
