@@ -63,7 +63,8 @@ jobs:
   state-worker-tests:
     name: State Worker Tests (single-threaded)
     needs: setup
-    runs-on: ubuntu-latest
+    runs-on:
+      group: big-bois-x86
     steps:
       - uses: actions/checkout@v4
         with:
