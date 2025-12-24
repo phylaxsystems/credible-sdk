@@ -905,8 +905,7 @@ impl SidecarTransport for GrpcService {
         let events_processed = Arc::new(AtomicU64::new(0));
         let events_processed_clone = events_processed.clone();
 
-        // Use larger buffer to handle bursts of events when running tests in parallel
-        let (tx, rx) = mpsc::channel(2048);
+        let (tx, rx) = mpsc::channel(256);
 
         // Spawn task to process incoming events
         let handle = tokio::spawn(async move {
