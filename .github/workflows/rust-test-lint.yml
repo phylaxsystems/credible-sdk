@@ -22,22 +22,72 @@ on:
         required: false
         default: false
 
+env:
+  # Pin nightly to a specific version for consistent caching across workflow runs
+  # Update this monthly or when new Rust features are needed
+  RUST_NIGHTLY_VERSION: "nightly-2024-12-15"
+
 jobs:
+  setup:
+    name: Setup Variables
+    runs-on: ubuntu-latest
+    outputs:
+      rust-nightly: ${{ steps.vars.outputs.rust-nightly }}
+    steps:
+      - id: vars
+        run: echo "rust-nightly=${{ env.RUST_NIGHTLY_VERSION }}" >> $GITHUB_OUTPUT
+
   rust-base:
-    name: Rust Base
+    name: Rust Base Nextest
+    needs: setup
     uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
     with:
       runner-group: "big-bois-x86"
-      rust-channel: "nightly"
+      rust-channel: ${{ needs.setup.outputs.rust-nightly }}
       require-lockfile: true
       install-foundry: true
       dind: true
       submodules: true
-      foundry-command: "forge build --root testdata/mock-protocol"
-      test-args: "-- --test-threads=2"
-      # [""] means default features
-      # Feature matrices are supported as follows: ["", "--features=foo", "--features=bar", "--features=foo,bar"]
+      use-nextest: true
+      foundry-command: "forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol"
+      test-args: "--exclude state-store --exclude state-worker --no-tests=warn"
       feature-sets: '[
         "--no-default-features --features test",
         "--no-default-features --features test --features optimism"
         ]'
+
+  # FIXME: State worker tests need special handling (single-threaded execution).
+  # Ideally, rust-base.yaml should support a test-matrix input with clean package selection
+  # (e.g., packages: ["state-store", "state-worker"]) to avoid this duplication.
+  # For now, we run these tests inline to avoid duplicate lint jobs.
+  state-worker-tests:
+    name: State Worker Tests (single-threaded)
+    needs: setup
+    runs-on:
+      group: big-bois-x86
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: ${{ needs.setup.outputs.rust-nightly }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+
+          shared-key: ${{ needs.setup.outputs.rust-nightly }}-base
+          key: default
+
+      - uses: taiki-e/install-action@nextest
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Build Foundry contracts
+        run: forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol
+
+      - name: Run state-worker tests
+        run: cargo nextest run --package state-store --package state-worker --locked --cargo-profile release --no-default-features --test-threads=2

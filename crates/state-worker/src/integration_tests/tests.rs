@@ -6,7 +6,10 @@ use crate::{
     cli::ProviderType,
     connect_provider,
     genesis,
-    integration_tests::setup::LocalInstance,
+    integration_tests::{
+        redis_fixture::get_shared_redis,
+        setup::LocalInstance,
+    },
     state,
     worker::StateWorker,
 };
@@ -62,6 +65,41 @@ fn get_latest_block_from_redis(
     max_block
 }
 
+/// Wait for a specific block to be processed in Redis (with polling and timeout).
+async fn wait_for_block(
+    redis_url: &str,
+    base_namespace: &str,
+    buffer_size: usize,
+    expected_block: u64,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    let client =
+        redis::Client::open(redis_url).map_err(|e| format!("Failed to connect to Redis: {e}"))?;
+    let mut conn = client
+        .get_connection()
+        .map_err(|e| format!("Failed to get Redis connection: {e}"))?;
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        if let Some(latest) = get_latest_block_from_redis(&mut conn, base_namespace, buffer_size)
+            && latest >= expected_block
+        {
+            return Ok(());
+        }
+
+        if start.elapsed() > timeout {
+            let latest = get_latest_block_from_redis(&mut conn, base_namespace, buffer_size);
+            return Err(format!(
+                "Timeout waiting for block {expected_block}. Latest block: {latest:?}"
+            ));
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+}
+
 /// Helper to get the namespace for a given block number.
 fn get_namespace_for_block(base_namespace: &str, block_number: u64, buffer_size: usize) -> String {
     let namespace_idx = usize::try_from(block_number).unwrap() % buffer_size;
@@ -112,9 +150,9 @@ async fn test_state_worker_hydrates_genesis_state() {
         .expect("Failed to get Redis connection");
 
     let address_hash = keccak256(hex::decode(genesis_account.trim_start_matches("0x")).unwrap());
-    let namespace = "state_worker_test:0";
-    let account_key = get_account_key(namespace, &address_hash.into());
-    let storage_key = get_storage_key(namespace, &address_hash.into());
+    let namespace = format!("{}:0", instance.namespace);
+    let account_key = get_account_key(&namespace, &address_hash.into());
+    let storage_key = get_storage_key(&namespace, &address_hash.into());
     let code_hash = format!(
         "0x{}",
         hex::encode(keccak256(
@@ -201,7 +239,7 @@ async fn test_state_worker_hydrates_genesis_state() {
         || storage_slot_one.is_none()
     {
         let keys: Vec<String> = redis::cmd("KEYS")
-            .arg("state_worker_test:*")
+            .arg(format!("{}:*", instance.namespace))
             .query(&mut conn)
             .unwrap_or_default();
         panic!("missing genesis data in redis. keys present: {keys:?}");
@@ -310,7 +348,7 @@ async fn test_state_worker_processes_multiple_state_changes() {
 
     let mut current_block: Option<u64> = None;
     for _ in 0..30 {
-        current_block = get_latest_block_from_redis(&mut conn, "state_worker_test", 3);
+        current_block = get_latest_block_from_redis(&mut conn, &instance.namespace, 3);
         if current_block == Some(3) {
             break;
         }
@@ -325,15 +363,15 @@ async fn test_state_worker_processes_multiple_state_changes() {
 
     let expected_block_hashes = vec![
         (
-            "state_worker_test:block_hash:1",
+            format!("{}:block_hash:1", instance.namespace),
             "0x0000000000000000000000000000000000000000000000000000000000000001",
         ),
         (
-            "state_worker_test:block_hash:2",
+            format!("{}:block_hash:2", instance.namespace),
             "0x0000000000000000000000000000000000000000000000000000000000000002",
         ),
         (
-            "state_worker_test:block_hash:3",
+            format!("{}:block_hash:3", instance.namespace),
             "0x0000000000000000000000000000000000000000000000000000000000000003",
         ),
     ];
@@ -355,7 +393,7 @@ async fn test_state_worker_processes_multiple_state_changes() {
         );
     }
 
-    let namespace_1 = "state_worker_test:1";
+    let namespace_1 = format!("{}:1", instance.namespace);
     let block_1_key = format!("{namespace_1}:block");
     let mut block_1: Option<String> = None;
     for _ in 0..30 {
@@ -368,7 +406,7 @@ async fn test_state_worker_processes_multiple_state_changes() {
     let block_1 = block_1.expect("Failed to get block 1 from namespace 1");
     assert_eq!(block_1, "1");
 
-    let namespace_2 = "state_worker_test:2";
+    let namespace_2 = format!("{}:2", instance.namespace);
     let block_2_key = format!("{namespace_2}:block");
     let mut block_2: Option<String> = None;
     for _ in 0..20 {
@@ -381,7 +419,7 @@ async fn test_state_worker_processes_multiple_state_changes() {
     let block_2 = block_2.expect("Failed to get block 2 from namespace 2");
     assert_eq!(block_2, "2");
 
-    let namespace_0 = "state_worker_test:0";
+    let namespace_0 = format!("{}:0", instance.namespace);
     let block_3_key = format!("{namespace_0}:block");
     let mut block_3: Option<String> = None;
     for _ in 0..20 {
@@ -396,20 +434,20 @@ async fn test_state_worker_processes_multiple_state_changes() {
 
     for (key, expected_hash) in [
         (
-            "state_worker_test:block_hash:1",
+            format!("{}:block_hash:1", instance.namespace),
             "0x0000000000000000000000000000000000000000000000000000000000000001",
         ),
         (
-            "state_worker_test:block_hash:2",
+            format!("{}:block_hash:2", instance.namespace),
             "0x0000000000000000000000000000000000000000000000000000000000000002",
         ),
         (
-            "state_worker_test:block_hash:3",
+            format!("{}:block_hash:3", instance.namespace),
             "0x0000000000000000000000000000000000000000000000000000000000000003",
         ),
     ] {
         let hash: String = conn
-            .get(key)
+            .get(&key)
             .unwrap_or_else(|_| panic!("Failed to get {key}"));
         assert_eq!(hash, expected_hash);
 
@@ -459,7 +497,7 @@ async fn test_state_worker_handles_rapid_state_changes() {
 
     let mut current_block: Option<u64> = None;
     for _ in 0..30 {
-        current_block = get_latest_block_from_redis(&mut conn, "state_worker_test", 3);
+        current_block = get_latest_block_from_redis(&mut conn, &instance.namespace, 3);
         if current_block == Some(5) {
             break;
         }
@@ -474,7 +512,7 @@ async fn test_state_worker_handles_rapid_state_changes() {
     );
 
     for block_num in 1..=current_block_num {
-        let key = format!("state_worker_test:block_hash:{block_num}");
+        let key = format!("{}:block_hash:{block_num}", instance.namespace);
         let mut hash: Option<String> = None;
         for _ in 0..20 {
             if let Ok(h) = conn.get::<_, String>(&key) {
@@ -489,7 +527,7 @@ async fn test_state_worker_handles_rapid_state_changes() {
     }
 
     for block_num in 3..=5 {
-        let namespace = get_namespace_for_block("state_worker_test", block_num, 3);
+        let namespace = get_namespace_for_block(&instance.namespace, block_num, 3);
         let block_key = format!("{namespace}:block");
 
         let mut stored_block: Option<String> = None;
@@ -660,7 +698,7 @@ async fn test_circular_buffer_rotation_with_state_diffs() {
 
     let mut latest: Option<u64> = None;
     for _ in 0..30 {
-        latest = get_latest_block_from_redis(&mut conn, "state_worker_test", 3);
+        latest = get_latest_block_from_redis(&mut conn, &instance.namespace, 3);
         if latest == Some(6) {
             break;
         }
@@ -669,7 +707,7 @@ async fn test_circular_buffer_rotation_with_state_diffs() {
     assert_eq!(latest, Some(6), "Latest block should be 6 after rotation");
 
     for block_num in 4..=6 {
-        let namespace = get_namespace_for_block("state_worker_test", block_num, 3);
+        let namespace = get_namespace_for_block(&instance.namespace, block_num, 3);
         let block_key = format!("{namespace}:block");
 
         let mut stored_block: Option<String> = None;
@@ -691,7 +729,7 @@ async fn test_circular_buffer_rotation_with_state_diffs() {
     }
 
     for block_num in 1..=6 {
-        let key = format!("state_worker_test:block_hash:{block_num}");
+        let key = format!("{}:block_hash:{block_num}", instance.namespace);
         let mut hash: Option<String> = None;
         for _ in 0..20 {
             if let Ok(h) = conn.get::<_, String>(&key) {
@@ -705,7 +743,7 @@ async fn test_circular_buffer_rotation_with_state_diffs() {
     }
 
     for block_num in 4..=6 {
-        let diff_key = format!("state_worker_test:diff:{block_num}");
+        let diff_key = format!("{}:diff:{block_num}", instance.namespace);
         let mut exists = false;
         for _ in 0..20 {
             if let Ok(e) = redis::cmd("EXISTS").arg(&diff_key).query::<bool>(&mut conn) {
@@ -722,7 +760,7 @@ async fn test_circular_buffer_rotation_with_state_diffs() {
     sleep(Duration::from_millis(100)).await;
 
     for block_num in 1..=3 {
-        let diff_key = format!("state_worker_test:diff:{block_num}");
+        let diff_key = format!("{}:diff:{block_num}", instance.namespace);
         let exists: bool = redis::cmd("EXISTS")
             .arg(&diff_key)
             .query(&mut conn)
@@ -737,21 +775,9 @@ async fn test_circular_buffer_rotation_with_state_diffs() {
 /// Test basic restart: process blocks, stop, restart, verify continuation
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_restart_continues_from_last_block() {
-    // Start Redis container
-    let redis_container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis container");
-
-    let host = redis_container
-        .get_host()
-        .await
-        .expect("Failed to get Redis host");
-    let port = redis_container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-    let redis_url = format!("redis://{host}:{port}");
+    // Use shared Redis container
+    let redis = get_shared_redis().await;
+    let redis_url = redis.url.clone();
 
     // Setup mock server
     let http_server_mock = DualProtocolMockServer::new()
@@ -812,14 +838,10 @@ async fn test_restart_continues_from_last_block() {
             sleep(Duration::from_millis(100)).await;
         }
 
-        // Wait for blocks to be processed
-        sleep(Duration::from_millis(300)).await;
-
-        // Verify blocks 1-3 are processed
-        let client = redis::Client::open(redis_url.as_str()).unwrap();
-        let mut conn = client.get_connection().unwrap();
-        let latest = get_latest_block_from_redis(&mut conn, "restart_test", 3);
-        assert_eq!(latest, Some(3), "Should have processed 3 blocks");
+        // Wait for blocks to be processed (with polling and 5 second timeout)
+        wait_for_block(&redis_url, "restart_test", 3, 3, 5)
+            .await
+            .expect("Should have processed 3 blocks");
 
         // Shutdown first worker
         shutdown_tx.send(()).unwrap();
@@ -886,19 +908,14 @@ async fn test_restart_continues_from_last_block() {
             sleep(Duration::from_millis(100)).await;
         }
 
-        sleep(Duration::from_millis(300)).await;
-
-        // Verify all blocks are processed
-        let client = redis::Client::open(redis_url.as_str()).unwrap();
-        let mut conn = client.get_connection().unwrap();
-        let latest = get_latest_block_from_redis(&mut conn, "restart_test", 3);
-        assert_eq!(
-            latest,
-            Some(6),
-            "Should have processed blocks 4-6 after restart"
-        );
+        // Wait for blocks to be processed (with polling and 5 second timeout)
+        wait_for_block(&redis_url, "restart_test", 3, 6, 5)
+            .await
+            .expect("Should have processed blocks 4-6 after restart");
 
         // Verify block hashes for all blocks exist
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
         for block_num in 1..=6 {
             let key = format!("restart_test:block_hash:{block_num}");
             let hash: Option<String> = conn.get(&key).ok();
@@ -1270,7 +1287,7 @@ async fn test_zero_storage_values_are_deleted() {
         .get_connection()
         .expect("Failed to get Redis connection");
 
-    let namespace = get_namespace_for_block("state_worker_test", 1, 3);
+    let namespace = get_namespace_for_block(&instance.namespace, 1, 3);
     let storage_key = get_storage_key(&namespace, &address_hash.into());
 
     let slot_zero_key = format!(
@@ -1344,7 +1361,7 @@ async fn test_zero_storage_values_are_deleted() {
     sleep(Duration::from_millis(200)).await;
 
     // Wait for block 2 to be processed
-    let namespace_2 = get_namespace_for_block("state_worker_test", 2, 3);
+    let namespace_2 = get_namespace_for_block(&instance.namespace, 2, 3);
     let block_2_key = format!("{namespace_2}:block");
     for _ in 0..30 {
         if let Ok(b) = conn.get::<_, String>(&block_2_key)
@@ -1430,7 +1447,7 @@ async fn test_get_account_does_not_load_storage() {
         .get_connection()
         .expect("Failed to get Redis connection");
 
-    let namespace = get_namespace_for_block("state_worker_test", 1, 3);
+    let namespace = get_namespace_for_block(&instance.namespace, 1, 3);
     let block_key = format!("{namespace}:block");
 
     for _ in 0..30 {
@@ -1445,7 +1462,7 @@ async fn test_get_account_does_not_load_storage() {
     // Create reader
     let reader = StateReader::new(
         &instance.redis_url,
-        "state_worker_test",
+        &instance.namespace,
         CircularBufferConfig::new(3).unwrap(),
     )
     .expect("Failed to create reader");
@@ -1521,7 +1538,7 @@ async fn test_get_full_account_returns_all_slots() {
         .get_connection()
         .expect("Failed to get Redis connection");
 
-    let namespace = get_namespace_for_block("state_worker_test", 1, 3);
+    let namespace = get_namespace_for_block(&instance.namespace, 1, 3);
     let block_key = format!("{namespace}:block");
 
     for _ in 0..30 {
@@ -1535,7 +1552,7 @@ async fn test_get_full_account_returns_all_slots() {
 
     let reader = StateReader::new(
         &instance.redis_url,
-        "state_worker_test",
+        &instance.namespace,
         CircularBufferConfig::new(3).unwrap(),
     )
     .expect("Failed to create reader");
@@ -1613,7 +1630,7 @@ async fn test_get_storage_returns_individual_slot() {
         .get_connection()
         .expect("Failed to get Redis connection");
 
-    let namespace = get_namespace_for_block("state_worker_test", 1, 3);
+    let namespace = get_namespace_for_block(&instance.namespace, 1, 3);
     let block_key = format!("{namespace}:block");
 
     for _ in 0..30 {
@@ -1627,7 +1644,7 @@ async fn test_get_storage_returns_individual_slot() {
 
     let reader = StateReader::new(
         &instance.redis_url,
-        "state_worker_test",
+        &instance.namespace,
         CircularBufferConfig::new(3).unwrap(),
     )
     .expect("Failed to create reader");
@@ -1712,7 +1729,7 @@ async fn test_eip2935_and_eip4788_system_contracts() {
 
     let mut latest: Option<u64> = None;
     for _ in 0..30 {
-        latest = get_latest_block_from_redis(&mut conn, "state_worker_test", 3);
+        latest = get_latest_block_from_redis(&mut conn, &instance.namespace, 3);
         if latest == Some(3) {
             break;
         }
@@ -1722,7 +1739,7 @@ async fn test_eip2935_and_eip4788_system_contracts() {
 
     let reader = StateReader::new(
         &instance.redis_url,
-        "state_worker_test",
+        &instance.namespace,
         CircularBufferConfig::new(3).unwrap(),
     )
     .expect("Failed to create reader");
@@ -1835,7 +1852,7 @@ async fn test_genesis_block_skips_system_calls() {
 
     let reader = StateReader::new(
         &instance.redis_url,
-        "state_worker_test",
+        &instance.namespace,
         CircularBufferConfig::new(3).unwrap(),
     )
     .expect("Failed to create reader");

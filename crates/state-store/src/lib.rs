@@ -165,6 +165,9 @@ pub mod writer;
 pub mod reader;
 
 #[cfg(test)]
+mod redis_test_fixture;
+
+#[cfg(test)]
 mod tests;
 
 // Re-export common types at the root

@@ -401,9 +401,6 @@ mod tests {
                 drop(receiver);
             });
 
-            // Let the cleanup task run
-            tokio::time::sleep(Duration::from_millis(350)).await;
-
             handle.await.unwrap();
         }
 

@@ -5,6 +5,7 @@ libs = ["lib"]
 
 [profile.assertions]
 src = "assertions/src"
+out = "out"
 test = "assertions/test"
 
 [lint]
