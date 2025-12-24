@@ -15,6 +15,37 @@ use pcl_common::args::CliArgs;
 use serde::Deserialize;
 use serde_json::json;
 
+/// Trait for interactive prompting, allowing for mocking in tests
+trait Prompter {
+    fn select(&self, message: &str, values: Vec<String>) -> Result<String, DappSubmitError>;
+    fn multi_select(
+        &self,
+        message: &str,
+        values: Vec<String>,
+    ) -> Result<Vec<String>, DappSubmitError>;
+}
+
+/// Real implementation using inquire crate
+struct InquirePrompter;
+
+impl Prompter for InquirePrompter {
+    fn select(&self, message: &str, values: Vec<String>) -> Result<String, DappSubmitError> {
+        Select::new(message, values)
+            .prompt()
+            .map_err(DappSubmitError::ProjectSelectionFailed)
+    }
+
+    fn multi_select(
+        &self,
+        message: &str,
+        values: Vec<String>,
+    ) -> Result<Vec<String>, DappSubmitError> {
+        MultiSelect::new(message, values)
+            .prompt()
+            .map_err(DappSubmitError::ProjectSelectionFailed)
+    }
+}
+
 // TODO(Odysseas) Add tests for the Dapp submission + Rust bindings from the Dapp API
 
 #[derive(Deserialize, Debug)]
@@ -316,22 +347,24 @@ impl DappSubmitArgs {
         values: Vec<String>,
         message: &str,
     ) -> Result<String, DappSubmitError> {
+        Self::provide_or_select_with_prompter(maybe_key, values, message, &InquirePrompter)
+    }
+
+    fn provide_or_select_with_prompter(
+        maybe_key: Option<String>,
+        values: Vec<String>,
+        message: &str,
+        prompter: &dyn Prompter,
+    ) -> Result<String, DappSubmitError> {
         match maybe_key {
-            None => {
-                Ok(Select::new(message, values)
-                    .prompt()
-                    .map_err(DappSubmitError::ProjectSelectionFailed)?)
-            }
+            None => prompter.select(message, values),
             Some(key) => {
                 let exists = values.contains(&key);
                 if exists {
                     Ok(key.clone())
                 } else {
                     println!("{key} does not exist");
-                    let choice = Select::new(message, values)
-                        .prompt()
-                        .map_err(DappSubmitError::ProjectSelectionFailed)?;
-                    Ok(choice)
+                    prompter.select(message, values)
                 }
             }
         }
@@ -351,12 +384,17 @@ impl DappSubmitArgs {
         values: Vec<String>,
         message: &str,
     ) -> Result<Vec<String>, DappSubmitError> {
+        Self::provide_or_multi_select_with_prompter(maybe_keys, values, message, &InquirePrompter)
+    }
+
+    fn provide_or_multi_select_with_prompter(
+        maybe_keys: Option<Vec<String>>,
+        values: Vec<String>,
+        message: &str,
+        prompter: &dyn Prompter,
+    ) -> Result<Vec<String>, DappSubmitError> {
         match maybe_keys {
-            None => {
-                Ok(MultiSelect::new(message, values)
-                    .prompt()
-                    .map_err(DappSubmitError::ProjectSelectionFailed)?)
-            }
+            None => prompter.multi_select(message, values),
             Some(keys) => {
                 let all_exist = keys.iter().all(|k| values.contains(k));
                 if all_exist {
@@ -368,9 +406,7 @@ impl DappSubmitArgs {
                         .cloned()
                         .collect::<Vec<_>>();
                     println!("{} does not exist", missing_keys.join(", "));
-                    Ok(MultiSelect::new(message, values)
-                        .prompt()
-                        .map_err(DappSubmitError::ProjectSelectionFailed)?)
+                    prompter.multi_select(message, values)
                 }
             }
         }
@@ -402,6 +438,46 @@ impl DappSubmitArgs {
 mod tests {
     use super::*;
     use crate::assertion_submission::DappSubmitArgs;
+
+    /// Mock prompter for testing that returns predefined values
+    struct MockPrompter {
+        select_response: Option<String>,
+        multi_select_response: Option<Vec<String>>,
+    }
+
+    impl MockPrompter {
+        fn new_select(response: String) -> Self {
+            Self {
+                select_response: Some(response),
+                multi_select_response: None,
+            }
+        }
+
+        fn new_multi_select(response: Vec<String>) -> Self {
+            Self {
+                select_response: None,
+                multi_select_response: Some(response),
+            }
+        }
+    }
+
+    impl Prompter for MockPrompter {
+        fn select(&self, _message: &str, _values: Vec<String>) -> Result<String, DappSubmitError> {
+            self.select_response.clone().ok_or_else(|| {
+                DappSubmitError::ProjectSelectionFailed(inquire::InquireError::OperationCanceled)
+            })
+        }
+
+        fn multi_select(
+            &self,
+            _message: &str,
+            _values: Vec<String>,
+        ) -> Result<Vec<String>, DappSubmitError> {
+            self.multi_select_response.clone().ok_or_else(|| {
+                DappSubmitError::ProjectSelectionFailed(inquire::InquireError::OperationCanceled)
+            })
+        }
+    }
 
     #[test]
     fn test_provide_or_select_with_valid_input() {
@@ -1174,24 +1250,45 @@ mod tests {
 
     #[test]
     fn test_provide_or_select_with_invalid_preselected() {
-        // Test when preselected value is not in the list
+        // Test when preselected value is not in the list - should fall back to prompting
         let values = vec!["Project1".to_string(), "Project2".to_string()];
-        // This would normally prompt the user, but we can't test interactive behavior
-        // Just verify the method signature is correct
-        let _ = DappSubmitArgs::provide_or_select(
+        let mock_prompter = MockPrompter::new_select("Project2".to_string());
+
+        let result = DappSubmitArgs::provide_or_select_with_prompter(
             Some("NonExistentProject".to_string()),
             values,
             "Select:",
+            &mock_prompter,
         );
+
+        // Should successfully select Project2 via the mock prompter
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Project2");
     }
 
     #[test]
     fn test_provide_or_multi_select_with_partial_invalid() {
-        // Test when some preselected values are not in the list
+        // Test when some preselected values are not in the list - should fall back to prompting
         let values = vec!["assertion1".to_string(), "assertion2".to_string()];
         let preselected = vec!["assertion1".to_string(), "assertion3".to_string()];
-        // This would normally prompt the user, but we can't test interactive behavior
-        let _ = DappSubmitArgs::provide_or_multi_select(Some(preselected), values, "Select:");
+        let mock_prompter = MockPrompter::new_multi_select(vec![
+            "assertion1".to_string(),
+            "assertion2".to_string(),
+        ]);
+
+        let result = DappSubmitArgs::provide_or_multi_select_with_prompter(
+            Some(preselected),
+            values,
+            "Select:",
+            &mock_prompter,
+        );
+
+        // Should successfully select assertions via the mock prompter
+        assert!(result.is_ok());
+        let selected = result.unwrap();
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains(&"assertion1".to_string()));
+        assert!(selected.contains(&"assertion2".to_string()));
     }
 
     #[test]

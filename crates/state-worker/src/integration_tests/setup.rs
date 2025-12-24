@@ -21,11 +21,10 @@ pub(in crate::integration_tests) struct LocalInstance {
     pub http_server_mock: DualProtocolMockServer,
     pub handle_worker: tokio::task::JoinHandle<()>,
     pub redis_url: String,
+    pub namespace: String,
 }
 
 impl LocalInstance {
-    const NAMESPACE: &'static str = "state_worker_test";
-
     pub(in crate::integration_tests) async fn new() -> Result<LocalInstance, String> {
         Self::new_with_setup_and_genesis(|_| {}, None).await
     }
@@ -46,6 +45,9 @@ impl LocalInstance {
     where
         F: FnOnce(&DualProtocolMockServer),
     {
+        // Create unique namespace per test to avoid state pollution
+        let namespace = format!("state_worker_test:{}", uuid::Uuid::new_v4());
+
         // Create the mock transport
         let http_server_mock = DualProtocolMockServer::new()
             .await
@@ -63,14 +65,14 @@ impl LocalInstance {
 
         let writer = StateWriter::new(
             &redis_url,
-            Self::NAMESPACE,
+            &namespace,
             CircularBufferConfig::new(3).map_err(|e| e.to_string())?,
         )
         .map_err(|e| format!("Failed to initialize redis client: {e}"))?;
 
         let reader = StateReader::new(
             &redis_url,
-            Self::NAMESPACE,
+            &namespace,
             CircularBufferConfig::new(3).map_err(|e| e.to_string())?,
         )
         .map_err(|e| format!("Failed to initialize redis client: {e}"))?;
@@ -94,6 +96,7 @@ impl LocalInstance {
             http_server_mock,
             handle_worker,
             redis_url,
+            namespace,
         })
     }
 }

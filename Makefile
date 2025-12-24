@@ -4,6 +4,12 @@ build:
 build-contracts:
 	forge build --root testdata/mock-protocol 
 
+# Clean up test containers
+test-cleanup:
+	@echo "Cleaning up test containers..."
+	@docker ps -a --filter "ancestor=redis:5.0" --format "{{.ID}}" | xargs -r docker rm -f || true
+	@docker ps -a --filter "ancestor=solc" --format "{{.ID}}" | xargs -r docker rm -f || true
+
 # Run the rust tests for optimism
 test-optimism: build-contracts
 	ASSERTION_DA_SOLC_DOCKER_PLATFORM=linux/amd64 cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features optimism --features test
@@ -12,7 +18,11 @@ test-optimism: build-contracts
 test-default: build-contracts
 	ASSERTION_DA_SOLC_DOCKER_PLATFORM=linux/amd64 cargo nextest run --workspace --locked  --cargo-profile release --no-tests=warn --no-default-features --features test
 
-make test: test-optimism test-default
+# Run state worker tests (single-threaded to avoid race conditions)
+test-state-worker:
+	cargo test --package state-store --package state-worker --locked --profile release --no-default-features -- --test-threads=1
+
+make test: test-optimism test-default test-state-worker test-cleanup
 
 # Run tests without full tests (skips Docker-dependent tests and integration tests)
 test-no-full:
