@@ -225,11 +225,6 @@ impl Sources {
 impl DatabaseRef for Sources {
     type Error = CacheError;
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        trace!(
-            target = "cache::basic_ref",
-            address = %address,
-            "Function call",
-        );
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();
@@ -288,11 +283,6 @@ impl DatabaseRef for Sources {
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        trace!(
-            target = "cache::block_hash_ref",
-            number = %number,
-            "Function call",
-        );
         let total_operation_instant = Instant::now();
         let result = self
             .iter_synced_sources()
@@ -329,11 +319,6 @@ impl DatabaseRef for Sources {
     }
 
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        trace!(
-            target = "cache::code_by_hash_ref",
-            code_hash = %code_hash,
-            "Function call",
-        );
         let total_operation_instant = Instant::now();
         let result = self
             .iter_synced_sources()
@@ -376,12 +361,6 @@ impl DatabaseRef for Sources {
         address: Address,
         index: StorageKey,
     ) -> Result<StorageValue, Self::Error> {
-        trace!(
-            target = "cache::storage_ref",
-            address = %address,
-            index = %format_args!("{:#x}", index),
-            "Function call",
-        );
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();

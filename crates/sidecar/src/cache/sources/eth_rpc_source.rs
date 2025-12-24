@@ -40,6 +40,7 @@ use std::{
 use thiserror::Error;
 use tokio::task::AbortHandle;
 use tracing::{
+    debug,
     error,
     info,
     warn,
@@ -145,7 +146,7 @@ impl EthRpcSourceInner {
     /// Handle new block
     fn handle_new_header(&self, header: &Header) {
         let block_number = header.inner.number;
-        info!("New block: #{}", block_number);
+        debug!("New block: #{}", block_number);
 
         // Update state
         *self.latest_head.write() = U256::from(block_number);

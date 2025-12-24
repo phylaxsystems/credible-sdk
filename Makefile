@@ -20,15 +20,15 @@ test-no-full:
 
 # Validate formatting
 format:
-	cargo +nightly fmt --check
+	cargo fmt --check
 
 # Errors if there is a warning with clippy
 lint:
-	cargo +nightly clippy --all-targets --workspace   --profile dev -- -D warnings -D clippy::pedantic
+	cargo clippy --all-targets --workspace   --profile dev -- -D warnings -D clippy::pedantic
 
 # Fix linting errors
 lint-fix:
-	cargo +nightly clippy --all-targets --workspace   --profile dev --fix -- -D clippy::pedantic
+	cargo clippy --all-targets --workspace   --profile dev --fix -- -D clippy::pedantic
 
 # Can be used as a manual pre-commit check
 pre-commit:

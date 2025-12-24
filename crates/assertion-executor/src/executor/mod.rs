@@ -33,7 +33,6 @@ use crate::{
         Account,
         AccountInfo,
         AccountStatus,
-        Address,
         AssertionContract,
         AssertionContractExecution,
         AssertionFnId,
@@ -42,7 +41,6 @@ use crate::{
         BlockEnv,
         Bytecode,
         EvmState,
-        EvmStorage,
         FixedBytes,
         ResultAndState,
         TxEnv,
@@ -68,6 +66,7 @@ use rayon::prelude::{
 use crate::error::TxExecutionError;
 use tracing::{
     debug,
+    error,
     instrument,
     trace,
     warn,
@@ -84,19 +83,6 @@ impl AssertionExecutor {
     pub fn new(config: ExecutorConfig, store: AssertionStore) -> Self {
         Self { config, store }
     }
-}
-
-/// Used for tracing outputs about state changes
-#[derive(Debug)]
-struct StateChangeMetadata<'a> {
-    #[allow(dead_code)]
-    address: &'a Address,
-    #[allow(dead_code)]
-    balance: &'a U256,
-    #[allow(dead_code)]
-    has_code: bool,
-    #[allow(dead_code)]
-    storage: &'a EvmStorage,
 }
 
 #[derive(Debug)]
@@ -129,7 +115,7 @@ impl AssertionExecutor {
     pub fn validate_transaction_ext_db<ExtDb, Active>(
         &mut self,
         block_env: BlockEnv,
-        tx_env: TxEnv,
+        tx_env: &TxEnv,
         fork_db: &mut ForkDb<Active>,
         external_db: &mut ExtDb,
     ) -> Result<
@@ -146,7 +132,7 @@ impl AssertionExecutor {
 
         // This call relies on From<EVMError<ExtDb::Error>> for ExecutorError<DB::Error>
         let forked_tx_result = self
-            .execute_forked_tx_ext_db::<ExtDb>(&block_env, tx_env, external_db)
+            .execute_forked_tx_ext_db::<ExtDb>(&block_env, tx_env.clone(), external_db)
             .map_err(ExecutorError::ForkTxExecutionError)?;
 
         let exec_result = &forked_tx_result.result_and_state.result;
@@ -193,14 +179,25 @@ impl AssertionExecutor {
         let valid = invalid_assertions.is_empty();
 
         if valid {
-            debug!(target: "assertion-executor::validate_tx", gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(), "Tx validated");
-            trace!(target: "assertion-executor::validate_tx", "Committing state changes to fork db");
+            debug!(
+                target: "assertion-executor::validate_tx",
+                gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(),
+                assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(),
+                "Tx validated"
+            );
             fork_db.commit(forked_tx_result.result_and_state.state.clone());
         } else {
-            debug!(target: "assertion-executor::validate_tx", gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(), ?invalid_assertions, "Tx invalidated by assertions");
-            trace!(
+            warn!(
                 target: "assertion-executor::validate_tx",
-                "Not committing state changes to fork db"
+                gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(),
+                ?invalid_assertions,
+                "Tx invalidated by assertions"
+            );
+            debug!(
+                target: "assertion-executor::validate_tx",
+                tx_env = ?tx_env,
+                result_and_state = ?forked_tx_result.result_and_state,
+                "Tx invalidated by assertions details"
             );
         }
 
@@ -244,7 +241,6 @@ impl AssertionExecutor {
 
         debug!(
             target: "assertion-executor::execute_assertions",
-            assertion_ids = ?assertions.iter().map(|a| format!("{:?}", a.assertion_contract.id)).collect::<Vec<_>>(),
             assertion_contract_count = assertions.len(),
             "Retrieved Assertion contracts from Assertion store"
         );
@@ -339,7 +335,7 @@ impl AssertionExecutor {
                 >>()
         });
 
-        debug!(target: "assertion-executor::execute_assertions", execution_results=?results_vec.iter().map(|result| format!("{result:?}")).collect::<Vec<_>>(), "Assertion Execution Results");
+        trace!(target: "assertion-executor::execute_assertions", execution_results=?results_vec.iter().map(|result| format!("{result:?}")).collect::<Vec<_>>(), "Assertion Execution Results");
         let mut valid_results = vec![];
         for result in results_vec {
             valid_results.push(result?);
@@ -386,9 +382,6 @@ impl AssertionExecutor {
             chain_id: Some(self.config.chain_id),
             ..Default::default()
         };
-
-        trace!(target: "assertion-executor::execute_assertions", ?tx_env, ?block_env, "Assertion Function Execution environment");
-
         let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
 
         let mut evm = crate::build_evm_by_features!(&mut multi_fork_db, &env, inspector);
@@ -400,7 +393,6 @@ impl AssertionExecutor {
         // as soon as assertion execution is done.
         reprice_evm_storage!(evm);
 
-        trace!(target: "assertion-executor::execute_assertions", "Executing assertion function");
         let result_and_state = evm.inspect_tx(tx_env);
 
         let result = result_and_state
@@ -453,7 +445,6 @@ impl AssertionExecutor {
                 vec![],
             ));
         }
-        debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
 
         let results = self
             .execute_assertions(block_env, tx_fork_db, &forked_tx_result)
@@ -465,8 +456,7 @@ impl AssertionExecutor {
             })?;
 
         if results.is_empty() {
-            debug!(target: "assertion-executor::validate_tx", "No assertions were executed");
-            trace!(target: "assertion-executor::validate_tx", "Comitting state changes to fork db");
+            trace!(target: "assertion-executor::validate_tx", "No assertions were executed");
             if commit {
                 fork_db.commit(forked_tx_result.result_and_state.state.clone());
             }
@@ -490,15 +480,10 @@ impl AssertionExecutor {
         let valid = invalid_assertions.is_empty();
 
         if valid && commit {
-            debug!(target: "assertion-executor::validate_tx", gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(), "Tx validated");
-            trace!(target: "assertion-executor::validate_tx", "Committing state changes to fork db");
+            trace!(target: "assertion-executor::validate_tx", gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(), "Tx validated");
             fork_db.commit(forked_tx_result.result_and_state.state.clone());
         } else {
-            debug!(target: "assertion-executor::validate_tx", gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(), ?invalid_assertions, "Tx invalidated by assertions");
-            trace!(
-                target: "assertion-executor::validate_tx",
-                "Not committing state changes to fork db"
-            );
+            trace!(target: "assertion-executor::validate_tx", gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(), ?invalid_assertions, "Tx invalidated by assertions");
         }
 
         Ok(TxValidationResult::new(
@@ -511,12 +496,7 @@ impl AssertionExecutor {
     /// Commits a transaction against a fork of the current state using a `ForkDb`.
     /// This is used for intra-block transaction execution where we want to build
     /// on top of previous transactions in the same block.
-    #[instrument(
-        level = "trace",
-        skip_all,
-        target = "assertion-executor::execute_tx",
-        fields(tx_env, block_env)
-    )]
+    #[instrument(level = "trace", skip_all, target = "assertion-executor::execute_tx")]
     fn execute_forked_tx_fork_db<Active>(
         &self,
         block_env: &BlockEnv,
@@ -534,24 +514,9 @@ impl AssertionExecutor {
         let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
 
         let result_and_state = evm.inspect_tx(tx_env).map_err(|e| {
-            debug!(target: "assertion-executor::execute_tx", error = ?e, "Evm error in execute_forked_tx");
+            error!(target: "assertion-executor::execute_tx", error = ?e, "Evm error in execute_forked_tx");
             TxExecutionError::TxEvmError(e)
         })?;
-
-        debug!(
-            target: "assertion-executor::execute_tx",
-            state_changes = ?{
-                result_and_state.state.iter().map(|(address, state_change)| {
-                    format!("{:?}", StateChangeMetadata {
-                        address,
-                        storage: &state_change.storage,
-                        balance: &state_change.info.balance,
-                        has_code: state_change.info.code.is_some(),
-                    })
-                }).collect::<Vec<_>>()
-            },
-            "Forked transaction state changes"
-        );
 
         let call_tracer = std::mem::take(evm.inspector);
         drop(evm);
@@ -568,12 +533,7 @@ impl AssertionExecutor {
     }
 
     /// Commits a transaction against a fork of the current state using an external DB.
-    #[instrument(
-        level = "trace",
-        skip_all,
-        target = "assertion-executor::execute_tx",
-        fields(tx_env, block_env)
-    )]
+    #[instrument(level = "trace", skip_all, target = "assertion-executor::execute_tx")]
     pub fn execute_forked_tx_ext_db<ExtDb>(
         &self,
         block_env: &BlockEnv,
@@ -593,21 +553,6 @@ impl AssertionExecutor {
             debug!(target: "assertion-executor::execute_tx", error = ?e, "Evm error in execute_forked_tx");
             e
         }).map_err(TxExecutionError::TxEvmError)?;
-
-        debug!(
-            target: "assertion-executor::execute_tx",
-            state_changes = ?{
-                result_and_state.state.iter().map(|(address, state_change)| {
-                    format!("{:?}", StateChangeMetadata {
-                        address,
-                        storage: &state_change.storage,
-                        balance: &state_change.info.balance,
-                        has_code: state_change.info.code.is_some(),
-                    })
-                }).collect::<Vec<_>>()
-            },
-            "Forked transaction state changes"
-        );
 
         let call_tracer = std::mem::take(evm.inspector);
         std::mem::drop(evm);
@@ -637,7 +582,7 @@ impl AssertionExecutor {
             code_hash,
             storage,
             account_status,
-            id,
+            id: _,
             ..
         } = assertion_contract;
 
@@ -696,11 +641,6 @@ impl AssertionExecutor {
                 .or_default()
                 .dont_read_from_inner_db = true;
         }
-        trace!(
-            target: "assertion-executor::insert_persistent_accounts",
-            assertion_id = ?id,
-            "Inserted assertion contract into assertion journal"
-        );
     }
 }
 
@@ -720,6 +660,7 @@ mod test {
             Account,
             AccountInfo,
             AccountStatus,
+            Address,
             BlockEnv,
             Bytes,
             EvmState,
@@ -994,7 +935,7 @@ mod test {
             let result = executor
                 .validate_transaction_ext_db::<_, _>(
                     block_env.clone(),
-                    tx,
+                    &tx,
                     &mut fork_db,
                     &mut mock_db,
                 )

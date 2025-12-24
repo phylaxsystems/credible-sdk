@@ -458,18 +458,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         match e {
             ExecutorError::ForkTxExecutionError(_) => {
                 // Transaction validation errors (nonce, gas, funds, etc.)
-                debug!(
+                trace!(
                     target = "engine",
                     error = ?e,
                     tx_execution_id = %tx_execution_id.to_json_string(),
+                    tx_env = ?tx_env,
                     "Transaction validation failed"
                 );
-                trace!(
-                    target = "engine",
-                    tx_execution_id = %tx_execution_id.to_json_string(),
-                    tx_env = ?tx_env,
-                    "Transaction validation environment"
-                );
+
                 self.add_transaction_result(
                     tx_execution_id,
                     &TransactionResult::ValidationError(format!("{e:?}")),
@@ -540,6 +536,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let tx_hash = tx_execution_id.tx_hash;
         let is_valid = rax.is_valid();
         let execution_result = &rax.result_and_state.result;
+        let status = match execution_result {
+            ExecutionResult::Success { .. } => "success",
+            ExecutionResult::Revert { .. } => "reverted",
+            ExecutionResult::Halt { .. } => "halt",
+        };
 
         info!(
             target = "engine",
@@ -547,7 +548,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             block_number = %tx_execution_id.block_number,
             iteration_id = tx_execution_id.iteration_id,
             is_valid,
-            execution_result = ?execution_result,
+            status,
+            gas_used = execution_result.gas_used(),
             "Transaction processed"
         );
 
@@ -558,25 +560,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 tx_hash = %tx_hash,
                 "Transaction does not invalidate assertions, processing result"
             );
-            trace!(
-                target = "engine",
-                tx_hash = %tx_hash,
-                tx_env = ?tx_env,
-                "Transaction processing environment"
-            );
-            trace!(
-                target = "engine",
-                tx_hash = %tx_hash,
-                assertions_ran = ?rax.assertions_executions,
-                "Assertions execution details"
-            );
 
             if execution_result.is_success() {
-                trace!(
-                    target = "engine",
-                    tx_hash = %tx_hash,
-                    "Commiting state of successful tx to buffer"
-                );
                 self.block_metrics.block_gas_used += rax.result_and_state.result.gas_used();
                 self.block_metrics.transactions_simulated_success += 1;
             } else {
@@ -587,13 +572,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 target = "engine",
                 tx_hash = %tx_hash,
                 "Transaction failed assertion validation"
-            );
-            trace!(
-                target = "engine",
-                tx_hash = %tx_hash,
-                tx_env = ?tx_env,
-                assertions_executions = ?rax.assertions_executions,
-                "Transaction validation details"
             );
 
             self.block_metrics.invalidated_transactions += 1;
@@ -629,15 +607,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         trace!(
             target = "engine",
             tx_hash = %tx_execution_id.tx_hash,
-            tx_env = ?tx_env,
-            "Executing transaction with environment"
-        );
-
-        debug!(
-            target = "engine",
-            tx_hash = %tx_execution_id.tx_hash,
+            caller = %tx_env.caller,
+            gas_limit = tx_env.gas_limit,
             block_number = %current_block_iteration.block_env.number,
-            "Validating transaction against assertions"
+            "Executing transaction with environment"
         );
 
         // Validate transaction and run assertions
@@ -689,7 +662,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             Some(rax.result_and_state.state),
         )?;
 
-        trace!("Transaction execution completed");
         Ok(())
     }
 
@@ -723,7 +695,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             last_tx_id.is_some() && last_tx_id.map(|id| id.tx_hash) != commit_head.last_tx_hash;
         let count_mismatch = n_transactions != commit_head.n_transactions;
 
-        debug!(
+        trace!(
             head_mismatch = head_mismatch,
             tx_hash_mismatch = tx_hash_mismatch,
             count_mismatch = count_mismatch,
@@ -790,7 +762,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 return Err(EngineError::NoSyncedSources);
             }
 
-            debug!(
+            trace!(
                 target = "engine",
                 waited_ms = waited.as_millis(),
                 next_retry_ms = RETRY_INTERVAL.as_millis(),
@@ -1070,16 +1042,18 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     /// This selection is done entirely by the driver of the sidecar.
     #[instrument(name = "engine::process_iteration", skip_all, level = "info")]
     fn process_iteration(&mut self, new_iteration: &NewIteration) -> Result<(), EngineError> {
+        let block_env = &new_iteration.block_env;
+
         info!(
             target = "engine",
             queue_iteration = ?new_iteration,
+            number = %block_env.number,
             "Processing a new iteration",
         );
 
         // Checks if the received iteration is sequential to the current head, otherwise we should
         // drop the event.
         let expected_block_number = self.current_head + U256::from(1);
-        let block_env = &new_iteration.block_env;
         if expected_block_number != block_env.number {
             warn!(
                 target = "engine",
@@ -1104,7 +1078,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         self.current_block_iterations
             .insert(block_execution_id, block_iteration_data);
 
-        info!(
+        debug!(
             target = "engine",
             timestamp = %block_env.timestamp,
             number = %block_env.number,
@@ -1206,7 +1180,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         self.current_block_iterations.clear();
 
-        info!(
+        debug!(
             target = "engine",
             commit_head = ?commit_head,
             processed_blocks = *processed_blocks,
@@ -1233,6 +1207,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         info!(
             target = "engine",
             tx_execution_id = ?tx_execution_id,
+            tx_hash = ?tx_hash,
             "Processing a new transaction",
         );
 

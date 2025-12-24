@@ -228,7 +228,7 @@ pub fn run_precompile_test(artifact: &str) -> TxValidationResult {
 
     //Execute triggering tx.
     executor
-        .validate_transaction_ext_db(BlockEnv::default(), trigger_tx, &mut fork_db, &mut mock_db)
+        .validate_transaction_ext_db(BlockEnv::default(), &trigger_tx, &mut fork_db, &mut mock_db)
         .unwrap()
 }
 /// Mines a block from an anvil provider, returning the block header
