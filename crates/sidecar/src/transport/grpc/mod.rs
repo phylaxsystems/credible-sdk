@@ -257,6 +257,9 @@ mod tests {
     use tokio_stream::wrappers::ReceiverStream;
     use tonic::transport::Channel;
 
+    /// Delay used in tests to wait for async operations to complete.
+    const TEST_WAIT_DELAY: Duration = Duration::from_millis(50);
+
     // Helper functions for binary encoding in tests
     fn encode_b256(hash: B256) -> Vec<u8> {
         hash.as_slice().to_vec()
@@ -447,7 +450,7 @@ mod tests {
 
         // Wait for commit head to be processed before sending events
         // This prevents race conditions when running tests in parallel
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(TEST_WAIT_DELAY).await;
 
         let address = instance
             .local_address
@@ -497,7 +500,7 @@ mod tests {
 
         // Wait for commit head to be processed before sending events
         // This prevents race conditions when running tests in parallel
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(TEST_WAIT_DELAY).await;
 
         let address = instance
             .local_address
@@ -617,7 +620,7 @@ mod tests {
 
         // Wait for commit head to be processed before sending events
         // This prevents race conditions when running tests in parallel
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(TEST_WAIT_DELAY).await;
 
         let address = instance
             .local_address
@@ -675,7 +678,7 @@ mod tests {
 
         // Wait for commit head to be processed before sending events
         // This prevents race conditions when running tests in parallel
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(TEST_WAIT_DELAY).await;
 
         let address = instance
             .local_address
@@ -722,7 +725,7 @@ mod tests {
 
         // Wait for commit head to be processed before sending events
         // This prevents race conditions when running tests in parallel
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(TEST_WAIT_DELAY).await;
 
         let address = instance
             .local_address
