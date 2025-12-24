@@ -40,6 +40,13 @@ use revm::{
         uint,
     },
 };
+use std::sync::{
+    Arc,
+    atomic::{
+        AtomicBool,
+        Ordering,
+    },
+};
 use thiserror::Error;
 
 impl<DB> CoreEngine<DB> {
@@ -198,10 +205,13 @@ fn create_test_block_env() -> BlockEnv {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_core_engine_errors_when_no_synced_sources() {
-    let (mut engine, tx_sender) = create_test_engine_with_timeout(Duration::from_millis(10)).await;
+    let (engine, tx_sender) = create_test_engine_with_timeout(Duration::from_millis(10)).await;
 
     let sources = engine.sources.clone();
-    let engine_handle = tokio::spawn(async move { engine.run().await });
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let (engine_handle, _engine_exit_rx) = engine
+        .spawn(shutdown.clone())
+        .expect("failed to spawn engine thread");
 
     // Create iteration with block number 1
     let mut block_env = BlockEnv::default();
@@ -229,6 +239,8 @@ async fn test_core_engine_errors_when_no_synced_sources() {
         .expect("queue send should succeed");
 
     assert_eq!(sources.iter_synced_sources().count(), 0);
+    shutdown.store(true, Ordering::Release);
+    let _ = engine_handle.join();
 }
 
 #[tokio::test]

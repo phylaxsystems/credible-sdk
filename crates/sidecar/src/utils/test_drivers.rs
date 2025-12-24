@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_lines)]
 use super::instance::{
+    EngineThreadHandle,
     LocalInstance,
     TestTransport,
 };
@@ -18,7 +19,10 @@ use crate::{
         TransactionQueueSender,
         TxQueueContents,
     },
-    event_sequencing::EventSequencing,
+    event_sequencing::{
+        EventSequencing,
+        EventSequencingError,
+    },
     execution_ids::TxExecutionId,
     transactions_state::TransactionResultEvent,
     transport::{
@@ -77,7 +81,10 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::AtomicBool,
+    },
     time::Duration,
 };
 use tokio::{
@@ -244,7 +251,10 @@ impl CommonSetup {
     async fn spawn_engine_with_sequencing(
         &self,
         transport_rx: TransactionQueueReceiver,
-    ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+    ) -> (
+        EngineThreadHandle,
+        std::thread::JoinHandle<Result<(), EventSequencingError>>,
+    ) {
         let (event_sequencing_tx_sender, core_engine_tx_receiver) = flume::unbounded();
 
         let state = OverlayDb::new(Some(self.underlying_db.clone()));
@@ -266,25 +276,17 @@ impl CommonSetup {
         )
         .await;
 
-        let engine_handle = tokio::spawn(async move {
-            info!(target: "test_driver", "Engine task started, waiting for items...");
-            let result = engine.run().await;
-            match result {
-                Ok(()) => info!(target: "test_driver", "Engine run() completed successfully"),
-                Err(e) => error!(target: "test_driver", "Engine run() failed: {:?}", e),
-            }
-        });
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (engine_handle, _engine_exit_rx) = engine
+            .spawn(shutdown.clone())
+            .expect("failed to spawn engine thread");
+        let engine_handle = EngineThreadHandle::new(engine_handle, shutdown);
 
-        let mut event_sequencing = EventSequencing::new(transport_rx, event_sequencing_tx_sender);
-
-        let sequencing_handle = tokio::spawn(async move {
-            info!(target: "test_driver", "Event sequencing task started");
-            let result = event_sequencing.run().await;
-            match result {
-                Ok(()) => info!(target: "test_driver", "Event sequencing completed successfully"),
-                Err(e) => error!(target: "test_driver", "Event sequencing failed: {:?}", e),
-            }
-        });
+        let event_sequencing = EventSequencing::new(transport_rx, event_sequencing_tx_sender);
+        let sequencing_shutdown = Arc::new(AtomicBool::new(false));
+        let (sequencing_handle, _sequencing_exit_rx) = event_sequencing
+            .spawn(sequencing_shutdown)
+            .expect("failed to spawn event sequencing thread");
 
         (engine_handle, sequencing_handle)
     }
