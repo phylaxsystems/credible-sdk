@@ -20,7 +20,7 @@ test-default: build-contracts
 
 # Run state worker tests (single-threaded to avoid race conditions)
 test-state-worker:
-	cargo test --package state-store --package state-worker --locked --profile release --no-default-features -- --test-threads=1
+	cargo test --package state-store --package state-worker --locked --profile release --no-default-features -- --test-threads=2
 
 make test: test-optimism test-default test-state-worker test-cleanup
 
