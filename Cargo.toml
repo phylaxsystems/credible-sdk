@@ -158,6 +158,10 @@ rustflags = [
 ]
 debug = "line-tables-only"
 
+[profile.bench]
+opt-level = 1
+lto = "off"
+
 # Temporary due to a requirement in phoundry
 [patch.crates-io]
 solar-compiler = { git = "https://github.com/paradigmxyz/solar.git", rev = "1f28069" }
