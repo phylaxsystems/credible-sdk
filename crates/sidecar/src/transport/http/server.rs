@@ -651,11 +651,13 @@ async fn handle_get_transaction(
 
     match state.transactions_results.is_tx_received(&tx_execution_id) {
         AcceptedState::Yes => {}
-        AcceptedState::NotYet(mut rx) => {
+        AcceptedState::NotYet(rx) => {
             let wait_started_at = Instant::now();
-            let wait_result =
-                tokio::time::timeout(Duration::from_millis(TRANSACTION_RECEIVE_WAIT), rx.recv())
-                    .await;
+            let wait_result = tokio::time::timeout(
+                Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
+                rx.recv_async(),
+            )
+            .await;
             histogram!("sidecar_get_transaction_wait_duration").record(wait_started_at.elapsed());
 
             match wait_result {
@@ -696,8 +698,8 @@ async fn resolve_transaction_result(
         .request_transaction_result(&tx_execution_id)
     {
         RequestTransactionResult::Result(result) => result,
-        RequestTransactionResult::Channel(mut receiver) => {
-            if let Ok(result) = receiver.recv().await {
+        RequestTransactionResult::Channel(receiver) => {
+            if let Ok(result) = receiver.recv_async().await {
                 result
             } else {
                 error!(

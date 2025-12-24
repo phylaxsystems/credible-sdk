@@ -71,6 +71,7 @@ use assertion_executor::primitives::{
     TxKind,
     U256,
 };
+use flume::TrySendError;
 use futures::stream::{
     FuturesUnordered,
     StreamExt,
@@ -107,7 +108,6 @@ use thiserror::Error;
 use tokio::{
     sync::{
         Mutex,
-        broadcast,
         mpsc,
     },
     task::AbortHandle,
@@ -572,13 +572,16 @@ type ResultStream = Pin<Box<dyn Stream<Item = Result<PbTransactionResult, Status
 /// Type alias for the streaming acks output.
 type AckStream = Pin<Box<dyn Stream<Item = Result<StreamAck, Status>> + Send>>;
 
+type ResultBroadcaster = Arc<Mutex<Vec<(u64, flume::Sender<PbTransactionResult>)>>>;
+
 /// Buffer size for the result broadcaster channel.
 const RESULT_BROADCAST_BUFFER: usize = 16_384;
 
 /// Shared state that lives as long as at least one GrpcService clone exists.
 struct GrpcServiceInner {
     commit_head_seen: AtomicBool,
-    result_broadcaster: broadcast::Sender<PbTransactionResult>,
+    result_broadcaster: ResultBroadcaster,
+    next_result_subscriber_id: AtomicU64,
     abort_handles: Mutex<Vec<AbortHandle>>,
     /// Buffer for detecting duplicate event IDs
     event_id_buffer: EventIdBuffer,
@@ -612,10 +615,10 @@ impl GrpcService {
         result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
         event_buffer_capacity: usize,
     ) -> Self {
-        let (result_broadcaster, _) = broadcast::channel(RESULT_BROADCAST_BUFFER);
+        let result_broadcaster: ResultBroadcaster = Arc::new(Mutex::new(Vec::new()));
 
         let mut abort_handle = vec![];
-        // Spawn background task to forward results from flume to broadcast
+        // Spawn background task to forward results from flume to subscribers
         if let Some(rx) = result_event_rx {
             let broadcaster = result_broadcaster.clone();
             let handle = tokio::spawn(async move {
@@ -628,6 +631,7 @@ impl GrpcService {
         let inner = Arc::new(GrpcServiceInner {
             commit_head_seen: AtomicBool::new(false),
             result_broadcaster,
+            next_result_subscriber_id: AtomicU64::new(0),
             abort_handles: Mutex::new(abort_handle),
             event_id_buffer: EventIdBuffer::new(event_buffer_capacity),
         });
@@ -642,14 +646,29 @@ impl GrpcService {
     /// Background task that consumes from the flume channel and broadcasts to subscribers.
     async fn result_forwarder_task(
         rx: flume::Receiver<TransactionResultEvent>,
-        broadcaster: broadcast::Sender<PbTransactionResult>,
+        broadcaster: ResultBroadcaster,
     ) {
         // Use async recv to avoid blocking the runtime
         while let Ok(event) = rx.recv_async().await {
             let pb_result = encode_transaction_result(event.tx_execution_id, &event.result);
 
-            // Ignore send errors - just means no subscribers
-            let subscriber_count = broadcaster.send(pb_result).unwrap_or(0);
+            let mut subscriber_count = 0;
+            let mut dropped_count = 0;
+            let mut guard = broadcaster.lock().await;
+            guard.retain(|(_, sender)| {
+                match sender.try_send(pb_result.clone()) {
+                    Ok(()) => {
+                        subscriber_count += 1;
+                        true
+                    }
+                    Err(TrySendError::Full(_)) => {
+                        dropped_count += 1;
+                        true
+                    }
+                    Err(TrySendError::Disconnected(_)) => false,
+                }
+            });
+            drop(guard);
 
             if subscriber_count > 0 {
                 debug!(
@@ -657,6 +676,14 @@ impl GrpcService {
                     tx_hash = ?event.tx_execution_id.tx_hash,
                     subscribers = subscriber_count,
                     "Forwarded result to gRPC subscribers"
+                );
+            }
+
+            if dropped_count > 0 {
+                warn!(
+                    target = "transport::grpc",
+                    dropped = dropped_count,
+                    "Result subscribers lagged; dropped deliveries"
                 );
             }
         }
@@ -778,8 +805,8 @@ impl GrpcService {
             .request_transaction_result(&tx_execution_id)
         {
             crate::transactions_state::RequestTransactionResult::Result(r) => r,
-            crate::transactions_state::RequestTransactionResult::Channel(mut rx) => {
-                rx.recv()
+            crate::transactions_state::RequestTransactionResult::Channel(rx) => {
+                rx.recv_async()
                     .await
                     .map_err(|_| Status::internal("engine unavailable"))?
             }
@@ -990,15 +1017,24 @@ impl SidecarTransport for GrpcService {
             .transpose()
             .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_NUMBER))?;
 
-        // Subscribe to the broadcast channel
-        let mut rx = self.inner.result_broadcaster.subscribe();
+        let (result_tx, result_rx) = flume::bounded(RESULT_BROADCAST_BUFFER);
+        let subscriber_id = self
+            .inner
+            .next_result_subscriber_id
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .result_broadcaster
+            .lock()
+            .await
+            .push((subscriber_id, result_tx));
 
         let (tx, stream_rx) = mpsc::channel(256);
 
         // Spawn task to filter and forward results to the gRPC stream
+        let broadcaster = self.inner.result_broadcaster.clone();
         tokio::spawn(async move {
             'main: loop {
-                match rx.recv().await {
+                match result_rx.recv_async().await {
                     Ok(pb_result) => {
                         // Optional: filter by block number if requested
                         if let Some(min_block) = from_block
@@ -1017,20 +1053,15 @@ impl SidecarTransport for GrpcService {
                             break 'main;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(
-                            target = "transport::grpc",
-                            lagged = n,
-                            "Result subscriber lagged, some results were dropped"
-                        );
-                        // Continue receiving
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
+                    Err(_) => {
                         // Channel closed, end stream
                         break 'main;
                     }
                 }
             }
+
+            let mut guard = broadcaster.lock().await;
+            guard.retain(|(id, _)| *id != subscriber_id);
         });
 
         let output_stream = tokio_stream::wrappers::ReceiverStream::new(stream_rx);

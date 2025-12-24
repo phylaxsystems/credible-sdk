@@ -11,7 +11,6 @@ use dashmap::{
     mapref::one::Ref,
 };
 use std::sync::Arc;
-use tokio::sync::broadcast;
 use tracing::error;
 
 /// Event emitted when a transaction result is available.
@@ -25,15 +24,15 @@ pub struct TransactionResultEvent {
 pub struct TransactionsState {
     transaction_results: DashMap<TxExecutionId, TransactionResult>,
     /// `DashMap` containing the pending queries from the reading the transaction result.
-    /// It contains the transaction execution id as key and the broadcast sender as value. The result shall be
-    /// sent via broadcast channel once it is ready.
+    /// It contains the transaction execution id as key and the fan-out senders as value. The result shall be
+    /// sent via per-request flume channels once it is ready.
     ///
     /// It is also used to create new receivers for multiple clients waiting for the result.
     ///
     /// Unlike in `QueryTransactionsResults` we dont need a cleanup taks, because we know that
     /// pending transactions will eventually be included.
     transaction_results_pending_requests:
-        DashMap<TxExecutionId, broadcast::Sender<TransactionResult>>,
+        DashMap<TxExecutionId, Vec<flume::Sender<TransactionResult>>>,
     /// `HashSet` containing the accepted transactions which haven't been processed yet.
     accepted_txs: DashSet<TxExecutionId>,
     /// Optional channel for streaming transaction results to external observers (e.g., transports).
@@ -113,7 +112,7 @@ impl TransactionsState {
     /// Check if there is a pending query for the processed result
     fn process_pending_queries(&self, tx_execution_id: TxExecutionId, result: &TransactionResult) {
         // O(1)
-        let Some((_, sender)) = self
+        let Some((_, senders)) = self
             .transaction_results_pending_requests
             .remove(&tx_execution_id)
         else {
@@ -121,16 +120,18 @@ impl TransactionsState {
         };
         // Purposedly ignore this error in case there is a race condition and the result is sent twice
         // O(1)
-        let _ = sender.send(result.clone()).map_err(|e| {
-            error!(
-                target = "transactions_state",
-                error = ?e,
-                tx_execution_id.block_number = %tx_execution_id.block_number,
-                tx_execution_id.iteration_id = tx_execution_id.iteration_id,
-                tx_hash = %tx_execution_id.tx_hash_hex(),
-                "Failed to send transaction result to query sender"
-            );
-        });
+        for sender in senders {
+            let _ = sender.send(result.clone()).map_err(|e| {
+                error!(
+                    target = "transactions_state",
+                    error = ?e,
+                    tx_execution_id.block_number = %tx_execution_id.block_number,
+                    tx_execution_id.iteration_id = tx_execution_id.iteration_id,
+                    tx_hash = %tx_execution_id.tx_hash_hex(),
+                    "Failed to send transaction result to query sender"
+                );
+            });
+        }
     }
 
     pub fn get_transaction_result(
@@ -157,16 +158,18 @@ impl TransactionsState {
         } else {
             // If we have a channel with clients waiting, we can just create a new
             // receiver and pass it on
-            if let Some(channel) = self
+            if let Some(mut channel) = self
                 .transaction_results_pending_requests
-                .get(tx_execution_id)
+                .get_mut(tx_execution_id)
             {
-                return RequestTransactionResult::Channel(channel.subscribe());
+                let (response_tx, response_rx) = flume::bounded(1);
+                channel.push(response_tx);
+                return RequestTransactionResult::Channel(response_rx);
             }
 
-            let (response_tx, response_rx) = broadcast::channel(1);
+            let (response_tx, response_rx) = flume::bounded(1);
             self.transaction_results_pending_requests
-                .insert(*tx_execution_id, response_tx);
+                .insert(*tx_execution_id, vec![response_tx]);
 
             // Check the race condition in which the engine is faster than the transport layer process:
             // Then it could happen:
@@ -187,7 +190,7 @@ impl TransactionsState {
 
 pub enum RequestTransactionResult {
     Result(TransactionResult),
-    Channel(broadcast::Receiver<TransactionResult>),
+    Channel(flume::Receiver<TransactionResult>),
 }
 
 #[cfg(test)]
@@ -482,7 +485,7 @@ mod tests {
         let result = create_test_transaction_result();
 
         // First request the transaction result (this will create a pending query)
-        let mut receiver = match state.request_transaction_result(&tx_execution_id) {
+        let receiver = match state.request_transaction_result(&tx_execution_id) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel"),
         };
@@ -505,7 +508,7 @@ mod tests {
         );
 
         // Verify we can receive the result through the channel
-        let received_result = timeout(Duration::from_millis(100), receiver.recv())
+        let received_result = timeout(Duration::from_millis(100), receiver.recv_async())
             .await
             .expect("Should receive result within timeout")
             .expect("Channel should not be closed");
@@ -520,10 +523,10 @@ mod tests {
         let result = create_test_transaction_result();
 
         // Simulate race condition: add result after request is made but before channel is returned
-        let (tx, _rx) = broadcast::channel(1);
+        let (tx, _rx) = flume::bounded(1);
         state
             .transaction_results_pending_requests
-            .insert(tx_execution_id, tx);
+            .insert(tx_execution_id, vec![tx]);
 
         // Add the transaction result
         state.add_transaction_result(tx_execution_id, &result.clone());
@@ -554,12 +557,12 @@ mod tests {
         let result2 = create_validation_error_result();
 
         // Create pending queries for both transactions
-        let mut receiver1 = match state.request_transaction_result(&tx_id1) {
+        let receiver1 = match state.request_transaction_result(&tx_id1) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel for tx1"),
         };
 
-        let mut receiver2 = match state.request_transaction_result(&tx_id2) {
+        let receiver2 = match state.request_transaction_result(&tx_id2) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel for tx2"),
         };
@@ -592,7 +595,7 @@ mod tests {
         );
 
         // Verify first receiver gets the result
-        let received_result1 = timeout(Duration::from_millis(100), receiver1.recv())
+        let received_result1 = timeout(Duration::from_millis(100), receiver1.recv_async())
             .await
             .expect("Should receive result1 within timeout")
             .expect("Channel should not be closed");
@@ -609,7 +612,7 @@ mod tests {
         );
 
         // Verify second receiver gets the result
-        let received_result2 = timeout(Duration::from_millis(100), receiver2.recv())
+        let received_result2 = timeout(Duration::from_millis(100), receiver2.recv_async())
             .await
             .expect("Should receive result2 within timeout")
             .expect("Channel should not be closed");
@@ -617,30 +620,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_multiple_receivers_get_broadcast_result() {
+    async fn test_multiple_receivers_get_fanout_result() {
         let state = TransactionsState::new();
         let tx_execution_id = create_test_tx_execution_id();
         let result = create_test_transaction_result();
 
-        // Request the same transaction result twice before it is available so both share the broadcast sender.
-        let mut receiver_one = match state.request_transaction_result(&tx_execution_id) {
+        // Request the same transaction result twice before it is available so both are notified.
+        let receiver_one = match state.request_transaction_result(&tx_execution_id) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel for first requester"),
         };
 
-        let mut receiver_two = match state.request_transaction_result(&tx_execution_id) {
+        let receiver_two = match state.request_transaction_result(&tx_execution_id) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel for second requester"),
         };
 
         state.add_transaction_result(tx_execution_id, &result.clone());
 
-        // Both receivers should pick up the broadcasted value.
-        let received_one = timeout(Duration::from_millis(100), receiver_one.recv())
+        // Both receivers should pick up the shared value.
+        let received_one = timeout(Duration::from_millis(100), receiver_one.recv_async())
             .await
             .expect("Should receive result for first receiver")
             .expect("Channel should not be closed");
-        let received_two = timeout(Duration::from_millis(100), receiver_two.recv())
+        let received_two = timeout(Duration::from_millis(100), receiver_two.recv_async())
             .await
             .expect("Should receive result for second receiver")
             .expect("Channel should not be closed");
@@ -662,7 +665,7 @@ mod tests {
         let tx_execution_id = create_test_tx_execution_id();
         let result = create_test_transaction_result();
 
-        // First subscriber waits for the broadcasted result.
+        // First subscriber waits for the shared result.
         let mut waiting_receiver = match state.request_transaction_result(&tx_execution_id) {
             RequestTransactionResult::Channel(rx) => rx,
             RequestTransactionResult::Result(_) => panic!("Expected channel"),
@@ -670,7 +673,7 @@ mod tests {
 
         state.add_transaction_result(tx_execution_id, &result.clone());
 
-        let received = timeout(Duration::from_millis(100), waiting_receiver.recv())
+        let received = timeout(Duration::from_millis(100), waiting_receiver.recv_async())
             .await
             .expect("Should receive broadcast")
             .expect("Channel should not be closed");

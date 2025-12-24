@@ -8,7 +8,6 @@ use std::{
 };
 use thiserror::Error;
 use tokio::{
-    sync::broadcast,
     task::JoinHandle,
     time::Instant,
 };
@@ -34,7 +33,7 @@ pub const TRANSACTION_RECEIVE_WAIT: u64 = 250;
 /// a receiver to wait on.
 pub enum AcceptedState {
     Yes,
-    NotYet(broadcast::Receiver<bool>),
+    NotYet(flume::Receiver<bool>),
 }
 
 /// Wrapper for `TransactionsState` for read-only transactions results.
@@ -46,7 +45,7 @@ pub enum AcceptedState {
 #[derive(Clone, Debug)]
 pub struct QueryTransactionsResults {
     transactions_state: Arc<TransactionsState>,
-    pending_receives: Arc<DashMap<TxExecutionId, broadcast::Sender<bool>>>,
+    pending_receives: Arc<DashMap<TxExecutionId, Vec<flume::Sender<bool>>>>,
     bg_task_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     metrics: TransportTransactionsResultMetrics,
 }
@@ -59,7 +58,7 @@ pub enum QueryTransactionsResultsError {
     NotifyFailed {
         tx_execution_id: TxExecutionId,
         #[source]
-        source: broadcast::error::SendError<bool>,
+        source: flume::SendError<bool>,
     },
 }
 
@@ -93,13 +92,7 @@ impl QueryTransactionsResults {
 
         // Get or create the sender before updating the state.
         // This ensures the channel infrastructure exists for concurrent subscribers.
-        let sender = self
-            .pending_receives
-            .entry(tx.tx_execution_id)
-            .or_insert_with(|| {
-                let (tx, _) = broadcast::channel(1);
-                tx
-            });
+        self.pending_receives.entry(tx.tx_execution_id).or_default();
 
         // Now update the state
         self.transactions_state.add_accepted_tx(tx_queue_contents);
@@ -110,7 +103,11 @@ impl QueryTransactionsResults {
             tx_execution_id = ?tx.tx_execution_id
         );
 
-        let _ = sender.send(true);
+        if let Some((_, senders)) = self.pending_receives.remove(&tx.tx_execution_id) {
+            for sender in senders {
+                let _ = sender.send(true);
+            }
+        }
 
         Ok(())
     }
@@ -132,9 +129,9 @@ impl QueryTransactionsResults {
                 cleanup_interval.tick().await;
 
                 // With retain(), the check and remove happen atomically per-entry.
-                pending_clone.retain(|_key, sender| {
-                    // Keep entries that have active receivers
-                    sender.receiver_count() > 0
+                pending_clone.retain(|_key, senders| {
+                    senders.retain(|sender| sender.receiver_count() > 0);
+                    !senders.is_empty()
                 });
             }
         });
@@ -144,7 +141,7 @@ impl QueryTransactionsResults {
 
     /// Checks to see if transaction has been received in the transport.
     /// Returns `AcceptedState::Yes` if it was, and if not, it will return
-    /// a `AcceptedState::NotYet` with broadcast receiver.
+    /// a `AcceptedState::NotYet` with a flume receiver.
     pub fn is_tx_received(&self, tx_execution_id: &TxExecutionId) -> AcceptedState {
         // Check state FIRST to avoid unnecessary channel creation.
         // This is the fast path for already-received transactions.
@@ -153,15 +150,10 @@ impl QueryTransactionsResults {
         }
 
         // Get or create the sender and subscribe
-        let entry = self
-            .pending_receives
-            .entry(*tx_execution_id)
-            .or_insert_with(|| {
-                let (tx, _) = broadcast::channel(1);
-                tx
-            });
+        let mut entry = self.pending_receives.entry(*tx_execution_id).or_default();
 
-        let receiver = entry.value().subscribe();
+        let (tx, receiver) = flume::bounded(1);
+        entry.push(tx);
 
         if self.transactions_state.is_tx_received(tx_execution_id) {
             return AcceptedState::Yes;
@@ -197,16 +189,15 @@ impl QueryTransactionsResults {
     }
 }
 
-type PendingTxWaitOutcome =
-    Result<Result<bool, broadcast::error::RecvError>, tokio::time::error::Elapsed>;
+type PendingTxWaitOutcome = Result<Result<bool, flume::RecvError>, tokio::time::error::Elapsed>;
 
 /// Waits for a batch of pending receivers to signal their transactions were received.
 pub async fn wait_for_pending_transactions<I, K>(pending: I) -> Vec<(K, PendingTxWaitOutcome)>
 where
-    I: IntoIterator<Item = (K, broadcast::Receiver<bool>)>,
+    I: IntoIterator<Item = (K, flume::Receiver<bool>)>,
     K: Send + Debug,
 {
-    let wait_futures = pending.into_iter().map(|(key, mut rx)| {
+    let wait_futures = pending.into_iter().map(|(key, rx)| {
         async move {
             debug!(
                 target = "transport::grpc",
@@ -215,9 +206,11 @@ where
                 "Waiting for the transaction to be received"
             );
             let wait_started_at = Instant::now();
-            let wait_result =
-                tokio::time::timeout(Duration::from_millis(TRANSACTION_RECEIVE_WAIT), rx.recv())
-                    .await;
+            let wait_result = tokio::time::timeout(
+                Duration::from_millis(TRANSACTION_RECEIVE_WAIT),
+                rx.recv_async(),
+            )
+            .await;
             histogram!("sidecar_get_transaction_wait_duration").record(wait_started_at.elapsed());
 
             debug!(
@@ -322,7 +315,7 @@ mod tests {
         let tx_execution_id = create_test_tx_execution_id(1);
 
         // Get receiver first
-        let mut receiver = match query_results.is_tx_received(&tx_execution_id) {
+        let receiver = match query_results.is_tx_received(&tx_execution_id) {
             AcceptedState::NotYet(rx) => rx,
             AcceptedState::Yes => panic!("should return NotYet"),
         };
@@ -332,7 +325,7 @@ mod tests {
         query_results.add_accepted_tx(&tx_contents).unwrap();
 
         // Receiver should get notification
-        let result = tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await;
+        let result = tokio::time::timeout(Duration::from_millis(100), receiver.recv_async()).await;
         assert!(result.is_ok(), "should receive notification");
         assert!(result.unwrap().unwrap());
     }
@@ -453,8 +446,10 @@ mod tests {
             let check_handle = tokio::spawn(async move {
                 match qr_for_check.is_tx_received(&tx_execution_id) {
                     AcceptedState::Yes => true,
-                    AcceptedState::NotYet(mut rx) => {
-                        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+                    AcceptedState::NotYet(rx) => {
+                        match tokio::time::timeout(Duration::from_millis(500), rx.recv_async())
+                            .await
+                        {
                             Ok(Ok(true)) => true,
                             Ok(Ok(false)) => false,
                             Ok(Err(_)) => qr_for_check.is_tx_received_now(&tx_execution_id),
@@ -493,8 +488,8 @@ mod tests {
         query_results.add_accepted_tx(&tx_contents).unwrap();
 
         // All receivers should get notification
-        for mut rx in receivers {
-            let result = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
+        for rx in receivers {
+            let result = tokio::time::timeout(Duration::from_millis(100), rx.recv_async()).await;
             assert!(
                 result.is_ok(),
                 "all subscribers should receive notification"
@@ -545,9 +540,10 @@ mod tests {
                 } else {
                     match qr.is_tx_received(&tx_execution_id) {
                         AcceptedState::Yes => true,
-                        AcceptedState::NotYet(mut rx) => {
+                        AcceptedState::NotYet(rx) => {
                             matches!(
-                                tokio::time::timeout(Duration::from_millis(50), rx.recv()).await,
+                                tokio::time::timeout(Duration::from_millis(50), rx.recv_async())
+                                    .await,
                                 Ok(Ok(true))
                             )
                         }
@@ -617,7 +613,7 @@ mod tests {
         let tx_contents = create_test_tx_queue_contents(tx_execution_id);
 
         // Get a receiver and hold it
-        let mut receiver = match query_results.is_tx_received(&tx_execution_id) {
+        let receiver = match query_results.is_tx_received(&tx_execution_id) {
             AcceptedState::NotYet(rx) => rx,
             AcceptedState::Yes => panic!("should be NotYet"),
         };
@@ -635,7 +631,7 @@ mod tests {
         query_results.add_accepted_tx(&tx_contents).unwrap();
 
         // Receiver should get notification
-        let result = tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await;
+        let result = tokio::time::timeout(Duration::from_millis(100), receiver.recv_async()).await;
         assert!(
             result.is_ok(),
             "active receiver should still get notification after cleanup cycles"
