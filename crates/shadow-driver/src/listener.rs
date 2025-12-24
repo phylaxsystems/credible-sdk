@@ -144,6 +144,8 @@ impl EventStream {
             return Err(anyhow!("failed to send event to stream: {e}"));
         }
 
+        debug!("Sent {event_type} event (id={event_id}) for block {block_number}, awaiting ack");
+
         // Wait for ack with timeout, also checking for stream death
         let timeout_duration = Duration::from_secs(ACK_TIMEOUT_SECS);
         let mut stream_dead_rx = self.stream_dead_rx.clone();
@@ -211,7 +213,12 @@ impl EventStream {
                 .send_event_and_wait(event, block_number, event_type)
                 .await
             {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    info!(
+                        "{event_type} sent successfully to sidecar (block={block_number}, event_id={event_id})"
+                    );
+                    return Ok(());
+                }
                 Err(e) => {
                     // If stream is dead, don't bother retrying
                     if self.is_stream_dead() {
@@ -793,7 +800,7 @@ impl Listener {
         info!("Step 1/3: Sending NewIteration event for block {block_number}");
         let new_iteration_success = match self.send_new_iteration_with_retry(stream, block).await {
             Ok(()) => {
-                debug!("Successfully sent NewIteration for block {block_number}");
+                debug!("NewIteration accepted for block {block_number}");
                 true
             }
             Err(e) => {
@@ -861,7 +868,7 @@ impl Listener {
             }
 
             if successful_tx_count > 0 {
-                debug!(
+                info!(
                     "Successfully sent {successful_tx_count}/{} transactions for block {block_number}",
                     transactions.len()
                 );
@@ -896,7 +903,7 @@ impl Listener {
         self.last_committed_block = Some(block_number);
 
         info!(
-            "Successfully committed block {block_number} ({successful_tx_count}/{} txs)",
+            "Block {block_number} committed successfully ({successful_tx_count}/{} txs)",
             transactions.len()
         );
 
@@ -1018,14 +1025,14 @@ impl Listener {
 
             if status_matches && gas_matches {
                 matches += 1;
-                debug!(
-                    "TX {tx_hash}: MATCH - status={provider_success}, gas_used={provider_gas_used}"
+                info!(
+                    "TX {tx_hash}: MATCH (status={provider_success}, gas_used={provider_gas_used})"
                 );
             } else {
                 mismatches += 1;
                 let sidecar_status_str = result_status_to_string(sidecar_result.status);
                 warn!(
-                    "TX {tx_hash}: MISMATCH - \
+                    "TX {tx_hash}: x MISMATCH - \
                      provider(status={provider_success}, gas={provider_gas_used}) vs \
                      sidecar(status={sidecar_status_str}, gas={sidecar_gas_used})"
                 );
@@ -1050,7 +1057,7 @@ impl Listener {
         }
 
         info!(
-            "Block {block_number} result comparison: {matches} matches, {mismatches} mismatches out of {} transactions",
+            "Block {block_number} result comparison complete: {matches} matches, {mismatches} x mismatches (total: {} txs)",
             tx_hashes.len()
         );
 
