@@ -76,7 +76,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ needs.setup.outputs.rust-nightly }}-state-worker-test
+
+          shared-key: ${{ needs.setup.outputs.rust-nightly }}-base
+          key: default
 
       - uses: taiki-e/install-action@nextest
 
