@@ -74,7 +74,7 @@ directories = "6.0.0"
 bollard = "0.19.4"
 rustls = { version = "0.23.35", features = ["aws_lc_rs"] }
 
-tracing = "0.1.43"
+tracing = {version = "0.1.43", features = ["release_max_level_debug"] }
 tracing-subscriber = { version = "0.3.22", features = ["std", "env-filter"] }
 console-subscriber = { version = "0.5.0" }
 tokio-metrics = { version = "0.4.6", features = ["rt"] }

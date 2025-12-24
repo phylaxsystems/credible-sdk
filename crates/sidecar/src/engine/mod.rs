@@ -1204,7 +1204,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let tx_env = queue_transaction.tx_env;
         self.block_metrics.transactions_considered += 1;
 
-        debug!(
+        info!(
             target = "engine",
             tx_execution_id = ?tx_execution_id,
             tx_hash = ?tx_hash,

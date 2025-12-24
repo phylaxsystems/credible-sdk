@@ -33,7 +33,6 @@ use crate::{
         Account,
         AccountInfo,
         AccountStatus,
-        Address,
         AssertionContract,
         AssertionContractExecution,
         AssertionFnId,
@@ -42,7 +41,6 @@ use crate::{
         BlockEnv,
         Bytecode,
         EvmState,
-        EvmStorage,
         FixedBytes,
         ResultAndState,
         TxEnv,
@@ -117,7 +115,7 @@ impl AssertionExecutor {
     pub fn validate_transaction_ext_db<ExtDb, Active>(
         &mut self,
         block_env: BlockEnv,
-        tx_env: TxEnv,
+        tx_env: &TxEnv,
         fork_db: &mut ForkDb<Active>,
         external_db: &mut ExtDb,
     ) -> Result<
@@ -498,11 +496,7 @@ impl AssertionExecutor {
     /// Commits a transaction against a fork of the current state using a `ForkDb`.
     /// This is used for intra-block transaction execution where we want to build
     /// on top of previous transactions in the same block.
-    #[instrument(
-        level = "trace",
-        skip_all,
-        target = "assertion-executor::execute_tx"
-    )]
+    #[instrument(level = "trace", skip_all, target = "assertion-executor::execute_tx")]
     fn execute_forked_tx_fork_db<Active>(
         &self,
         block_env: &BlockEnv,
@@ -539,11 +533,7 @@ impl AssertionExecutor {
     }
 
     /// Commits a transaction against a fork of the current state using an external DB.
-    #[instrument(
-        level = "trace",
-        skip_all,
-        target = "assertion-executor::execute_tx"
-    )]
+    #[instrument(level = "trace", skip_all, target = "assertion-executor::execute_tx")]
     pub fn execute_forked_tx_ext_db<ExtDb>(
         &self,
         block_env: &BlockEnv,
@@ -670,6 +660,7 @@ mod test {
             Account,
             AccountInfo,
             AccountStatus,
+            Address,
             BlockEnv,
             Bytes,
             EvmState,
@@ -944,7 +935,7 @@ mod test {
             let result = executor
                 .validate_transaction_ext_db::<_, _>(
                     block_env.clone(),
-                    tx,
+                    &tx,
                     &mut fork_db,
                     &mut mock_db,
                 )

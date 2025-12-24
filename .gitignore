@@ -46,3 +46,5 @@ crates/dapp-api-client/openapi/
 assertion_store_database/
 indexer_database/
 geth/
+perf.*
+myOutput.json

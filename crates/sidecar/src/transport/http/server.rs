@@ -378,7 +378,7 @@ pub async fn handle_transaction_rpc(
     let params_len = request
         .params
         .as_ref()
-        .and_then(|params| params.as_array().map(|items| items.len()));
+        .and_then(|params| params.as_array().map(Vec::len));
     debug!(
         method = %request.method,
         id = ?request.id,
