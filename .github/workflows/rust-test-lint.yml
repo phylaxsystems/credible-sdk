@@ -24,7 +24,7 @@ on:
 
 jobs:
   rust-base:
-    name: Rust Base
+    name: Rust Base Nextest
     uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
     with:
       runner-group: "big-bois-x86"
@@ -35,9 +35,26 @@ jobs:
       submodules: true
       use-nextest: true
       foundry-command: "forge build --root testdata/mock-protocol"
+      test-args: "--exclude state-store --exclude state-worker --no-tests=warn"
       # [""] means default features
       # Feature matrices are supported as follows: ["", "--features=foo", "--features=bar", "--features=foo,bar"]
       feature-sets: '[
         "--no-default-features --features test",
         "--no-default-features --features test --features optimism"
+        ]'
+
+  rust-base-state-worker:
+    name: Rust Base State Worker
+    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
+    with:
+      rust-channel: "nightly"
+      require-lockfile: true
+      install-foundry: true
+      foundry-command: "forge build --root testdata/mock-protocol"
+      dind: true
+      test-args: "--package state-store --package state-worker -- --test-threads=1"
+      # [""] means default features
+      # Feature matrices are supported as follows: ["", "--features=foo", "--features=bar", "--features=foo,bar"]
+      feature-sets: '[
+        "--no-default-features"
         ]'
