@@ -38,7 +38,7 @@ jobs:
       artifact_name: pcl-binaries
       rust-channel: "nightly"
       package: "pcl"
-  
+
   build-assertion-da:
     needs: check-version
     uses: phylaxsystems/actions/.github/workflows/rust-build-binary.yaml@main
@@ -48,9 +48,19 @@ jobs:
       artifact_name: assertion-da-binaries
       rust-channel: "nightly"
       package: "assertion-da-server"
-  
+
+  build-sidecar:
+    needs: check-version
+    uses: phylaxsystems/actions/.github/workflows/rust-build-binary.yaml@main
+    with:
+      binary-name: sidecar
+      version: ${{ needs.check-version.outputs.version }}
+      artifact_name: sidecar-binaries
+      rust-channel: "nightly"
+      package: "sidecar"
+
   combine-artifacts:
-    needs: [build-pcl, build-assertion-da]
+    needs: [ build-pcl, build-assertion-da, build-sidecar ]
     runs-on: ubuntu-latest
     steps:
       - name: Download PCL artifacts
@@ -58,27 +68,34 @@ jobs:
         with:
           name: pcl-binaries
           path: pcl-artifacts/
-      
+
       - name: Download assertion-da artifacts
         uses: actions/download-artifact@v4
         with:
           name: assertion-da-binaries
           path: assertion-da-artifacts/
-      
+
+      - name: Download sidecar artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: sidecar-binaries
+          path: sidecar-artifacts/
+
       - name: Combine artifacts
         run: |
           mkdir -p release-artifacts
           find pcl-artifacts -name "*.tar.gz" -exec cp {} release-artifacts/ \;
           find assertion-da-artifacts -name "*.tar.gz" -exec cp {} release-artifacts/ \;
+          find sidecar-artifacts -name "*.tar.gz" -exec cp {} release-artifacts/ \;
           ls -la release-artifacts/
-      
+
       - name: Upload combined artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-artifacts
           path: release-artifacts/
           retention-days: 1
-  
+
   release-github:
     needs: combine-artifacts
     uses: phylaxsystems/actions/.github/workflows/release-github.yaml@main
