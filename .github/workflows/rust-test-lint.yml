@@ -22,21 +22,34 @@ on:
         required: false
         default: false
 
+env:
+  # Pin nightly to a specific version for consistent caching across workflow runs
+  # Update this monthly or when new Rust features are needed
+  RUST_NIGHTLY_VERSION: "nightly-2024-12-15"
+
 jobs:
+  setup:
+    name: Setup Variables
+    runs-on: ubuntu-latest
+    outputs:
+      rust-nightly: ${{ steps.vars.outputs.rust-nightly }}
+    steps:
+      - id: vars
+        run: echo "rust-nightly=${{ env.RUST_NIGHTLY_VERSION }}" >> $GITHUB_OUTPUT
+
   rust-base:
     name: Rust Base Nextest
+    needs: setup
     uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
     with:
       runner-group: "big-bois-x86"
-      # Pin nightly to a specific version for consistent caching across workflow runs
-      # Update this monthly or when new Rust features are needed
-      rust-channel: "nightly-2024-12-15"
+      rust-channel: ${{ needs.setup.outputs.rust-nightly }}
       require-lockfile: true
       install-foundry: true
       dind: true
       submodules: true
       use-nextest: true
-      foundry-command: "forge build --root testdata/mock-protocol"
+      foundry-command: "forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol"
       test-args: "--exclude state-store --exclude state-worker --no-tests=warn"
       feature-sets: '[
         "--no-default-features --features test",
@@ -49,6 +62,7 @@ jobs:
   # For now, we run these tests inline to avoid duplicate lint jobs.
   state-worker-tests:
     name: State Worker Tests (single-threaded)
+    needs: setup
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,10 +70,12 @@ jobs:
           submodules: recursive
 
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: ${{ needs.setup.outputs.rust-nightly }}
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: nightly-state-worker-test
+          key: ${{ needs.setup.outputs.rust-nightly }}-state-worker-test
 
       - uses: taiki-e/install-action@nextest
 
@@ -68,7 +84,7 @@ jobs:
           version: nightly
 
       - name: Build Foundry contracts
-        run: forge build --root testdata/mock-protocol
+        run: forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol
 
       - name: Run state-worker tests
         run: cargo nextest run --package state-store --package state-worker --locked --cargo-profile release --no-default-features --test-threads=2
