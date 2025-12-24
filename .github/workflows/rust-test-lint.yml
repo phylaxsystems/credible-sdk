@@ -49,7 +49,7 @@ jobs:
       dind: true
       submodules: true
       use-nextest: true
-      foundry-command: "forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol"
+      foundry-command: "forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol"
       test-args: "--exclude state-store --exclude state-worker --no-tests=warn"
       feature-sets: '[
         "--no-default-features --features test",
@@ -84,7 +84,7 @@ jobs:
           version: nightly
 
       - name: Build Foundry contracts
-        run: forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol
+        run: forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol
 
       - name: Run state-worker tests
         run: cargo nextest run --package state-store --package state-worker --locked --cargo-profile release --no-default-features --test-threads=2
