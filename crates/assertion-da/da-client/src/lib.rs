@@ -252,15 +252,18 @@ mod tests {
             local::PrivateKeySigner,
         },
     };
-    use assertion_da_server::api::{
-        db::listen_for_db,
-        process_request::StoredAssertion,
-        serve,
-        types::{
-            DbOperation,
-            DbRequest,
-            DbRequestSender,
-        },
+    use assertion_da_server::{
+        LEAF_FANOUT,
+        api::{
+            db::listen_for_db,
+            process_request::StoredAssertion,
+            serve,
+            types::{
+                DbOperation,
+                DbRequest,
+                DbRequestSender,
+            },
+        }
     };
     use bollard::Docker;
     use serde_json::json;
@@ -281,7 +284,7 @@ mod tests {
         // Create a temporary directory for the database
         let temp_dir = TempDir::new().unwrap();
         let (db_sender, db_receiver) = mpsc::unbounded_channel();
-        let db = DbConfig::new().path(&temp_dir).open().unwrap();
+        let db: sled::Db<{ LEAF_FANOUT }> = DbConfig::new().path(&temp_dir).open().unwrap();
         let signer = PrivateKeySigner::random();
 
         // Set up test server

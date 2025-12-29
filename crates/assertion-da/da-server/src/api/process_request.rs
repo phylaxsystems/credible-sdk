@@ -384,7 +384,10 @@ mod tests {
         },
         signers::Signer,
     };
-    use sled::Config as DbConfig;
+    use sled::{
+        Config as DbConfig,
+        Db,
+    };
     use tempfile::TempDir;
     use tokio::{
         net::TcpListener,
@@ -403,7 +406,7 @@ mod tests {
         let (db_sender, db_receiver) = mpsc::unbounded_channel();
 
         // Set up the database
-        let db = DbConfig::new().path(&temp_dir).open().unwrap();
+        let db: Db<{ crate::LEAF_FANOUT }> = DbConfig::new().path(&temp_dir).open().unwrap();
 
         // Create a random signer for testing
         let signer = PrivateKeySigner::random();

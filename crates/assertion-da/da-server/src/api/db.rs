@@ -1,5 +1,4 @@
 use crate::{
-    LEAF_FANOUT,
     api::types::{
         DbOperation,
         DbRequest,
@@ -13,11 +12,33 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+pub trait Database {
+    fn query(&self, key: &Vec<u8>) -> Result<Option<DbResponse>>;
+    fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<Option<DbResponse>>;
+}
+
+impl<const FANOUT: usize> Database for Db<FANOUT> {
+    fn query(&self, key: &Vec<u8>) -> Result<Option<DbResponse>> {
+        match self.get(key)? {
+            Some(value) => Ok(Some(DbResponse::Value(value.to_vec()))),
+            None => Ok(None),
+        }
+    }
+
+    fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<Option<DbResponse>> {
+        match self.insert(key, value.to_vec())? {
+            // TODO: Check if we want this behavior (doesn't overwrite)
+            Some(old_value) => Ok(Some(DbResponse::Value(old_value.to_vec()))),
+            None => Ok(None),
+        }
+    }
+}
+
 /// Listens to a mpsc channel for database events and responds
 /// accordingly.
-pub async fn listen_for_db(
+pub async fn listen_for_db<DB: Database>(
     mut rx: mpsc::UnboundedReceiver<DbRequest>,
-    db: Db<{ LEAF_FANOUT }>,
+    db: DB,
     cancel_token: CancellationToken,
 ) -> Result<()> {
     loop {
@@ -28,9 +49,9 @@ pub async fn listen_for_db(
             }
             Some(req) = rx.recv() => {
                 let res = match req.request {
-                    DbOperation::Get(key) => db_get(&db, &key)?,
+                    DbOperation::Get(key) => db.query(&key)?,
                     DbOperation::Insert(key, value) => {
-                        db_insert(&db, &key, &value)?;
+                        db.put(&key, &value)?;
                         None
                     }
                 };
@@ -42,21 +63,16 @@ pub async fn listen_for_db(
     Ok(())
 }
 
-fn db_get(db: &Db<{ LEAF_FANOUT }>, key: &Vec<u8>) -> Result<Option<DbResponse>> {
-    let rax = db.get(key)?;
-    if rax.is_none() {
-        return Ok(None);
-    }
-    let rax = rax.unwrap().to_vec();
-    Ok(Some(DbResponse::Value(rax)))
+fn db_get(db: &dyn Database, key: &Vec<u8>) -> Result<Option<DbResponse>> {
+    Ok(db.query(key)?)
 }
 
-fn db_insert(db: &Db<{ LEAF_FANOUT }>, key: &Vec<u8>, value: &Vec<u8>) -> Result<()> {
-    db.insert(key, value.to_owned())?;
+fn db_insert(db: &dyn Database, key: &Vec<u8>, value: &Vec<u8>) -> Result<()> {
+    db.put(key, value)?;
 
-    let db_size = db.size_on_disk()? / (1024 * 1024);
-    #[allow(clippy::cast_precision_loss)]
-    metrics::gauge!("db_size_mb").set(db_size as f64);
+    // let db_size = db.size_on_disk()? / (1024 * 1024);
+    // #[allow(clippy::cast_precision_loss)]
+    // metrics::gauge!("db_size_mb").set(db_size as f64);
     metrics::gauge!("database_assertions_sum").increment(1);
     Ok(())
 }
@@ -64,11 +80,12 @@ fn db_insert(db: &Db<{ LEAF_FANOUT }>, key: &Vec<u8>, value: &Vec<u8>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sled::Db;
     use tokio::sync::oneshot;
 
     #[tokio::test]
     async fn test_db_operations() {
-        let db = sled::Config::tmp().unwrap().open().unwrap();
+        let db: Db<{ crate::LEAF_FANOUT }> = sled::Config::tmp().unwrap().open().unwrap();
 
         // Test insert
         let key = vec![1, 2, 3];
@@ -91,7 +108,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_listen_for_db() {
-        let db = sled::Config::tmp().unwrap().open().unwrap();
+        let db: Db<{ crate::LEAF_FANOUT }> = sled::Config::tmp().unwrap().open().unwrap();
 
         let (tx, rx) = mpsc::unbounded_channel();
 

@@ -43,7 +43,7 @@ impl Config {
     /// # Panics
     ///
     /// Will panic if the root directory is invalid
-    pub async fn build(self) -> anyhow::Result<DaServer> {
+    pub async fn build(self) -> anyhow::Result<DaServer<Db<{ crate::LEAF_FANOUT }>>> {
         // Bind to an address
         let listener = TcpListener::bind(&self.listen_addr).await?;
         tracing::info!(listen_addr = ?self.listen_addr, "Listening on address");
