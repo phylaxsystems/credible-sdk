@@ -14,10 +14,9 @@ permissions: write-all
 
 jobs:
   criterion:
-    uses: phylaxsystems/actions/.github/workflows/benchmark.yaml@main
+    uses: phylaxsystems/actions/.github/workflows/benchmark.yaml@hotfix/bench-perms
     with:
       rust-channel: stable
-<<<<<<< HEAD
       bench-command: "RUSTFLAGS=\"-C opt-level=1\" SIDECAR_BENCH_TRANSPORT=mock RUST_LOG=error cargo bench -p sidecar --features bench-utils --benches && cargo bench --manifest-path crates/assertion-executor/Cargo.toml --features test --benches"
       install-foundry: true
       submodules: true
@@ -34,3 +33,5 @@ jobs:
       baseline-branch: "main"
       baseline-workflow-file: "benchmarks.yml"
       baseline-artifact-name: "criterion-baseline"
+    # secrets:
+    #   COMMENT_TOKEN: ${{ secrets.BENCHMARKS_COMMENT_TOKEN }}
