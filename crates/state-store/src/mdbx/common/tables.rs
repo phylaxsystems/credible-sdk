@@ -42,14 +42,16 @@
 //!
 //! Big-endian encoding ensures lexicographic ordering matches numeric ordering.
 
-use super::types::{
-    AccountData,
-    BlockMetadata,
-    GlobalMetadata,
-    NamespacedAccountKey,
-    NamespacedBytecodeKey,
-    NamespacedStorageKey,
-    StorageValue,
+use crate::{
+    AccountInfo,
+    mdbx::common::types::{
+        BlockMetadata,
+        GlobalMetadata,
+        NamespacedAccountKey,
+        NamespacedBytecodeKey,
+        NamespacedStorageKey,
+        StorageValue,
+    },
 };
 use bytes::BufMut;
 use reth_codecs::Compact;
@@ -149,41 +151,6 @@ impl Decompress for BlockNumber {
         let mut buf = [0u8; 8];
         buf.copy_from_slice(&value[..8]);
         Ok(Self(u64::from_be_bytes(buf)))
-    }
-}
-
-/// Wrapper for code hash (key for bytecode table).
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
-)]
-pub struct CodeHash(pub alloy::primitives::B256);
-
-impl Encode for CodeHash {
-    type Encoded = [u8; 32];
-    fn encode(self) -> Self::Encoded {
-        self.0.0
-    }
-}
-
-impl Decode for CodeHash {
-    fn decode(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        Ok(Self(alloy::primitives::B256::from_slice(value)))
-    }
-}
-
-impl Compress for CodeHash {
-    type Compressed = Vec<u8>;
-    fn compress(self) -> Self::Compressed {
-        self.0.as_slice().to_vec()
-    }
-    fn compress_to_buf<B: BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
-        buf.put_slice(self.0.as_slice());
-    }
-}
-
-impl Decompress for CodeHash {
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        Ok(Self(alloy::primitives::B256::from_slice(value)))
     }
 }
 
@@ -310,7 +277,7 @@ macro_rules! impl_compact_table_codec {
 impl_compact_table_codec!(NamespacedAccountKey, 33);
 impl_compact_table_codec!(NamespacedStorageKey, 65);
 impl_compact_table_codec!(NamespacedBytecodeKey, 33);
-impl_compact_table_codec!(AccountData, 64);
+impl_compact_table_codec!(AccountInfo, 64);
 impl_compact_table_codec!(StorageValue, 32);
 impl_compact_table_codec!(BlockMetadata, 64);
 impl_compact_table_codec!(GlobalMetadata, 16);
@@ -355,7 +322,7 @@ impl Table for NamespacedAccounts {
     const NAME: &'static str = "NamespacedAccounts";
     const DUPSORT: bool = false;
     type Key = NamespacedAccountKey;
-    type Value = AccountData;
+    type Value = AccountInfo;
 }
 
 /// Storage slots per account per namespace.

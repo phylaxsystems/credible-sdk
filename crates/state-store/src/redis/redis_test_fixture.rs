@@ -20,7 +20,7 @@ pub struct SharedRedisContainer {
     pub host: String,
     #[allow(dead_code)]
     pub port: u16,
-    pub url: String,
+    pub _url: String,
 }
 
 impl SharedRedisContainer {
@@ -43,7 +43,7 @@ impl SharedRedisContainer {
             _container: container,
             host,
             port,
-            url,
+            _url: url,
         })
     }
 
@@ -84,11 +84,4 @@ pub async fn get_shared_redis() -> Arc<SharedRedisContainer> {
         })
         .await
         .clone()
-}
-
-/// Get a connection to the shared Redis instance
-pub async fn get_test_redis_connection() -> anyhow::Result<redis::Connection> {
-    let redis = get_shared_redis().await;
-    let client = redis::Client::open(redis.url.as_str())?;
-    Ok(client.get_connection()?)
 }

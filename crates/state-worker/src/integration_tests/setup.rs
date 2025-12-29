@@ -8,7 +8,7 @@ use crate::{
     worker::StateWorker,
 };
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
-use state_store::{
+use state_store::redis::{
     CircularBufferConfig,
     StateReader,
     StateWriter,

@@ -14,7 +14,7 @@ use crate::{
     cli::Args,
     worker::StateWorker,
 };
-use state_store::{
+use state_store::redis::{
     CircularBufferConfig,
     StateReader,
 };
@@ -36,7 +36,7 @@ use anyhow::{
     Result,
 };
 use clap::Parser;
-use state_store::StateWriter;
+use state_store::redis::StateWriter;
 use std::{
     sync::Arc,
     time::Duration,

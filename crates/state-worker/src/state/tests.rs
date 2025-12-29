@@ -38,12 +38,6 @@ use alloy_rpc_types_trace::{
 };
 use std::collections::BTreeMap;
 
-// Helper to hash slots
-fn hash_slot(slot: B256) -> U256 {
-    let slot_hash = keccak256(slot.0);
-    U256::from_be_bytes(slot_hash.into())
-}
-
 // Helper to create Parity trace
 fn create_parity_trace(tx_hash: B256, state_diff: StateDiff) -> TraceResultsWithTransactionHash {
     TraceResultsWithTransactionHash {
@@ -105,8 +99,8 @@ fn test_simple_balance_change_produces_identical_output() {
     assert_eq!(geth_accounts.len(), 1);
 
     // Sort for comparison
-    parity_accounts.sort_by_key(|a| a.address_hash.clone());
-    geth_accounts.sort_by_key(|a| a.address_hash.clone());
+    parity_accounts.sort_by_key(|a| a.address_hash);
+    geth_accounts.sort_by_key(|a| a.address_hash);
 
     let parity_account = &parity_accounts[0];
     let geth_account = &geth_accounts[0];
@@ -168,8 +162,8 @@ fn test_contract_deployment_produces_identical_output() {
     assert_eq!(parity_accounts.len(), 1);
     assert_eq!(geth_accounts.len(), 1);
 
-    parity_accounts.sort_by_key(|a| a.address_hash.clone());
-    geth_accounts.sort_by_key(|a| a.address_hash.clone());
+    parity_accounts.sort_by_key(|a| a.address_hash);
+    geth_accounts.sort_by_key(|a| a.address_hash);
 
     let parity_account = &parity_accounts[0];
     let geth_account = &geth_accounts[0];
@@ -193,6 +187,11 @@ fn test_storage_updates_produce_identical_output() {
     let slot1 = B256::from(U256::from(1));
     let slot2 = B256::from(U256::from(2));
     let slot3 = B256::from(U256::from(3));
+
+    // Compute hashed slot keys (what the implementation actually stores)
+    let slot1_hash = keccak256(slot1.0);
+    let slot2_hash = keccak256(slot2.0);
+    let slot3_hash = keccak256(slot3.0);
 
     // === Parity format ===
     let mut parity_storage = BTreeMap::new();
@@ -251,8 +250,8 @@ fn test_storage_updates_produce_identical_output() {
     assert_eq!(parity_accounts.len(), 1);
     assert_eq!(geth_accounts.len(), 1);
 
-    parity_accounts.sort_by_key(|a| a.address_hash.clone());
-    geth_accounts.sort_by_key(|a| a.address_hash.clone());
+    parity_accounts.sort_by_key(|a| a.address_hash);
+    geth_accounts.sort_by_key(|a| a.address_hash);
 
     let parity_account = &parity_accounts[0];
     let geth_account = &geth_accounts[0];
@@ -260,31 +259,28 @@ fn test_storage_updates_produce_identical_output() {
     // Verify storage is identical
     assert_eq!(parity_account.storage.len(), geth_account.storage.len());
 
-    let hashed_slot1 = hash_slot(slot1);
-    let hashed_slot2 = hash_slot(slot2);
-    let hashed_slot3 = hash_slot(slot3);
-
     // Both should have the same hashed slots with the same values
+    // Use hashed keys since the implementation hashes slots before storing
     assert_eq!(
-        parity_account.storage.get(&hashed_slot1),
+        parity_account.storage.get(&slot1_hash),
         Some(&U256::from(100))
     );
     assert_eq!(
-        geth_account.storage.get(&hashed_slot1),
+        geth_account.storage.get(&slot1_hash),
         Some(&U256::from(100))
     );
 
     assert_eq!(
-        parity_account.storage.get(&hashed_slot2),
+        parity_account.storage.get(&slot2_hash),
         Some(&U256::from(300))
     );
     assert_eq!(
-        geth_account.storage.get(&hashed_slot2),
+        geth_account.storage.get(&slot2_hash),
         Some(&U256::from(300))
     );
 
-    assert_eq!(parity_account.storage.get(&hashed_slot3), Some(&U256::ZERO));
-    assert_eq!(geth_account.storage.get(&hashed_slot3), Some(&U256::ZERO));
+    assert_eq!(parity_account.storage.get(&slot3_hash), Some(&U256::ZERO));
+    assert_eq!(geth_account.storage.get(&slot3_hash), Some(&U256::ZERO));
 }
 
 #[test]
@@ -344,8 +340,8 @@ fn test_selfdestruct_balance_transfer_produces_identical_output() {
     assert_eq!(parity_accounts.len(), 1);
     assert_eq!(geth_accounts.len(), 1);
 
-    parity_accounts.sort_by_key(|a| a.address_hash.clone());
-    geth_accounts.sort_by_key(|a| a.address_hash.clone());
+    parity_accounts.sort_by_key(|a| a.address_hash);
+    geth_accounts.sort_by_key(|a| a.address_hash);
 
     let parity_account = &parity_accounts[0];
     let geth_account = &geth_accounts[0];
@@ -417,8 +413,8 @@ fn test_selfdestruct_storage_persists_produces_identical_output() {
     assert_eq!(parity_accounts.len(), 1);
     assert_eq!(geth_accounts.len(), 1);
 
-    parity_accounts.sort_by_key(|a| a.address_hash.clone());
-    geth_accounts.sort_by_key(|a| a.address_hash.clone());
+    parity_accounts.sort_by_key(|a| a.address_hash);
+    geth_accounts.sort_by_key(|a| a.address_hash);
 
     let parity_account = &parity_accounts[0];
     let geth_account = &geth_accounts[0];
@@ -523,8 +519,8 @@ fn test_multiple_transactions_produce_identical_output() {
     assert_eq!(parity_accounts.len(), 1);
     assert_eq!(geth_accounts.len(), 1);
 
-    parity_accounts.sort_by_key(|a| a.address_hash.clone());
-    geth_accounts.sort_by_key(|a| a.address_hash.clone());
+    parity_accounts.sort_by_key(|a| a.address_hash);
+    geth_accounts.sort_by_key(|a| a.address_hash);
 
     let parity_account = &parity_accounts[0];
     let geth_account = &geth_accounts[0];
@@ -647,8 +643,8 @@ fn test_complex_scenario_produces_identical_output() {
     assert_eq!(parity_accounts.len(), 3);
     assert_eq!(geth_accounts.len(), 3);
 
-    parity_accounts.sort_by_key(|a| a.address_hash.clone());
-    geth_accounts.sort_by_key(|a| a.address_hash.clone());
+    parity_accounts.sort_by_key(|a| a.address_hash);
+    geth_accounts.sort_by_key(|a| a.address_hash);
 
     for (parity_account, geth_account) in parity_accounts.iter().zip(geth_accounts.iter()) {
         assert_eq!(parity_account.address_hash, geth_account.address_hash);

@@ -7,7 +7,7 @@ mod sync_task;
 pub(crate) mod utils;
 
 pub use error::RedisCacheError;
-use state_store::StateReader;
+use state_store::redis::StateReader;
 
 use self::{
     sync_task::publish_sync_state,
@@ -43,6 +43,7 @@ use revm::{
         StorageValue,
     },
 };
+use state_store::Reader;
 use std::{
     collections::HashMap,
     fmt::{
@@ -220,8 +221,7 @@ impl DatabaseRef for RedisSource {
             self.backend
                 .get_code(code_hash, target_block_u64)
                 .map_err(Self::Error::RedisCodeByHash)?
-                .ok_or(Self::Error::CodeByHashNotFound)?
-                .into(),
+                .ok_or(Self::Error::CodeByHashNotFound)?,
         );
         Ok(bytecode)
     }
@@ -233,12 +233,11 @@ impl DatabaseRef for RedisSource {
         index: StorageKey,
     ) -> Result<StorageValue, Self::Error> {
         let slot_hash = keccak256(index.to_be_bytes::<32>());
-        let slot = U256::from_be_bytes(slot_hash.into());
         let target_block = *self.target_block.read();
         let target_block_u64 = Self::u256_to_u64(target_block);
         let value = self
             .backend
-            .get_storage(address.into(), slot, target_block_u64)
+            .get_storage(address.into(), slot_hash, target_block_u64)
             .map_err(Self::Error::RedisStorage)?
             .unwrap_or_default();
         Ok(value)

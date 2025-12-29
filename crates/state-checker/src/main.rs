@@ -11,8 +11,11 @@ use clap::Parser;
 use log::error;
 use rust_tracing::trace;
 use state_store::{
-    CircularBufferConfig,
-    StateReader,
+    Reader,
+    redis::{
+        CircularBufferConfig,
+        StateReader,
+    },
 };
 use tracing::info;
 

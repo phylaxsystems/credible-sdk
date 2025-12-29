@@ -1,35 +1,39 @@
 //! State reader implementation for querying blockchain state from Redis.
 
 use crate::{
-    CircularBufferConfig,
-    common::{
-        AccountInfo,
-        AccountState,
-        AddressHash,
-        BlockMetadata,
-        RedisStateClient,
-        decode_b256,
-        decode_bytes,
-        decode_u256,
-        encode_b256,
-        error::{
-            StateError,
-            StateResult,
+    AccountInfo,
+    AccountState,
+    AddressHash,
+    BlockMetadata,
+    Reader,
+    redis::{
+        CircularBufferConfig,
+        common::{
+            RedisStateClient,
+            decode_b256,
+            decode_bytes,
+            decode_u256,
+            encode_b256,
+            error::{
+                StateError,
+                StateResult,
+            },
+            get_account_key,
+            get_all_accounts_pattern,
+            get_block_hash_key,
+            get_block_key,
+            get_code_key,
+            get_namespace_for_block,
+            get_state_root_key,
+            get_storage_key,
+            read_latest_block_number,
+            read_namespace_lock,
         },
-        get_account_key,
-        get_all_accounts_pattern,
-        get_block_hash_key,
-        get_block_key,
-        get_code_key,
-        get_namespace_for_block,
-        get_state_root_key,
-        get_storage_key,
-        read_latest_block_number,
-        read_namespace_lock,
     },
 };
 use alloy::primitives::{
     B256,
+    Bytes,
     KECCAK256_EMPTY,
     U256,
 };
@@ -42,24 +46,28 @@ pub struct StateReader {
     client: RedisStateClient,
 }
 
-impl StateReader {
-    /// Create a new reader.
-    pub fn new(
-        redis_url: &str,
-        base_namespace: &str,
-        buffer_config: CircularBufferConfig,
-    ) -> StateResult<Self> {
-        let client = RedisStateClient::new(redis_url, base_namespace.to_string(), buffer_config)?;
-        Ok(Self { client })
-    }
+impl Reader for StateReader {
+    type Error = StateError;
 
     /// Get the most recent block number from metadata (O(1) operation).
     /// Falls back to scanning all namespaces if metadata is unavailable.
-    pub fn latest_block_number(&self) -> StateResult<Option<u64>> {
+    fn latest_block_number(&self) -> StateResult<Option<u64>> {
         let base_namespace = self.client.base_namespace.clone();
 
         self.client
             .with_connection(move |conn| read_latest_block_number(conn, &base_namespace))
+    }
+
+    /// Check if a specific block number is available in the circular buffer.
+    ///
+    /// Note: This checks availability without considering locks.
+    fn is_block_available(&self, block_number: u64) -> StateResult<bool> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        self.client.with_connection(move |conn| {
+            is_block_available(conn, &base_namespace, buffer_size, block_number)
+        })
     }
 
     /// Get account info without storage slots (balance, nonce, code hash, code only).
@@ -67,7 +75,7 @@ impl StateReader {
     /// Use `get_full_account` or `get_all_storage` separately if storage is needed.
     ///
     /// Returns an error if the namespace is locked for writing.
-    pub fn get_account(
+    fn get_account(
         &self,
         address_hash: AddressHash,
         block_number: u64,
@@ -86,44 +94,21 @@ impl StateReader {
         })
     }
 
-    /// Get the complete account state including code and all storage slots.
-    /// WARNING: This can be expensive for contracts with large storage (millions of slots).
-    /// Use `get_account` + `get_storage` for specific slots when possible.
-    ///
-    /// Returns an error if the namespace is locked for writing.
-    pub fn get_full_account(
-        &self,
-        address_hash: AddressHash,
-        block_number: u64,
-    ) -> StateResult<Option<AccountState>> {
-        let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
-
-        self.client.with_connection(move |conn| {
-            get_full_account_at_block(
-                conn,
-                &base_namespace,
-                buffer_size,
-                &address_hash,
-                block_number,
-            )
-        })
-    }
-
     /// Get a specific storage slot for an account at a block.
     ///
-    /// The `slot` parameter should be the `keccak256` hash of the original 32-byte slot index,
+    /// The `slot_hash` parameter should be the `keccak256` hash of the original 32-byte slot index,
     /// matching the format persisted by the writer (and Nethermind state dumps).
     ///
     /// Returns an error if the namespace is locked for writing.
-    pub fn get_storage(
+    fn get_storage(
         &self,
         address_hash: AddressHash,
-        slot: U256,
+        slot_hash: B256,
         block_number: u64,
     ) -> StateResult<Option<U256>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
+        let slot = U256::from_be_bytes(slot_hash.into());
 
         self.client.with_connection(move |conn| {
             get_storage_at_block(
@@ -137,52 +122,89 @@ impl StateReader {
         })
     }
 
-    /// Scan all account hashes (keccak of addresses) in a namespace for a specific block.
-    /// Returns a list of all keccak(address) hashes that have account data stored.
-    ///
-    /// Returns an error if the namespace is locked for writing.
-    pub fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
-        let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
-
-        self.client.with_connection(move |conn| {
-            scan_account_hashes_at_block(conn, &base_namespace, buffer_size, block_number)
-        })
-    }
-
     /// Get all storage slots for an account at a block.
     ///
     /// Returned map keys are `keccak256(slot)` digests corresponding to the original storage slots.
     ///
     /// Returns an error if the namespace is locked for writing.
-    pub fn get_all_storage(
+    fn get_all_storage(
         &self,
         address_hash: AddressHash,
         block_number: u64,
-    ) -> StateResult<HashMap<U256, B256>> {
+    ) -> StateResult<HashMap<B256, U256>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
 
         self.client.with_connection(move |conn| {
-            get_all_storage_at_block(
+            let result = get_all_storage_at_block(
                 conn,
                 &base_namespace,
                 buffer_size,
                 &address_hash,
                 block_number,
-            )
+            )?;
+            // Convert HashMap<U256, B256> to HashMap<B256, U256>
+            Ok(result
+                .into_iter()
+                .map(|(slot, value)| {
+                    (
+                        B256::from(slot.to_be_bytes()),
+                        U256::from_be_bytes(value.into()),
+                    )
+                })
+                .collect())
         })
     }
 
     /// Get contract bytecode by code hash.
     ///
     /// Returns an error if the namespace is locked for writing.
-    pub fn get_code(&self, code_hash: B256, block_number: u64) -> StateResult<Option<Vec<u8>>> {
+    fn get_code(&self, code_hash: B256, block_number: u64) -> StateResult<Option<Bytes>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
 
         self.client.with_connection(move |conn| {
-            get_code_at_block(conn, &base_namespace, buffer_size, code_hash, block_number)
+            let result =
+                get_code_at_block(conn, &base_namespace, buffer_size, code_hash, block_number)?;
+            Ok(result.map(Bytes::from))
+        })
+    }
+
+    /// Get complete account state including storage.
+    ///
+    /// WARNING: This can transfer large amounts of data for contracts with many slots.
+    fn get_full_account(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<Option<AccountState>> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        self.client.with_connection(move |conn| {
+            let result = get_full_account_at_block(
+                conn,
+                &base_namespace,
+                buffer_size,
+                &address_hash,
+                block_number,
+            )?;
+            // Convert internal AccountState to crate-level AccountState
+            Ok(result.map(|a| {
+                AccountState {
+                    address_hash: a.address_hash,
+                    balance: a.balance,
+                    nonce: a.nonce,
+                    code_hash: a.code_hash,
+                    code: a.code.map(Bytes::from),
+                    storage: a
+                        .storage
+                        .into_iter()
+                        .map(|(k, v)| (B256::from(k.to_be_bytes()), v))
+                        .collect(),
+                    deleted: a.deleted,
+                }
+            }))
         })
     }
 
@@ -190,7 +212,7 @@ impl StateReader {
     ///
     /// Note: Block hashes are stored globally, not per-namespace, so this does not
     /// check namespace locks.
-    pub fn get_block_hash(&self, block_number: u64) -> StateResult<Option<B256>> {
+    fn get_block_hash(&self, block_number: u64) -> StateResult<Option<B256>> {
         let base_namespace = self.client.base_namespace.clone();
 
         self.client
@@ -201,7 +223,7 @@ impl StateReader {
     ///
     /// Note: State roots are stored globally, not per-namespace, so this does not
     /// check namespace locks.
-    pub fn get_state_root(&self, block_number: u64) -> StateResult<Option<B256>> {
+    fn get_state_root(&self, block_number: u64) -> StateResult<Option<B256>> {
         let base_namespace = self.client.base_namespace.clone();
 
         self.client
@@ -213,7 +235,7 @@ impl StateReader {
     ///
     /// Note: Block metadata is stored globally, not per-namespace, so this does not
     /// check namespace locks.
-    pub fn get_block_metadata(&self, block_number: u64) -> StateResult<Option<BlockMetadata>> {
+    fn get_block_metadata(&self, block_number: u64) -> StateResult<Option<BlockMetadata>> {
         let base_namespace = self.client.base_namespace.clone();
 
         self.client.with_connection(move |conn| {
@@ -251,15 +273,41 @@ impl StateReader {
         })
     }
 
-    /// Check if a specific block number is available in the circular buffer.
+    /// Get the range of available blocks [oldest, latest].
+    fn get_available_block_range(&self) -> StateResult<Option<(u64, u64)>> {
+        let latest = self.latest_block_number()?;
+
+        if let Some(latest_block) = latest {
+            let buffer_size = self.client.buffer_config.buffer_size as u64;
+            let oldest_block = latest_block.saturating_sub(buffer_size - 1);
+            Ok(Some((oldest_block, latest_block)))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl StateReader {
+    /// Create a new reader.
+    pub fn new(
+        redis_url: &str,
+        base_namespace: &str,
+        buffer_config: CircularBufferConfig,
+    ) -> StateResult<Self> {
+        let client = RedisStateClient::new(redis_url, base_namespace.to_string(), buffer_config)?;
+        Ok(Self { client })
+    }
+
+    /// Scan all account hashes (keccak of addresses) in a namespace for a specific block.
+    /// Returns a list of all keccak(address) hashes that have account data stored.
     ///
-    /// Note: This checks availability without considering locks.
-    pub fn is_block_available(&self, block_number: u64) -> StateResult<bool> {
+    /// Returns an error if the namespace is locked for writing.
+    pub fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
 
         self.client.with_connection(move |conn| {
-            is_block_available(conn, &base_namespace, buffer_size, block_number)
+            scan_account_hashes_at_block(conn, &base_namespace, buffer_size, block_number)
         })
     }
 
@@ -283,24 +331,23 @@ impl StateReader {
             Ok(true)
         })
     }
-
-    /// Get the range of available blocks [oldest, latest].
-    pub fn get_available_block_range(&self) -> StateResult<Option<(u64, u64)>> {
-        let latest = self.latest_block_number()?;
-
-        if let Some(latest_block) = latest {
-            let buffer_size = self.client.buffer_config.buffer_size as u64;
-            let oldest_block = latest_block.saturating_sub(buffer_size - 1);
-            Ok(Some((oldest_block, latest_block)))
-        } else {
-            Ok(None)
-        }
-    }
 }
 
 // ============================================================================
 // Internal helper functions
 // ============================================================================
+
+/// Internal account state for Redis (uses different storage key format)
+#[derive(Debug, Clone)]
+struct InternalAccountState {
+    pub address_hash: AddressHash,
+    pub balance: U256,
+    pub nonce: u64,
+    pub code_hash: B256,
+    pub code: Option<Vec<u8>>,
+    pub storage: HashMap<U256, U256>,
+    pub deleted: bool,
+}
 
 /// Parse namespace block number from optional string.
 fn parse_namespace_block(namespace_block_str: Option<String>) -> StateResult<Option<u64>> {
@@ -393,7 +440,7 @@ where
         .map_err(|e| StateError::ParseInt(nonce.clone(), e))?;
 
     Ok(Some(AccountInfo {
-        address_hash: address_hash.clone(),
+        address_hash: *address_hash,
         balance: balance_parsed,
         nonce: nonce_parsed,
         code_hash: code_hash_decoded,
@@ -408,7 +455,7 @@ fn get_full_account_at_block<C>(
     buffer_size: usize,
     address_hash: &AddressHash,
     block_number: u64,
-) -> StateResult<Option<AccountState>>
+) -> StateResult<Option<InternalAccountState>>
 where
     C: redis::ConnectionLike,
 {
@@ -483,8 +530,8 @@ where
         .parse()
         .map_err(|e| StateError::ParseInt(nonce.clone(), e))?;
 
-    Ok(Some(AccountState {
-        address_hash: address_hash.clone(),
+    Ok(Some(InternalAccountState {
+        address_hash: *address_hash,
         balance: balance_parsed,
         nonce: nonce_parsed,
         code_hash: code_hash_decoded,

@@ -22,7 +22,7 @@
 //! └── Metadata            (0 → global metadata, e.g., latest block)
 //! ```
 
-use crate::common::{
+use crate::mdbx::common::{
     error::{
         StateError,
         StateResult,

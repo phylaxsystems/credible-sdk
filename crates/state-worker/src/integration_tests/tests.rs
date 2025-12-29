@@ -22,16 +22,19 @@ use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use redis::Commands;
 use serde_json::json;
 use state_store::{
-    ChunkedWriteConfig,
-    CircularBufferConfig,
-    StateReader,
-    StateWriter,
-    common::{
-        AccountInfo,
-        AccountState,
-        BlockStateUpdate,
-        get_account_key,
-        get_storage_key,
+    AccountState,
+    BlockStateUpdate,
+    Reader,
+    Writer,
+    redis::{
+        ChunkedWriteConfig,
+        CircularBufferConfig,
+        StateReader,
+        StateWriter,
+        common::{
+            get_account_key,
+            get_storage_key,
+        },
     },
 };
 use std::time::Duration;
@@ -1468,7 +1471,7 @@ async fn test_get_account_does_not_load_storage() {
     .expect("Failed to create reader");
 
     // Test get_account returns AccountInfo (without storage field at all)
-    let account_info: AccountInfo = reader
+    let account_info = reader
         .get_account(address_hash.into(), 1)
         .expect("Failed to get account")
         .expect("Account should exist");
@@ -1571,15 +1574,12 @@ async fn test_get_full_account_returns_all_slots() {
     let slot_0_hash = keccak256(U256::ZERO.to_be_bytes::<32>());
     let slot_1_hash = keccak256(U256::from(1).to_be_bytes::<32>());
 
-    let slot_0_key = U256::from_be_bytes(slot_0_hash.into());
-    let slot_1_key = U256::from_be_bytes(slot_1_hash.into());
-
     assert!(
-        account.storage.contains_key(&slot_0_key),
+        account.storage.contains_key(&slot_0_hash),
         "Storage should contain slot 0"
     );
     assert!(
-        account.storage.contains_key(&slot_1_key),
+        account.storage.contains_key(&slot_1_hash),
         "Storage should contain slot 1"
     );
 }
@@ -1651,10 +1651,9 @@ async fn test_get_storage_returns_individual_slot() {
 
     // Use get_storage for individual slot lookup
     let slot_5_hash = keccak256(U256::from(5).to_be_bytes::<32>());
-    let slot_key = U256::from_be_bytes(slot_5_hash.into());
 
     let value = reader
-        .get_storage(address_hash.into(), slot_key, 1)
+        .get_storage(address_hash.into(), slot_5_hash, 1)
         .expect("Failed to get storage")
         .expect("Storage slot should exist");
 
@@ -1662,10 +1661,9 @@ async fn test_get_storage_returns_individual_slot() {
 
     // Verify non-existent slot returns None
     let non_existent_slot = keccak256(U256::from(999).to_be_bytes::<32>());
-    let non_existent_key = U256::from_be_bytes(non_existent_slot.into());
 
     let missing = reader
-        .get_storage(address_hash.into(), non_existent_key, 1)
+        .get_storage(address_hash.into(), non_existent_slot, 1)
         .expect("Failed to get storage");
 
     assert!(missing.is_none(), "Non-existent slot should return None");
@@ -1799,28 +1797,45 @@ async fn test_eip2935_and_eip4788_system_contracts() {
     );
 
     // Verify the dual ring buffer pattern: timestamp at slot N, root at slot N + 8191
+    // Since storage keys are keccak256(slot), we can't reverse them to check ranges.
+    // Instead, we verify the storage has the expected number of entries and
+    // check that the expected keys for known timestamps exist.
     assert!(
         eip4788_account.storage.len() >= 2,
         "EIP-4788 should have at least 2 storage slots (timestamp + root)"
     );
 
-    let mut has_low_slot = false;
-    let mut has_high_slot = false;
-    for slot in eip4788_account.storage.keys() {
-        let slot_u64 = slot.to::<u64>();
-        if slot_u64 < HISTORY_BUFFER_LENGTH {
-            has_low_slot = true;
-        } else if slot_u64 >= HISTORY_BUFFER_LENGTH && slot_u64 < 2 * HISTORY_BUFFER_LENGTH {
-            has_high_slot = true;
-        }
-    }
+    // Get the timestamp from block 3 to compute expected storage keys
+    // The mock server uses block_number * 12 as timestamp (standard 12s block time)
+    let block_3_timestamp = 3u64 * 12;
+    let timestamp_index = block_3_timestamp % HISTORY_BUFFER_LENGTH;
+
+    // Compute the expected hashed storage keys
+    let expected_timestamp_key = keccak256(U256::from(timestamp_index).to_be_bytes::<32>());
+    let expected_root_key =
+        keccak256(U256::from(timestamp_index + HISTORY_BUFFER_LENGTH).to_be_bytes::<32>());
+
     assert!(
-        has_low_slot,
-        "EIP-4788 should have timestamp slot (< HISTORY_BUFFER_LENGTH)"
+        eip4788_account
+            .storage
+            .contains_key(&expected_timestamp_key),
+        "EIP-4788 should have timestamp slot at keccak256({timestamp_index})",
     );
     assert!(
-        has_high_slot,
-        "EIP-4788 should have root slot (>= HISTORY_BUFFER_LENGTH)"
+        eip4788_account.storage.contains_key(&expected_root_key),
+        "EIP-4788 should have root slot at keccak256({})",
+        timestamp_index + HISTORY_BUFFER_LENGTH
+    );
+
+    // Verify the values stored are correct
+    let stored_timestamp = eip4788_account
+        .storage
+        .get(&expected_timestamp_key)
+        .expect("timestamp slot should exist");
+    assert_eq!(
+        *stored_timestamp,
+        U256::from(block_3_timestamp),
+        "Stored timestamp should match block timestamp"
     );
 }
 
@@ -2087,7 +2102,7 @@ async fn test_recover_stale_locks_fails_without_diff() {
     assert!(
         matches!(
             err,
-            state_store::common::error::StateError::MissingStateDiff { .. }
+            state_store::redis::common::error::StateError::MissingStateDiff { .. }
         ),
         "expected MissingStateDiff error, got: {err:?}",
     );
@@ -2329,7 +2344,7 @@ async fn test_recovery_partial_diff_chain_fails() {
     assert!(result.is_err(), "recovery should fail with partial diffs");
     let err = result.unwrap_err();
     match err {
-        state_store::common::error::StateError::MissingStateDiff {
+        state_store::redis::common::error::StateError::MissingStateDiff {
             needed_block,
             target_block,
         } => {

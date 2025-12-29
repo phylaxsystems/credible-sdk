@@ -1,7 +1,7 @@
 use alloy::primitives::U256;
 use assertion_executor::db::DatabaseRef;
 use revm::context::DBErrorMarker;
-use state_store::common::error::StateError;
+use state_store::redis::common::error::StateError;
 use std::fmt::{
     Debug,
     Display,
