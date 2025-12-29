@@ -18,7 +18,7 @@ jobs:
     uses: phylaxsystems/actions/.github/workflows/benchmark.yaml@hotfix/bench-perms
     with:
       rust-channel: stable
-      bench-command: "RUSTFLAGS=\"-C opt-level=1\" SIDECAR_BENCH_TRANSPORT=mock RUST_LOG=error cargo bench -p sidecar --features bench-utils --benches && cargo bench --manifest-path crates/assertion-executor/Cargo.toml --features test --benches"
+      bench-command: "forge build --root testdata/mock-protocol && RUSTFLAGS=\"-C opt-level=1\" SIDECAR_BENCH_TRANSPORT=mock RUST_LOG=error cargo bench -p sidecar --features bench-utils --benches && cargo bench --manifest-path crates/assertion-executor/Cargo.toml --features test --benches"
       install-foundry: true
       submodules: true
       foundry-command: "forge build --root testdata/mock-protocol"

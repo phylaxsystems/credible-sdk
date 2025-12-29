@@ -732,7 +732,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     ///
     /// If the sources do not become synced after a set amount of time, the function
     /// errors.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench-utils"))]
     async fn verify_state_sources_synced_for_tx(&mut self) -> Result<(), EngineError> {
         const RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -942,7 +942,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
     /// Run the engine and process transactions and blocks received
     /// via the transaction queue.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench-utils"))]
     pub async fn run(&mut self) -> Result<(), EngineError> {
         let mut processed_blocks = 0u64;
         let mut block_processing_time = Instant::now();
@@ -1309,7 +1309,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     /// Applies the state inside `self.last_executed_tx` to `self.state`.
     ///
     /// If `self.last_executed_tx` is empty, we dont do anything.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench-utils"))]
     fn apply_state_buffer(
         &mut self,
         block_execution_id: BlockExecutionId,

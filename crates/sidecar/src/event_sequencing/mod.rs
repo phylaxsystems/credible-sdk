@@ -155,7 +155,7 @@ impl EventSequencing {
 
     /// An asynchronous function that continuously processes events from a transaction queue channel
     /// and forwards them to a core engine for further handling.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench-utils"))]
     pub async fn run(&mut self) -> Result<(), EventSequencingError> {
         loop {
             let event = self.receive_event().await?;
@@ -164,7 +164,7 @@ impl EventSequencing {
     }
 
     /// Receives an event from the transaction queue, yielding when empty.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench-utils"))]
     async fn receive_event(&mut self) -> Result<TxQueueContents, EventSequencingError> {
         loop {
             match self.tx_receiver.try_recv() {
