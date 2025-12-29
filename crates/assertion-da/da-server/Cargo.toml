@@ -32,6 +32,7 @@ directories.workspace = true
 bollard.workspace = true
 alloy-json-abi.workspace = true
 tokio-util.workspace = true
+redis.workspace = true
 
 tracing.workspace = true
 rust-tracing.workspace = true
@@ -50,3 +51,5 @@ jsonschema = "0.30.0"
 [dev-dependencies]
 tempfile.workspace = true
 assertion-da-client = { path = "../da-client" }
+testcontainers.workspace = true
+testcontainers-modules.workspace = true

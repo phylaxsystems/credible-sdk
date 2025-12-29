@@ -7,16 +7,20 @@ use crate::{
 };
 
 use sled::Db;
+use redis::Client;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Database trait implementing basic query and put/insert functionality
 pub trait Database {
     fn query(&self, key: &Vec<u8>) -> Result<Option<DbResponse>>;
     fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<Option<DbResponse>>;
 }
 
+// Sled implementation
+// TODO: maybe behind a feature flag?
 impl<const FANOUT: usize> Database for Db<FANOUT> {
     fn query(&self, key: &Vec<u8>) -> Result<Option<DbResponse>> {
         match self.get(key)? {
@@ -31,6 +35,35 @@ impl<const FANOUT: usize> Database for Db<FANOUT> {
             Some(old_value) => Ok(Some(DbResponse::Value(old_value.to_vec()))),
             None => Ok(None),
         }
+    }
+}
+
+// Redis implementation
+// TODO: maybe behind a feature flag?
+pub struct RedisDb {
+    client: Client,
+}
+
+impl RedisDb {
+    pub fn new(client: Client) -> Self {
+        Self {
+            client,
+        }
+    }
+}
+
+impl Database for RedisDb {
+    fn query(&self, key: &Vec<u8>) -> Result<Option<DbResponse>> {
+        let mut conn = self.client.get_connection()?;
+        let value: Option<Vec<u8>> = redis::cmd("GET").arg(key).query(&mut conn)?;
+        Ok(value.map(DbResponse::Value))
+    }
+
+    fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<Option<DbResponse>> {
+        let mut conn = self.client.get_connection()?;
+        // GETSET returns the old value before setting the new one
+        let old_value: Option<Vec<u8>> = redis::cmd("GETSET").arg(key).arg(value).query(&mut conn)?;
+        Ok(old_value.map(DbResponse::Value))
     }
 }
 
@@ -52,6 +85,7 @@ pub async fn listen_for_db<DB: Database>(
                     DbOperation::Get(key) => db.query(&key)?,
                     DbOperation::Insert(key, value) => {
                         db.put(&key, &value)?;
+                        metrics::gauge!("database_assertions_sum").increment(1);
                         None
                     }
                 };
@@ -60,20 +94,6 @@ pub async fn listen_for_db<DB: Database>(
             }
         }
     }
-    Ok(())
-}
-
-fn db_get(db: &dyn Database, key: &Vec<u8>) -> Result<Option<DbResponse>> {
-    Ok(db.query(key)?)
-}
-
-fn db_insert(db: &dyn Database, key: &Vec<u8>, value: &Vec<u8>) -> Result<()> {
-    db.put(key, value)?;
-
-    // let db_size = db.size_on_disk()? / (1024 * 1024);
-    // #[allow(clippy::cast_precision_loss)]
-    // metrics::gauge!("db_size_mb").set(db_size as f64);
-    metrics::gauge!("database_assertions_sum").increment(1);
     Ok(())
 }
 
@@ -90,10 +110,10 @@ mod tests {
         // Test insert
         let key = vec![1, 2, 3];
         let value = vec![4, 5, 6];
-        db_insert(&db, &key, &value).unwrap();
+        db.put(&key, &value).unwrap();
 
         // Test get
-        let result = db_get(&db, &key).unwrap();
+        let result = db.query(&key).unwrap();
         assert!(result.is_some());
         match result {
             Some(DbResponse::Value(val)) => assert_eq!(val, value),
@@ -102,7 +122,7 @@ mod tests {
 
         // Test get non-existent
         let missing_key = vec![7, 8, 9];
-        let result = db_get(&db, &missing_key).unwrap();
+        let result = db.query(&missing_key).unwrap();
         assert!(result.is_none());
     }
 
@@ -148,5 +168,54 @@ mod tests {
         // Clean up
         cancel_token.cancel();
         handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_redis_db_operations() {
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::redis::Redis;
+
+        // Start Redis container
+        let container = Redis::default().start().await.unwrap();
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(6379).await.unwrap();
+
+        // Connect to Redis
+        let client = redis::Client::open(format!("redis://{host}:{port}")).unwrap();
+        let db = RedisDb::new(client);
+
+        // Test insert (first insert returns None since key didn't exist)
+        let key = vec![1, 2, 3];
+        let value = vec![4, 5, 6];
+        let result = db.put(&key, &value).unwrap();
+        assert!(result.is_none());
+
+        // Test query
+        let result = db.query(&key).unwrap();
+        assert!(result.is_some());
+        match result {
+            Some(DbResponse::Value(val)) => assert_eq!(val, value),
+            _ => panic!("Unexpected response type"),
+        }
+
+        // Test put returns old value
+        let new_value = vec![7, 8, 9];
+        let result = db.put(&key, &new_value).unwrap();
+        match result {
+            Some(DbResponse::Value(val)) => assert_eq!(val, value),
+            _ => panic!("Expected old value to be returned"),
+        }
+
+        // Verify new value was set
+        let result = db.query(&key).unwrap();
+        match result {
+            Some(DbResponse::Value(val)) => assert_eq!(val, new_value),
+            _ => panic!("Unexpected response type"),
+        }
+
+        // Test query non-existent key
+        let missing_key = vec![10, 11, 12];
+        let result = db.query(&missing_key).unwrap();
+        assert!(result.is_none());
     }
 }
