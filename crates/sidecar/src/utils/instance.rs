@@ -20,6 +20,7 @@ use crate::{
         sources::Source,
     },
     engine::{
+        EngineError,
         TransactionResult,
         queue::CommitHead,
     },
@@ -83,7 +84,13 @@ use std::{
     future::Future,
     net::SocketAddr,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
+    },
     time::{
         Duration,
         Instant,
@@ -99,6 +106,29 @@ type TestDbError = std::convert::Infallible;
 enum WaitError {
     Timeout,
     ChannelClosed,
+}
+
+pub struct EngineThreadHandle {
+    shutdown: Arc<AtomicBool>,
+    handle: std::thread::JoinHandle<Result<(), EngineError>>,
+}
+
+impl EngineThreadHandle {
+    pub fn new(
+        handle: std::thread::JoinHandle<Result<(), EngineError>>,
+        shutdown: Arc<AtomicBool>,
+    ) -> Self {
+        Self { shutdown, handle }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.handle.is_finished()
+    }
+
+    pub fn shutdown_and_join(self) {
+        self.shutdown.store(true, Ordering::Release);
+        let _ = self.handle.join();
+    }
 }
 
 #[allow(async_fn_in_trait)]
@@ -182,7 +212,7 @@ pub struct LocalInstance<T: TestTransport> {
     /// Transport task handle
     transport_handle: Option<JoinHandle<()>>,
     /// Engine task handle
-    engine_handle: Option<JoinHandle<()>>,
+    engine_handle: Option<EngineThreadHandle>,
     /// Current block number
     pub block_number: U256,
     /// Shared transaction results from engine
@@ -224,7 +254,7 @@ impl<T: TestTransport> LocalInstance<T> {
         fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
         assertion_store: Arc<AssertionStore>,
         transport_handle: Option<JoinHandle<()>>,
-        engine_handle: Option<JoinHandle<()>>,
+        engine_handle: Option<EngineThreadHandle>,
         block_number: U256,
         transaction_results: Arc<crate::TransactionsState>,
         default_account: Address,
@@ -317,6 +347,14 @@ impl<T: TestTransport> LocalInstance<T> {
         let nonce = *entry;
         *entry += 1;
         nonce
+    }
+
+    /// Get the current block execution identifier for this instance.
+    pub fn current_block_execution_id(&self) -> BlockExecutionId {
+        BlockExecutionId {
+            block_number: self.block_number,
+            iteration_id: self.iteration_id,
+        }
     }
 
     /// Reset the nonce to a specific value for a given address and iteration
@@ -1371,7 +1409,7 @@ impl<T: TestTransport> Drop for LocalInstance<T> {
             handle.abort();
         }
         if let Some(handle) = self.engine_handle.take() {
-            handle.abort();
+            handle.shutdown_and_join();
         }
     }
 }
