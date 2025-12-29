@@ -263,7 +263,7 @@ mod tests {
                 DbRequest,
                 DbRequestSender,
             },
-        }
+        },
     };
     use bollard::Docker;
     use serde_json::json;

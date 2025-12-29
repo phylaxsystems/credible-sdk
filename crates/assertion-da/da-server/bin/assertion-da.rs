@@ -20,6 +20,7 @@ async fn main() -> Result<()> {
 
     match backend {
         DatabaseBackend::Sled(server) => {
+            #[allow(clippy::large_futures)]
             run_server(server, cancellation_token).await;
         }
         DatabaseBackend::Redis(server) => {

@@ -1,13 +1,11 @@
-use crate::{
-    api::types::{
-        DbOperation,
-        DbRequest,
-        DbResponse,
-    },
+use crate::api::types::{
+    DbOperation,
+    DbRequest,
+    DbResponse,
 };
 
-use sled::Db;
 use redis::Client;
+use sled::Db;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -15,21 +13,21 @@ use tokio_util::sync::CancellationToken;
 
 /// Database trait implementing basic query and put/insert functionality
 pub trait Database {
-    fn query(&self, key: &Vec<u8>) -> Result<Option<DbResponse>>;
-    fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<Option<DbResponse>>;
+    fn query(&self, key: &[u8]) -> Result<Option<DbResponse>>;
+    fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<DbResponse>>;
 }
 
 // Sled implementation
 // TODO: maybe behind a feature flag?
 impl<const FANOUT: usize> Database for Db<FANOUT> {
-    fn query(&self, key: &Vec<u8>) -> Result<Option<DbResponse>> {
+    fn query(&self, key: &[u8]) -> Result<Option<DbResponse>> {
         match self.get(key)? {
             Some(value) => Ok(Some(DbResponse::Value(value.to_vec()))),
             None => Ok(None),
         }
     }
 
-    fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<Option<DbResponse>> {
+    fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<DbResponse>> {
         match self.insert(key, value.to_vec())? {
             // TODO: Check if we want this behavior (doesn't overwrite)
             Some(old_value) => Ok(Some(DbResponse::Value(old_value.to_vec()))),
@@ -46,23 +44,22 @@ pub struct RedisDb {
 
 impl RedisDb {
     pub fn new(client: Client) -> Self {
-        Self {
-            client,
-        }
+        Self { client }
     }
 }
 
 impl Database for RedisDb {
-    fn query(&self, key: &Vec<u8>) -> Result<Option<DbResponse>> {
+    fn query(&self, key: &[u8]) -> Result<Option<DbResponse>> {
         let mut conn = self.client.get_connection()?;
         let value: Option<Vec<u8>> = redis::cmd("GET").arg(key).query(&mut conn)?;
         Ok(value.map(DbResponse::Value))
     }
 
-    fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<Option<DbResponse>> {
+    fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<DbResponse>> {
         let mut conn = self.client.get_connection()?;
         // GETSET returns the old value before setting the new one
-        let old_value: Option<Vec<u8>> = redis::cmd("GETSET").arg(key).arg(value).query(&mut conn)?;
+        let old_value: Option<Vec<u8>> =
+            redis::cmd("GETSET").arg(key).arg(value).query(&mut conn)?;
         Ok(old_value.map(DbResponse::Value))
     }
 }

@@ -30,9 +30,15 @@ pub async fn deploy_test_da(
         private_key: format!("{:x}", private_key.to_bytes()),
         metrics_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         log_level: tracing::metadata::LevelFilter::current(),
+        redis_url: None,
     };
 
-    let server = config.build().await.unwrap();
+    let backend = config.build().await.unwrap();
+
+    let assertion_da_server::DatabaseBackend::Sled(server) = backend else {
+        panic!("Expected Sled backend");
+    };
+
     let local_addr = server.listener.local_addr().unwrap();
     let handle = tokio::spawn(server.run(CancellationToken::new()));
 

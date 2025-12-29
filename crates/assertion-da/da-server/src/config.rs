@@ -44,6 +44,7 @@ pub struct Config {
     pub redis_url: Option<String>,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum DatabaseBackend {
     Sled(DaServer<Db<{ crate::LEAF_FANOUT }>>),
     Redis(DaServer<RedisDb>),
@@ -274,7 +275,7 @@ mod tests {
         }
 
         // Submit an assertion
-        let source_code = r#"
+        let source_code = r"
             // SPDX-License-Identifier: MIT
             pragma solidity ^0.8.0;
 
@@ -289,7 +290,7 @@ mod tests {
                     return value;
                 }
             }
-        "#;
+        ";
 
         let submission_response = da_client
             .submit_assertion(
@@ -307,7 +308,10 @@ mod tests {
         let fetch_response = da_client.fetch_assertion(submission_response.id).await?;
 
         // Verify the fetched assertion matches
-        assert_eq!(fetch_response.prover_signature, submission_response.prover_signature);
+        assert_eq!(
+            fetch_response.prover_signature,
+            submission_response.prover_signature
+        );
         assert!(!fetch_response.bytecode.is_empty());
 
         // Clean up
