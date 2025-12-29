@@ -3,7 +3,7 @@ name: Benchmarks
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-      paths:
+    paths:
       - ".github/workflows/benchmarks.yml"
     #   - "crates/src/**"
     #   - "!**/*.md"
