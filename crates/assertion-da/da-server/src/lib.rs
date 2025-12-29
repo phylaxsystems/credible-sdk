@@ -8,7 +8,10 @@ mod config;
 mod encode_args;
 mod server;
 
-pub use config::Config;
+pub use config::{
+    Config,
+    DatabaseBackend,
+};
 pub use server::DaServer;
 
 /// Leaf fanout for sled.

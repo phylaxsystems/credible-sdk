@@ -1,4 +1,7 @@
-use assertion_da_server::Config;
+use assertion_da_server::{
+    Config,
+    DatabaseBackend,
+};
 
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
@@ -12,9 +15,25 @@ async fn main() -> Result<()> {
 
     let config = Config::parse();
 
-    let server = config.build().await?;
+    let backend = config.build().await?;
     let cancellation_token = CancellationToken::new();
 
+    match backend {
+        DatabaseBackend::Sled(server) => {
+            run_server(server, cancellation_token).await;
+        }
+        DatabaseBackend::Redis(server) => {
+            run_server(server, cancellation_token).await;
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_server<DB: assertion_da_server::api::db::Database + Send + 'static>(
+    server: assertion_da_server::DaServer<DB>,
+    cancellation_token: CancellationToken,
+) {
     let mut boxed_server_future = Box::pin(server.run(cancellation_token.clone()));
 
     tokio::select! {
@@ -25,11 +44,8 @@ async fn main() -> Result<()> {
             tracing::info!("Received Ctrl-C signal, initiating graceful shutdown");
             cancellation_token.cancel();
             handle_server_result(boxed_server_future.await);
-
         }
     }
-
-    Ok(())
 }
 
 /// Handle the result of the server
