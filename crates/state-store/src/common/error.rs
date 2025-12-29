@@ -9,6 +9,30 @@ use std::num::TryFromIntError;
 /// Errors that can occur during Redis state operations.
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
+    /// Database error
+    #[error("Database error: {0}")]
+    Database(#[source] reth_db::DatabaseError),
+
+    /// Failed to open the database
+    #[error("Failed to open database at {path}: {message}")]
+    DatabaseOpen { path: String, message: String },
+
+    /// Failed to create a database directory
+    #[error("Failed to create database directory at {path}: {source}")]
+    CreateDir {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Failed to create a table
+    #[error("Failed to create table '{table}': {message}")]
+    CreateTable { table: String, message: String },
+
+    /// Transaction commit failed
+    #[error("Failed to commit transaction: {0}")]
+    CommitFailed(String),
+
     /// Redis connection or query error
     #[error("Redis error")]
     Redis(#[source] redis::RedisError),
