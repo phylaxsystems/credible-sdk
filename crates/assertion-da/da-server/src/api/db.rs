@@ -59,7 +59,7 @@ impl Database for RedisDb {
         let mut conn = self.client.get_connection()?;
         // GETSET returns the old value before setting the new one
         let old_value: Option<Vec<u8>> =
-            redis::cmd("GETSET").arg(key).arg(value).query(&mut conn)?;
+            redis::cmd("SET").arg(key).arg(value).arg("GET").query(&mut conn)?;
         Ok(old_value.map(DbResponse::Value))
     }
 }
@@ -98,6 +98,7 @@ pub async fn listen_for_db<DB: Database>(
 mod tests {
     use super::*;
     use sled::Db;
+    use testcontainers::ImageExt;
     use tokio::sync::oneshot;
 
     #[tokio::test]
@@ -173,7 +174,7 @@ mod tests {
         use testcontainers_modules::redis::Redis;
 
         // Start Redis container
-        let container = Redis::default().start().await.unwrap();
+        let container = Redis::default().with_tag("7-alpine").start().await.unwrap();
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(6379).await.unwrap();
 

@@ -128,6 +128,7 @@ mod tests {
         str::FromStr,
     };
     use tokio_util::sync::CancellationToken;
+    use testcontainers::ImageExt;
 
     #[tokio::test]
     async fn test_server_random_port() -> anyhow::Result<()> {
@@ -226,7 +227,7 @@ mod tests {
         use testcontainers_modules::redis::Redis;
 
         // Start Redis container
-        let container = Redis::default().start().await.unwrap();
+        let container = Redis::default().with_tag("7-alpine").start().await.unwrap();
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(6379).await.unwrap();
         let redis_url = format!("redis://{host}:{port}");
