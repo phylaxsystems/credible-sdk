@@ -1,6 +1,9 @@
 pub mod common;
 pub mod db;
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(feature = "reader")]
 pub mod reader;
 
