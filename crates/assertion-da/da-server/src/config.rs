@@ -71,7 +71,7 @@ impl Config {
             let _ = client.get_connection()?;
             tracing::info!(redis_url = redis_url, "Connected to Redis");
 
-            let db = RedisDb::new(client);
+            let db = RedisDb::new(client)?;
             let server = DaServer {
                 listener,
                 db,

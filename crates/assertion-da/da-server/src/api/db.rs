@@ -4,6 +4,7 @@ use crate::api::types::{
     DbResponse,
 };
 
+use r2d2::Pool;
 use redis::Client;
 use sled::Db;
 
@@ -39,24 +40,25 @@ impl<const FANOUT: usize> Database for Db<FANOUT> {
 // Redis implementation
 // TODO: maybe behind a feature flag?
 pub struct RedisDb {
-    client: Client,
+    pool: Pool<Client>,
 }
 
 impl RedisDb {
-    pub fn new(client: Client) -> Self {
-        Self { client }
+    pub fn new(client: Client) -> Result<Self> {
+        let pool = r2d2::Pool::builder().build(client)?;
+        Ok(Self { pool })
     }
 }
 
 impl Database for RedisDb {
     fn query(&self, key: &[u8]) -> Result<Option<DbResponse>> {
-        let mut conn = self.client.get_connection()?;
+        let mut conn = self.pool.get()?;
         let value: Option<Vec<u8>> = redis::cmd("GET").arg(key).query(&mut conn)?;
         Ok(value.map(DbResponse::Value))
     }
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<DbResponse>> {
-        let mut conn = self.client.get_connection()?;
+        let mut conn = self.pool.get()?;
         // GETSET returns the old value before setting the new one
         let old_value: Option<Vec<u8>> = redis::cmd("SET")
             .arg(key)
@@ -183,7 +185,7 @@ mod tests {
 
         // Connect to Redis
         let client = redis::Client::open(format!("redis://{host}:{port}")).unwrap();
-        let db = RedisDb::new(client);
+        let db = RedisDb::new(client).unwrap();
 
         // Test insert (first insert returns None since key didn't exist)
         let key = vec![1, 2, 3];
