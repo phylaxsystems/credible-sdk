@@ -58,8 +58,11 @@ impl Database for RedisDb {
     fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<DbResponse>> {
         let mut conn = self.client.get_connection()?;
         // GETSET returns the old value before setting the new one
-        let old_value: Option<Vec<u8>> =
-            redis::cmd("SET").arg(key).arg(value).arg("GET").query(&mut conn)?;
+        let old_value: Option<Vec<u8>> = redis::cmd("SET")
+            .arg(key)
+            .arg(value)
+            .arg("GET")
+            .query(&mut conn)?;
         Ok(old_value.map(DbResponse::Value))
     }
 }

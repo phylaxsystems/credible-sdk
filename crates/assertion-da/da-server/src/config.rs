@@ -127,8 +127,8 @@ mod tests {
         net::SocketAddr,
         str::FromStr,
     };
-    use tokio_util::sync::CancellationToken;
     use testcontainers::ImageExt;
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn test_server_random_port() -> anyhow::Result<()> {
