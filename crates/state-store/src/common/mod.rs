@@ -1,6 +1,8 @@
 //! Common types, configuration, and utilities shared between reader and writer.
 
 pub mod error;
+pub mod tables;
+pub mod types;
 
 use alloy::primitives::{
     Address,

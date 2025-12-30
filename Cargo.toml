@@ -74,9 +74,9 @@ testcontainers = "0.25"
 testcontainers-modules = { version = "0.13", features = ["redis"] }
 directories = "6.0.0"
 bollard = "0.19.4"
-rustls = { version = "0.23.35", features = ["aws_lc_rs"] }
+rustls = { version = "0.23.0", features = ["aws_lc_rs"] }
 
-tracing = {version = "0.1.43", features = ["release_max_level_debug"] }
+tracing = { version = "0.1.43", features = ["release_max_level_debug"] }
 tracing-subscriber = { version = "0.3.22", features = ["std", "env-filter"] }
 console-subscriber = { version = "0.5.0" }
 tokio-metrics = { version = "0.4.6", features = ["rt"] }
@@ -135,7 +135,7 @@ op-revm = { version = "14.1.0", default-features = false }
 moka = { version = "0.12.11", features = ["sync"] }
 enum-as-inner = "0.6.1"
 url = "2.5.7"
-criterion = { version = "0.8.1" }
+criterion = { version = "0.5.1" }
 evm-glue = { git = "https://git@github.com/Philogy/evm-glue.git", rev = "6be3e8c89a7d193b591ca0415ec2a48b1540c01e" }
 
 
@@ -159,6 +159,10 @@ rustflags = [
     "symbol-mangling-version=v0",
 ]
 debug = "line-tables-only"
+
+[profile.bench]
+opt-level = 1
+lto = "off"
 
 # Temporary due to a requirement in phoundry
 [patch.crates-io]

@@ -87,10 +87,7 @@ use std::{
         Instant,
     },
 };
-use tokio::{
-    sync::oneshot,
-    time::sleep,
-};
+use tokio::sync::oneshot;
 
 #[allow(unused_imports)]
 use assertion_executor::{
@@ -728,51 +725,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         }
     }
 
-    /// Verifies that all state sources are synced, and if not stall until they are.
-    ///
-    /// If the sources do not become synced after a set amount of time, the function
-    /// errors.
-    #[cfg(test)]
-    async fn verify_state_sources_synced_for_tx(&mut self) -> Result<(), EngineError> {
-        const RETRY_INTERVAL: Duration = Duration::from_millis(10);
-
-        if !self.check_sources_available {
-            return Ok(());
-        }
-        self.check_sources_available = false;
-
-        let start = Instant::now();
-        loop {
-            if self.sources.iter_synced_sources().into_iter().any(|a| {
-                // For this case, the min_synced_block is the current head too, meaning that
-                // the sources must be synced up to the current head
-                a.is_synced(self.current_head, self.current_head)
-            }) {
-                return Ok(());
-            }
-
-            let waited = start.elapsed();
-            if waited >= self.state_sources_sync_timeout {
-                error!(
-                    target = "engine",
-                    waited_ms = waited.as_millis(),
-                    timeout_ms = self.state_sources_sync_timeout.as_millis(),
-                    "No synced sources within timeout"
-                );
-                return Err(EngineError::NoSyncedSources);
-            }
-
-            trace!(
-                target = "engine",
-                waited_ms = waited.as_millis(),
-                next_retry_ms = RETRY_INTERVAL.as_millis(),
-                timeout_ms = self.state_sources_sync_timeout.as_millis(),
-                "No synced sources, retrying"
-            );
-            sleep(RETRY_INTERVAL).await;
-        }
-    }
-
     /// Spawns the engine on a dedicated OS thread with blocking receive.
     #[allow(clippy::type_complexity)]
     pub fn spawn(
@@ -937,99 +889,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
 
             std::thread::sleep(RETRY_INTERVAL);
-        }
-    }
-
-    /// Run the engine and process transactions and blocks received
-    /// via the transaction queue.
-    #[cfg(test)]
-    pub async fn run(&mut self) -> Result<(), EngineError> {
-        let mut processed_blocks = 0u64;
-        let mut block_processing_time = Instant::now();
-        let mut idle_start = Instant::now();
-
-        loop {
-            // Use try_recv and yield when empty to be async-friendly
-            let event = match self.tx_receiver.try_recv() {
-                Ok(event) => {
-                    // We received an event, accumulate time spent idle
-                    self.block_metrics.idle_time += idle_start.elapsed();
-                    event
-                }
-                Err(flume::TryRecvError::Empty) => {
-                    // Channel is empty, yield to allow other tasks to run
-                    tokio::task::yield_now().await;
-                    continue;
-                }
-                Err(flume::TryRecvError::Disconnected) => {
-                    error!(target = "engine", "Transaction queue channel disconnected");
-                    return Err(EngineError::ChannelClosed);
-                }
-            };
-
-            // Track event processing time
-            let event_start = Instant::now();
-
-            // Process event and handle errors appropriately
-            let result = match event {
-                TxQueueContents::NewIteration(new_iteration, current_span) => {
-                    let _guard = current_span.enter();
-                    self.process_iteration(&new_iteration)
-                }
-                TxQueueContents::CommitHead(commit_head, current_span) => {
-                    let _guard = current_span.enter();
-                    self.process_commit_head(
-                        &commit_head,
-                        &mut processed_blocks,
-                        &mut block_processing_time,
-                    )
-                }
-                TxQueueContents::Tx(queue_transaction, current_span) => {
-                    let _guard = current_span.enter();
-                    // Await the async verification before processing
-                    match self.verify_state_sources_synced_for_tx().await {
-                        Ok(()) => self.process_transaction_event(queue_transaction),
-                        Err(e) => Err(e),
-                    }
-                }
-                TxQueueContents::Reorg(tx_execution_id, current_span) => {
-                    let _guard = current_span.enter();
-                    self.execute_reorg(tx_execution_id)
-                }
-            };
-
-            // Handle the result of event processing
-            if let Err(error) = result {
-                match ErrorRecoverability::from(&error) {
-                    ErrorRecoverability::Recoverable => {
-                        // Log the error and continue processing
-                        warn!(
-                            target = "engine",
-                            error = ?error,
-                            "Recoverable error occurred during event processing, continuing"
-                        );
-                        // Invalid the cache and reset the latest unprocessed block
-                        self.cache.invalidate_all();
-                        self.sources
-                            .reset_latest_unprocessed_block(self.current_head);
-                        self.current_block_iterations.clear();
-                    }
-                    ErrorRecoverability::Unrecoverable => {
-                        // Log the critical error and break the loop
-                        critical!(
-                            error = ?error,
-                            "Unrecoverable error occurred, stopping engine"
-                        );
-                        return Err(error);
-                    }
-                }
-            }
-
-            // Accumulate event processing time
-            self.block_metrics.event_processing_time += event_start.elapsed();
-
-            // Reset idle timer after processing event
-            idle_start = Instant::now();
         }
     }
 
@@ -1309,7 +1168,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     /// Applies the state inside `self.last_executed_tx` to `self.state`.
     ///
     /// If `self.last_executed_tx` is empty, we dont do anything.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench-utils"))]
     fn apply_state_buffer(
         &mut self,
         block_execution_id: BlockExecutionId,

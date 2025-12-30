@@ -157,6 +157,7 @@
 #![allow(clippy::missing_errors_doc)]
 
 pub mod common;
+pub mod db;
 
 #[cfg(feature = "writer")]
 pub mod writer;

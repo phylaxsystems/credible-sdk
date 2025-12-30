@@ -1,0 +1,43 @@
+name: Benchmarks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/benchmarks.yml"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "!**/*.md"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: write-all
+
+jobs:
+  criterion:
+    uses: phylaxsystems/actions/.github/workflows/benchmark.yaml@main
+    with:
+      rust-channel: stable
+      bench-command: "forge build --root testdata/mock-protocol && RUSTFLAGS=\"-C opt-level=1\" SIDECAR_BENCH_TRANSPORT=mock RUST_LOG=error cargo bench -p sidecar --features bench-utils --benches && cargo bench --manifest-path crates/assertion-executor/Cargo.toml --features test --benches"
+      install-foundry: true
+      submodules: true
+      foundry-command: "forge build --root testdata/mock-protocol"
+      publish-pages: true
+      pages-path: "target/criterion"
+      pages-report-path: "report"
+      comment-on-pr: true
+      pr-number: ${{ github.event.pull_request.number || '' }}
+      pr-from-fork: ${{ github.event.pull_request.head.repo.fork || false }}
+      pages-prefix: ${{ github.event_name == 'pull_request' && format('main-bench/pr-{0}', github.event.pull_request.number) || (github.ref == 'refs/heads/main' && 'main-bench' || format('main-bench/ref-{0}', github.ref_name)) }}
+      pages-merge-workflow: "docs.yml"
+      pages-merge-branch: ${{ github.event.repository.default_branch }}
+      pages-merge-artifact-name: "github-pages"
+      compare-to-baseline: ${{ github.event_name == 'pull_request' }}
+      save-baseline: ${{ github.ref == 'refs/heads/main' }}
+      baseline-branch: "main"
+      baseline-workflow-file: "benchmarks.yml"
+      baseline-artifact-name: "criterion-baseline"
+    # secrets:
+    #   COMMENT_TOKEN: ${{ secrets.BENCHMARKS_COMMENT_TOKEN }}
