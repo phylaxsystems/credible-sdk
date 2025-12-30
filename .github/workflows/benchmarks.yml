@@ -5,8 +5,10 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - ".github/workflows/benchmarks.yml"
-    #   - "crates/src/**"
-    #   - "!**/*.md"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "!**/*.md"
   push:
     branches: [main]
   workflow_dispatch:
@@ -28,7 +30,10 @@ jobs:
       comment-on-pr: true
       pr-number: ${{ github.event.pull_request.number || '' }}
       pr-from-fork: ${{ github.event.pull_request.head.repo.fork || false }}
-      pages-prefix: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref_name) }}
+      pages-prefix: ${{ github.event_name == 'pull_request' && format('main-bench/pr-{0}', github.event.pull_request.number) || (github.ref == 'refs/heads/main' && 'main-bench' || format('main-bench/ref-{0}', github.ref_name)) }}
+      pages-merge-workflow: "docs.yml"
+      pages-merge-branch: ${{ github.event.repository.default_branch }}
+      pages-merge-artifact-name: "github-pages"
       compare-to-baseline: ${{ github.event_name == 'pull_request' }}
       save-baseline: ${{ github.ref == 'refs/heads/main' }}
       baseline-branch: "main"
