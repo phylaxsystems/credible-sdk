@@ -430,7 +430,7 @@ impl CircularBufferConfig {
     ///
     /// # Errors
     ///
-    /// Returns `InvalidBufferSize` if `buffer_size <= 1`.
+    /// Returns `InvalidBufferSize` if `buffer_size == 0`.
     pub fn new(buffer_size: u8) -> Result<Self, super::error::StateError> {
         if buffer_size == 0 {
             return Err(super::error::StateError::InvalidBufferSize);

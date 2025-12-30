@@ -19,7 +19,7 @@
 //! ├── Bytecodes           (code_hash → bytecode)
 //! ├── BlockMetadata       (block → hash+root)
 //! ├── StateDiffs          (block → JSON diff)
-//! └── Metadata            (0 → global metadata)
+//! └── Metadata            (0 → global metadata, e.g., latest block)
 //! ```
 
 use crate::common::{

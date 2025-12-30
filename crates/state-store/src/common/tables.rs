@@ -82,7 +82,11 @@ impl Encode for NamespaceIdx {
 
 impl Decode for NamespaceIdx {
     fn decode(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        Ok(Self(value[0]))
+        Ok(Self(*value.first().ok_or(
+            reth_db_api::DatabaseError::Other(
+                "Invalid namespace index encoding: buffer too short".to_string(),
+            ),
+        )?))
     }
 }
 
@@ -98,7 +102,11 @@ impl Compress for NamespaceIdx {
 
 impl Decompress for NamespaceIdx {
     fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        Ok(Self(value[0]))
+        Ok(Self(*value.first().ok_or(
+            reth_db_api::DatabaseError::Other(
+                "Invalid namespace index encoding: buffer too short".to_string(),
+            ),
+        )?))
     }
 }
 
