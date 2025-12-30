@@ -14,9 +14,17 @@ use tokio::net::TcpListener;
 use tracing::level_filters::LevelFilter;
 
 use crate::{
-    api::db::RedisDb,
+    api::{
+        db::{
+            Database,
+            RedisDb,
+        },
+        types::DbResponse,
+    },
     server::DaServer,
 };
+
+use anyhow::Result as AnyhowResult;
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -46,8 +54,24 @@ pub struct Config {
 
 #[allow(clippy::large_enum_variant)]
 pub enum DatabaseBackend {
-    Sled(DaServer<Db<{ crate::LEAF_FANOUT }>>),
-    Redis(DaServer<RedisDb>),
+    Sled(Db<{ crate::LEAF_FANOUT }>),
+    Redis(RedisDb),
+}
+
+impl Database for DatabaseBackend {
+    fn query(&self, key: &[u8]) -> AnyhowResult<Option<DbResponse>> {
+        match self {
+            DatabaseBackend::Sled(db) => db.query(key),
+            DatabaseBackend::Redis(db) => db.query(key),
+        }
+    }
+
+    fn put(&self, key: &[u8], value: &[u8]) -> AnyhowResult<Option<DbResponse>> {
+        match self {
+            DatabaseBackend::Sled(db) => db.put(key, value),
+            DatabaseBackend::Redis(db) => db.put(key, value),
+        }
+    }
 }
 
 impl Config {
@@ -56,7 +80,7 @@ impl Config {
     /// # Panics
     ///
     /// Will panic if the root directory is invalid
-    pub async fn build(self) -> anyhow::Result<DatabaseBackend> {
+    pub async fn build(self) -> anyhow::Result<DaServer<DatabaseBackend>> {
         // Bind to an address
         let listener = TcpListener::bind(&self.listen_addr).await?;
         tracing::info!(listen_addr = ?self.listen_addr, "Listening on address");
@@ -65,44 +89,38 @@ impl Config {
         tracing::info!("Connected to Docker daemon");
 
         // Check if Redis URL is set
-        if let Some(redis_url) = &self.redis_url {
+        let db = if let Some(redis_url) = &self.redis_url {
             let client = redis::Client::open(redis_url.as_str())?;
             // Test the connection
             let _ = client.get_connection()?;
             tracing::info!(redis_url = redis_url, "Connected to Redis");
 
-            let db = RedisDb::new(client)?;
-            let server = DaServer {
-                listener,
-                db,
-                docker,
-                private_key: self.private_key.clone(),
+            DatabaseBackend::Redis(RedisDb::new(client)?)
+        } else {
+            // Fall back to Sled
+            let root_dir =
+                directories::ProjectDirs::from("com", "phylaxsystems", "assertion-da").unwrap();
+            let db_path = if let Some(db_path) = &self.db_path {
+                db_path
+            } else {
+                &root_dir.data_dir().join("db")
             };
 
-            return Ok(DatabaseBackend::Redis(server));
-        }
+            let sled_db: Db<{ crate::LEAF_FANOUT }> = DbConfig::new()
+                .path(db_path.clone())
+                .cache_capacity_bytes(self.cache_size)
+                .open()?;
 
-        // Fall back to Sled
-        let root_dir =
-            directories::ProjectDirs::from("com", "phylaxsystems", "assertion-da").unwrap();
-        let db_path = if let Some(db_path) = &self.db_path {
-            db_path
-        } else {
-            &root_dir.data_dir().join("db")
+            let db_size = sled_db.size_on_disk()?;
+            tracing::info!(
+                database_size_mbs = db_size,
+                database_path = db_path.to_str().unwrap(),
+                "Opened Sled database"
+            );
+            metrics::gauge!("db_size_mb").set(u32::try_from(db_size)?);
+
+            DatabaseBackend::Sled(sled_db)
         };
-
-        let db: Db<{ crate::LEAF_FANOUT }> = DbConfig::new()
-            .path(db_path.clone())
-            .cache_capacity_bytes(self.cache_size)
-            .open()?;
-
-        let db_size = db.size_on_disk()?;
-        tracing::info!(
-            database_size_mbs = db_size,
-            database_path = db_path.to_str().unwrap(),
-            "Opened Sled database"
-        );
-        metrics::gauge!("db_size_mb").set(u32::try_from(db_size)?);
 
         let server = DaServer {
             listener,
@@ -111,7 +129,7 @@ impl Config {
             private_key: self.private_key.clone(),
         };
 
-        Ok(DatabaseBackend::Sled(server))
+        Ok(server)
     }
 }
 
@@ -144,11 +162,7 @@ mod tests {
             redis_url: None,
         };
 
-        let backend = config.build().await?;
-
-        let DatabaseBackend::Sled(server) = backend else {
-            panic!("Expected Sled backend");
-        };
+        let server = config.build().await?;
 
         let listen_addr = server.listener.local_addr()?;
         // Check that we got a random port
@@ -244,11 +258,7 @@ mod tests {
             redis_url: Some(redis_url),
         };
 
-        let backend = config.build().await?;
-
-        let DatabaseBackend::Redis(server) = backend else {
-            panic!("Expected Redis backend");
-        };
+        let server = config.build().await?;
 
         let listen_addr = server.listener.local_addr()?;
         assert_ne!(listen_addr.port(), 0);
