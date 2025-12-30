@@ -2,7 +2,10 @@ pub mod config;
 
 use std::{
     fmt::Debug,
-    sync::atomic::AtomicU64,
+    sync::{
+        OnceLock,
+        atomic::AtomicU64,
+    },
 };
 
 use crate::{
@@ -58,9 +61,12 @@ use revm::{
     InspectEvm,
 };
 
-use rayon::prelude::{
-    IntoParallelIterator,
-    ParallelIterator,
+use rayon::{
+    ThreadPoolBuilder,
+    prelude::{
+        IntoParallelIterator,
+        ParallelIterator,
+    },
 };
 
 use crate::error::TxExecutionError;
@@ -71,6 +77,17 @@ use tracing::{
     trace,
     warn,
 };
+
+static ASSERTION_EXECUTOR_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+fn assertion_executor_pool() -> &'static rayon::ThreadPool {
+    ASSERTION_EXECUTOR_POOL.get_or_init(|| {
+        ThreadPoolBuilder::new()
+            .thread_name(|_| "assex-thread".to_string())
+            .build()
+            .expect("Failed to build assertion executor thread pool")
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct AssertionExecutor {
@@ -248,26 +265,28 @@ impl AssertionExecutor {
         let results: Result<
             Vec<AssertionContractExecution>,
             AssertionExecutionError<<Active as DatabaseRef>::Error>,
-        > = assertions
-            .into_par_iter()
-            .map(
-                move |assertion_for_execution| -> Result<
-                    AssertionContractExecution,
-                    AssertionExecutionError<<Active as DatabaseRef>::Error>,
-                > {
-                    let phevm_context =
-                        PhEvmContext::new(&logs_and_traces, assertion_for_execution.adopter);
+        > = assertion_executor_pool().install(|| {
+            assertions
+                .into_par_iter()
+                .map(
+                    move |assertion_for_execution| -> Result<
+                        AssertionContractExecution,
+                        AssertionExecutionError<<Active as DatabaseRef>::Error>,
+                    > {
+                        let phevm_context =
+                            PhEvmContext::new(&logs_and_traces, assertion_for_execution.adopter);
 
-                    self.run_assertion_contract(
-                        &assertion_for_execution.assertion_contract,
-                        &assertion_for_execution.selectors,
-                        &block_env,
-                        tx_fork_db.clone(),
-                        &phevm_context,
-                    )
-                },
-            )
-            .collect();
+                        self.run_assertion_contract(
+                            &assertion_for_execution.assertion_contract,
+                            &assertion_for_execution.selectors,
+                            &block_env,
+                            tx_fork_db.clone(),
+                            &phevm_context,
+                        )
+                    },
+                )
+                .collect()
+        });
         debug!(target: "assertion-executor::execute_assertions", ?results, "Assertion Execution Results");
         results
     }
@@ -309,30 +328,32 @@ impl AssertionExecutor {
 
         let current_span = tracing::Span::current();
         let results_vec = current_span.in_scope(|| {
-            fn_selectors
-                .into_par_iter()
-                .map(
-                    |fn_selector: &FixedBytes<4>| -> Result<
-                        AssertionFunctionResult,
-                        AssertionExecutionError<<Active as DatabaseRef>::Error>,
-                    > {
-                        self.execute_assertion_fn(AssertionExecutionParams {
-                            assertion_contract,
-                            fn_selector,
-                            block_env: block_env.clone(),
-                            multi_fork_db: multi_fork_db.clone(),
-                            assertion_gas: &assertion_gas,
-                            assertions_ran: &assertions_ran,
-                            inspector: inspector.clone(),
-                        })
-                    },
-                )
-                .collect::<Vec<
-                    Result<
-                        AssertionFunctionResult,
-                        AssertionExecutionError<<Active as DatabaseRef>::Error>,
-                    >,
-                >>()
+            assertion_executor_pool().install(|| {
+                fn_selectors
+                    .into_par_iter()
+                    .map(
+                        |fn_selector: &FixedBytes<4>| -> Result<
+                            AssertionFunctionResult,
+                            AssertionExecutionError<<Active as DatabaseRef>::Error>,
+                        > {
+                            self.execute_assertion_fn(AssertionExecutionParams {
+                                assertion_contract,
+                                fn_selector,
+                                block_env: block_env.clone(),
+                                multi_fork_db: multi_fork_db.clone(),
+                                assertion_gas: &assertion_gas,
+                                assertions_ran: &assertions_ran,
+                                inspector: inspector.clone(),
+                            })
+                        },
+                    )
+                    .collect::<Vec<
+                        Result<
+                            AssertionFunctionResult,
+                            AssertionExecutionError<<Active as DatabaseRef>::Error>,
+                        >,
+                    >>()
+            })
         });
 
         trace!(target: "assertion-executor::execute_assertions", execution_results=?results_vec.iter().map(|result| format!("{result:?}")).collect::<Vec<_>>(), "Assertion Execution Results");
