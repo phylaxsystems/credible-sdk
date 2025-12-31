@@ -362,6 +362,16 @@ impl StateReader {
         Ok(Self { db })
     }
 
+    /// Create a new reader from an existing database handle.
+    pub(crate) fn from_db(db: StateDb) -> Self {
+        Self { db }
+    }
+
+    /// Get a reference to the underlying database.
+    pub(crate) fn db(&self) -> &StateDb {
+        &self.db
+    }
+
     /// Get the configured buffer size.
     pub fn buffer_size(&self) -> u8 {
         self.db.buffer_size()
@@ -455,7 +465,7 @@ mod tests {
         let db = StateDb::open(&path, config).unwrap();
 
         // Then create a reader from the existing db handle
-        let reader = StateReader { db };
+        let reader = StateReader::from_db(db);
         (reader, tmp)
     }
 

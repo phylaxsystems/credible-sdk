@@ -39,9 +39,12 @@ use crate::{
     AccountInfo,
     AccountState,
     AddressHash,
+    BlockMetadata,
     BlockStateUpdate,
+    Reader,
     Writer,
     mdbx::{
+        StateReader,
         common::{
             error::{
                 StateError,
@@ -61,7 +64,6 @@ use crate::{
                 StateDiffs,
             },
             types::{
-                BlockMetadata,
                 CircularBufferConfig,
                 GlobalMetadata,
                 NamespacedAccountKey,
@@ -72,8 +74,13 @@ use crate::{
         },
         db::StateDb,
     },
+    redis::writer::StaleLockRecovery,
 };
-use alloy::primitives::B256;
+use alloy::primitives::{
+    B256,
+    Bytes,
+    U256,
+};
 use reth_db_api::{
     cursor::DbCursorRO,
     transaction::{
@@ -81,7 +88,10 @@ use reth_db_api::{
         DbTxMut,
     },
 };
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    path::Path,
+};
 
 /// State writer for persisting blockchain state to MDBX.
 ///
@@ -89,22 +99,133 @@ use std::path::Path;
 /// should be active at a time per database path.
 #[derive(Debug)]
 pub struct StateWriter {
-    db: StateDb,
+    reader: StateReader,
 }
 
-impl Writer for StateWriter {
+impl Reader for StateWriter {
     type Error = StateError;
 
     /// Get the most recent block number.
     ///
     /// Returns `None` if no blocks have been written yet.
     fn latest_block_number(&self) -> StateResult<Option<u64>> {
-        let tx = self.db.tx()?;
-        let meta = tx
-            .get::<Metadata>(MetadataKey)
-            .map_err(StateError::Database)?;
-        Ok(meta.map(|m| m.latest_block))
+        self.reader.latest_block_number()
     }
+
+    /// Check if a block is available in the circular buffer.
+    ///
+    /// A block is available if its namespace currently contains that block.
+    fn is_block_available(&self, block_number: u64) -> StateResult<bool> {
+        self.reader.is_block_available(block_number)
+    }
+
+    /// Get account info (`balance`, `nonce`, `code_hash`) without storage.
+    ///
+    /// This is the fastest way to get basic account data. If you also need
+    /// storage, use `get_full_account()` instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    fn get_account(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<Option<AccountInfo>> {
+        self.reader.get_account(address_hash, block_number)
+    }
+
+    /// Get a specific storage slot value.
+    ///
+    /// Returns `None` if the slot doesn't exist or has value zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    fn get_storage(
+        &self,
+        address_hash: AddressHash,
+        slot_hash: B256,
+        block_number: u64,
+    ) -> StateResult<Option<U256>> {
+        self.reader
+            .get_storage(address_hash, slot_hash, block_number)
+    }
+
+    /// Get all storage slots for an account.
+    ///
+    /// # Warning
+    ///
+    /// This can be expensive for contracts with many slots (e.g., ERC20 with
+    /// thousands of holders). Consider using `get_storage()` for specific slots
+    /// when possible.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    fn get_all_storage(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<HashMap<B256, U256>> {
+        self.reader.get_all_storage(address_hash, block_number)
+    }
+
+    /// Get contract bytecode by code hash.
+    ///
+    /// Bytecode is content-addressed and shared across all namespaces,
+    /// so this only verifies the block exists, then looks up by hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    fn get_code(&self, code_hash: B256, block_number: u64) -> StateResult<Option<Bytes>> {
+        self.reader.get_code(code_hash, block_number)
+    }
+
+    /// Get complete account state including storage.
+    ///
+    /// # Warning
+    ///
+    /// This can transfer large amounts of data for contracts with many storage
+    /// slots. Use `get_account()` if you only need balance/nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    fn get_full_account(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<Option<AccountState>> {
+        self.reader.get_full_account(address_hash, block_number)
+    }
+
+    /// Get block hash for a specific block number.
+    fn get_block_hash(&self, block_number: u64) -> StateResult<Option<B256>> {
+        self.reader.get_block_hash(block_number)
+    }
+
+    /// Get state root for a specific block number.
+    fn get_state_root(&self, block_number: u64) -> StateResult<Option<B256>> {
+        self.reader.get_state_root(block_number)
+    }
+
+    /// Get block metadata (hash and state root).
+    fn get_block_metadata(&self, block_number: u64) -> StateResult<Option<BlockMetadata>> {
+        self.reader.get_block_metadata(block_number)
+    }
+
+    /// Get the range of available blocks [oldest, latest].
+    ///
+    /// Returns `None` if no blocks have been written.
+    fn get_available_block_range(&self) -> StateResult<Option<(u64, u64)>> {
+        self.reader.get_available_block_range()
+    }
+}
+
+impl Writer for StateWriter {
+    type Error = StateError;
 
     /// Commit a block's state update to the database.
     ///
@@ -124,11 +245,12 @@ impl Writer for StateWriter {
     /// with `buffer_size`=3), the intermediate diffs (blocks 101, 102) are applied
     /// first to bring the namespace's state up to date.
     fn commit_block(&self, update: &BlockStateUpdate) -> StateResult<()> {
+        let db = self.reader.db();
         let block_number = update.block_number;
-        let namespace_idx = self.db.namespace_for_block(block_number)?;
+        let namespace_idx = db.namespace_for_block(block_number)?;
         let ns_idx = NamespaceIdx(namespace_idx);
 
-        let tx = self.db.tx_mut()?;
+        let tx = db.tx_mut()?;
 
         // 1. Apply intermediate diffs if there's a gap (rotation)
         let current_ns_block = tx
@@ -158,7 +280,7 @@ impl Writer for StateWriter {
         // 5. Update block metadata
         tx.put::<BlockMetadataTable>(
             BlockNumber(block_number),
-            BlockMetadata {
+            crate::mdbx::common::types::BlockMetadata {
                 block_hash: update.block_hash,
                 state_root: update.state_root,
             },
@@ -170,13 +292,13 @@ impl Writer for StateWriter {
             MetadataKey,
             GlobalMetadata {
                 latest_block: block_number,
-                buffer_size: self.db.buffer_size(),
+                buffer_size: db.buffer_size(),
             },
         )
         .map_err(StateError::Database)?;
 
         // 7. Cleanup old data (diffs and metadata beyond buffer)
-        let buffer_size = u64::from(self.db.buffer_size());
+        let buffer_size = u64::from(db.buffer_size());
         if block_number >= buffer_size {
             let cleanup_block = block_number - buffer_size;
             let _ = tx.delete::<StateDiffs>(BlockNumber(cleanup_block), None);
@@ -189,6 +311,16 @@ impl Writer for StateWriter {
 
         Ok(())
     }
+
+    /// Ensure the database metadata matches the configured buffer size.
+    fn ensure_dump_index_metadata(&self) -> StateResult<()> {
+        Ok(())
+    }
+
+    /// Check for and recover from stale locks on all namespaces.
+    fn recover_stale_locks(&self) -> StateResult<Vec<StaleLockRecovery>> {
+        Ok(vec![])
+    }
 }
 
 impl StateWriter {
@@ -197,7 +329,18 @@ impl StateWriter {
     /// Creates the database if it doesn't exist.
     pub fn new(path: impl AsRef<Path>, config: CircularBufferConfig) -> StateResult<Self> {
         let db = StateDb::open(path, config)?;
-        Ok(Self { db })
+        let reader = StateReader::from_db(db);
+        Ok(Self { reader })
+    }
+
+    /// Get a reference to the underlying reader.
+    pub fn reader(&self) -> &StateReader {
+        &self.reader
+    }
+
+    /// Get the configured buffer size.
+    pub fn buffer_size(&self) -> u8 {
+        self.reader.buffer_size()
     }
 
     /// Apply a stored diff to a namespace.

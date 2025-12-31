@@ -41,7 +41,6 @@ use state_store::{
     AccountState,
     AddressHash,
     Reader,
-    redis::StateReader,
 };
 use std::collections::HashMap;
 
@@ -65,9 +64,9 @@ pub struct SystemCallConfig {
 ///
 /// Returns a list of `AccountState` records representing the state
 /// modifications from EIP-2935 and EIP-4788 system calls.
-pub fn compute_system_call_states(
+pub fn compute_system_call_states<R: Reader>(
     config: &SystemCallConfig,
-    reader: Option<&StateReader>,
+    reader: Option<&R>,
 ) -> Result<Vec<AccountState>> {
     let mut states = Vec::new();
 
@@ -85,9 +84,9 @@ pub fn compute_system_call_states(
 }
 
 /// Compute EIP-2935 state changes (historical block hashes)
-fn compute_eip2935_state(
+fn compute_eip2935_state<R: Reader>(
     config: &SystemCallConfig,
-    reader: Option<&StateReader>,
+    reader: Option<&R>,
 ) -> Result<Option<AccountState>> {
     // Skip genesis block
     if config.block_number == 0 {
@@ -133,9 +132,9 @@ fn compute_eip2935_state(
 }
 
 /// Compute EIP-4788 state changes (beacon block roots)
-fn compute_eip4788_state(
+fn compute_eip4788_state<R: Reader>(
     config: &SystemCallConfig,
-    reader: Option<&StateReader>,
+    reader: Option<&R>,
 ) -> Result<Option<AccountState>> {
     // Skip genesis block
     if config.block_number == 0 {
@@ -198,8 +197,8 @@ fn compute_eip4788_state(
 /// Fetch existing account state from the reader, or return defaults if not present.
 ///
 /// Reads from `block_number - 1` (the previous block's state).
-fn fetch_existing_or_default<F>(
-    reader: Option<&StateReader>,
+fn fetch_existing_or_default<F, R: Reader>(
+    reader: Option<&R>,
     address_hash: &AddressHash,
     block_number: u64,
     defaults: F,
@@ -233,6 +232,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use state_store::mdbx::StateReader;
 
     #[test]
     fn test_eip2935_computes_correct_slot() {
@@ -244,7 +244,7 @@ mod tests {
         };
 
         // No reader provided, should use defaults
-        let states = compute_system_call_states(&config, None).unwrap();
+        let states = compute_system_call_states::<StateReader>(&config, None).unwrap();
 
         let eip2935_state = states
             .iter()
@@ -275,7 +275,7 @@ mod tests {
         };
 
         // No reader provided, should use defaults
-        let states = compute_system_call_states(&config, None).unwrap();
+        let states = compute_system_call_states::<StateReader>(&config, None).unwrap();
 
         let eip4788_state = states
             .iter()
@@ -316,7 +316,7 @@ mod tests {
             parent_beacon_block_root: Some(B256::ZERO),
         };
 
-        let states = compute_system_call_states(&config, None).unwrap();
+        let states = compute_system_call_states::<StateReader>(&config, None).unwrap();
         assert!(states.is_empty());
     }
 
@@ -329,7 +329,7 @@ mod tests {
             parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
-        let result = compute_system_call_states(&config, None);
+        let result = compute_system_call_states::<StateReader>(&config, None);
         assert!(result.is_err());
         assert!(
             result
@@ -348,7 +348,7 @@ mod tests {
             parent_beacon_block_root: None,
         };
 
-        let result = compute_system_call_states(&config, None);
+        let result = compute_system_call_states::<StateReader>(&config, None);
         assert!(result.is_err());
         assert!(
             result
@@ -367,7 +367,7 @@ mod tests {
             parent_beacon_block_root: Some(B256::repeat_byte(0xee)),
         };
 
-        let states = compute_system_call_states(&config, None).unwrap();
+        let states = compute_system_call_states::<StateReader>(&config, None).unwrap();
 
         let eip2935_state = states
             .iter()

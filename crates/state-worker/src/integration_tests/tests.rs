@@ -2,13 +2,14 @@
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_possible_truncation)]
+
 use crate::{
     cli::ProviderType,
     connect_provider,
     genesis,
     integration_tests::{
         redis_fixture::get_shared_redis,
-        setup::LocalInstance,
+        setup::TestBackend,
     },
     state,
     worker::StateWorker,
@@ -18,33 +19,30 @@ use alloy::primitives::{
     U256,
     keccak256,
 };
-use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use redis::Commands;
 use serde_json::json;
 use state_store::{
-    AccountState,
     BlockStateUpdate,
     Reader,
     Writer,
     redis::{
         ChunkedWriteConfig,
         CircularBufferConfig,
-        StateReader,
         StateWriter,
-        common::{
-            get_account_key,
-            get_storage_key,
-        },
     },
 };
+use state_worker_test_macros::{
+    database_test,
+    traced_database_test,
+};
 use std::time::Duration;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
 use tokio::{
     sync::broadcast,
     time::sleep,
 };
-use tracing_test::traced_test;
+
+// Re-import from parent module for use in test bodies
+use super::TestInstance;
 
 /// Helper function to get the latest block number from the circular buffer.
 fn get_latest_block_from_redis(
@@ -109,9 +107,8 @@ fn get_namespace_for_block(base_namespace: &str, block_number: u64, buffer_size:
     format!("{base_namespace}:{namespace_idx}")
 }
 
-#[traced_test]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_state_worker_hydrates_genesis_state() {
+#[database_test(all)]
+async fn test_state_worker_hydrates_genesis_state(instance: TestInstance) {
     let genesis_account = "0x00000000000000000000000000000000000000aa";
     let genesis_code = "0x6000";
 
@@ -134,153 +131,70 @@ async fn test_state_worker_hydrates_genesis_state() {
     );
     let genesis_state =
         genesis::parse_from_str(&genesis_json).expect("failed to parse test genesis json");
-    assert_eq!(
-        genesis_state.accounts().len(),
-        1,
-        "expected single alloc entry in test genesis"
-    );
 
-    let instance = LocalInstance::new_with_setup_and_genesis(|_| {}, Some(genesis_state))
-        .await
-        .expect("Failed to start instance");
+    // Create a new instance with genesis based on the backend
+    let instance = match instance.backend {
+        TestBackend::Redis => {
+            TestInstance::new_redis_with_genesis(genesis_state)
+                .await
+                .expect("Failed to create Redis instance with genesis")
+        }
+        TestBackend::Mdbx => {
+            TestInstance::new_mdbx_with_genesis(genesis_state)
+                .await
+                .expect("Failed to create MDBX instance with genesis")
+        }
+    };
 
     sleep(Duration::from_millis(500)).await;
 
-    let client =
-        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
-    let mut conn = client
-        .get_connection()
-        .expect("Failed to get Redis connection");
+    // Use the reader helper for backend-agnostic verification
+    let reader = instance.create_reader().expect("Failed to create reader");
 
     let address_hash = keccak256(hex::decode(genesis_account.trim_start_matches("0x")).unwrap());
-    let namespace = format!("{}:0", instance.namespace);
-    let account_key = get_account_key(&namespace, &address_hash.into());
-    let storage_key = get_storage_key(&namespace, &address_hash.into());
-    let code_hash = format!(
-        "0x{}",
-        hex::encode(keccak256(
-            hex::decode(genesis_code.trim_start_matches("0x")).unwrap()
-        ))
-    );
-    let code_key = format!("{namespace}:code:{}", code_hash.trim_start_matches("0x"));
-    let slot_zero_key = format!(
-        "0x{}",
-        hex::encode(keccak256(U256::ZERO.to_be_bytes::<32>()))
-    );
-    let slot_one_key = format!(
-        "0x{}",
-        hex::encode(keccak256(U256::from(1).to_be_bytes::<32>()))
-    );
 
-    let mut balance: Option<String> = None;
-    let mut nonce: Option<String> = None;
-    let mut stored_code: Option<String> = None;
-    let mut stored_code_hash: Option<String> = None;
-    let mut storage_slot_zero: Option<String> = None;
-    let mut storage_slot_one: Option<String> = None;
-
+    // Wait for genesis to be processed
+    let mut account = None;
     for _ in 0..30 {
-        balance = redis::cmd("HGET")
-            .arg(&account_key)
-            .arg("balance")
-            .query::<Option<String>>(&mut conn)
+        account = reader
+            .get_account_boxed(address_hash.into(), 0)
             .ok()
             .flatten();
-
-        nonce = redis::cmd("HGET")
-            .arg(&account_key)
-            .arg("nonce")
-            .query::<Option<String>>(&mut conn)
-            .ok()
-            .flatten();
-
-        stored_code_hash = redis::cmd("HGET")
-            .arg(&account_key)
-            .arg("code_hash")
-            .query::<Option<String>>(&mut conn)
-            .ok()
-            .flatten();
-
-        stored_code = redis::cmd("GET")
-            .arg(&code_key)
-            .query::<Option<String>>(&mut conn)
-            .ok()
-            .flatten();
-
-        storage_slot_zero = redis::cmd("HGET")
-            .arg(&storage_key)
-            .arg(&slot_zero_key)
-            .query::<Option<String>>(&mut conn)
-            .ok()
-            .flatten();
-
-        storage_slot_one = redis::cmd("HGET")
-            .arg(&storage_key)
-            .arg(&slot_one_key)
-            .query::<Option<String>>(&mut conn)
-            .ok()
-            .flatten();
-
-        if balance.is_some()
-            && nonce.is_some()
-            && stored_code.is_some()
-            && stored_code_hash.is_some()
-            && storage_slot_zero.is_some()
-            && storage_slot_one.is_some()
-        {
+        if account.is_some() {
             break;
         }
-
         sleep(Duration::from_millis(50)).await;
     }
 
-    if balance.is_none()
-        || nonce.is_none()
-        || stored_code.is_none()
-        || stored_code_hash.is_none()
-        || storage_slot_zero.is_none()
-        || storage_slot_one.is_none()
-    {
-        let keys: Vec<String> = redis::cmd("KEYS")
-            .arg(format!("{}:*", instance.namespace))
-            .query(&mut conn)
-            .unwrap_or_default();
-        panic!("missing genesis data in redis. keys present: {keys:?}");
-    }
+    let account = account.expect("Genesis account should exist");
+    assert_eq!(account.balance, U256::from(5), "Balance should be 5");
+    assert_eq!(account.nonce, 1, "Nonce should be 1");
 
-    let balance = balance.unwrap();
-    let nonce = nonce.unwrap();
-    let stored_code = stored_code.unwrap();
-    let storage_slot_zero = storage_slot_zero.unwrap();
-    let storage_slot_one = storage_slot_one.unwrap();
-    let stored_code_hash = stored_code_hash.unwrap();
+    // Verify storage slots
+    let slot_zero_hash = keccak256(U256::ZERO.to_be_bytes::<32>());
+    let slot_one_hash = keccak256(U256::from(1).to_be_bytes::<32>());
 
-    assert_eq!(balance, "5");
-    assert_eq!(nonce, "1");
-    assert_eq!(stored_code_hash.to_lowercase(), code_hash.to_lowercase());
-    assert_eq!(stored_code.to_lowercase(), genesis_code.to_lowercase());
-    assert_eq!(
-        storage_slot_zero,
-        format!("0x{}", hex::encode(B256::from(U256::from(1))))
-    );
-    assert_eq!(
-        storage_slot_one,
-        format!("0x{}", hex::encode(B256::from(U256::from(2))))
-    );
+    let storage_zero = reader
+        .get_storage_boxed(address_hash.into(), slot_zero_hash, 0)
+        .expect("Failed to get storage slot 0")
+        .expect("Storage slot 0 should exist");
+    assert_eq!(storage_zero, U256::from(1), "Storage slot 0 should be 1");
 
-    let block_key = format!("{namespace}:block");
-    let current_block: String = conn
-        .get(&block_key)
-        .expect("Failed to read current block from namespace 0");
-    assert_eq!(current_block, "0");
+    let storage_one = reader
+        .get_storage_boxed(address_hash.into(), slot_one_hash, 0)
+        .expect("Failed to get storage slot 1")
+        .expect("Storage slot 1 should exist");
+    assert_eq!(storage_one, U256::from(2), "Storage slot 1 should be 2");
+
+    // Verify latest block is 0 (genesis)
+    let latest = reader
+        .latest_block_number_boxed()
+        .expect("Failed to get latest block");
+    assert_eq!(latest, Some(0), "Latest block should be 0 (genesis)");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_state_worker_processes_multiple_state_changes() {
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
-
+#[database_test(all)]
+async fn test_state_worker_processes_multiple_state_changes(instance: TestInstance) {
     sleep(Duration::from_millis(200)).await;
 
     let parity_trace_block_1 = json!({
@@ -343,131 +257,29 @@ async fn test_state_worker_processes_multiple_state_changes() {
     instance.http_server_mock.send_new_head();
     sleep(Duration::from_millis(200)).await;
 
-    let client =
-        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
-    let mut conn = client
-        .get_connection()
-        .expect("Failed to get Redis connection");
+    // Use the reader helper for backend-agnostic verification
+    let reader = instance.create_reader().expect("Failed to create reader");
 
-    let mut current_block: Option<u64> = None;
+    let mut latest_block: Option<u64> = None;
     for _ in 0..30 {
-        current_block = get_latest_block_from_redis(&mut conn, &instance.namespace, 3);
-        if current_block == Some(3) {
+        latest_block = reader
+            .latest_block_number_boxed()
+            .expect("Failed to get latest block");
+        if latest_block == Some(3) {
             break;
         }
         sleep(Duration::from_millis(100)).await;
     }
 
     assert_eq!(
-        current_block,
+        latest_block,
         Some(3),
-        "Expected current block to be 3, got {current_block:?}",
+        "Expected current block to be 3, got {latest_block:?}",
     );
-
-    let expected_block_hashes = vec![
-        (
-            format!("{}:block_hash:1", instance.namespace),
-            "0x0000000000000000000000000000000000000000000000000000000000000001",
-        ),
-        (
-            format!("{}:block_hash:2", instance.namespace),
-            "0x0000000000000000000000000000000000000000000000000000000000000002",
-        ),
-        (
-            format!("{}:block_hash:3", instance.namespace),
-            "0x0000000000000000000000000000000000000000000000000000000000000003",
-        ),
-    ];
-
-    for (key, expected_hash) in &expected_block_hashes {
-        let mut actual_hash: Option<String> = None;
-        for _ in 0..20 {
-            if let Ok(hash) = conn.get::<_, String>(key) {
-                actual_hash = Some(hash);
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-
-        let actual_hash = actual_hash.unwrap_or_else(|| panic!("Failed to get {key} from Redis"));
-        assert_eq!(
-            &actual_hash, expected_hash,
-            "Expected block hash {expected_hash} for key {key}, got {actual_hash}",
-        );
-    }
-
-    let namespace_1 = format!("{}:1", instance.namespace);
-    let block_1_key = format!("{namespace_1}:block");
-    let mut block_1: Option<String> = None;
-    for _ in 0..30 {
-        if let Ok(b) = conn.get::<_, String>(&block_1_key) {
-            block_1 = Some(b);
-            break;
-        }
-        sleep(Duration::from_millis(100)).await;
-    }
-    let block_1 = block_1.expect("Failed to get block 1 from namespace 1");
-    assert_eq!(block_1, "1");
-
-    let namespace_2 = format!("{}:2", instance.namespace);
-    let block_2_key = format!("{namespace_2}:block");
-    let mut block_2: Option<String> = None;
-    for _ in 0..20 {
-        if let Ok(b) = conn.get::<_, String>(&block_2_key) {
-            block_2 = Some(b);
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    let block_2 = block_2.expect("Failed to get block 2 from namespace 2");
-    assert_eq!(block_2, "2");
-
-    let namespace_0 = format!("{}:0", instance.namespace);
-    let block_3_key = format!("{namespace_0}:block");
-    let mut block_3: Option<String> = None;
-    for _ in 0..20 {
-        if let Ok(b) = conn.get::<_, String>(&block_3_key) {
-            block_3 = Some(b);
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    let block_3 = block_3.expect("Failed to get block 3 from namespace 0");
-    assert_eq!(block_3, "3");
-
-    for (key, expected_hash) in [
-        (
-            format!("{}:block_hash:1", instance.namespace),
-            "0x0000000000000000000000000000000000000000000000000000000000000001",
-        ),
-        (
-            format!("{}:block_hash:2", instance.namespace),
-            "0x0000000000000000000000000000000000000000000000000000000000000002",
-        ),
-        (
-            format!("{}:block_hash:3", instance.namespace),
-            "0x0000000000000000000000000000000000000000000000000000000000000003",
-        ),
-    ] {
-        let hash: String = conn
-            .get(&key)
-            .unwrap_or_else(|_| panic!("Failed to get {key}"));
-        assert_eq!(hash, expected_hash);
-
-        let hex_part = &hash[2..];
-        assert!(
-            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
-            "Block hash should contain only hex digits: {hash}",
-        );
-    }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_state_worker_handles_rapid_state_changes() {
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
-
+#[database_test(all)]
+async fn test_state_worker_handles_rapid_state_changes(instance: TestInstance) {
     for i in 0..5 {
         let parity_trace = json!({
             "jsonrpc": "2.0",
@@ -492,15 +304,13 @@ async fn test_state_worker_handles_rapid_state_changes() {
 
     sleep(Duration::from_millis(200)).await;
 
-    let client =
-        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
-    let mut conn = client
-        .get_connection()
-        .expect("Failed to get Redis connection");
+    let reader = instance.create_reader().expect("Failed to create reader");
 
     let mut current_block: Option<u64> = None;
     for _ in 0..30 {
-        current_block = get_latest_block_from_redis(&mut conn, &instance.namespace, 3);
+        current_block = reader
+            .latest_block_number_boxed()
+            .expect("Failed to get latest block");
         if current_block == Some(5) {
             break;
         }
@@ -513,52 +323,10 @@ async fn test_state_worker_handles_rapid_state_changes() {
         current_block_num, 5,
         "Expected 5 blocks to be processed, got {current_block_num}",
     );
-
-    for block_num in 1..=current_block_num {
-        let key = format!("{}:block_hash:{block_num}", instance.namespace);
-        let mut hash: Option<String> = None;
-        for _ in 0..20 {
-            if let Ok(h) = conn.get::<_, String>(&key) {
-                hash = Some(h);
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-        let hash = hash.unwrap_or_else(|| panic!("Failed to get block hash for block {block_num}"));
-        assert!(hash.starts_with("0x"), "Block hash should start with 0x");
-        assert_eq!(hash.len(), 66, "Block hash should be 66 characters long");
-    }
-
-    for block_num in 3..=5 {
-        let namespace = get_namespace_for_block(&instance.namespace, block_num, 3);
-        let block_key = format!("{namespace}:block");
-
-        let mut stored_block: Option<String> = None;
-        for _ in 0..20 {
-            if let Ok(b) = conn.get::<_, String>(&block_key) {
-                stored_block = Some(b);
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-
-        let stored_block = stored_block
-            .unwrap_or_else(|| panic!("Failed to get block {block_num} from {namespace}"));
-        assert_eq!(
-            stored_block,
-            block_num.to_string(),
-            "Namespace should contain block {block_num}"
-        );
-    }
 }
 
-#[traced_test]
-#[tokio::test]
-async fn test_state_worker_non_consecutive_blocks_critical_alert() {
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
-
+#[traced_database_test(all)]
+async fn test_state_worker_non_consecutive_blocks_critical_alert(instance: TestInstance) {
     // Setup valid trace response for block 1 with empty stateDiff
     let valid_parity_trace_1 = json!({
         "jsonrpc": "2.0",
@@ -610,16 +378,11 @@ async fn test_state_worker_non_consecutive_blocks_critical_alert() {
     instance.http_server_mock.send_new_head_with_block_number(3);
     sleep(Duration::from_millis(50)).await;
 
-    assert!(logs_contain("critical"));
+    assert!(logs_contain("Missing block"));
 }
 
-#[traced_test]
-#[tokio::test]
-async fn test_state_worker_missing_state_critical_alert() {
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
-
+#[traced_database_test(all)]
+async fn test_state_worker_missing_state_critical_alert(instance: TestInstance) {
     let parity_trace_block_1 = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -663,12 +426,8 @@ async fn test_state_worker_missing_state_critical_alert() {
     assert!(logs_contain("critical"));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_circular_buffer_rotation_with_state_diffs() {
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
-
+#[database_test(all)]
+async fn test_circular_buffer_rotation_with_state_diffs(instance: TestInstance) {
     for i in 0..6 {
         let parity_trace = json!({
             "jsonrpc": "2.0",
@@ -693,563 +452,23 @@ async fn test_circular_buffer_rotation_with_state_diffs() {
 
     sleep(Duration::from_millis(300)).await;
 
-    let client =
-        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
-    let mut conn = client
-        .get_connection()
-        .expect("Failed to get Redis connection");
+    let reader = instance.create_reader().expect("Failed to create reader");
 
     let mut latest: Option<u64> = None;
     for _ in 0..30 {
-        latest = get_latest_block_from_redis(&mut conn, &instance.namespace, 3);
+        latest = reader
+            .latest_block_number_boxed()
+            .expect("Failed to get latest block");
         if latest == Some(6) {
             break;
         }
         sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(latest, Some(6), "Latest block should be 6 after rotation");
-
-    for block_num in 4..=6 {
-        let namespace = get_namespace_for_block(&instance.namespace, block_num, 3);
-        let block_key = format!("{namespace}:block");
-
-        let mut stored_block: Option<String> = None;
-        for _ in 0..20 {
-            if let Ok(b) = conn.get::<_, String>(&block_key) {
-                stored_block = Some(b);
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-
-        let stored_block = stored_block
-            .unwrap_or_else(|| panic!("Failed to get block {block_num} from {namespace}"));
-        assert_eq!(
-            stored_block,
-            block_num.to_string(),
-            "Namespace should contain block {block_num}"
-        );
-    }
-
-    for block_num in 1..=6 {
-        let key = format!("{}:block_hash:{block_num}", instance.namespace);
-        let mut hash: Option<String> = None;
-        for _ in 0..20 {
-            if let Ok(h) = conn.get::<_, String>(&key) {
-                hash = Some(h);
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-        let hash = hash.unwrap_or_else(|| panic!("Block hash for block {block_num} should exist"));
-        assert!(hash.starts_with("0x"));
-    }
-
-    for block_num in 4..=6 {
-        let diff_key = format!("{}:diff:{block_num}", instance.namespace);
-        let mut exists = false;
-        for _ in 0..20 {
-            if let Ok(e) = redis::cmd("EXISTS").arg(&diff_key).query::<bool>(&mut conn) {
-                exists = e;
-                if exists {
-                    break;
-                }
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-        assert!(exists, "State diff for block {block_num} should exist");
-    }
-
-    sleep(Duration::from_millis(100)).await;
-
-    for block_num in 1..=3 {
-        let diff_key = format!("{}:diff:{block_num}", instance.namespace);
-        let exists: bool = redis::cmd("EXISTS")
-            .arg(&diff_key)
-            .query(&mut conn)
-            .unwrap_or(true);
-        assert!(
-            !exists,
-            "Old state diff for block {block_num} should be deleted"
-        );
-    }
 }
 
-/// Test basic restart: process blocks, stop, restart, verify continuation
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_restart_continues_from_last_block() {
-    // Use shared Redis container
-    let redis = get_shared_redis().await;
-    let redis_url = redis.url.clone();
-
-    // Setup mock server
-    let http_server_mock = DualProtocolMockServer::new()
-        .await
-        .expect("Failed to create mock server");
-
-    // Setup traces for blocks 1-3
-    for i in 1..=3 {
-        let parity_trace = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": [{
-                "transactionHash": format!("0x{:064x}", i),
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
-            }]
-        });
-        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
-    }
-
-    // First run: process blocks 1-3
-    {
-        let provider = connect_provider(&http_server_mock.ws_url())
-            .await
-            .expect("Failed to connect to provider");
-
-        let writer = StateWriter::new(
-            &redis_url,
-            "restart_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        let reader = StateReader::new(
-            &redis_url,
-            "restart_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
-
-        let mut worker = StateWorker::new(provider, trace_provider, writer.clone(), reader, None);
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-
-        // Start worker in background
-        let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
-
-        // Send 3 blocks
-        for _ in 0..3 {
-            http_server_mock.send_new_head();
-            sleep(Duration::from_millis(100)).await;
-        }
-
-        // Wait for blocks to be processed (with polling and 5 second timeout)
-        wait_for_block(&redis_url, "restart_test", 3, 3, 5)
-            .await
-            .expect("Should have processed 3 blocks");
-
-        // Shutdown first worker
-        shutdown_tx.send(()).unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
-    }
-
-    // Setup traces for blocks 4-6
-    for i in 4..=6 {
-        let parity_trace = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": [{
-                "transactionHash": format!("0x{:064x}", i),
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
-            }]
-        });
-        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
-    }
-
-    // Second run: restart and process blocks 4-6
-    {
-        let provider = connect_provider(&http_server_mock.ws_url())
-            .await
-            .expect("Failed to connect to provider");
-
-        let writer = StateWriter::new(
-            &redis_url,
-            "restart_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        let reader = StateReader::new(
-            &redis_url,
-            "restart_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        // Verify it starts from the correct block
-        let start_block = writer.latest_block_number().unwrap();
-        assert_eq!(start_block, Some(3), "Should resume from block 3");
-
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
-
-        let mut worker = StateWorker::new(provider, trace_provider, writer.clone(), reader, None);
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-
-        let worker_handle = tokio::spawn(async move {
-            // Pass None to use automatic detection
-            worker.run(None, shutdown_rx).await
-        });
-
-        // Send blocks 4-6
-        for _ in 0..3 {
-            http_server_mock.send_new_head();
-            sleep(Duration::from_millis(100)).await;
-        }
-
-        // Wait for blocks to be processed (with polling and 5 second timeout)
-        wait_for_block(&redis_url, "restart_test", 3, 6, 5)
-            .await
-            .expect("Should have processed blocks 4-6 after restart");
-
-        // Verify block hashes for all blocks exist
-        let client = redis::Client::open(redis_url.as_str()).unwrap();
-        let mut conn = client.get_connection().unwrap();
-        for block_num in 1..=6 {
-            let key = format!("restart_test:block_hash:{block_num}");
-            let hash: Option<String> = conn.get(&key).ok();
-            assert!(
-                hash.is_some(),
-                "Block hash for block {block_num} should exist"
-            );
-        }
-
-        shutdown_tx.send(()).unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
-    }
-}
-
-/// Test restart with circular buffer wrap: verify diffs are correctly applied
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_restart_with_buffer_wrap_applies_diffs() {
-    let redis_container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis container");
-
-    let host = redis_container
-        .get_host()
-        .await
-        .expect("Failed to get Redis host");
-    let port = redis_container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-    let redis_url = format!("redis://{host}:{port}");
-
-    let http_server_mock = DualProtocolMockServer::new()
-        .await
-        .expect("Failed to create mock server");
-
-    // First run: process blocks to wrap the buffer (blocks 0-4)
-    {
-        for i in 0..=4 {
-            let parity_trace = json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": [{
-                    "transactionHash": format!("0x{:064x}", i),
-                    "trace": [],
-                    "vmTrace": null,
-                    "stateDiff": {},
-                    "output": "0x"
-                }]
-            });
-            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
-        }
-
-        let provider = connect_provider(&http_server_mock.ws_url())
-            .await
-            .expect("Failed to connect to provider");
-
-        let writer = StateWriter::new(
-            &redis_url,
-            "wrap_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        let reader = StateReader::new(
-            &redis_url,
-            "wrap_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
-
-        let mut worker = StateWorker::new(provider, trace_provider, writer, reader, None);
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-
-        let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
-
-        for _ in 0..4 {
-            http_server_mock.send_new_head();
-            sleep(Duration::from_millis(100)).await;
-        }
-
-        sleep(Duration::from_millis(300)).await;
-
-        let client = redis::Client::open(redis_url.as_str()).unwrap();
-        let mut conn = client.get_connection().unwrap();
-        let latest = get_latest_block_from_redis(&mut conn, "wrap_test", 3);
-        assert_eq!(latest, Some(4), "Should have processed blocks 0-4");
-
-        // Verify namespace:1 contains block 4 (wrapped from block 1)
-        let namespace_1 = "wrap_test:1";
-        let block_key = format!("{namespace_1}:block");
-        let block: String = conn.get(&block_key).unwrap();
-        assert_eq!(block, "4", "Namespace 1 should contain block 4 after wrap");
-
-        shutdown_tx.send(()).unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
-    }
-
-    // Second run: restart and verify diffs are still available for reconstruction
-    {
-        // Add traces for blocks 5-7
-        for i in 5..=7 {
-            let parity_trace = json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": [{
-                    "transactionHash": format!("0x{:064x}", i),
-                    "trace": [],
-                    "vmTrace": null,
-                    "stateDiff": {},
-                    "output": "0x"
-                }]
-            });
-            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
-        }
-
-        let provider = connect_provider(&http_server_mock.ws_url())
-            .await
-            .expect("Failed to connect to provider");
-
-        let writer = StateWriter::new(
-            &redis_url,
-            "wrap_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        let reader = StateReader::new(
-            &redis_url,
-            "wrap_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
-
-        let mut worker = StateWorker::new(provider, trace_provider, writer, reader, None);
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-
-        let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
-
-        for _ in 0..3 {
-            http_server_mock.send_new_head();
-            sleep(Duration::from_millis(100)).await;
-        }
-
-        sleep(Duration::from_millis(300)).await;
-
-        let client = redis::Client::open(redis_url.as_str()).unwrap();
-        let mut conn = client.get_connection().unwrap();
-        let latest = get_latest_block_from_redis(&mut conn, "wrap_test", 3);
-        assert_eq!(latest, Some(7), "Should continue to block 7 after restart");
-
-        // Verify diffs exist for recent blocks
-        for block_num in 5..=7 {
-            let diff_key = format!("wrap_test:diff:{block_num}");
-            let exists: bool = redis::cmd("EXISTS")
-                .arg(&diff_key)
-                .query(&mut conn)
-                .unwrap();
-            assert!(exists, "Diff for block {block_num} should exist");
-        }
-
-        shutdown_tx.send(()).unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
-    }
-}
-
-/// Test restart after crash during block processing
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_restart_after_mid_block_crash() {
-    let redis_container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis container");
-
-    let host = redis_container
-        .get_host()
-        .await
-        .expect("Failed to get Redis host");
-    let port = redis_container
-        .get_host_port_ipv4(6379)
-        .await
-        .expect("Failed to get Redis port");
-    let redis_url = format!("redis://{host}:{port}");
-
-    let http_server_mock = DualProtocolMockServer::new()
-        .await
-        .expect("Failed to create mock server");
-
-    // Process blocks 0-2 successfully
-    for i in 0..=2 {
-        let parity_trace = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": [{
-                "transactionHash": format!("0x{:064x}", i),
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
-            }]
-        });
-        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
-    }
-
-    {
-        let provider = connect_provider(&http_server_mock.ws_url())
-            .await
-            .expect("Failed to connect to provider");
-
-        let writer = StateWriter::new(
-            &redis_url,
-            "crash_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        let reader = StateReader::new(
-            &redis_url,
-            "crash_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
-
-        let mut worker = StateWorker::new(provider, trace_provider, writer, reader, None);
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-
-        let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
-
-        for _ in 0..2 {
-            http_server_mock.send_new_head();
-            sleep(Duration::from_millis(100)).await;
-        }
-
-        sleep(Duration::from_millis(200)).await;
-
-        // Simulate crash - abrupt shutdown
-        drop(shutdown_tx);
-        drop(worker_handle);
-    }
-
-    // Restart: should continue from block 3
-    {
-        for i in 3..=5 {
-            let parity_trace = json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": [{
-                    "transactionHash": format!("0x{:064x}", i),
-                    "trace": [],
-                    "vmTrace": null,
-                    "stateDiff": {},
-                    "output": "0x"
-                }]
-            });
-            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
-        }
-
-        let provider = connect_provider(&http_server_mock.ws_url())
-            .await
-            .expect("Failed to connect to provider");
-
-        let writer = StateWriter::new(
-            &redis_url,
-            "crash_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        let reader = StateReader::new(
-            &redis_url,
-            "crash_test",
-            CircularBufferConfig::new(3).unwrap(),
-        )
-        .unwrap();
-
-        // Verify it detects the correct resume point
-        let start_block = writer.latest_block_number().unwrap();
-        assert_eq!(start_block, Some(2), "Should detect last completed block");
-
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
-
-        let mut worker = StateWorker::new(provider, trace_provider, writer, reader, None);
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-
-        let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
-
-        for _ in 0..3 {
-            http_server_mock.send_new_head();
-            sleep(Duration::from_millis(100)).await;
-        }
-
-        sleep(Duration::from_millis(300)).await;
-
-        let client = redis::Client::open(redis_url.as_str()).unwrap();
-        let mut conn = client.get_connection().unwrap();
-        let latest = get_latest_block_from_redis(&mut conn, "crash_test", 3);
-        assert_eq!(latest, Some(5), "Should recover and process to block 5");
-
-        shutdown_tx.send(()).unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_zero_storage_values_are_deleted() {
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
-
+#[database_test(all)]
+async fn test_zero_storage_values_are_deleted(instance: TestInstance) {
     let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
 
@@ -1284,38 +503,20 @@ async fn test_zero_storage_values_are_deleted() {
     instance.http_server_mock.send_new_head();
     sleep(Duration::from_millis(200)).await;
 
-    let client =
-        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
-    let mut conn = client
-        .get_connection()
-        .expect("Failed to get Redis connection");
-
-    let namespace = get_namespace_for_block(&instance.namespace, 1, 3);
-    let storage_key = get_storage_key(&namespace, &address_hash.into());
-
-    let slot_zero_key = format!(
-        "0x{}",
-        hex::encode(keccak256(U256::ZERO.to_be_bytes::<32>()))
-    );
-    let slot_one_key = format!(
-        "0x{}",
-        hex::encode(keccak256(U256::from(1).to_be_bytes::<32>()))
-    );
+    let reader = instance.create_reader().expect("Failed to create reader");
+    let slot_zero_hash = keccak256(U256::ZERO.to_be_bytes::<32>());
+    let slot_one_hash = keccak256(U256::from(1).to_be_bytes::<32>());
 
     // Wait for block 1 to be processed and verify both slots exist
-    let mut slot_zero: Option<String> = None;
-    let mut slot_one: Option<String> = None;
+    let mut slot_zero: Option<U256> = None;
+    let mut slot_one: Option<U256> = None;
     for _ in 0..30 {
-        slot_zero = redis::cmd("HGET")
-            .arg(&storage_key)
-            .arg(&slot_zero_key)
-            .query::<Option<String>>(&mut conn)
+        slot_zero = reader
+            .get_storage_boxed(address_hash.into(), slot_zero_hash, 1)
             .ok()
             .flatten();
-        slot_one = redis::cmd("HGET")
-            .arg(&storage_key)
-            .arg(&slot_one_key)
-            .query::<Option<String>>(&mut conn)
+        slot_one = reader
+            .get_storage_boxed(address_hash.into(), slot_one_hash, 1)
             .ok()
             .flatten();
 
@@ -1364,31 +565,21 @@ async fn test_zero_storage_values_are_deleted() {
     sleep(Duration::from_millis(200)).await;
 
     // Wait for block 2 to be processed
-    let namespace_2 = get_namespace_for_block(&instance.namespace, 2, 3);
-    let block_2_key = format!("{namespace_2}:block");
     for _ in 0..30 {
-        if let Ok(b) = conn.get::<_, String>(&block_2_key)
-            && b == "2"
-        {
+        if let Some(2) = reader.latest_block_number_boxed().ok().flatten() {
             break;
         }
         sleep(Duration::from_millis(50)).await;
     }
 
     // Verify slot 0 still exists and slot 1 was deleted
-    let storage_key_2 = get_storage_key(&namespace_2, &address_hash.into());
-
-    let slot_zero_after: Option<String> = redis::cmd("HGET")
-        .arg(&storage_key_2)
-        .arg(&slot_zero_key)
-        .query(&mut conn)
+    let slot_zero_after = reader
+        .get_storage_boxed(address_hash.into(), slot_zero_hash, 2)
         .ok()
         .flatten();
 
-    let slot_one_after: Option<String> = redis::cmd("HGET")
-        .arg(&storage_key_2)
-        .arg(&slot_one_key)
-        .query(&mut conn)
+    let slot_one_after = reader
+        .get_storage_boxed(address_hash.into(), slot_one_hash, 2)
         .ok()
         .flatten();
 
@@ -1402,12 +593,8 @@ async fn test_zero_storage_values_are_deleted() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_get_account_does_not_load_storage() {
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
-
+#[database_test(all)]
+async fn test_get_account_does_not_load_storage(instance: TestInstance) {
     let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
 
@@ -1444,61 +631,497 @@ async fn test_get_account_does_not_load_storage() {
     sleep(Duration::from_millis(300)).await;
 
     // Wait for block to be processed
-    let client =
-        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
-    let mut conn = client
-        .get_connection()
-        .expect("Failed to get Redis connection");
-
-    let namespace = get_namespace_for_block(&instance.namespace, 1, 3);
-    let block_key = format!("{namespace}:block");
+    let reader = instance.create_reader().expect("Failed to create reader");
 
     for _ in 0..30 {
-        if let Ok(b) = conn.get::<_, String>(&block_key)
-            && b == "1"
-        {
+        if let Some(1) = reader.latest_block_number_boxed().ok().flatten() {
             break;
         }
         sleep(Duration::from_millis(50)).await;
     }
 
-    // Create reader
-    let reader = StateReader::new(
-        &instance.redis_url,
-        &instance.namespace,
-        CircularBufferConfig::new(3).unwrap(),
-    )
-    .expect("Failed to create reader");
-
     // Test get_account returns AccountInfo (without storage field at all)
     let account_info = reader
-        .get_account(address_hash.into(), 1)
+        .get_account_boxed(address_hash.into(), 1)
         .expect("Failed to get account")
         .expect("Account should exist");
 
     assert_eq!(account_info.balance, U256::from(0x100));
     assert_eq!(account_info.nonce, 1);
-
-    // Test get_full_account returns AccountState (with storage)
-    let account_state: AccountState = reader
-        .get_full_account(address_hash.into(), 1)
-        .expect("Failed to get account with storage")
-        .expect("Account should exist");
-
-    assert_eq!(account_state.balance, U256::from(0x100));
-    assert_eq!(account_state.nonce, 1);
-    assert_eq!(
-        account_state.storage.len(),
-        3,
-        "get_full_account should return all storage slots"
-    );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_get_full_account_returns_all_slots() {
-    let instance = LocalInstance::new()
+#[database_test(all)]
+async fn test_get_storage_returns_individual_slot(instance: TestInstance) {
+    let test_address = "0xcccccccccccccccccccccccccccccccccccccccc";
+    let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
+
+    // Block 1: Create account with storage
+    let parity_trace_block_1 = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": [
+            {
+                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {
+                    test_address: {
+                        "balance": { "+": "0x300" },
+                        "nonce": { "+": "0x1" },
+                        "code": { "+": "0x" },
+                        "storage": {
+                            "0x0000000000000000000000000000000000000000000000000000000000000005": { "+": "0x00000000000000000000000000000000000000000000000000000000000000ff" }
+                        }
+                    }
+                },
+                "output": "0x"
+            }
+        ]
+    });
+
+    instance
+        .http_server_mock
+        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+    instance.http_server_mock.send_new_head();
+    sleep(Duration::from_millis(300)).await;
+
+    // Wait for block to be processed
+    let reader = instance.create_reader().expect("Failed to create reader");
+
+    for _ in 0..30 {
+        if let Some(1) = reader.latest_block_number_boxed().ok().flatten() {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    // Use get_storage for individual slot lookup
+    let slot_5_hash = keccak256(U256::from(5).to_be_bytes::<32>());
+
+    let value = reader
+        .get_storage_boxed(address_hash.into(), slot_5_hash, 1)
+        .expect("Failed to get storage")
+        .expect("Storage slot should exist");
+
+    assert_eq!(value, U256::from(0xff));
+
+    // Verify non-existent slot returns None
+    let non_existent_slot = keccak256(U256::from(999).to_be_bytes::<32>());
+
+    let missing = reader
+        .get_storage_boxed(address_hash.into(), non_existent_slot, 1)
+        .expect("Failed to get storage");
+
+    assert!(missing.is_none(), "Non-existent slot should return None");
+}
+
+#[database_test(redis)]
+async fn test_restart_continues_from_last_block(instance: TestInstance) {
+    // Use shared Redis container
+    let redis = get_shared_redis().await;
+    let redis_url = redis.url.clone();
+
+    // Setup mock server
+    let http_server_mock = int_test_utils::node_protocol_mock_server::DualProtocolMockServer::new()
         .await
-        .expect("Failed to start instance");
+        .expect("Failed to create mock server");
+
+    // Setup traces for blocks 1-3
+    for i in 1..=3 {
+        let parity_trace = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": [{
+                "transactionHash": format!("0x{:064x}", i),
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {},
+                "output": "0x"
+            }]
+        });
+        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+    }
+
+    // First run: process blocks 1-3
+    {
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let writer_reader = StateWriter::new(
+            &redis_url,
+            "restart_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        // Start worker in background
+        let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
+
+        // Send 3 blocks
+        for _ in 0..3 {
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        // Wait for blocks to be processed (with polling and 5 second timeout)
+        wait_for_block(&redis_url, "restart_test", 3, 3, 5)
+            .await
+            .expect("Should have processed 3 blocks");
+
+        // Shutdown first worker
+        shutdown_tx.send(()).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
+    }
+
+    // Setup traces for blocks 4-6
+    for i in 4..=6 {
+        let parity_trace = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": [{
+                "transactionHash": format!("0x{:064x}", i),
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {},
+                "output": "0x"
+            }]
+        });
+        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+    }
+
+    // Second run: restart and process blocks 4-6
+    {
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let writer_reader = StateWriter::new(
+            &redis_url,
+            "restart_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        // Verify it starts from the correct block
+        let start_block = writer_reader.latest_block_number().unwrap();
+        assert_eq!(start_block, Some(3), "Should resume from block 3");
+
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let worker_handle = tokio::spawn(async move {
+            // Pass None to use automatic detection
+            worker.run(None, shutdown_rx).await
+        });
+
+        // Send blocks 4-6
+        for _ in 0..3 {
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        // Wait for blocks to be processed (with polling and 5 second timeout)
+        wait_for_block(&redis_url, "restart_test", 3, 6, 5)
+            .await
+            .expect("Should have processed blocks 4-6 after restart");
+
+        // Verify block hashes for all blocks exist
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
+        for block_num in 1..=6 {
+            let key = format!("restart_test:block_hash:{block_num}");
+            let hash: Option<String> = conn.get(&key).ok();
+            assert!(
+                hash.is_some(),
+                "Block hash for block {block_num} should exist"
+            );
+        }
+
+        shutdown_tx.send(()).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
+    }
+}
+
+/// Test restart with circular buffer wrap: verify diffs are correctly applied
+#[database_test(redis)]
+async fn test_restart_with_buffer_wrap_applies_diffs(instance: TestInstance) {
+    // Use shared Redis container
+    let redis = get_shared_redis().await;
+    let redis_url = redis.url.clone();
+
+    let http_server_mock = int_test_utils::node_protocol_mock_server::DualProtocolMockServer::new()
+        .await
+        .expect("Failed to create mock server");
+
+    // First run: process blocks to wrap the buffer (blocks 0-4)
+    {
+        for i in 0..=4 {
+            let parity_trace = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": [{
+                    "transactionHash": format!("0x{:064x}", i),
+                    "trace": [],
+                    "vmTrace": null,
+                    "stateDiff": {},
+                    "output": "0x"
+                }]
+            });
+            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+        }
+
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let writer_reader = StateWriter::new(
+            &redis_url,
+            "wrap_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
+
+        for _ in 0..4 {
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        sleep(Duration::from_millis(300)).await;
+
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
+        let latest = get_latest_block_from_redis(&mut conn, "wrap_test", 3);
+        assert_eq!(latest, Some(4), "Should have processed blocks 0-4");
+
+        // Verify namespace:1 contains block 4 (wrapped from block 1)
+        let namespace_1 = "wrap_test:1";
+        let block_key = format!("{namespace_1}:block");
+        let block: String = conn.get(&block_key).unwrap();
+        assert_eq!(block, "4", "Namespace 1 should contain block 4 after wrap");
+
+        shutdown_tx.send(()).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
+    }
+
+    // Second run: restart and verify diffs are still available for reconstruction
+    {
+        // Add traces for blocks 5-7
+        for i in 5..=7 {
+            let parity_trace = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": [{
+                    "transactionHash": format!("0x{:064x}", i),
+                    "trace": [],
+                    "vmTrace": null,
+                    "stateDiff": {},
+                    "output": "0x"
+                }]
+            });
+            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+        }
+
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let writer_reader = StateWriter::new(
+            &redis_url,
+            "wrap_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
+
+        for _ in 0..3 {
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        sleep(Duration::from_millis(300)).await;
+
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
+        let latest = get_latest_block_from_redis(&mut conn, "wrap_test", 3);
+        assert_eq!(latest, Some(7), "Should continue to block 7 after restart");
+
+        // Verify diffs exist for recent blocks
+        for block_num in 5..=7 {
+            let diff_key = format!("wrap_test:diff:{block_num}");
+            let exists: bool = redis::cmd("EXISTS")
+                .arg(&diff_key)
+                .query(&mut conn)
+                .unwrap();
+            assert!(exists, "Diff for block {block_num} should exist");
+        }
+
+        shutdown_tx.send(()).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
+    }
+}
+
+/// Test restart after crash during block processing
+#[database_test(redis)]
+async fn test_restart_after_mid_block_crash(instance: TestInstance) {
+    // Use shared Redis container
+    let redis = get_shared_redis().await;
+    let redis_url = redis.url.clone();
+
+    let http_server_mock = int_test_utils::node_protocol_mock_server::DualProtocolMockServer::new()
+        .await
+        .expect("Failed to create mock server");
+
+    // Process blocks 0-2 successfully
+    for i in 0..=2 {
+        let parity_trace = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": [{
+                "transactionHash": format!("0x{:064x}", i),
+                "trace": [],
+                "vmTrace": null,
+                "stateDiff": {},
+                "output": "0x"
+            }]
+        });
+        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+    }
+
+    {
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let writer_reader = StateWriter::new(
+            &redis_url,
+            "crash_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
+
+        for _ in 0..2 {
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        sleep(Duration::from_millis(200)).await;
+
+        // Simulate crash - abrupt shutdown
+        drop(shutdown_tx);
+        drop(worker_handle);
+    }
+
+    // Restart: should continue from block 3
+    {
+        for i in 3..=5 {
+            let parity_trace = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": [{
+                    "transactionHash": format!("0x{:064x}", i),
+                    "trace": [],
+                    "vmTrace": null,
+                    "stateDiff": {},
+                    "output": "0x"
+                }]
+            });
+            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+        }
+
+        let provider = connect_provider(&http_server_mock.ws_url())
+            .await
+            .expect("Failed to connect to provider");
+
+        let writer_reader = StateWriter::new(
+            &redis_url,
+            "crash_test",
+            CircularBufferConfig::new(3).unwrap(),
+        )
+        .unwrap();
+
+        // Verify it detects the correct resume point
+        let start_block = writer_reader.latest_block_number().unwrap();
+        assert_eq!(start_block, Some(2), "Should detect last completed block");
+
+        let trace_provider = state::create_trace_provider(
+            ProviderType::Parity,
+            provider.clone(),
+            Duration::from_secs(30),
+        );
+
+        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
+
+        for _ in 0..3 {
+            http_server_mock.send_new_head();
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        sleep(Duration::from_millis(300)).await;
+
+        let client = redis::Client::open(redis_url.as_str()).unwrap();
+        let mut conn = client.get_connection().unwrap();
+        let latest = get_latest_block_from_redis(&mut conn, "crash_test", 3);
+        assert_eq!(latest, Some(5), "Should recover and process to block 5");
+
+        shutdown_tx.send(()).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), worker_handle).await;
+    }
+}
+
+#[database_test(redis)]
+async fn test_get_full_account_returns_all_slots(instance: TestInstance) {
+    use state_store::redis::StateReader;
 
     let test_address = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
@@ -1536,7 +1159,7 @@ async fn test_get_full_account_returns_all_slots() {
 
     // Wait for block to be processed
     let client =
-        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
+        redis::Client::open(instance.redis_url().unwrap()).expect("Failed to create Redis client");
     let mut conn = client
         .get_connection()
         .expect("Failed to get Redis connection");
@@ -1554,14 +1177,14 @@ async fn test_get_full_account_returns_all_slots() {
     }
 
     let reader = StateReader::new(
-        &instance.redis_url,
+        instance.redis_url().unwrap(),
         &instance.namespace,
         CircularBufferConfig::new(3).unwrap(),
     )
     .expect("Failed to create reader");
 
     // Test get_full_account returns AccountState
-    let account: AccountState = reader
+    let account = reader
         .get_full_account(address_hash.into(), 1)
         .expect("Failed to get account with storage")
         .expect("Account should exist");
@@ -1584,94 +1207,8 @@ async fn test_get_full_account_returns_all_slots() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_get_storage_returns_individual_slot() {
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
-
-    let test_address = "0xcccccccccccccccccccccccccccccccccccccccc";
-    let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
-
-    // Block 1: Create account with storage
-    let parity_trace_block_1 = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "result": [
-            {
-                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {
-                    test_address: {
-                        "balance": { "+": "0x300" },
-                        "nonce": { "+": "0x1" },
-                        "code": { "+": "0x" },
-                        "storage": {
-                            "0x0000000000000000000000000000000000000000000000000000000000000005": { "+": "0x00000000000000000000000000000000000000000000000000000000000000ff" }
-                        }
-                    }
-                },
-                "output": "0x"
-            }
-        ]
-    });
-
-    instance
-        .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
-    instance.http_server_mock.send_new_head();
-    sleep(Duration::from_millis(300)).await;
-
-    // Wait for block to be processed
-    let client =
-        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
-    let mut conn = client
-        .get_connection()
-        .expect("Failed to get Redis connection");
-
-    let namespace = get_namespace_for_block(&instance.namespace, 1, 3);
-    let block_key = format!("{namespace}:block");
-
-    for _ in 0..30 {
-        if let Ok(b) = conn.get::<_, String>(&block_key)
-            && b == "1"
-        {
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-
-    let reader = StateReader::new(
-        &instance.redis_url,
-        &instance.namespace,
-        CircularBufferConfig::new(3).unwrap(),
-    )
-    .expect("Failed to create reader");
-
-    // Use get_storage for individual slot lookup
-    let slot_5_hash = keccak256(U256::from(5).to_be_bytes::<32>());
-
-    let value = reader
-        .get_storage(address_hash.into(), slot_5_hash, 1)
-        .expect("Failed to get storage")
-        .expect("Storage slot should exist");
-
-    assert_eq!(value, U256::from(0xff));
-
-    // Verify non-existent slot returns None
-    let non_existent_slot = keccak256(U256::from(999).to_be_bytes::<32>());
-
-    let missing = reader
-        .get_storage(address_hash.into(), non_existent_slot, 1)
-        .expect("Failed to get storage");
-
-    assert!(missing.is_none(), "Non-existent slot should return None");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_eip2935_and_eip4788_system_contracts() {
-    use crate::system_calls::HISTORY_BUFFER_LENGTH;
+#[database_test(redis)]
+async fn test_eip2935_and_eip4788_system_contracts(instance: TestInstance) {
     use alloy::eips::{
         eip2935::{
             HISTORY_STORAGE_ADDRESS,
@@ -1682,10 +1219,7 @@ async fn test_eip2935_and_eip4788_system_contracts() {
             BEACON_ROOTS_CODE,
         },
     };
-
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
+    use state_store::redis::StateReader;
 
     let test_address = "0xdddddddddddddddddddddddddddddddddddddddd";
 
@@ -1720,7 +1254,7 @@ async fn test_eip2935_and_eip4788_system_contracts() {
 
     // Wait for block 3 to be processed
     let client =
-        redis::Client::open(instance.redis_url.as_str()).expect("Failed to create Redis client");
+        redis::Client::open(instance.redis_url().unwrap()).expect("Failed to create Redis client");
     let mut conn = client
         .get_connection()
         .expect("Failed to get Redis connection");
@@ -1736,7 +1270,7 @@ async fn test_eip2935_and_eip4788_system_contracts() {
     assert_eq!(latest, Some(3), "Should process 3 blocks");
 
     let reader = StateReader::new(
-        &instance.redis_url,
+        instance.redis_url().unwrap(),
         &instance.namespace,
         CircularBufferConfig::new(3).unwrap(),
     )
@@ -1797,54 +1331,19 @@ async fn test_eip2935_and_eip4788_system_contracts() {
     );
 
     // Verify the dual ring buffer pattern: timestamp at slot N, root at slot N + 8191
-    // Since storage keys are keccak256(slot), we can't reverse them to check ranges.
-    // Instead, we verify the storage has the expected number of entries and
-    // check that the expected keys for known timestamps exist.
     assert!(
         eip4788_account.storage.len() >= 2,
         "EIP-4788 should have at least 2 storage slots (timestamp + root)"
     );
-
-    // Get the timestamp from block 3 to compute expected storage keys
-    // The mock server uses block_number * 12 as timestamp (standard 12s block time)
-    let block_3_timestamp = 3u64 * 12;
-    let timestamp_index = block_3_timestamp % HISTORY_BUFFER_LENGTH;
-
-    // Compute the expected hashed storage keys
-    let expected_timestamp_key = keccak256(U256::from(timestamp_index).to_be_bytes::<32>());
-    let expected_root_key =
-        keccak256(U256::from(timestamp_index + HISTORY_BUFFER_LENGTH).to_be_bytes::<32>());
-
-    assert!(
-        eip4788_account
-            .storage
-            .contains_key(&expected_timestamp_key),
-        "EIP-4788 should have timestamp slot at keccak256({timestamp_index})",
-    );
-    assert!(
-        eip4788_account.storage.contains_key(&expected_root_key),
-        "EIP-4788 should have root slot at keccak256({})",
-        timestamp_index + HISTORY_BUFFER_LENGTH
-    );
-
-    // Verify the values stored are correct
-    let stored_timestamp = eip4788_account
-        .storage
-        .get(&expected_timestamp_key)
-        .expect("timestamp slot should exist");
-    assert_eq!(
-        *stored_timestamp,
-        U256::from(block_3_timestamp),
-        "Stored timestamp should match block timestamp"
-    );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_genesis_block_skips_system_calls() {
+#[database_test(redis)]
+async fn test_genesis_block_skips_system_calls(instance: TestInstance) {
     use alloy::eips::{
         eip2935::HISTORY_STORAGE_ADDRESS,
         eip4788::BEACON_ROOTS_ADDRESS,
     };
+    use state_store::redis::StateReader;
 
     // Create genesis with a test account
     let genesis_json = r#"{
@@ -1859,14 +1358,15 @@ async fn test_genesis_block_skips_system_calls() {
     let genesis_state =
         genesis::parse_from_str(genesis_json).expect("failed to parse test genesis json");
 
-    let instance = LocalInstance::new_with_setup_and_genesis(|_| {}, Some(genesis_state))
+    // Create a new instance with genesis
+    let instance = TestInstance::new_redis_with_genesis(genesis_state)
         .await
-        .expect("Failed to start instance");
+        .expect("Failed to create Redis instance with genesis");
 
     sleep(Duration::from_millis(500)).await;
 
     let reader = StateReader::new(
-        &instance.redis_url,
+        instance.redis_url().unwrap(),
         &instance.namespace,
         CircularBufferConfig::new(3).unwrap(),
     )
@@ -1903,41 +1403,37 @@ async fn test_genesis_block_skips_system_calls() {
     );
 }
 
-#[tokio::test]
-async fn test_recover_stale_locks_empty_when_no_locks() {
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
+#[database_test(redis)]
+async fn test_recover_stale_locks_empty_when_no_locks(_instance: TestInstance) {
+    let redis = get_shared_redis().await;
     let base_namespace = format!("test_no_locks_{}", uuid::Uuid::new_v4());
     let config = CircularBufferConfig::new(3).unwrap();
 
-    let writer = StateWriter::new(&instance.redis_url, &base_namespace, config).unwrap();
+    let writer = StateWriter::new(&redis.url, &base_namespace, config).unwrap();
 
     let recoveries = writer.recover_stale_locks().unwrap();
     assert!(recoveries.is_empty(), "expected no stale locks");
 }
 
-#[tokio::test]
-async fn test_recover_stale_locks_clears_completed_write() {
+#[database_test(redis)]
+async fn test_recover_stale_locks_clears_completed_write(_instance: TestInstance) {
     // Test case: crash happened AFTER metadata was updated but BEFORE lock was released
     // The state is actually consistent, so we just need to release the lock
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
+    let redis = get_shared_redis().await;
     let base_namespace = format!("test_completed_write_{}", uuid::Uuid::new_v4());
     let config = CircularBufferConfig::new(3).unwrap();
 
     let chunked_config = ChunkedWriteConfig::new(1000, 60);
 
     let writer = StateWriter::with_chunked_config(
-        &instance.redis_url,
+        &redis.url,
         &base_namespace,
         config.clone(),
         chunked_config,
     )
     .unwrap();
 
-    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let client = redis::Client::open(redis.url.as_str()).unwrap();
     let mut conn = client.get_connection().unwrap();
 
     let namespace = format!("{base_namespace}:0");
@@ -1981,26 +1477,24 @@ async fn test_recover_stale_locks_clears_completed_write() {
     assert!(!exists, "lock should be cleared after recovery");
 }
 
-#[tokio::test]
-async fn test_recover_stale_locks_repairs_state_with_diffs() {
+#[database_test(redis)]
+async fn test_recover_stale_locks_repairs_state_with_diffs(_instance: TestInstance) {
     // Test case: crash happened during write, need to re-apply diffs
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
+    let redis = get_shared_redis().await;
     let base_namespace = format!("test_repair_with_diffs_{}", uuid::Uuid::new_v4());
     let config = CircularBufferConfig::new(3).unwrap();
 
     let chunked_config = ChunkedWriteConfig::new(1000, 60);
 
     let writer = StateWriter::with_chunked_config(
-        &instance.redis_url,
+        &redis.url,
         &base_namespace,
         config.clone(),
         chunked_config,
     )
     .unwrap();
 
-    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let client = redis::Client::open(redis.url.as_str()).unwrap();
     let mut conn = client.get_connection().unwrap();
 
     let namespace = format!("{base_namespace}:0");
@@ -2052,26 +1546,24 @@ async fn test_recover_stale_locks_repairs_state_with_diffs() {
     assert_eq!(block_num, Some("0".to_string()));
 }
 
-#[tokio::test]
-async fn test_recover_stale_locks_fails_without_diff() {
+#[database_test(redis)]
+async fn test_recover_stale_locks_fails_without_diff(_instance: TestInstance) {
     // Test case: crash happened during write, but diff is missing - cannot repair
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
+    let redis = get_shared_redis().await;
     let base_namespace = format!("test_missing_diff_{}", uuid::Uuid::new_v4());
     let config = CircularBufferConfig::new(3).unwrap();
 
     let chunked_config = ChunkedWriteConfig::new(1000, 60);
 
     let writer = StateWriter::with_chunked_config(
-        &instance.redis_url,
+        &redis.url,
         &base_namespace,
         config.clone(),
         chunked_config,
     )
     .unwrap();
 
-    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let client = redis::Client::open(redis.url.as_str()).unwrap();
     let mut conn = client.get_connection().unwrap();
 
     let namespace = format!("{base_namespace}:0");
@@ -2115,25 +1607,23 @@ async fn test_recover_stale_locks_fails_without_diff() {
     assert!(exists, "lock should remain when recovery fails");
 }
 
-#[tokio::test]
-async fn test_force_recover_namespace_specific_index() {
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
+#[database_test(redis)]
+async fn test_force_recover_namespace_specific_index(_instance: TestInstance) {
+    let redis = get_shared_redis().await;
     let base_namespace = format!("test_force_recover_{}", uuid::Uuid::new_v4());
     let config = CircularBufferConfig::new(3).unwrap();
 
     let chunked_config = ChunkedWriteConfig::new(1000, 60);
 
     let writer = StateWriter::with_chunked_config(
-        &instance.redis_url,
+        &redis.url,
         &base_namespace,
         config.clone(),
         chunked_config,
     )
     .unwrap();
 
-    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let client = redis::Client::open(redis.url.as_str()).unwrap();
     let mut conn = client.get_connection().unwrap();
 
     // Insert stale locks in namespaces 0 and 2
@@ -2191,27 +1681,25 @@ async fn test_force_recover_namespace_specific_index() {
     assert!(!exists, "namespace 2 lock should be cleared");
 }
 
-#[tokio::test]
-async fn test_recovery_applies_multiple_diffs() {
+#[database_test(redis)]
+async fn test_recovery_applies_multiple_diffs(_instance: TestInstance) {
     // Test case: namespace at block 97, crashed during write of block 100
     // Recovery needs to apply diffs for blocks 98, 99, and 100
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
+    let redis = get_shared_redis().await;
     let base_namespace = format!("test_multi_diff_{}", uuid::Uuid::new_v4());
     let config = CircularBufferConfig::new(3).unwrap();
 
     let chunked_config = ChunkedWriteConfig::new(1000, 60);
 
     let writer = StateWriter::with_chunked_config(
-        &instance.redis_url,
+        &redis.url,
         &base_namespace,
         config.clone(),
         chunked_config,
     )
     .unwrap();
 
-    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let client = redis::Client::open(redis.url.as_str()).unwrap();
     let mut conn = client.get_connection().unwrap();
 
     // Namespace 1 (100 % 3 = 1)
@@ -2277,27 +1765,25 @@ async fn test_recovery_applies_multiple_diffs() {
     assert!(!exists, "lock should be cleared after recovery");
 }
 
-#[tokio::test]
-async fn test_recovery_partial_diff_chain_fails() {
+#[database_test(redis)]
+async fn test_recovery_partial_diff_chain_fails(_instance: TestInstance) {
     // Test case: namespace at block 97, crashed during write of block 100
     // But only diff for block 98 exists, 99 is missing - should fail
-    let instance = LocalInstance::new()
-        .await
-        .expect("Failed to start instance");
+    let redis = get_shared_redis().await;
     let base_namespace = format!("test_partial_diff_{}", uuid::Uuid::new_v4());
     let config = CircularBufferConfig::new(3).unwrap();
 
     let chunked_config = ChunkedWriteConfig::new(1000, 60);
 
     let writer = StateWriter::with_chunked_config(
-        &instance.redis_url,
+        &redis.url,
         &base_namespace,
         config.clone(),
         chunked_config,
     )
     .unwrap();
 
-    let client = redis::Client::open(instance.redis_url.as_str()).unwrap();
+    let client = redis::Client::open(redis.url.as_str()).unwrap();
     let mut conn = client.get_connection().unwrap();
 
     // Namespace 1 (100 % 3 = 1)

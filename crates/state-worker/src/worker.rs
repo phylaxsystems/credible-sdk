@@ -1,8 +1,8 @@
-//! Core orchestration loop that keeps Redis in sync with the execution client.
+//! Core orchestration loop that keeps the database in sync with the execution client.
 //!
 //! The worker bootstraps from the last persisted block, catches up to head via
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
-//! is traced with the pre-state tracer and written into Redis.
+//! is traced with the pre-state tracer and written into the database.
 use crate::{
     critical,
     genesis::GenesisState,
@@ -28,11 +28,8 @@ use anyhow::{
 use futures::StreamExt;
 use state_store::{
     BlockStateUpdate,
+    Reader,
     Writer,
-    redis::{
-        StateReader,
-        StateWriter,
-    },
 };
 use std::{
     sync::Arc,
@@ -51,28 +48,32 @@ use tracing::{
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 
 /// Coordinates block ingestion, tracing, and persistence.
-pub struct StateWorker {
+pub struct StateWorker<WR>
+where
+    WR: Writer + Reader,
+{
     provider: Arc<RootProvider>,
     trace_provider: Box<dyn TraceProvider>,
-    writer: StateWriter,
-    reader: StateReader,
+    writer_reader: WR,
     genesis_state: Option<GenesisState>,
 }
 
-impl StateWorker {
-    /// Build a worker that shares the provider/Redis client across async tasks.
+impl<WR> StateWorker<WR>
+where
+    WR: Writer + Reader + Send + Sync,
+    <WR as Writer>::Error: std::error::Error + Send + Sync + 'static,
+    <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
+{
     pub fn new(
         provider: Arc<RootProvider>,
         trace_provider: Box<dyn TraceProvider>,
-        writer: StateWriter,
-        reader: StateReader,
+        writer_reader: WR,
         genesis_state: Option<GenesisState>,
     ) -> Self {
         Self {
             provider,
             trace_provider,
-            writer,
-            reader,
+            writer_reader,
             genesis_state,
         }
     }
@@ -126,7 +127,7 @@ impl StateWorker {
     /// If recovery fails (e.g., missing diffs), the lock remains in place, and
     /// the worker fails to start. This prevents readers from accessing corrupt data.
     fn recover_stale_locks(&self) -> Result<()> {
-        match self.writer.recover_stale_locks() {
+        match self.writer_reader.recover_stale_locks() {
             Ok(recoveries) => {
                 if recoveries.is_empty() {
                     debug!("no stale locks detected");
@@ -162,9 +163,9 @@ impl StateWorker {
         }
 
         let current = self
-            .writer
+            .writer_reader
             .latest_block_number()
-            .context("failed to read current block from redis")?;
+            .context("failed to read current block from the database")?;
 
         Ok(current.map_or(0, |b| b + 1))
     }
@@ -266,7 +267,7 @@ impl StateWorker {
         // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
 
-        match self.writer.commit_block(&update) {
+        match self.writer_reader.commit_block(&update) {
             Ok(()) => (),
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to persist block");
@@ -274,7 +275,7 @@ impl StateWorker {
             }
         }
 
-        info!(block_number, "block persisted to redis");
+        info!(block_number, "block persisted to database");
         Ok(())
     }
 
@@ -309,7 +310,7 @@ impl StateWorker {
         };
 
         // Pass the reader to fetch existing account state
-        match system_calls::compute_system_call_states(&config, Some(&self.reader)) {
+        match system_calls::compute_system_call_states(&config, Some(&self.writer_reader)) {
             Ok(states) => {
                 for state in states {
                     update.merge_account_state(state);
@@ -336,14 +337,10 @@ impl StateWorker {
             return Ok(());
         };
 
-        let already_exists = self
-            .writer
-            .latest_block_number()
-            .context("failed to check if genesis already exists")?
-            .is_some();
+        let already_exists = self.writer_reader.latest_block_number()?.is_some();
 
         if already_exists {
-            info!("block 0 already exists in redis; skipping genesis hydration");
+            info!("block 0 already exists in database; skipping genesis hydration");
             return Ok(());
         }
 
@@ -370,7 +367,7 @@ impl StateWorker {
             accounts,
         );
 
-        match self.writer.commit_block(&update) {
+        match self.writer_reader.commit_block(&update) {
             Ok(()) => (),
             Err(err) => {
                 critical!(error = ?err, block_number = 0, "failed to persist genesis block");
@@ -378,7 +375,7 @@ impl StateWorker {
             }
         }
 
-        info!(block_number = 0, "genesis block persisted to redis");
+        info!(block_number = 0, "genesis block persisted to database");
         Ok(())
     }
 }
