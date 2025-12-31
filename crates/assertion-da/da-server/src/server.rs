@@ -10,9 +10,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::api::db::Database;
 
-pub struct DaServer<DB: Database> {
+pub struct DaServer {
     pub listener: TcpListener,
-    pub db: DB,
+    pub db: Arc<dyn Database>,
     pub docker: Arc<Docker>,
     pub private_key: String,
 }
@@ -20,7 +20,7 @@ pub struct DaServer<DB: Database> {
 // Type alias for boxed future
 pub type BoxedFuture = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'static>>;
 
-impl<DB: Database + Send + 'static> DaServer<DB> {
+impl DaServer {
     /// Start the server
     /// Will run until either the database or the API server stops running.
     pub fn start(self, cancel_token: CancellationToken) -> (BoxedFuture, BoxedFuture) {
@@ -86,6 +86,8 @@ impl<DB: Database + Send + 'static> DaServer<DB> {
 
 #[cfg(test)]
 mod tests {
+    use crate::api::db::SledDb;
+
     use super::*;
     use bollard::Docker;
     use std::sync::Arc;
@@ -96,8 +98,8 @@ mod tests {
     async fn test_server_cancellation() {
         // Set up test components
         let temp_dir = TempDir::new().unwrap();
-        let db: sled::Db<{ crate::LEAF_FANOUT }> =
-            sled::Config::new().path(&temp_dir).open().unwrap();
+        let db: SledDb<{ crate::LEAF_FANOUT }> =
+            SledDb::new(sled::Config::new().path(&temp_dir).open().unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let docker = Arc::new(Docker::connect_with_local_defaults().unwrap());
         let private_key =
@@ -106,7 +108,7 @@ mod tests {
         // Create server instance
         let server = DaServer {
             listener,
-            db,
+            db: Arc::new(db),
             docker,
             private_key,
         };

@@ -14,17 +14,13 @@ use tokio::net::TcpListener;
 use tracing::level_filters::LevelFilter;
 
 use crate::{
-    api::{
-        db::{
-            Database,
-            RedisDb,
-        },
-        types::DbResponse,
+    api::db::{
+        Database,
+        RedisDb,
+        SledDb,
     },
     server::DaServer,
 };
-
-use anyhow::Result as AnyhowResult;
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -52,35 +48,13 @@ pub struct Config {
     pub redis_url: Option<String>,
 }
 
-#[allow(clippy::large_enum_variant)]
-pub enum DatabaseBackend {
-    Sled(Db<{ crate::LEAF_FANOUT }>),
-    Redis(RedisDb),
-}
-
-impl Database for DatabaseBackend {
-    fn query(&self, key: &[u8]) -> AnyhowResult<Option<DbResponse>> {
-        match self {
-            DatabaseBackend::Sled(db) => db.query(key),
-            DatabaseBackend::Redis(db) => db.query(key),
-        }
-    }
-
-    fn put(&self, key: &[u8], value: &[u8]) -> AnyhowResult<Option<DbResponse>> {
-        match self {
-            DatabaseBackend::Sled(db) => db.put(key, value),
-            DatabaseBackend::Redis(db) => db.put(key, value),
-        }
-    }
-}
-
 impl Config {
     /// Build the assertion DA Server
     ///
     /// # Panics
     ///
     /// Will panic if the root directory is invalid
-    pub async fn build(self) -> anyhow::Result<DaServer<DatabaseBackend>> {
+    pub async fn build(self) -> anyhow::Result<DaServer> {
         // Bind to an address
         let listener = TcpListener::bind(&self.listen_addr).await?;
         tracing::info!(listen_addr = ?self.listen_addr, "Listening on address");
@@ -89,13 +63,13 @@ impl Config {
         tracing::info!("Connected to Docker daemon");
 
         // Check if Redis URL is set
-        let db = if let Some(redis_url) = &self.redis_url {
+        let db: Arc<dyn Database> = if let Some(redis_url) = &self.redis_url {
             let client = redis::Client::open(redis_url.as_str())?;
             // Test the connection
             let _ = client.get_connection()?;
             tracing::info!(redis_url = redis_url, "Connected to Redis");
 
-            DatabaseBackend::Redis(RedisDb::new(client)?)
+            Arc::new(RedisDb::new(client)?)
         } else {
             // Fall back to Sled
             let root_dir =
@@ -119,7 +93,7 @@ impl Config {
             );
             metrics::gauge!("db_size_mb").set(u32::try_from(db_size)?);
 
-            DatabaseBackend::Sled(sled_db)
+            Arc::new(SledDb::new(sled_db))
         };
 
         let server = DaServer {

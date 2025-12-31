@@ -255,7 +255,10 @@ mod tests {
     use assertion_da_server::{
         LEAF_FANOUT,
         api::{
-            db::listen_for_db,
+            db::{
+                SledDb,
+                listen_for_db,
+            },
             process_request::StoredAssertion,
             serve,
             types::{
@@ -284,7 +287,8 @@ mod tests {
         // Create a temporary directory for the database
         let temp_dir = TempDir::new().unwrap();
         let (db_sender, db_receiver) = mpsc::unbounded_channel();
-        let db: sled::Db<{ LEAF_FANOUT }> = DbConfig::new().path(&temp_dir).open().unwrap();
+        let db: SledDb<{ LEAF_FANOUT }> =
+            SledDb::new(DbConfig::new().path(&temp_dir).open().unwrap());
         let signer = PrivateKeySigner::random();
 
         // Set up test server
@@ -311,7 +315,12 @@ mod tests {
 
         // Start the database listener
         tokio::spawn(async move {
-            Box::pin(listen_for_db(db_receiver, db, CancellationToken::new())).await
+            Box::pin(listen_for_db(
+                db_receiver,
+                Arc::new(db),
+                CancellationToken::new(),
+            ))
+            .await
         });
 
         // Create the client

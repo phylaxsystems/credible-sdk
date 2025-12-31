@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    Mutex,
+};
+
 use crate::api::types::{
     DbOperation,
     DbRequest,
@@ -13,24 +18,37 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Database trait implementing basic query and put/insert functionality
-pub trait Database {
+pub trait Database: Send + Sync {
     fn query(&self, key: &[u8]) -> Result<Option<DbResponse>>;
     fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<DbResponse>>;
 }
 
 // Sled implementation
 // TODO: maybe behind a feature flag?
-impl<const FANOUT: usize> Database for Db<FANOUT> {
+pub struct SledDb<const FANOUT: usize> {
+    inner: Mutex<Db<FANOUT>>,
+}
+
+impl<const FANOUT: usize> SledDb<FANOUT> {
+    pub fn new(db: Db<FANOUT>) -> Self {
+        Self {
+            inner: Mutex::new(db),
+        }
+    }
+}
+
+impl<const FANOUT: usize> Database for SledDb<FANOUT> {
     fn query(&self, key: &[u8]) -> Result<Option<DbResponse>> {
-        match self.get(key)? {
+        let db = self.inner.lock().unwrap();
+        match db.get(key)? {
             Some(value) => Ok(Some(DbResponse::Value(value.to_vec()))),
             None => Ok(None),
         }
     }
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<Option<DbResponse>> {
-        match self.insert(key, value.to_vec())? {
-            // TODO: Check if we want this behavior (doesn't overwrite)
+        let db = self.inner.lock().unwrap();
+        match db.insert(key, value.to_vec())? {
             Some(old_value) => Ok(Some(DbResponse::Value(old_value.to_vec()))),
             None => Ok(None),
         }
@@ -71,9 +89,9 @@ impl Database for RedisDb {
 
 /// Listens to a mpsc channel for database events and responds
 /// accordingly.
-pub async fn listen_for_db<DB: Database>(
+pub async fn listen_for_db(
     mut rx: mpsc::UnboundedReceiver<DbRequest>,
-    db: DB,
+    db: Arc<impl Database + ?Sized>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
     loop {
@@ -102,13 +120,13 @@ pub async fn listen_for_db<DB: Database>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sled::Db;
     use testcontainers::ImageExt;
     use tokio::sync::oneshot;
 
     #[tokio::test]
     async fn test_db_operations() {
-        let db: Db<{ crate::LEAF_FANOUT }> = sled::Config::tmp().unwrap().open().unwrap();
+        let db: SledDb<{ crate::LEAF_FANOUT }> =
+            SledDb::new(sled::Config::tmp().unwrap().open().unwrap());
 
         // Test insert
         let key = vec![1, 2, 3];
@@ -131,13 +149,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_listen_for_db() {
-        let db: Db<{ crate::LEAF_FANOUT }> = sled::Config::tmp().unwrap().open().unwrap();
+        let db: SledDb<{ crate::LEAF_FANOUT }> =
+            SledDb::new(sled::Config::tmp().unwrap().open().unwrap());
 
         let (tx, rx) = mpsc::unbounded_channel();
 
         let cancel_token = CancellationToken::new();
         // Spawn the listener
-        let handle = tokio::spawn(listen_for_db(rx, db.clone(), cancel_token.clone()));
+        let handle = tokio::spawn(listen_for_db(rx, Arc::new(db), cancel_token.clone()));
 
         // Test get operation
         let (resp_tx, resp_rx) = oneshot::channel();

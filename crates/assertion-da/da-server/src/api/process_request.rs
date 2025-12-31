@@ -373,7 +373,10 @@ mod tests {
     use super::*;
     use crate::api::{
         DbRequest,
-        db::listen_for_db,
+        db::{
+            SledDb,
+            listen_for_db,
+        },
         serve,
         types::DbOperation,
     };
@@ -384,10 +387,7 @@ mod tests {
         },
         signers::Signer,
     };
-    use sled::{
-        Config as DbConfig,
-        Db,
-    };
+    use sled::Config as DbConfig;
     use tempfile::TempDir;
     use tokio::{
         net::TcpListener,
@@ -406,7 +406,8 @@ mod tests {
         let (db_sender, db_receiver) = mpsc::unbounded_channel();
 
         // Set up the database
-        let db: Db<{ crate::LEAF_FANOUT }> = DbConfig::new().path(&temp_dir).open().unwrap();
+        let db: SledDb<{ crate::LEAF_FANOUT }> =
+            SledDb::new(DbConfig::new().path(&temp_dir).open().unwrap());
 
         // Create a random signer for testing
         let signer = PrivateKeySigner::random();
@@ -436,7 +437,12 @@ mod tests {
 
         // Start the database listener
         tokio::spawn(async move {
-            Box::pin(listen_for_db(db_receiver, db, CancellationToken::new())).await
+            Box::pin(listen_for_db(
+                db_receiver,
+                Arc::new(db),
+                CancellationToken::new(),
+            ))
+            .await
         });
 
         (temp_dir, db_sender, signer, server_url)
