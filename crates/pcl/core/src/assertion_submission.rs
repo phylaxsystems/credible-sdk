@@ -951,7 +951,7 @@ mod tests {
         assert_eq!(parsed[0].assertion_name, "StringAssertion");
         assert_eq!(
             parsed[0].constructor_args,
-            vec![r#""hello"#, r#" world""#, r#""test string""#]
+            vec![r#""hello"#, r#"world""#, r#""test string""#]
         );
     }
 
