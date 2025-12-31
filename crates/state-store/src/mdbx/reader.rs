@@ -449,7 +449,13 @@ mod tests {
     fn create_test_reader() -> (StateReader, TempDir) {
         let tmp = TempDir::new().unwrap();
         let config = CircularBufferConfig::new(3).unwrap();
-        let reader = StateReader::new(tmp.path().join("state"), config).unwrap();
+        let path = tmp.path().join("state");
+
+        // First create the database with write access to initialize it
+        let db = StateDb::open(&path, config).unwrap();
+
+        // Then create a reader from the existing db handle
+        let reader = StateReader { db };
         (reader, tmp)
     }
 
