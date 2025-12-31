@@ -134,3 +134,53 @@ async fn main() -> Result<()> {
 //conflicting short args can fall through CI without tests like this.
 //Consider adding unit tests with dapp and da mocks for a quicker 0-1 than running
 //the dapp in CI.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parses_store_command_with_assertion_flag() {
+        let cli =
+            Cli::try_parse_from(["pcl", "--json", "store", "-a", "TestAssertion()"]).unwrap();
+        assert!(cli.args.json_output());
+        match cli.command {
+            Commands::Store(args) => {
+                assert_eq!(args.assertion_specs.len(), 1);
+                assert_eq!(args.assertion_specs[0].assertion_name, "TestAssertion");
+            }
+            _ => panic!("expected store command"),
+        }
+    }
+
+    #[test]
+    fn parses_submit_command_with_project_name() {
+        let cli = Cli::try_parse_from([
+            "pcl",
+            "submit",
+            "-a",
+            "TestAssertion(arg)",
+            "--project-name",
+            "demo",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Submit(args) => {
+                assert_eq!(args.project_name.as_deref(), Some("demo"));
+                let keys = args.assertion_keys.expect("assertion keys");
+                assert_eq!(keys.len(), 1);
+                assert_eq!(keys[0].assertion_name, "TestAssertion");
+                assert_eq!(keys[0].constructor_args, vec!["arg"]);
+            }
+            _ => panic!("expected submit command"),
+        }
+    }
+
+    #[test]
+    fn parses_config_show_command() {
+        let cli = Cli::try_parse_from(["pcl", "config", "show"]).unwrap();
+        matches!(cli.command, Commands::Config(_));
+    }
+}

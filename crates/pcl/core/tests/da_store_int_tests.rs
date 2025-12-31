@@ -1,4 +1,6 @@
-#![cfg(feature = "full-test")]
+#![cfg(all(feature = "full-test", target_arch = "x86_64"))]
+// These integration tests spin up Dockerized Solc images. They only run on x86_64 hosts because
+// our Solc images don't provide arm64 manifests (e.g., Apple Silicon).
 
 mod common;
 

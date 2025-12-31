@@ -743,6 +743,44 @@ mod tests {
         assert!(client.is_ok());
     }
 
+    #[test]
+    fn test_assertions_to_store_prefers_explicit_specs() {
+        let args = DaStoreArgs {
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            root: None,
+            assertion_specs: vec![AssertionKey::new(
+                "SpecAssertion".to_string(),
+                vec!["arg1".to_string()],
+            )],
+            assertion_contract: Some("Fallback".to_string()),
+            constructor_args: vec!["positional".to_string()],
+        };
+
+        let assertions = args.assertions_to_store();
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].assertion_name, "SpecAssertion");
+        assert_eq!(assertions[0].constructor_args, vec!["arg1"]);
+    }
+
+    #[test]
+    fn test_assertions_to_store_uses_positional_when_no_specs() {
+        let args = DaStoreArgs {
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            root: None,
+            assertion_specs: vec![],
+            assertion_contract: Some("Fallback".to_string()),
+            constructor_args: vec!["positional".to_string(), "arg2".to_string()],
+        };
+
+        let assertions = args.assertions_to_store();
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].assertion_name, "Fallback");
+        assert_eq!(
+            assertions[0].constructor_args,
+            vec!["positional".to_string(), "arg2".to_string()]
+        );
+    }
+
     #[tokio::test]
     async fn test_update_config() {
         let args = DaStoreArgs {
