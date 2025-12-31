@@ -25,7 +25,6 @@ async fn main() -> Result<()> {
             tracing::info!("Received Ctrl-C signal, initiating graceful shutdown");
             cancellation_token.cancel();
             handle_server_result(boxed_server_future.await);
-
         }
     }
 

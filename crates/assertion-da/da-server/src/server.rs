@@ -1,6 +1,5 @@
 use anyhow::Result;
 use bollard::Docker;
-use sled::Db;
 use std::{
     future::Future,
     pin::Pin,
@@ -9,9 +8,11 @@ use std::{
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+use crate::api::db::Database;
+
 pub struct DaServer {
     pub listener: TcpListener,
-    pub db: Db,
+    pub db: Arc<dyn Database>,
     pub docker: Arc<Docker>,
     pub private_key: String,
 }
@@ -27,7 +28,7 @@ impl DaServer {
         let (db_tx, db_rx) = tokio::sync::mpsc::unbounded_channel::<crate::api::types::DbRequest>();
 
         // Start the database management task
-        let db_handle = crate::api::db::listen_for_db(db_rx, self.db.clone(), cancel_token.clone());
+        let db_handle = crate::api::db::listen_for_db(db_rx, self.db, cancel_token.clone());
         tracing::debug!("Started Database task");
 
         // Start the API server
@@ -85,6 +86,8 @@ impl DaServer {
 
 #[cfg(test)]
 mod tests {
+    use crate::api::db::SledDb;
+
     use super::*;
     use bollard::Docker;
     use std::sync::Arc;
@@ -95,7 +98,8 @@ mod tests {
     async fn test_server_cancellation() {
         // Set up test components
         let temp_dir = TempDir::new().unwrap();
-        let db = sled::Config::new().path(&temp_dir).open().unwrap();
+        let db: SledDb<{ crate::LEAF_FANOUT }> =
+            SledDb::new(sled::Config::new().path(&temp_dir).open().unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let docker = Arc::new(Docker::connect_with_local_defaults().unwrap());
         let private_key =
@@ -104,7 +108,7 @@ mod tests {
         // Create server instance
         let server = DaServer {
             listener,
-            db,
+            db: Arc::new(db),
             docker,
             private_key,
         };
