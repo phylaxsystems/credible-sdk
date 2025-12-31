@@ -54,7 +54,7 @@ use sidecar::{
     },
     utils::ErrorRecoverability,
 };
-use state_store::{
+use state_store::redis::{
     CircularBufferConfig,
     StateReader,
 };

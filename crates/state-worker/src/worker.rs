@@ -27,9 +27,12 @@ use anyhow::{
 };
 use futures::StreamExt;
 use state_store::{
-    StateReader,
-    StateWriter,
-    common::BlockStateUpdate,
+    BlockStateUpdate,
+    Writer,
+    redis::{
+        StateReader,
+        StateWriter,
+    },
 };
 use std::{
     sync::Arc,
@@ -263,7 +266,7 @@ impl StateWorker {
         // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
 
-        match self.writer.commit_block(update) {
+        match self.writer.commit_block(&update) {
             Ok(()) => (),
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to persist block");
@@ -367,7 +370,7 @@ impl StateWorker {
             accounts,
         );
 
-        match self.writer.commit_block(update) {
+        match self.writer.commit_block(&update) {
             Ok(()) => (),
             Err(err) => {
                 critical!(error = ?err, block_number = 0, "failed to persist genesis block");

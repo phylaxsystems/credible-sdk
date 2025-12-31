@@ -28,6 +28,7 @@ mod tests;
 
 use alloy::primitives::{
     B256,
+    Bytes,
     U256,
     keccak256,
 };
@@ -36,7 +37,7 @@ use alloy_rpc_types_trace::parity::TraceResultsWithTransactionHash;
 use anyhow::Result;
 use async_trait::async_trait;
 use revm::primitives::KECCAK_EMPTY;
-use state_store::common::{
+use state_store::{
     AccountState,
     AddressHash,
     BlockStateUpdate,
@@ -57,8 +58,8 @@ pub trait TraceProvider: Send + Sync {
 pub(crate) struct AccountSnapshot {
     pub(crate) balance: Option<U256>,
     pub(crate) nonce: Option<u64>,
-    pub(crate) code: Option<Vec<u8>>,
-    pub(crate) storage_updates: HashMap<U256, U256>,
+    pub(crate) code: Option<Bytes>,
+    pub(crate) storage_updates: HashMap<B256, U256>,
     pub(crate) touched: bool,
 }
 
@@ -197,7 +198,7 @@ mod account_deletion_tests {
         let snapshot = AccountSnapshot {
             balance: Some(U256::from(100)),
             nonce: Some(1),
-            code: Some(code),
+            code: Some(Bytes::from_iter(code)),
             storage_updates: HashMap::new(),
             touched: true,
         };

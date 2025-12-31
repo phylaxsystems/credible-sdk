@@ -4,34 +4,37 @@
 //! write locks to handle large state updates without blocking Redis for extended periods.
 
 use crate::{
-    CircularBufferConfig,
-    common::{
-        AccountState,
-        BlockStateUpdate,
-        ChunkedWriteConfig,
-        NamespaceLock,
-        RedisStateClient,
-        encode_b256,
-        encode_bytes,
-        encode_u256,
-        ensure_state_dump_indices,
-        error::{
-            StateError,
-            StateResult,
+    AccountState,
+    BlockStateUpdate,
+    Writer,
+    redis::{
+        CircularBufferConfig,
+        common::{
+            ChunkedWriteConfig,
+            NamespaceLock,
+            RedisStateClient,
+            encode_b256,
+            encode_bytes,
+            encode_u256,
+            ensure_state_dump_indices,
+            error::{
+                StateError,
+                StateResult,
+            },
+            get_account_key,
+            get_block_hash_key,
+            get_block_key,
+            get_code_key,
+            get_diff_key,
+            get_namespace_for_block,
+            get_state_root_key,
+            get_storage_key,
+            get_write_lock_key,
+            read_latest_block_number,
+            read_namespace_block_number,
+            read_namespace_lock,
+            update_metadata_in_pipe,
         },
-        get_account_key,
-        get_block_hash_key,
-        get_block_key,
-        get_code_key,
-        get_diff_key,
-        get_namespace_for_block,
-        get_state_root_key,
-        get_storage_key,
-        get_write_lock_key,
-        read_latest_block_number,
-        read_namespace_block_number,
-        read_namespace_lock,
-        update_metadata_in_pipe,
     },
 };
 use alloy::primitives::B256;
@@ -64,6 +67,64 @@ pub struct StateWriter {
     writer_id: String,
 }
 
+impl Writer for StateWriter {
+    type Error = StateError;
+
+    /// Read the most recently persisted block number from Redis metadata.
+    fn latest_block_number(&self) -> StateResult<Option<u64>> {
+        let base_namespace = self.client.base_namespace.clone();
+        self.client
+            .with_connection(move |conn| read_latest_block_number(conn, &base_namespace))
+    }
+
+    /// Persist all account mutations for the block using chunked commits with locking.
+    ///
+    /// Strategy:
+    /// 1. Acquire write lock on target namespace
+    /// 2. Apply intermediate diffs in chunks (if needed for circular buffer rotation)
+    /// 3. Apply current block's state changes in chunks
+    /// 4. Finalize metadata and release lock
+    fn commit_block(&self, update: &BlockStateUpdate) -> StateResult<()> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+        let chunked_config = self.chunked_config.clone();
+        let writer_id = self.writer_id.clone();
+
+        // Convert crate-level AccountState to Redis AccountState
+        let redis_update = RedisBlockStateUpdate {
+            block_number: update.block_number,
+            block_hash: update.block_hash,
+            state_root: update.state_root,
+            accounts: update
+                .accounts
+                .iter()
+                .map(|a| {
+                    AccountState {
+                        address_hash: a.address_hash,
+                        balance: a.balance,
+                        nonce: a.nonce,
+                        code_hash: a.code_hash,
+                        code: a.code.clone(),
+                        storage: a.storage.clone(),
+                        deleted: a.deleted,
+                    }
+                })
+                .collect(),
+        };
+
+        self.client.with_connection(move |conn| {
+            commit_block_chunked(
+                conn,
+                &base_namespace,
+                buffer_size,
+                &chunked_config,
+                &writer_id,
+                &redis_update,
+            )
+        })
+    }
+}
+
 impl StateWriter {
     /// Build a new writer with circular buffer support.
     pub fn new(
@@ -92,38 +153,6 @@ impl StateWriter {
             client,
             chunked_config,
             writer_id,
-        })
-    }
-
-    /// Read the most recently persisted block number from Redis metadata.
-    pub fn latest_block_number(&self) -> StateResult<Option<u64>> {
-        let base_namespace = self.client.base_namespace.clone();
-        self.client
-            .with_connection(move |conn| read_latest_block_number(conn, &base_namespace))
-    }
-
-    /// Persist all account mutations for the block using chunked commits with locking.
-    ///
-    /// Strategy:
-    /// 1. Acquire write lock on target namespace
-    /// 2. Apply intermediate diffs in chunks (if needed for circular buffer rotation)
-    /// 3. Apply current block's state changes in chunks
-    /// 4. Finalize metadata and release lock
-    pub fn commit_block(&self, update: BlockStateUpdate) -> StateResult<()> {
-        let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
-        let chunked_config = self.chunked_config.clone();
-        let writer_id = self.writer_id.clone();
-
-        self.client.with_connection(move |conn| {
-            commit_block_chunked(
-                conn,
-                &base_namespace,
-                buffer_size,
-                &chunked_config,
-                &writer_id,
-                &update,
-            )
         })
     }
 
@@ -200,6 +229,25 @@ impl StateWriter {
                 chunk_size,
             )
         })
+    }
+}
+
+/// Internal block state update for Redis (uses different storage key format)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RedisBlockStateUpdate {
+    pub block_number: u64,
+    pub block_hash: B256,
+    pub state_root: B256,
+    pub accounts: Vec<AccountState>,
+}
+
+impl RedisBlockStateUpdate {
+    fn to_json(&self) -> StateResult<String> {
+        serde_json::to_string(self).map_err(|e| StateError::SerializeDiff(self.block_number, e))
+    }
+
+    fn from_json(json: &str, block_number: u64) -> StateResult<Self> {
+        serde_json::from_str(json).map_err(|e| StateError::DeserializeDiff(block_number, e))
     }
 }
 
@@ -291,7 +339,7 @@ where
 
         match diff_json {
             Some(json) => {
-                let diff = deserialize_state_diff(&json, block_num)?;
+                let diff = RedisBlockStateUpdate::from_json(&json, block_num)?;
                 let accounts: Vec<&AccountState> = diff.accounts.iter().collect();
 
                 // Apply account changes in chunks
@@ -336,14 +384,9 @@ where
     }))
 }
 
-/// Deserialize a state diff from JSON.
-fn deserialize_state_diff(json: &str, block_number: u64) -> StateResult<BlockStateUpdate> {
-    serde_json::from_str(json).map_err(|e| StateError::DeserializeDiff(block_number, e))
-}
-
 /// Serialize state diff for storage.
-pub(crate) fn serialize_state_diff(update: &BlockStateUpdate) -> StateResult<String> {
-    serde_json::to_string(update).map_err(|e| StateError::SerializeDiff(update.block_number, e))
+fn serialize_state_diff(update: &RedisBlockStateUpdate) -> StateResult<String> {
+    update.to_json()
 }
 
 /// Acquire write lock for a namespace using SET NX (set if not exists).
@@ -477,8 +520,7 @@ fn write_account_to_pipe(pipe: &mut redis::Pipeline, namespace: &str, account: &
     if !account.storage.is_empty() || account.deleted {
         let storage_key = get_storage_key(namespace, &account.address_hash);
         for (slot, value) in &account.storage {
-            let slot_hash = B256::from(slot.to_be_bytes::<32>());
-            let slot_hex = encode_b256(slot_hash);
+            let slot_hex = encode_b256(*slot);
             if value.is_zero() {
                 pipe.hdel(&storage_key, slot_hex);
             } else {
@@ -524,7 +566,7 @@ where
 fn store_state_diff<C>(
     conn: &mut C,
     base_namespace: &str,
-    update: &BlockStateUpdate,
+    update: &RedisBlockStateUpdate,
     buffer_size: usize,
 ) -> StateResult<()>
 where
@@ -554,7 +596,7 @@ pub(crate) fn commit_block_chunked<C>(
     buffer_size: usize,
     chunked_config: &ChunkedWriteConfig,
     writer_id: &str,
-    update: &BlockStateUpdate,
+    update: &RedisBlockStateUpdate,
 ) -> StateResult<()>
 where
     C: redis::ConnectionLike,
@@ -583,7 +625,7 @@ where
                 let diff_json: Option<String> = redis::cmd("GET").arg(&diff_key).query(conn)?;
 
                 if let Some(json) = diff_json {
-                    let diff = deserialize_state_diff(&json, intermediate_block)?;
+                    let diff = RedisBlockStateUpdate::from_json(&json, intermediate_block)?;
                     let accounts: Vec<&AccountState> = diff.accounts.iter().collect();
                     for chunk in accounts.chunks(chunked_config.chunk_size) {
                         write_account_chunk(conn, &namespace, chunk)?;
@@ -635,7 +677,7 @@ mod tests {
 
     #[test]
     fn test_serialize_deserialize_state_diff() {
-        let update = BlockStateUpdate {
+        let update = RedisBlockStateUpdate {
             block_number: 42,
             block_hash: B256::from([1u8; 32]),
             state_root: B256::from([2u8; 32]),
@@ -644,14 +686,14 @@ mod tests {
                 balance: U256::from(1000u64),
                 nonce: 5,
                 code_hash: B256::from([4u8; 32]),
-                code: Some(vec![0x60, 0x80]),
+                code: Some(vec![0x60, 0x80].into()),
                 storage: std::collections::HashMap::new(),
                 deleted: false,
             }],
         };
 
         let serialized = serialize_state_diff(&update).unwrap();
-        let deserialized = deserialize_state_diff(&serialized, 42).unwrap();
+        let deserialized = RedisBlockStateUpdate::from_json(&serialized, 42).unwrap();
 
         assert_eq!(deserialized.block_number, 42);
         assert_eq!(deserialized.accounts.len(), 1);

@@ -4,7 +4,10 @@ use crate::{
 };
 use alloy::primitives::U256;
 use parking_lot::RwLock;
-use state_store::StateReader;
+use state_store::{
+    Reader,
+    redis::StateReader,
+};
 use std::{
     sync::{
         Arc,

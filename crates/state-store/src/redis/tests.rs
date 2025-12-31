@@ -3,24 +3,31 @@
 #![allow(clippy::cast_sign_loss)]
 
 use crate::{
-    ChunkedWriteConfig,
-    CircularBufferConfig,
-    StateReader,
-    StateWriter,
-    common::{
-        AccountState,
-        BlockStateUpdate,
-        NamespaceLock,
-        get_account_key,
-        get_diff_key,
-        get_storage_key,
-        get_write_lock_key,
+    AccountState,
+    AddressHash,
+    BlockStateUpdate,
+    Reader,
+    Writer,
+    redis::{
+        ChunkedWriteConfig,
+        CircularBufferConfig,
+        StateReader,
+        StateWriter,
+        common::{
+            NamespaceLock,
+            encode_b256,
+            get_account_key,
+            get_diff_key,
+            get_storage_key,
+            get_write_lock_key,
+        },
+        redis_test_fixture::get_shared_redis,
     },
-    writer::commit_block_chunked,
 };
 use alloy::primitives::{
     Address,
     B256,
+    Bytes,
     U256,
     keccak256,
 };
@@ -28,22 +35,24 @@ use anyhow::Result;
 use redis::Commands;
 use std::collections::HashMap;
 
-use crate::redis_test_fixture::{
-    get_shared_redis,
-    get_test_redis_connection,
-};
-
 /// Helper to render U256 in `0x`-prefixed hex for Redis.
 fn encode_u256(value: U256) -> String {
     format!("0x{value:064x}")
 }
 
+/// Convert u64 to U256.
 fn u256_from_u64(value: u64) -> U256 {
     U256::from(value)
 }
 
-async fn setup_redis() -> Result<redis::Connection> {
-    get_test_redis_connection().await
+/// Convert u64 slot index to B256 (zero-padded).
+fn slot_to_b256(slot: u64) -> B256 {
+    B256::from(U256::from(slot).to_be_bytes::<32>())
+}
+
+/// Hash a slot (B256 -> B256 via keccak256).
+fn hash_slot(slot: B256) -> B256 {
+    keccak256(slot)
 }
 
 // Helper to create a test update with specific account data
@@ -53,7 +62,7 @@ fn create_test_update(
     address: Address,
     balance: u64,
     nonce: u64,
-    storage: HashMap<U256, U256>,
+    storage: HashMap<B256, U256>,
     code: Option<Vec<u8>>,
 ) -> BlockStateUpdate {
     let code_hash = code.as_ref().map_or(B256::ZERO, keccak256);
@@ -63,23 +72,18 @@ fn create_test_update(
         state_root,
         block_hash: B256::repeat_byte(u8::try_from(block_number).unwrap_or(0xff)),
         accounts: vec![AccountState {
-            address_hash: address.into(),
+            address_hash: AddressHash(keccak256(address)),
             balance: U256::from(balance),
             nonce,
             code_hash,
-            code,
+            code: code.map(Bytes::from),
             storage: hash_storage_slots(storage),
             deleted: false,
         }],
     }
 }
 
-fn hash_slot(slot: U256) -> U256 {
-    let slot_hash = keccak256(slot.to_be_bytes::<32>());
-    U256::from_be_bytes(slot_hash.into())
-}
-
-fn hash_storage_slots(storage: HashMap<U256, U256>) -> HashMap<U256, U256> {
+fn hash_storage_slots(storage: HashMap<B256, U256>) -> HashMap<B256, U256> {
     storage
         .into_iter()
         .map(|(slot, value)| (hash_slot(slot), value))
@@ -110,11 +114,11 @@ fn verify_storage(
     conn: &mut redis::Connection,
     namespace: &str,
     address: Address,
-    slot: U256,
+    slot: B256,
     expected_value: U256,
 ) -> Result<()> {
     let storage_key = get_storage_key(namespace, &address.into());
-    let slot_hex = encode_u256(hash_slot(slot));
+    let slot_hex = encode_b256(hash_slot(slot));
 
     let value: String = conn.hget(&storage_key, &slot_hex)?;
     assert_eq!(value, encode_u256(expected_value), "Storage value mismatch");
@@ -142,7 +146,7 @@ async fn test_cumulative_state_with_different_accounts() -> Result<()> {
         HashMap::new(),
         None,
     );
-    writer.commit_block(update0)?;
+    writer.commit_block(&update0)?;
 
     // Block 1: Account 0x22 with balance 2000 (0x11 not touched)
     let addr_0x22 = Address::repeat_byte(0x22);
@@ -155,7 +159,7 @@ async fn test_cumulative_state_with_different_accounts() -> Result<()> {
         HashMap::new(),
         None,
     );
-    writer.commit_block(update1)?;
+    writer.commit_block(&update1)?;
 
     // Block 2: Account 0x33 with balance 3000 (0x11 and 0x22 not touched)
     let addr_0x33 = Address::repeat_byte(0x33);
@@ -168,7 +172,7 @@ async fn test_cumulative_state_with_different_accounts() -> Result<()> {
         HashMap::new(),
         None,
     );
-    writer.commit_block(update2)?;
+    writer.commit_block(&update2)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -184,7 +188,7 @@ async fn test_cumulative_state_with_different_accounts() -> Result<()> {
         HashMap::new(),
         None,
     );
-    writer.commit_block(update3)?;
+    writer.commit_block(&update3)?;
 
     // CRITICAL: Namespace 0 should have CUMULATIVE state:
     // - Account 0x11 from block 0
@@ -226,7 +230,7 @@ async fn test_cumulative_state_with_account_updates() -> Result<()> {
         HashMap::new(),
         None,
     );
-    writer.commit_block(update0)?;
+    writer.commit_block(&update0)?;
 
     // Block 1: Same account, balance increases to 1500, nonce to 1
     let update1 = create_test_update(
@@ -238,7 +242,7 @@ async fn test_cumulative_state_with_account_updates() -> Result<()> {
         HashMap::new(),
         None,
     );
-    writer.commit_block(update1)?;
+    writer.commit_block(&update1)?;
 
     // Block 2: Same account, balance decreases to 1200, nonce to 2
     let update2 = create_test_update(
@@ -250,7 +254,7 @@ async fn test_cumulative_state_with_account_updates() -> Result<()> {
         HashMap::new(),
         None,
     );
-    writer.commit_block(update2)?;
+    writer.commit_block(&update2)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -265,7 +269,7 @@ async fn test_cumulative_state_with_account_updates() -> Result<()> {
         HashMap::new(),
         None,
     );
-    writer.commit_block(update3)?;
+    writer.commit_block(&update3)?;
 
     // Namespace 0 should have the FINAL state after applying all diffs
     verify_account_state(&mut conn, &format!("{namespace}:0"), address, 2000, 3)?;
@@ -285,7 +289,7 @@ async fn test_cumulative_storage_updates() -> Result<()> {
     let address = Address::repeat_byte(0x66);
 
     // Block 0: Set storage slot 1 = 100
-    let storage_0 = HashMap::from([(u256_from_u64(1), u256_from_u64(100))]);
+    let storage_0 = HashMap::from([(slot_to_b256(1), u256_from_u64(100))]);
     let update0 = create_test_update(
         0,
         B256::repeat_byte(0xBB),
@@ -295,10 +299,10 @@ async fn test_cumulative_storage_updates() -> Result<()> {
         storage_0,
         None,
     );
-    writer.commit_block(update0)?;
+    writer.commit_block(&update0)?;
 
     // Block 1: Set storage slot 2 = 200 (slot 1 not touched)
-    let storage_1 = HashMap::from([(u256_from_u64(2), u256_from_u64(200))]);
+    let storage_1 = HashMap::from([(slot_to_b256(2), u256_from_u64(200))]);
     let update1 = create_test_update(
         1,
         B256::repeat_byte(0xBB),
@@ -308,10 +312,10 @@ async fn test_cumulative_storage_updates() -> Result<()> {
         storage_1,
         None,
     );
-    writer.commit_block(update1)?;
+    writer.commit_block(&update1)?;
 
     // Block 2: Update storage slot 1 = 150 (slot 2 not touched)
-    let storage_2 = HashMap::from([(u256_from_u64(1), u256_from_u64(150))]);
+    let storage_2 = HashMap::from([(slot_to_b256(1), u256_from_u64(150))]);
     let update2 = create_test_update(
         2,
         B256::repeat_byte(0xBB),
@@ -321,13 +325,13 @@ async fn test_cumulative_storage_updates() -> Result<()> {
         storage_2,
         None,
     );
-    writer.commit_block(update2)?;
+    writer.commit_block(&update2)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
 
     // Block 3: Set storage slot 3 = 300
-    let storage_3 = HashMap::from([(u256_from_u64(3), u256_from_u64(300))]);
+    let storage_3 = HashMap::from([(slot_to_b256(3), u256_from_u64(300))]);
     let update3 = create_test_update(
         3,
         B256::repeat_byte(0xBB),
@@ -337,7 +341,7 @@ async fn test_cumulative_storage_updates() -> Result<()> {
         storage_3,
         None,
     );
-    writer.commit_block(update3)?;
+    writer.commit_block(&update3)?;
 
     // Namespace 0 should have ALL storage slots with their latest values:
     // - Slot 1 = 150 (updated in block 2)
@@ -347,21 +351,21 @@ async fn test_cumulative_storage_updates() -> Result<()> {
         &mut conn,
         &format!("{namespace}:0"),
         address,
-        u256_from_u64(1),
+        slot_to_b256(1),
         u256_from_u64(150),
     )?;
     verify_storage(
         &mut conn,
         &format!("{namespace}:0"),
         address,
-        u256_from_u64(2),
+        slot_to_b256(2),
         u256_from_u64(200),
     )?;
     verify_storage(
         &mut conn,
         &format!("{namespace}:0"),
         address,
-        u256_from_u64(3),
+        slot_to_b256(3),
         u256_from_u64(300),
     )?;
 
@@ -390,7 +394,7 @@ async fn test_single_block_only_one_state_available() -> Result<()> {
         HashMap::new(),
         None,
     );
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let latest = writer.latest_block_number()?;
     assert_eq!(latest, Some(0));
@@ -405,12 +409,12 @@ async fn test_single_block_only_one_state_available() -> Result<()> {
 
 #[tokio::test]
 async fn test_state_diff_storage_and_cleanup() -> Result<()> {
-    let mut conn = setup_redis().await?;
+    let redis = get_shared_redis().await;
+    let (host, port) = (redis.host.clone(), redis.port);
 
     let base_namespace = "diff_cleanup";
-    let buffer_size = 3;
-    let chunked_config = ChunkedWriteConfig::default();
-    let writer_id = "test-writer";
+    let config = CircularBufferConfig { buffer_size: 3 };
+    let writer = StateWriter::new(&format!("redis://{host}:{port}"), base_namespace, config)?;
 
     for block_num in 0..3 {
         let update = BlockStateUpdate {
@@ -419,14 +423,7 @@ async fn test_state_diff_storage_and_cleanup() -> Result<()> {
             state_root: B256::repeat_byte(u8::try_from(block_num).unwrap()),
             accounts: vec![],
         };
-        commit_block_chunked(
-            &mut conn,
-            base_namespace,
-            buffer_size,
-            &chunked_config,
-            writer_id,
-            &update,
-        )?;
+        writer.commit_block(&update)?;
     }
 
     let update3 = BlockStateUpdate {
@@ -435,14 +432,10 @@ async fn test_state_diff_storage_and_cleanup() -> Result<()> {
         state_root: B256::repeat_byte(3),
         accounts: vec![],
     };
-    commit_block_chunked(
-        &mut conn,
-        base_namespace,
-        buffer_size,
-        &chunked_config,
-        writer_id,
-        &update3,
-    )?;
+    writer.commit_block(&update3)?;
+
+    let client = redis::Client::open(format!("redis://{host}:{port}"))?;
+    let mut conn = client.get_connection()?;
 
     let diff_key_0 = get_diff_key(base_namespace, 0);
     let exists_0: bool = redis::cmd("EXISTS").arg(&diff_key_0).query(&mut conn)?;
@@ -479,7 +472,7 @@ async fn test_large_scale_rotation() -> Result<()> {
             HashMap::new(),
             None,
         );
-        writer.commit_block(update)?;
+        writer.commit_block(&update)?;
     }
 
     let latest = writer.latest_block_number()?;
@@ -529,35 +522,32 @@ async fn test_zero_storage_values_are_deleted() -> Result<()> {
 
     // Block 0: Set storage slots 1, 2, 3 to non-zero values
     let storage_0 = HashMap::from([
-        (u256_from_u64(1), u256_from_u64(100)),
-        (u256_from_u64(2), u256_from_u64(200)),
-        (u256_from_u64(3), u256_from_u64(300)),
+        (slot_to_b256(1), u256_from_u64(100)),
+        (slot_to_b256(2), u256_from_u64(200)),
+        (slot_to_b256(3), u256_from_u64(300)),
     ]);
     let update0 = create_test_update(0, B256::ZERO, address, 1000, 0, storage_0, None);
-    writer.commit_block(update0)?;
+    writer.commit_block(&update0)?;
 
     let all_storage = reader.get_all_storage(address.into(), 0)?;
     assert_eq!(all_storage.len(), 3);
 
-    let storage_1 = HashMap::from([(u256_from_u64(2), U256::ZERO)]);
+    let storage_1 = HashMap::from([(slot_to_b256(2), U256::ZERO)]);
     let update1 = create_test_update(1, B256::ZERO, address, 1000, 1, storage_1, None);
-    writer.commit_block(update1)?;
+    writer.commit_block(&update1)?;
 
     let all_storage = reader.get_all_storage(address.into(), 1)?;
     assert_eq!(all_storage.len(), 2);
-    assert!(all_storage.contains_key(&hash_slot(u256_from_u64(1))));
-    assert!(!all_storage.contains_key(&hash_slot(u256_from_u64(2))));
-    assert!(all_storage.contains_key(&hash_slot(u256_from_u64(3))));
+    assert!(all_storage.contains_key(&hash_slot(slot_to_b256(1))));
+    assert!(!all_storage.contains_key(&hash_slot(slot_to_b256(2))));
+    assert!(all_storage.contains_key(&hash_slot(slot_to_b256(3))));
 
-    let slot_2_value = reader.get_storage(address.into(), hash_slot(u256_from_u64(2)), 1)?;
+    let slot_2_value = reader.get_storage(address.into(), hash_slot(slot_to_b256(2)), 1)?;
     assert_eq!(slot_2_value, None);
 
-    let storage_2 = HashMap::from([
-        (u256_from_u64(1), U256::ZERO),
-        (u256_from_u64(3), U256::ZERO),
-    ]);
+    let storage_2 = HashMap::from([(slot_to_b256(1), U256::ZERO), (slot_to_b256(3), U256::ZERO)]);
     let update2 = create_test_update(2, B256::ZERO, address, 1000, 2, storage_2, None);
-    writer.commit_block(update2)?;
+    writer.commit_block(&update2)?;
 
     let all_storage = reader.get_all_storage(address.into(), 2)?;
     assert_eq!(all_storage.len(), 0);
@@ -592,14 +582,14 @@ async fn test_roundtrip_basic_account_read() -> Result<()> {
         HashMap::new(),
         None,
     );
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     // Read back
     let account = reader.get_full_account(address.into(), 0)?;
     assert!(account.is_some());
 
     let account = account.unwrap();
-    assert_eq!(account.address_hash, address.into());
+    assert_eq!(account.address_hash, AddressHash(keccak256(address)));
     assert_eq!(account.balance, U256::from(1000u64));
     assert_eq!(account.nonce, 5);
     assert_eq!(account.code, None);
@@ -626,13 +616,13 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
     let address = Address::repeat_byte(0xbb);
 
     let storage = HashMap::from([
-        (u256_from_u64(1), u256_from_u64(100)),
-        (u256_from_u64(2), u256_from_u64(200)),
-        (u256_from_u64(3), u256_from_u64(300)),
+        (slot_to_b256(1), u256_from_u64(100)),
+        (slot_to_b256(2), u256_from_u64(200)),
+        (slot_to_b256(3), u256_from_u64(300)),
     ]);
 
     let update = create_test_update(0, B256::repeat_byte(0xBB), address, 5000, 10, storage, None);
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let account = reader.get_full_account(address.into(), 0)?;
     assert!(account.is_some());
@@ -642,20 +632,20 @@ async fn test_roundtrip_account_with_storage() -> Result<()> {
     assert_eq!(account.nonce, 10);
     assert_eq!(account.storage.len(), 3);
     assert_eq!(
-        account.storage.get(&hash_slot(u256_from_u64(1))),
+        account.storage.get(&hash_slot(slot_to_b256(1))),
         Some(&u256_from_u64(100))
     );
     assert_eq!(
-        account.storage.get(&hash_slot(u256_from_u64(2))),
+        account.storage.get(&hash_slot(slot_to_b256(2))),
         Some(&u256_from_u64(200))
     );
     assert_eq!(
-        account.storage.get(&hash_slot(u256_from_u64(3))),
+        account.storage.get(&hash_slot(slot_to_b256(3))),
         Some(&u256_from_u64(300))
     );
 
     // Test individual storage slot read
-    let slot_value = reader.get_storage(address.into(), hash_slot(u256_from_u64(2)), 0)?;
+    let slot_value = reader.get_storage(address.into(), hash_slot(slot_to_b256(2)), 0)?;
     assert_eq!(slot_value, Some(u256_from_u64(200)));
 
     Ok(())
@@ -688,7 +678,7 @@ async fn test_roundtrip_account_with_code() -> Result<()> {
         HashMap::new(),
         Some(code.clone()),
     );
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     // Read back
     let account = reader.get_account(address.into(), 0)?;
@@ -700,7 +690,7 @@ async fn test_roundtrip_account_with_code() -> Result<()> {
     // Test direct code read
     let code_hash = keccak256(&code);
     let fetched_code = reader.get_code(code_hash, 0)?;
-    assert_eq!(fetched_code, Some(code));
+    assert_eq!(fetched_code, Some(Bytes::from(code)));
 
     Ok(())
 }
@@ -733,7 +723,7 @@ async fn test_roundtrip_circular_buffer_rotation() -> Result<()> {
             HashMap::new(),
             None,
         );
-        writer.commit_block(update)?;
+        writer.commit_block(&update)?;
     }
 
     // Latest block should be 5
@@ -790,15 +780,15 @@ async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
 
     // Block 0: Create account A
     let update0 = create_test_update(0, B256::ZERO, addr_a, 1000, 1, HashMap::new(), None);
-    writer.commit_block(update0)?;
+    writer.commit_block(&update0)?;
 
     // Block 1: Create account B
     let update1 = create_test_update(1, B256::ZERO, addr_b, 2000, 2, HashMap::new(), None);
-    writer.commit_block(update1)?;
+    writer.commit_block(&update1)?;
 
     // Block 2: Create account C
     let update2 = create_test_update(2, B256::ZERO, addr_c, 3000, 3, HashMap::new(), None);
-    writer.commit_block(update2)?;
+    writer.commit_block(&update2)?;
 
     // Block 3: Update account A (overwrites namespace 0)
     let update3 = BlockStateUpdate {
@@ -806,7 +796,7 @@ async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
         block_hash: B256::repeat_byte(3),
         state_root: B256::ZERO,
         accounts: vec![AccountState {
-            address_hash: addr_a.into(),
+            address_hash: AddressHash(keccak256(addr_a)),
             balance: U256::from(1500u64),
             nonce: 5,
             code_hash: B256::ZERO,
@@ -815,7 +805,7 @@ async fn test_roundtrip_cumulative_state_reads() -> Result<()> {
             deleted: false,
         }],
     };
-    writer.commit_block(update3)?;
+    writer.commit_block(&update3)?;
 
     // Read block 3 - should have cumulative state of all accounts
     // Account A with updated values
@@ -869,7 +859,7 @@ async fn test_roundtrip_block_metadata() -> Result<()> {
             block_hash,
             state_root,
             accounts: vec![AccountState {
-                address_hash: address.into(),
+                address_hash: AddressHash(keccak256(address)),
                 balance: U256::from(block_num * 100),
                 nonce: block_num,
                 code_hash: B256::ZERO,
@@ -878,7 +868,7 @@ async fn test_roundtrip_block_metadata() -> Result<()> {
                 deleted: false,
             }],
         };
-        writer.commit_block(update)?;
+        writer.commit_block(&update)?;
     }
 
     // Read block metadata
@@ -933,51 +923,51 @@ async fn test_roundtrip_storage_evolution() -> Result<()> {
 
     // Block 0: Set slots 1, 2, 3
     let storage_0 = HashMap::from([
-        (u256_from_u64(1), u256_from_u64(100)),
-        (u256_from_u64(2), u256_from_u64(200)),
-        (u256_from_u64(3), u256_from_u64(300)),
+        (slot_to_b256(1), u256_from_u64(100)),
+        (slot_to_b256(2), u256_from_u64(200)),
+        (slot_to_b256(3), u256_from_u64(300)),
     ]);
     let update0 = create_test_update(0, B256::ZERO, address, 1000, 0, storage_0, None);
-    writer.commit_block(update0)?;
+    writer.commit_block(&update0)?;
 
     // Block 1: Update slot 1, add slot 4
     let storage_1 = HashMap::from([
-        (u256_from_u64(1), u256_from_u64(150)),
-        (u256_from_u64(4), u256_from_u64(400)),
+        (slot_to_b256(1), u256_from_u64(150)),
+        (slot_to_b256(4), u256_from_u64(400)),
     ]);
     let update1 = create_test_update(1, B256::ZERO, address, 1000, 1, storage_1, None);
-    writer.commit_block(update1)?;
+    writer.commit_block(&update1)?;
 
     // Block 2: Zero slot 2, update slot 3
     let storage_2 = HashMap::from([
-        (u256_from_u64(2), U256::ZERO),
-        (u256_from_u64(3), u256_from_u64(350)),
+        (slot_to_b256(2), U256::ZERO),
+        (slot_to_b256(3), u256_from_u64(350)),
     ]);
     let update2 = create_test_update(2, B256::ZERO, address, 1000, 2, storage_2, None);
-    writer.commit_block(update2)?;
+    writer.commit_block(&update2)?;
 
-    let storage_3 = HashMap::from([(u256_from_u64(5), u256_from_u64(500))]);
+    let storage_3 = HashMap::from([(slot_to_b256(5), u256_from_u64(500))]);
     let update3 = create_test_update(3, B256::ZERO, address, 1000, 3, storage_3, None);
-    writer.commit_block(update3)?;
+    writer.commit_block(&update3)?;
 
     let all_storage = reader.get_all_storage(address.into(), 3)?;
     assert_eq!(all_storage.len(), 4);
     assert_eq!(
-        all_storage.get(&hash_slot(u256_from_u64(1))),
-        Some(&u256_from_u64(150).into())
+        all_storage.get(&hash_slot(slot_to_b256(1))),
+        Some(&u256_from_u64(150))
     );
-    assert_eq!(all_storage.get(&hash_slot(u256_from_u64(2))), None);
+    assert_eq!(all_storage.get(&hash_slot(slot_to_b256(2))), None);
     assert_eq!(
-        all_storage.get(&hash_slot(u256_from_u64(3))),
-        Some(&u256_from_u64(350).into())
-    );
-    assert_eq!(
-        all_storage.get(&hash_slot(u256_from_u64(4))),
-        Some(&u256_from_u64(400).into())
+        all_storage.get(&hash_slot(slot_to_b256(3))),
+        Some(&u256_from_u64(350))
     );
     assert_eq!(
-        all_storage.get(&hash_slot(u256_from_u64(5))),
-        Some(&u256_from_u64(500).into())
+        all_storage.get(&hash_slot(slot_to_b256(4))),
+        Some(&u256_from_u64(400))
+    );
+    assert_eq!(
+        all_storage.get(&hash_slot(slot_to_b256(5))),
+        Some(&u256_from_u64(500))
     );
 
     Ok(())
@@ -1005,7 +995,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
         state_root: B256::ZERO,
         accounts: vec![
             AccountState {
-                address_hash: Address::repeat_byte(0x01).into(),
+                address_hash: AddressHash(keccak256(Address::repeat_byte(0x01))),
                 balance: U256::from(1000u64),
                 nonce: 1,
                 code_hash: B256::ZERO,
@@ -1014,7 +1004,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
                 deleted: false,
             },
             AccountState {
-                address_hash: Address::repeat_byte(0x02).into(),
+                address_hash: AddressHash(keccak256(Address::repeat_byte(0x02))),
                 balance: U256::from(2000u64),
                 nonce: 2,
                 code_hash: B256::ZERO,
@@ -1023,7 +1013,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
                 deleted: false,
             },
             AccountState {
-                address_hash: Address::repeat_byte(0x03).into(),
+                address_hash: AddressHash(keccak256(Address::repeat_byte(0x03))),
                 balance: U256::from(3000u64),
                 nonce: 3,
                 code_hash: B256::ZERO,
@@ -1033,7 +1023,7 @@ async fn test_roundtrip_multiple_accounts_per_block() -> Result<()> {
             },
         ],
     };
-    writer.commit_block(update0)?;
+    writer.commit_block(&update0)?;
 
     // Read all three accounts
     for i in 1..=3 {
@@ -1061,7 +1051,7 @@ async fn test_write_lock_prevents_read() -> Result<()> {
     let address = Address::repeat_byte(0xaa);
 
     let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -1075,7 +1065,7 @@ async fn test_write_lock_prevents_read() -> Result<()> {
     assert!(result.is_err());
 
     match result {
-        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        Err(crate::redis::common::error::StateError::NamespaceLocked { .. }) => {}
         _ => panic!("Expected NamespaceLocked error"),
     }
 
@@ -1101,7 +1091,7 @@ async fn test_stale_lock_blocks_read() -> Result<()> {
     let address = Address::repeat_byte(0xbb);
 
     let update = create_test_update(0, B256::ZERO, address, 2000, 2, HashMap::new(), None);
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -1116,7 +1106,7 @@ async fn test_stale_lock_blocks_read() -> Result<()> {
     assert!(result.is_err());
 
     match result {
-        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        Err(crate::redis::common::error::StateError::NamespaceLocked { .. }) => {}
         _ => panic!("Expected NamespaceLocked error"),
     }
 
@@ -1143,7 +1133,7 @@ async fn test_is_block_readable() -> Result<()> {
     let address = Address::repeat_byte(0xcc);
 
     let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     assert!(reader.is_block_readable(0)?);
     assert!(!reader.is_block_readable(1)?);
@@ -1182,11 +1172,11 @@ async fn test_concurrent_writers_lock_contention() -> Result<()> {
     conn.set::<_, _, ()>(&lock_key, lock.to_json()?)?;
 
     let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
-    let result = writer2.commit_block(update);
+    let result = writer2.commit_block(&update);
 
     assert!(result.is_err());
     match result {
-        Err(crate::common::error::StateError::LockAcquisitionFailed { .. }) => {}
+        Err(crate::redis::common::error::StateError::LockAcquisitionFailed { .. }) => {}
         Err(e) => panic!("Expected LockAcquisitionFailed, got: {e:?}"),
         Ok(()) => panic!("Expected error, got success"),
     }
@@ -1209,7 +1199,7 @@ async fn test_writer_releases_lock_on_success() -> Result<()> {
     let address = Address::repeat_byte(0x22);
     let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
 
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -1234,7 +1224,7 @@ async fn test_reader_blocked_during_active_write() -> Result<()> {
 
     let address = Address::repeat_byte(0x33);
     let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -1246,7 +1236,7 @@ async fn test_reader_blocked_during_active_write() -> Result<()> {
     let result = reader.get_account(address.into(), 0);
     assert!(result.is_err());
     match result {
-        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        Err(crate::redis::common::error::StateError::NamespaceLocked { .. }) => {}
         Err(e) => panic!("Expected NamespaceLocked, got: {e:?}"),
         Ok(_) => panic!("Expected error, got success"),
     }
@@ -1275,7 +1265,7 @@ async fn test_namespace_isolation_with_locks() -> Result<()> {
     for i in 0..3 {
         let address = Address::repeat_byte(i as u8);
         let update = create_test_update(i, B256::ZERO, address, 1000, 1, HashMap::new(), None);
-        writer.commit_block(update)?;
+        writer.commit_block(&update)?;
     }
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
@@ -1317,7 +1307,7 @@ async fn test_scan_accounts_respects_lock() -> Result<()> {
         accounts: (0..5)
             .map(|i| {
                 AccountState {
-                    address_hash: Address::repeat_byte(i).into(),
+                    address_hash: AddressHash(keccak256(Address::repeat_byte(i))),
                     balance: U256::from(i as u64 * 100),
                     nonce: i as u64,
                     code_hash: B256::ZERO,
@@ -1328,7 +1318,7 @@ async fn test_scan_accounts_respects_lock() -> Result<()> {
             })
             .collect(),
     };
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let hashes = reader.scan_account_hashes(0)?;
     assert_eq!(hashes.len(), 5);
@@ -1345,7 +1335,7 @@ async fn test_scan_accounts_respects_lock() -> Result<()> {
     let result = reader.scan_account_hashes(0);
     assert!(result.is_err());
     match result {
-        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        Err(crate::redis::common::error::StateError::NamespaceLocked { .. }) => {}
         Err(e) => panic!("Expected NamespaceLocked, got: {e:?}"),
         Ok(_) => panic!("Expected error"),
     }
@@ -1366,12 +1356,12 @@ async fn test_get_all_storage_respects_lock() -> Result<()> {
 
     let address = Address::repeat_byte(0xaa);
     let storage = HashMap::from([
-        (u256_from_u64(1), u256_from_u64(100)),
-        (u256_from_u64(2), u256_from_u64(200)),
+        (slot_to_b256(1), u256_from_u64(100)),
+        (slot_to_b256(2), u256_from_u64(200)),
     ]);
 
     let update = create_test_update(0, B256::ZERO, address, 1000, 1, storage, None);
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -1385,7 +1375,7 @@ async fn test_get_all_storage_respects_lock() -> Result<()> {
     let result = reader.get_all_storage(address.into(), 0);
     assert!(result.is_err());
 
-    let result = reader.get_storage(address.into(), hash_slot(u256_from_u64(1)), 0);
+    let result = reader.get_storage(address.into(), hash_slot(slot_to_b256(1)), 0);
     assert!(result.is_err());
 
     Ok(())
@@ -1407,7 +1397,7 @@ async fn test_get_code_respects_lock() -> Result<()> {
     let code_hash = keccak256(&code);
 
     let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), Some(code));
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -1448,7 +1438,7 @@ async fn test_sequential_writes_same_namespace() -> Result<()> {
             HashMap::new(),
             None,
         );
-        writer.commit_block(update)?;
+        writer.commit_block(&update)?;
 
         if block_num % 3 == 0 {
             let lock_key = get_write_lock_key(&format!("{namespace}:0"));
@@ -1485,7 +1475,7 @@ async fn test_large_chunked_write_lock_maintained() -> Result<()> {
         accounts: (0..num_accounts)
             .map(|i| {
                 AccountState {
-                    address_hash: Address::repeat_byte(i as u8).into(),
+                    address_hash: AddressHash(keccak256(Address::repeat_byte(i as u8))),
                     balance: U256::from(i as u64 * 100),
                     nonce: i as u64,
                     code_hash: B256::ZERO,
@@ -1497,7 +1487,7 @@ async fn test_large_chunked_write_lock_maintained() -> Result<()> {
             .collect(),
     };
 
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     for i in 0..num_accounts {
         let account = reader.get_account(Address::repeat_byte(i as u8).into(), 0)?;
@@ -1534,7 +1524,7 @@ async fn test_stale_lock_blocks_both_reader_and_writer() -> Result<()> {
 
     let address = Address::repeat_byte(0x44);
     let update = create_test_update(0, B256::ZERO, address, 1000, 1, HashMap::new(), None);
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     for block_num in 1..=2 {
         let update = create_test_update(
@@ -1546,7 +1536,7 @@ async fn test_stale_lock_blocks_both_reader_and_writer() -> Result<()> {
             HashMap::new(),
             None,
         );
-        writer.commit_block(update)?;
+        writer.commit_block(&update)?;
     }
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
@@ -1562,16 +1552,16 @@ async fn test_stale_lock_blocks_both_reader_and_writer() -> Result<()> {
     let read_result = reader.get_account(address.into(), 0);
     assert!(read_result.is_err());
     match read_result {
-        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        Err(crate::redis::common::error::StateError::NamespaceLocked { .. }) => {}
         Err(e) => panic!("Expected NamespaceLocked for reader, got: {e:?}"),
         Ok(_) => panic!("Expected error"),
     }
 
     let update3 = create_test_update(3, B256::ZERO, address, 2000, 3, HashMap::new(), None);
-    let write_result = writer.commit_block(update3);
+    let write_result = writer.commit_block(&update3);
     assert!(write_result.is_err());
     match write_result {
-        Err(crate::common::error::StateError::StaleLockDetected { writer_id, .. }) => {
+        Err(crate::redis::common::error::StateError::StaleLockDetected { writer_id, .. }) => {
             assert_eq!(writer_id, "crashed-writer");
         }
         Err(e) => panic!("Expected StaleLockDetected for writer, got: {e:?}"),
@@ -1601,7 +1591,7 @@ async fn test_block_metadata_not_affected_by_namespace_lock() -> Result<()> {
         block_hash,
         state_root,
         accounts: vec![AccountState {
-            address_hash: address.into(),
+            address_hash: AddressHash(keccak256(address)),
             balance: U256::from(1000u64),
             nonce: 1,
             code_hash: B256::ZERO,
@@ -1610,7 +1600,7 @@ async fn test_block_metadata_not_affected_by_namespace_lock() -> Result<()> {
             deleted: false,
         }],
     };
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -1656,7 +1646,7 @@ async fn test_different_writers_different_namespaces_concurrent() -> Result<()> 
         HashMap::new(),
         None,
     );
-    writer1.commit_block(update0)?;
+    writer1.commit_block(&update0)?;
 
     let update1 = create_test_update(
         1,
@@ -1667,7 +1657,7 @@ async fn test_different_writers_different_namespaces_concurrent() -> Result<()> 
         HashMap::new(),
         None,
     );
-    writer2.commit_block(update1)?;
+    writer2.commit_block(&update1)?;
 
     let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
 
@@ -1716,10 +1706,10 @@ async fn test_get_full_account_respects_lock() -> Result<()> {
     let reader = StateReader::new(&format!("redis://{host}:{port}"), namespace, config)?;
 
     let address = Address::repeat_byte(0xcc);
-    let storage = HashMap::from([(u256_from_u64(1), u256_from_u64(100))]);
+    let storage = HashMap::from([(slot_to_b256(1), u256_from_u64(100))]);
 
     let update = create_test_update(0, B256::ZERO, address, 1000, 1, storage, None);
-    writer.commit_block(update)?;
+    writer.commit_block(&update)?;
 
     let client = redis::Client::open(format!("redis://{host}:{port}"))?;
     let mut conn = client.get_connection()?;
@@ -1733,7 +1723,7 @@ async fn test_get_full_account_respects_lock() -> Result<()> {
     let result = reader.get_full_account(address.into(), 0);
     assert!(result.is_err());
     match result {
-        Err(crate::common::error::StateError::NamespaceLocked { .. }) => {}
+        Err(crate::redis::common::error::StateError::NamespaceLocked { .. }) => {}
         Err(e) => panic!("Expected NamespaceLocked, got: {e:?}"),
         Ok(_) => panic!("Expected error"),
     }
@@ -1764,7 +1754,7 @@ async fn test_writer_can_write_after_own_successful_write() -> Result<()> {
             HashMap::new(),
             None,
         );
-        writer.commit_block(update)?;
+        writer.commit_block(&update)?;
     }
 
     for block_num in [4u64, 5, 6] {
@@ -1803,7 +1793,7 @@ async fn test_available_block_range() -> Result<()> {
             HashMap::new(),
             None,
         );
-        writer.commit_block(update)?;
+        writer.commit_block(&update)?;
     }
 
     let range = reader.get_available_block_range()?;

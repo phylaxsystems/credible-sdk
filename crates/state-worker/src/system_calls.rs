@@ -28,6 +28,7 @@ use alloy::{
     },
     primitives::{
         B256,
+        Bytes,
         U256,
         keccak256,
     },
@@ -37,11 +38,10 @@ use anyhow::{
     bail,
 };
 use state_store::{
-    StateReader,
-    common::{
-        AccountState,
-        AddressHash,
-    },
+    AccountState,
+    AddressHash,
+    Reader,
+    redis::StateReader,
 };
 use std::collections::HashMap;
 
@@ -108,7 +108,7 @@ fn compute_eip2935_state(
     let value = U256::from_be_bytes(parent_hash.0);
 
     let mut storage = HashMap::new();
-    storage.insert(slot, value);
+    storage.insert(keccak256(slot.to_be_bytes::<32>()), value);
 
     // Try to fetch existing account state from the previous block
     let (balance, nonce, code_hash, code) =
@@ -117,7 +117,7 @@ fn compute_eip2935_state(
                 U256::ZERO,
                 1,
                 keccak256(&HISTORY_STORAGE_CODE),
-                Some(HISTORY_STORAGE_CODE.to_vec()),
+                Some(HISTORY_STORAGE_CODE.clone()),
             )
         });
 
@@ -160,12 +160,18 @@ fn compute_eip4788_state(
     // - Slot `timestamp % HISTORY_BUFFER_LENGTH`: timestamp
     // - Slot `timestamp % HISTORY_BUFFER_LENGTH + HISTORY_BUFFER_LENGTH`: beacon root
     let timestamp_index = config.timestamp % HISTORY_BUFFER_LENGTH;
+
+    // Compute raw EVM slots (U256)
     let timestamp_slot = U256::from(timestamp_index);
     let root_slot = U256::from(timestamp_index + HISTORY_BUFFER_LENGTH);
 
+    // Hash slots to get trie keys (B256)
+    let timestamp_slot_key = keccak256(timestamp_slot.to_be_bytes::<32>());
+    let root_slot_key = keccak256(root_slot.to_be_bytes::<32>());
+
     let mut storage = HashMap::new();
-    storage.insert(timestamp_slot, U256::from(config.timestamp));
-    storage.insert(root_slot, U256::from_be_bytes(beacon_root.0));
+    storage.insert(timestamp_slot_key, U256::from(config.timestamp));
+    storage.insert(root_slot_key, U256::from_be_bytes(beacon_root.0));
 
     // Try to fetch existing account state from the previous block
     let (balance, nonce, code_hash, code) =
@@ -174,7 +180,7 @@ fn compute_eip4788_state(
                 U256::ZERO,
                 1,
                 keccak256(&BEACON_ROOTS_CODE),
-                Some(BEACON_ROOTS_CODE.to_vec()),
+                Some(BEACON_ROOTS_CODE.clone()),
             )
         });
 
@@ -197,9 +203,9 @@ fn fetch_existing_or_default<F>(
     address_hash: &AddressHash,
     block_number: u64,
     defaults: F,
-) -> (U256, u64, B256, Option<Vec<u8>>)
+) -> (U256, u64, B256, Option<Bytes>)
 where
-    F: FnOnce() -> (U256, u64, B256, Option<Vec<u8>>),
+    F: FnOnce() -> (U256, u64, B256, Option<Bytes>),
 {
     let Some(reader) = reader else {
         return defaults();
@@ -208,7 +214,7 @@ where
     // Read from previous block's state
     let prev_block = block_number.saturating_sub(1);
 
-    match reader.get_full_account(address_hash.clone(), prev_block) {
+    match reader.get_full_account(*address_hash, prev_block) {
         Ok(Some(existing)) => {
             (
                 existing.balance,
@@ -246,10 +252,11 @@ mod tests {
             .expect("EIP-2935 state should exist");
 
         // Slot = 100 % 8191 = 100
-        let expected_slot = U256::from(100);
-        assert!(eip2935_state.storage.contains_key(&expected_slot));
+        let raw_slot = U256::from(100);
+        let expected_slot_key = keccak256(raw_slot.to_be_bytes::<32>());
+        assert!(eip2935_state.storage.contains_key(&expected_slot_key));
 
-        let stored_hash = eip2935_state.storage.get(&expected_slot).unwrap();
+        let stored_hash = eip2935_state.storage.get(&expected_slot_key).unwrap();
         assert_eq!(*stored_hash, U256::from_be_bytes(B256::repeat_byte(0xab).0));
 
         // Verify defaults are used
@@ -276,18 +283,21 @@ mod tests {
             .expect("EIP-4788 state should exist");
 
         let timestamp_index = 1_700_000_000u64 % HISTORY_BUFFER_LENGTH;
-        let timestamp_slot = U256::from(timestamp_index);
-        let root_slot = U256::from(timestamp_index + HISTORY_BUFFER_LENGTH);
 
-        assert!(eip4788_state.storage.contains_key(&timestamp_slot));
-        assert!(eip4788_state.storage.contains_key(&root_slot));
+        // Hash the raw slots to get storage keys
+        let timestamp_slot_key = keccak256(U256::from(timestamp_index).to_be_bytes::<32>());
+        let root_slot_key =
+            keccak256(U256::from(timestamp_index + HISTORY_BUFFER_LENGTH).to_be_bytes::<32>());
+
+        assert!(eip4788_state.storage.contains_key(&timestamp_slot_key));
+        assert!(eip4788_state.storage.contains_key(&root_slot_key));
 
         assert_eq!(
-            *eip4788_state.storage.get(&timestamp_slot).unwrap(),
+            *eip4788_state.storage.get(&timestamp_slot_key).unwrap(),
             U256::from(1_700_000_000u64)
         );
         assert_eq!(
-            *eip4788_state.storage.get(&root_slot).unwrap(),
+            *eip4788_state.storage.get(&root_slot_key).unwrap(),
             U256::from_be_bytes(B256::repeat_byte(0xcd).0)
         );
 
@@ -365,7 +375,9 @@ mod tests {
             .unwrap();
 
         // (8191 + 99) % 8191 = 99
-        let expected_slot = U256::from(99);
-        assert!(eip2935_state.storage.contains_key(&expected_slot));
+
+        let raw_slot = U256::from(99);
+        let expected_slot_key = keccak256(raw_slot.to_be_bytes::<32>());
+        assert!(eip2935_state.storage.contains_key(&expected_slot_key));
     }
 }

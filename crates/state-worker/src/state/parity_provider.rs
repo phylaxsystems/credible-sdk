@@ -19,7 +19,7 @@ use anyhow::{
     Result,
 };
 use async_trait::async_trait;
-use state_store::common::BlockStateUpdate;
+use state_store::BlockStateUpdate;
 use std::sync::Arc;
 
 pub struct ParityTraceProvider {

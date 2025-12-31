@@ -18,7 +18,7 @@ use alloy_rpc_types_trace::parity::{
     StateDiff,
     TraceResultsWithTransactionHash,
 };
-use state_store::common::{
+use state_store::{
     AccountState,
     AddressHash,
 };
@@ -83,7 +83,7 @@ fn process_diff(accounts: &mut HashMap<AddressHash, AccountSnapshot>, state_diff
         match &account_diff.code {
             Delta::Unchanged => {}
             Delta::Added(code) => {
-                snapshot.code = Some(code.to_vec());
+                snapshot.code = Some(code.clone());
                 snapshot.touched = true;
             }
             Delta::Removed(_) => {
@@ -91,7 +91,7 @@ fn process_diff(accounts: &mut HashMap<AddressHash, AccountSnapshot>, state_diff
                 snapshot.touched = true;
             }
             Delta::Changed(change) => {
-                snapshot.code = Some(change.to.to_vec());
+                snapshot.code = Some(change.to.clone());
                 snapshot.touched = true;
             }
         }
@@ -99,23 +99,22 @@ fn process_diff(accounts: &mut HashMap<AddressHash, AccountSnapshot>, state_diff
         // Handle storage changes
         for (slot, storage_delta) in &account_diff.storage {
             let slot_hash = keccak256(slot.0);
-            let slot_key = U256::from_be_bytes(slot_hash.into());
             match storage_delta {
                 Delta::Unchanged => {}
                 Delta::Added(value) => {
                     snapshot
                         .storage_updates
-                        .insert(slot_key, U256::from_be_bytes(value.0));
+                        .insert(slot_hash, U256::from_be_bytes(value.0));
                     snapshot.touched = true;
                 }
                 Delta::Removed(_) => {
-                    snapshot.storage_updates.insert(slot_key, U256::ZERO);
+                    snapshot.storage_updates.insert(slot_hash, U256::ZERO);
                     snapshot.touched = true;
                 }
                 Delta::Changed(change) => {
                     snapshot
                         .storage_updates
-                        .insert(slot_key, U256::from_be_bytes(change.to.0));
+                        .insert(slot_hash, U256::from_be_bytes(change.to.0));
                     snapshot.touched = true;
                 }
             }
@@ -201,9 +200,8 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         let slot_hash = keccak256(slot.0);
-        let slot_key = U256::from_be_bytes(slot_hash.into());
         assert_eq!(
-            results[0].storage.get(&slot_key),
+            results[0].storage.get(&slot_hash),
             Some(&U256::from_be_bytes(value.0))
         );
     }
@@ -237,9 +235,8 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         let slot_hash = keccak256(slot.0);
-        let slot_key = U256::from_be_bytes(slot_hash.into());
         assert_eq!(
-            results[0].storage.get(&slot_key),
+            results[0].storage.get(&slot_hash),
             Some(&U256::from_be_bytes(B256::from([0xBBu8; 32]).0))
         );
     }
@@ -270,8 +267,7 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         let slot_hash = keccak256(slot.0);
-        let slot_key = U256::from_be_bytes(slot_hash.into());
-        assert_eq!(results[0].storage.get(&slot_key), Some(&U256::ZERO));
+        assert_eq!(results[0].storage.get(&slot_hash), Some(&U256::ZERO));
     }
 
     #[test]

@@ -1,55 +1,18 @@
 //! Common types, configuration, and utilities shared between reader and writer.
 
 pub mod error;
-pub mod tables;
-pub mod types;
 
+use crate::AddressHash;
 use alloy::primitives::{
-    Address,
     B256,
     U256,
-    keccak256,
 };
 use chrono::Utc;
 use error::{
     StateError,
     StateResult,
 };
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
-
-/// Type for defining the keccak256(address)
-#[derive(
-    Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct AddressHash(B256);
-
-impl AddressHash {
-    pub fn new<T: AsRef<[u8]>>(bytes: T) -> Self {
-        Self(keccak256(bytes))
-    }
-}
-
-impl From<B256> for AddressHash {
-    fn from(hash: B256) -> Self {
-        Self(hash)
-    }
-}
-
-impl From<Address> for AddressHash {
-    fn from(address: Address) -> Self {
-        Self(keccak256(address))
-    }
-}
-
-impl AsRef<[u8]> for AddressHash {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
+use std::sync::Arc;
 
 /// Redis key prefixes and separators
 pub mod keys {
@@ -381,79 +344,6 @@ where
     value.map(|v| NamespaceLock::from_json(&v)).transpose()
 }
 
-/// Account info without storage slots.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct AccountInfo {
-    pub address_hash: AddressHash,
-    pub balance: U256,
-    pub nonce: u64,
-    pub code_hash: B256,
-}
-
-/// Complete account state with all fields including storage.
-/// This is the canonical representation used by both reader and writer.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct AccountState {
-    pub address_hash: AddressHash,
-    pub balance: U256,
-    pub nonce: u64,
-    pub code_hash: B256,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub code: Option<Vec<u8>>,
-    #[serde(skip_serializing_if = "HashMap::is_empty", default)]
-    /// Storage slots keyed by `keccak256(slot)` (hashed slot indices).
-    pub storage: HashMap<U256, U256>,
-    #[serde(default)]
-    pub deleted: bool,
-}
-
-/// Complete state update for a block.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct BlockStateUpdate {
-    pub block_number: u64,
-    pub block_hash: B256,
-    pub state_root: B256,
-    pub accounts: Vec<AccountState>,
-}
-
-impl BlockStateUpdate {
-    /// Create a new block state update.
-    pub fn new(block_number: u64, block_hash: B256, state_root: B256) -> Self {
-        Self {
-            block_number,
-            block_hash,
-            state_root,
-            accounts: Vec::new(),
-        }
-    }
-
-    /// Merge an account state into the update.
-    /// If the account already exists, merge the storage slots and update fields.
-    /// If the account doesn't exist, add it.
-    pub fn merge_account_state(&mut self, state: AccountState) {
-        if let Some(existing) = self
-            .accounts
-            .iter_mut()
-            .find(|a| a.address_hash == state.address_hash)
-        {
-            // Merge storage slots
-            for (slot, value) in state.storage {
-                existing.storage.insert(slot, value);
-            }
-            // Update other fields
-            existing.balance = state.balance;
-            existing.nonce = state.nonce;
-            existing.code_hash = state.code_hash;
-            if state.code.is_some() {
-                existing.code = state.code;
-            }
-            existing.deleted = state.deleted;
-        } else {
-            self.accounts.push(state);
-        }
-    }
-}
-
 /// Block metadata.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockMetadata {
@@ -549,6 +439,11 @@ pub fn decode_bytes(s: &str) -> StateResult<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        AccountState,
+        BlockStateUpdate,
+    };
+    use std::collections::HashMap;
 
     #[test]
     fn test_circular_buffer_config() {
@@ -686,10 +581,10 @@ mod tests {
         let address_hash = AddressHash::new([0x42u8; 20]);
 
         let mut storage1 = HashMap::new();
-        storage1.insert(U256::from(1), U256::from(100));
+        storage1.insert(U256::from(1).into(), U256::from(100));
 
         let state1 = AccountState {
-            address_hash: address_hash.clone(),
+            address_hash,
             balance: U256::from(100),
             nonce: 1,
             code_hash: B256::ZERO,
@@ -700,7 +595,7 @@ mod tests {
         update.merge_account_state(state1);
 
         let mut storage2 = HashMap::new();
-        storage2.insert(U256::from(2), U256::from(200));
+        storage2.insert(U256::from(2).into(), U256::from(200));
 
         let state2 = AccountState {
             address_hash,

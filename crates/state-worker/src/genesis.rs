@@ -13,7 +13,7 @@ use anyhow::{
 };
 use revm::primitives::KECCAK_EMPTY;
 use serde::Deserialize;
-use state_store::common::AccountState;
+use state_store::AccountState;
 use std::{
     collections::HashMap,
     str::FromStr,
@@ -121,7 +121,7 @@ fn parse_u64(value: Option<&str>) -> Result<u64> {
     }
 }
 
-fn parse_code(code: Option<&str>) -> Result<(Option<Vec<u8>>, B256)> {
+fn parse_code(code: Option<&str>) -> Result<(Option<Bytes>, B256)> {
     let Some(code) = code else {
         return Ok((None, KECCAK_EMPTY));
     };
@@ -135,7 +135,7 @@ fn parse_code(code: Option<&str>) -> Result<(Option<Vec<u8>>, B256)> {
     Ok((Some(bytes), hash))
 }
 
-fn parse_storage(storage: HashMap<String, String>) -> Result<HashMap<U256, U256>> {
+fn parse_storage(storage: HashMap<String, String>) -> Result<HashMap<B256, U256>> {
     let mut entries = HashMap::new();
     for (slot, value) in storage {
         let slot = parse_u256(Some(&slot))
@@ -143,14 +143,13 @@ fn parse_storage(storage: HashMap<String, String>) -> Result<HashMap<U256, U256>
         let value = parse_u256(Some(&value))
             .with_context(|| format!("failed to parse storage slot value {value}"))?;
         let slot_hash = keccak256(slot.to_be_bytes::<32>());
-        let hashed_slot = U256::from_be_bytes(slot_hash.into());
-        entries.insert(hashed_slot, value);
+        entries.insert(slot_hash, value);
     }
 
     Ok(entries)
 }
 
-fn decode_hex_bytes(value: &str) -> Result<Vec<u8>> {
+fn decode_hex_bytes(value: &str) -> Result<Bytes> {
     let normalized = if let Some(hex_str) = value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
@@ -164,9 +163,7 @@ fn decode_hex_bytes(value: &str) -> Result<Vec<u8>> {
         value.to_string()
     };
 
-    Bytes::from_str(&normalized)
-        .map(|bytes| bytes.to_vec())
-        .map_err(|err| anyhow!("failed to decode hex value {value}: {err}"))
+    Bytes::from_str(&normalized).map_err(|err| anyhow!("failed to decode hex value {value}: {err}"))
 }
 
 #[cfg(test)]
