@@ -31,8 +31,10 @@ mod tests {
 
     #[test]
     fn config_dir_can_be_overridden() {
-        let mut args = CliArgs::default();
-        args.config_dir = Some(PathBuf::from("/tmp/pcl"));
+        let args = CliArgs {
+            config_dir: Some(PathBuf::from("/tmp/pcl")),
+            ..Default::default()
+        };
         assert_eq!(args.config_dir.as_deref(), Some(Path::new("/tmp/pcl")));
     }
 }
