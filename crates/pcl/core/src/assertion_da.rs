@@ -320,18 +320,17 @@ impl DaStoreArgs {
     fn update_config<A: ToString + ?Sized, S: ToString + ?Sized>(
         &self,
         config: &mut CliConfig,
-        assertion_name: &str,
-        constructor_args: &[String],
+        assertion_key: &AssertionKey,
         assertion_id: &A,
         signature: &S,
         spinner: &ProgressBar,
         json_output: bool,
     ) {
         let assertion_for_submission = AssertionForSubmission {
-            assertion_contract: assertion_name.to_string(),
+            assertion_contract: assertion_key.assertion_name.clone(),
             assertion_id: assertion_id.to_string(),
             signature: signature.to_string(),
-            constructor_args: constructor_args.to_vec(),
+            constructor_args: assertion_key.constructor_args.clone(),
         };
 
         config.add_assertion_for_submission(assertion_for_submission.clone());
@@ -406,8 +405,7 @@ impl DaStoreArgs {
                 .await?;
             self.update_config(
                 config,
-                &assertion_key.assertion_name,
-                &assertion_key.constructor_args,
+                &assertion_key,
                 &submission_response.id,
                 &submission_response.prover_signature,
                 &spinner,
@@ -757,13 +755,14 @@ mod tests {
 
         let mut config = CliConfig::default();
         let spinner = DaStoreArgs::create_spinner();
-        let constructor_args = vec!["arg1".to_string(), "arg2".to_string()];
-        let assertion_name = "test_assertion".to_string();
+        let assertion_key = AssertionKey::new(
+            "test_assertion".to_string(),
+            vec!["arg1".to_string(), "arg2".to_string()],
+        );
 
         args.update_config(
             &mut config,
-            &assertion_name,
-            &constructor_args,
+            &assertion_key,
             "test_id",
             "test_signature",
             &spinner,
@@ -772,7 +771,7 @@ mod tests {
 
         assert_eq!(config.assertions_for_submission.len(), 1);
 
-        let expected_key = AssertionKey::new(assertion_name, constructor_args);
+        let expected_key = assertion_key;
 
         let assertion = config.assertions_for_submission.get(&expected_key).unwrap();
         assert_eq!(assertion.assertion_contract, "test_assertion");
