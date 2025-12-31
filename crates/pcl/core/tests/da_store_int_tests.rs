@@ -10,7 +10,10 @@ mod tests {
         U256,
     };
     use assertion_da_client::DaClientError;
-    use pcl_core::error::DaSubmitError;
+    use pcl_core::{
+        config::AssertionKey,
+        error::DaSubmitError,
+    };
     use std::{
         fs::File,
         io::Write,
@@ -109,7 +112,7 @@ mod tests {
         test_runner.run().await.unwrap();
 
         test_runner
-            .assert_assertion_as_expected("NoArgsAssertion".to_string())
+            .assert_assertion_as_expected(AssertionKey::new("NoArgsAssertion".to_string(), vec![]))
             .await;
     }
 
@@ -124,14 +127,34 @@ mod tests {
 
         //assert that the assertion is in the config file
         test_runner
-            .assert_assertion_as_expected("NoArgsAssertion".to_string())
+            .assert_assertion_as_expected(AssertionKey::new("NoArgsAssertion".to_string(), vec![]))
             .await;
 
         // Try to submit same assertion again
         let result = test_runner.run().await;
         assert!(result.is_ok());
         test_runner
-            .assert_assertion_as_expected("NoArgsAssertion".to_string())
+            .assert_assertion_as_expected(AssertionKey::new("NoArgsAssertion".to_string(), vec![]))
+            .await;
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "full-test")]
+    async fn test_da_store_multiple_assertions_in_one_command() {
+        let mut test_setup = TestSetup::new();
+        test_setup.set_assertion_specs(vec![
+            AssertionKey::new("NoArgsAssertion".to_string(), vec![]),
+            AssertionKey::new("OwnableAssertion".to_string(), vec![]),
+        ]);
+
+        let mut test_runner = test_setup.build().await.unwrap();
+        test_runner.run().await.unwrap();
+
+        test_runner
+            .assert_assertion_as_expected(AssertionKey::new("NoArgsAssertion".to_string(), vec![]))
+            .await;
+        test_runner
+            .assert_assertion_as_expected(AssertionKey::new("OwnableAssertion".to_string(), vec![]))
             .await;
     }
     // Test DA Submission with invalid url

@@ -21,6 +21,7 @@ use pcl_phoundry::build_and_flatten::{
     BuildAndFlattenArgs,
 };
 use serde_json::json;
+use std::path::PathBuf;
 use tokio::time::Duration;
 
 use assertion_da_client::{
@@ -38,6 +39,10 @@ use crate::{
     error::DaSubmitError,
 };
 
+const STORE_DOCS_URL: &str = "https://docs.phylax.systems/credible/store-submit-assertions";
+const STORE_AFTER_HELP: &str = "Store assertions on the Assertion DA before linking them to a project with `pcl submit`.\n\
+Learn more about the workflow: https://docs.phylax.systems/credible/store-submit-assertions";
+
 /// Command-line arguments for storing assertions in the Data Availability layer.
 ///
 /// This struct handles the configuration needed to submit assertions to the DA layer,
@@ -45,7 +50,10 @@ use crate::{
 #[derive(Parser)]
 #[clap(
     name = "store",
-    about = "Submit the Assertion bytecode and source code to be stored by the Assertion DA of the Credible Layer"
+    arg_required_else_help = true,
+    about = "Store assertion bytecode and source on the Credible Assertion DA.",
+    long_about = "Store assertion bytecode and source on the Credible Assertion Data Availability (DA) service. Run this before `pcl submit` so the dApp can reference the assertion in a project.",
+    after_help = STORE_AFTER_HELP
 )]
 pub struct DaStoreArgs {
     /// URL of the assertion-DA server
@@ -58,13 +66,39 @@ pub struct DaStoreArgs {
     )]
     pub da_url: String,
 
-    /// Build and flatten arguments for the assertion
-    #[clap(flatten)]
-    pub args: BuildAndFlattenArgs,
+    /// Root directory where assertions live
+    #[clap(
+        long,
+        value_hint = ValueHint::DirPath,
+        help = "Root directory of your assertion project (defaults to the nearest Foundry project)."
+    )]
+    pub root: Option<PathBuf>,
 
-    /// Constructor arguments for the assertion contract
-    #[clap(help = "Constructor arguments for the assertion contract.
-                         Format: <ARG0> <ARG1> <ARG2>")]
+    /// Assertions to store using the formatted flag
+    #[clap(
+        long = "assertion",
+        short = 'a',
+        value_name = "ASSERTION",
+        value_hint = ValueHint::Other,
+        value_parser,
+        help = "Assertion spec in the format 'Name(arg1,arg2)'. Repeat to store multiple assertions at once (wrap the value in quotes to avoid shell parsing)."
+    )]
+    pub assertion_specs: Vec<AssertionKey>,
+
+    /// Assertion contract when using positional args
+    #[clap(
+        value_name = "ASSERTION_CONTRACT",
+        help = "Name of the assertion contract when storing a single assertion.",
+        required_unless_present = "assertion_specs"
+    )]
+    pub assertion_contract: Option<String>,
+
+    /// Constructor arguments for the positional assertion contract
+    #[clap(
+        value_name = "CONSTRUCTOR_ARGS",
+        help = "Constructor arguments for the positional assertion contract.",
+        requires = "assertion_contract"
+    )]
     pub constructor_args: Vec<String>,
 }
 
@@ -82,6 +116,21 @@ impl DaStoreArgs {
         );
         spinner.enable_steady_tick(Duration::from_millis(80));
         spinner
+    }
+
+    /// Returns the assertions that should be stored for this invocation.
+    fn assertions_to_store(&self) -> Vec<AssertionKey> {
+        if !self.assertion_specs.is_empty() {
+            return self.assertion_specs.clone();
+        }
+
+        vec![AssertionKey::new(
+            self.assertion_contract
+                .as_ref()
+                .expect("clap ensures either --assertion or positional arguments are provided")
+                .clone(),
+            self.constructor_args.clone(),
+        )]
     }
 
     /// Handles HTTP error responses from the DA layer.
@@ -145,6 +194,10 @@ impl DaStoreArgs {
                 "Visit the Credible Layer DApp to link the assertion on-chain and enforce it:"
             );
             println!("  {}", "https://dapp.phylax.systems".cyan().bold());
+            println!(
+                "Need a refresher on store vs submit? {}",
+                STORE_DOCS_URL.cyan().bold()
+            );
         }
     }
 
@@ -152,10 +205,16 @@ impl DaStoreArgs {
     ///
     /// # Returns
     /// * `Result<BuildAndFlatOutput, DaSubmitError>` - The build output or error
-    fn build_and_flatten_assertion(&self) -> Result<BuildAndFlatOutput, DaSubmitError> {
-        self.args
-            .run()
-            .map_err(|e| DaSubmitError::PhoundryError(Box::new(*e)))
+    fn build_and_flatten_assertion(
+        &self,
+        assertion_name: &str,
+    ) -> Result<BuildAndFlatOutput, DaSubmitError> {
+        BuildAndFlattenArgs {
+            assertion_contract: assertion_name.to_string(),
+            root: self.root.clone(),
+        }
+        .run()
+        .map_err(|e| DaSubmitError::PhoundryError(Box::new(*e)))
     }
 
     /// Creates a DA client with appropriate authentication.
@@ -186,6 +245,8 @@ impl DaStoreArgs {
     async fn submit_to_da(
         &self,
         client: &DaClient,
+        assertion_name: &str,
+        constructor_args: &[String],
         build_output: &BuildAndFlatOutput,
         spinner: &ProgressBar,
     ) -> Result<DaSubmissionResponse, DaSubmitError> {
@@ -195,10 +256,10 @@ impl DaStoreArgs {
             .map(|constructor| constructor.inputs.clone())
             .unwrap_or_default();
 
-        if constructor_inputs.len() != self.constructor_args.len() {
+        if constructor_inputs.len() != constructor_args.len() {
             return Err(DaSubmitError::InvalidConstructorArgs(
                 constructor_inputs.len(),
-                self.constructor_args.len(),
+                constructor_args.len(),
             ));
         }
 
@@ -212,11 +273,11 @@ impl DaStoreArgs {
 
         match client
             .submit_assertion_with_args(
-                self.args.assertion_contract.clone(),
+                assertion_name.to_string(),
                 build_output.flattened_source.clone(),
                 build_output.compiler_version.clone(),
                 constructor_signature,
-                self.constructor_args.clone(),
+                constructor_args.to_vec(),
             )
             .await
         {
@@ -259,16 +320,18 @@ impl DaStoreArgs {
     fn update_config<A: ToString + ?Sized, S: ToString + ?Sized>(
         &self,
         config: &mut CliConfig,
+        assertion_name: &str,
+        constructor_args: &[String],
         assertion_id: &A,
         signature: &S,
         spinner: &ProgressBar,
         json_output: bool,
     ) {
         let assertion_for_submission = AssertionForSubmission {
-            assertion_contract: self.args.assertion_contract.clone(),
+            assertion_contract: assertion_name.to_string(),
             assertion_id: assertion_id.to_string(),
             signature: signature.to_string(),
-            constructor_args: self.constructor_args.clone(),
+            constructor_args: constructor_args.to_vec(),
         };
 
         config.add_assertion_for_submission(assertion_for_submission.clone());
@@ -304,28 +367,53 @@ impl DaStoreArgs {
         config: &mut CliConfig,
     ) -> Result<(), DaSubmitError> {
         let json_output = cli_args.json_output();
-        let spinner = if json_output {
-            ProgressBar::hidden()
-        } else {
-            Self::create_spinner()
-        };
-
-        if !json_output {
-            spinner.set_message("Submitting assertion to DA...");
-        }
-
-        let build_output = self.build_and_flatten_assertion()?;
+        let assertions = self.assertions_to_store();
         let client = self
             .create_da_client(config)
             .map_err(DaSubmitError::DaClientError)?;
-        let submission_response = self.submit_to_da(&client, &build_output, &spinner).await?;
-        self.update_config(
-            config,
-            &submission_response.id,
-            &submission_response.prover_signature,
-            &spinner,
-            json_output,
-        );
+        let total = assertions.len();
+
+        for (index, assertion_key) in assertions.into_iter().enumerate() {
+            let spinner = if json_output {
+                ProgressBar::hidden()
+            } else {
+                Self::create_spinner()
+            };
+
+            if !json_output {
+                let prefix = if total > 1 {
+                    format!(
+                        "Submitting {} to DA ({}/{})...",
+                        assertion_key.assertion_name,
+                        index + 1,
+                        total
+                    )
+                } else {
+                    format!("Submitting {} to DA...", assertion_key.assertion_name)
+                };
+                spinner.set_message(prefix);
+            }
+
+            let build_output = self.build_and_flatten_assertion(&assertion_key.assertion_name)?;
+            let submission_response = self
+                .submit_to_da(
+                    &client,
+                    &assertion_key.assertion_name,
+                    &assertion_key.constructor_args,
+                    &build_output,
+                    &spinner,
+                )
+                .await?;
+            self.update_config(
+                config,
+                &assertion_key.assertion_name,
+                &assertion_key.constructor_args,
+                &submission_response.id,
+                &submission_response.prover_signature,
+                &spinner,
+                json_output,
+            );
+        }
 
         Ok(())
     }
@@ -368,11 +456,14 @@ mod tests {
         }
     }
 
-    /// Creates test build and flatten arguments
-    fn create_test_build_args() -> BuildAndFlattenArgs {
-        BuildAndFlattenArgs {
-            assertion_contract: "MockAssertion".to_string(),
-            root: Some("../../../testdata/mock-protocol".parse().unwrap()),
+    /// Creates default store args pointing at the mock-project testdata
+    fn create_test_store_args(da_url: String) -> DaStoreArgs {
+        DaStoreArgs {
+            da_url,
+            root: Some(PathBuf::from("../../../testdata/mock-protocol")),
+            assertion_specs: vec![],
+            assertion_contract: Some("MockAssertion".to_string()),
+            constructor_args: vec![Address::random().to_string()],
         }
     }
 
@@ -403,11 +494,7 @@ mod tests {
             .create();
 
         let mut config = create_test_config();
-        let args = DaStoreArgs {
-            da_url: server.url(),
-            args: create_test_build_args(),
-            constructor_args: vec![Address::random().to_string()],
-        };
+        let args = create_test_store_args(server.url());
 
         let cli_args = CliArgs::default();
         let result = args.run(&cli_args, &mut config).await;
@@ -435,11 +522,7 @@ mod tests {
             .create();
 
         let mut config = create_test_config();
-        let args = DaStoreArgs {
-            da_url: server.url(),
-            args: create_test_build_args(),
-            constructor_args: vec![Address::random().to_string()],
-        };
+        let args = create_test_store_args(server.url());
 
         let cli_args = CliArgs::parse_from(["test", "--json"]);
 
@@ -481,11 +564,8 @@ mod tests {
             .create();
 
         let mut config = create_test_config();
-        let args = DaStoreArgs {
-            da_url: server.url(),
-            args: create_test_build_args(),
-            constructor_args: vec!["invalid_arg".to_string()],
-        };
+        let mut args = create_test_store_args(server.url());
+        args.constructor_args = vec!["invalid_arg".to_string()];
 
         let cli_args = CliArgs::default();
         let result = args.run(&cli_args, &mut config).await;
@@ -511,7 +591,9 @@ mod tests {
     async fn test_display_success_info() {
         let args = DaStoreArgs {
             da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
-            args: create_test_build_args(),
+            root: None,
+            assertion_specs: vec![],
+            assertion_contract: Some("test_assertion".to_string()),
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
 
@@ -547,13 +629,7 @@ mod tests {
             .create();
 
         let mut config = create_test_config();
-        let args = create_test_build_args();
-
-        let args = DaStoreArgs {
-            da_url: server.url(),
-            args,
-            constructor_args: vec![Address::random().to_string()],
-        };
+        let args = create_test_store_args(server.url());
 
         let cli_args = CliArgs::default();
         let result = args.run(&cli_args, &mut config).await;
@@ -581,11 +657,7 @@ mod tests {
             .create();
 
         let mut config = create_test_config();
-        let args = DaStoreArgs {
-            da_url: server.url(),
-            args: create_test_build_args(),
-            constructor_args: vec![Address::random().to_string()],
-        };
+        let args = create_test_store_args(server.url());
 
         // Create CLI args with JSON output enabled
         let cli_args = CliArgs::parse_from(["test", "--json"]);
@@ -603,11 +675,7 @@ mod tests {
 
         let mut config = create_test_config();
         config.auth = None; // Simulate no auth
-        let args = DaStoreArgs {
-            da_url: server.url(),
-            args: create_test_build_args(),
-            constructor_args: vec![Address::random().to_string()],
-        };
+        let args = create_test_store_args(server.url());
 
         let cli_args = CliArgs::default();
         let result = args.run(&cli_args, &mut config).await;
@@ -622,11 +690,7 @@ mod tests {
         let mock = server.mock("POST", "/").with_status(500).create();
 
         let mut config = create_test_config();
-        let args = DaStoreArgs {
-            da_url: server.url(),
-            args: create_test_build_args(),
-            constructor_args: vec![Address::random().to_string()],
-        };
+        let args = create_test_store_args(server.url());
 
         let cli_args = CliArgs::default();
         let result = args.run(&cli_args, &mut config).await;
@@ -646,7 +710,9 @@ mod tests {
     async fn test_create_da_client_with_auth() {
         let args = DaStoreArgs {
             da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
-            args: BuildAndFlattenArgs::default(),
+            root: None,
+            assertion_specs: vec![],
+            assertion_contract: Some("ExampleAssertion".to_string()),
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
 
@@ -668,7 +734,9 @@ mod tests {
     async fn test_create_da_client_without_auth() {
         let args = DaStoreArgs {
             da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
-            args: BuildAndFlattenArgs::default(),
+            root: None,
+            assertion_specs: vec![],
+            assertion_contract: Some("ExampleAssertion".to_string()),
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
 
@@ -681,21 +749,30 @@ mod tests {
     async fn test_update_config() {
         let args = DaStoreArgs {
             da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
-            args: BuildAndFlattenArgs {
-                assertion_contract: "test_assertion".to_string(),
-                ..BuildAndFlattenArgs::default()
-            },
+            root: None,
+            assertion_specs: vec![],
+            assertion_contract: Some("test_assertion".to_string()),
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
 
         let mut config = CliConfig::default();
         let spinner = DaStoreArgs::create_spinner();
+        let constructor_args = vec!["arg1".to_string(), "arg2".to_string()];
+        let assertion_name = "test_assertion".to_string();
 
-        args.update_config(&mut config, "test_id", "test_signature", &spinner, false);
+        args.update_config(
+            &mut config,
+            &assertion_name,
+            &constructor_args,
+            "test_id",
+            "test_signature",
+            &spinner,
+            false,
+        );
 
         assert_eq!(config.assertions_for_submission.len(), 1);
 
-        let expected_key = "test_assertion(arg1,arg2)".to_string().into();
+        let expected_key = AssertionKey::new(assertion_name, constructor_args);
 
         let assertion = config.assertions_for_submission.get(&expected_key).unwrap();
         assert_eq!(assertion.assertion_contract, "test_assertion");
@@ -708,11 +785,7 @@ mod tests {
         let mut server = Server::new_async().await;
         let mock = server.mock("POST", "/").with_status(401).create();
 
-        let args = DaStoreArgs {
-            da_url: server.url(),
-            args: create_test_build_args(),
-            constructor_args: vec![Address::random().to_string()],
-        };
+        let args = create_test_store_args(server.url());
 
         let cli_args = CliArgs::default();
 
@@ -735,7 +808,9 @@ mod tests {
     async fn test_run_with_invalid_url() {
         let args = DaStoreArgs {
             da_url: "invalid-url".to_string(),
-            args: BuildAndFlattenArgs::default(),
+            root: None,
+            assertion_specs: vec![],
+            assertion_contract: Some("ExampleAssertion".to_string()),
             constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
         };
 

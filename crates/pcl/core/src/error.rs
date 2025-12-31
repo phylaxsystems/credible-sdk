@@ -22,8 +22,10 @@ pub enum DaSubmitError {
     #[error("HTTP Error: {0}")]
     HttpError(u16),
     /// Invalid Constructor Args
-    #[error("Invalid Constructor Args Count: Constructor Signature expects: {0}, Constructor Args submitted: {1};
-        Pass args by calling the command in the following format: `pcl store <assertion_contract> <arg0> <arg1>`"
+    #[error(
+        "Invalid constructor args count. Expected {0} but received {1}. \
+        Provide args as positional parameters (`pcl store <contract> <arg0> <arg1>`) \
+        or as formatted specs (`pcl store -a \"Contract(arg0,arg1)\"`)."
     )]
     InvalidConstructorArgs(usize, usize),
 }
@@ -47,7 +49,7 @@ pub enum DappSubmitError {
 
     /// Error when no projects are found for the authenticated user
     #[error(
-        "No projects found for the authenticated user.\nPlease run `pcl project new` or head to https://dapp.phylax.systems to create one."
+        "No projects found for the authenticated user.\nVisit https://dapp.phylax.systems to create one, then rerun `pcl submit`."
     )]
     NoProjectsFound,
 
