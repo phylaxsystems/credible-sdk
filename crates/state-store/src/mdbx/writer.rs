@@ -301,8 +301,12 @@ impl Writer for StateWriter {
         let buffer_size = u64::from(db.buffer_size());
         if block_number >= buffer_size {
             let cleanup_block = block_number - buffer_size;
-            let _ = tx.delete::<StateDiffs>(BlockNumber(cleanup_block), None);
-            let _ = tx.delete::<BlockMetadataTable>(BlockNumber(cleanup_block), None);
+            let _ = tx
+                .delete::<StateDiffs>(BlockNumber(cleanup_block), None)
+                .map_err(StateError::Database)?;
+            let _ = tx
+                .delete::<BlockMetadataTable>(BlockNumber(cleanup_block), None)
+                .map_err(StateError::Database)?;
         }
 
         // 8. Commit transaction (atomic)
