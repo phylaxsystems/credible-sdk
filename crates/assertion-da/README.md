@@ -50,17 +50,72 @@ docker compose -f etc/docker-compose-dev.yaml up
 
 **Note:** The `private-key` flag is required so the Assertion DA can sign the Assertion bytecode.
 
+## Database Backends
+
+The assertion-da supports two database backends for storing assertions:
+
+### Sled (Default)
+
+By default, assertions are stored in a local [Sled](https://github.com/spacejam/sled) embedded database. This is suitable for single-instance deployments and development.
+
+Configure with:
+- `--db-path` / `DA_DB_PATH`: Path to the database directory (defaults to platform-specific data directory)
+- `--cache-size` / `DA_CACHE_SIZE`: Cache size in bytes (default: 1000000)
+
+### Redis
+
+For production deployments requiring horizontal scaling or shared state across multiple instances, Redis can be used as the backend.
+
+**Requirements:**
+- Redis 7.0 or higher is required (uses `SET ... GET` command for atomic get-and-set operations)
+
+**Enable Redis by setting:**
+- `--redis-url` / `DA_REDIS_URL`: Redis connection URL (e.g., `redis://localhost:6379`)
+
+When `DA_REDIS_URL` is set, the Sled database options (`db-path`, `cache-size`) are ignored.
+
+**Example:**
+
+```bash
+# Using environment variable
+export DA_REDIS_URL=redis://localhost:6379
+cargo run --release --bin assertion-da -- --private-key <PRIVATE_KEY>
+
+# Using command line argument
+cargo run --release --bin assertion-da -- --private-key <PRIVATE_KEY> --redis-url redis://localhost:6379
+```
+
+**Docker Compose with Redis:**
+
+```yaml
+services:
+  assertion-da:
+    image: ghcr.io/phylaxsystems/assertion-da:latest
+    environment:
+      DA_PRIVATE_KEY: "0x..."
+      DA_REDIS_URL: "redis://redis:6379"
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+```
+
 ### Usage
 
 ```bash
 Usage: assertion-da [OPTIONS] --private-key <PRIVATE_KEY>
 
 Options:
-      --db-path <DB_PATH>          Path of the database, defaults to /usr/local/assertions [env: DA_DB_PATH=]
-      --cache-size <CACHE_SIZE>    Cache size in bytes [env: DA_CACHE_SIZE=] [default: 1000000]
-      --listen-addr <LISTEN_ADDR>  Api server address [env: DA_LISTEN_ADDR=] [default: 127.0.0.1:5001]
-      --private-key <PRIVATE_KEY>  Private key for the assertion DA [env: DA_PRIVATE_KEY=0x...]
+      --db-path <DB_PATH>          Path of the database (Sled only) [env: DA_DB_PATH=]
+      --cache-size <CACHE_SIZE>    Cache size in bytes (Sled only) [env: DA_CACHE_SIZE=] [default: 1000000]
+      --listen-addr <LISTEN_ADDR>  Api server address [env: DA_LISTEN_ADDR=] [default: 0.0.0.0:5001]
+      --private-key <PRIVATE_KEY>  Private key for the assertion DA [env: DA_PRIVATE_KEY=]
       --log-level <LOG_LEVEL>      Log level [env: DA_LOG_LEVEL=] [default: info]
+      --metrics-addr <METRICS_ADDR>  Metrics server address [env: DA_METRICS_ADDR=] [default: 0.0.0.0:9002]
+      --redis-url <REDIS_URL>      Redis URL - if set, uses Redis instead of Sled (requires Redis 7+) [env: DA_REDIS_URL=]
   -h, --help                       Print help
   -V, --version                    Print version
 ```
