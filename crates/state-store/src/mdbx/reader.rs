@@ -356,22 +356,8 @@ impl Reader for StateReader {
 }
 
 impl StateReader {
-    /// Create a new reader with read-write database access.
-    ///
-    /// This opens the database in read-write mode, which is needed if you
-    /// want to use the same path for both reader and writer.
-    pub fn new(path: impl AsRef<Path>, config: CircularBufferConfig) -> StateResult<Self> {
-        let db = StateDb::open(path, config)?;
-        Ok(Self { db })
-    }
-
     /// Create a new reader with read-only database access.
-    ///
-    /// More efficient if you only need to read. The database must already exist.
-    pub fn new_read_only(
-        path: impl AsRef<Path>,
-        config: CircularBufferConfig,
-    ) -> StateResult<Self> {
+    pub fn new(path: impl AsRef<Path>, config: CircularBufferConfig) -> StateResult<Self> {
         let db = StateDb::open_read_only(path, config)?;
         Ok(Self { db })
     }
@@ -463,7 +449,13 @@ mod tests {
     fn create_test_reader() -> (StateReader, TempDir) {
         let tmp = TempDir::new().unwrap();
         let config = CircularBufferConfig::new(3).unwrap();
-        let reader = StateReader::new(tmp.path().join("state"), config).unwrap();
+        let path = tmp.path().join("state");
+
+        // First create the database with write access to initialize it
+        let db = StateDb::open(&path, config).unwrap();
+
+        // Then create a reader from the existing db handle
+        let reader = StateReader { db };
         (reader, tmp)
     }
 
