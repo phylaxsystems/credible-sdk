@@ -1,6 +1,7 @@
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::missing_errors_doc)]
 
+use crate::redis::writer::StaleLockRecovery;
 use alloy::primitives::{
     Address,
     B256,
@@ -307,11 +308,6 @@ pub trait Reader {
 pub trait Writer {
     type Error: std::error::Error;
 
-    /// Get the most recent block number.
-    ///
-    /// Returns `None` if no blocks have been written yet.
-    fn latest_block_number(&self) -> Result<Option<u64>, Self::Error>;
-
     /// Commit a block's state update to the database.
     ///
     /// This handles:
@@ -322,6 +318,21 @@ pub trait Writer {
     /// All changes happen in a single transaction. If anything fails,
     /// the entire operation is rolled back.
     fn commit_block(&self, update: &BlockStateUpdate) -> Result<(), Self::Error>;
+
+    /// Ensure the Redis metadata matches the configured namespace rotation size.
+    fn ensure_dump_index_metadata(&self) -> Result<(), Self::Error>;
+
+    /// Check for and recover from stale locks on all namespaces.
+    ///
+    /// Should be called during startup before processing blocks. For each stale lock:
+    /// - If the state can be repaired (diffs exist): completes the write, releases lock
+    /// - If repair fails (missing diffs): returns error, lock remains in place
+    ///
+    /// The lock is NEVER released until the state is consistent, ensuring readers
+    /// cannot access corrupt data.
+    ///
+    /// Returns information about successfully recovered locks.
+    fn recover_stale_locks(&self) -> Result<Vec<StaleLockRecovery>, Self::Error>;
 }
 
 #[cfg(test)]
