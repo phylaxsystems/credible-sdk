@@ -48,7 +48,7 @@ rapidhash = "4.1.1"
 [features]
 default = ["full-test"]
 optimism = []
-phoundry = ["revm/optional_eip3607"]
+phoundry = ["revm/optional_eip3607", "revm/optional_block_gas_limit"]
 test = ["serde_json", "rand"]
 serde_json = []
 full-test = []
