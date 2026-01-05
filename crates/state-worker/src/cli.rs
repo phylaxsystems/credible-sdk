@@ -12,17 +12,14 @@ pub struct Args {
     #[arg(long, env = "STATE_WORKER_PROVIDER_TYPE")]
     pub provider_type: ProviderType,
 
-    #[arg(long, env = "STATE_WORKER_REDIS_URL")]
-    pub redis_url: String,
-
-    #[arg(long, env = "STATE_WORKER_REDIS_NAMESPACE", default_value = "state")]
-    pub redis_namespace: String,
+    #[arg(long, env = "STATE_WORKER_MDBX_PATH")]
+    pub mdbx_path: String,
 
     #[arg(long, env = "STATE_WORKER_START_BLOCK")]
     pub start_block: Option<u64>,
 
     #[arg(long, env = "STATE_WORKER_STATE_DEPTH", default_value = "3")]
-    pub state_depth: usize,
+    pub state_depth: u8,
 
     /// File to read genesis state from. Required to seed initial state.
     #[arg(long, env = "STATE_WORKER_FILE_TO_GENESIS")]

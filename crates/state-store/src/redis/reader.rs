@@ -298,6 +298,16 @@ impl StateReader {
         Ok(Self { client })
     }
 
+    /// Create a new reader from an existing client.
+    pub(crate) fn from_client(client: RedisStateClient) -> Self {
+        Self { client }
+    }
+
+    /// Get a reference to the underlying client.
+    pub(crate) fn client(&self) -> &RedisStateClient {
+        &self.client
+    }
+
     /// Scan all account hashes (keccak of addresses) in a namespace for a specific block.
     /// Returns a list of all keccak(address) hashes that have account data stored.
     ///
@@ -339,7 +349,7 @@ impl StateReader {
 
 /// Internal account state for Redis (uses different storage key format)
 #[derive(Debug, Clone)]
-struct InternalAccountState {
+pub(crate) struct InternalAccountState {
     pub address_hash: AddressHash,
     pub balance: U256,
     pub nonce: u64,
@@ -387,7 +397,7 @@ where
 
 /// Get account info without storage slots.
 /// This is the lightweight version that avoids loading potentially large storage.
-fn get_account_at_block<C>(
+pub(crate) fn get_account_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
@@ -449,7 +459,7 @@ where
 
 /// Get the complete account state including code and storage in a single roundtrip.
 /// WARNING: This can transfer large amounts of data for contracts with many storage slots.
-fn get_full_account_at_block<C>(
+pub(crate) fn get_full_account_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
@@ -542,7 +552,7 @@ where
 }
 
 /// Get a storage slot at a specific block.
-fn get_storage_at_block<C>(
+pub(crate) fn get_storage_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
@@ -582,7 +592,7 @@ where
 }
 
 /// Get all storage slots for an account at a block.
-fn get_all_storage_at_block<C>(
+pub(crate) fn get_all_storage_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
@@ -624,7 +634,7 @@ where
 }
 
 /// Get contract code at a specific block.
-fn get_code_at_block<C>(
+pub(crate) fn get_code_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,
@@ -731,7 +741,7 @@ where
 }
 
 /// Get block hash (shared across namespaces).
-fn get_block_hash<C>(
+pub(crate) fn get_block_hash<C>(
     conn: &mut C,
     base_namespace: &str,
     block_number: u64,
@@ -746,7 +756,7 @@ where
 }
 
 /// Get state root (shared across namespaces).
-fn get_state_root<C>(
+pub(crate) fn get_state_root<C>(
     conn: &mut C,
     base_namespace: &str,
     block_number: u64,
@@ -761,7 +771,7 @@ where
 }
 
 /// Check if a block is available in the circular buffer.
-fn is_block_available<C>(
+pub(crate) fn is_block_available<C>(
     conn: &mut C,
     base_namespace: &str,
     buffer_size: usize,

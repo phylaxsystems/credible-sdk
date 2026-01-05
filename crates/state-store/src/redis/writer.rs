@@ -4,11 +4,16 @@
 //! write locks to handle large state updates without blocking Redis for extended periods.
 
 use crate::{
+    AccountInfo,
     AccountState,
+    AddressHash,
+    BlockMetadata,
     BlockStateUpdate,
+    Reader,
     Writer,
     redis::{
         CircularBufferConfig,
+        StateReader,
         common::{
             ChunkedWriteConfig,
             NamespaceLock,
@@ -30,14 +35,18 @@ use crate::{
             get_state_root_key,
             get_storage_key,
             get_write_lock_key,
-            read_latest_block_number,
             read_namespace_block_number,
             read_namespace_lock,
             update_metadata_in_pipe,
         },
     },
 };
-use alloy::primitives::B256;
+use alloy::primitives::{
+    B256,
+    Bytes,
+    U256,
+};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Information about a recovered stale lock.
@@ -62,20 +71,120 @@ pub struct StaleLockRecovery {
 /// while maintaining consistency for readers.
 #[derive(Clone)]
 pub struct StateWriter {
-    client: RedisStateClient,
+    reader: StateReader,
     chunked_config: ChunkedWriteConfig,
     writer_id: String,
 }
 
-impl Writer for StateWriter {
+impl Reader for StateWriter {
     type Error = StateError;
 
-    /// Read the most recently persisted block number from Redis metadata.
+    /// Get the most recent block number from metadata (O(1) operation).
+    /// Falls back to scanning all namespaces if metadata is unavailable.
     fn latest_block_number(&self) -> StateResult<Option<u64>> {
-        let base_namespace = self.client.base_namespace.clone();
-        self.client
-            .with_connection(move |conn| read_latest_block_number(conn, &base_namespace))
+        self.reader.latest_block_number()
     }
+
+    /// Check if a specific block number is available in the circular buffer.
+    ///
+    /// Note: This checks availability without considering locks.
+    fn is_block_available(&self, block_number: u64) -> StateResult<bool> {
+        self.reader.is_block_available(block_number)
+    }
+
+    /// Get account info without storage slots (balance, nonce, code hash, code only).
+    /// This is the recommended method for most use cases to avoid large data transfers.
+    /// Use `get_full_account` or `get_all_storage` separately if storage is needed.
+    ///
+    /// Returns an error if the namespace is locked for writing.
+    fn get_account(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<Option<AccountInfo>> {
+        self.reader.get_account(address_hash, block_number)
+    }
+
+    /// Get a specific storage slot for an account at a block.
+    ///
+    /// The `slot_hash` parameter should be the `keccak256` hash of the original 32-byte slot index,
+    /// matching the format persisted by the writer (and Nethermind state dumps).
+    ///
+    /// Returns an error if the namespace is locked for writing.
+    fn get_storage(
+        &self,
+        address_hash: AddressHash,
+        slot_hash: B256,
+        block_number: u64,
+    ) -> StateResult<Option<U256>> {
+        self.reader
+            .get_storage(address_hash, slot_hash, block_number)
+    }
+
+    /// Get all storage slots for an account at a block.
+    ///
+    /// Returned map keys are `keccak256(slot)` digests corresponding to the original storage slots.
+    ///
+    /// Returns an error if the namespace is locked for writing.
+    fn get_all_storage(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<HashMap<B256, U256>> {
+        self.reader.get_all_storage(address_hash, block_number)
+    }
+
+    /// Get contract bytecode by code hash.
+    ///
+    /// Returns an error if the namespace is locked for writing.
+    fn get_code(&self, code_hash: B256, block_number: u64) -> StateResult<Option<Bytes>> {
+        self.reader.get_code(code_hash, block_number)
+    }
+
+    /// Get complete account state including storage.
+    ///
+    /// WARNING: This can transfer large amounts of data for contracts with many slots.
+    fn get_full_account(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<Option<AccountState>> {
+        self.reader.get_full_account(address_hash, block_number)
+    }
+
+    /// Get block hash for a specific block number.
+    ///
+    /// Note: Block hashes are stored globally, not per-namespace, so this does not
+    /// check namespace locks.
+    fn get_block_hash(&self, block_number: u64) -> StateResult<Option<B256>> {
+        self.reader.get_block_hash(block_number)
+    }
+
+    /// Get state root for a specific block number.
+    ///
+    /// Note: State roots are stored globally, not per-namespace, so this does not
+    /// check namespace locks.
+    fn get_state_root(&self, block_number: u64) -> StateResult<Option<B256>> {
+        self.reader.get_state_root(block_number)
+    }
+
+    /// Get complete block metadata (hash and state root).
+    /// Optimized to fetch both in a single roundtrip.
+    ///
+    /// Note: Block metadata is stored globally, not per-namespace, so this does not
+    /// check namespace locks.
+    fn get_block_metadata(&self, block_number: u64) -> StateResult<Option<BlockMetadata>> {
+        self.reader.get_block_metadata(block_number)
+    }
+
+    /// Get the range of available blocks [oldest, latest].
+    fn get_available_block_range(&self) -> StateResult<Option<(u64, u64)>> {
+        self.reader.get_available_block_range()
+    }
+}
+
+impl Writer for StateWriter {
+    type Error = StateError;
 
     /// Persist all account mutations for the block using chunked commits with locking.
     ///
@@ -85,8 +194,9 @@ impl Writer for StateWriter {
     /// 3. Apply current block's state changes in chunks
     /// 4. Finalize metadata and release lock
     fn commit_block(&self, update: &BlockStateUpdate) -> StateResult<()> {
-        let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
+        let client = self.reader.client();
+        let base_namespace = client.base_namespace.clone();
+        let buffer_size = client.buffer_config.buffer_size;
         let chunked_config = self.chunked_config.clone();
         let writer_id = self.writer_id.clone();
 
@@ -112,7 +222,7 @@ impl Writer for StateWriter {
                 .collect(),
         };
 
-        self.client.with_connection(move |conn| {
+        client.with_connection(move |conn| {
             commit_block_chunked(
                 conn,
                 &base_namespace,
@@ -120,6 +230,45 @@ impl Writer for StateWriter {
                 &chunked_config,
                 &writer_id,
                 &redis_update,
+            )
+        })
+    }
+
+    /// Ensure the Redis metadata matches the configured namespace rotation size.
+    fn ensure_dump_index_metadata(&self) -> StateResult<()> {
+        let client = self.reader.client();
+        let base_namespace = client.base_namespace.clone();
+        let buffer_size = client.buffer_config.buffer_size;
+
+        client.with_connection(move |conn| {
+            ensure_state_dump_indices(conn, &base_namespace, buffer_size)
+        })
+    }
+
+    /// Check for and recover from stale locks on all namespaces.
+    ///
+    /// Should be called during startup before processing blocks. For each stale lock:
+    /// - If the state can be repaired (diffs exist): completes the write, releases lock
+    /// - If repair fails (missing diffs): returns error, lock remains in place
+    ///
+    /// The lock is NEVER released until the state is consistent, ensuring readers
+    /// cannot access corrupt data.
+    ///
+    /// Returns information about successfully recovered locks.
+    fn recover_stale_locks(&self) -> StateResult<Vec<StaleLockRecovery>> {
+        let client = self.reader.client();
+        let base_namespace = client.base_namespace.clone();
+        let buffer_size = client.buffer_config.buffer_size;
+        let stale_timeout = self.chunked_config.stale_lock_timeout_secs;
+        let chunk_size = self.chunked_config.chunk_size;
+
+        client.with_connection(move |conn| {
+            recover_all_stale_locks(
+                conn,
+                &base_namespace,
+                buffer_size,
+                stale_timeout,
+                chunk_size,
             )
         })
     }
@@ -148,21 +297,12 @@ impl StateWriter {
         chunked_config: ChunkedWriteConfig,
     ) -> StateResult<Self> {
         let client = RedisStateClient::new(redis_url, base_namespace.to_string(), buffer_config)?;
+        let reader = StateReader::from_client(client);
         let writer_id = Uuid::new_v4().to_string();
         Ok(Self {
-            client,
+            reader,
             chunked_config,
             writer_id,
-        })
-    }
-
-    /// Ensure the Redis metadata matches the configured namespace rotation size.
-    pub fn ensure_dump_index_metadata(&self) -> StateResult<()> {
-        let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
-
-        self.client.with_connection(move |conn| {
-            ensure_state_dump_indices(conn, &base_namespace, buffer_size)
         })
     }
 
@@ -171,31 +311,9 @@ impl StateWriter {
         &self.writer_id
     }
 
-    /// Check for and recover from stale locks on all namespaces.
-    ///
-    /// Should be called during startup before processing blocks. For each stale lock:
-    /// - If the state can be repaired (diffs exist): completes the write, releases lock
-    /// - If repair fails (missing diffs): returns error, lock remains in place
-    ///
-    /// The lock is NEVER released until the state is consistent, ensuring readers
-    /// cannot access corrupt data.
-    ///
-    /// Returns information about successfully recovered locks.
-    pub fn recover_stale_locks(&self) -> StateResult<Vec<StaleLockRecovery>> {
-        let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
-        let stale_timeout = self.chunked_config.stale_lock_timeout_secs;
-        let chunk_size = self.chunked_config.chunk_size;
-
-        self.client.with_connection(move |conn| {
-            recover_all_stale_locks(
-                conn,
-                &base_namespace,
-                buffer_size,
-                stale_timeout,
-                chunk_size,
-            )
-        })
+    /// Get a reference to the underlying reader.
+    pub fn reader(&self) -> &StateReader {
+        &self.reader
     }
 
     /// Force recovery of a specific namespace by repairing its state and clearing the lock.
@@ -206,8 +324,9 @@ impl StateWriter {
         &self,
         namespace_idx: usize,
     ) -> StateResult<Option<StaleLockRecovery>> {
-        let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
+        let client = self.reader.client();
+        let base_namespace = client.base_namespace.clone();
+        let buffer_size = client.buffer_config.buffer_size;
         let stale_timeout = self.chunked_config.stale_lock_timeout_secs;
         let chunk_size = self.chunked_config.chunk_size;
 
@@ -218,7 +337,7 @@ impl StateWriter {
             ));
         }
 
-        self.client.with_connection(move |conn| {
+        client.with_connection(move |conn| {
             let namespace = format!("{base_namespace}:{namespace_idx}");
             recover_namespace_lock(
                 conn,

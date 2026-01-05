@@ -14,10 +14,6 @@ use crate::{
     cli::Args,
     worker::StateWorker,
 };
-use state_store::redis::{
-    CircularBufferConfig,
-    StateReader,
-};
 
 use rust_tracing::trace;
 use tracing::{
@@ -36,7 +32,13 @@ use anyhow::{
     Result,
 };
 use clap::Parser;
-use state_store::redis::StateWriter;
+use state_store::{
+    Writer,
+    mdbx::{
+        StateWriter,
+        common::CircularBufferConfig,
+    },
+};
 use std::{
     sync::Arc,
     time::Duration,
@@ -56,21 +58,14 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let provider = connect_provider(&args.ws_url).await?;
-    let writer = StateWriter::new(
-        args.redis_url.as_str(),
-        &args.redis_namespace,
+    let writer_reader = StateWriter::new(
+        args.mdbx_path.as_str(),
         CircularBufferConfig::new(args.state_depth)?,
     )
-    .context("failed to initialize redis client")?;
-    let reader = StateReader::new(
-        args.redis_url.as_str(),
-        &args.redis_namespace,
-        CircularBufferConfig::new(args.state_depth)?,
-    )
-    .context("failed to initialize redis client")?;
-    writer
+    .context("failed to initialize database client")?;
+    writer_reader
         .ensure_dump_index_metadata()
-        .context("failed to ensure redis namespace index metadata")?;
+        .context("failed to ensure database namespace index metadata")?;
     // Load genesis from file (required to seed initial state)
     let file_path = &args.file_to_genesis;
     info!("Loading genesis from file: {}", file_path);
@@ -105,7 +100,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut worker = StateWorker::new(provider, trace_provider, writer, reader, genesis_state);
+    let mut worker = StateWorker::new(provider, trace_provider, writer_reader, genesis_state);
 
     match worker.run(args.start_block, shutdown_rx).await {
         Ok(()) => {

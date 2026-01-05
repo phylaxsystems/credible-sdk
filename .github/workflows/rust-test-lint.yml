@@ -1,14 +1,14 @@
 name: Rust Test, Lint
 on:
   push:
-    branches: [main]
+    branches: [ main ]
     paths:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/rust-test-lint.yml"
   pull_request:
-    branches: [main]
+    branches: [ main ]
     paths:
       - "crates/**"
       - "Cargo.toml"
