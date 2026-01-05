@@ -28,8 +28,8 @@ reth-libmdbx = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 ignored = ["modular-bitfield"]
 
 [dev-dependencies]
-testcontainers = "0.26.0"
-testcontainers-modules = { version = "0.14.0", features = ["redis"] }
+testcontainers.workspace = true
+testcontainers-modules = { workspace = true, features = ["redis"] }
 tempfile = { workspace = true }
 
 [features]
