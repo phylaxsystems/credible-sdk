@@ -24,6 +24,7 @@ rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 state-store = { path = "../state-store", features = ["writer"] }
+metrics = { workspace = true }
 
 [dev-dependencies]
 int-test-utils = { path = "../int-test-utils" }

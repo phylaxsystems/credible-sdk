@@ -5,6 +5,7 @@ use crate::{
     AccountState,
     AddressHash,
     BlockMetadata,
+    ReadStats,
     Reader,
     redis::{
         CircularBufferConfig,
@@ -38,7 +39,14 @@ use alloy::primitives::{
     U256,
 };
 use redis::Pipeline;
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::Instant,
+};
+use tracing::{
+    instrument,
+    trace,
+};
 
 /// Thin wrapper for reading blockchain state from Redis.
 #[derive(Clone, Debug)]
@@ -75,6 +83,7 @@ impl Reader for StateReader {
     /// Use `get_full_account` or `get_all_storage` separately if storage is needed.
     ///
     /// Returns an error if the namespace is locked for writing.
+    #[instrument(skip(self), level = "trace")]
     fn get_account(
         &self,
         address_hash: AddressHash,
@@ -100,6 +109,7 @@ impl Reader for StateReader {
     /// matching the format persisted by the writer (and Nethermind state dumps).
     ///
     /// Returns an error if the namespace is locked for writing.
+    #[instrument(skip(self), level = "trace")]
     fn get_storage(
         &self,
         address_hash: AddressHash,
@@ -127,15 +137,17 @@ impl Reader for StateReader {
     /// Returned map keys are `keccak256(slot)` digests corresponding to the original storage slots.
     ///
     /// Returns an error if the namespace is locked for writing.
+    #[instrument(skip(self), level = "debug")]
     fn get_all_storage(
         &self,
         address_hash: AddressHash,
         block_number: u64,
     ) -> StateResult<HashMap<B256, U256>> {
+        let start = Instant::now();
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
 
-        self.client.with_connection(move |conn| {
+        let result = self.client.with_connection(move |conn| {
             let result = get_all_storage_at_block(
                 conn,
                 &base_namespace,
@@ -152,13 +164,22 @@ impl Reader for StateReader {
                         U256::from_be_bytes(value.into()),
                     )
                 })
-                .collect())
-        })
+                .collect::<HashMap<_, _>>())
+        })?;
+
+        trace!(
+            slots = result.len(),
+            duration_us = start.elapsed().as_micros(),
+            "get_all_storage complete"
+        );
+
+        Ok(result)
     }
 
     /// Get contract bytecode by code hash.
     ///
     /// Returns an error if the namespace is locked for writing.
+    #[instrument(skip(self), level = "trace")]
     fn get_code(&self, code_hash: B256, block_number: u64) -> StateResult<Option<Bytes>> {
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
@@ -173,15 +194,17 @@ impl Reader for StateReader {
     /// Get complete account state including storage.
     ///
     /// WARNING: This can transfer large amounts of data for contracts with many slots.
+    #[instrument(skip(self), level = "debug")]
     fn get_full_account(
         &self,
         address_hash: AddressHash,
         block_number: u64,
     ) -> StateResult<Option<AccountState>> {
+        let start = Instant::now();
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
 
-        self.client.with_connection(move |conn| {
+        let result = self.client.with_connection(move |conn| {
             let result = get_full_account_at_block(
                 conn,
                 &base_namespace,
@@ -205,7 +228,18 @@ impl Reader for StateReader {
                     deleted: a.deleted,
                 }
             }))
-        })
+        })?;
+
+        if let Some(ref acc) = result {
+            trace!(
+                storage_slots = acc.storage.len(),
+                has_code = acc.code.is_some(),
+                duration_us = start.elapsed().as_micros(),
+                "get_full_account complete"
+            );
+        }
+
+        Ok(result)
     }
 
     /// Get block hash for a specific block number.
@@ -312,13 +346,23 @@ impl StateReader {
     /// Returns a list of all keccak(address) hashes that have account data stored.
     ///
     /// Returns an error if the namespace is locked for writing.
+    #[instrument(skip(self), level = "debug")]
     pub fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
+        let start = Instant::now();
         let base_namespace = self.client.base_namespace.clone();
         let buffer_size = self.client.buffer_config.buffer_size;
 
-        self.client.with_connection(move |conn| {
+        let result = self.client.with_connection(move |conn| {
             scan_account_hashes_at_block(conn, &base_namespace, buffer_size, block_number)
-        })
+        })?;
+
+        trace!(
+            accounts = result.len(),
+            duration_us = start.elapsed().as_micros(),
+            "scan_account_hashes complete"
+        );
+
+        Ok(result)
     }
 
     /// Check if a specific block number is available and not locked for writing.
@@ -340,6 +384,26 @@ impl StateReader {
 
             Ok(true)
         })
+    }
+
+    /// Get all storage slots for an account with statistics.
+    ///
+    /// Same as `get_all_storage` but returns additional timing information.
+    #[instrument(skip(self), level = "debug")]
+    pub fn get_all_storage_with_stats(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<(HashMap<B256, U256>, ReadStats)> {
+        let start = Instant::now();
+        let storage = self.get_all_storage(address_hash, block_number)?;
+
+        let stats = ReadStats {
+            storage_slots_read: storage.len(),
+            duration: start.elapsed(),
+        };
+
+        Ok((storage, stats))
     }
 }
 

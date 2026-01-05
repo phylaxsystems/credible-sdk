@@ -15,7 +15,11 @@ use serde::{
     Deserialize,
     Serialize,
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    time::Duration,
+};
 
 pub mod mdbx;
 pub mod redis;
@@ -66,6 +70,12 @@ impl Compact for AccountInfo {
 )]
 #[serde(transparent)]
 pub struct AddressHash(pub B256);
+
+impl Display for AddressHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
+    }
+}
 
 impl AddressHash {
     pub fn new<T: AsRef<[u8]>>(bytes: T) -> Self {
@@ -233,6 +243,55 @@ pub struct BlockMetadata {
     pub state_root: B256,
 }
 
+/// Statistics from a block commit operation.
+///
+/// Returned by `Writer::commit_block()` to allow callers to track
+/// performance metrics without coupling the storage layer to a
+/// specific metrics library.
+#[derive(Debug, Clone, Default)]
+pub struct CommitStats {
+    /// Number of accounts written (created or updated).
+    pub accounts_written: usize,
+    /// Number of accounts deleted.
+    pub accounts_deleted: usize,
+    /// Number of storage slots written (non-zero values).
+    pub storage_slots_written: usize,
+    /// Number of storage slots deleted (set to zero).
+    pub storage_slots_deleted: usize,
+    /// Number of accounts whose entire storage was wiped.
+    pub full_storage_deletes: usize,
+    /// Number of bytecodes written.
+    pub bytecodes_written: usize,
+    /// Number of intermediate diffs applied during rotation.
+    pub diffs_applied: usize,
+    /// Size of the serialized diff in bytes.
+    pub diff_bytes: usize,
+    /// Largest storage count for any single account in this commit.
+    pub largest_account_storage: usize,
+
+    /// Time spent in parallel preprocessing (validation, diff creation, batch building).
+    pub preprocess_duration: Duration,
+    /// Time spent applying intermediate diffs during rotation.
+    pub diff_application_duration: Duration,
+    /// Time spent executing batch writes.
+    pub batch_write_duration: Duration,
+    /// Time spent in `tx.commit()` call.
+    pub commit_duration: Duration,
+    /// Total wall-clock time for the entire commit operation.
+    pub total_duration: Duration,
+}
+
+/// Statistics from read operations.
+///
+/// Returned by bulk read methods to help track performance.
+#[derive(Debug, Clone, Default)]
+pub struct ReadStats {
+    /// Number of storage slots read.
+    pub storage_slots_read: usize,
+    /// Time spent in the read operation.
+    pub duration: Duration,
+}
+
 /// Trait for reading blockchain state from a storage backend.
 pub trait Reader {
     type Error: std::error::Error;
@@ -317,7 +376,9 @@ pub trait Writer {
     ///
     /// All changes happen in a single transaction. If anything fails,
     /// the entire operation is rolled back.
-    fn commit_block(&self, update: &BlockStateUpdate) -> Result<(), Self::Error>;
+    ///
+    /// Returns statistics about the commit operation for metrics tracking.
+    fn commit_block(&self, update: &BlockStateUpdate) -> Result<CommitStats, Self::Error>;
 
     /// Ensure the Redis metadata matches the configured namespace rotation size.
     fn ensure_dump_index_metadata(&self) -> Result<(), Self::Error>;
@@ -362,5 +423,12 @@ mod tests {
         assert_eq!(decoded.block_number, 100);
         assert_eq!(decoded.accounts.len(), 1);
         assert_eq!(decoded.accounts[0].balance, U256::from(1000));
+    }
+
+    #[test]
+    fn test_commit_stats_default() {
+        let stats = CommitStats::default();
+        assert_eq!(stats.accounts_written, 0);
+        assert_eq!(stats.total_duration, Duration::ZERO);
     }
 }

@@ -39,6 +39,7 @@ use crate::{
     AccountState,
     AddressHash,
     BlockMetadata,
+    ReadStats,
     Reader,
     mdbx::{
         common::{
@@ -80,6 +81,11 @@ use reth_db_api::{
 use std::{
     collections::HashMap,
     path::Path,
+    time::Instant,
+};
+use tracing::{
+    instrument,
+    trace,
 };
 
 /// State reader for querying blockchain state from MDBX.
@@ -123,6 +129,7 @@ impl Reader for StateReader {
     /// # Errors
     ///
     /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    #[instrument(skip(self), level = "trace")]
     fn get_account(
         &self,
         address_hash: AddressHash,
@@ -156,6 +163,7 @@ impl Reader for StateReader {
     /// # Errors
     ///
     /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    #[instrument(skip(self), level = "trace")]
     fn get_storage(
         &self,
         address_hash: AddressHash,
@@ -187,11 +195,13 @@ impl Reader for StateReader {
     /// # Errors
     ///
     /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    #[instrument(skip(self), level = "debug")]
     fn get_all_storage(
         &self,
         address_hash: AddressHash,
         block_number: u64,
     ) -> StateResult<HashMap<B256, U256>> {
+        let start = Instant::now();
         let tx = self.db.tx()?;
         let namespace_idx = self.db.namespace_for_block(block_number)?;
 
@@ -222,6 +232,12 @@ impl Reader for StateReader {
             }
         }
 
+        trace!(
+            slots = result.len(),
+            duration_us = start.elapsed().as_micros(),
+            "get_all_storage complete"
+        );
+
         Ok(result)
     }
 
@@ -233,6 +249,7 @@ impl Reader for StateReader {
     /// # Errors
     ///
     /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    #[instrument(skip(self), level = "trace")]
     fn get_code(&self, code_hash: B256, block_number: u64) -> StateResult<Option<Bytes>> {
         let tx = self.db.tx()?;
         let namespace_idx = self.db.namespace_for_block(block_number)?;
@@ -256,11 +273,13 @@ impl Reader for StateReader {
     /// # Errors
     ///
     /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    #[instrument(skip(self), level = "debug")]
     fn get_full_account(
         &self,
         address_hash: AddressHash,
         block_number: u64,
     ) -> StateResult<Option<AccountState>> {
+        let start = Instant::now();
         let tx = self.db.tx()?;
         let namespace_idx = self.db.namespace_for_block(block_number)?;
 
@@ -303,6 +322,13 @@ impl Reader for StateReader {
         } else {
             None
         };
+
+        trace!(
+            storage_slots = storage.len(),
+            has_code = code.is_some(),
+            duration_us = start.elapsed().as_micros(),
+            "get_full_account complete"
+        );
 
         Ok(Some(AccountState {
             address_hash,
@@ -385,7 +411,9 @@ impl StateReader {
     /// # Errors
     ///
     /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    #[instrument(skip(self), level = "debug")]
     pub fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
+        let start = Instant::now();
         let tx = self.db.tx()?;
         let namespace_idx = self.db.namespace_for_block(block_number)?;
 
@@ -411,7 +439,33 @@ impl StateReader {
             }
         }
 
+        trace!(
+            accounts = result.len(),
+            duration_us = start.elapsed().as_micros(),
+            "scan_account_hashes complete"
+        );
+
         Ok(result)
+    }
+
+    /// Get all storage slots for an account with statistics.
+    ///
+    /// Same as `get_all_storage` but returns additional timing information.
+    #[instrument(skip(self), level = "debug")]
+    pub fn get_all_storage_with_stats(
+        &self,
+        address_hash: AddressHash,
+        block_number: u64,
+    ) -> StateResult<(HashMap<B256, U256>, ReadStats)> {
+        let start = Instant::now();
+        let storage = self.get_all_storage(address_hash, block_number)?;
+
+        let stats = ReadStats {
+            storage_slots_read: storage.len(),
+            duration: start.elapsed(),
+        };
+
+        Ok((storage, stats))
     }
 
     /// Get block metadata from internal table format.

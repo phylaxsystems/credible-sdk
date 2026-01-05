@@ -1178,7 +1178,7 @@ async fn test_concurrent_writers_lock_contention() -> Result<()> {
     match result {
         Err(crate::redis::common::error::StateError::LockAcquisitionFailed { .. }) => {}
         Err(e) => panic!("Expected LockAcquisitionFailed, got: {e:?}"),
-        Ok(()) => panic!("Expected error, got success"),
+        Ok(_) => panic!("Expected error, got success"),
     }
 
     conn.del::<_, ()>(&lock_key)?;
@@ -1565,7 +1565,7 @@ async fn test_stale_lock_blocks_both_reader_and_writer() -> Result<()> {
             assert_eq!(writer_id, "crashed-writer");
         }
         Err(e) => panic!("Expected StaleLockDetected for writer, got: {e:?}"),
-        Ok(()) => panic!("Expected error"),
+        Ok(_) => panic!("Expected error"),
     }
 
     Ok(())

@@ -6,6 +6,7 @@
 use crate::{
     critical,
     genesis::GenesisState,
+    metrics::WorkerMetrics,
     state::{
         BlockStateUpdateBuilder,
         TraceProvider,
@@ -56,6 +57,7 @@ where
     trace_provider: Box<dyn TraceProvider>,
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
+    metrics: WorkerMetrics,
 }
 
 impl<WR> StateWorker<WR>
@@ -75,6 +77,7 @@ where
             trace_provider,
             writer_reader,
             genesis_state,
+            metrics: WorkerMetrics::new(),
         }
     }
 
@@ -140,6 +143,7 @@ where
                             writer_id = %recovery.writer_id,
                             "recovered stale lock and repaired state"
                         );
+                        self.metrics.record_stale_lock_recovery();
                     }
                 }
                 Ok(())
@@ -260,6 +264,7 @@ where
             Ok(update) => update,
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to trace block");
+                self.metrics.record_block_failure();
                 return Err(anyhow!("failed to trace block {block_number}"));
             }
         };
@@ -268,9 +273,12 @@ where
         self.apply_system_calls(&mut update, block_number).await?;
 
         match self.writer_reader.commit_block(&update) {
-            Ok(()) => (),
+            Ok(stats) => {
+                self.metrics.record_commit(block_number, &stats);
+            }
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to persist block");
+                self.metrics.record_block_failure();
                 return Err(anyhow!("failed to persist block {block_number}"));
             }
         }
@@ -368,9 +376,12 @@ where
         );
 
         match self.writer_reader.commit_block(&update) {
-            Ok(()) => (),
+            Ok(stats) => {
+                self.metrics.record_commit(0, &stats);
+            }
             Err(err) => {
                 critical!(error = ?err, block_number = 0, "failed to persist genesis block");
+                self.metrics.record_block_failure();
                 return Err(anyhow!("failed to persist genesis block"));
             }
         }

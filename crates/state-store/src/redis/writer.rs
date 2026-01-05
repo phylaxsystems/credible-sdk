@@ -9,6 +9,7 @@ use crate::{
     AddressHash,
     BlockMetadata,
     BlockStateUpdate,
+    CommitStats,
     Reader,
     Writer,
     redis::{
@@ -46,7 +47,17 @@ use alloy::primitives::{
     Bytes,
     U256,
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::Instant,
+};
+use tracing::{
+    Span,
+    debug,
+    instrument,
+    trace,
+    warn,
+};
 use uuid::Uuid;
 
 /// Information about a recovered stale lock.
@@ -193,7 +204,19 @@ impl Writer for StateWriter {
     /// 2. Apply intermediate diffs in chunks (if needed for circular buffer rotation)
     /// 3. Apply current block's state changes in chunks
     /// 4. Finalize metadata and release lock
-    fn commit_block(&self, update: &BlockStateUpdate) -> StateResult<()> {
+    ///
+    /// Returns `CommitStats` with timing and count information for metrics.
+    #[instrument(
+        skip(self, update),
+        fields(
+            block_number = update.block_number,
+            accounts = update.accounts.len(),
+        ),
+        level = "debug"
+    )]
+    fn commit_block(&self, update: &BlockStateUpdate) -> StateResult<CommitStats> {
+        let total_start = Instant::now();
+
         let client = self.reader.client();
         let base_namespace = client.base_namespace.clone();
         let buffer_size = client.buffer_config.buffer_size;
@@ -222,7 +245,7 @@ impl Writer for StateWriter {
                 .collect(),
         };
 
-        client.with_connection(move |conn| {
+        let stats = client.with_connection(move |conn| {
             commit_block_chunked(
                 conn,
                 &base_namespace,
@@ -231,7 +254,29 @@ impl Writer for StateWriter {
                 &writer_id,
                 &redis_update,
             )
-        })
+        })?;
+
+        let total_duration = total_start.elapsed();
+
+        // Record final metrics on span
+        Span::current().record(
+            "total_ms",
+            i64::try_from(total_duration.as_millis()).map_err(StateError::IntConversion)?,
+        );
+
+        debug!(
+            total_ms = total_duration.as_millis(),
+            preprocess_ms = stats.preprocess_duration.as_millis(),
+            diff_apply_ms = stats.diff_application_duration.as_millis(),
+            batch_write_ms = stats.batch_write_duration.as_millis(),
+            commit_ms = stats.commit_duration.as_millis(),
+            diffs_applied = stats.diffs_applied,
+            accounts_written = stats.accounts_written,
+            storage_written = stats.storage_slots_written,
+            "block committed to redis"
+        );
+
+        Ok(stats)
     }
 
     /// Ensure the Redis metadata matches the configured namespace rotation size.
@@ -255,6 +300,7 @@ impl Writer for StateWriter {
     /// cannot access corrupt data.
     ///
     /// Returns information about successfully recovered locks.
+    #[instrument(skip(self), level = "debug")]
     fn recover_stale_locks(&self) -> StateResult<Vec<StaleLockRecovery>> {
         let client = self.reader.client();
         let base_namespace = client.base_namespace.clone();
@@ -320,6 +366,7 @@ impl StateWriter {
     ///
     /// This will attempt to complete the interrupted write. If the required diffs
     /// are not available, returns an error and leaves the lock in place.
+    #[instrument(skip(self), level = "debug")]
     pub fn force_recover_namespace(
         &self,
         namespace_idx: usize,
@@ -397,8 +444,18 @@ where
             stale_timeout_secs,
             chunk_size,
         )? {
+            debug!(
+                namespace = %recovery.namespace,
+                target_block = recovery.target_block,
+                writer_id = %recovery.writer_id,
+                "recovered stale lock"
+            );
             recoveries.push(recovery);
         }
+    }
+
+    if !recoveries.is_empty() {
+        debug!(count = recoveries.len(), "stale lock recovery complete");
     }
 
     Ok(recoveries)
@@ -434,11 +491,21 @@ where
     let current_block = read_namespace_block_number(conn, namespace)?;
     let target_block = lock.target_block;
 
+    trace!(
+        namespace = namespace,
+        current_block = ?current_block,
+        target_block = target_block,
+        writer_id = %lock.writer_id,
+        "found stale lock, attempting recovery"
+    );
+
     // Case 1: Write already completed (crash happened after metadata update but before lock release)
     // State is consistent, just release the lock
     if current_block == Some(target_block) {
         let lock_key = get_write_lock_key(namespace);
         redis::cmd("DEL").arg(&lock_key).query::<()>(conn)?;
+
+        trace!(namespace = namespace, "lock released (write was complete)");
 
         return Ok(Some(StaleLockRecovery {
             namespace: namespace.to_string(),
@@ -452,41 +519,52 @@ where
     // Case 2: Write did not complete, so need to repair by re-applying diffs
     let start_block = current_block.map_or(0, |b| b + 1);
 
+    debug!(
+        namespace = namespace,
+        start_block = start_block,
+        target_block = target_block,
+        diffs_to_apply = target_block - start_block + 1,
+        "repairing namespace state"
+    );
+
     for block_num in start_block..=target_block {
         let diff_key = get_diff_key(base_namespace, block_num);
         let diff_json: Option<String> = redis::cmd("GET").arg(&diff_key).query(conn)?;
 
-        match diff_json {
-            Some(json) => {
-                let diff = RedisBlockStateUpdate::from_json(&json, block_num)?;
-                let accounts: Vec<&AccountState> = diff.accounts.iter().collect();
+        if let Some(json) = diff_json {
+            let diff = RedisBlockStateUpdate::from_json(&json, block_num)?;
+            let accounts: Vec<&AccountState> = diff.accounts.iter().collect();
 
-                // Apply account changes in chunks
-                for chunk in accounts.chunks(chunk_size) {
-                    write_account_chunk(conn, namespace, chunk)?;
-                }
-
-                // If this is the target block, finalize with metadata
-                if block_num == target_block {
-                    write_block_metadata(
-                        conn,
-                        namespace,
-                        base_namespace,
-                        target_block,
-                        diff.block_hash,
-                        diff.state_root,
-                        buffer_size,
-                    )?;
-                }
+            // Apply account changes in chunks
+            for chunk in accounts.chunks(chunk_size) {
+                write_account_chunk(conn, namespace, chunk)?;
             }
-            None => {
-                // Cannot complete recovery
-                // DO NOT release the lock
-                return Err(StateError::MissingStateDiff {
-                    needed_block: block_num,
+
+            // If this is the target block, finalize with metadata
+            if block_num == target_block {
+                write_block_metadata(
+                    conn,
+                    namespace,
+                    base_namespace,
                     target_block,
-                });
+                    diff.block_hash,
+                    diff.state_root,
+                    buffer_size,
+                )?;
             }
+        } else {
+            // Cannot complete recovery
+            // DO NOT release the lock
+            warn!(
+                namespace = namespace,
+                needed_block = block_num,
+                target_block = target_block,
+                "cannot recover: missing state diff"
+            );
+            return Err(StateError::MissingStateDiff {
+                needed_block: block_num,
+                target_block,
+            });
         }
     }
 
@@ -501,11 +579,6 @@ where
         started_at: lock.started_at,
         previous_block: current_block,
     }))
-}
-
-/// Serialize state diff for storage.
-fn serialize_state_diff(update: &RedisBlockStateUpdate) -> StateResult<String> {
-    update.to_json()
 }
 
 /// Acquire write lock for a namespace using SET NX (set if not exists).
@@ -548,6 +621,7 @@ where
         .query(conn)?;
 
     if result.is_some() {
+        trace!(namespace = namespace, "write lock acquired");
         Ok(())
     } else {
         Err(StateError::LockAcquisitionFailed {
@@ -584,6 +658,7 @@ where
 
     if should_delete {
         let _: Option<()> = redis::pipe().atomic().del(&lock_key).query(conn)?;
+        trace!(namespace = namespace, "write lock released");
     } else {
         redis::cmd("UNWATCH").query::<()>(conn)?;
     }
@@ -681,34 +756,10 @@ where
     Ok(())
 }
 
-/// Store the state diff for a block.
-fn store_state_diff<C>(
-    conn: &mut C,
-    base_namespace: &str,
-    update: &RedisBlockStateUpdate,
-    buffer_size: usize,
-) -> StateResult<()>
-where
-    C: redis::ConnectionLike,
-{
-    let mut pipe = redis::pipe();
-
-    let diff_key = get_diff_key(base_namespace, update.block_number);
-    let diff_data = serialize_state_diff(update)?;
-    pipe.set(&diff_key, diff_data);
-
-    // Delete old state diff
-    if update.block_number >= buffer_size as u64 {
-        let old_block = update.block_number - buffer_size as u64;
-        let old_diff_key = get_diff_key(base_namespace, old_block);
-        pipe.del(&old_diff_key);
-    }
-
-    pipe.query::<()>(conn)?;
-    Ok(())
-}
-
 /// Commit a block using chunked writes with locking.
+///
+/// Returns `CommitStats` with timing and count information.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn commit_block_chunked<C>(
     conn: &mut C,
     base_namespace: &str,
@@ -716,13 +767,45 @@ pub(crate) fn commit_block_chunked<C>(
     chunked_config: &ChunkedWriteConfig,
     writer_id: &str,
     update: &RedisBlockStateUpdate,
-) -> StateResult<()>
+) -> StateResult<CommitStats>
 where
     C: redis::ConnectionLike,
 {
+    let total_start = Instant::now();
+    let mut stats = CommitStats::default();
+
     let block_number = update.block_number;
     let namespace = get_namespace_for_block(base_namespace, block_number, buffer_size)?;
     let current_block = read_namespace_block_number(conn, &namespace)?;
+
+    // Collect stats from update
+    stats.accounts_written = update.accounts.iter().filter(|a| !a.deleted).count();
+    stats.accounts_deleted = update.accounts.iter().filter(|a| a.deleted).count();
+    stats.storage_slots_written = update
+        .accounts
+        .iter()
+        .flat_map(|a| a.storage.iter())
+        .filter(|(_, v)| !v.is_zero())
+        .count();
+    stats.storage_slots_deleted = update
+        .accounts
+        .iter()
+        .flat_map(|a| a.storage.iter())
+        .filter(|(_, v)| v.is_zero())
+        .count();
+    stats.bytecodes_written = update.accounts.iter().filter(|a| a.code.is_some()).count();
+    stats.largest_account_storage = update
+        .accounts
+        .iter()
+        .map(|a| a.storage.len())
+        .max()
+        .unwrap_or(0);
+
+    // Preprocess timing (serialization happens here)
+    let preprocess_start = Instant::now();
+    let diff_json = update.to_json()?;
+    stats.diff_bytes = diff_json.len();
+    stats.preprocess_duration = preprocess_start.elapsed();
 
     // Create and acquire lock
     let lock = NamespaceLock::new(block_number, writer_id.to_string());
@@ -738,7 +821,17 @@ where
         let start_block = current_block.map_or(0, |old| old + 1);
 
         // Phase 1: Apply intermediate diffs if there's a gap
+        let diff_start = Instant::now();
         if block_number > start_block {
+            let diffs_to_apply = block_number - start_block;
+            debug!(
+                namespace = %namespace,
+                current_block = ?current_block,
+                target_block = block_number,
+                diffs = diffs_to_apply,
+                "applying intermediate diffs for rotation"
+            );
+
             for intermediate_block in start_block..block_number {
                 let diff_key = get_diff_key(base_namespace, intermediate_block);
                 let diff_json: Option<String> = redis::cmd("GET").arg(&diff_key).query(conn)?;
@@ -749,6 +842,7 @@ where
                     for chunk in accounts.chunks(chunked_config.chunk_size) {
                         write_account_chunk(conn, &namespace, chunk)?;
                     }
+                    stats.diffs_applied += 1;
                 } else {
                     return Err(StateError::MissingStateDiff {
                         needed_block: intermediate_block,
@@ -757,14 +851,18 @@ where
                 }
             }
         }
+        stats.diff_application_duration = diff_start.elapsed();
 
         // Phase 2: Write current block's accounts in chunks
+        let batch_start = Instant::now();
         let accounts: Vec<&AccountState> = update.accounts.iter().collect();
         for chunk in accounts.chunks(chunked_config.chunk_size) {
             write_account_chunk(conn, &namespace, chunk)?;
         }
+        stats.batch_write_duration = batch_start.elapsed();
 
         // Phase 3: Finalize
+        let commit_start = Instant::now();
         write_block_metadata(
             conn,
             &namespace,
@@ -775,7 +873,20 @@ where
             buffer_size,
         )?;
 
-        store_state_diff(conn, base_namespace, update, buffer_size)?;
+        // Store the diff (we already have it serialized)
+        let diff_key = get_diff_key(base_namespace, update.block_number);
+        redis::cmd("SET")
+            .arg(&diff_key)
+            .arg(&diff_json)
+            .query::<()>(conn)?;
+
+        // Delete old state diff
+        if update.block_number >= buffer_size as u64 {
+            let old_block = update.block_number - buffer_size as u64;
+            let old_diff_key = get_diff_key(base_namespace, old_block);
+            redis::cmd("DEL").arg(&old_diff_key).query::<()>(conn)?;
+        }
+        stats.commit_duration = commit_start.elapsed();
 
         Ok(())
     })();
@@ -783,7 +894,19 @@ where
     // Always release lock
     release_write_lock(conn, &namespace, writer_id)?;
 
-    result
+    result?;
+
+    stats.total_duration = total_start.elapsed();
+
+    trace!(
+        accounts_written = stats.accounts_written,
+        storage_written = stats.storage_slots_written,
+        diff_bytes = stats.diff_bytes,
+        total_ms = stats.total_duration.as_millis(),
+        "commit complete"
+    );
+
+    Ok(stats)
 }
 
 #[cfg(test)]
@@ -811,7 +934,7 @@ mod tests {
             }],
         };
 
-        let serialized = serialize_state_diff(&update).unwrap();
+        let serialized = update.to_json().unwrap();
         let deserialized = RedisBlockStateUpdate::from_json(&serialized, 42).unwrap();
 
         assert_eq!(deserialized.block_number, 42);
