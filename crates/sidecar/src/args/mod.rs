@@ -165,12 +165,10 @@ pub struct StateConfig {
     pub eth_rpc_source_ws_url: Option<String>,
     /// Eth RCP source HTTP bind address and port
     pub eth_rpc_source_http_url: Option<String>,
-    /// Redis bind address and port
-    pub redis_url: Option<String>,
-    /// Namespace prefix for Redis keys.
-    pub redis_namespace: Option<String>,
-    /// Redis state depth (how many blocks behind head Redis will have the data from)
-    pub redis_depth: Option<usize>,
+    /// State worker MDBX path
+    pub state_worker_mdbx_path: Option<String>,
+    /// State worker depth (how many blocks behind head state worker will have the data from)
+    pub state_worker_depth: Option<usize>,
     /// Minimum state diff to consider a cache synced
     pub minimum_state_diff: u64,
     /// Maximum time (ms) the engine will wait for a state source to report as  synced before
@@ -224,9 +222,8 @@ mod tests {
   "state": {
     "eth_rpc_source_ws_url": "ws://localhost:8548",
     "eth_rpc_source_http_url": "http://localhost:8545",
-    "redis_url": "redis://localhost:6379",
-    "redis_namespace": "sidecar",
-    "redis_depth": 100,
+    "state_worker_mdbx_path": "/data/state_worker.mdbx",
+    "state_worker_depth": 100,
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -276,11 +273,10 @@ mod tests {
             Some("http://localhost:8545".to_string())
         );
         assert_eq!(
-            config.state.redis_url,
-            Some("redis://localhost:6379".to_string())
+            config.state.state_worker_mdbx_path,
+            Some("/data/state_worker.mdbx".to_string())
         );
-        assert_eq!(config.state.redis_namespace, Some("sidecar".to_string()));
-        assert_eq!(config.state.redis_depth, Some(100));
+        assert_eq!(config.state.state_worker_depth, Some(100));
         assert_eq!(config.state.minimum_state_diff, 10);
         assert_eq!(config.state.sources_sync_timeout_ms, 30000);
         assert_eq!(config.state.sources_monitoring_period_ms, 1000);
@@ -365,8 +361,7 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
-    "redis_namespace": "test",
-    "redis_depth": 50,
+    "state_worker_depth": 50,
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -412,8 +407,8 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
-    "redis_namespace": "sidecar",
-    "redis_depth": 100,
+    "state_worker_mdbx_path": "/data/state_worker.mdbx",
+    "state_worker_depth": 3,
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -466,6 +461,6 @@ mod tests {
         let config = Config::from_file(temp_file.path()).unwrap();
 
         assert_eq!(config.state.eth_rpc_source_ws_url, None);
-        assert_eq!(config.state.redis_url, None);
+        assert_eq!(config.state.state_worker_mdbx_path, None);
     }
 }

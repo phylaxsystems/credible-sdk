@@ -1,38 +1,22 @@
 # `state-worker`
 
 The `state-worker` is a component that pulls in state from a blockchain and commits it to
-an external redis database.
+an external mdbx database.
 
 The `state-worker` subscribes to the `newHeads` subscription over WS and then for every new block.
 
 - If configured with provider type `parity`: it uses `trace_replayBlockTransactions` to get the state changes made in a
-  block which later get collapsed into a single block which gets committed to redis.
+  block which later get collapsed into a single block which gets committed to mdbx.
 - If configured with provider type `geth`: it uses `debug_traceByBlockHash` and `debug_traceByBlockNumber` to get the
   state changes made in a block.
 
-The changes are stored in a `revm::DatabaseRef` compatible format so we can consume the redis cache directly
+The changes are stored in a `revm::DatabaseRef` compatible format so we can consume the mdbx cache directly
 in the sidecar by calling into it.
-
-## Redis state representation
-
-The redis state is represented as follows:
-
-```
-state:account:{address}       → {balance, nonce, code_hash}
-state:storage:{address}       → {slot1: value1, slot2: value2, ...}
-state:code:{code_hash}        → hex-encoded bytecode
-state:{idx}:block             → marker identifying which block the namespace stores
-state:meta:latest_block       → latest synced block number
-state:state_dump_indices      → number of namespaces in the circular buffer
-state:block_hash:{number}     → block hash
-state:state_root:{number}     → state root
-```
 
 ## Using and configuring the `state-worker`
 
-The state worker requires `--ws-url` for the Ethereum WebSocket endpoint, `--redis-url` for the Redis
-database, and `--file-to-genesis` to preload the initial state from a file. Optional flags include:
+The state worker requires `--ws-url` for the Ethereum WebSocket endpoint, `--mdbx-path` for the MDBX
+disk path, and `--file-to-genesis` to preload the initial state from a file. Optional flags include:
 
-- `--redis-namespace` to change the key namespace (defaults to `state`).
 - `--start-block` to override the resume position derived from `state:meta:latest_block`.
 - `--trace-timeout-secs` to tune the timeout for `debug_traceBlockBy*` calls (default 30 seconds).
