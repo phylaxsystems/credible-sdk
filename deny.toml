@@ -74,8 +74,17 @@ ignore = [
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
     #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
-    # https://rustsec.org/advisories/RUSTSEC-2025-0137
-    "RUSTSEC-2025-0137",
+    # https://rustsec.org/advisories/RUSTSEC-2018-0017.html, tempdir unmaintained in sled,
+    "RUSTSEC-2018-0017",
+    # https://rustsec.org/advisories/RUSTSEC-2018-0018.html, old version of remove_dir_all in tempdire/sled
+    "RUSTSEC-2023-0018",
+    # https://rustsec.org/advisories/RUSTSEC-2024-0436.html, paste! unmaintained
+    "RUSTSEC-2024-0436",
+    # https://rustsec.org/advisories/RUSTSEC-2024-0437.html
+    # old version of protobuf
+    "RUSTSEC-2024-0437",
+    # https://rustsec.org/advisories/RUSTSEC-2025-0134.html
+    "RUSTSEC-2025-0134",
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
