@@ -40,7 +40,7 @@ jobs:
   rust-base:
     name: Rust Base Nextest
     needs: setup
-    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@add-cargo-deny
+    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
     with:
       runner-group: "big-bois-x86"
       rust-channel: ${{ needs.setup.outputs.rust-nightly }}
