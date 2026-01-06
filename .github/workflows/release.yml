@@ -1,11 +1,92 @@
-name: Release and Publish
+name: Tag, Release and Publish
 
 on:
   push:
     tags:
       - "*.*.*"
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+
 jobs:
+  # Only runs on main branch push - creates tag if version changed
+  create-tag:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract versions and create tag if changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          get_version() {
+            awk '
+              /^\[workspace\.package\][[:space:]]*$/ { in_section=1; next }
+              /^\[/ { in_section=0 }
+              in_section && /^[[:space:]]*version[[:space:]]*=/ {
+                sub(/.*=[[:space:]]*"/, "")
+                sub(/".*/, "")
+                print; exit
+              }
+            ' "$1"
+          }
+
+          CURRENT="$(get_version Cargo.toml)"
+          if [[ -z "$CURRENT" ]]; then
+            echo "::error::Could not extract [workspace.package].version from Cargo.toml"
+            exit 1
+          fi
+          echo "Current version: $CURRENT"
+
+          BEFORE="${{ github.event.before }}"
+          PREVIOUS=""
+
+          if [[ "$BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+            if git cat-file -e "${BEFORE}:Cargo.toml" 2>/dev/null; then
+              git show "${BEFORE}:Cargo.toml" > /tmp/prev.toml
+              PREVIOUS="$(get_version /tmp/prev.toml || true)"
+            else
+              echo "::warning::Could not read Cargo.toml from before commit; treating as version change"
+            fi
+          fi
+
+          echo "Previous version: ${PREVIOUS:-none}"
+
+          if [[ -n "$PREVIOUS" && "$CURRENT" == "$PREVIOUS" ]]; then
+            echo "Version unchanged, skipping release"
+            exit 0
+          fi
+
+          TAG="${CURRENT}"
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag $TAG already exists locally"
+            exit 1
+          fi
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "::error::Tag $TAG already exists on remote"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+          echo "Created and pushed tag: $TAG"
+          echo "This will trigger a new workflow run for the release"
+
   check-version:
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.check.outputs.version }}
@@ -29,6 +110,7 @@ jobs:
             echo "Version mismatch: Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
             exit 1
           fi
+
   build-pcl:
     needs: check-version
     uses: phylaxsystems/actions/.github/workflows/rust-build-binary.yaml@main
