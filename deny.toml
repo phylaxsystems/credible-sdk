@@ -82,7 +82,8 @@ ignore = [
     "RUSTSEC-2024-0436",
     # https://rustsec.org/advisories/RUSTSEC-2024-0437.htm, outdated version of protobuf
     "RUSTSEC-2024-0437",
-    # https://rustsec.org/advisories/RUSTSEC-2025-0134.html
+    # https://rustsec.org/advisories/RUSTSEC-2025-0134.html, rustls-pemfile is unmaintained
+    # It is still used in bollard, but it can be hopeffully removed once https://github.com/fussybeaver/bollard/issues/666 is solved. 
     "RUSTSEC-2025-0134",
     # https://rustsec.org/advisories/RUSTSEC-2025-0137 `reciprocal_mg10` OOB, unused
     "RUSTSEC-2025-0137",
