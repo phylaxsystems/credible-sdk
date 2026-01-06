@@ -9,6 +9,7 @@
 //! - Either all changes are committed, or none are (crash-safe)
 //! - Readers never see partial writes (MVCC isolation)
 //! - No explicit locking needed for read consistency
+//! - State and metadata are always consistent
 //!
 //! ## Example
 //!
@@ -32,7 +33,8 @@
 //!     ],
 //! };
 //!
-//! writer.commit_block(update)?;
+//! let stats = writer.commit_block(&update)?;
+//! println!("Committed in {:?}", stats.total_duration);
 //! ```
 
 use crate::{
@@ -53,6 +55,7 @@ use crate::{
             tables::{
                 BlockMetadataTable,
                 BlockNumber,
+                Bytecode,
                 Bytecodes,
                 Metadata,
                 MetadataKey,
@@ -64,6 +67,8 @@ use crate::{
                 StateDiffs,
             },
             types::{
+                BinaryAccountDiff,
+                BinaryStateDiff,
                 CircularBufferConfig,
                 GlobalMetadata,
                 NamespacedAccountKey,
@@ -81,19 +86,171 @@ use alloy::primitives::{
     Bytes,
     U256,
 };
+use rayon::prelude::*;
 use reth_db_api::{
-    cursor::DbCursorRO,
+    cursor::{
+        DbCursorRO,
+        DbCursorRW,
+    },
     transaction::{
         DbTx,
         DbTxMut,
     },
 };
 use std::{
-    collections::HashMap,
+    collections::{
+        HashMap,
+        HashSet,
+    },
+    hash::Hash,
     path::Path,
 };
 
+/// Pre-sorted batch of writes for optimal MDBX performance.
+///
+/// MDBX B-trees perform best with sorted inserts (avoids page splits).
+/// This structure collects all writes and sorts them before applying.
+#[derive(Default)]
+struct WriteBatch {
+    /// Account updates, will be sorted by key before writing.
+    accounts: Vec<(NamespacedAccountKey, AccountInfo)>,
+    /// Accounts to delete.
+    account_deletes: Vec<NamespacedAccountKey>,
+    /// Storage updates, will be sorted by key before writing.
+    storage: Vec<(NamespacedStorageKey, StorageValue)>,
+    /// Storage slots to delete.
+    storage_deletes: Vec<NamespacedStorageKey>,
+    /// Bytecodes to write, will be sorted by key before writing.
+    bytecodes: Vec<(NamespacedBytecodeKey, Bytes)>,
+    /// Addresses whose entire storage should be deleted (for deleted accounts).
+    full_storage_deletes: Vec<(u8, AddressHash)>,
+}
+
+impl WriteBatch {
+    /// Create a new batch with pre-allocated capacity.
+    fn with_capacity(account_hint: usize, storage_hint: usize) -> Self {
+        Self {
+            accounts: Vec::with_capacity(account_hint),
+            account_deletes: Vec::with_capacity(account_hint / 10),
+            storage: Vec::with_capacity(storage_hint),
+            storage_deletes: Vec::with_capacity(storage_hint / 10),
+            bytecodes: Vec::with_capacity(account_hint / 5),
+            full_storage_deletes: Vec::with_capacity(account_hint / 20),
+        }
+    }
+
+    /// Apply an overlay batch on top of this batch.
+    ///
+    /// This is CRITICAL for correctness: the overlay represents a newer state,
+    /// so its operations must override the base state:
+    /// - Overlay deletes remove entries from base writes
+    /// - Overlay writes remove entries from base deletes
+    /// - Then overlay entries are added
+    ///
+    /// This ensures that when a newer block deletes something that existed in
+    /// an older block, the deletion takes effect.
+    fn apply_overlay(&mut self, overlay: WriteBatch) {
+        // 1. Overlay account deletes remove from base accounts
+        let overlay_account_deletes: HashSet<_> = overlay.account_deletes.iter().copied().collect();
+        self.accounts
+            .retain(|(k, _)| !overlay_account_deletes.contains(k));
+
+        // 2. Overlay storage deletes remove from base storage
+        let overlay_storage_deletes: HashSet<_> = overlay.storage_deletes.iter().copied().collect();
+        self.storage
+            .retain(|(k, _)| !overlay_storage_deletes.contains(k));
+
+        // 3. Overlay accounts remove from base account_deletes (recreation)
+        let overlay_accounts: HashSet<_> = overlay.accounts.iter().map(|(k, _)| *k).collect();
+        self.account_deletes
+            .retain(|k| !overlay_accounts.contains(k));
+
+        // 4. Overlay storage removes from base storage_deletes (rewrite after delete)
+        let overlay_storage: HashSet<_> = overlay.storage.iter().map(|(k, _)| *k).collect();
+        self.storage_deletes
+            .retain(|k| !overlay_storage.contains(k));
+
+        // 5. Overlay full_storage_deletes should clear any storage we have for those accounts
+        for (ns, addr) in &overlay.full_storage_deletes {
+            self.storage
+                .retain(|(k, _)| !(k.namespace_idx == *ns && k.address_hash == *addr));
+            self.storage_deletes
+                .retain(|k| !(k.namespace_idx == *ns && k.address_hash == *addr));
+        }
+
+        // 6. Now extend with overlay entries
+        self.accounts.extend(overlay.accounts);
+        self.account_deletes.extend(overlay.account_deletes);
+        self.storage.extend(overlay.storage);
+        self.storage_deletes.extend(overlay.storage_deletes);
+        self.bytecodes.extend(overlay.bytecodes);
+        self.full_storage_deletes
+            .extend(overlay.full_storage_deletes);
+    }
+
+    /// Sort all entries and deduplicate.
+    ///
+    /// After `apply_overlay` has been called for all batches in order,
+    /// there should be no conflicts between writes and deletes.
+    /// This just deduplicates within each vector and sorts for optimal B-tree insertion.
+    fn sort_and_deduplicate(&mut self) {
+        Self::deduplicate_keep_last(&mut self.accounts, |(k, _)| *k);
+        self.accounts.sort_unstable_by_key(|(k, _)| *k);
+
+        self.account_deletes.sort_unstable();
+        self.account_deletes.dedup();
+
+        Self::deduplicate_keep_last(&mut self.storage, |(k, _)| *k);
+        self.storage.sort_unstable_by_key(|(k, _)| *k);
+
+        self.storage_deletes.sort_unstable();
+        self.storage_deletes.dedup();
+
+        Self::deduplicate_keep_last(&mut self.bytecodes, |(k, _)| *k);
+        self.bytecodes.sort_unstable_by_key(|(k, _)| *k);
+
+        self.full_storage_deletes.sort_unstable();
+        self.full_storage_deletes.dedup();
+    }
+
+    /// Deduplicate a vector, keeping the LAST occurrence of each key.
+    ///
+    /// This ensures that when multiple blocks modify the same key,
+    /// the most recent block's value (which was added last) wins.
+    fn deduplicate_keep_last<T, K>(vec: &mut Vec<T>, key_fn: impl Fn(&T) -> K)
+    where
+        K: Eq + Hash,
+    {
+        if vec.is_empty() {
+            return;
+        }
+
+        // Build a map of key -> last index
+        let mut last_occurrence: HashMap<K, usize> = HashMap::with_capacity(vec.len());
+        for (i, item) in vec.iter().enumerate() {
+            last_occurrence.insert(key_fn(item), i);
+        }
+
+        // Collect the indices we want to keep, sorted
+        let mut keep_indices: Vec<usize> = last_occurrence.into_values().collect();
+        keep_indices.sort_unstable();
+
+        // Compact the vector in-place
+        let mut write_idx = 0;
+        for read_idx in keep_indices {
+            if write_idx != read_idx {
+                vec.swap(write_idx, read_idx);
+            }
+            write_idx += 1;
+        }
+        vec.truncate(write_idx);
+    }
+}
+
 /// State writer for persisting blockchain state to MDBX.
+///
+/// Uses standard durable sync mode for maximum data safety. All writes
+/// are fully synced to disk on commit.
 ///
 /// MDBX enforces single-writer semantics, so only one `StateWriter`
 /// should be active at a time per database path.
@@ -105,28 +262,14 @@ pub struct StateWriter {
 impl Reader for StateWriter {
     type Error = StateError;
 
-    /// Get the most recent block number.
-    ///
-    /// Returns `None` if no blocks have been written yet.
     fn latest_block_number(&self) -> StateResult<Option<u64>> {
         self.reader.latest_block_number()
     }
 
-    /// Check if a block is available in the circular buffer.
-    ///
-    /// A block is available if its namespace currently contains that block.
     fn is_block_available(&self, block_number: u64) -> StateResult<bool> {
         self.reader.is_block_available(block_number)
     }
 
-    /// Get account info (`balance`, `nonce`, `code_hash`) without storage.
-    ///
-    /// This is the fastest way to get basic account data. If you also need
-    /// storage, use `get_full_account()` instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns `BlockNotFound` if the block is not in the circular buffer.
     fn get_account(
         &self,
         address_hash: AddressHash,
@@ -135,13 +278,6 @@ impl Reader for StateWriter {
         self.reader.get_account(address_hash, block_number)
     }
 
-    /// Get a specific storage slot value.
-    ///
-    /// Returns `None` if the slot doesn't exist or has value zero.
-    ///
-    /// # Errors
-    ///
-    /// Returns `BlockNotFound` if the block is not in the circular buffer.
     fn get_storage(
         &self,
         address_hash: AddressHash,
@@ -152,17 +288,6 @@ impl Reader for StateWriter {
             .get_storage(address_hash, slot_hash, block_number)
     }
 
-    /// Get all storage slots for an account.
-    ///
-    /// # Warning
-    ///
-    /// This can be expensive for contracts with many slots (e.g., ERC20 with
-    /// thousands of holders). Consider using `get_storage()` for specific slots
-    /// when possible.
-    ///
-    /// # Errors
-    ///
-    /// Returns `BlockNotFound` if the block is not in the circular buffer.
     fn get_all_storage(
         &self,
         address_hash: AddressHash,
@@ -171,28 +296,10 @@ impl Reader for StateWriter {
         self.reader.get_all_storage(address_hash, block_number)
     }
 
-    /// Get contract bytecode by code hash.
-    ///
-    /// Bytecode is content-addressed and shared across all namespaces,
-    /// so this only verifies the block exists, then looks up by hash.
-    ///
-    /// # Errors
-    ///
-    /// Returns `BlockNotFound` if the block is not in the circular buffer.
     fn get_code(&self, code_hash: B256, block_number: u64) -> StateResult<Option<Bytes>> {
         self.reader.get_code(code_hash, block_number)
     }
 
-    /// Get complete account state including storage.
-    ///
-    /// # Warning
-    ///
-    /// This can transfer large amounts of data for contracts with many storage
-    /// slots. Use `get_account()` if you only need balance/nonce.
-    ///
-    /// # Errors
-    ///
-    /// Returns `BlockNotFound` if the block is not in the circular buffer.
     fn get_full_account(
         &self,
         address_hash: AddressHash,
@@ -201,24 +308,18 @@ impl Reader for StateWriter {
         self.reader.get_full_account(address_hash, block_number)
     }
 
-    /// Get block hash for a specific block number.
     fn get_block_hash(&self, block_number: u64) -> StateResult<Option<B256>> {
         self.reader.get_block_hash(block_number)
     }
 
-    /// Get state root for a specific block number.
     fn get_state_root(&self, block_number: u64) -> StateResult<Option<B256>> {
         self.reader.get_state_root(block_number)
     }
 
-    /// Get block metadata (hash and state root).
     fn get_block_metadata(&self, block_number: u64) -> StateResult<Option<BlockMetadata>> {
         self.reader.get_block_metadata(block_number)
     }
 
-    /// Get the range of available blocks [oldest, latest].
-    ///
-    /// Returns `None` if no blocks have been written.
     fn get_available_block_range(&self) -> StateResult<Option<(u64, u64)>> {
         self.reader.get_available_block_range()
     }
@@ -230,54 +331,99 @@ impl Writer for StateWriter {
     /// Commit a block's state update to the database.
     ///
     /// This handles:
-    /// 1. Applying intermediate diffs if rotating the circular buffer
-    /// 2. Writing all account and storage changes
-    /// 3. Updating metadata and cleaning up old data
+    /// 1. Parallel pre-processing of account changes
+    /// 2. Converting to binary diff format
+    /// 3. Loading base state (from previous namespace) or intermediate diffs
+    /// 4. Applying all batches as overlays in chronological order
+    /// 5. Writing all account and storage changes in one transaction
+    /// 6. Updating metadata and cleaning up old data
     ///
     /// ## Atomicity
     ///
     /// All changes happen in a single transaction. If anything fails,
     /// the entire operation is rolled back and the database remains unchanged.
-    ///
-    /// ## Reconstruction
-    ///
-    /// When a namespace rotates (e.g., block 103 replaces block 100 in namespace 1
-    /// with `buffer_size`=3), the intermediate diffs (blocks 101, 102) are applied
-    /// first to bring the namespace's state up to date.
+    #[allow(clippy::too_many_lines)]
     fn commit_block(&self, update: &BlockStateUpdate) -> StateResult<()> {
         let db = self.reader.db();
         let block_number = update.block_number;
         let namespace_idx = db.namespace_for_block(block_number)?;
-        let ns_idx = NamespaceIdx(namespace_idx);
+        let buffer_size = db.buffer_size();
 
-        let tx = db.tx_mut()?;
+        // Phase 1: Validation and parallel pre-processing
+        Self::validate_unique_accounts(update)?;
 
-        // 1. Apply intermediate diffs if there's a gap (rotation)
-        let current_ns_block = tx
-            .get::<NamespaceBlocks>(ns_idx)
-            .map_err(StateError::Database)?;
-        let start_block = current_ns_block.map_or(0, |b| b.0 + 1);
-        if block_number > start_block {
-            for diff_block in start_block..block_number {
-                Self::apply_diff_from_storage(&tx, namespace_idx, diff_block, block_number)?;
+        let diff = Self::to_binary_diff_parallel(update);
+        let current_block_batch = Self::build_write_batch_parallel(namespace_idx, &diff);
+        let diff_bytes = diff.to_bytes()?;
+
+        // Phase 2: Load base state and intermediate diffs
+        let base_batches = {
+            let read_tx = db.tx()?;
+
+            let current_ns_block = read_tx
+                .get::<NamespaceBlocks>(NamespaceIdx(namespace_idx))
+                .map_err(StateError::Database)?;
+
+            match current_ns_block {
+                Some(existing_block) => {
+                    // Namespace has a block - load intermediate diffs
+                    let start_block = existing_block.0 + 1;
+                    if block_number > start_block {
+                        (start_block..block_number)
+                            .into_par_iter()
+                            .map(|diff_block| {
+                                Self::load_and_build_batch(
+                                    &read_tx,
+                                    namespace_idx,
+                                    diff_block,
+                                    block_number,
+                                )
+                            })
+                            .collect::<StateResult<Vec<_>>>()?
+                    } else {
+                        vec![]
+                    }
+                }
+                None => {
+                    // Namespace is empty - copy state from previous block's namespace
+                    if block_number > 0 {
+                        let prev_block = block_number - 1;
+                        let prev_namespace = db.namespace_for_block(prev_block)?;
+                        let base_batch =
+                            Self::copy_namespace_state(&read_tx, prev_namespace, namespace_idx)?;
+                        vec![base_batch]
+                    } else {
+                        vec![]
+                    }
+                }
             }
+        };
+
+        // Phase 3: Apply all batches as overlays in CHRONOLOGICAL ORDER
+        // Each overlay's deletes remove from previous writes, and writes remove from previous deletes
+        let mut final_batch = WriteBatch::default();
+
+        for batch in base_batches {
+            final_batch.apply_overlay(batch);
         }
 
-        // 2. Write current block's state changes
-        Self::write_account_changes(&tx, namespace_idx, &update.accounts)?;
+        // Apply current block LAST
+        final_batch.apply_overlay(current_block_batch);
 
-        // 3. Store the diff for future rotations
-        let diff_data = update
-            .to_json()
-            .map_err(|e| StateError::SerializeDiff(block_number, e))?;
-        tx.put::<StateDiffs>(BlockNumber(block_number), StateDiffData(diff_data))
+        // Sort and deduplicate for optimal B-tree insertion
+        final_batch.sort_and_deduplicate();
+
+        // Phase 4: Single write transaction
+        let tx = db.tx_mut()?;
+
+        Self::execute_batch(&tx, final_batch)?;
+
+        tx.put::<StateDiffs>(BlockNumber(block_number), StateDiffData(diff_bytes))
             .map_err(StateError::Database)?;
 
-        // 4. Update namespace block number
-        tx.put::<NamespaceBlocks>(ns_idx, BlockNumber(block_number))
+        tx.put::<NamespaceBlocks>(NamespaceIdx(namespace_idx), BlockNumber(block_number))
             .map_err(StateError::Database)?;
 
-        // 5. Update block metadata
         tx.put::<BlockMetadataTable>(
             BlockNumber(block_number),
             crate::mdbx::common::types::BlockMetadata {
@@ -287,73 +433,254 @@ impl Writer for StateWriter {
         )
         .map_err(StateError::Database)?;
 
-        // 6. Update global metadata
         tx.put::<Metadata>(
             MetadataKey,
             GlobalMetadata {
                 latest_block: block_number,
-                buffer_size: db.buffer_size(),
+                buffer_size,
             },
         )
         .map_err(StateError::Database)?;
 
-        // 7. Cleanup old data (diffs and metadata beyond buffer)
-        let buffer_size = u64::from(db.buffer_size());
-        if block_number >= buffer_size {
-            let cleanup_block = block_number - buffer_size;
-            let _ = tx
-                .delete::<StateDiffs>(BlockNumber(cleanup_block), None)
-                .map_err(StateError::Database)?;
-            let _ = tx
-                .delete::<BlockMetadataTable>(BlockNumber(cleanup_block), None)
-                .map_err(StateError::Database)?;
+        let buffer_size_u64 = u64::from(buffer_size);
+        if block_number >= buffer_size_u64 {
+            let cleanup_block = block_number - buffer_size_u64;
+            let _ = tx.delete::<StateDiffs>(BlockNumber(cleanup_block), None);
+            let _ = tx.delete::<BlockMetadataTable>(BlockNumber(cleanup_block), None);
         }
 
-        // 8. Commit transaction (atomic)
         tx.commit()
             .map_err(|e| StateError::CommitFailed(e.to_string()))?;
 
         Ok(())
     }
 
-    /// Ensure the database metadata matches the configured buffer size.
     fn ensure_dump_index_metadata(&self) -> StateResult<()> {
         Ok(())
     }
 
-    /// Check for and recover from stale locks on all namespaces.
     fn recover_stale_locks(&self) -> StateResult<Vec<StaleLockRecovery>> {
         Ok(vec![])
     }
 }
 
 impl StateWriter {
-    /// Create a new writer.
-    ///
-    /// Creates the database if it doesn't exist.
     pub fn new(path: impl AsRef<Path>, config: CircularBufferConfig) -> StateResult<Self> {
         let db = StateDb::open(path, config)?;
         let reader = StateReader::from_db(db);
         Ok(Self { reader })
     }
 
-    /// Get a reference to the underlying reader.
     pub fn reader(&self) -> &StateReader {
         &self.reader
     }
 
-    /// Get the configured buffer size.
     pub fn buffer_size(&self) -> u8 {
         self.reader.buffer_size()
     }
 
-    /// Apply a stored diff to a namespace.
-    fn apply_diff_from_storage(
-        tx: &reth_db::mdbx::tx::Tx<reth_libmdbx::RW>,
+    fn validate_unique_accounts(update: &BlockStateUpdate) -> StateResult<()> {
+        let mut seen = std::collections::HashSet::with_capacity(update.accounts.len());
+        for acc in &update.accounts {
+            if !seen.insert(acc.address_hash) {
+                return Err(StateError::DuplicateAccount(acc.address_hash));
+            }
+        }
+        Ok(())
+    }
+
+    fn to_binary_diff_parallel(update: &BlockStateUpdate) -> BinaryStateDiff {
+        let accounts: Vec<BinaryAccountDiff> = update
+            .accounts
+            .par_iter()
+            .map(|acc| {
+                let mut storage: Vec<_> = acc.storage.iter().map(|(k, v)| (*k, *v)).collect();
+                storage.sort_unstable_by_key(|(slot, _)| *slot);
+
+                BinaryAccountDiff {
+                    address_hash: acc.address_hash,
+                    deleted: acc.deleted,
+                    balance: acc.balance,
+                    nonce: acc.nonce,
+                    code_hash: acc.code_hash,
+                    code: acc.code.clone(),
+                    storage,
+                }
+            })
+            .collect();
+
+        BinaryStateDiff {
+            block_number: update.block_number,
+            block_hash: update.block_hash,
+            state_root: update.state_root,
+            accounts,
+        }
+    }
+
+    fn build_write_batch_parallel(namespace_idx: u8, diff: &BinaryStateDiff) -> WriteBatch {
+        let storage_count: usize = diff.accounts.iter().map(|a| a.storage.len()).sum();
+        let chunk_size = (diff.accounts.len() / rayon::current_num_threads()).max(1);
+
+        let batches: Vec<WriteBatch> = diff
+            .accounts
+            .par_chunks(chunk_size.max(1))
+            .map(|chunk| {
+                let mut batch = WriteBatch::with_capacity(
+                    chunk.len(),
+                    storage_count / rayon::current_num_threads().max(1),
+                );
+                for acc in chunk {
+                    Self::process_account_to_batch(namespace_idx, acc, &mut batch);
+                }
+                batch
+            })
+            .collect();
+
+        let mut final_batch = WriteBatch::with_capacity(diff.accounts.len(), storage_count);
+        for batch in batches {
+            // Use apply_overlay here too to handle any within-diff conflicts correctly
+            final_batch.apply_overlay(batch);
+        }
+        final_batch
+    }
+
+    fn process_account_to_batch(
+        namespace_idx: u8,
+        acc: &BinaryAccountDiff,
+        batch: &mut WriteBatch,
+    ) {
+        let account_key = NamespacedAccountKey::new(namespace_idx, acc.address_hash);
+
+        if acc.deleted {
+            batch.account_deletes.push(account_key);
+            batch
+                .full_storage_deletes
+                .push((namespace_idx, acc.address_hash));
+            return;
+        }
+
+        batch.accounts.push((
+            account_key,
+            AccountInfo {
+                address_hash: acc.address_hash,
+                balance: acc.balance,
+                nonce: acc.nonce,
+                code_hash: acc.code_hash,
+            },
+        ));
+
+        if let Some(code) = &acc.code
+            && !code.is_empty()
+        {
+            batch.bytecodes.push((
+                NamespacedBytecodeKey::new(namespace_idx, acc.code_hash),
+                code.clone(),
+            ));
+        }
+
+        for (slot_hash, value) in &acc.storage {
+            let storage_key =
+                NamespacedStorageKey::new(namespace_idx, acc.address_hash, *slot_hash);
+            if value.is_zero() {
+                batch.storage_deletes.push(storage_key);
+            } else {
+                batch.storage.push((storage_key, StorageValue(*value)));
+            }
+        }
+    }
+
+    /// Copy all state from one namespace to another, returning a `WriteBatch`.
+    fn copy_namespace_state(
+        tx: &reth_db::mdbx::tx::Tx<reth_libmdbx::RO>,
+        from_namespace: u8,
+        to_namespace: u8,
+    ) -> StateResult<WriteBatch> {
+        let mut batch = WriteBatch::default();
+
+        // Copy all accounts
+        {
+            let mut cursor = tx
+                .cursor_read::<NamespacedAccounts>()
+                .map_err(StateError::Database)?;
+
+            let start_key = NamespacedAccountKey::new(from_namespace, AddressHash::default());
+
+            if let Some((key, value)) = cursor.seek(start_key).map_err(StateError::Database)?
+                && key.namespace_idx == from_namespace
+            {
+                let new_key = NamespacedAccountKey::new(to_namespace, key.address_hash);
+                batch.accounts.push((new_key, value));
+
+                while let Some((key, value)) = cursor.next().map_err(StateError::Database)? {
+                    if key.namespace_idx != from_namespace {
+                        break;
+                    }
+                    let new_key = NamespacedAccountKey::new(to_namespace, key.address_hash);
+                    batch.accounts.push((new_key, value));
+                }
+            }
+        }
+
+        // Copy all storage
+        {
+            let mut cursor = tx
+                .cursor_read::<NamespacedStorage>()
+                .map_err(StateError::Database)?;
+
+            let start_key =
+                NamespacedStorageKey::new(from_namespace, AddressHash::default(), B256::ZERO);
+
+            if let Some((key, value)) = cursor.seek(start_key).map_err(StateError::Database)?
+                && key.namespace_idx == from_namespace
+            {
+                let new_key =
+                    NamespacedStorageKey::new(to_namespace, key.address_hash, key.slot_hash);
+                batch.storage.push((new_key, value));
+
+                while let Some((key, value)) = cursor.next().map_err(StateError::Database)? {
+                    if key.namespace_idx != from_namespace {
+                        break;
+                    }
+                    let new_key =
+                        NamespacedStorageKey::new(to_namespace, key.address_hash, key.slot_hash);
+                    batch.storage.push((new_key, value));
+                }
+            }
+        }
+
+        // Copy all bytecodes
+        {
+            let mut cursor = tx
+                .cursor_read::<Bytecodes>()
+                .map_err(StateError::Database)?;
+
+            let start_key = NamespacedBytecodeKey::new(from_namespace, B256::ZERO);
+
+            if let Some((key, value)) = cursor.seek(start_key).map_err(StateError::Database)?
+                && key.namespace_idx == from_namespace
+            {
+                let new_key = NamespacedBytecodeKey::new(to_namespace, key.code_hash);
+                batch.bytecodes.push((new_key, value.0));
+
+                while let Some((key, value)) = cursor.next().map_err(StateError::Database)? {
+                    if key.namespace_idx != from_namespace {
+                        break;
+                    }
+                    let new_key = NamespacedBytecodeKey::new(to_namespace, key.code_hash);
+                    batch.bytecodes.push((new_key, value.0));
+                }
+            }
+        }
+
+        Ok(batch)
+    }
+
+    fn load_and_build_batch(
+        tx: &reth_db::mdbx::tx::Tx<reth_libmdbx::RO>,
         namespace_idx: u8,
         diff_block: u64,
         target_block: u64,
-    ) -> StateResult<()> {
+    ) -> StateResult<WriteBatch> {
         let diff_data = tx
             .get::<StateDiffs>(BlockNumber(diff_block))
             .map_err(StateError::Database)?
@@ -362,73 +689,76 @@ impl StateWriter {
                 target_block,
             })?;
 
-        let update = BlockStateUpdate::from_json(&diff_data.0)
-            .map_err(|e| StateError::DeserializeDiff(diff_block, e))?;
-
-        Self::write_account_changes(tx, namespace_idx, &update.accounts)
+        let diff = BinaryStateDiff::from_bytes(&diff_data.0)?;
+        Ok(Self::build_write_batch_parallel(namespace_idx, &diff))
     }
 
-    /// Write account and storage changes to a namespace.
-    fn write_account_changes(
+    fn execute_batch(
         tx: &reth_db::mdbx::tx::Tx<reth_libmdbx::RW>,
-        namespace_idx: u8,
-        accounts: &[AccountState],
+        batch: WriteBatch,
     ) -> StateResult<()> {
-        for account in accounts {
-            let address_hash = account.address_hash;
-            let account_key = NamespacedAccountKey::new(namespace_idx, address_hash);
-
-            if account.deleted {
-                // Delete the account and all its storage
-                tx.delete::<NamespacedAccounts>(account_key, None)
-                    .map_err(StateError::Database)?;
-                Self::delete_account_storage(tx, namespace_idx, address_hash)?;
-                continue;
-            }
-
-            // Write account data
-            tx.put::<NamespacedAccounts>(
-                account_key,
-                AccountInfo {
-                    address_hash: account.address_hash,
-                    balance: account.balance,
-                    nonce: account.nonce,
-                    code_hash: account.code_hash,
-                },
-            )
-            .map_err(StateError::Database)?;
-
-            // Write bytecode if present (deduplicated by code_hash)
-            if let Some(code) = &account.code
-                && !code.is_empty()
-            {
-                tx.put::<Bytecodes>(
-                    NamespacedBytecodeKey::new(namespace_idx, account.code_hash),
-                    crate::mdbx::common::tables::Bytecode(code.clone()),
-                )
+        // Delete accounts first
+        for key in batch.account_deletes {
+            tx.delete::<NamespacedAccounts>(key, None)
                 .map_err(StateError::Database)?;
+        }
+
+        // Delete all storage for deleted accounts
+        for (namespace_idx, address_hash) in batch.full_storage_deletes {
+            Self::delete_account_storage(tx, namespace_idx, address_hash)?;
+        }
+
+        // Write accounts
+        if !batch.accounts.is_empty() {
+            let mut cursor = tx
+                .cursor_write::<NamespacedAccounts>()
+                .map_err(StateError::Database)?;
+            for (key, value) in batch.accounts {
+                cursor.upsert(key, &value).map_err(StateError::Database)?;
             }
+        }
 
-            // Write storage changes
-            for (slot_hash, value) in &account.storage {
-                let storage_key =
-                    NamespacedStorageKey::new(namespace_idx, address_hash, *slot_hash);
+        // Write storage
+        if !batch.storage.is_empty() {
+            let mut cursor = tx
+                .cursor_write::<NamespacedStorage>()
+                .map_err(StateError::Database)?;
+            for (key, value) in batch.storage {
+                cursor.upsert(key, &value).map_err(StateError::Database)?;
+            }
+        }
 
-                if value.is_zero() {
-                    // Zero means delete (Ethereum semantics)
-                    tx.delete::<NamespacedStorage>(storage_key, None)
-                        .map_err(StateError::Database)?;
-                } else {
-                    tx.put::<NamespacedStorage>(storage_key, StorageValue(*value))
-                        .map_err(StateError::Database)?;
+        // Delete storage slots
+        if !batch.storage_deletes.is_empty() {
+            let mut cursor = tx
+                .cursor_write::<NamespacedStorage>()
+                .map_err(StateError::Database)?;
+            for key in batch.storage_deletes {
+                if cursor
+                    .seek_exact(key)
+                    .map_err(StateError::Database)?
+                    .is_some()
+                {
+                    cursor.delete_current().map_err(StateError::Database)?;
                 }
+            }
+        }
+
+        // Write bytecodes
+        if !batch.bytecodes.is_empty() {
+            let mut cursor = tx
+                .cursor_write::<Bytecodes>()
+                .map_err(StateError::Database)?;
+            for (key, value) in batch.bytecodes {
+                cursor
+                    .upsert(key, &Bytecode(value))
+                    .map_err(StateError::Database)?;
             }
         }
 
         Ok(())
     }
 
-    /// Delete all storage for an account in a namespace.
     fn delete_account_storage(
         tx: &reth_db::mdbx::tx::Tx<reth_libmdbx::RW>,
         namespace_idx: u8,
@@ -439,7 +769,6 @@ impl StateWriter {
             .map_err(StateError::Database)?;
         let start_key = NamespacedStorageKey::new(namespace_idx, address_hash, B256::ZERO);
 
-        // Collect keys to delete (can't delete while iterating)
         let mut to_delete = Vec::new();
 
         if let Some((key, _)) = cursor.seek(start_key).map_err(StateError::Database)?
@@ -455,7 +784,6 @@ impl StateWriter {
             }
         }
 
-        // Delete collected keys
         for key in to_delete {
             tx.delete::<NamespacedStorage>(key, None)
                 .map_err(StateError::Database)?;

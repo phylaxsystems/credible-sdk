@@ -18,7 +18,7 @@
 //! ├── NamespacedStorage   (namespace+address+slot → value)
 //! ├── Bytecodes           (code_hash → bytecode)
 //! ├── BlockMetadata       (block → hash+root)
-//! ├── StateDiffs          (block → JSON diff)
+//! ├── StateDiffs          (block → binary diff)
 //! └── Metadata            (0 → global metadata, e.g., latest block)
 //! ```
 
@@ -91,7 +91,7 @@ impl StateDb {
     /// Creates the database directory if it doesn't exist.
     /// Creates all required tables if they don't exist.
     ///
-    /// Uses the default maximum size of 1TB.
+    /// Uses the default maximum size of 2TB.
     pub fn open(path: impl AsRef<Path>, config: CircularBufferConfig) -> StateResult<Self> {
         Self::open_with_size(path, config, DEFAULT_MAX_DB_SIZE)
     }

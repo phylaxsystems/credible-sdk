@@ -11974,6 +11974,7 @@ dependencies = [
  "chrono",
  "hex",
  "modular-bitfield",
+ "rayon",
  "redis",
  "reth-codecs",
  "reth-db",
