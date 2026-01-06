@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
 
     let (block_number, root) = service.calculate_latest_state_root()?;
     info!(
-        "State cache (redis) calculated state root: 0x{} for block {block_number}",
+        "State cache (state_worker) calculated state root: 0x{} for block {block_number}",
         hex::encode(root)
     );
 

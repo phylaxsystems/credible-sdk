@@ -20,7 +20,7 @@ use sidecar::{
         sources::{
             Source,
             eth_rpc_source::EthRpcSource,
-            redis::RedisSource,
+            state_worker::MdbxSource,
         },
     },
     config::{
@@ -54,9 +54,9 @@ use sidecar::{
     },
     utils::ErrorRecoverability,
 };
-use state_store::redis::{
-    CircularBufferConfig,
+use state_store::mdbx::{
     StateReader,
+    common::CircularBufferConfig,
 };
 use std::{
     net::SocketAddr,
@@ -180,16 +180,14 @@ async fn main() -> anyhow::Result<()> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
         let mut sources: Vec<Arc<dyn Source>> = vec![];
-        if let (Some(redis_url), Some(redis_namespace), Some(redis_depth)) = (
-            config.state.redis_url.as_ref(),
-            config.state.redis_namespace.as_ref(),
-            config.state.redis_depth,
-        ) && let Ok(redis_client) = StateReader::new(
-            redis_url,
-            redis_namespace,
-            CircularBufferConfig::new(redis_depth)?,
+        if let (Some(state_worker_path), Some(state_worker_depth)) = (
+            config.state.state_worker_mdbx_path.as_ref(),
+            config.state.state_worker_depth,
+        ) && let Ok(state_worker_client) = StateReader::new(
+            state_worker_path,
+            CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
         ) {
-            sources.push(Arc::new(RedisSource::new(redis_client)));
+            sources.push(Arc::new(MdbxSource::new(state_worker_client)));
         }
         if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
             &config.state.eth_rpc_source_ws_url,

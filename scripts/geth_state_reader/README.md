@@ -26,9 +26,9 @@ cd /path/to/credible-sdk
 uv run python scripts/geth_state_reader/main.py \
   --datadir geth/geth \
   --block-number 0 \
-  --redis-url redis://127.0.0.1:6380/0 \
-  --redis-namespace state \
-  --redis-buffer-size 3 \
+  --state_worker-url state_worker://127.0.0.1:6380/0 \
+  --state_worker-namespace state \
+  --state_worker-buffer-size 3 \
   --json-output state_dump.json \
   --json-output-enabled
 ```
@@ -41,8 +41,10 @@ Flags:
 - `--limit`: max account count to process (0 or omitted for all).
 - `--redis-url`: Redis connection URL (required to write state). When set you must also pass `--block-number`.
 - `--redis-namespace`: Redis namespace prefix (defaults to `state`).
-- `--redis-pipeline-size`: number of accounts to buffer before flushing Redis pipelines (defaults to 1 for immediate writes).
-- `--redis-buffer-size`: number of namespace slots in the circular buffer (defaults to `3`, matching the state worker's default `--state-depth`).
+- `--redis-pipeline-size`: number of accounts to buffer before flushing Redis pipelines (defaults to 1 for immediate
+  writes).
+- `--redis-buffer-size`: number of namespace slots in the circular buffer (defaults to `3`, matching the state worker's
+  default `--state-depth`).
 - `--json-output` + `--json-output-enabled`: enable newline-delimited JSON mirroring.
 - `--geth-dump-backend`: choose between `snapshot`, `trie`, or `auto` (default) for the
   backing `geth` command. `snapshot` avoids `missing trie node` errors on the modern
@@ -58,21 +60,3 @@ datadir no longer contains the historical state needed for the requested block
 error indicating which state roots are available. If you hit this failure,
 either re-sync the datadir as an archive node or choose a block that is still
 covered by the snapshot horizon.
-
-## Verification
-
-After running the script, verify Redis contents:
-
-```bash
-redis-cli -u redis://127.0.0.1:6380/0 \
-  HGETALL state:0:account:00bf49f440a1cd0527e4d06e2765654c0f56452257516d793a9b8d604dcfdf2a
-redis-cli -u redis://127.0.0.1:6380/0 \
-  HGETALL state:0:storage:0d6aea581b220579a2b99819299dd32c7c28a420018ecb0bde93af007ad89a31
-redis-cli -u redis://127.0.0.1:6380/0 GET state:block_hash:0
-redis-cli -u redis://127.0.0.1:6380/0 GET state:state_root:0
-redis-cli -u redis://127.0.0.1:6380/0 GET state:meta:latest_block
-redis-cli -u redis://127.0.0.1:6380/0 GET state:state_dump_indices
-```
-
-Replace the `0` namespace in these keys with `block_number % redis_buffer_size`. The values should
-match the output from `geth dump --incompletes --limit ...`.

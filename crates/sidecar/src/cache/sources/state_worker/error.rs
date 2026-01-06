@@ -1,13 +1,14 @@
-//! redis error types
+//! State worker error types
 
 use crate::cache::sources::SourceError;
 use assertion_executor::primitives::B256;
+use state_store::mdbx;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum RedisCacheError {
-    #[error("redis backend error: {0}")]
-    Backend(#[source] redis::RedisError),
+pub enum StateWorkerCacheError {
+    #[error("State worker backend error")]
+    Backend(#[source] mdbx::common::error::StateError),
     #[error("missing field '{field}' for key '{key}'")]
     MissingField { key: String, field: &'static str },
     #[error("invalid integer for '{key}.{field}': {source}")]
@@ -39,13 +40,13 @@ pub enum RedisCacheError {
     Other(String),
 }
 
-impl From<RedisCacheError> for SourceError {
-    fn from(value: RedisCacheError) -> Self {
+impl From<StateWorkerCacheError> for SourceError {
+    fn from(value: StateWorkerCacheError) -> Self {
         match value {
-            RedisCacheError::Backend(err) => SourceError::Request(Box::new(err)),
-            RedisCacheError::BlockHashNotFound(_) => SourceError::BlockNotFound,
-            RedisCacheError::CodeNotFound(_) => SourceError::CodeByHashNotFound,
-            RedisCacheError::CacheMiss { .. } => SourceError::CacheMiss,
+            StateWorkerCacheError::Backend(err) => SourceError::Request(Box::new(err)),
+            StateWorkerCacheError::BlockHashNotFound(_) => SourceError::BlockNotFound,
+            StateWorkerCacheError::CodeNotFound(_) => SourceError::CodeByHashNotFound,
+            StateWorkerCacheError::CacheMiss { .. } => SourceError::CacheMiss,
             other => SourceError::Other(other.to_string()),
         }
     }

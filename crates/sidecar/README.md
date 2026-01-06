@@ -326,8 +326,8 @@ The configuration file is a JSON file with the following schema:
       "type": "object",
       "description": "State source configuration",
       "required": [
-        "redis_namespace",
-        "redis_depth",
+        "state_worker_mdbx_path",
+        "state_worker_depth",
         "minimum_state_diff",
         "sources_sync_timeout_ms",
         "sources_monitoring_period_ms"
@@ -353,29 +353,17 @@ The configuration file is a JSON file with the following schema:
             "http://besu-service:8548"
           ]
         },
-        "redis_url": {
+        "state_worker_mdbx_path": {
           "type": "string",
-          "description": "Redis bind address and port (optional)",
-          "format": "uri",
-          "pattern": "^redis://",
+          "description": "State worker MDBX path (optional)",
+          "format": "path",
           "examples": [
-            "redis://localhost:6379",
-            "redis://redis-service:6379"
+            "/tmp"
           ]
         },
-        "redis_namespace": {
-          "type": "string",
-          "description": "Namespace prefix for Redis keys",
-          "minLength": 1,
-          "examples": [
-            "sidecar",
-            "credible",
-            "custom_namespace"
-          ]
-        },
-        "redis_depth": {
+        "state_worker_depth": {
           "type": "integer",
-          "description": "Redis state depth - how many blocks behind head Redis will have the data from",
+          "description": "State worker state depth - how many blocks behind head state worker will have the data from",
           "minimum": 0,
           "maximum": 9007199254740991,
           "examples": [
@@ -448,8 +436,8 @@ The default configuration can be found in [default_config.json](default_config.j
   "state": {
     "eth_rpc_source_ws_url": "ws://127.0.0.1:8546",
     "eth_rpc_source_http_url": "http://127.0.0.1:8545",
-    "redis_namespace": "sidecar",
-    "redis_depth": 3,
+    "state_worker_mdbx_path": "/data/state_worker.mdbx",
+    "state_worker_depth": 3,
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
     "sources_monitoring_period_ms": 500

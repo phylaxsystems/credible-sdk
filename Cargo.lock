@@ -9931,18 +9931,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "redis-test"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7a5cadf877f090eebfef0f4e8646c56531ab416b388410fe1c974f4e6e9cb20"
-dependencies = [
- "rand 0.9.2",
- "redis",
- "socket2 0.6.1",
- "tempfile",
-]
-
-[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11551,8 +11539,6 @@ dependencies = [
  "prost 0.14.1",
  "protoc-bin-vendored",
  "rand 0.9.2",
- "redis",
- "redis-test",
  "reqwest",
  "revm",
  "rust-tracing",

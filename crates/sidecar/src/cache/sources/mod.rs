@@ -1,7 +1,7 @@
 use alloy::primitives::U256;
 use assertion_executor::db::DatabaseRef;
 use revm::context::DBErrorMarker;
-use state_store::redis::common::error::StateError;
+use state_store::mdbx::common::error::StateError;
 use std::fmt::{
     Debug,
     Display,
@@ -10,7 +10,7 @@ use thiserror::Error;
 
 pub mod eth_rpc_source;
 mod json_rpc_db;
-pub mod redis;
+pub mod state_worker;
 
 /// A data source that provides blockchain state information.
 ///
@@ -114,7 +114,7 @@ pub trait Source: DatabaseRef<Error = SourceError> + Debug + Sync + Send {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SourceName {
     EthRpcSource,
-    Redis,
+    StateWorker,
     #[cfg(test)]
     Other,
 }
@@ -124,7 +124,7 @@ impl Display for SourceName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SourceName::EthRpcSource => write!(f, "EthRpcSource"),
-            SourceName::Redis => write!(f, "Redis"),
+            SourceName::StateWorker => write!(f, "StateWorker"),
             #[cfg(test)]
             SourceName::Other => write!(f, "Other"),
         }
@@ -141,14 +141,14 @@ pub enum SourceError {
     CacheMiss,
     #[error("Request failed")]
     Request(#[source] Box<dyn std::error::Error + Send + Sync>),
-    #[error("Failed to fetch code by hash from Redis")]
-    RedisCodeByHash(#[source] StateError),
-    #[error("Failed to fetch storage from Redis")]
-    RedisStorage(#[source] StateError),
-    #[error("Failed to fetch account info from Redis")]
-    RedisAccount(#[source] StateError),
-    #[error("Failed to fetch the block hash from Redis")]
-    RedisBlockHash(#[source] StateError),
+    #[error("Failed to fetch code by hash from state worker")]
+    StateWorkerCodeByHash(#[source] StateError),
+    #[error("Failed to fetch storage from state worker")]
+    StateWorkerStorage(#[source] StateError),
+    #[error("Failed to fetch account info from state worker")]
+    StateWorkerAccount(#[source] StateError),
+    #[error("Failed to fetch the block hash from state worker")]
+    StateWorkerBlockHash(#[source] StateError),
     #[error("Other error: {0}")]
     Other(String),
     #[error("Storage not found")]
