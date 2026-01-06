@@ -23,8 +23,6 @@ jobs:
           fetch-depth: 0
 
       - name: Extract versions and create tag if changed
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
