@@ -1,5 +1,6 @@
 //! Error types for MDBX state management.
 
+use crate::AddressHash;
 use alloy::primitives::{
     Address,
     B256,
@@ -39,10 +40,6 @@ pub enum StateError {
     /// Failed to parse U256
     #[error("Failed to parse U256 from '{0}'")]
     ParseU256(String, #[source] alloy::primitives::ruint::ParseError),
-
-    /// Failed to parse integer
-    #[error("Failed to parse integer from '{0}'")]
-    ParseInt(String, #[source] std::num::ParseIntError),
 
     /// Block not found in expected namespace
     #[error("Block {block_number} not found in namespace {namespace_idx}")]
@@ -103,6 +100,10 @@ pub enum StateError {
     /// Codec error
     #[error("Codec error: {0}")]
     Codec(String),
+
+    /// Duplicate account in block state update
+    #[error("Duplicate account in BlockStateUpdate: {0:x}")]
+    DuplicateAccount(AddressHash),
 }
 
 /// Result type alias for state operations.

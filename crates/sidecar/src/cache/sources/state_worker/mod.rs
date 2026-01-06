@@ -1,13 +1,13 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
-//! # Redis-backed cache source
+//! # State-worker backed cache source
 
 pub(crate) mod error;
 mod sync_task;
 pub(crate) mod utils;
 
-pub use error::RedisCacheError;
-use state_store::redis::StateReader;
+pub use error::StateWorkerCacheError;
+use state_store::mdbx::StateReader;
 
 use self::{
     sync_task::publish_sync_state,
@@ -35,7 +35,6 @@ use assertion_executor::primitives::{
     U256,
 };
 use parking_lot::RwLock;
-use redis::Commands;
 use revm::{
     DatabaseRef,
     primitives::{
@@ -67,13 +66,13 @@ use tokio_util::sync::CancellationToken;
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
-pub struct RedisSource {
+pub struct MdbxSource {
     backend: StateReader,
-    /// Target block to request from redis.
+    /// Target block to request from state worker.
     target_block: Arc<RwLock<U256>>,
     /// Records newest block the background poller has seen.
     observed_head: Arc<RwLock<U256>>,
-    /// Oldest block that exists in redis buffer. Used to prevent asking for a block redis doesnt have.
+    /// Oldest block that exists in state worker buffer. Used to prevent asking for a block state worker doesnt have.
     oldest_block: Arc<RwLock<U256>>,
     sync_status: Arc<AtomicBool>,
     cancel_token: CancellationToken,
@@ -87,7 +86,7 @@ pub(crate) struct CacheStatus {
     pub latest_head: RwLock<U256>,
 }
 
-impl RedisSource {
+impl MdbxSource {
     /// Creates a cache that stores entries under the default `state` namespace.
     pub fn new(backend: StateReader) -> Self {
         let target_block = Arc::new(RwLock::new(U256::ZERO));
@@ -143,19 +142,19 @@ impl RedisSource {
 
     /// Computes the intersection of two block ranges and returns the target block.
     ///
-    /// Given the required range `[min_synced_block, latest_head]` and the Redis
-    /// available range `[redis_oldest_block, redis_observed_head]`, this function
+    /// Given the required range `[min_synced_block, latest_head]` and the state worker
+    /// available range `[state_worker_oldest_block, state_worker_observed_head]`, this function
     /// returns the most recent block in the intersection (upper bound), or `None`
     /// if the ranges do not overlap.
     #[inline]
     fn calculate_target_block(
         min_synced_block: U256,
         latest_head: U256,
-        redis_oldest_block: U256,
-        redis_observed_head: U256,
+        state_worker_oldest_block: U256,
+        state_worker_observed_head: U256,
     ) -> Option<U256> {
-        let lower_bound = min_synced_block.max(redis_oldest_block);
-        let upper_bound = latest_head.min(redis_observed_head);
+        let lower_bound = min_synced_block.max(state_worker_oldest_block);
+        let upper_bound = latest_head.min(state_worker_observed_head);
 
         if lower_bound <= upper_bound {
             Some(upper_bound)
@@ -169,16 +168,16 @@ impl RedisSource {
     fn ranges_overlap(
         min_synced_block: U256,
         latest_head: U256,
-        redis_oldest_block: U256,
-        redis_observed_head: U256,
+        state_worker_oldest_block: U256,
+        state_worker_observed_head: U256,
     ) -> bool {
-        let lower_bound = min_synced_block.max(redis_oldest_block);
-        let upper_bound = latest_head.min(redis_observed_head);
+        let lower_bound = min_synced_block.max(state_worker_oldest_block);
+        let upper_bound = latest_head.min(state_worker_observed_head);
         lower_bound <= upper_bound
     }
 }
 
-impl DatabaseRef for RedisSource {
+impl DatabaseRef for MdbxSource {
     type Error = super::SourceError;
 
     /// Reconstructs an account from cached metadata, returning `None` when absent.
@@ -188,7 +187,7 @@ impl DatabaseRef for RedisSource {
         let Some(account) = self
             .backend
             .get_account(address.into(), target_block_u64)
-            .map_err(Self::Error::RedisAccount)?
+            .map_err(Self::Error::StateWorkerAccount)?
         else {
             return Ok(None);
         };
@@ -208,7 +207,7 @@ impl DatabaseRef for RedisSource {
         let block_hash = self
             .backend
             .get_block_hash(number)
-            .map_err(Self::Error::RedisBlockHash)?
+            .map_err(Self::Error::StateWorkerBlockHash)?
             .ok_or(Self::Error::BlockNotFound)?;
         Ok(block_hash)
     }
@@ -220,7 +219,7 @@ impl DatabaseRef for RedisSource {
         let bytecode = Bytecode::new_raw(
             self.backend
                 .get_code(code_hash, target_block_u64)
-                .map_err(Self::Error::RedisCodeByHash)?
+                .map_err(Self::Error::StateWorkerCodeByHash)?
                 .ok_or(Self::Error::CodeByHashNotFound)?,
         );
         Ok(bytecode)
@@ -238,26 +237,26 @@ impl DatabaseRef for RedisSource {
         let value = self
             .backend
             .get_storage(address.into(), slot_hash, target_block_u64)
-            .map_err(Self::Error::RedisStorage)?
+            .map_err(Self::Error::StateWorkerStorage)?
             .unwrap_or_default();
         Ok(value)
     }
 }
 
-impl Source for RedisSource {
+impl Source for MdbxSource {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool {
         if !self.sync_status.load(Ordering::Acquire) {
             return false;
         }
-        let redis_observed_head = *self.observed_head.read();
-        let redis_oldest_block = *self.oldest_block.read();
+        let state_worker_observed_head = *self.observed_head.read();
+        let state_worker_oldest_block = *self.oldest_block.read();
 
         Self::ranges_overlap(
             min_synced_block,
             latest_head,
-            redis_oldest_block,
-            redis_observed_head,
+            state_worker_oldest_block,
+            state_worker_observed_head,
         )
     }
 
@@ -266,14 +265,14 @@ impl Source for RedisSource {
         *self.cache_status.min_synced_block.write() = min_synced_block;
         *self.cache_status.latest_head.write() = latest_head;
 
-        let redis_observed_head = *self.observed_head.read();
-        let redis_oldest_block = *self.oldest_block.read();
+        let state_worker_observed_head = *self.observed_head.read();
+        let state_worker_oldest_block = *self.oldest_block.read();
 
         if let Some(target) = Self::calculate_target_block(
             min_synced_block,
             latest_head,
-            redis_oldest_block,
-            redis_observed_head,
+            state_worker_oldest_block,
+            state_worker_observed_head,
         ) {
             *self.target_block.write() = target;
         }
@@ -281,11 +280,11 @@ impl Source for RedisSource {
 
     /// Provides an identifier used in logs and metrics.
     fn name(&self) -> SourceName {
-        SourceName::Redis
+        SourceName::StateWorker
     }
 }
 
-impl Drop for RedisSource {
+impl Drop for MdbxSource {
     fn drop(&mut self) {
         self.cancel_token.cancel();
         self.sync_task.abort();
@@ -307,15 +306,15 @@ mod tests {
         U256::from(n)
     }
 
-    /// Helper struct to test the cache logic without needing a real Redis backend
-    struct TestRedisCache {
+    /// Helper struct to test the cache logic without needing a real state worker backend
+    struct TestStateWorkerCache {
         target_block: Arc<RwLock<U256>>,
         observed_head: Arc<RwLock<U256>>,
         oldest_block: Arc<RwLock<U256>>,
         sync_status: Arc<AtomicBool>,
     }
 
-    impl TestRedisCache {
+    impl TestStateWorkerCache {
         fn new(oldest_block: u64, observed_head: u64, synced: bool) -> Self {
             Self {
                 target_block: Arc::new(RwLock::new(U256::ZERO)),
@@ -329,26 +328,26 @@ mod tests {
             if !self.sync_status.load(Ordering::Acquire) {
                 return false;
             }
-            let redis_observed_head = *self.observed_head.read();
-            let redis_oldest_block = *self.oldest_block.read();
+            let state_worker_observed_head = *self.observed_head.read();
+            let state_worker_oldest_block = *self.oldest_block.read();
 
-            RedisSource::ranges_overlap(
+            MdbxSource::ranges_overlap(
                 U256::from(min_synced_block),
                 U256::from(latest_head),
-                redis_oldest_block,
-                redis_observed_head,
+                state_worker_oldest_block,
+                state_worker_observed_head,
             )
         }
 
         fn update_cache_status(&self, min_synced_block: u64, latest_head: u64) {
-            let redis_observed_head = *self.observed_head.read();
-            let redis_oldest_block = *self.oldest_block.read();
+            let state_worker_observed_head = *self.observed_head.read();
+            let state_worker_oldest_block = *self.oldest_block.read();
 
-            if let Some(target) = RedisSource::calculate_target_block(
+            if let Some(target) = MdbxSource::calculate_target_block(
                 U256::from(min_synced_block),
                 U256::from(latest_head),
-                redis_oldest_block,
-                redis_observed_head,
+                state_worker_oldest_block,
+                state_worker_observed_head,
             ) {
                 *self.target_block.write() = target;
             }
@@ -370,181 +369,181 @@ mod tests {
 
     #[test]
     fn calculate_perfect_overlap_identical_ranges() {
-        // Redis: [100, 200], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(100), u(200));
+        // state_worker: [100, 200], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(100), u(200));
         assert_eq!(result, Some(u(200)));
     }
 
     #[test]
-    fn calculate_redis_contains_required_range() {
-        // Redis: [50, 300], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(50), u(300));
+    fn calculate_state_worker_contains_required_range() {
+        // state_worker: [50, 300], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(50), u(300));
         assert_eq!(result, Some(u(200)));
     }
 
     #[test]
-    fn calculate_redis_contains_required_with_same_start() {
-        // Redis: [100, 300], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(100), u(300));
+    fn calculate_state_worker_contains_required_with_same_start() {
+        // state_worker: [100, 300], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(100), u(300));
         assert_eq!(result, Some(u(200)));
     }
 
     #[test]
-    fn calculate_redis_contains_required_with_same_end() {
-        // Redis: [50, 200], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(50), u(200));
+    fn calculate_state_worker_contains_required_with_same_end() {
+        // state_worker: [50, 200], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(50), u(200));
         assert_eq!(result, Some(u(200)));
     }
 
     #[test]
-    fn calculate_required_contains_redis_range() {
-        // Redis: [150, 180], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(150), u(180));
+    fn calculate_required_contains_state_worker_range() {
+        // state_worker: [150, 180], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(150), u(180));
         assert_eq!(result, Some(u(180)));
     }
 
     #[test]
-    fn calculate_required_contains_redis_with_same_start() {
-        // Redis: [100, 180], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(100), u(180));
+    fn calculate_required_contains_state_worker_with_same_start() {
+        // state_worker: [100, 180], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(100), u(180));
         assert_eq!(result, Some(u(180)));
     }
 
     #[test]
-    fn calculate_required_contains_redis_with_same_end() {
-        // Redis: [150, 200], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(150), u(200));
+    fn calculate_required_contains_state_worker_with_same_end() {
+        // state_worker: [150, 200], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(150), u(200));
         assert_eq!(result, Some(u(200)));
     }
 
     #[test]
-    fn calculate_partial_overlap_redis_starts_earlier() {
-        // Redis: [50, 150], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(50), u(150));
+    fn calculate_partial_overlap_state_worker_starts_earlier() {
+        // state_worker: [50, 150], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(50), u(150));
         assert_eq!(result, Some(u(150)));
     }
 
     #[test]
-    fn calculate_partial_overlap_redis_ends_later() {
-        // Redis: [150, 250], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(150), u(250));
+    fn calculate_partial_overlap_state_worker_ends_later() {
+        // state_worker: [150, 250], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(150), u(250));
         assert_eq!(result, Some(u(200)));
     }
 
     #[test]
-    fn calculate_touching_at_single_point_redis_ends_at_required_start() {
-        // Redis: [50, 100], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(50), u(100));
+    fn calculate_touching_at_single_point_state_worker_ends_at_required_start() {
+        // state_worker: [50, 100], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(50), u(100));
         assert_eq!(result, Some(u(100)));
     }
 
     #[test]
-    fn calculate_touching_at_single_point_redis_starts_at_required_end() {
-        // Redis: [200, 300], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(200), u(300));
+    fn calculate_touching_at_single_point_state_worker_starts_at_required_end() {
+        // state_worker: [200, 300], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(200), u(300));
         assert_eq!(result, Some(u(200)));
     }
 
     #[test]
-    fn calculate_no_overlap_redis_before_required() {
-        // Redis: [50, 99], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(50), u(99));
+    fn calculate_no_overlap_state_worker_before_required() {
+        // state_worker: [50, 99], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(50), u(99));
         assert_eq!(result, None);
     }
 
     #[test]
-    fn calculate_no_overlap_redis_after_required() {
-        // Redis: [201, 300], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(201), u(300));
+    fn calculate_no_overlap_state_worker_after_required() {
+        // state_worker: [201, 300], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(201), u(300));
         assert_eq!(result, None);
     }
 
     #[test]
-    fn calculate_no_overlap_large_gap_redis_before() {
-        // Redis: [10, 50], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(10), u(50));
+    fn calculate_no_overlap_large_gap_state_worker_before() {
+        // state_worker: [10, 50], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(10), u(50));
         assert_eq!(result, None);
     }
 
     #[test]
-    fn calculate_no_overlap_large_gap_redis_after() {
-        // Redis: [500, 600], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(500), u(600));
+    fn calculate_no_overlap_large_gap_state_worker_after() {
+        // state_worker: [500, 600], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(500), u(600));
         assert_eq!(result, None);
     }
 
     #[test]
-    fn calculate_single_block_required_within_redis() {
-        // Redis: [100, 200], Required: [150, 150]
-        let result = RedisSource::calculate_target_block(u(150), u(150), u(100), u(200));
+    fn calculate_single_block_required_within_state_worker() {
+        // state_worker: [100, 200], Required: [150, 150]
+        let result = MdbxSource::calculate_target_block(u(150), u(150), u(100), u(200));
         assert_eq!(result, Some(u(150)));
     }
 
     #[test]
-    fn calculate_single_block_redis_within_required() {
-        // Redis: [150, 150], Required: [100, 200]
-        let result = RedisSource::calculate_target_block(u(100), u(200), u(150), u(150));
+    fn calculate_single_block_state_worker_within_required() {
+        // state_worker: [150, 150], Required: [100, 200]
+        let result = MdbxSource::calculate_target_block(u(100), u(200), u(150), u(150));
         assert_eq!(result, Some(u(150)));
     }
 
     #[test]
     fn calculate_both_single_block_same() {
-        // Redis: [150, 150], Required: [150, 150]
-        let result = RedisSource::calculate_target_block(u(150), u(150), u(150), u(150));
+        // state_worker: [150, 150], Required: [150, 150]
+        let result = MdbxSource::calculate_target_block(u(150), u(150), u(150), u(150));
         assert_eq!(result, Some(u(150)));
     }
 
     #[test]
     fn calculate_both_single_block_different() {
-        // Redis: [150, 150], Required: [160, 160]
-        let result = RedisSource::calculate_target_block(u(160), u(160), u(150), u(150));
+        // state_worker: [150, 150], Required: [160, 160]
+        let result = MdbxSource::calculate_target_block(u(160), u(160), u(150), u(150));
         assert_eq!(result, None);
     }
 
     #[test]
-    fn calculate_single_block_at_redis_start() {
-        // Redis: [100, 200], Required: [100, 100]
-        let result = RedisSource::calculate_target_block(u(100), u(100), u(100), u(200));
+    fn calculate_single_block_at_state_worker_start() {
+        // state_worker: [100, 200], Required: [100, 100]
+        let result = MdbxSource::calculate_target_block(u(100), u(100), u(100), u(200));
         assert_eq!(result, Some(u(100)));
     }
 
     #[test]
-    fn calculate_single_block_at_redis_end() {
-        // Redis: [100, 200], Required: [200, 200]
-        let result = RedisSource::calculate_target_block(u(200), u(200), u(100), u(200));
+    fn calculate_single_block_at_state_worker_end() {
+        // state_worker: [100, 200], Required: [200, 200]
+        let result = MdbxSource::calculate_target_block(u(200), u(200), u(100), u(200));
         assert_eq!(result, Some(u(200)));
     }
 
     #[test]
     fn calculate_all_zeros() {
-        let result = RedisSource::calculate_target_block(u(0), u(0), u(0), u(0));
+        let result = MdbxSource::calculate_target_block(u(0), u(0), u(0), u(0));
         assert_eq!(result, Some(u(0)));
     }
 
     #[test]
     fn calculate_both_start_at_zero() {
-        // Redis: [0, 100], Required: [0, 50]
-        let result = RedisSource::calculate_target_block(u(0), u(50), u(0), u(100));
+        // state_worker: [0, 100], Required: [0, 50]
+        let result = MdbxSource::calculate_target_block(u(0), u(50), u(0), u(100));
         assert_eq!(result, Some(u(50)));
     }
 
     #[test]
     fn calculate_invalid_required_range() {
         // Required: [200, 100] (invalid: min > max)
-        let result = RedisSource::calculate_target_block(u(200), u(100), u(50), u(150));
+        let result = MdbxSource::calculate_target_block(u(200), u(100), u(50), u(150));
         assert_eq!(result, None);
     }
 
     #[test]
-    fn calculate_invalid_redis_range() {
-        // Redis: [200, 100] (invalid: oldest > observed)
-        let result = RedisSource::calculate_target_block(u(50), u(150), u(200), u(100));
+    fn calculate_invalid_state_worker_range() {
+        // state_worker: [200, 100] (invalid: oldest > observed)
+        let result = MdbxSource::calculate_target_block(u(50), u(150), u(200), u(100));
         assert_eq!(result, None);
     }
 
     #[test]
     fn calculate_large_ethereum_block_numbers() {
-        let result = RedisSource::calculate_target_block(
+        let result = MdbxSource::calculate_target_block(
             u(18_000_000),
             u(18_500_000),
             u(17_900_000),
@@ -555,39 +554,39 @@ mod tests {
 
     #[test]
     fn overlap_overlapping_ranges() {
-        assert!(RedisSource::ranges_overlap(u(100), u(200), u(150), u(250)));
+        assert!(MdbxSource::ranges_overlap(u(100), u(200), u(150), u(250)));
     }
 
     #[test]
     fn overlap_non_overlapping_ranges() {
-        assert!(!RedisSource::ranges_overlap(u(100), u(200), u(300), u(400)));
+        assert!(!MdbxSource::ranges_overlap(u(100), u(200), u(300), u(400)));
     }
 
     #[test]
     fn overlap_touching_at_boundary() {
-        assert!(RedisSource::ranges_overlap(u(100), u(200), u(200), u(300)));
+        assert!(MdbxSource::ranges_overlap(u(100), u(200), u(200), u(300)));
     }
 
     #[test]
     fn overlap_adjacent_not_touching() {
-        assert!(!RedisSource::ranges_overlap(u(100), u(199), u(200), u(300)));
+        assert!(!MdbxSource::ranges_overlap(u(100), u(199), u(200), u(300)));
     }
 
     #[test]
     fn overlap_identical_ranges() {
-        assert!(RedisSource::ranges_overlap(u(100), u(200), u(100), u(200)));
+        assert!(MdbxSource::ranges_overlap(u(100), u(200), u(100), u(200)));
     }
 
     #[test]
     fn overlap_one_contains_other() {
-        assert!(RedisSource::ranges_overlap(u(50), u(250), u(100), u(200)));
-        assert!(RedisSource::ranges_overlap(u(100), u(200), u(50), u(250)));
+        assert!(MdbxSource::ranges_overlap(u(50), u(250), u(100), u(200)));
+        assert!(MdbxSource::ranges_overlap(u(100), u(200), u(50), u(250)));
     }
 
     #[test]
     fn test_perfect_overlap() {
-        // Redis: [100, 200], Required: [100, 200]
-        let cache = TestRedisCache::new(100, 200, true);
+        // state_worker: [100, 200], Required: [100, 200]
+        let cache = TestStateWorkerCache::new(100, 200, true);
 
         assert!(cache.is_synced(100, 200));
         cache.update_cache_status(100, 200);
@@ -595,9 +594,9 @@ mod tests {
     }
 
     #[test]
-    fn test_redis_contains_required_range() {
-        // Redis: [50, 300], Required: [100, 200]
-        let cache = TestRedisCache::new(50, 300, true);
+    fn test_state_worker_contains_required_range() {
+        // state_worker: [50, 300], Required: [100, 200]
+        let cache = TestStateWorkerCache::new(50, 300, true);
 
         assert!(cache.is_synced(100, 200));
         cache.update_cache_status(100, 200);
@@ -605,20 +604,20 @@ mod tests {
     }
 
     #[test]
-    fn test_required_contains_redis_range() {
-        // Redis: [150, 180], Required: [100, 200]
-        let cache = TestRedisCache::new(150, 180, true);
+    fn test_required_contains_state_worker_range() {
+        // state_worker: [150, 180], Required: [100, 200]
+        let cache = TestStateWorkerCache::new(150, 180, true);
 
         assert!(cache.is_synced(100, 200));
         cache.update_cache_status(100, 200);
-        assert_eq!(cache.get_target_block(), 180); // Should pick redis_observed_head
+        assert_eq!(cache.get_target_block(), 180); // Should pick state_worker_observed_head
     }
 
     #[test]
     fn test_partial_overlap_lower() {
-        // Redis: [50, 150], Required: [100, 200]
+        // state_worker: [50, 150], Required: [100, 200]
         // Overlap: [100, 150]
-        let cache = TestRedisCache::new(50, 150, true);
+        let cache = TestStateWorkerCache::new(50, 150, true);
 
         assert!(cache.is_synced(100, 200));
         cache.update_cache_status(100, 200);
@@ -627,9 +626,9 @@ mod tests {
 
     #[test]
     fn test_partial_overlap_upper() {
-        // Redis: [150, 250], Required: [100, 200]
+        // state_worker: [150, 250], Required: [100, 200]
         // Overlap: [150, 200]
-        let cache = TestRedisCache::new(150, 250, true);
+        let cache = TestStateWorkerCache::new(150, 250, true);
 
         assert!(cache.is_synced(100, 200));
         cache.update_cache_status(100, 200);
@@ -638,9 +637,9 @@ mod tests {
 
     #[test]
     fn test_no_overlap_gap() {
-        // Redis: [100, 150], Required: [200, 250]
+        // state_worker: [100, 150], Required: [200, 250]
         // No overlap
-        let cache = TestRedisCache::new(100, 150, true);
+        let cache = TestStateWorkerCache::new(100, 150, true);
 
         assert!(!cache.is_synced(200, 250));
 
@@ -651,9 +650,9 @@ mod tests {
 
     #[test]
     fn test_no_overlap_reversed() {
-        // Redis: [200, 250], Required: [100, 150]
+        // state_worker: [200, 250], Required: [100, 150]
         // No overlap
-        let cache = TestRedisCache::new(200, 250, true);
+        let cache = TestStateWorkerCache::new(200, 250, true);
 
         assert!(!cache.is_synced(100, 150));
 
@@ -664,18 +663,18 @@ mod tests {
 
     #[test]
     fn test_touching_ranges_not_overlapping() {
-        // Redis: [100, 150], Required: [151, 200]
+        // state_worker: [100, 150], Required: [151, 200]
         // No overlap (adjacent but not overlapping)
-        let cache = TestRedisCache::new(100, 150, true);
+        let cache = TestStateWorkerCache::new(100, 150, true);
 
         assert!(!cache.is_synced(151, 200));
     }
 
     #[test]
     fn test_touching_ranges_overlapping_by_one() {
-        // Redis: [100, 150], Required: [150, 200]
+        // state_worker: [100, 150], Required: [150, 200]
         // Overlap at block 150
-        let cache = TestRedisCache::new(100, 150, true);
+        let cache = TestStateWorkerCache::new(100, 150, true);
 
         assert!(cache.is_synced(150, 200));
         cache.update_cache_status(150, 200);
@@ -684,9 +683,9 @@ mod tests {
 
     #[test]
     fn test_single_block_overlap() {
-        // Redis: [100, 200], Required: [150, 150]
+        // state_worker: [100, 200], Required: [150, 150]
         // Single block requirement
-        let cache = TestRedisCache::new(100, 200, true);
+        let cache = TestStateWorkerCache::new(100, 200, true);
 
         assert!(cache.is_synced(150, 150));
         cache.update_cache_status(150, 150);
@@ -695,9 +694,9 @@ mod tests {
 
     #[test]
     fn test_sync_status_false() {
-        // Redis: [100, 200], Required: [120, 180]
+        // state_worker: [100, 200], Required: [120, 180]
         // Perfect overlap but sync_status is false
-        let cache = TestRedisCache::new(100, 200, false);
+        let cache = TestStateWorkerCache::new(100, 200, false);
 
         assert!(!cache.is_synced(120, 180));
         // update_cache_status should still work even if sync_status is false
@@ -708,7 +707,7 @@ mod tests {
     #[test]
     fn test_zero_blocks() {
         // Edge case: block 0
-        let cache = TestRedisCache::new(0, 100, true);
+        let cache = TestStateWorkerCache::new(0, 100, true);
 
         assert!(cache.is_synced(0, 50));
         cache.update_cache_status(0, 50);
@@ -718,7 +717,7 @@ mod tests {
     #[test]
     fn test_large_block_numbers() {
         // Test with realistic Ethereum block numbers
-        let cache = TestRedisCache::new(18_000_000, 18_500_000, true);
+        let cache = TestStateWorkerCache::new(18_000_000, 18_500_000, true);
 
         assert!(cache.is_synced(18_200_000, 18_400_000));
         cache.update_cache_status(18_200_000, 18_400_000);
@@ -728,7 +727,7 @@ mod tests {
     #[test]
     fn test_update_multiple_times() {
         // Test that target_block updates correctly on multiple calls
-        let cache = TestRedisCache::new(100, 500, true);
+        let cache = TestStateWorkerCache::new(100, 500, true);
 
         cache.update_cache_status(200, 300);
         assert_eq!(cache.get_target_block(), 300);
@@ -744,7 +743,7 @@ mod tests {
     fn test_invalid_required_range() {
         // Edge case: min_synced_block > latest_head (invalid input)
         // The logic should handle this gracefully
-        let cache = TestRedisCache::new(100, 200, true);
+        let cache = TestStateWorkerCache::new(100, 200, true);
 
         assert!(!cache.is_synced(250, 200)); // min > max
 
@@ -754,9 +753,9 @@ mod tests {
     }
 
     #[test]
-    fn test_redis_oldest_equals_observed() {
-        // Edge case: Redis has only one block
-        let cache = TestRedisCache::new(150, 150, true);
+    fn test_state_worker_oldest_equals_observed() {
+        // Edge case: state_worker has only one block
+        let cache = TestStateWorkerCache::new(150, 150, true);
 
         assert!(cache.is_synced(100, 200));
         cache.update_cache_status(100, 200);
@@ -765,8 +764,8 @@ mod tests {
 
     #[test]
     fn test_required_range_is_single_block() {
-        // Required range is a single block that exists in Redis
-        let cache = TestRedisCache::new(100, 200, true);
+        // Required range is a single block that exists in state_worker
+        let cache = TestStateWorkerCache::new(100, 200, true);
 
         assert!(cache.is_synced(150, 150));
         cache.update_cache_status(150, 150);
@@ -776,7 +775,7 @@ mod tests {
     #[test]
     fn test_exactly_at_boundaries() {
         // Test when required range exactly matches boundaries
-        let cache = TestRedisCache::new(100, 200, true);
+        let cache = TestStateWorkerCache::new(100, 200, true);
 
         // Left boundary
         assert!(cache.is_synced(100, 100));
@@ -790,8 +789,8 @@ mod tests {
     }
 
     #[test]
-    fn test_target_block_updates_when_redis_syncs_late() {
-        let cache = TestRedisCache::new(97, 99, true);
+    fn test_target_block_updates_when_state_worker_syncs_late() {
+        let cache = TestStateWorkerCache::new(97, 99, true);
 
         // Simulate set_block_number(100) being called
         cache.update_cache_status(100, 100);
@@ -804,11 +803,11 @@ mod tests {
         );
         assert!(!cache.is_synced(100, 100), "Should not be synced yet");
 
-        // RACE CONDITION: Redis syncs to block 100 AFTER update_cache_status was called
+        // RACE CONDITION: state_worker syncs to block 100 AFTER update_cache_status was called
         cache.set_observed_head(100);
         cache.set_oldest_block(98);
 
-        // Now Redis has the block, call update_cache_status again
+        // Now state_worker has the block, call update_cache_status again
         // (This simulates what the background sync task does)
         cache.update_cache_status(100, 100);
 
@@ -816,7 +815,7 @@ mod tests {
         assert_eq!(
             cache.get_target_block(),
             100,
-            "target_block should be updated to 100 after Redis syncs"
+            "target_block should be updated to 100 after state_worker syncs"
         );
         assert!(cache.is_synced(100, 100), "Should be synced now");
     }
@@ -824,8 +823,8 @@ mod tests {
     #[test]
     fn test_target_block_race_with_empty_cache() {
         // Simulate the exact scenario from the bug report:
-        // Cache is empty/invalidated, Redis hasn't synced to new block yet
-        let cache = TestRedisCache::new(97, 99, true);
+        // Cache is empty/invalidated, state_worker hasn't synced to new block yet
+        let cache = TestStateWorkerCache::new(97, 99, true);
 
         // Block 100 arrives, cache is invalidated
         cache.update_cache_status(100, 100);
@@ -836,7 +835,7 @@ mod tests {
 
         // Execution starts, first few transactions succeed...
 
-        // HALFWAY THROUGH: Redis syncs to block 100
+        // HALFWAY THROUGH: state_worker syncs to block 100
         cache.set_observed_head(100);
         cache.set_oldest_block(98);
 
@@ -847,20 +846,20 @@ mod tests {
         assert_eq!(
             cache.get_target_block(),
             100,
-            "target_block should be updated when Redis catches up"
+            "target_block should be updated when state_worker catches up"
         );
         assert!(cache.is_synced(100, 100));
     }
 
     #[test]
     fn test_target_block_stays_in_valid_range() {
-        let cache = TestRedisCache::new(95, 98, true);
+        let cache = TestStateWorkerCache::new(95, 98, true);
 
         // Set initial target
         cache.update_cache_status(96, 97);
         assert_eq!(cache.get_target_block(), 97);
 
-        // Redis syncs forward
+        // state_worker syncs forward
         cache.set_observed_head(100);
 
         // Update should pick the most recent valid block
@@ -868,7 +867,7 @@ mod tests {
         assert_eq!(
             cache.get_target_block(),
             97,
-            "Should pick min(latest_head, redis_observed_head) = 97"
+            "Should pick min(latest_head, state_worker_observed_head) = 97"
         );
 
         // Now increase latest_head to 105
@@ -882,13 +881,13 @@ mod tests {
 
     #[test]
     fn test_target_block_not_updated_when_no_overlap() {
-        let cache = TestRedisCache::new(100, 150, true);
+        let cache = TestStateWorkerCache::new(100, 150, true);
 
         // Set valid target first
         cache.update_cache_status(120, 140);
         assert_eq!(cache.get_target_block(), 140);
 
-        // Request block range that doesn't overlap with Redis
+        // Request block range that doesn't overlap with state_worker
         cache.update_cache_status(200, 250);
 
         // target_block should NOT change (stays at previous valid value)
@@ -902,13 +901,13 @@ mod tests {
 
     #[test]
     fn test_target_block_multiple_sync_updates() {
-        let cache = TestRedisCache::new(95, 100, true);
+        let cache = TestStateWorkerCache::new(95, 100, true);
 
-        // First update: Redis has [95, 100], request [98, 99]
+        // First update: state_worker has [95, 100], request [98, 99]
         cache.update_cache_status(98, 99);
         assert_eq!(cache.get_target_block(), 99);
 
-        // Redis syncs forward to 105
+        // state_worker syncs forward to 105
         cache.set_observed_head(105);
 
         // Second update: request [100, 102]
@@ -926,13 +925,13 @@ mod tests {
 
     #[test]
     fn test_target_block_with_moving_oldest_block() {
-        let cache = TestRedisCache::new(90, 100, true);
+        let cache = TestStateWorkerCache::new(90, 100, true);
 
-        // Initial state: Redis buffer is [90, 100]
+        // Initial state: state_worker buffer is [90, 100]
         cache.update_cache_status(95, 98);
         assert_eq!(cache.get_target_block(), 98);
 
-        // Redis buffer advances (oldest moves forward), now [95, 105]
+        // state_worker buffer advances (oldest moves forward), now [95, 105]
         cache.set_oldest_block(95);
         cache.set_observed_head(105);
 

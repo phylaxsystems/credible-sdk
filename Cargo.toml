@@ -68,7 +68,6 @@ sled = { version = "1.0.0-alpha.124" }
 hex = "0.4.3"
 tempfile = { version = "3.23.0" }
 wiremock = "0.6.5"
-redis-test = "1.0.0"
 redis = "1.0.1"
 testcontainers = "0.26.0"
 testcontainers-modules = { version = "0.14.0", features = ["redis"] }

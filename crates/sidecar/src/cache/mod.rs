@@ -420,28 +420,12 @@ mod tests {
     #![allow(clippy::cast_possible_truncation)]
     #![allow(clippy::cast_sign_loss)]
     use super::*;
-    use crate::cache::sources::{
-        Source,
-        redis::{
-            RedisCacheError,
-            RedisSource,
-        },
-    };
-    use alloy::hex;
+    use crate::cache::sources::Source;
     use assertion_executor::primitives::{
         AccountInfo,
         Address,
         B256,
         Bytecode,
-    };
-    use redis::{
-        self,
-        ErrorKind,
-        RedisError,
-    };
-    use redis_test::{
-        MockCmd,
-        MockRedisConnection,
     };
     use revm::primitives::{
         StorageKey,
@@ -449,11 +433,8 @@ mod tests {
         U256,
     };
     use std::{
-        collections::HashMap,
-        fmt,
         sync::{
             Arc,
-            Mutex,
             atomic::{
                 AtomicUsize,
                 Ordering,
@@ -622,37 +603,6 @@ mod tests {
         }
     }
 
-    struct RedisTestBackend {
-        connection: Mutex<MockRedisConnection>,
-        hgetall_calls: Arc<AtomicUsize>,
-    }
-
-    impl fmt::Debug for RedisTestBackend {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.debug_struct("RedisTestBackend").finish()
-        }
-    }
-
-    impl RedisTestBackend {
-        fn with_commands<I>(commands: I) -> (Self, Arc<AtomicUsize>)
-        where
-            I: IntoIterator<Item = MockCmd>,
-        {
-            let calls = Arc::new(AtomicUsize::new(0));
-            (
-                Self {
-                    connection: Mutex::new(MockRedisConnection::new(commands)),
-                    hgetall_calls: calls.clone(),
-                },
-                calls,
-            )
-        }
-    }
-
-    fn redis_io_error(message: &str) -> RedisError {
-        RedisError::from((ErrorKind::Io, "TEST", message.to_string()))
-    }
-
     // Helper functions
     fn create_test_address() -> Address {
         Address::from([1u8; 20])
@@ -708,14 +658,14 @@ mod tests {
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
         );
         let source3 =
-            Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(U256::ZERO));
+            Arc::new(MockSource::new(SourceName::StateWorker).with_synced_threshold(U256::ZERO));
 
         let cache = Sources::new(vec![source1, source2, source3], 10);
 
         // Block 0 - only source3 should be synced
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), SourceName::Redis);
+        assert_eq!(synced[0].name(), SourceName::StateWorker);
 
         // Block 15 - source1 and source3 should be synced
         cache.set_block_number(U256::from(15));
@@ -723,7 +673,7 @@ mod tests {
         assert_eq!(synced.len(), 2);
         let names: Vec<_> = synced.iter().map(|s| s.name()).collect();
         assert!(names.contains(&SourceName::Other));
-        assert!(names.contains(&SourceName::Redis));
+        assert!(names.contains(&SourceName::StateWorker));
 
         // Block 60 - all sources should be synced
         cache.set_block_number(U256::from(60));
@@ -1196,8 +1146,9 @@ mod tests {
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
         );
-        let source3 =
-            Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(U256::from(101)));
+        let source3 = Arc::new(
+            MockSource::new(SourceName::StateWorker).with_synced_threshold(U256::from(101)),
+        );
 
         // Test with max_depth = 20
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 20);
@@ -1216,7 +1167,7 @@ mod tests {
         let names: Vec<_> = synced.iter().map(|s| s.name()).collect();
         assert!(names.contains(&SourceName::Other));
         assert!(names.contains(&SourceName::EthRpcSource));
-        assert!(!names.contains(&SourceName::Redis));
+        assert!(!names.contains(&SourceName::StateWorker));
 
         // Test with max_depth = 60
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 60);
@@ -1302,8 +1253,9 @@ mod tests {
         let source2 = Arc::new(
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(200)),
         );
-        let source3 =
-            Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(U256::from(300)));
+        let source3 = Arc::new(
+            MockSource::new(SourceName::StateWorker).with_synced_threshold(U256::from(300)),
+        );
 
         let cache = Sources::new(vec![source1.clone(), source2.clone(), source3.clone()], 50);
 
@@ -1368,14 +1320,14 @@ mod tests {
             MockSource::new(SourceName::EthRpcSource).with_synced_threshold(U256::from(50)),
         );
         let source3 =
-            Arc::new(MockSource::new(SourceName::Redis).with_synced_threshold(U256::ZERO));
+            Arc::new(MockSource::new(SourceName::StateWorker).with_synced_threshold(U256::ZERO));
 
         let cache = Sources::new(vec![source1, source2, source3], 10);
 
         // Block 0 - effective block is 0, only source3 should be synced
         let synced: Vec<_> = cache.iter_synced_sources().collect();
         assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].name(), SourceName::Redis);
+        assert_eq!(synced[0].name(), SourceName::StateWorker);
 
         // Block 15 - this sets required_head to 15
         cache.set_block_number(U256::from(15));

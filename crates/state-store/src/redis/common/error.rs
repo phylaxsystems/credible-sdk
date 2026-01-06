@@ -76,7 +76,7 @@ pub enum StateError {
 
     /// Conflicting namespace rotation size in Redis metadata
     #[error(
-        "State dump index count mismatch: redis configured for {existing} indices but requested {requested}"
+        "State dump index count mismatch: state worker configured for {existing} indices but requested {requested}"
     )]
     StateDumpIndexMismatch { existing: usize, requested: usize },
 

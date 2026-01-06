@@ -1,12 +1,12 @@
 use crate::{
-    cache::sources::redis::CacheStatus,
+    cache::sources::state_worker::CacheStatus,
     critical,
 };
 use alloy::primitives::U256;
 use parking_lot::RwLock;
 use state_store::{
     Reader,
-    redis::StateReader,
+    mdbx::StateReader,
 };
 use std::{
     sync::{
@@ -43,8 +43,8 @@ pub fn publish_sync_state(
     if let Some(block_number) = latest_head {
         *observed_block.write() = block_number;
         let oldest = oldest_block.unwrap_or(block_number);
-        // We shift the oldest block to be +1, so we avoid fetching status for a block in Redis which will be rotated next
-        // But we can only do it if the redis depth is > 1
+        // We shift the oldest block to be +1, so we avoid fetching status for a block in state worker which will be rotated next
+        // But we can only do it if the state_worker depth is > 1
         let shift = if block_number > oldest {
             U256::from(1)
         } else {
@@ -75,16 +75,20 @@ pub fn publish_sync_state(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_sync_task(
+pub fn spawn_sync_task<T>(
     cache_status: Arc<CacheStatus>,
-    reader: StateReader,
+    reader: T,
     target_block: Arc<RwLock<U256>>,
     observed_block: Arc<RwLock<U256>>,
     oldest_block: Arc<RwLock<U256>>,
     sync_status: Arc<AtomicBool>,
     cancel: CancellationToken,
     poll_interval: Duration,
-) -> JoinHandle<()> {
+) -> JoinHandle<()>
+where
+    T: Reader + Clone + Send + Sync + 'static,
+    T::Error: Send + 'static,
+{
     tokio::spawn(async move {
         let mut ticker = interval(poll_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -121,7 +125,7 @@ pub fn spawn_sync_task(
                             );
                         }
                         Ok(Err(error)) => {
-                            critical!(error = ?error, "redis sync task failed to read latest block range");
+                            critical!(error = ?error, "state_worker sync task failed to read latest block range");
                             publish_sync_state(
                                 cache_status.clone(),
                                 None,
@@ -133,7 +137,7 @@ pub fn spawn_sync_task(
                             );
                         }
                         Err(join_error) => {
-                            critical!(error = ?join_error, "redis sync task join error");
+                            critical!(error = ?join_error, "state_worker sync task join error");
                             publish_sync_state(
                                 cache_status.clone(),
                                 None,
@@ -241,7 +245,7 @@ mod tests {
         assert_eq!(*observed_block.read(), U256::ZERO);
         assert_eq!(*oldest_block.read(), U256::ZERO);
         assert!(!sync_status.load(Ordering::Acquire));
-        // target_block should remain unchanged when Redis is unavailable
+        // target_block should remain unchanged when state worker is unavailable
         assert_eq!(*target_block.read(), u256(10));
     }
 
@@ -286,7 +290,7 @@ mod tests {
         let oldest_block = RwLock::new(U256::ZERO);
         let sync_status = AtomicBool::new(false);
 
-        // Redis syncs to 100 with range [98, 100]
+        // State worker syncs to 100 with range [98, 100]
         publish_sync_state(
             cache_status.clone(),
             Some(u256(100)), // latest_head
@@ -305,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_sync_state_handles_late_redis_sync() {
+    fn test_publish_sync_state_handles_late_state_worker_sync() {
         let cache_status = Arc::new(CacheStatus {
             min_synced_block: RwLock::new(u256(100)),
             latest_head: RwLock::new(u256(100)),
@@ -315,7 +319,7 @@ mod tests {
         let oldest_block = RwLock::new(U256::ZERO);
         let sync_status = AtomicBool::new(false);
 
-        // First call: Redis only has up to 99
+        // First call: State worker only has up to 99
         publish_sync_state(
             cache_status.clone(),
             Some(u256(99)),
@@ -331,7 +335,7 @@ mod tests {
         assert_eq!(*target_block.read(), U256::ZERO);
         assert!(!sync_status.load(Ordering::Acquire));
 
-        // Second call: Redis catches up to 100
+        // Second call: State worker catches up to 100
         publish_sync_state(
             cache_status.clone(),
             Some(u256(100)),
@@ -358,7 +362,7 @@ mod tests {
         let oldest_block = RwLock::new(U256::ZERO);
         let sync_status = AtomicBool::new(false);
 
-        // Redis has [90, 100]
+        // State worker has [90, 100]
         publish_sync_state(
             cache_status.clone(),
             Some(u256(100)),
@@ -386,7 +390,7 @@ mod tests {
         let oldest_block = RwLock::new(U256::ZERO);
         let sync_status = AtomicBool::new(true);
 
-        // Redis has [100, 150]
+        // State worker has [100, 150]
         publish_sync_state(
             cache_status.clone(),
             Some(u256(150)),
@@ -400,7 +404,7 @@ mod tests {
         // No overlap: [max(200,100), min(250,150)] = [200, 150], invalid
         // target_block should NOT be updated
         assert_eq!(*target_block.read(), u256(150));
-        // But sync_status should be updated: 150 is within Redis range [100, 150]
+        // But sync_status should be updated: 150 is within State worker range [100, 150]
         assert!(sync_status.load(Ordering::Acquire));
     }
 
@@ -415,7 +419,7 @@ mod tests {
         let oldest_block = RwLock::new(U256::ZERO);
         let sync_status = AtomicBool::new(false);
 
-        // First: Redis has [90, 100]
+        // First: State worker has [90, 100]
         publish_sync_state(
             cache_status.clone(),
             Some(u256(100)),
@@ -429,7 +433,7 @@ mod tests {
         assert_eq!(*target_block.read(), u256(100));
         assert!(sync_status.load(Ordering::Acquire));
 
-        // Second: Redis window moves forward [95, 105]
+        // Second: State worker window moves forward [95, 105]
         publish_sync_state(
             cache_status.clone(),
             Some(u256(105)),
@@ -457,7 +461,7 @@ mod tests {
         let oldest_block = RwLock::new(U256::ZERO);
         let sync_status = AtomicBool::new(false);
 
-        // Redis has [150, 250]
+        // State worker has [150, 250]
         publish_sync_state(
             cache_status.clone(),
             Some(u256(250)),
@@ -485,7 +489,7 @@ mod tests {
         let oldest_block = RwLock::new(U256::ZERO);
         let sync_status = AtomicBool::new(false);
 
-        // Redis has exactly [100, 100]
+        // State worker has exactly [100, 100]
         publish_sync_state(
             cache_status.clone(),
             Some(u256(100)),
@@ -512,7 +516,7 @@ mod tests {
         let oldest_block = RwLock::new(U256::ZERO);
         let sync_status = AtomicBool::new(true);
 
-        // Redis has [100, 200] - no overlap with [50, 60]
+        // State worker has [100, 200] - no overlap with [50, 60]
         publish_sync_state(
             cache_status.clone(),
             Some(u256(200)),
@@ -526,7 +530,7 @@ mod tests {
         // No overlap: [max(50,100), min(60,200)] = [100, 60], invalid
         // target_block should remain at 55
         assert_eq!(*target_block.read(), u256(55));
-        // sync_status checks if target_block (55) is within Redis range [100, 200] -> false
+        // sync_status checks if target_block (55) is within state worker range [100, 200] -> false
         assert!(!sync_status.load(Ordering::Acquire));
     }
 }

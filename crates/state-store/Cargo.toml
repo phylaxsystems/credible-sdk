@@ -23,6 +23,7 @@ reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-libmdbx = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+rayon = { workspace = true }
 
 [package.metadata.cargo-shear]
 ignored = ["modular-bitfield"]
