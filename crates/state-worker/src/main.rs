@@ -6,6 +6,7 @@ mod genesis;
 #[cfg(test)]
 mod integration_tests;
 mod macros;
+mod metrics;
 mod state;
 mod system_calls;
 mod worker;
@@ -53,7 +54,7 @@ async fn main() -> Result<()> {
         .expect("Failed to install rustls crypto provider");
 
     // Install the shared tracing subscriber used across Credible services.
-    trace();
+    let _guard = trace();
 
     let args = Args::parse();
 
@@ -66,6 +67,7 @@ async fn main() -> Result<()> {
     writer_reader
         .ensure_dump_index_metadata()
         .context("failed to ensure database namespace index metadata")?;
+
     // Load genesis from file (required to seed initial state)
     let file_path = &args.file_to_genesis;
     info!("Loading genesis from file: {}", file_path);
