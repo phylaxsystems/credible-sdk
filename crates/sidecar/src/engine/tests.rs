@@ -62,6 +62,7 @@ impl<DB> CoreEngine<DB> {
             cache: OverlayDb::new(None),
             current_block_iterations: HashMap::new(),
             tx_receiver,
+            incident_sender: None,
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
                 AssertionStore::new_ephemeral(),
@@ -181,6 +182,7 @@ async fn create_test_engine_with_timeout(
         timeout,
         timeout / 2, // We divide by 2 to ensure we read the cache status before we timeout
         false,
+        None,
         #[cfg(feature = "cache_validation")]
         None,
     )
@@ -746,6 +748,7 @@ async fn test_database_commit_and_block_env_requirements() {
         fork_db: engine.cache.fork(),
         n_transactions: 0,
         last_executed_tx: LastExecutedTx::new(),
+        executed_txs: Vec::new(),
         block_env,
     };
 
@@ -1083,6 +1086,7 @@ async fn test_failed_transaction_commit() {
         fork_db: engine.cache.fork(),
         n_transactions: 0,
         last_executed_tx,
+        executed_txs: Vec::new(),
         block_env: BlockEnv::default(),
     };
 

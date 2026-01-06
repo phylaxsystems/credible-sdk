@@ -363,6 +363,7 @@ impl AssertionExecutor {
         }
 
         let rax = AssertionContractExecution {
+            adopter: context.adopter,
             assertion_fns_results: valid_results,
             total_assertion_gas: assertion_gas.into_inner(),
             total_assertion_funcs_ran: assertions_ran.into_inner(),

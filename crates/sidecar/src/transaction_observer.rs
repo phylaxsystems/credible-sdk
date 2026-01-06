@@ -1,5 +1,6 @@
 use crate::utils::ErrorRecoverability;
 use std::{
+    collections::VecDeque,
     sync::{
         Arc,
         atomic::{
@@ -8,7 +9,10 @@ use std::{
         },
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{
+        Duration,
+        Instant,
+    },
 };
 use revm::{context::{BlockEnv, TxEnv}, primitives::{Address, Bytes, FixedBytes}};
 use thiserror::Error;
@@ -16,38 +20,43 @@ use tokio::sync::oneshot;
 use tracing::info;
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Timeout for recv - threads will check for the shutdown flag at this interval
+const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// This struct contains data for giving high level context to
 /// any observer about an incident (or invalidation) that occured. 
 #[derive(Debug, Clone)]
-pub(crate) struct IncidentData {
-    adopter_address: Address,
-    assertion_id: FixedBytes<32>,
-    assertion_fn: FixedBytes<4>,
-    revert_data: Bytes,
+pub struct IncidentData {
+    pub(crate) adopter_address: Address,
+    pub(crate) assertion_id: FixedBytes<32>,
+    pub(crate) assertion_fn: FixedBytes<4>,
+    pub(crate) revert_data: Bytes,
 }
 
 /// Contains txhash and blockenv. Used to reconstruct
 /// incident txs and display them to end users.
-pub(crate) type ReconstructableTx = (FixedBytes<32>, TxEnv);
+pub type ReconstructableTx = (FixedBytes<32>, TxEnv);
 
 /// Represents a full incident, includes transactions that preceeded
 /// the invalidating(incident) tx, blockenv, and more metadata needed
 /// for consumers to debug and investigate assertion failures.
 #[derive(Debug)]
-pub(crate) struct IncidentReport {
+pub struct IncidentReport {
     /// Transaction that caused the incident
-    transaction_data: ReconstructableTx,
+    pub(crate) transaction_data: ReconstructableTx,
     /// All individual assertion failures
-    failures: Vec<IncidentData>,
+    pub(crate) failures: Vec<IncidentData>,
     /// Block env of where the invalidation happened
-    block_env: BlockEnv,
+    pub(crate) block_env: BlockEnv,
     /// When the invalidation happened
-    incident_timestamp: u64,
+    pub(crate) incident_timestamp: u64,
     /// Transaction hashes of previous transactions in the iteration
     /// and their blockenvs
-    prev_txs: Vec<ReconstructableTx>,
+    pub(crate) prev_txs: Vec<ReconstructableTx>,
 }
+
+pub type IncidentReportSender = flume::Sender<IncidentReport>;
+pub type IncidentReportReceiver = flume::Receiver<IncidentReport>;
 
 #[derive(Clone)]
 pub struct TransactionObserverConfig {
@@ -95,11 +104,17 @@ impl Default for TransactionObserverConfig {
 /// as to not flood the endpoint with requests if its crashing.
 pub struct TransactionObserver {
     config: TransactionObserverConfig,
+    incident_rx: IncidentReportReceiver,
+    pending_reports: VecDeque<IncidentReport>,
 }
 
 impl TransactionObserver {
-    pub fn new(config: TransactionObserverConfig) -> Self {
-        Self { config }
+    pub fn new(config: TransactionObserverConfig, incident_rx: IncidentReportReceiver) -> Self {
+        Self {
+            config,
+            incident_rx,
+            pending_reports: VecDeque::new(),
+        }
     }
 
     /// Spawns the transaction observer on a dedicated OS thread.
@@ -132,18 +147,33 @@ impl TransactionObserver {
         &mut self,
         shutdown: Arc<AtomicBool>,
     ) -> Result<(), TransactionObserverError> {
+        let mut last_publish = Instant::now();
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 info!(target = "transaction_observer", "Shutdown signal received");
                 return Ok(());
             }
 
-            self.publish_invalidations()?;
-            std::thread::sleep(self.config.poll_interval);
+            match self.incident_rx.recv_timeout(RECV_TIMEOUT) {
+                Ok(report) => self.store_incident(report),
+                Err(flume::RecvTimeoutError::Timeout) => {}
+                Err(flume::RecvTimeoutError::Disconnected) => {
+                    return Err(TransactionObserverError::ChannelClosed);
+                }
+            }
+
+            if last_publish.elapsed() >= self.config.poll_interval {
+                self.publish_invalidations()?;
+                last_publish = Instant::now();
+            }
         }
     }
 
-    fn publish_invalidations(&self) -> Result<(), TransactionObserverError> {
+    fn store_incident(&mut self, report: IncidentReport) {
+        self.pending_reports.push_back(report);
+    }
+
+    fn publish_invalidations(&mut self) -> Result<(), TransactionObserverError> {
         Ok(())
     }
 }
@@ -152,6 +182,8 @@ impl TransactionObserver {
 pub enum TransactionObserverError {
     #[error("Failed to publish invalidations to dapp API: {reason}")]
     PublishFailed { reason: String },
+    #[error("Incident report channel closed")]
+    ChannelClosed,
 }
 
 impl From<&TransactionObserverError> for ErrorRecoverability {

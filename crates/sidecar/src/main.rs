@@ -224,6 +224,8 @@ async fn main() -> anyhow::Result<()> {
         let (transport_tx_sender, event_sequencing_rx) = unbounded();
         // Channel: EventSequencing -> CoreEngine
         let (event_sequencing_tx, engine_rx) = unbounded();
+        // Channel: CoreEngine -> TransactionObserver
+        let (incident_report_tx, incident_report_rx) = unbounded();
 
         let (engine_state_results, result_event_rx) = match config.transport.protocol {
             TransportProtocol::Grpc => {
@@ -259,6 +261,7 @@ async fn main() -> anyhow::Result<()> {
                 .credible
                 .overlay_cache_invalidation_every_block
                 .unwrap_or(false),
+            Some(incident_report_tx),
             #[cfg(feature = "cache_validation")]
             Some(&config.credible.cache_checker_ws_url),
         )
@@ -267,7 +270,10 @@ async fn main() -> anyhow::Result<()> {
         thread_handles.engine = Some(engine_handle);
 
         // Spawn TransactionObserver on a dedicated OS thread
-        let transaction_observer = TransactionObserver::new(TransactionObserverConfig::default());
+        let transaction_observer = TransactionObserver::new(
+            TransactionObserverConfig::default(),
+            incident_report_rx,
+        );
         let (observer_handle, observer_exited) =
             transaction_observer.spawn(Arc::clone(&shutdown_flag))?;
         thread_handles.transaction_observer = Some(observer_handle);
