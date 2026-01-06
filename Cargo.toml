@@ -17,7 +17,7 @@ members = [
     "crates/state-worker",
     "crates/shadow-driver",
     "crates/state-store",
-    "crates/state-checker",
+    "crates/state-checker", "scripts/geth_snapshop",
 ]
 exclude = ["fuzz"]
 resolver = "2"
