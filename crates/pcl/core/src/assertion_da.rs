@@ -11,10 +11,9 @@ use clap::{
     ValueHint,
 };
 use colored::Colorize;
-use indicatif::{
-    ProgressBar,
-    ProgressStyle,
-};
+use indicatif::ProgressBar;
+#[cfg(not(test))]
+use indicatif::ProgressStyle;
 use pcl_common::args::CliArgs;
 use pcl_phoundry::build_and_flatten::{
     BuildAndFlatOutput,
@@ -22,6 +21,7 @@ use pcl_phoundry::build_and_flatten::{
 };
 use serde_json::json;
 use std::path::PathBuf;
+#[cfg(not(test))]
 use tokio::time::Duration;
 
 use assertion_da_client::{
@@ -81,31 +81,24 @@ pub struct DaStoreArgs {
         value_name = "ASSERTION",
         value_hint = ValueHint::Other,
         value_parser,
-        help = "Assertion spec in the format 'Name(arg1,arg2)'. Repeat to store multiple assertions at once (wrap the value in quotes to avoid shell parsing)."
+        help = "Assertion contract in the format 'Name(arg1,arg2)'. Repeat the flag to store multiple assertions (wrap the value in quotes to avoid shell parsing)."
     )]
     pub assertion_specs: Vec<AssertionKey>,
 
-    /// Assertion contract when using positional args
+    /// Assertions provided as positional arguments (when not using --assertion)
     #[clap(
-        value_name = "ASSERTION_CONTRACT",
-        help = "Name of the assertion contract when storing a single assertion.",
-        required_unless_present = "assertion_specs"
+        value_name = "ASSERTION_OR_ARG",
+        value_hint = ValueHint::Other,
+        help = "Assertion contract(s) when not using --assertion. Provide as 'ContractName [CONSTRUCTOR_ARGS...]' for a single assertion or as 'ContractName(arg1,arg2)' to inline constructor args. Repeat specs to store multiple assertions.",
+        required_unless_present = "assertion_specs",
+        trailing_var_arg = true
     )]
-    pub assertion_contract: Option<String>,
-
-    /// Constructor arguments for the positional assertion contract
-    #[clap(
-        value_name = "CONSTRUCTOR_ARGS",
-        help = "Constructor arguments for the positional assertion contract.",
-        requires = "assertion_contract"
-    )]
-    pub constructor_args: Vec<String>,
+    pub positional_assertions: Vec<String>,
 }
 
 impl DaStoreArgs {
     /// Creates and configures a progress spinner for displaying operation status.
-    ///
-    /// Returns a configured `ProgressBar` instance with a custom spinner style.
+    #[cfg(not(test))]
     fn create_spinner() -> ProgressBar {
         let spinner = ProgressBar::new_spinner();
         spinner.set_style(
@@ -118,19 +111,48 @@ impl DaStoreArgs {
         spinner
     }
 
+    /// Creates a spinner for tests without spawning background threads.
+    #[cfg(test)]
+    fn create_spinner() -> ProgressBar {
+        ProgressBar::hidden()
+    }
+
     /// Returns the assertions that should be stored for this invocation.
     fn assertions_to_store(&self) -> Vec<AssertionKey> {
         if !self.assertion_specs.is_empty() {
             return self.assertion_specs.clone();
         }
 
-        vec![AssertionKey::new(
-            self.assertion_contract
-                .as_ref()
-                .expect("clap ensures either --assertion or positional arguments are provided")
-                .clone(),
-            self.constructor_args.clone(),
-        )]
+        self.positional_assertions_to_keys()
+    }
+
+    /// Parses positional assertions into AssertionKey entries.
+    fn positional_assertions_to_keys(&self) -> Vec<AssertionKey> {
+        if self.positional_assertions.is_empty() {
+            return vec![];
+        }
+
+        // If any positional argument already looks like a formatted assertion spec,
+        // treat every positional token as a standalone spec (enabling multiple specs).
+        if self
+            .positional_assertions
+            .iter()
+            .any(|token| token.contains('(') || token.contains(')'))
+        {
+            return self
+                .positional_assertions
+                .iter()
+                .map(|token| AssertionKey::from(token.as_str()))
+                .collect();
+        }
+
+        let mut positional_iter = self.positional_assertions.iter();
+        let Some(contract) = positional_iter.next() else {
+            return vec![];
+        };
+        let constructor_args = positional_iter.map(|arg| arg.to_string()).collect();
+
+        vec![AssertionKey::new(contract.clone(), constructor_args)]
     }
 
     /// Handles HTTP error responses from the DA layer.
@@ -195,9 +217,9 @@ impl DaStoreArgs {
             );
             println!("  {}", "https://dapp.phylax.systems".cyan().bold());
             println!(
-                "Need a refresher on store vs submit? {}",
-                STORE_DOCS_URL.cyan().bold()
+                "Tip: use `pcl store` to send assertions to the DA and `pcl submit` to begin enforcement."
             );
+            println!("Docs: {}", STORE_DOCS_URL.cyan().bold());
         }
     }
 
@@ -456,12 +478,12 @@ mod tests {
 
     /// Creates default store args pointing at the mock-project testdata
     fn create_test_store_args(da_url: String) -> DaStoreArgs {
+        let constructor_arg = Address::random().to_string();
         DaStoreArgs {
             da_url,
             root: Some(PathBuf::from("../../../testdata/mock-protocol")),
             assertion_specs: vec![],
-            assertion_contract: Some("MockAssertion".to_string()),
-            constructor_args: vec![Address::random().to_string()],
+            positional_assertions: vec!["MockAssertion".to_string(), constructor_arg],
         }
     }
 
@@ -563,7 +585,7 @@ mod tests {
 
         let mut config = create_test_config();
         let mut args = create_test_store_args(server.url());
-        args.constructor_args = vec!["invalid_arg".to_string()];
+        args.positional_assertions = vec!["MockAssertion".to_string(), "invalid_arg".to_string()];
 
         let cli_args = CliArgs::default();
         let result = args.run(&cli_args, &mut config).await;
@@ -591,8 +613,11 @@ mod tests {
             da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
             root: None,
             assertion_specs: vec![],
-            assertion_contract: Some("test_assertion".to_string()),
-            constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
+            positional_assertions: vec![
+                "test_assertion".to_string(),
+                "arg1".to_string(),
+                "arg2".to_string(),
+            ],
         };
 
         let assertion = AssertionForSubmission {
@@ -710,8 +735,11 @@ mod tests {
             da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
             root: None,
             assertion_specs: vec![],
-            assertion_contract: Some("ExampleAssertion".to_string()),
-            constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
+            positional_assertions: vec![
+                "ExampleAssertion".to_string(),
+                "arg1".to_string(),
+                "arg2".to_string(),
+            ],
         };
 
         let config = CliConfig {
@@ -734,8 +762,11 @@ mod tests {
             da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
             root: None,
             assertion_specs: vec![],
-            assertion_contract: Some("ExampleAssertion".to_string()),
-            constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
+            positional_assertions: vec![
+                "ExampleAssertion".to_string(),
+                "arg1".to_string(),
+                "arg2".to_string(),
+            ],
         };
 
         let config = CliConfig::default();
@@ -752,8 +783,7 @@ mod tests {
                 "SpecAssertion".to_string(),
                 vec!["arg1".to_string()],
             )],
-            assertion_contract: Some("Fallback".to_string()),
-            constructor_args: vec!["positional".to_string()],
+            positional_assertions: vec!["Fallback".to_string(), "positional".to_string()],
         };
 
         let assertions = args.assertions_to_store();
@@ -768,8 +798,11 @@ mod tests {
             da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
             root: None,
             assertion_specs: vec![],
-            assertion_contract: Some("Fallback".to_string()),
-            constructor_args: vec!["positional".to_string(), "arg2".to_string()],
+            positional_assertions: vec![
+                "Fallback".to_string(),
+                "positional".to_string(),
+                "arg2".to_string(),
+            ],
         };
 
         let assertions = args.assertions_to_store();
@@ -781,14 +814,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_positional_assertions_allow_multiple_specs_with_inline_args() {
+        let args = DaStoreArgs {
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            root: None,
+            assertion_specs: vec![],
+            positional_assertions: vec![
+                "FirstAssertion()".to_string(),
+                "SecondAssertion(arg1,arg2)".to_string(),
+            ],
+        };
+
+        let assertions = args.assertions_to_store();
+        assert_eq!(assertions.len(), 2);
+        assert_eq!(assertions[0].assertion_name, "FirstAssertion");
+        assert!(assertions[0].constructor_args.is_empty());
+        assert_eq!(assertions[1].assertion_name, "SecondAssertion");
+        assert_eq!(
+            assertions[1].constructor_args,
+            vec!["arg1".to_string(), "arg2".to_string()]
+        );
+    }
+
     #[tokio::test]
     async fn test_update_config() {
         let args = DaStoreArgs {
             da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
             root: None,
             assertion_specs: vec![],
-            assertion_contract: Some("test_assertion".to_string()),
-            constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
+            positional_assertions: vec![
+                "test_assertion".to_string(),
+                "arg1".to_string(),
+                "arg2".to_string(),
+            ],
         };
 
         let mut config = CliConfig::default();
@@ -847,8 +906,11 @@ mod tests {
             da_url: "invalid-url".to_string(),
             root: None,
             assertion_specs: vec![],
-            assertion_contract: Some("ExampleAssertion".to_string()),
-            constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
+            positional_assertions: vec![
+                "ExampleAssertion".to_string(),
+                "arg1".to_string(),
+                "arg2".to_string(),
+            ],
         };
 
         let mut config = CliConfig::default();

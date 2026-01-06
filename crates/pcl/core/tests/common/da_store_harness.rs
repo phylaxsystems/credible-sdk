@@ -26,6 +26,7 @@ pub struct TestSetup {
     pub root: Option<PathBuf>,
     pub assertion_contract: Option<String>,
     pub constructor_args: Vec<String>,
+    pub positional_assertions: Vec<String>,
     pub assertion_specs: Vec<AssertionKey>,
     pub json: bool,
 }
@@ -37,6 +38,7 @@ impl TestSetup {
             assertion_contract: None,
             json: false,
             constructor_args: vec![],
+            positional_assertions: vec![],
             assertion_specs: vec![],
         }
     }
@@ -53,6 +55,10 @@ impl TestSetup {
         self.constructor_args = constructor_args;
     }
 
+    pub fn set_positional_assertions(&mut self, positional_assertions: Vec<String>) {
+        self.positional_assertions = positional_assertions;
+    }
+
     pub fn set_assertion_specs(&mut self, assertion_specs: Vec<AssertionKey>) {
         self.assertion_specs = assertion_specs;
     }
@@ -64,6 +70,19 @@ impl TestSetup {
 
     pub async fn build(&self) -> Result<TestRunner, DaSubmitError> {
         let (handle, da_url) = deploy_test_da(SigningKey::random(&mut OsRng)).await;
+        let positional_assertions = if !self.positional_assertions.is_empty() {
+            self.positional_assertions.clone()
+        } else if self.assertion_specs.is_empty() {
+            let mut assertions = vec![
+                self.assertion_contract
+                    .clone()
+                    .unwrap_or_else(|| "NoArgsAssertion".to_string()),
+            ];
+            assertions.extend(self.constructor_args.clone());
+            assertions
+        } else {
+            vec![]
+        };
         let da_store_args = DaStoreArgs {
             da_url: format!("http://{da_url}"),
             root: Some(
@@ -72,14 +91,7 @@ impl TestSetup {
                     .unwrap_or_else(|| PathBuf::from("../../../testdata/mock-protocol")),
             ),
             assertion_specs: self.assertion_specs.clone(),
-            assertion_contract: self.assertion_contract.clone().or_else(|| {
-                if self.assertion_specs.is_empty() {
-                    Some("NoArgsAssertion".to_string())
-                } else {
-                    None
-                }
-            }),
-            constructor_args: self.constructor_args.clone(),
+            positional_assertions,
         };
 
         let cli_config = CliConfig {

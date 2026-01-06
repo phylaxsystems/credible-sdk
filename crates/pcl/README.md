@@ -148,15 +148,17 @@ Display options:
 #### Store Assertions in Data Availability Layer
 
 ```bash
-pcl store [OPTIONS] [ASSERTION_CONTRACT] [CONSTRUCTOR_ARGS]...
+pcl store [OPTIONS] [ASSERTION_CONTRACT_OR_ARG]...
 
 Arguments:
-  [ASSERTION_CONTRACT]   Name of the assertion contract when storing a single assertion
-  [CONSTRUCTOR_ARGS]...  Constructor arguments for the positional assertion contract
+  [ASSERTION_CONTRACT_OR_ARG]  Assertion contract when not using --assertion.
+                               Use `ContractName [CONSTRUCTOR_ARGS...]` to store a single assertion (legacy positional mode), or use
+                               `ContractName(arg1,arg2)` to inline constructor arguments and repeat the spec to store multiple assertions at once.
 
 Options:
   -a, --assertion <ASSERTION>
-          Assertion spec in the format 'Name(arg1,arg2)'. Repeat the flag to store multiple assertions in one run.
+          Assertion contract in the format 'Name(arg1,arg2)'. Example: `-a OwnableAssertion(0xabc...,86400)`.
+          Repeat the flag (or positional specs) to store multiple assertions in one run.
   -u, --da-url <DA_URL>  URL of the assertion-DA server [env: PCL_DA_URL=] [default: https://demo-21-assertion-da.phylax.systems]
       --root <ROOT>      Root directory of the project
   -h, --help             Print help (see a summary with '-h')
@@ -168,10 +170,13 @@ Examples:
 # Store a single assertion using positional args
 pcl store OwnableAssertion
 
-# Store multiple assertions (with constructor args) in one go
+# Store a single assertion and constructor args inline
+pcl store "OwnableAssertion(0x0f6c13A04D358A5FEB9d073Da585bF6a2aF8d3d9,3600)"
+
+# Store multiple assertions (mixing --assertion and positional specs)
 pcl store --root ./assertions \
   -a "NoArgsAssertion()" \
-  -a "MockAssertion(0x0f6c13A04D358A5FEB9d073Da585bF6a2aF8d3d9)"
+  "MockAssertion(0x0f6c13A04D358A5FEB9d073Da585bF6a2aF8d3d9)"
 ```
 
 #### Submit Assertions to dApps
