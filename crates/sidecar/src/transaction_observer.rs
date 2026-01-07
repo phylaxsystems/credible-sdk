@@ -32,7 +32,6 @@ use serde::{
     Serialize,
 };
 use std::{
-    collections::VecDeque,
     path::Path,
     sync::{
         Arc,
@@ -139,7 +138,6 @@ impl Default for TransactionObserverConfig {
 pub struct TransactionObserver {
     config: TransactionObserverConfig,
     incident_rx: IncidentReportReceiver,
-    pending_reports: VecDeque<IncidentReport>,
     db: IncidentDb,
 }
 
@@ -152,7 +150,6 @@ impl TransactionObserver {
         Ok(Self {
             config,
             incident_rx,
-            pending_reports: VecDeque::new(),
             db,
         })
     }
@@ -206,14 +203,17 @@ impl TransactionObserver {
         }
     }
 
-    /// Stores an incident on disk and in pending reports.
+    /// Stores an incident on disk.
     fn store_incident(&mut self, report: IncidentReport) -> Result<(), TransactionObserverError> {
         self.db.store(&report)?;
-        self.pending_reports.push_back(report);
         Ok(())
     }
 
     /// Publishes all invalidations to the dapp.
+    ///
+    /// Gets a consistent view of the db for unpublished incidents, and then
+    /// tries to push them to the api. If the response is a tcp success, we 
+    /// can remove it from the db. If not, we leave it for the next run.
     fn publish_invalidations(&mut self) -> Result<(), TransactionObserverError> {
         Ok(())
     }
