@@ -1,5 +1,6 @@
 use crate::utils::ErrorRecoverability;
 use rand::random;
+use reqwest::blocking::Client;
 use reth_db::mdbx::{
     DatabaseArguments,
     DatabaseEnv,
@@ -48,7 +49,10 @@ use std::{
 };
 use thiserror::Error;
 use tokio::sync::oneshot;
-use tracing::info;
+use tracing::{
+    info,
+    warn,
+};
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Timeout for recv - threads will check for the shutdown flag at this interval
@@ -139,6 +143,7 @@ pub struct TransactionObserver {
     config: TransactionObserverConfig,
     incident_rx: IncidentReportReceiver,
     db: IncidentDb,
+    client: Client,
 }
 
 impl TransactionObserver {
@@ -147,10 +152,12 @@ impl TransactionObserver {
         incident_rx: IncidentReportReceiver,
     ) -> Result<Self, TransactionObserverError> {
         let db = IncidentDb::open(&config.db_path)?;
+        let client = Client::new();
         Ok(Self {
             config,
             incident_rx,
             db,
+            client,
         })
     }
 
@@ -212,9 +219,64 @@ impl TransactionObserver {
     /// Publishes all invalidations to the dapp.
     ///
     /// Gets a consistent view of the db for unpublished incidents, and then
-    /// tries to push them to the api. If the response is a tcp success, we 
-    /// can remove it from the db. If not, we leave it for the next run.
+    /// tries to push them to the api in parallel. If the response is a tcp
+    /// success, we can remove it from the db. If not, we leave it for the
+    /// next run.
     fn publish_invalidations(&mut self) -> Result<(), TransactionObserverError> {
+        if self.config.endpoint.trim().is_empty() || self.config.endpoint_rps_max == 0 {
+            return Ok(());
+        }
+
+        let incidents = self
+            .db
+            .load_batch(self.config.endpoint_rps_max)?;
+        if incidents.is_empty() {
+            return Ok(());
+        }
+
+        let endpoint = self.config.endpoint.trim().to_string();
+        let auth_token = self.config.auth_token.trim().to_string();
+        let client = self.client.clone();
+
+        let results = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(incidents.len());
+            for (key, report) in incidents {
+                let client = client.clone();
+                let endpoint = endpoint.clone();
+                let auth_token = auth_token.clone();
+                handles.push(scope.spawn(move || {
+                    let mut request = client.post(&endpoint).json(&report);
+                    if !auth_token.is_empty() {
+                        request = request.bearer_auth(&auth_token);
+                    }
+                    let success = request
+                        .send()
+                        .map(|response| response.status().is_success())
+                        .unwrap_or(false);
+                    (key, success)
+                }));
+            }
+
+            let mut completed = Vec::with_capacity(handles.len());
+            for handle in handles {
+                match handle.join() {
+                    Ok(result) => completed.push(result),
+                    Err(_) => {
+                        warn!(
+                            target = "transaction_observer",
+                            "Invalidation publish thread panicked"
+                        );
+                    }
+                }
+            }
+            completed
+        });
+
+        let keys_to_delete: Vec<Vec<u8>> = results
+            .into_iter()
+            .filter_map(|(key, success)| success.then_some(key))
+            .collect();
+        self.db.delete_keys(&keys_to_delete)?;
         Ok(())
     }
 }
@@ -332,6 +394,75 @@ impl IncidentDb {
             TransactionObserverError::PersistFailed {
                 reason: e.to_string(),
             }
+        })?;
+        Ok(())
+    }
+
+    /// Loads up to `limit` incident reports from a consistent snapshot.
+    ///
+    /// Returns (key, report) pairs so callers can delete on success.
+    fn load_batch(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, IncidentReport)>, TransactionObserverError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let tx = self.env.tx().map_err(|e| TransactionObserverError::PublishFailed {
+            reason: e.to_string(),
+        })?;
+        let mut cursor = tx
+            .inner
+            .cursor_with_dbi(self.dbi)
+            .map_err(|e| TransactionObserverError::PublishFailed {
+                reason: e.to_string(),
+            })?;
+
+        let mut reports = Vec::new();
+        let mut next = cursor
+            .first::<Vec<u8>, Vec<u8>>()
+            .map_err(|e| TransactionObserverError::PublishFailed {
+                reason: e.to_string(),
+            })?;
+        while let Some((key, payload)) = next {
+            let report = bincode::deserialize(&payload).map_err(|e| {
+                TransactionObserverError::PublishFailed {
+                    reason: e.to_string(),
+                }
+            })?;
+            reports.push((key, report));
+            if reports.len() >= limit {
+                break;
+            }
+            next = cursor
+                .next::<Vec<u8>, Vec<u8>>()
+                .map_err(|e| TransactionObserverError::PublishFailed {
+                    reason: e.to_string(),
+                })?;
+        }
+
+        Ok(reports)
+    }
+
+    /// Deletes incident reports by key in a single write transaction.
+    fn delete_keys(&self, keys: &[Vec<u8>]) -> Result<(), TransactionObserverError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        let tx = self.env.tx_mut().map_err(|e| TransactionObserverError::PublishFailed {
+            reason: e.to_string(),
+        })?;
+        for key in keys {
+            tx.inner
+                .del(self.dbi, key, None)
+                .map_err(|e| TransactionObserverError::PublishFailed {
+                    reason: e.to_string(),
+                })?;
+        }
+        tx.commit().map_err(|e| TransactionObserverError::PublishFailed {
+            reason: e.to_string(),
         })?;
         Ok(())
     }
