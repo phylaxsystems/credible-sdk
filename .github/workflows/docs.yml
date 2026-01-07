@@ -52,14 +52,14 @@ jobs:
           echo "Generated documentation for crates:"
           ls -la target/doc/ | grep -E "(pcl|sidecar|assertion)" | head -10
 
-      - name: Download benchmark Pages artifact
+      - name: Download benchmark artifact
         uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           workflow: benchmarks.yml
           workflow_conclusion: success
           branch: ${{ github.event.repository.default_branch }}
-          name: github-pages
+          name: criterion-html
           search_artifacts: true
           path: .bench-pages
           if_no_artifact_found: ignore
@@ -68,9 +68,11 @@ jobs:
         shell: bash
         run: |
           pages_dst=".pages-artifact"
+          bench_src=".bench-pages/target/criterion"
           mkdir -p "$pages_dst"
-          if [ -d ".bench-pages" ] && [ -n "$(ls -A .bench-pages)" ]; then
-            cp -R ".bench-pages"/. "$pages_dst"/
+          if [ -d "$bench_src" ] && [ -n "$(ls -A "$bench_src")" ]; then
+            mkdir -p "$pages_dst/main-bench"
+            cp -R "$bench_src"/. "$pages_dst/main-bench"/
           fi
           cp -R target/doc/. "$pages_dst"/
 

@@ -29,7 +29,7 @@ jobs:
       install-foundry: true
       submodules: true
       foundry-command: "forge build --root testdata/mock-protocol"
-      publish-pages: true
+      publish-pages: ${{ github.event_name != 'push' }}
       pages-path: "target/criterion"
       pages-report-path: "report"
       comment-on-pr: true
