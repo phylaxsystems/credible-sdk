@@ -56,7 +56,7 @@ async fn test_public_endpoint_without_auth() {
 
     // Verify the request was made without auth header
     mock.assert();
-    let hits = mock.hits();
+    let hits = mock.calls();
     assert_eq!(hits, 1);
 }
 

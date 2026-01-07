@@ -42,7 +42,7 @@ progenitor = "0.8"
 
 [dev-dependencies]
 tokio = { workspace = true }
-httpmock = "0.7"
+httpmock = "0.8"
 assert_matches = "1.5"
-rstest = "0.24"
+rstest = "0.26"
 pretty_assertions = "1.4"

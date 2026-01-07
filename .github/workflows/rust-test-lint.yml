@@ -51,6 +51,7 @@ jobs:
       use-nextest: true
       foundry-command: "forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol"
       test-args: "--exclude state-store --exclude state-worker --no-tests=warn"
+      deny-checks: "advisories"
       feature-sets: '[
         "--no-default-features --features test",
         "--no-default-features --features test --features optimism"
