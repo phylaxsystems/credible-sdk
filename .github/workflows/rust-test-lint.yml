@@ -25,7 +25,7 @@ on:
 env:
   # Pin nightly to a specific version for consistent caching across workflow runs
   # Update this monthly or when new Rust features are needed
-  RUST_NIGHTLY_VERSION: "nightly-2026-01-07"
+  RUST_NIGHTLY_VERSION: ${{ vars.RUST_NIGHTLY_VERSION }}
 
 jobs:
   setup:
