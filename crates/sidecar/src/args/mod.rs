@@ -118,6 +118,8 @@ pub struct CredibleConfig {
     pub indexer_db_path: String,
     /// Path to the rpc store db
     pub assertion_store_db_path: String,
+    /// Path to the transaction observer database
+    pub transaction_observer_db_path: String,
     /// Block tag to use for indexing assertions.
     pub block_tag: BlockTag,
     /// Contract address of the state oracle contract, used to query assertion info
@@ -209,6 +211,7 @@ mod tests {
     "indexer_rpc_url": "ws://localhost:8546",
     "indexer_db_path": "/tmp/indexer.db",
     "assertion_store_db_path": "/tmp/store.db",
+    "transaction_observer_db_path": "/tmp/observer.db",
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
     "state_oracle_deployment_block": 100,
@@ -256,6 +259,10 @@ mod tests {
         assert_eq!(config.credible.indexer_rpc_url, "ws://localhost:8546");
         assert_eq!(config.credible.indexer_db_path, "/tmp/indexer.db");
         assert_eq!(config.credible.assertion_store_db_path, "/tmp/store.db");
+        assert_eq!(
+            config.credible.transaction_observer_db_path,
+            "/tmp/observer.db"
+        );
         assert_eq!(config.credible.state_oracle_deployment_block, 100);
         assert_eq!(config.credible.transaction_results_max_capacity, 10000);
 
@@ -351,6 +358,7 @@ mod tests {
     "indexer_rpc_url": "ws://localhost:8546",
     "indexer_db_path": "/tmp/indexer.db",
     "assertion_store_db_path": "/tmp/store.db",
+    "transaction_observer_db_path": "/tmp/observer.db",
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
     "state_oracle_deployment_block": 100,
@@ -397,6 +405,7 @@ mod tests {
     "indexer_rpc_url": "ws://localhost:8546",
     "indexer_db_path": "/tmp/indexer.db",
     "assertion_store_db_path": "/tmp/store.db",
+    "transaction_observer_db_path": "/tmp/observer.db",
     "block_tag": "Latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
     "state_oracle_deployment_block": 100,
@@ -439,6 +448,7 @@ mod tests {
     "indexer_rpc_url": "ws://localhost:8546",
     "indexer_db_path": "/tmp/indexer.db",
     "assertion_store_db_path": "/tmp/store.db",
+    "transaction_observer_db_path": "/tmp/observer.db",
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
     "state_oracle_deployment_block": 100,

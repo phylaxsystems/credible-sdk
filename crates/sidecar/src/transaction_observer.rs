@@ -1,6 +1,39 @@
 use crate::utils::ErrorRecoverability;
+use rand::random;
+use reth_db::mdbx::{
+    DatabaseArguments,
+    DatabaseEnv,
+    DatabaseEnvKind,
+};
+use reth_db_api::{
+    Database,
+    transaction::{
+        DbTx,
+        DbTxMut,
+    },
+};
+use reth_libmdbx::{
+    DatabaseFlags,
+    WriteFlags,
+};
+use revm::{
+    context::{
+        BlockEnv,
+        TxEnv,
+    },
+    primitives::{
+        Address,
+        Bytes,
+        FixedBytes,
+    },
+};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use std::{
     collections::VecDeque,
+    path::Path,
     sync::{
         Arc,
         atomic::{
@@ -14,7 +47,6 @@ use std::{
         Instant,
     },
 };
-use revm::{context::{BlockEnv, TxEnv}, primitives::{Address, Bytes, FixedBytes}};
 use thiserror::Error;
 use tokio::sync::oneshot;
 use tracing::info;
@@ -24,8 +56,8 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// This struct contains data for giving high level context to
-/// any observer about an incident (or invalidation) that occured. 
-#[derive(Debug, Clone)]
+/// any observer about an incident (or invalidation) that occured.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncidentData {
     pub(crate) adopter_address: Address,
     pub(crate) assertion_id: FixedBytes<32>,
@@ -40,7 +72,7 @@ pub type ReconstructableTx = (FixedBytes<32>, TxEnv);
 /// Represents a full incident, includes transactions that preceeded
 /// the invalidating(incident) tx, blockenv, and more metadata needed
 /// for consumers to debug and investigate assertion failures.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IncidentReport {
     /// Transaction that caused the incident
     pub(crate) transaction_data: ReconstructableTx,
@@ -57,6 +89,8 @@ pub struct IncidentReport {
 
 pub type IncidentReportSender = flume::Sender<IncidentReport>;
 pub type IncidentReportReceiver = flume::Receiver<IncidentReport>;
+
+const INCIDENT_REPORTS_TABLE: &str = "incident_reports";
 
 #[derive(Clone)]
 pub struct TransactionObserverConfig {
@@ -81,7 +115,7 @@ impl Default for TransactionObserverConfig {
 
 /// The `TransactionObserver`s job is to accept reports of invalidating transactions
 /// (or incidents), store them, and forward these events to the dapp API.
-/// 
+///
 /// # Receving data
 ///
 /// The `TransactionObserver` receives `IncidentReport`s via a mpsc channel.
@@ -96,7 +130,7 @@ impl Default for TransactionObserverConfig {
 /// The `TransactionObserver` in the background has a process that reads the database,
 /// and publishes data from it to the dapp API. This happens on a different thread to
 /// not block ingest. It polls every n-ms for new updates. It then queues these updates
-/// to be sent. If we receive a tcp response that indicates a success, we can remove 
+/// to be sent. If we receive a tcp response that indicates a success, we can remove
 /// the request safely from the database only then.
 ///
 /// If the request fails, we have it remain in the database and save it for the next run.
@@ -106,15 +140,21 @@ pub struct TransactionObserver {
     config: TransactionObserverConfig,
     incident_rx: IncidentReportReceiver,
     pending_reports: VecDeque<IncidentReport>,
+    db: IncidentDb,
 }
 
 impl TransactionObserver {
-    pub fn new(config: TransactionObserverConfig, incident_rx: IncidentReportReceiver) -> Self {
-        Self {
+    pub fn new(
+        config: TransactionObserverConfig,
+        incident_rx: IncidentReportReceiver,
+    ) -> Result<Self, TransactionObserverError> {
+        let db = IncidentDb::open(&config.db_path)?;
+        Ok(Self {
             config,
             incident_rx,
             pending_reports: VecDeque::new(),
-        }
+            db,
+        })
     }
 
     /// Spawns the transaction observer on a dedicated OS thread.
@@ -143,10 +183,7 @@ impl TransactionObserver {
         Ok((handle, rx))
     }
 
-    fn run_blocking(
-        &mut self,
-        shutdown: Arc<AtomicBool>,
-    ) -> Result<(), TransactionObserverError> {
+    fn run_blocking(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), TransactionObserverError> {
         let mut last_publish = Instant::now();
         loop {
             if shutdown.load(Ordering::Relaxed) {
@@ -155,7 +192,7 @@ impl TransactionObserver {
             }
 
             match self.incident_rx.recv_timeout(RECV_TIMEOUT) {
-                Ok(report) => self.store_incident(report),
+                Ok(report) => self.store_incident(report)?,
                 Err(flume::RecvTimeoutError::Timeout) => {}
                 Err(flume::RecvTimeoutError::Disconnected) => {
                     return Err(TransactionObserverError::ChannelClosed);
@@ -169,10 +206,14 @@ impl TransactionObserver {
         }
     }
 
-    fn store_incident(&mut self, report: IncidentReport) {
+    /// Stores an incident on disk and in pending reports.
+    fn store_incident(&mut self, report: IncidentReport) -> Result<(), TransactionObserverError> {
+        self.db.store(&report)?;
         self.pending_reports.push_back(report);
+        Ok(())
     }
 
+    /// Publishes all invalidations to the dapp.
     fn publish_invalidations(&mut self) -> Result<(), TransactionObserverError> {
         Ok(())
     }
@@ -184,10 +225,114 @@ pub enum TransactionObserverError {
     PublishFailed { reason: String },
     #[error("Incident report channel closed")]
     ChannelClosed,
+    #[error("Failed to open incident database: {reason}")]
+    DatabaseOpen { reason: String },
+    #[error("Failed to persist incident report: {reason}")]
+    PersistFailed { reason: String },
 }
 
 impl From<&TransactionObserverError> for ErrorRecoverability {
     fn from(_: &TransactionObserverError) -> Self {
         ErrorRecoverability::Recoverable
+    }
+}
+
+/// Opens an MDBX database holding the incident reports.
+/// Used as the source of truth for what incidents we are
+/// yet to report on to the dapp API.
+// TODO: i dont really like that we are opening a seprate database
+// for this. we should have a global sidecar mdbx.
+struct IncidentDb {
+    env: DatabaseEnv,
+    dbi: reth_libmdbx::ffi::MDBX_dbi,
+}
+
+impl IncidentDb {
+    fn open(path: &str) -> Result<Self, TransactionObserverError> {
+        if path.is_empty() {
+            return Err(TransactionObserverError::DatabaseOpen {
+                reason: "incident db path is empty".to_string(),
+            });
+        }
+
+        let path = Path::new(path);
+        if !path.exists() {
+            std::fs::create_dir_all(path).map_err(|e| {
+                TransactionObserverError::DatabaseOpen {
+                    reason: format!("Failed to create db directory: {e}"),
+                }
+            })?;
+        }
+
+        let args = DatabaseArguments::default();
+        let env = DatabaseEnv::open(path, DatabaseEnvKind::RW, args).map_err(|e| {
+            TransactionObserverError::DatabaseOpen {
+                reason: e.to_string(),
+            }
+        })?;
+
+        let tx = env.tx_mut().map_err(|e| {
+            TransactionObserverError::DatabaseOpen {
+                reason: e.to_string(),
+            }
+        })?;
+        let db = tx
+            .inner
+            .create_db(Some(INCIDENT_REPORTS_TABLE), DatabaseFlags::default())
+            .map_err(|e| {
+                TransactionObserverError::DatabaseOpen {
+                    reason: e.to_string(),
+                }
+            })?;
+        let dbi = db.dbi();
+        tx.commit().map_err(|e| {
+            TransactionObserverError::DatabaseOpen {
+                reason: e.to_string(),
+            }
+        })?;
+
+        Ok(Self { env, dbi })
+    }
+
+    /// Store an individual incident in an on disk persistant db.
+    /// Incidents stored are synced to disk immediately.
+    fn store(&self, report: &IncidentReport) -> Result<(), TransactionObserverError> {
+        // we need individual keys for incidents
+        // we might see the same hash for multiple incidents so we just use
+        // a random key
+        //
+        // we should never actually see duplicate incidents hit the observer
+        let key = random::<u32>().to_be_bytes();
+
+        let payload = bincode::serialize(report).map_err(|e| {
+            TransactionObserverError::PersistFailed {
+                reason: e.to_string(),
+            }
+        })?;
+
+        let tx = self.env.tx_mut().map_err(|e| {
+            TransactionObserverError::PersistFailed {
+                reason: e.to_string(),
+            }
+        })?;
+        let env = tx.inner.env().clone();
+        tx.inner
+            .put(self.dbi, &key, &payload, WriteFlags::empty())
+            .map_err(|e| {
+                TransactionObserverError::PersistFailed {
+                    reason: e.to_string(),
+                }
+            })?;
+        tx.commit().map_err(|e| {
+            TransactionObserverError::PersistFailed {
+                reason: e.to_string(),
+            }
+        })?;
+        env.sync(true).map_err(|e| {
+            TransactionObserverError::PersistFailed {
+                reason: e.to_string(),
+            }
+        })?;
+        Ok(())
     }
 }
