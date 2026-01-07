@@ -21,7 +21,7 @@
         llvm = pkgs.llvmPackages_latest;
         clangStdenv = llvm.stdenv;
 
-        rustNightly = pkgs.rust-bin.nightly.latest.default.override {
+        rustNightly = pkgs.rust-bin.nightly."2026-01-07".default.override {
           extensions = [ "rust-src" "rust-analyzer" "cargo" ];
         };
 
@@ -73,8 +73,6 @@
             export CXXFLAGS="-O3 $CXXFLAGS"
 
             export LIBCLANG_PATH="${llvm.libclang.lib}/lib"
-
-            rustup default nightly 2>/dev/null || true
 
             ${if pkgs.stdenv.isDarwin then ''
               export DYLD_LIBRARY_PATH="${pkgs.openssl.out}/lib:$DYLD_LIBRARY_PATH"

@@ -15,6 +15,11 @@ on:
 
 permissions: write-all
 
+# env:
+  # Pin nightly to a specific version for consistent caching across workflow runs
+  # Update this monthly or when new Rust features are needed
+  RUST_NIGHTLY_VERSION: ${{ vars.RUST_NIGHTLY_VERSION }}
+
 jobs:
   criterion:
     uses: phylaxsystems/actions/.github/workflows/benchmark.yaml@main
