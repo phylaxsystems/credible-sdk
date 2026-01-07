@@ -5041,6 +5041,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "geth_snapshop"
+version = "0.9.3"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "clap",
+ "hex",
+ "regex",
+ "serde",
+ "serde_json",
+ "state-store",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
