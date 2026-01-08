@@ -25,6 +25,7 @@ use crate::{
     },
     execution_ids::TxExecutionId,
     transactions_state::TransactionResultEvent,
+    transaction_observer::IncidentReportSender,
     transport::{
         Transport,
         grpc::{
@@ -251,6 +252,7 @@ impl CommonSetup {
     async fn spawn_engine_with_sequencing(
         &self,
         transport_rx: TransactionQueueReceiver,
+        incident_sender: Option<IncidentReportSender>,
     ) -> (
         EngineThreadHandle,
         std::thread::JoinHandle<Result<(), EventSequencingError>>,
@@ -271,7 +273,7 @@ impl CommonSetup {
             Duration::from_millis(100),
             Duration::from_millis(20),
             false,
-            None,
+            incident_sender,
             #[cfg(feature = "cache_validation")]
             Some(&self.eth_rpc_source_http_mock.ws_url()),
         )
@@ -313,7 +315,55 @@ impl LocalInstanceMockDriver {
         let (mock_tx, mock_rx) = flume::unbounded();
 
         let (engine_handle, _sequencing_handle) = setup
-            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, None)
+            .await;
+
+        let transport =
+            MockTransport::with_receiver(transport_tx_sender, mock_rx, setup.state_results.clone());
+
+        let transport_handle = tokio::spawn(async move {
+            info!(target: "test_transport", "Transport task started");
+            let result = transport.run().await;
+            match result {
+                Ok(()) => info!(target: "test_transport", "Transport run() completed successfully"),
+                Err(e) => warn!(target: "test_transport", "Transport stopped with error: {}", e),
+            }
+        });
+
+        Ok(LocalInstance::new_internal(
+            setup.underlying_db,
+            setup.sources.clone(),
+            setup.eth_rpc_source_http_mock,
+            setup.fallback_eth_rpc_source_http_mock,
+            setup.assertion_store,
+            Some(transport_handle),
+            Some(engine_handle),
+            U256::from(1),
+            setup.state_results,
+            setup.default_account,
+            None,
+            setup.list_of_sources,
+            LocalInstanceMockDriver {
+                mock_sender: mock_tx,
+                block_tx_hashes_by_iteration: HashMap::new(),
+                override_n_transactions: None,
+                override_last_tx_hash: None,
+            },
+        ))
+    }
+
+    pub async fn new_with_incident_sender(
+        incident_sender: IncidentReportSender,
+    ) -> Result<LocalInstance<Self>, String> {
+        info!(target: "test_transport", "Creating LocalInstance with MockTransport");
+
+        let setup = CommonSetup::new(None, None).await?;
+
+        let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
+        let (mock_tx, mock_rx) = flume::unbounded();
+
+        let (engine_handle, _sequencing_handle) = setup
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, Some(incident_sender))
             .await;
 
         let transport =
@@ -361,7 +411,7 @@ impl TestTransport for LocalInstanceMockDriver {
         let (mock_tx, mock_rx) = flume::unbounded();
 
         let (engine_handle, _sequencing_handle) = setup
-            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, None)
             .await;
 
         let transport =
@@ -622,7 +672,7 @@ impl LocalInstanceHttpDriver {
 
         // Spawn engine and event sequencing
         let (engine_handle, _sequencing_handle) = setup
-            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, None)
             .await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1027,7 +1077,7 @@ impl LocalInstanceGrpcDriver {
         let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
 
         let (engine_handle, _sequencing_handle) = setup
-            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, None)
             .await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
