@@ -10,6 +10,10 @@ use futures::stream::{
     FuturesUnordered,
     StreamExt,
 };
+use metrics::{
+    counter,
+    histogram,
+};
 use revm::{
     context::{
         BlockEnv,
@@ -230,7 +234,13 @@ impl TransactionObserver {
 
     /// Stores an incident on disk.
     fn store_incident(&mut self, report: &IncidentReport) -> Result<(), TransactionObserverError> {
-        self.db.store(report)?;
+        counter!("transaction_observer_incidents_received_total").increment(1);
+        if let Err(err) = self.db.store(report) {
+            if matches!(err, TransactionObserverError::PersistFailed { .. }) {
+                counter!("transaction_observer_incidents_persist_failed_total").increment(1);
+            }
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -267,6 +277,7 @@ impl TransactionObserver {
             trace!(target = "transaction_observer", "No incidents to publish");
             return Ok(());
         }
+        let publish_started_at = Instant::now();
         debug!(
             target = "transaction_observer",
             incident_count = incidents.len(),
@@ -337,10 +348,16 @@ impl TransactionObserver {
             .filter_map(|(key, success)| success.then_some(key))
             .collect();
         self.db.delete_keys(&keys_to_delete)?;
+        let success_count = keys_to_delete.len();
+        let failure_count = total_results.saturating_sub(success_count);
+        counter!("transaction_observer_publish_success_total").increment(success_count as u64);
+        counter!("transaction_observer_publish_failure_total").increment(failure_count as u64);
+        histogram!("transaction_observer_publish_duration_seconds")
+            .record(publish_started_at.elapsed());
         debug!(
             target = "transaction_observer",
-            published = keys_to_delete.len(),
-            failed = total_results.saturating_sub(keys_to_delete.len()),
+            published = success_count,
+            failed = failure_count,
             "Finished publishing incidents"
         );
         Ok(())
