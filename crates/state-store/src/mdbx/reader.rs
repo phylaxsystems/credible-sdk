@@ -388,6 +388,7 @@ impl Reader for StateReader {
     /// # Errors
     ///
     /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    #[instrument(skip(self), level = "debug")]
     fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
         let start = Instant::now();
         let tx = self.db.tx()?;
