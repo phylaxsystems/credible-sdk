@@ -15,6 +15,25 @@ use httpmock::{
     prelude::*,
 };
 use serde_json::json;
+use std::net::TcpListener;
+
+fn try_start_mock_server() -> MockServer {
+    TcpListener::bind("127.0.0.1:0")
+        .map_err(|err| format!("Failed to bind localhost for httpmock: {err}"))
+        .and_then(|listener| {
+            drop(listener);
+            std::panic::catch_unwind(MockServer::start).map_err(|err| {
+                if let Some(msg) = err.downcast_ref::<&str>() {
+                    (*msg).to_string()
+                } else if let Some(msg) = err.downcast_ref::<String>() {
+                    msg.clone()
+                } else {
+                    "MockServer::start() panicked".to_string()
+                }
+            })
+        })
+        .expect("Failed to start httpmock server")
+}
 
 /// Helper function to create a mock with cleaner syntax
 fn setup_mock<F>(server: &MockServer, configure: F) -> Mock<'_>
@@ -26,7 +45,7 @@ where
 
 #[tokio::test]
 async fn test_public_endpoint_without_auth_real_api() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the health endpoint (should be public)
     let mock = setup_mock(&server, |when, then| {
@@ -59,7 +78,7 @@ async fn test_public_endpoint_without_auth_real_api() {
 
 #[tokio::test]
 async fn test_private_endpoint_without_auth_real_api() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the private endpoint returning empty array for unauthenticated requests
     // (mimics real API behavior)
@@ -102,7 +121,7 @@ async fn test_private_endpoint_without_auth_real_api() {
 
 #[tokio::test]
 async fn test_private_endpoint_with_auth_real_api() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the private endpoint with valid auth returning data
     let mock = setup_mock(&server, |when, then| {
@@ -119,7 +138,7 @@ async fn test_private_endpoint_with_auth_real_api() {
                 {
                     "project_id": "c1e794ce-4030-487c-a4e6-917caeeb4875",
                     "project_name": "Saved Project",
-                    "project_networks": ["1"],
+                    "project_networks": [1],
                     "project_manager": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
                     "created_at": "2025-01-01T00:00:00Z",
                     "updated_at": "2025-01-01T00:00:00Z",
@@ -156,7 +175,7 @@ async fn test_private_endpoint_with_auth_real_api() {
 
 #[tokio::test]
 async fn test_public_endpoint_with_auth_real_api() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the health endpoint accepting auth (but not requiring it)
     let mock = setup_mock(&server, |when, then| {

@@ -272,7 +272,12 @@ async fn main() -> anyhow::Result<()> {
         // Spawn TransactionObserver on a dedicated OS thread
         let transaction_observer_config = TransactionObserverConfig {
             db_path: config.credible.transaction_observer_db_path.clone(),
-            ..TransactionObserverConfig::default()
+            endpoint: config.credible.transaction_observer_endpoint.clone(),
+            auth_token: config.credible.transaction_observer_auth_token.clone(),
+            endpoint_rps_max: config.credible.transaction_observer_endpoint_rps_max,
+            poll_interval: Duration::from_millis(
+                config.credible.transaction_observer_poll_interval_ms,
+            ),
         };
         let transaction_observer =
             TransactionObserver::new(transaction_observer_config, incident_report_rx)?;

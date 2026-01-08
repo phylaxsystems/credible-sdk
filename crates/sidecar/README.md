@@ -134,6 +134,10 @@ The configuration file is a JSON file with the following schema:
         "indexer_db_path",
         "assertion_store_db_path",
         "transaction_observer_db_path",
+        "transaction_observer_endpoint",
+        "transaction_observer_auth_token",
+        "transaction_observer_endpoint_rps_max",
+        "transaction_observer_poll_interval_ms",
         "block_tag",
         "state_oracle",
         "state_oracle_deployment_block",
@@ -212,6 +216,38 @@ The configuration file is a JSON file with the following schema:
           "examples": [
             "/tmp/observer.db",
             "/var/lib/sidecar/observer.db"
+          ]
+        },
+        "transaction_observer_endpoint": {
+          "type": "string",
+          "description": "Dapp API endpoint for incident publishing (empty to disable)",
+          "examples": [
+            "https://dapp.phylax.systems/api/v1/enforcer/incidents",
+            ""
+          ]
+        },
+        "transaction_observer_auth_token": {
+          "type": "string",
+          "description": "Auth token for incident publishing (optional)",
+          "examples": [
+            "your-token",
+            ""
+          ]
+        },
+        "transaction_observer_endpoint_rps_max": {
+          "type": "integer",
+          "description": "Max incident publish requests per poll interval",
+          "minimum": 0,
+          "examples": [
+            60
+          ]
+        },
+        "transaction_observer_poll_interval_ms": {
+          "type": "integer",
+          "description": "Poll interval for incident publishing in milliseconds",
+          "minimum": 0,
+          "examples": [
+            1000
           ]
         },
         "block_tag": {
@@ -434,6 +470,10 @@ The default configuration can be found in [default_config.json](default_config.j
     "indexer_db_path": ".local/sidecar-host/indexer_database",
     "assertion_store_db_path": ".local/sidecar-host/assertion_store_database",
     "transaction_observer_db_path": ".local/sidecar-host/transaction_observer_database",
+    "transaction_observer_endpoint": "",
+    "transaction_observer_auth_token": "",
+    "transaction_observer_endpoint_rps_max": 60,
+    "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "latest",
     "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
     "state_oracle_deployment_block": 0,

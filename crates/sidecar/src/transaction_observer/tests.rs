@@ -16,7 +16,10 @@ use chrono::{
     SecondsFormat,
     Utc,
 };
-use httpmock::prelude::*;
+use httpmock::{
+    Mock,
+    prelude::*,
+};
 use revm::{
     context::{
         BlockEnv,
@@ -33,6 +36,7 @@ use revm::{
     },
 };
 use serde_json::{
+    Map,
     Value,
     json,
 };
@@ -60,6 +64,106 @@ fn format_timestamp(timestamp: u64) -> String {
     let seconds = i64::try_from(timestamp).expect("valid timestamp");
     let date_time = chrono::DateTime::<Utc>::from_timestamp(seconds, 0).expect("valid timestamp");
     date_time.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn build_test_tx_pair() -> (B256, B256, TxEnv, TxEnv) {
+    let tx_hash_pass = B256::from([0x11; 32]);
+    let tx_hash_fail = B256::from([0x22; 32]);
+    let caller = counter_call().caller;
+    let chain_id = 1u64;
+    let gas_limit = 100_000u64;
+    let gas_price = 10u128;
+
+    let mut tx_pass = counter_call();
+    tx_pass.caller = caller;
+    tx_pass.gas_limit = gas_limit;
+    tx_pass.gas_price = gas_price;
+    tx_pass.nonce = 0;
+    tx_pass.chain_id = Some(chain_id);
+    tx_pass.tx_type = 0;
+
+    let mut tx_fail = tx_pass.clone();
+    tx_fail.nonce = 1;
+
+    (tx_hash_pass, tx_hash_fail, tx_pass, tx_fail)
+}
+
+fn tx_data_matches(tx_data: &Map<String, Value>, tx_hash: &B256, tx_env: &TxEnv) -> bool {
+    let Some(expected_chain_id) = tx_env.chain_id else {
+        return false;
+    };
+    let expected_hash = hex_bytes(tx_hash.as_slice());
+    let expected_nonce = tx_env.nonce.to_string();
+    let expected_gas_limit = tx_env.gas_limit.to_string();
+    let expected_to_address = match &tx_env.kind {
+        TxKind::Call(to) => hex_bytes(to.as_slice()),
+        TxKind::Create => String::new(),
+    };
+    let expected_from_address = hex_bytes(tx_env.caller.as_slice());
+    let expected_value = tx_env.value.to_string();
+    let expected_gas_price = tx_env.gas_price.to_string();
+    let expected_data = if tx_env.data.is_empty() {
+        None
+    } else {
+        Some(hex_bytes(tx_env.data.as_ref()))
+    };
+
+    if tx_data.get("transaction_hash").and_then(Value::as_str) != Some(expected_hash.as_str()) {
+        return false;
+    }
+    if tx_data.get("chain_id").and_then(Value::as_u64) != Some(expected_chain_id) {
+        return false;
+    }
+    if tx_data.get("nonce").and_then(Value::as_str) != Some(expected_nonce.as_str()) {
+        return false;
+    }
+    if tx_data.get("gas_limit").and_then(Value::as_str) != Some(expected_gas_limit.as_str()) {
+        return false;
+    }
+    if tx_data.get("to_address").and_then(Value::as_str) != Some(expected_to_address.as_str()) {
+        return false;
+    }
+    if tx_data.get("from_address").and_then(Value::as_str) != Some(expected_from_address.as_str()) {
+        return false;
+    }
+    if tx_data.get("value").and_then(Value::as_str) != Some(expected_value.as_str()) {
+        return false;
+    }
+    if tx_data.get("gas_price").and_then(Value::as_str) != Some(expected_gas_price.as_str()) {
+        return false;
+    }
+    if let Some(expected_data) = expected_data
+        && tx_data.get("data").and_then(Value::as_str) != Some(expected_data.as_str())
+    {
+        return false;
+    }
+
+    true
+}
+
+async fn wait_for_mock_calls(mock: &Mock<'_>, timeout: Duration) {
+    let start = Instant::now();
+    while mock.calls() == 0 && start.elapsed() < timeout {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn collect_invalid_txs(
+    pass_invalid: bool,
+    fail_invalid: bool,
+    tx_hash_pass: B256,
+    tx_pass: TxEnv,
+    tx_hash_fail: B256,
+    tx_fail: TxEnv,
+) -> Vec<(B256, TxEnv)> {
+    let mut invalid_txs = Vec::new();
+    if pass_invalid {
+        invalid_txs.push((tx_hash_pass, tx_pass));
+    }
+    if fail_invalid {
+        invalid_txs.push((tx_hash_fail, tx_fail));
+    }
+    invalid_txs
 }
 
 fn build_incident_report() -> IncidentReport {
@@ -261,43 +365,22 @@ fn observer_retries_after_failed_publish() {
     );
 }
 
+#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn observer_posts_invalidating_transaction_from_local_instance() {
     let server = MockServer::start();
-    let tx_hash_pass = B256::from([0x11; 32]);
-    let tx_hash_fail = B256::from([0x22; 32]);
-    let caller = counter_call().caller;
-    let chain_id = 1u64;
-    let gas_limit = 100_000u64;
-    let gas_price = 10u128;
-
-    let mut tx_pass = counter_call();
-    tx_pass.caller = caller;
-    tx_pass.gas_limit = gas_limit;
-    tx_pass.gas_price = gas_price;
-    tx_pass.nonce = 0;
-    tx_pass.chain_id = Some(chain_id);
-    tx_pass.tx_type = 0;
-
-    let mut tx_fail = tx_pass.clone();
-    tx_fail.nonce = 1;
-
-    let captured_bodies = Arc::new(Mutex::new(Vec::new()));
-    let captured_bodies_handle = Arc::clone(&captured_bodies);
+    let (tx_hash_pass, tx_hash_fail, tx_pass, tx_fail) = build_test_tx_pair();
+    let (body_tx, body_rx) = flume::unbounded();
+    let body_tx_handle = body_tx.clone();
 
     let mock = server.mock(|when, then| {
         when.method(POST)
             .path("/api/v1/enforcer/incidents")
-            .is_true(move |req| {
-                let mut bodies = captured_bodies_handle.lock().expect("lock body capture");
-                bodies.push(req.body_string());
-                true
-            });
+            .is_true(move |req| body_tx_handle.send(req.body_string()).is_ok());
         then.status(202)
             .header("content-type", "application/json")
             .json_body(incident_response_body("queued", "tracking-success"));
     });
-
     let tempdir = TempDir::new().expect("tempdir");
     let (incident_tx, incident_rx) = flume::unbounded();
     let config = TransactionObserverConfig {
@@ -309,7 +392,7 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
     };
     let observer = TransactionObserver::new(config, incident_rx).expect("observer");
     let shutdown = Arc::new(AtomicBool::new(false));
-    let (observer_handle, _observer_exit) = observer
+    let (observer_handle, observer_exit) = observer
         .spawn(Arc::clone(&shutdown))
         .expect("spawn observer");
 
@@ -337,6 +420,20 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
         tx_hash_fail,
         1,
     );
+    tokio::time::timeout(
+        Duration::from_secs(8),
+        instance.wait_for_transaction_processed(&tx_execution_id_pass),
+    )
+    .await
+    .expect("timeout waiting for pass tx")
+    .expect("wait for pass tx");
+    tokio::time::timeout(
+        Duration::from_secs(8),
+        instance.wait_for_transaction_processed(&tx_execution_id_fail),
+    )
+    .await
+    .expect("timeout waiting for fail tx")
+    .expect("wait for fail tx");
     let pass_invalid = instance
         .is_transaction_invalid(&tx_execution_id_pass)
         .await
@@ -345,95 +442,31 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
         .is_transaction_invalid(&tx_execution_id_fail)
         .await
         .expect("invalid check fail");
-    let mut invalid_txs = Vec::new();
-    if pass_invalid {
-        invalid_txs.push((tx_hash_pass, &tx_pass));
-    }
-    if fail_invalid {
-        invalid_txs.push((tx_hash_fail, &tx_fail));
-    }
+    let invalid_txs = collect_invalid_txs(
+        pass_invalid,
+        fail_invalid,
+        tx_hash_pass,
+        tx_pass.clone(),
+        tx_hash_fail,
+        tx_fail.clone(),
+    );
     assert!(
         !invalid_txs.is_empty(),
         "Expected at least one invalidating transaction"
     );
-
-    let start = Instant::now();
-    while mock.calls() == 0 && start.elapsed() < Duration::from_secs(2) {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-
+    wait_for_mock_calls(&mock, Duration::from_secs(5)).await;
+    assert!(mock.calls() > 0, "timed out waiting for incident publish");
     mock.assert();
-
-    let bodies = captured_bodies.lock().expect("lock body capture");
+    let bodies: Vec<String> = body_rx.try_iter().collect();
     let matches_invalid = bodies.iter().any(|body| {
         let incident: Value = serde_json::from_str(body).expect("incident json");
         let tx_data = incident
             .get("transaction_data")
             .and_then(Value::as_object)
             .expect("transaction_data");
-        invalid_txs.iter().any(|(tx_hash, tx_env)| {
-            let expected_chain_id = match tx_env.chain_id {
-                Some(chain_id) => chain_id,
-                None => return false,
-            };
-            let expected_hash = hex_bytes(tx_hash.as_slice());
-            let expected_nonce = tx_env.nonce.to_string();
-            let expected_gas_limit = tx_env.gas_limit.to_string();
-            let expected_to_address = match &tx_env.kind {
-                TxKind::Call(to) => hex_bytes(to.as_slice()),
-                TxKind::Create => String::new(),
-            };
-            let expected_from_address = hex_bytes(tx_env.caller.as_slice());
-            let expected_value = tx_env.value.to_string();
-            let expected_gas_price = tx_env.gas_price.to_string();
-            let expected_data = if tx_env.data.is_empty() {
-                None
-            } else {
-                Some(hex_bytes(tx_env.data.as_ref()))
-            };
-
-            if tx_data.get("transaction_hash").and_then(Value::as_str)
-                != Some(expected_hash.as_str())
-            {
-                return false;
-            }
-            if tx_data.get("chain_id").and_then(Value::as_u64) != Some(expected_chain_id) {
-                return false;
-            }
-            if tx_data.get("nonce").and_then(Value::as_str) != Some(expected_nonce.as_str()) {
-                return false;
-            }
-            if tx_data.get("gas_limit").and_then(Value::as_str)
-                != Some(expected_gas_limit.as_str())
-            {
-                return false;
-            }
-            if tx_data.get("to_address").and_then(Value::as_str)
-                != Some(expected_to_address.as_str())
-            {
-                return false;
-            }
-            if tx_data.get("from_address").and_then(Value::as_str)
-                != Some(expected_from_address.as_str())
-            {
-                return false;
-            }
-            if tx_data.get("value").and_then(Value::as_str) != Some(expected_value.as_str()) {
-                return false;
-            }
-            if tx_data.get("gas_price").and_then(Value::as_str)
-                != Some(expected_gas_price.as_str())
-            {
-                return false;
-            }
-            if let Some(expected_data) = expected_data {
-                if tx_data.get("data").and_then(Value::as_str) != Some(expected_data.as_str()) {
-                    return false;
-                }
-            }
-
-            true
-        })
+        invalid_txs
+            .iter()
+            .any(|(tx_hash, tx_env)| tx_data_matches(tx_data, tx_hash, tx_env))
     });
     assert!(
         matches_invalid,
@@ -441,5 +474,13 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
     );
 
     shutdown.store(true, Ordering::Relaxed);
-    let _ = observer_handle.join();
+    let observer_result = tokio::time::timeout(Duration::from_secs(10), observer_exit)
+        .await
+        .expect("timeout waiting for observer exit")
+        .expect("observer exit");
+    observer_handle
+        .join()
+        .expect("observer join")
+        .expect("observer error");
+    observer_result.expect("observer error");
 }

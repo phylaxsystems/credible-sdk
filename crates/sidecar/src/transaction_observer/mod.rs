@@ -151,6 +151,12 @@ impl TransactionObserver {
         config: TransactionObserverConfig,
         incident_rx: IncidentReportReceiver,
     ) -> Result<Self, TransactionObserverError> {
+        if config.endpoint.trim().is_empty() {
+            warn!(
+                target = "transaction_observer",
+                "Dapp endpoint not configured; incident publishing disabled"
+            );
+        }
         let db = IncidentDb::open(&config.db_path)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

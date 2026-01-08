@@ -24,8 +24,8 @@ use crate::{
         EventSequencingError,
     },
     execution_ids::TxExecutionId,
-    transactions_state::TransactionResultEvent,
     transaction_observer::IncidentReportSender,
+    transactions_state::TransactionResultEvent,
     transport::{
         Transport,
         grpc::{

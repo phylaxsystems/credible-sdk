@@ -120,6 +120,14 @@ pub struct CredibleConfig {
     pub assertion_store_db_path: String,
     /// Path to the transaction observer database
     pub transaction_observer_db_path: String,
+    /// Dapp API endpoint for incident publishing
+    pub transaction_observer_endpoint: String,
+    /// Dapp API auth token for incident publishing
+    pub transaction_observer_auth_token: String,
+    /// Max incident publish requests per poll interval
+    pub transaction_observer_endpoint_rps_max: usize,
+    /// Poll interval for incident publishing in milliseconds
+    pub transaction_observer_poll_interval_ms: u64,
     /// Block tag to use for indexing assertions.
     pub block_tag: BlockTag,
     /// Contract address of the state oracle contract, used to query assertion info
@@ -212,6 +220,10 @@ mod tests {
     "indexer_db_path": "/tmp/indexer.db",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
+    "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
+    "transaction_observer_auth_token": "test-token",
+    "transaction_observer_endpoint_rps_max": 50,
+    "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
     "state_oracle_deployment_block": 100,
@@ -263,6 +275,16 @@ mod tests {
             config.credible.transaction_observer_db_path,
             "/tmp/observer.db"
         );
+        assert_eq!(
+            config.credible.transaction_observer_endpoint,
+            "http://localhost:3001/api/v1/enforcer/incidents"
+        );
+        assert_eq!(
+            config.credible.transaction_observer_auth_token,
+            "test-token"
+        );
+        assert_eq!(config.credible.transaction_observer_endpoint_rps_max, 50);
+        assert_eq!(config.credible.transaction_observer_poll_interval_ms, 1000);
         assert_eq!(config.credible.state_oracle_deployment_block, 100);
         assert_eq!(config.credible.transaction_results_max_capacity, 10000);
 
@@ -359,6 +381,10 @@ mod tests {
     "indexer_db_path": "/tmp/indexer.db",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
+    "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
+    "transaction_observer_auth_token": "test-token",
+    "transaction_observer_endpoint_rps_max": 50,
+    "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
     "state_oracle_deployment_block": 100,
@@ -406,6 +432,10 @@ mod tests {
     "indexer_db_path": "/tmp/indexer.db",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
+    "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
+    "transaction_observer_auth_token": "test-token",
+    "transaction_observer_endpoint_rps_max": 50,
+    "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "Latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
     "state_oracle_deployment_block": 100,
@@ -449,6 +479,10 @@ mod tests {
     "indexer_db_path": "/tmp/indexer.db",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
+    "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
+    "transaction_observer_auth_token": "test-token",
+    "transaction_observer_endpoint_rps_max": 50,
+    "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
     "state_oracle_deployment_block": 100,
