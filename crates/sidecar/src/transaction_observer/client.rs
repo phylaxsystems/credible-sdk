@@ -38,9 +38,11 @@ fn endpoint_base_url(endpoint: &str) -> String {
     }
 
     if let Ok(mut url) = Url::parse(trimmed) {
-        if url.path().ends_with("/enforcer/incidents") {
-            let new_path = url.path().trim_end_matches("/enforcer/incidents");
-            let new_path = new_path.trim_end_matches('/');
+        let path = url.path().to_string();
+        if path.ends_with("/enforcer/incidents") {
+            let new_path = path
+                .trim_end_matches("/enforcer/incidents")
+                .trim_end_matches('/');
             url.set_path(if new_path.is_empty() { "/" } else { new_path });
         }
         return url.to_string().trim_end_matches('/').to_string();

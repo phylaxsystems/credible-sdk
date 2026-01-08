@@ -7,6 +7,8 @@ pub mod auth;
 pub mod client;
 pub mod config;
 pub mod error;
+// Generated code is exempt from pedantic clippy lints.
+#[allow(clippy::pedantic)]
 pub mod generated;
 
 pub use auth::{

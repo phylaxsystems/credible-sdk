@@ -42,7 +42,7 @@ async fn test_public_endpoint_without_auth() {
 
     // Call public endpoint without auth
     let api = client.inner();
-    let result = api.get_projects(None, None).await;
+    let result = api.get_projects(None, None, None).await;
 
     // Should succeed
     if let Err(ref e) = result {
@@ -92,7 +92,7 @@ async fn test_public_endpoint_with_auth() {
 
     // Call public endpoint with auth
     let api = client.inner();
-    let result = api.get_projects(None, None).await;
+    let result = api.get_projects(None, None, None).await;
 
     // Should succeed
     assert!(result.is_ok(), "Public endpoint should work with auth");

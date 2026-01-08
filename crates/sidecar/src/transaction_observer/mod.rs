@@ -1,6 +1,8 @@
 mod client;
 mod db;
 mod payload;
+#[cfg(test)]
+mod tests;
 
 use crate::utils::ErrorRecoverability;
 use dapp_api_client::Client as DappClient;
@@ -38,8 +40,10 @@ use std::{
     },
 };
 use thiserror::Error;
-use tokio::runtime::Runtime;
-use tokio::sync::oneshot;
+use tokio::{
+    runtime::Runtime,
+    sync::oneshot,
+};
 use tracing::{
     info,
     warn,
@@ -151,8 +155,10 @@ impl TransactionObserver {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|e| TransactionObserverError::PublishFailed {
-                reason: format!("Failed to initialize dapp runtime: {e}"),
+            .map_err(|e| {
+                TransactionObserverError::PublishFailed {
+                    reason: format!("Failed to initialize dapp runtime: {e}"),
+                }
             })?;
         let dapp_client = build_dapp_client(&config)?;
         Ok(Self {
@@ -182,7 +188,7 @@ impl TransactionObserver {
             .name("sidecar-transaction-observer".into())
             .spawn(move || {
                 let mut observer = self;
-                let result = observer.run_blocking(shutdown);
+                let result = observer.run_blocking(&shutdown);
                 let _ = tx.send(result.clone());
                 result
             })?;
@@ -190,7 +196,7 @@ impl TransactionObserver {
         Ok((handle, rx))
     }
 
-    fn run_blocking(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), TransactionObserverError> {
+    fn run_blocking(&mut self, shutdown: &Arc<AtomicBool>) -> Result<(), TransactionObserverError> {
         let mut last_publish = Instant::now();
         loop {
             if shutdown.load(Ordering::Relaxed) {
@@ -199,7 +205,7 @@ impl TransactionObserver {
             }
 
             match self.incident_rx.recv_timeout(RECV_TIMEOUT) {
-                Ok(report) => self.store_incident(report)?,
+                Ok(report) => self.store_incident(&report)?,
                 Err(flume::RecvTimeoutError::Timeout) => {}
                 Err(flume::RecvTimeoutError::Disconnected) => {
                     return Err(TransactionObserverError::ChannelClosed);
@@ -214,8 +220,8 @@ impl TransactionObserver {
     }
 
     /// Stores an incident on disk.
-    fn store_incident(&mut self, report: IncidentReport) -> Result<(), TransactionObserverError> {
-        self.db.store(&report)?;
+    fn store_incident(&mut self, report: &IncidentReport) -> Result<(), TransactionObserverError> {
+        self.db.store(report)?;
         Ok(())
     }
 
@@ -237,9 +243,7 @@ impl TransactionObserver {
             return Ok(());
         };
 
-        let incidents = self
-            .db
-            .load_batch(self.config.endpoint_rps_max)?;
+        let incidents = self.db.load_batch(self.config.endpoint_rps_max)?;
         if incidents.is_empty() {
             return Ok(());
         }

@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let api = client.inner();
 
             // Make the API call
-            match api.get_projects(None, None).await {
+            match api.get_projects(None, None, None).await {
                 Ok(response) => {
                     let projects = response.into_inner();
                     println!("   ✓ Successfully retrieved projects");
@@ -118,7 +118,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 5. Additional API examples
             println!("\n5. Additional Available Methods:");
-            println!("   - api.get_projects(network_id, user) - List projects with filters");
+            println!(
+                "   - api.get_projects(network_id, user, show_archived) - List projects with filters"
+            );
             println!("   - api.get_projects_saved(wallet_address) - Get saved projects");
             println!(
                 "   - api.get_projects_project_id(project_id, include) - Get specific project"
@@ -143,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let api = client.inner();
 
             // Make the API call - this should work without authentication
-            match api.get_projects(None, None).await {
+            match api.get_projects(None, None, None).await {
                 Ok(response) => {
                     let projects = response.into_inner();
                     println!("   ✓ Successfully retrieved projects without authentication!");

@@ -11110,6 +11110,7 @@ dependencies = [
  "futures",
  "hashlink",
  "hex",
+ "httpmock",
  "int-test-utils",
  "metrics",
  "moka",

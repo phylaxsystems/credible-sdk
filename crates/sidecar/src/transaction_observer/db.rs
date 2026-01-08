@@ -103,7 +103,7 @@ impl IncidentDb {
         })?;
         let env = tx.inner.env().clone();
         tx.inner
-            .put(self.dbi, &key, &payload, WriteFlags::empty())
+            .put(self.dbi, key, &payload, WriteFlags::empty())
             .map_err(|e| {
                 TransactionObserverError::PersistFailed {
                     reason: e.to_string(),
@@ -133,22 +133,23 @@ impl IncidentDb {
             return Ok(Vec::new());
         }
 
-        let tx = self.env.tx().map_err(|e| TransactionObserverError::PublishFailed {
-            reason: e.to_string(),
-        })?;
-        let mut cursor = tx
-            .inner
-            .cursor_with_dbi(self.dbi)
-            .map_err(|e| TransactionObserverError::PublishFailed {
+        let tx = self.env.tx().map_err(|e| {
+            TransactionObserverError::PublishFailed {
                 reason: e.to_string(),
-            })?;
+            }
+        })?;
+        let mut cursor = tx.inner.cursor_with_dbi(self.dbi).map_err(|e| {
+            TransactionObserverError::PublishFailed {
+                reason: e.to_string(),
+            }
+        })?;
 
         let mut reports = Vec::new();
-        let mut next = cursor
-            .first::<Vec<u8>, Vec<u8>>()
-            .map_err(|e| TransactionObserverError::PublishFailed {
+        let mut next = cursor.first::<Vec<u8>, Vec<u8>>().map_err(|e| {
+            TransactionObserverError::PublishFailed {
                 reason: e.to_string(),
-            })?;
+            }
+        })?;
         while let Some((key, payload)) = next {
             let report = bincode::deserialize(&payload).map_err(|e| {
                 TransactionObserverError::PublishFailed {
@@ -159,11 +160,11 @@ impl IncidentDb {
             if reports.len() >= limit {
                 break;
             }
-            next = cursor
-                .next::<Vec<u8>, Vec<u8>>()
-                .map_err(|e| TransactionObserverError::PublishFailed {
+            next = cursor.next::<Vec<u8>, Vec<u8>>().map_err(|e| {
+                TransactionObserverError::PublishFailed {
                     reason: e.to_string(),
-                })?;
+                }
+            })?;
         }
 
         Ok(reports)
@@ -175,18 +176,22 @@ impl IncidentDb {
             return Ok(());
         }
 
-        let tx = self.env.tx_mut().map_err(|e| TransactionObserverError::PublishFailed {
-            reason: e.to_string(),
+        let tx = self.env.tx_mut().map_err(|e| {
+            TransactionObserverError::PublishFailed {
+                reason: e.to_string(),
+            }
         })?;
         for key in keys {
-            tx.inner
-                .del(self.dbi, key, None)
-                .map_err(|e| TransactionObserverError::PublishFailed {
+            tx.inner.del(self.dbi, key, None).map_err(|e| {
+                TransactionObserverError::PublishFailed {
                     reason: e.to_string(),
-                })?;
+                }
+            })?;
         }
-        tx.commit().map_err(|e| TransactionObserverError::PublishFailed {
-            reason: e.to_string(),
+        tx.commit().map_err(|e| {
+            TransactionObserverError::PublishFailed {
+                reason: e.to_string(),
+            }
         })?;
         Ok(())
     }

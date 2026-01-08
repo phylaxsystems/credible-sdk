@@ -633,7 +633,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                     .unwrap_or_default();
                 failures.push(IncidentData {
                     adopter_address: assertion_execution.adopter,
-                    assertion_id: fn_result.id.assertion_contract_id.into(),
+                    assertion_id: fn_result.id.assertion_contract_id,
                     assertion_fn: fn_result.id.fn_selector,
                     revert_data,
                 });
@@ -735,7 +735,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             Some(result_and_state.state),
         )?;
 
-        let tx_data: ReconstructableTx = (tx_execution_id.tx_hash.into(), tx_env.clone());
+        let tx_data: ReconstructableTx = (tx_execution_id.tx_hash, tx_env.clone());
         if let Some(prev_txs) = prev_txs {
             self.emit_incident_report(tx_data.clone(), &block_env, prev_txs, &rax);
         }

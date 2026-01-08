@@ -4,21 +4,20 @@ use super::{
     ReconstructableTx,
     TransactionObserverError,
 };
-use chrono::{
-    NaiveDateTime,
-    Utc,
-};
-use dapp_api_client::generated::types as dapp_types;
+use chrono::Utc;
+use dapp_api_client::generated::client::types as dapp_types;
 use revm::{
     context::{
         BlockEnv,
         TxEnv,
     },
-    context_interface::either::Either,
-    context_interface::transaction::{
-        AccessList,
-        RecoveredAuthorization,
-        SignedAuthorization,
+    context_interface::{
+        either::Either,
+        transaction::{
+            AccessList,
+            RecoveredAuthorization,
+            SignedAuthorization,
+        },
     },
     primitives::{
         Address,
@@ -40,7 +39,7 @@ pub(super) fn build_incident_body(
         .failures
         .iter()
         .map(build_failure_payload)
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
     let transaction_data = build_transaction_data_payload(&report.transaction_data)?;
 
     let mut body = Map::new();
@@ -55,7 +54,7 @@ pub(super) fn build_incident_body(
         Value::Object(build_block_env_payload(&report.block_env)),
     );
 
-    let previous_transactions = build_previous_transactions_payload(&report.prev_txs)?;
+    let previous_transactions = build_previous_transactions_payload(&report.prev_txs);
     if !previous_transactions.is_empty() {
         body.insert(
             "previous_transactions".to_string(),
@@ -76,12 +75,12 @@ fn format_incident_timestamp(timestamp: u64) -> Result<String, TransactionObserv
             reason: format!("Incident timestamp out of range: {timestamp}"),
         }
     })?;
-    let naive = NaiveDateTime::from_timestamp_opt(seconds, 0).ok_or_else(|| {
+    let date_time = chrono::DateTime::<Utc>::from_timestamp(seconds, 0).ok_or_else(|| {
         TransactionObserverError::PublishFailed {
             reason: format!("Invalid incident timestamp: {timestamp}"),
         }
     })?;
-    Ok(chrono::DateTime::<Utc>::from_utc(naive, Utc).to_rfc3339())
+    Ok(date_time.to_rfc3339())
 }
 
 fn build_block_env_payload(block_env: &BlockEnv) -> Map<String, Value> {
@@ -137,7 +136,7 @@ fn build_block_env_payload(block_env: &BlockEnv) -> Map<String, Value> {
     payload
 }
 
-fn build_failure_payload(failure: &IncidentData) -> Result<Value, TransactionObserverError> {
+fn build_failure_payload(failure: &IncidentData) -> Value {
     let mut payload = Map::new();
     payload.insert(
         "assertion_adopter_address".to_string(),
@@ -159,19 +158,17 @@ fn build_failure_payload(failure: &IncidentData) -> Result<Value, TransactionObs
         );
     }
 
-    Ok(Value::Object(payload))
+    Value::Object(payload)
 }
 
-fn build_previous_transactions_payload(
-    previous_txs: &[ReconstructableTx],
-) -> Result<Vec<Value>, TransactionObserverError> {
+fn build_previous_transactions_payload(previous_txs: &[ReconstructableTx]) -> Vec<Value> {
     previous_txs
         .iter()
         .map(|(_, tx_env)| build_previous_transaction_payload(tx_env))
         .collect()
 }
 
-fn build_previous_transaction_payload(tx_env: &TxEnv) -> Result<Value, TransactionObserverError> {
+fn build_previous_transaction_payload(tx_env: &TxEnv) -> Value {
     let mut payload = Map::new();
     payload.insert(
         "from".to_string(),
@@ -181,17 +178,14 @@ fn build_previous_transaction_payload(tx_env: &TxEnv) -> Result<Value, Transacti
         "to".to_string(),
         Value::String(tx_kind_to_address(&tx_env.kind, false)),
     );
-    payload.insert(
-        "value".to_string(),
-        Value::String(tx_env.value.to_string()),
-    );
+    payload.insert("value".to_string(), Value::String(tx_env.value.to_string()));
     if !tx_env.data.is_empty() {
         payload.insert(
             "calldata".to_string(),
             Value::String(bytes_to_hex(tx_env.data.as_ref())),
         );
     }
-    Ok(Value::Object(payload))
+    Value::Object(payload)
 }
 
 fn build_transaction_data_payload(
@@ -208,15 +202,24 @@ fn build_transaction_data_payload(
     };
 
     let mut payload = Map::new();
+    insert_common_transaction_fields(&mut payload, tx_hash.as_slice(), tx_env, chain_id);
+    insert_tx_type_fields(&mut payload, tx_env)?;
+
+    Ok(Value::Object(payload))
+}
+
+fn insert_common_transaction_fields(
+    payload: &mut Map<String, Value>,
+    tx_hash: &[u8],
+    tx_env: &TxEnv,
+    chain_id: u64,
+) {
     payload.insert(
         "transaction_hash".to_string(),
-        Value::String(bytes_to_hex(tx_hash.as_slice())),
+        Value::String(bytes_to_hex(tx_hash)),
     );
     payload.insert("chain_id".to_string(), Value::Number(chain_id.into()));
-    payload.insert(
-        "nonce".to_string(),
-        Value::String(tx_env.nonce.to_string()),
-    );
+    payload.insert("nonce".to_string(), Value::String(tx_env.nonce.to_string()));
     payload.insert(
         "gas_limit".to_string(),
         Value::String(tx_env.gas_limit.to_string()),
@@ -229,13 +232,10 @@ fn build_transaction_data_payload(
         "from_address".to_string(),
         Value::String(bytes_to_hex(tx_env.caller.as_slice())),
     );
-    payload.insert(
-        "value".to_string(),
-        Value::String(tx_env.value.to_string()),
-    );
+    payload.insert("value".to_string(), Value::String(tx_env.value.to_string()));
     payload.insert(
         "type".to_string(),
-        Value::Number((tx_env.tx_type as u64).into()),
+        Value::Number(u64::from(tx_env.tx_type).into()),
     );
     if !tx_env.data.is_empty() {
         payload.insert(
@@ -243,13 +243,19 @@ fn build_transaction_data_payload(
             Value::String(bytes_to_hex(tx_env.data.as_ref())),
         );
     }
+}
 
+fn insert_tx_type_fields(
+    payload: &mut Map<String, Value>,
+    tx_env: &TxEnv,
+) -> Result<(), TransactionObserverError> {
     match tx_env.tx_type {
         0 => {
             payload.insert(
                 "gas_price".to_string(),
                 Value::String(tx_env.gas_price.to_string()),
             );
+            Ok(())
         }
         1 => {
             payload.insert(
@@ -260,6 +266,7 @@ fn build_transaction_data_payload(
             if !access_list.is_empty() {
                 payload.insert("access_list".to_string(), Value::Array(access_list));
             }
+            Ok(())
         }
         2 => {
             payload.insert(
@@ -274,6 +281,7 @@ fn build_transaction_data_payload(
             if !access_list.is_empty() {
                 payload.insert("access_list".to_string(), Value::Array(access_list));
             }
+            Ok(())
         }
         3 => {
             payload.insert(
@@ -302,6 +310,7 @@ fn build_transaction_data_payload(
             if !access_list.is_empty() {
                 payload.insert("access_list".to_string(), Value::Array(access_list));
             }
+            Ok(())
         }
         4 => {
             payload.insert(
@@ -320,15 +329,14 @@ fn build_transaction_data_payload(
                 "authorization_list".to_string(),
                 Value::Array(authorization_list_payload(&tx_env.authorization_list)),
             );
+            Ok(())
         }
         tx_type => {
-            return Err(TransactionObserverError::PublishFailed {
+            Err(TransactionObserverError::PublishFailed {
                 reason: format!("Unsupported transaction type: {tx_type}"),
-            });
+            })
         }
     }
-
-    Ok(Value::Object(payload))
 }
 
 fn access_list_payload(access_list: &AccessList) -> Vec<Value> {

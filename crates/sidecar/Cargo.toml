@@ -93,6 +93,7 @@ tracing-test = "0.2.5"
 int-test-utils = { path = "../int-test-utils" }
 tempfile = "3.23.0"
 criterion = { workspace = true }
+httpmock = "0.8"
 
 [profile.release]
 lto = "fat"
