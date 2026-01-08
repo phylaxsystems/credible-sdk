@@ -25,6 +25,7 @@ tonic-prost = "0.14.2"
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
 tracing = { workspace = true }
 ctor = { version = "0.6.3", optional = true }
 tracing-subscriber.workspace = true
@@ -32,6 +33,7 @@ sled = { workspace = true }
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 rustls = { workspace = true }
 assertion-da-client = { workspace = true }
+dapp-api-client = { path = "../dapp-api-client" }
 alloy-provider = { workspace = true }
 metrics = { workspace = true }
 futures = { workspace = true }
