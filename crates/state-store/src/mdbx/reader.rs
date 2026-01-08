@@ -379,29 +379,6 @@ impl Reader for StateReader {
             None => Ok(None),
         }
     }
-}
-
-impl StateReader {
-    /// Create a new reader with read-only database access.
-    pub fn new(path: impl AsRef<Path>, config: CircularBufferConfig) -> StateResult<Self> {
-        let db = StateDb::open_read_only(path, config)?;
-        Ok(Self { db })
-    }
-
-    /// Create a new reader from an existing database handle.
-    pub(crate) fn from_db(db: StateDb) -> Self {
-        Self { db }
-    }
-
-    /// Get a reference to the underlying database.
-    pub(crate) fn db(&self) -> &StateDb {
-        &self.db
-    }
-
-    /// Get the configured buffer size.
-    pub fn buffer_size(&self) -> u8 {
-        self.db.buffer_size()
-    }
 
     /// Scan all account hashes in the buffer for a specific block.
     ///
@@ -412,7 +389,7 @@ impl StateReader {
     ///
     /// Returns `BlockNotFound` if the block is not in the circular buffer.
     #[instrument(skip(self), level = "debug")]
-    pub fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
+    fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
         let start = Instant::now();
         let tx = self.db.tx()?;
         let namespace_idx = self.db.namespace_for_block(block_number)?;
@@ -446,6 +423,29 @@ impl StateReader {
         );
 
         Ok(result)
+    }
+}
+
+impl StateReader {
+    /// Create a new reader with read-only database access.
+    pub fn new(path: impl AsRef<Path>, config: CircularBufferConfig) -> StateResult<Self> {
+        let db = StateDb::open_read_only(path, config)?;
+        Ok(Self { db })
+    }
+
+    /// Create a new reader from an existing database handle.
+    pub(crate) fn from_db(db: StateDb) -> Self {
+        Self { db }
+    }
+
+    /// Get a reference to the underlying database.
+    pub(crate) fn db(&self) -> &StateDb {
+        &self.db
+    }
+
+    /// Get the configured buffer size.
+    pub fn buffer_size(&self) -> u8 {
+        self.db.buffer_size()
     }
 
     /// Get all storage slots for an account with statistics.

@@ -412,6 +412,11 @@ impl Reader for StateWriter {
     fn get_available_block_range(&self) -> StateResult<Option<(u64, u64)>> {
         self.reader.get_available_block_range()
     }
+
+    /// Scan all account hashes in the buffer for a specific block.
+    fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
+        self.reader.scan_account_hashes(block_number)
+    }
 }
 
 impl Writer for StateWriter {

@@ -12,9 +12,9 @@ use log::error;
 use rust_tracing::trace;
 use state_store::{
     Reader,
-    redis::{
-        CircularBufferConfig,
+    mdbx::{
         StateReader,
+        common::CircularBufferConfig,
     },
 };
 use tracing::info;
@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
         buffer_size: args.state_depth,
     };
 
-    let reader = StateReader::new(&args.redis_url, &args.redis_namespace, config)?;
+    let reader = StateReader::new(&args.mdbx_path, config)?;
 
     let service = StateRootService::new(&reader);
 

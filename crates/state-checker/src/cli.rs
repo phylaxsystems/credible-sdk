@@ -9,15 +9,11 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// Redis connection string.
-    #[arg(long, env = "STATE_CHECKER_REDIS_URL")]
-    pub redis_url: String,
+    /// MDBX path.
+    #[arg(long, env = "STATE_CHECKER_MDBX_PATH")]
+    pub mdbx_path: String,
 
-    /// Namespace prefix for Redis keys.
-    #[arg(long, env = "STATE_CHECKER_REDIS_NAMESPACE", default_value = "state")]
-    pub redis_namespace: String,
-
-    /// Optional state depth (how many blocks behind head Redis will have the data from)
+    /// Optional state depth (how many blocks behind head in the state worker will have the data from)
     #[arg(long, env = "STATE_CHECKER_STATE_DEPTH", default_value = "3")]
-    pub state_depth: usize,
+    pub state_depth: u8,
 }
