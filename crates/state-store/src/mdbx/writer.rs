@@ -317,9 +317,17 @@ pub struct BootstrapWriter {
     storage_slots_written: usize,
     bytecodes_written: usize,
     total_start: Instant,
+    // Batch buffers for cursor-based writes
+    account_batch: Vec<(NamespacedAccountKey, AccountInfo)>,
+    storage_batch: Vec<(NamespacedStorageKey, StorageValue)>,
+    bytecode_batch: Vec<(NamespacedBytecodeKey, Bytes)>,
+    batch_size: usize,
 }
 
 impl BootstrapWriter {
+    /// Default batch size for cursor-based writes
+    const DEFAULT_BATCH_SIZE: usize = 10_000;
+
     /// Write a single account to all namespaces.
     ///
     /// Memory usage: Only this single account is held in memory.
@@ -333,30 +341,24 @@ impl BootstrapWriter {
 
         // Write to ALL namespaces (circular buffer requirement)
         for ns in 0..self.buffer_size {
-            // Write account info
+            // Queue account info
             let account_key = NamespacedAccountKey::new(ns, acc.address_hash);
-            self.tx
-                .put::<NamespacedAccounts>(account_key, info.clone())
-                .map_err(StateError::Database)?;
+            self.account_batch.push((account_key, info.clone()));
 
-            // Write storage slots
+            // Queue storage slots
             for (slot_hash, value) in &acc.storage {
                 if !value.is_zero() {
                     let storage_key = NamespacedStorageKey::new(ns, acc.address_hash, *slot_hash);
-                    self.tx
-                        .put::<NamespacedStorage>(storage_key, StorageValue(*value))
-                        .map_err(StateError::Database)?;
+                    self.storage_batch.push((storage_key, StorageValue(*value)));
                 }
             }
 
-            // Write bytecode (deduplicated by code_hash)
+            // Queue bytecode (deduplicated by code_hash)
             if let Some(ref code) = acc.code
                 && !code.is_empty()
             {
                 let bytecode_key = NamespacedBytecodeKey::new(ns, acc.code_hash);
-                self.tx
-                    .put::<Bytecodes>(bytecode_key, Bytecode(code.clone()))
-                    .map_err(StateError::Database)?;
+                self.bytecode_batch.push((bytecode_key, code.clone()));
             }
         }
 
@@ -364,6 +366,63 @@ impl BootstrapWriter {
         self.storage_slots_written += acc.storage.len();
         if acc.code.as_ref().is_some_and(|c| !c.is_empty()) {
             self.bytecodes_written += 1;
+        }
+
+        // Flush when batch is large enough
+        if self.account_batch.len() >= self.batch_size {
+            self.flush_batch()?;
+        }
+
+        Ok(())
+    }
+
+    /// Flush the current batch to the database using cursor-based writes.
+    fn flush_batch(&mut self) -> StateResult<()> {
+        if self.account_batch.is_empty()
+            && self.storage_batch.is_empty()
+            && self.bytecode_batch.is_empty()
+        {
+            return Ok(());
+        }
+
+        // Sort for optimal B-tree insertion
+        self.account_batch.sort_unstable_by_key(|(k, _)| *k);
+        self.storage_batch.sort_unstable_by_key(|(k, _)| *k);
+        self.bytecode_batch.sort_unstable_by_key(|(k, _)| *k);
+
+        // Write accounts with cursor
+        if !self.account_batch.is_empty() {
+            let mut cursor = self
+                .tx
+                .cursor_write::<NamespacedAccounts>()
+                .map_err(StateError::Database)?;
+            for (key, value) in self.account_batch.drain(..) {
+                cursor.upsert(key, &value).map_err(StateError::Database)?;
+            }
+        }
+
+        // Write storage with cursor
+        if !self.storage_batch.is_empty() {
+            let mut cursor = self
+                .tx
+                .cursor_write::<NamespacedStorage>()
+                .map_err(StateError::Database)?;
+            for (key, value) in self.storage_batch.drain(..) {
+                cursor.upsert(key, &value).map_err(StateError::Database)?;
+            }
+        }
+
+        // Write bytecodes with cursor
+        if !self.bytecode_batch.is_empty() {
+            let mut cursor = self
+                .tx
+                .cursor_write::<Bytecodes>()
+                .map_err(StateError::Database)?;
+            for (key, value) in self.bytecode_batch.drain(..) {
+                cursor
+                    .upsert(key, &Bytecode(value))
+                    .map_err(StateError::Database)?;
+            }
         }
 
         Ok(())
@@ -404,8 +463,11 @@ impl BootstrapWriter {
     ///
     /// This MUST be called to complete the bootstrap. Dropping without
     /// calling `finalize()` will roll back all writes.
-    pub fn finalize(self) -> StateResult<CommitStats> {
+    pub fn finalize(mut self) -> StateResult<CommitStats> {
         let mut stats = CommitStats::default();
+
+        // Flush any remaining batched writes
+        self.flush_batch()?;
 
         // Mark all namespaces as containing this block
         for ns in 0..self.buffer_size {
@@ -971,6 +1033,10 @@ impl StateWriter {
             storage_slots_written: 0,
             bytecodes_written: 0,
             total_start: Instant::now(),
+            account_batch: Vec::with_capacity(BootstrapWriter::DEFAULT_BATCH_SIZE),
+            storage_batch: Vec::with_capacity(BootstrapWriter::DEFAULT_BATCH_SIZE * 10),
+            bytecode_batch: Vec::with_capacity(BootstrapWriter::DEFAULT_BATCH_SIZE / 5),
+            batch_size: BootstrapWriter::DEFAULT_BATCH_SIZE,
         })
     }
 

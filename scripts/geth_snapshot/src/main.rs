@@ -29,6 +29,10 @@ use std::{
         Command,
         Stdio,
     },
+    sync::mpsc::{
+        SyncSender,
+        sync_channel,
+    },
     thread,
 };
 
@@ -520,95 +524,184 @@ fn maybe_pruned_state_error(
     ))
 }
 
-/// Process JSON lines from a buffered reader
-fn process_json_lines<R, F>(reader: R, args: &Args, on_account: &mut F) -> Result<DumpMetadata>
-where
-    R: BufRead,
-    F: FnMut(AccountState) -> Result<()>,
-{
+/// Result from the parser thread
+struct ParserResult {
+    metadata: DumpMetadata,
+}
+
+/// Message sent from parser to writer thread
+enum ParsedItem {
+    Account(AccountState),
+    StateRoot(B256),
+}
+
+/// Parse a single line and return the parsed item
+fn parse_line(line: &str, line_number: usize) -> Result<Option<ParsedItem>> {
+    if line.is_empty() {
+        return Ok(None);
+    }
+
+    // Try parsing as root object first (only matches lines with ONLY "root" field)
+    if let Ok(root) = serde_json::from_str::<GethRoot>(line) {
+        if let Some(ref r) = root.root
+            && let Ok(state_root) = parse_hex_b256(r)
+        {
+            return Ok(Some(ParsedItem::StateRoot(state_root)));
+        }
+        return Ok(None);
+    }
+
+    // Try parsing as account - FAIL HARD on parse errors, we need 1:1 state
+    let raw: GethAccount = serde_json::from_str(line).with_context(|| {
+        format!(
+            "FATAL: Failed to parse account JSON at line {line_number}. State integrity compromised!\nLine content: {}",
+            if line.len() > 200 { &line[..200] } else { line }
+        )
+    })?;
+
+    let account = parse_account(raw).with_context(|| {
+        format!(
+            "FATAL: Failed to parse account data at line {line_number}. State integrity compromised!\nLine content: {}",
+            if line.len() > 200 { &line[..200] } else { line }
+        )
+    })?;
+
+    Ok(Some(ParsedItem::Account(account)))
+}
+
+/// Run the parser in a separate thread, sending parsed accounts through a channel
+fn run_parser_thread(
+    json_path: &str,
+    tx: &SyncSender<ParsedItem>,
+    verbose: bool,
+) -> Result<ParserResult> {
     let mut metadata = DumpMetadata::default();
     let mut line_number: usize = 0;
 
-    for line in reader.lines() {
-        line_number += 1;
-        let line =
-            line.with_context(|| format!("Failed to read line {line_number} from JSON input"))?;
-
-        if line.is_empty() {
-            continue;
-        }
-
-        // Try parsing as root object first (only matches lines with ONLY "root" field)
-        if let Ok(root) = serde_json::from_str::<GethRoot>(&line) {
-            if let Some(ref r) = root.root
-                && let Ok(state_root) = parse_hex_b256(r)
-            {
-                metadata.state_root = Some(state_root);
-                if args.verbose {
-                    eprintln!("Line {line_number}: Parsed state root: {state_root:x}");
-                }
-            }
-            continue;
-        }
-
-        // Try parsing as account - FAIL HARD on parse errors, we need 1:1 state
-        let raw: GethAccount = serde_json::from_str(&line).with_context(|| {
-            format!(
-                "FATAL: Failed to parse account JSON at line {line_number}. State integrity compromised!\nLine content: {}",
-                if line.len() > 200 { &line[..200] } else { &line }
-            )
-        })?;
-
-        let account = parse_account(raw).with_context(|| {
-            format!(
-                "FATAL: Failed to parse account data at line {line_number}. State integrity compromised!\nLine content: {}",
-                if line.len() > 200 { &line[..200] } else { &line }
-            )
-        })?;
-
-        // Stream account to callback immediately - memory is released after this
-        on_account(account)?;
-
-        metadata.total_accounts += 1;
-
-        if args.verbose && metadata.total_accounts % 10000 == 0 {
-            eprintln!("Processed {} accounts...", metadata.total_accounts);
-        }
-    }
-
-    Ok(metadata)
-}
-
-/// Run dump from JSON file input
-fn run_json_dump<F>(args: &Args, on_account: &mut F) -> Result<DumpMetadata>
-where
-    F: FnMut(AccountState) -> Result<()>,
-{
-    let json_path = args.json.as_ref().unwrap();
-
     if json_path == "-" {
         // Read from stdin
-        if args.verbose {
+        if verbose {
             eprintln!("Reading JSON from stdin...");
         }
         let stdin = std::io::stdin();
-        let reader = BufReader::new(stdin.lock());
-        process_json_lines(reader, args, on_account)
+        let reader = BufReader::with_capacity(256 * 1024, stdin.lock());
+
+        for line in reader.lines() {
+            line_number += 1;
+            let line =
+                line.with_context(|| format!("Failed to read line {line_number} from JSON input"))?;
+
+            if let Some(item) = parse_line(&line, line_number)? {
+                match item {
+                    ParsedItem::StateRoot(root) => {
+                        metadata.state_root = Some(root);
+                        if verbose {
+                            eprintln!("Line {line_number}: Parsed state root: {root:x}");
+                        }
+                    }
+                    ParsedItem::Account(_) => {
+                        metadata.total_accounts += 1;
+                        if tx.send(item).is_err() {
+                            // Receiver dropped, stop parsing
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     } else {
         // Read from file
-        if args.verbose {
+        if verbose {
             eprintln!("Reading JSON from file: {json_path}");
         }
 
-        if !Path::new(json_path).exists() {
+        if !Path::new(&json_path).exists() {
             bail!("JSON input file not found: {json_path}");
         }
 
         let file = File::open(json_path)
             .with_context(|| format!("Failed to open JSON file: {json_path}"))?;
-        let reader = BufReader::new(file);
-        process_json_lines(reader, args, on_account)
+        let reader = BufReader::with_capacity(256 * 1024, file);
+
+        for line in reader.lines() {
+            line_number += 1;
+            let line =
+                line.with_context(|| format!("Failed to read line {line_number} from JSON input"))?;
+
+            if let Some(item) = parse_line(&line, line_number)? {
+                match item {
+                    ParsedItem::StateRoot(root) => {
+                        metadata.state_root = Some(root);
+                        if verbose {
+                            eprintln!("Line {line_number}: Parsed state root: {root:x}");
+                        }
+                    }
+                    ParsedItem::Account(_) => {
+                        metadata.total_accounts += 1;
+                        if tx.send(item).is_err() {
+                            // Receiver dropped, stop parsing
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if verbose && metadata.total_accounts % 10000 == 0 && metadata.total_accounts > 0 {
+                eprintln!("Parsed {} accounts...", metadata.total_accounts);
+            }
+        }
     }
+
+    Ok(ParserResult { metadata })
+}
+
+/// Run dump from JSON file input with parallel parsing and writing
+fn run_json_dump<F>(args: &Args, on_account: &mut F) -> Result<DumpMetadata>
+where
+    F: FnMut(AccountState) -> Result<()>,
+{
+    let json_path = args.json.as_ref().unwrap().clone();
+    let verbose = args.verbose;
+
+    // Create a bounded channel to buffer parsed accounts
+    // This allows the parser to run ahead of the writer
+    let (tx, rx) = sync_channel::<ParsedItem>(1000);
+
+    // Spawn parser thread
+    let parser_handle = thread::spawn(move || run_parser_thread(&json_path, &tx, verbose));
+
+    // Process accounts in main thread as they arrive
+    let mut state_root: Option<B256> = None;
+    let mut accounts_processed: usize = 0;
+
+    for item in rx {
+        match item {
+            ParsedItem::Account(account) => {
+                on_account(account)?;
+                accounts_processed += 1;
+
+                if args.verbose && accounts_processed.is_multiple_of(10000) {
+                    eprintln!("Written {accounts_processed} accounts...");
+                }
+            }
+            ParsedItem::StateRoot(root) => {
+                state_root = Some(root);
+            }
+        }
+    }
+
+    // Wait for parser thread and get metadata
+    let parser_result = parser_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Parser thread panicked"))??;
+
+    let mut metadata = parser_result.metadata;
+    // Use state root from channel if we received it
+    if state_root.is_some() {
+        metadata.state_root = state_root;
+    }
+
+    Ok(metadata)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -662,7 +755,7 @@ where
         })
     });
 
-    let reader = BufReader::new(stdout);
+    let reader = BufReader::with_capacity(256 * 1024, stdout);
 
     let mut metadata = DumpMetadata::default();
     let mut line_number: usize = 0;
