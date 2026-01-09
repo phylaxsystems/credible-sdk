@@ -2,8 +2,6 @@ name: Tag, Release and Publish
 
 on:
   push:
-    tags:
-      - "*.*.*"
     branches:
       - main
     paths:
