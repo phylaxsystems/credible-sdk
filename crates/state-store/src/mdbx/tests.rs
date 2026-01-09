@@ -3120,3 +3120,889 @@ fn test_delete_then_recreate_then_delete_again() {
     // Final state: slot 1 deleted
     assert!(r.get_all_storage(a.into(), 5).unwrap().is_empty());
 }
+
+#[test]
+fn test_bootstrap_populates_all_namespaces() {
+    // Verify that bootstrap_from_snapshot writes to ALL namespaces
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xaa);
+
+    let accounts = vec![account_state_with_storage(a, 1000, 5, [(1, 100), (2, 200)])];
+
+    let stats = w
+        .bootstrap_from_snapshot(
+            accounts,
+            100,
+            B256::repeat_byte(0x11),
+            B256::repeat_byte(0x22),
+        )
+        .unwrap();
+
+    // Should write to all 3 namespaces
+    assert_eq!(
+        stats.accounts_written, 3,
+        "should write to all 3 namespaces"
+    );
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // Verify state
+    assert_eq!(r.latest_block_number().unwrap(), Some(100));
+    assert!(r.is_block_available(100).unwrap());
+
+    let acc = r.get_account(a.into(), 100).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1000));
+    assert_eq!(acc.nonce, 5);
+
+    let storage = r.get_all_storage(a.into(), 100).unwrap();
+    assert_eq!(storage.len(), 2);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+}
+
+#[test]
+fn test_bootstrap_block_metadata() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xbb);
+
+    let block_hash = B256::repeat_byte(0x11);
+    let state_root = B256::repeat_byte(0x22);
+
+    w.bootstrap_from_snapshot(
+        vec![simple_account(a, 1000, 0)],
+        100,
+        block_hash,
+        state_root,
+    )
+    .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    let meta = r.get_block_metadata(100).unwrap().unwrap();
+    assert_eq!(meta.block_hash, block_hash);
+    assert_eq!(meta.state_root, state_root);
+}
+
+#[test]
+fn test_bootstrap_with_code() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xcc);
+    let code = vec![0x60, 0x80, 0x60, 0x40, 0x52];
+    let code_hash = keccak256(&code);
+
+    let accounts = vec![AccountState {
+        address_hash: AddressHash(keccak256(a)),
+        balance: u256(0),
+        nonce: 1,
+        code_hash,
+        code: Some(Bytes::from(code.clone())),
+        storage: HashMap::new(),
+        deleted: false,
+    }];
+
+    w.bootstrap_from_snapshot(accounts, 100, B256::ZERO, B256::ZERO)
+        .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    let acc = r.get_account(a.into(), 100).unwrap().unwrap();
+    assert_eq!(acc.code_hash, code_hash);
+
+    let retrieved_code = r.get_code(code_hash, 100).unwrap();
+    assert_eq!(retrieved_code, Some(Bytes::from(code)));
+}
+
+#[test]
+fn test_bootstrap_multiple_accounts() {
+    let (w, tmp) = writer_env(5);
+
+    let accounts: Vec<_> = (1..=10u8)
+        .map(|i| {
+            account_state_with_storage(
+                addr(i),
+                u64::from(i) * 100,
+                u64::from(i),
+                [(1, u64::from(i) * 10)],
+            )
+        })
+        .collect();
+
+    let stats = w
+        .bootstrap_from_snapshot(accounts, 50, B256::ZERO, B256::ZERO)
+        .unwrap();
+
+    // 10 accounts * 5 namespaces = 50
+    assert_eq!(stats.accounts_written, 50);
+
+    drop(w);
+    let r = reader_for(&tmp, 5);
+
+    for i in 1..=10u8 {
+        let acc = r.get_account(addr(i).into(), 50).unwrap().unwrap();
+        assert_eq!(acc.balance, u256(u64::from(i) * 100));
+        assert_eq!(acc.nonce, u64::from(i));
+
+        let slot = r
+            .get_storage(addr(i).into(), hash_slot(slot_b256(1)), 50)
+            .unwrap();
+        assert_eq!(slot, Some(u256(u64::from(i) * 10)));
+    }
+}
+
+#[test]
+fn test_bootstrap_then_commit_first_block_no_diffs_needed() {
+    // CRITICAL: After bootstrap, the first block in each namespace should NOT need any diffs
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xdd);
+
+    // Bootstrap at block 100
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Block 101 -> namespace 2 (101 % 3 = 2)
+    // Namespace 2 has block 100, so start_block = 101, block_number = 101
+    // 101 > 101 is FALSE, so no diffs needed!
+    let stats_101 = w
+        .commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+
+    assert_eq!(
+        stats_101.diffs_applied, 0,
+        "Block 101 should NOT need any diffs after bootstrap"
+    );
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // Verify state at block 101
+    let acc = r.get_account(a.into(), 101).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1100));
+    assert_eq!(acc.nonce, 1);
+
+    let storage = r.get_all_storage(a.into(), 101).unwrap();
+    assert_eq!(storage.len(), 2);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+}
+
+#[test]
+fn test_bootstrap_then_commit_sequence_with_diffs() {
+    // After bootstrap, commit blocks 101, 102, 103 and verify diff counts
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xee);
+
+    // Bootstrap at block 100 - all namespaces have block 100
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Block 101 -> namespace 2 (101 % 3 = 2)
+    // Namespace 2 has block 100, start_block = 101
+    // No diffs needed (101 > 101 is false)
+    let stats_101 = w
+        .commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    assert_eq!(stats_101.diffs_applied, 0);
+
+    // Block 102 -> namespace 0 (102 % 3 = 0)
+    // Namespace 0 has block 100, start_block = 101
+    // Needs diff for block 101 (102 > 101 is true, apply 101)
+    let stats_102 = w
+        .commit_block(&update_with_storage(102, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    assert_eq!(
+        stats_102.diffs_applied, 1,
+        "Block 102 needs 1 diff (block 101)"
+    );
+
+    // Block 103 -> namespace 1 (103 % 3 = 1)
+    // Namespace 1 has block 100, start_block = 101
+    // Needs diffs for blocks 101 and 102
+    let stats_103 = w
+        .commit_block(&update_with_storage(103, a, 1300, 3, [(4, 400)]))
+        .unwrap();
+    assert_eq!(
+        stats_103.diffs_applied, 2,
+        "Block 103 needs 2 diffs (101, 102)"
+    );
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // Block 100 should be rotated out
+    assert!(!r.is_block_available(100).unwrap());
+
+    // Blocks 101, 102, 103 should be available
+    assert!(r.is_block_available(101).unwrap());
+    assert!(r.is_block_available(102).unwrap());
+    assert!(r.is_block_available(103).unwrap());
+
+    // Verify cumulative state at block 103
+    let acc = r.get_account(a.into(), 103).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1300));
+    assert_eq!(acc.nonce, 3);
+
+    let storage = r.get_all_storage(a.into(), 103).unwrap();
+    assert_eq!(storage.len(), 4);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(4))), Some(&u256(400)));
+}
+
+#[test]
+fn test_bootstrap_full_rotation_cycle() {
+    // Bootstrap then process enough blocks for 2 full rotations
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xff);
+
+    // Bootstrap at block 100
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Process blocks 101-106 (2 full rotations)
+    for block_num in 101..=106u64 {
+        w.commit_block(&update_with_storage(
+            block_num,
+            a,
+            block_num * 10,
+            block_num,
+            [(block_num, block_num * 100)],
+        ))
+        .unwrap();
+    }
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // Only blocks 104, 105, 106 should be available
+    assert!(!r.is_block_available(103).unwrap());
+    assert!(r.is_block_available(104).unwrap());
+    assert!(r.is_block_available(105).unwrap());
+    assert!(r.is_block_available(106).unwrap());
+
+    // Verify final state at block 106
+    let acc = r.get_account(a.into(), 106).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1060));
+    assert_eq!(acc.nonce, 106);
+
+    // Should have slots 1 (from bootstrap) + 101-106 = 7 slots
+    let storage = r.get_all_storage(a.into(), 106).unwrap();
+    assert_eq!(storage.len(), 7);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    for block_num in 101..=106u64 {
+        assert_eq!(
+            storage.get(&hash_slot(slot_b256(block_num))),
+            Some(&u256(block_num * 100))
+        );
+    }
+}
+
+#[test]
+fn test_bootstrap_with_account_deletion_after() {
+    let (w, tmp) = writer_env(3);
+    let (a, b) = (addr(0x11), addr(0x22));
+
+    // Bootstrap with two accounts
+    w.bootstrap_from_snapshot(
+        vec![
+            account_state_with_storage(a, 1000, 0, [(1, 100)]),
+            account_state_with_storage(b, 2000, 0, [(1, 200)]),
+        ],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Block 101: delete account A
+    w.commit_block(&block_update(101, vec![deleted_account(a)]))
+        .unwrap();
+
+    // Block 102: update account B
+    w.commit_block(&simple_update(102, b, 2500, 1)).unwrap();
+
+    // Block 103: rotation - should apply deletion correctly
+    w.commit_block(&simple_update(103, b, 3000, 2)).unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // A should be deleted
+    assert!(r.get_account(a.into(), 103).unwrap().is_none());
+    assert!(r.get_all_storage(a.into(), 103).unwrap().is_empty());
+
+    // B should exist with correct state
+    let acc_b = r.get_account(b.into(), 103).unwrap().unwrap();
+    assert_eq!(acc_b.balance, u256(3000));
+    assert_eq!(
+        r.get_storage(b.into(), hash_slot(slot_b256(1)), 103)
+            .unwrap(),
+        Some(u256(200))
+    );
+}
+
+#[test]
+fn test_bootstrap_with_storage_deletion_after() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x33);
+
+    // Bootstrap with storage slots 1, 2, 3
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(
+            a,
+            1000,
+            0,
+            [(1, 100), (2, 200), (3, 300)],
+        )],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Block 101: delete slot 2
+    w.commit_block(&block_update(
+        101,
+        vec![AccountState {
+            address_hash: AddressHash(keccak256(a)),
+            balance: u256(1000),
+            nonce: 1,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: hash_storage(HashMap::from([(slot_b256(2), U256::ZERO)])),
+            deleted: false,
+        }],
+    ))
+    .unwrap();
+
+    // Block 102: update slot 1
+    w.commit_block(&update_with_storage(102, a, 1000, 2, [(1, 150)]))
+        .unwrap();
+
+    // Block 103: add slot 4
+    w.commit_block(&update_with_storage(103, a, 1000, 3, [(4, 400)]))
+        .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    let storage = r.get_all_storage(a.into(), 103).unwrap();
+    assert_eq!(storage.len(), 3); // slots 1, 3, 4 (slot 2 deleted)
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(150)));
+    assert!(!storage.contains_key(&hash_slot(slot_b256(2))));
+    assert_eq!(storage.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(4))), Some(&u256(400)));
+}
+
+#[test]
+fn test_bootstrap_large_storage() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x44);
+
+    // Bootstrap with 100 storage slots
+    let slots: Vec<_> = (1..=100u64).map(|i| (i, i * 10)).collect();
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, slots)],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Commit a few blocks
+    w.commit_block(&simple_update(101, a, 1100, 1)).unwrap();
+    w.commit_block(&simple_update(102, a, 1200, 2)).unwrap();
+    w.commit_block(&simple_update(103, a, 1300, 3)).unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // All 100 slots should persist
+    let storage = r.get_all_storage(a.into(), 103).unwrap();
+    assert_eq!(storage.len(), 100);
+    for i in 1..=100u64 {
+        assert_eq!(storage.get(&hash_slot(slot_b256(i))), Some(&u256(i * 10)));
+    }
+}
+
+#[test]
+fn test_bootstrap_buffer_size_one() {
+    // Edge case: buffer_size = 1
+    // With buffer_size=1, every block goes to namespace 0
+    // No intermediate diffs are ever needed because each block directly replaces the previous
+    let (w, tmp) = writer_env(1);
+    let a = addr(0x55);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Block 101: namespace 0 has block 100, start_block=101, 101>101 is false → 0 diffs
+    let stats_101 = w
+        .commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    assert_eq!(
+        stats_101.diffs_applied, 0,
+        "buffer_size=1 never needs intermediate diffs"
+    );
+
+    // Block 102: namespace 0 has block 101, start_block=102, 102>102 is false → 0 diffs
+    let stats_102 = w
+        .commit_block(&update_with_storage(102, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    assert_eq!(
+        stats_102.diffs_applied, 0,
+        "buffer_size=1 never needs intermediate diffs"
+    );
+
+    drop(w);
+    let r = reader_for(&tmp, 1);
+
+    // Only block 102 available (buffer_size=1 means only 1 block retained)
+    assert!(!r.is_block_available(100).unwrap());
+    assert!(!r.is_block_available(101).unwrap());
+    assert!(r.is_block_available(102).unwrap());
+
+    // State is cumulative - the diffs ARE stored, they're just applied during
+    // the commit itself (base state copied from previous namespace block)
+    let storage = r.get_all_storage(a.into(), 102).unwrap();
+    assert_eq!(storage.len(), 3);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
+}
+
+#[test]
+fn test_bootstrap_large_buffer_size() {
+    let (w, tmp) = writer_env(100);
+    let a = addr(0x66);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        50,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Commit 50 blocks - should all be within buffer
+    for block_num in 51..=100u64 {
+        w.commit_block(&update_with_storage(
+            block_num,
+            a,
+            block_num * 10,
+            block_num,
+            [(block_num, block_num * 100)],
+        ))
+        .unwrap();
+    }
+
+    drop(w);
+    let r = reader_for(&tmp, 100);
+
+    // All blocks 50-100 should be available (buffer_size = 100)
+    for block_num in 50..=100u64 {
+        assert!(
+            r.is_block_available(block_num).unwrap(),
+            "Block {block_num} should be available",
+        );
+    }
+}
+
+#[test]
+fn test_bootstrap_preserves_state_across_all_namespaces() {
+    // Verify that reading from any namespace gives same result after bootstrap
+    let (w, tmp) = writer_env(5);
+    let a = addr(0x77);
+
+    let code = vec![0x60, 0x80];
+    let code_hash = keccak256(&code);
+
+    w.bootstrap_from_snapshot(
+        vec![AccountState {
+            address_hash: AddressHash(keccak256(a)),
+            balance: u256(9999),
+            nonce: 42,
+            code_hash,
+            code: Some(Bytes::from(code.clone())),
+            storage: hash_storage(storage([(1, 111), (2, 222), (3, 333)])),
+            deleted: false,
+        }],
+        1000,
+        B256::repeat_byte(0xAA),
+        B256::repeat_byte(0xBB),
+    )
+    .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 5);
+
+    // Verify complete state
+    let acc = r.get_account(a.into(), 1000).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(9999));
+    assert_eq!(acc.nonce, 42);
+    assert_eq!(acc.code_hash, code_hash);
+
+    let storage = r.get_all_storage(a.into(), 1000).unwrap();
+    assert_eq!(storage.len(), 3);
+
+    let retrieved_code = r.get_code(code_hash, 1000).unwrap();
+    assert_eq!(retrieved_code, Some(Bytes::from(code)));
+
+    let meta = r.get_block_metadata(1000).unwrap().unwrap();
+    assert_eq!(meta.block_hash, B256::repeat_byte(0xAA));
+    assert_eq!(meta.state_root, B256::repeat_byte(0xBB));
+}
+
+#[test]
+fn test_bootstrap_empty_accounts_list() {
+    let (w, tmp) = writer_env(3);
+
+    w.bootstrap_from_snapshot(
+        vec![],
+        100,
+        B256::repeat_byte(0x11),
+        B256::repeat_byte(0x22),
+    )
+    .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    assert_eq!(r.latest_block_number().unwrap(), Some(100));
+    assert!(r.is_block_available(100).unwrap());
+
+    // No accounts to read
+    let random_addr = addr(0x99);
+    assert!(r.get_account(random_addr.into(), 100).unwrap().is_none());
+}
+
+#[test]
+fn test_bootstrap_then_complex_rotation_scenario() {
+    // Bootstrap, then do complex operations during rotations
+    let (w, tmp) = writer_env(3);
+    let (a, b, c) = (addr(0x0a), addr(0x0b), addr(0x0c));
+
+    // Bootstrap with 3 accounts
+    w.bootstrap_from_snapshot(
+        vec![
+            account_state_with_storage(a, 1000, 0, [(1, 10)]),
+            account_state_with_storage(b, 2000, 0, [(1, 20)]),
+            account_state_with_storage(c, 3000, 0, [(1, 30)]),
+        ],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Block 101: update A, delete B
+    w.commit_block(&block_update(
+        101,
+        vec![
+            account_state_with_storage(a, 1100, 1, [(2, 110)]),
+            deleted_account(b),
+        ],
+    ))
+    .unwrap();
+
+    // Block 102: update C, recreate B
+    w.commit_block(&block_update(
+        102,
+        vec![
+            account_state_with_storage(c, 3300, 1, [(2, 330)]),
+            account_state_with_storage(b, 5000, 0, [(5, 500)]),
+        ],
+    ))
+    .unwrap();
+
+    // Block 103: rotation - just update A
+    w.commit_block(&block_update(
+        103,
+        vec![account_state_with_storage(a, 1200, 2, [(3, 120)])],
+    ))
+    .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // Verify A at block 103
+    let acc_a = r.get_account(a.into(), 103).unwrap().unwrap();
+    assert_eq!(acc_a.balance, u256(1200));
+    let storage_a = r.get_all_storage(a.into(), 103).unwrap();
+    assert_eq!(storage_a.len(), 3); // slots 1, 2, 3
+    assert_eq!(storage_a.get(&hash_slot(slot_b256(1))), Some(&u256(10)));
+    assert_eq!(storage_a.get(&hash_slot(slot_b256(2))), Some(&u256(110)));
+    assert_eq!(storage_a.get(&hash_slot(slot_b256(3))), Some(&u256(120)));
+
+    // Verify B at block 103 (recreated)
+    let acc_b = r.get_account(b.into(), 103).unwrap().unwrap();
+    assert_eq!(acc_b.balance, u256(5000));
+    let storage_b = r.get_all_storage(b.into(), 103).unwrap();
+    assert_eq!(storage_b.len(), 1); // only slot 5 from recreation
+    assert!(!storage_b.contains_key(&hash_slot(slot_b256(1)))); // old slot gone
+
+    // Verify C at block 103
+    let acc_c = r.get_account(c.into(), 103).unwrap().unwrap();
+    assert_eq!(acc_c.balance, u256(3300));
+    let storage_c = r.get_all_storage(c.into(), 103).unwrap();
+    assert_eq!(storage_c.len(), 2); // slots 1, 2
+}
+
+#[test]
+fn test_bootstrap_high_block_number() {
+    // Bootstrap at a high block number (simulating sync from snapshot)
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x88);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        10_000_000, // 10 million
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Commit next few blocks
+    for block_num in 10_000_001..=10_000_003u64 {
+        w.commit_block(&simple_update(
+            block_num,
+            a,
+            block_num,
+            block_num - 10_000_000,
+        ))
+        .unwrap();
+    }
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    assert_eq!(r.latest_block_number().unwrap(), Some(10_000_003));
+    assert!(!r.is_block_available(10_000_000).unwrap());
+    assert!(r.is_block_available(10_000_001).unwrap());
+    assert!(r.is_block_available(10_000_002).unwrap());
+    assert!(r.is_block_available(10_000_003).unwrap());
+}
+
+#[test]
+fn test_bootstrap_zero_balance_and_storage() {
+    // Bootstrap with account that has zero balance but non-zero storage
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x99);
+
+    w.bootstrap_from_snapshot(
+        vec![AccountState {
+            address_hash: AddressHash(keccak256(a)),
+            balance: U256::ZERO,
+            nonce: 0,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: hash_storage(storage([(1, 100)])),
+            deleted: false,
+        }],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    let acc = r.get_account(a.into(), 100).unwrap().unwrap();
+    assert_eq!(acc.balance, U256::ZERO);
+    assert_eq!(
+        r.get_storage(a.into(), hash_slot(slot_b256(1)), 100)
+            .unwrap(),
+        Some(u256(100))
+    );
+}
+
+#[test]
+fn test_bootstrap_scan_account_hashes() {
+    let (w, tmp) = writer_env(3);
+
+    let accounts: Vec<_> = (0..5u8)
+        .map(|i| simple_account(addr(i), u64::from(i) * 100, u64::from(i)))
+        .collect();
+
+    w.bootstrap_from_snapshot(accounts, 100, B256::ZERO, B256::ZERO)
+        .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    let hashes = r.scan_account_hashes(100).unwrap();
+    assert_eq!(hashes.len(), 5);
+}
+
+#[test]
+fn test_bootstrap_available_block_range() {
+    let (w, tmp) = writer_env(5);
+    let a = addr(0xab);
+
+    w.bootstrap_from_snapshot(
+        vec![simple_account(a, 1000, 0)],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Add a few more blocks
+    w.commit_block(&simple_update(101, a, 1100, 1)).unwrap();
+    w.commit_block(&simple_update(102, a, 1200, 2)).unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 5);
+
+    // get_available_block_range returns THEORETICAL range: (latest - buffer_size + 1, latest)
+    // With latest=102 and buffer_size=5: (102 - 5 + 1, 102) = (98, 102)
+    // This is NOT the same as which blocks actually exist!
+    let range = r.get_available_block_range().unwrap();
+    assert_eq!(range, Some((98, 102)));
+
+    // Use is_block_available to check actual block availability
+    // After bootstrap at 100 + commits at 101, 102:
+    // - ns 0 (100%5=0): block 100
+    // - ns 1 (101%5=1): block 101
+    // - ns 2 (102%5=2): block 102
+    // - ns 3: block 100 (from bootstrap)
+    // - ns 4: block 100 (from bootstrap)
+    assert!(!r.is_block_available(98).unwrap(), "block 98 never existed");
+    assert!(!r.is_block_available(99).unwrap(), "block 99 never existed");
+    assert!(
+        r.is_block_available(100).unwrap(),
+        "block 100 from bootstrap"
+    );
+    assert!(r.is_block_available(101).unwrap(), "block 101 committed");
+    assert!(r.is_block_available(102).unwrap(), "block 102 committed");
+}
+
+#[test]
+fn test_bootstrap_code_deduplication_across_namespaces() {
+    // Same code hash used by multiple accounts - should be stored once per namespace
+    let (w, tmp) = writer_env(3);
+    let (a, b) = (addr(0xca), addr(0xcb));
+    let code = vec![0x60, 0x80, 0x60, 0x40];
+    let code_hash = keccak256(&code);
+
+    w.bootstrap_from_snapshot(
+        vec![
+            AccountState {
+                address_hash: AddressHash(keccak256(a)),
+                balance: u256(1000),
+                nonce: 1,
+                code_hash,
+                code: Some(Bytes::from(code.clone())),
+                storage: HashMap::new(),
+                deleted: false,
+            },
+            AccountState {
+                address_hash: AddressHash(keccak256(b)),
+                balance: u256(2000),
+                nonce: 2,
+                code_hash,
+                code: Some(Bytes::from(code.clone())),
+                storage: HashMap::new(),
+                deleted: false,
+            },
+        ],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // Both accounts should have same code hash
+    assert_eq!(
+        r.get_account(a.into(), 100).unwrap().unwrap().code_hash,
+        code_hash
+    );
+    assert_eq!(
+        r.get_account(b.into(), 100).unwrap().unwrap().code_hash,
+        code_hash
+    );
+
+    // Code should be retrievable
+    assert_eq!(r.get_code(code_hash, 100).unwrap(), Some(Bytes::from(code)));
+}
+
+#[test]
+fn test_bootstrap_stress_many_accounts() {
+    // Stress test with many accounts
+    let (w, tmp) = writer_env(5);
+
+    let accounts: Vec<_> = (0..100u8)
+        .map(|i| {
+            account_state_with_storage(
+                addr(i),
+                u64::from(i) * 100,
+                u64::from(i),
+                [(1, u64::from(i) * 10)],
+            )
+        })
+        .collect();
+
+    let stats = w
+        .bootstrap_from_snapshot(accounts, 1000, B256::ZERO, B256::ZERO)
+        .unwrap();
+
+    // 100 accounts * 5 namespaces = 500
+    assert_eq!(stats.accounts_written, 500);
+
+    // Commit a few blocks
+    for block_num in 1001..=1005u64 {
+        let accounts: Vec<_> = (0..10u8)
+            .map(|i| {
+                account_state_with_storage(
+                    addr(i),
+                    block_num * 100 + u64::from(i),
+                    block_num,
+                    [(block_num, block_num * 10)],
+                )
+            })
+            .collect();
+        w.commit_block(&block_update(block_num, accounts)).unwrap();
+    }
+
+    drop(w);
+    let r = reader_for(&tmp, 5);
+
+    // Verify some accounts
+    for i in 0..10u8 {
+        let acc = r.get_account(addr(i).into(), 1005).unwrap().unwrap();
+        assert_eq!(acc.balance, u256(1005 * 100 + u64::from(i)));
+    }
+
+    // Unchanged accounts should still have bootstrap values
+    for i in 10..100u8 {
+        let acc = r.get_account(addr(i).into(), 1005).unwrap().unwrap();
+        assert_eq!(acc.balance, u256(u64::from(i) * 100));
+    }
+}

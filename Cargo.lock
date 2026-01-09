@@ -5041,7 +5041,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "geth_snapshop"
+name = "geth_snapshot"
 version = "0.9.3"
 dependencies = [
  "alloy",

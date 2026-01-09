@@ -404,6 +404,27 @@ pub trait Writer {
     ///
     /// Returns information about successfully recovered locks.
     fn recover_stale_locks(&self) -> Result<Vec<StaleLockRecovery>, Self::Error>;
+
+    /// Bootstrap the circular buffer from a single state snapshot.
+    ///
+    /// Copies the same state to ALL namespaces, with all namespaces pointing
+    /// to the same block number. This allows the circular buffer to work
+    /// correctly once new blocks start arriving.
+    ///
+    /// After `buffer_size` new blocks are processed, all state will be accurate
+    /// (the initially duplicated state will have been overwritten).
+    ///
+    /// ## Note
+    ///
+    /// No state diffs are stored during bootstrap - they're not needed since
+    /// all namespaces are initialized with identical state at the same block.
+    fn bootstrap_from_snapshot(
+        &self,
+        accounts: Vec<AccountState>,
+        block_number: u64,
+        block_hash: B256,
+        state_root: B256,
+    ) -> Result<CommitStats, Self::Error>;
 }
 
 #[cfg(test)]

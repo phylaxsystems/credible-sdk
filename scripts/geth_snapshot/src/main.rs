@@ -1,7 +1,11 @@
-use alloy::primitives::{
-    B256,
-    Bytes,
-    U256,
+use alloy::{
+    primitives::{
+        B256,
+        Bytes,
+        U256,
+        keccak256,
+    },
+    rlp::Decodable,
 };
 use anyhow::{
     Context,
@@ -14,11 +18,13 @@ use serde::Deserialize;
 use state_store::mdbx::StateWriter;
 use std::{
     collections::HashMap,
+    fs::File,
     io::{
         BufRead,
         BufReader,
         Write,
     },
+    path::Path,
     process::{
         Command,
         Stdio,
@@ -29,8 +35,6 @@ use std::{
 use state_store::{
     AccountState,
     AddressHash,
-    BlockStateUpdate,
-    Writer,
     mdbx::common::CircularBufferConfig,
 };
 
@@ -38,9 +42,9 @@ use state_store::{
 #[command(name = "geth-dump")]
 #[command(about = "Dump Geth state into Redis/MDBX")]
 struct Args {
-    /// Path to the Geth data directory
+    /// Path to the Geth data directory (required if --json not provided)
     #[arg(long)]
-    datadir: String,
+    datadir: Option<String>,
 
     /// Path to geth binary
     #[arg(long, default_value = "geth")]
@@ -78,9 +82,34 @@ struct Args {
     #[arg(long)]
     json_output: Option<String>,
 
+    /// JSON input file - pre-dumped geth snapshot (use - for stdin)
+    /// If provided, --datadir is not required
+    #[arg(long)]
+    json: Option<String>,
+
     /// Verbose logging
     #[arg(long, short)]
     verbose: bool,
+}
+
+impl Args {
+    /// Validate that either --json or --datadir is provided
+    fn validate(&self) -> Result<()> {
+        match (&self.json, &self.datadir) {
+            (None, None) => {
+                bail!("Either --json or --datadir must be provided");
+            }
+            (Some(_), Some(_)) => {
+                bail!("Cannot use both --json and --datadir. Choose one input source.");
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Check if we're reading from a JSON file
+    fn is_json_input(&self) -> bool {
+        self.json.is_some()
+    }
 }
 
 /// Storage value can be a simple string or an object with key/value fields
@@ -124,6 +153,7 @@ struct GethAccount {
 
 /// Root object (contains state root)
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GethRoot {
     root: Option<String>,
 }
@@ -144,6 +174,7 @@ struct GethDumpError {
     source: anyhow::Error,
 }
 
+/// Parse an integer value (for balance, nonce, etc.) - NOT RLP encoded
 fn parse_int(s: &str) -> Result<U256> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -156,14 +187,78 @@ fn parse_int(s: &str) -> Result<U256> {
         if hex_part.is_empty() {
             return Ok(U256::ZERO);
         }
-        U256::from_str_radix(hex_part, 16).context("Invalid U256 hex")
+        if hex_part.len() > 64 {
+            bail!(
+                "Hex value too large for U256: {}",
+                &trimmed[..trimmed.len().min(80)]
+            );
+        }
+        U256::from_str_radix(hex_part, 16)
+            .with_context(|| format!("Invalid U256 hex: {}", &trimmed[..trimmed.len().min(80)]))
     } else {
-        U256::from_str_radix(trimmed, 10).context("Invalid U256 decimal")
+        U256::from_str_radix(trimmed, 10).with_context(|| {
+            format!(
+                "Invalid U256 decimal: {}",
+                &trimmed[..trimmed.len().min(80)]
+            )
+        })
     }
+}
+
+/// Parse a storage value - these are RLP encoded in geth snapshot dumps
+fn parse_storage_value(s: &str) -> Result<U256> {
+    let trimmed = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+
+    if trimmed.is_empty() {
+        return Ok(U256::ZERO);
+    }
+
+    let bytes = hex::decode(trimmed).with_context(|| {
+        format!(
+            "Invalid hex in storage value: {}",
+            &trimmed[..trimmed.len().min(80)]
+        )
+    })?;
+
+    if bytes.is_empty() {
+        return Ok(U256::ZERO);
+    }
+
+    // Use alloy's proper RLP decoding
+    let decoded: Bytes = Bytes::decode(&mut bytes.as_slice()).with_context(|| {
+        format!(
+            "Failed to RLP-decode storage value: {}",
+            &trimmed[..trimmed.len().min(80)]
+        )
+    })?;
+
+    if decoded.is_empty() {
+        return Ok(U256::ZERO);
+    }
+
+    if decoded.len() > 32 {
+        bail!(
+            "Decoded storage value too large for U256 (got {} bytes, max 32): {}",
+            decoded.len(),
+            hex::encode(&decoded[..decoded.len().min(40)])
+        );
+    }
+
+    Ok(U256::from_be_slice(&decoded))
 }
 
 fn parse_hex_b256(s: &str) -> Result<B256> {
     let trimmed = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+
+    // Warn if the value is shorter than expected - this could indicate data corruption
+    if !trimmed.is_empty() && trimmed.len() < 64 {
+        eprintln!(
+            "Warning: B256 value shorter than 64 hex chars (got {}), left-padding with zeros: {}",
+            trimmed.len(),
+            s
+        );
+    }
+
     let padded = format!("{trimmed:0>64}");
     let bytes = hex::decode(&padded).context("Invalid B256 hex")?;
     Ok(B256::from_slice(&bytes))
@@ -198,8 +293,20 @@ fn parse_storage(raw: StorageFormat) -> Result<HashMap<B256, U256>> {
                     }
                 };
 
-                let slot = parse_hex_b256(&slot_key)?;
-                let val = parse_int(&slot_value)?;
+                let slot = parse_hex_b256(&slot_key).with_context(|| {
+                    format!(
+                        "Invalid storage slot key: {}",
+                        &slot_key[..slot_key.len().min(80)]
+                    )
+                })?;
+                // Storage values are RLP-encoded in geth snapshot dumps
+                let val = parse_storage_value(&slot_value).with_context(|| {
+                    format!(
+                        "Invalid storage value for slot {}: {}",
+                        &slot_key[..slot_key.len().min(40)],
+                        &slot_value[..slot_value.len().min(80)]
+                    )
+                })?;
                 // Don't filter zero values
                 storage.insert(slot, val);
             }
@@ -210,8 +317,17 @@ fn parse_storage(raw: StorageFormat) -> Result<HashMap<B256, U256>> {
                     // Use "key" or "hash" field
                     let slot_key = key.or(hash);
                     if let (Some(k), Some(v)) = (slot_key, value) {
-                        let slot = parse_hex_b256(&k)?;
-                        let val = parse_int(&v)?;
+                        let slot = parse_hex_b256(&k).with_context(|| {
+                            format!("Invalid storage slot key: {}", &k[..k.len().min(80)])
+                        })?;
+                        // Storage values are RLP-encoded in geth snapshot dumps
+                        let val = parse_storage_value(&v).with_context(|| {
+                            format!(
+                                "Invalid storage value for slot {}: {}",
+                                &k[..k.len().min(40)],
+                                &v[..v.len().min(80)]
+                            )
+                        })?;
                         storage.insert(slot, val);
                     }
                 }
@@ -221,6 +337,12 @@ fn parse_storage(raw: StorageFormat) -> Result<HashMap<B256, U256>> {
 
     Ok(storage)
 }
+
+/// The empty code hash (keccak256 of empty bytes) - used to identify accounts without code
+const EMPTY_CODE_HASH: B256 = B256::new([
+    0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d, 0xb2, 0xdc, 0xc7, 0x03, 0xc0,
+    0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b, 0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70,
+]);
 
 fn parse_account(raw: GethAccount) -> Result<AccountState> {
     let address_hash = AddressHash::from_hash(parse_hex_b256(&raw.key)?);
@@ -242,6 +364,21 @@ fn parse_account(raw: GethAccount) -> Result<AccountState> {
         .transpose()?;
     let storage = parse_storage(raw.storage)?;
 
+    // Validate code hash if code is present
+    if let Some(ref code_bytes) = code {
+        let computed_hash = keccak256(code_bytes);
+        if computed_hash != code_hash {
+            bail!(
+                "Code hash mismatch for account {address_hash:?}: expected {code_hash:x}, computed {computed_hash:x}",
+            );
+        }
+    } else {
+        // If no code, the code_hash should be either zero or the empty code hash
+        if code_hash != B256::ZERO && code_hash != EMPTY_CODE_HASH {
+            bail!("Account {address_hash:?} has no code but non-empty code hash: {code_hash:x}",);
+        }
+    }
+
     Ok(AccountState {
         address_hash,
         balance,
@@ -262,7 +399,8 @@ fn build_geth_command(args: &Args, mode: &str) -> Command {
         cmd.args(["dump", "--iterative", "--incompletes"]);
     }
 
-    cmd.args(["--datadir", &args.datadir]);
+    // Safe to unwrap because we validated datadir exists when not using --json
+    cmd.args(["--datadir", args.datadir.as_ref().unwrap()]);
 
     if let Some(limit) = args.limit {
         cmd.args(["--limit", &limit.to_string()]);
@@ -382,6 +520,97 @@ fn maybe_pruned_state_error(
     ))
 }
 
+/// Process JSON lines from a buffered reader
+fn process_json_lines<R, F>(reader: R, args: &Args, on_account: &mut F) -> Result<DumpMetadata>
+where
+    R: BufRead,
+    F: FnMut(AccountState) -> Result<()>,
+{
+    let mut metadata = DumpMetadata::default();
+    let mut line_number: usize = 0;
+
+    for line in reader.lines() {
+        line_number += 1;
+        let line =
+            line.with_context(|| format!("Failed to read line {line_number} from JSON input"))?;
+
+        if line.is_empty() {
+            continue;
+        }
+
+        // Try parsing as root object first (only matches lines with ONLY "root" field)
+        if let Ok(root) = serde_json::from_str::<GethRoot>(&line) {
+            if let Some(ref r) = root.root
+                && let Ok(state_root) = parse_hex_b256(r)
+            {
+                metadata.state_root = Some(state_root);
+                if args.verbose {
+                    eprintln!("Line {line_number}: Parsed state root: {state_root:x}");
+                }
+            }
+            continue;
+        }
+
+        // Try parsing as account - FAIL HARD on parse errors, we need 1:1 state
+        let raw: GethAccount = serde_json::from_str(&line).with_context(|| {
+            format!(
+                "FATAL: Failed to parse account JSON at line {line_number}. State integrity compromised!\nLine content: {}",
+                if line.len() > 200 { &line[..200] } else { &line }
+            )
+        })?;
+
+        let account = parse_account(raw).with_context(|| {
+            format!(
+                "FATAL: Failed to parse account data at line {line_number}. State integrity compromised!\nLine content: {}",
+                if line.len() > 200 { &line[..200] } else { &line }
+            )
+        })?;
+
+        // Stream account to callback immediately - memory is released after this
+        on_account(account)?;
+
+        metadata.total_accounts += 1;
+
+        if args.verbose && metadata.total_accounts % 10000 == 0 {
+            eprintln!("Processed {} accounts...", metadata.total_accounts);
+        }
+    }
+
+    Ok(metadata)
+}
+
+/// Run dump from JSON file input
+fn run_json_dump<F>(args: &Args, on_account: &mut F) -> Result<DumpMetadata>
+where
+    F: FnMut(AccountState) -> Result<()>,
+{
+    let json_path = args.json.as_ref().unwrap();
+
+    if json_path == "-" {
+        // Read from stdin
+        if args.verbose {
+            eprintln!("Reading JSON from stdin...");
+        }
+        let stdin = std::io::stdin();
+        let reader = BufReader::new(stdin.lock());
+        process_json_lines(reader, args, on_account)
+    } else {
+        // Read from file
+        if args.verbose {
+            eprintln!("Reading JSON from file: {json_path}");
+        }
+
+        if !Path::new(json_path).exists() {
+            bail!("JSON input file not found: {json_path}");
+        }
+
+        let file = File::open(json_path)
+            .with_context(|| format!("Failed to open JSON file: {json_path}"))?;
+        let reader = BufReader::new(file);
+        process_json_lines(reader, args, on_account)
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn run_geth_dump<F>(
     args: &Args,
@@ -436,33 +665,89 @@ where
     let reader = BufReader::new(stdout);
 
     let mut metadata = DumpMetadata::default();
+    let mut line_number: usize = 0;
 
     for line in reader.lines() {
-        let Ok(line) = line else {
-            continue;
+        line_number += 1;
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                return Err(GethDumpError {
+                    command: if mode == "snapshot" {
+                        "snapshot dump".to_string()
+                    } else {
+                        "dump".to_string()
+                    },
+                    stderr: String::new(),
+                    source: anyhow::anyhow!("Failed to read line {line_number}: {e}"),
+                });
+            }
         };
+
         if line.is_empty() {
             continue;
         }
 
-        // Try parsing as root object first
+        // Try parsing as root object first (only matches lines with ONLY "root" field)
         if let Ok(root) = serde_json::from_str::<GethRoot>(&line) {
             if let Some(ref r) = root.root
                 && let Ok(state_root) = parse_hex_b256(r)
             {
                 metadata.state_root = Some(state_root);
+                if args.verbose {
+                    eprintln!("Line {line_number}: Parsed state root: {state_root:x}");
+                }
             }
             continue;
         }
 
-        // Try parsing as account
+        // Try parsing as account - FAIL HARD on parse errors, we need 1:1 state
         let raw: GethAccount = match serde_json::from_str(&line) {
             Ok(a) => a,
-            Err(_) => continue,
+            Err(e) => {
+                return Err(GethDumpError {
+                    command: if mode == "snapshot" {
+                        "snapshot dump".to_string()
+                    } else {
+                        "dump".to_string()
+                    },
+                    stderr: String::new(),
+                    source: anyhow::anyhow!(
+                        "FATAL: Failed to parse account JSON at line {}. State integrity compromised!\nError: {}\nLine content: {}",
+                        line_number,
+                        e,
+                        if line.len() > 200 {
+                            &line[..200]
+                        } else {
+                            &line
+                        }
+                    ),
+                });
+            }
         };
 
-        let Ok(account) = parse_account(raw) else {
-            continue;
+        let account = match parse_account(raw) {
+            Ok(a) => a,
+            Err(e) => {
+                return Err(GethDumpError {
+                    command: if mode == "snapshot" {
+                        "snapshot dump".to_string()
+                    } else {
+                        "dump".to_string()
+                    },
+                    stderr: String::new(),
+                    source: anyhow::anyhow!(
+                        "FATAL: Failed to parse account data at line {}. State integrity compromised!\nError: {}\nLine content: {}",
+                        line_number,
+                        e,
+                        if line.len() > 200 {
+                            &line[..200]
+                        } else {
+                            &line
+                        }
+                    ),
+                });
+            }
         };
 
         // Stream account to callback immediately - memory is released after this
@@ -607,16 +892,14 @@ where
 }
 
 fn main() -> Result<()> {
-    const BATCH_SIZE: usize = 10000;
-
     let args = Args::parse();
 
-    let block_number = args.block_number.unwrap_or(0);
+    // Validate args
+    args.validate()?;
 
     // Setup MDBX writer if path provided
     let writer = if let Some(ref path) = args.mdbx_path {
         let w = StateWriter::new(path, CircularBufferConfig::new(args.buffer_size)?)?;
-        w.ensure_dump_index_metadata()?;
         Some(w)
     } else {
         None
@@ -635,18 +918,14 @@ fn main() -> Result<()> {
             None
         };
 
-    // For MDBX, we accumulate into a BlockStateUpdate but commit in batches
-    // to avoid OOM while still using the existing API.
-    //
-    // NOTE: This assumes StateWriter.commit_block() supports being called multiple
-    // times and APPENDS/MERGES data rather than replacing. If the current API
-    // clears and replaces on each call, you'll need to modify StateWriter to add:
-    //   - begin_block(block_number) -> clears namespace
-    //   - write_account(account) -> writes single account
-    //   - finalize_block(metadata) -> writes block metadata
-    let mut update = BlockStateUpdate::new(block_number, B256::ZERO, B256::ZERO);
-    let mut accounts_written: usize = 0;
-    let mut storage_slots_written: usize = 0;
+    // Start streaming bootstrap session (if using MDBX)
+    // This writes accounts progressively without loading all into memory
+    let mut bootstrap = writer
+        .as_ref()
+        .map(|w| w.begin_bootstrap(0, B256::ZERO, B256::ZERO))
+        .transpose()?;
+
+    let mut storage_slots_count: usize = 0;
 
     // Callback that streams accounts to sinks
     let mut on_account = |account: AccountState| -> Result<()> {
@@ -656,47 +935,49 @@ fn main() -> Result<()> {
             jw.write_all(b"\n")?;
         }
 
-        // Accumulate for MDBX in batches
-        if writer.is_some() {
-            storage_slots_written += account.storage.len();
-            update.merge_account_state(account);
-            accounts_written += 1;
+        // Write to MDBX immediately (streaming, no accumulation!)
+        if let Some(ref mut bs) = bootstrap {
+            storage_slots_count += account.storage.len();
+            bs.write_account(&account)?;
 
-            // Commit batch to avoid OOM
-            if update.accounts.len() >= BATCH_SIZE {
-                if let Some(ref w) = writer {
-                    w.commit_block(&update)?;
+            if args.verbose {
+                let (accts, _, _) = bs.progress();
+                if accts % 10000 == 0 {
+                    eprintln!("Written {accts} accounts to MDBX...");
                 }
-                // Clear for next batch (keep block info)
-                update = BlockStateUpdate::new(block_number, B256::ZERO, B256::ZERO);
             }
         }
 
         Ok(())
     };
 
-    // Run dump with streaming callback
-    let metadata = run_with_fallback(&args, &mut on_account)?;
+    // Run dump - either from JSON file or from geth
+    let metadata = if args.is_json_input() {
+        run_json_dump(&args, &mut on_account)?
+    } else {
+        run_with_fallback(&args, &mut on_account)?
+    };
 
     // Get final block info
     let final_block_number = args.block_number.or(metadata.block_number).unwrap_or(0);
     let final_block_hash = metadata.block_hash.unwrap_or(B256::ZERO);
     let final_state_root = metadata.state_root.unwrap_or(B256::ZERO);
 
-    // Commit any remaining accounts in the last batch
-    if let Some(ref w) = writer {
-        if !update.accounts.is_empty() {
-            w.commit_block(&update)?;
-        }
+    // Finalize bootstrap (commits the transaction)
+    if let Some(mut bs) = bootstrap {
+        // Update metadata with correct values from geth output
+        bs.set_block_number(final_block_number);
+        bs.set_metadata(final_block_hash, final_state_root);
 
-        // Write final block metadata
-        let final_update =
-            BlockStateUpdate::new(final_block_number, final_block_hash, final_state_root);
-        w.commit_block(&final_update)?;
+        let stats = bs.finalize()?;
 
         if args.verbose {
             eprintln!(
-                "MDBX: wrote {accounts_written} accounts, {storage_slots_written} storage slots",
+                "MDBX: wrote {} accounts, {} storage slots to {} namespaces in {:?}",
+                stats.accounts_written / usize::from(writer.as_ref().unwrap().buffer_size()),
+                storage_slots_count,
+                writer.as_ref().unwrap().buffer_size(),
+                stats.total_duration,
             );
         }
     }
