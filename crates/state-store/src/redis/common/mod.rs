@@ -54,11 +54,11 @@ pub mod keys {
 #[derive(Clone, Debug)]
 pub struct CircularBufferConfig {
     /// Number of historical states to maintain
-    pub buffer_size: usize,
+    pub buffer_size: u8,
 }
 
 impl CircularBufferConfig {
-    pub fn new(buffer_size: usize) -> StateResult<Self> {
+    pub fn new(buffer_size: u8) -> StateResult<Self> {
         if buffer_size <= 1 {
             return Err(StateError::InvalidBufferSize);
         }
@@ -141,9 +141,9 @@ impl NamespaceLock {
 pub fn get_namespace_for_block(
     base_namespace: &str,
     block_number: u64,
-    buffer_size: usize,
+    buffer_size: u8,
 ) -> StateResult<String> {
-    let namespace_idx = usize::try_from(block_number)? % buffer_size;
+    let namespace_idx = block_number % u64::from(buffer_size);
     Ok(format!(
         "{base_namespace}{}{namespace_idx}",
         keys::SEPARATOR
@@ -277,7 +277,7 @@ pub fn update_metadata_in_pipe(
     pipe: &mut redis::Pipeline,
     base_namespace: &str,
     block_number: u64,
-    buffer_size: usize,
+    buffer_size: u8,
 ) {
     // Update latest block
     let latest_key = get_latest_block_metadata_key(base_namespace);
@@ -292,7 +292,7 @@ pub fn update_metadata_in_pipe(
 pub fn ensure_state_dump_indices<C>(
     conn: &mut C,
     base_namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
 ) -> StateResult<()>
 where
     C: redis::ConnectionLike,
@@ -302,7 +302,7 @@ where
 
     if let Some(existing) = value {
         let parsed = existing
-            .parse::<usize>()
+            .parse::<u8>()
             .map_err(|e| StateError::ParseInt(existing.clone(), e))?;
         if parsed != buffer_size {
             return Err(StateError::StateDumpIndexMismatch {

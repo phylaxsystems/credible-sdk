@@ -60,7 +60,7 @@ pub enum StateError {
 
     /// Invalid namespace calculation
     #[error("Invalid namespace calculation for block {0} with buffer size {1}")]
-    InvalidNamespace(u64, usize),
+    InvalidNamespace(u64, u8),
 
     /// Invalid buffer size
     #[error("Buffer size must be greater than 0")]
@@ -78,7 +78,7 @@ pub enum StateError {
     #[error(
         "State dump index count mismatch: state worker configured for {existing} indices but requested {requested}"
     )]
-    StateDumpIndexMismatch { existing: usize, requested: usize },
+    StateDumpIndexMismatch { existing: u8, requested: u8 },
 
     /// Account not found
     #[error("Account {0} not found at block {1}")]

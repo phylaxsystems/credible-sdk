@@ -371,6 +371,19 @@ pub trait Reader {
     ///
     /// Returns `BlockNotFound` if the block is not in the circular buffer.
     fn scan_account_hashes(&self, block_number: u64) -> Result<Vec<AddressHash>, Self::Error>;
+
+    /// Check if a state diff exists for the given block.
+    ///
+    /// Used for recovery to identify missing intermediate diffs.
+    fn has_state_diff(&self, block_number: u64) -> Result<bool, Self::Error>;
+
+    /// Get the current block number stored in a specific namespace.
+    ///
+    /// Returns `None` if the namespace is empty (no blocks written yet).
+    fn get_namespace_block(&self, namespace_idx: u8) -> Result<Option<u64>, Self::Error>;
+
+    /// Get the buffer size configuration.
+    fn buffer_size(&self) -> u8;
 }
 
 /// Trait for writing blockchain state to a storage backend.
@@ -425,6 +438,14 @@ pub trait Writer {
         block_hash: B256,
         state_root: B256,
     ) -> Result<CommitStats, Self::Error>;
+
+    /// Store a state diff without committing the full block state.
+    ///
+    /// Used for recovery when intermediate diffs are missing. This stores
+    /// just the diff data so that future namespace rotations can succeed.
+    ///
+    /// The diff is stored in the same format as `commit_block` would store it.
+    fn store_state_diff(&self, update: &BlockStateUpdate) -> Result<(), Self::Error>;
 }
 
 #[cfg(test)]

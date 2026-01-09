@@ -24,6 +24,7 @@ use crate::{
             get_block_hash_key,
             get_block_key,
             get_code_key,
+            get_diff_key,
             get_namespace_for_block,
             get_state_root_key,
             get_storage_key,
@@ -312,7 +313,7 @@ impl Reader for StateReader {
         let latest = self.latest_block_number()?;
 
         if let Some(latest_block) = latest {
-            let buffer_size = self.client.buffer_config.buffer_size as u64;
+            let buffer_size = u64::from(self.client.buffer_config.buffer_size);
             let oldest_block = latest_block.saturating_sub(buffer_size - 1);
             Ok(Some((oldest_block, latest_block)))
         } else {
@@ -341,6 +342,46 @@ impl Reader for StateReader {
         );
 
         Ok(result)
+    }
+
+    /// Check if a state diff exists for the given block.
+    ///
+    /// Used for recovery to identify missing intermediate diffs.
+    fn has_state_diff(&self, block_number: u64) -> StateResult<bool> {
+        let base_namespace = self.client.base_namespace.clone();
+
+        self.client.with_connection(move |conn| {
+            let diff_key = get_diff_key(&base_namespace, block_number);
+            let exists: bool = redis::cmd("EXISTS").arg(&diff_key).query(conn)?;
+            Ok(exists)
+        })
+    }
+
+    /// Get the current block number stored in a specific namespace.
+    ///
+    /// Returns `None` if the namespace is empty (no blocks written yet).
+    fn get_namespace_block(&self, namespace_idx: u8) -> StateResult<Option<u64>> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        if namespace_idx >= buffer_size {
+            return Err(StateError::InvalidNamespace(
+                u64::from(namespace_idx),
+                buffer_size,
+            ));
+        }
+
+        self.client.with_connection(move |conn| {
+            let namespace = format!("{base_namespace}:{namespace_idx}");
+            let block_key = get_block_key(&namespace);
+            let block_str: Option<String> = redis::cmd("GET").arg(&block_key).query(conn)?;
+            parse_namespace_block(block_str)
+        })
+    }
+
+    /// Get the buffer size configuration.
+    fn buffer_size(&self) -> u8 {
+        self.client.buffer_config.buffer_size
     }
 }
 
@@ -464,7 +505,7 @@ where
 pub(crate) fn get_account_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
     address_hash: &AddressHash,
     block_number: u64,
 ) -> StateResult<Option<AccountInfo>>
@@ -526,7 +567,7 @@ where
 pub(crate) fn get_full_account_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
     address_hash: &AddressHash,
     block_number: u64,
 ) -> StateResult<Option<InternalAccountState>>
@@ -619,7 +660,7 @@ where
 pub(crate) fn get_storage_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
     address_hash: &AddressHash,
     slot: U256,
     block_number: u64,
@@ -659,7 +700,7 @@ where
 pub(crate) fn get_all_storage_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
     address_hash: &AddressHash,
     block_number: u64,
 ) -> StateResult<HashMap<U256, B256>>
@@ -701,7 +742,7 @@ where
 pub(crate) fn get_code_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
     code_hash: B256,
     block_number: u64,
 ) -> StateResult<Option<Vec<u8>>>
@@ -740,7 +781,7 @@ where
 fn scan_account_hashes_at_block<C>(
     conn: &mut C,
     base_namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
     block_number: u64,
 ) -> StateResult<Vec<AddressHash>>
 where
@@ -838,7 +879,7 @@ where
 pub(crate) fn is_block_available<C>(
     conn: &mut C,
     base_namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
     block_number: u64,
 ) -> StateResult<bool>
 where

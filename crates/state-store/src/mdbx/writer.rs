@@ -598,6 +598,21 @@ impl Reader for StateWriter {
     fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
         self.reader.scan_account_hashes(block_number)
     }
+
+    /// Check if a state diff exists for the given block.
+    fn has_state_diff(&self, block_number: u64) -> StateResult<bool> {
+        self.reader.has_state_diff(block_number)
+    }
+
+    /// Get the current block number stored in a specific namespace.
+    fn get_namespace_block(&self, namespace_idx: u8) -> StateResult<Option<u64>> {
+        self.reader.get_namespace_block(namespace_idx)
+    }
+
+    /// Get the buffer size configuration.
+    fn buffer_size(&self) -> u8 {
+        self.reader.buffer_size()
+    }
 }
 
 impl Writer for StateWriter {
@@ -891,6 +906,52 @@ impl Writer for StateWriter {
     ) -> StateResult<CommitStats> {
         // Delegate to the streaming implementation for consistency
         self.bootstrap_from_iterator(accounts.into_iter(), block_number, block_hash, state_root)
+    }
+
+    /// Store a state diff without committing the full block state.
+    ///
+    /// Used for recovery when intermediate diffs are missing. This stores
+    /// just the diff data so that future namespace rotations can succeed.
+    fn store_state_diff(&self, update: &BlockStateUpdate) -> StateResult<()> {
+        let db = self.reader.db();
+        let tx = db.tx_mut()?;
+
+        // Convert to binary diff and store
+        let diff = Self::to_binary_diff_parallel(update);
+        let diff_bytes = diff.to_bytes()?;
+
+        tx.put::<StateDiffs>(
+            BlockNumber(update.block_number),
+            StateDiffData(diff_bytes.clone()),
+        )
+        .map_err(StateError::Database)?;
+
+        // Also store block metadata if it doesn't exist
+        let existing_meta = tx
+            .get::<BlockMetadataTable>(BlockNumber(update.block_number))
+            .map_err(StateError::Database)?;
+
+        if existing_meta.is_none() {
+            tx.put::<BlockMetadataTable>(
+                BlockNumber(update.block_number),
+                crate::mdbx::common::types::BlockMetadata {
+                    block_hash: update.block_hash,
+                    state_root: update.state_root,
+                },
+            )
+            .map_err(StateError::Database)?;
+        }
+
+        tx.commit()
+            .map_err(|e| StateError::CommitFailed(e.to_string()))?;
+
+        debug!(
+            block_number = update.block_number,
+            diff_bytes = diff_bytes.len(),
+            "stored recovered state diff"
+        );
+
+        Ok(())
     }
 }
 

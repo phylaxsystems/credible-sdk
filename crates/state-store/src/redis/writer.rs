@@ -197,6 +197,21 @@ impl Reader for StateWriter {
     fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
         self.reader.scan_account_hashes(block_number)
     }
+
+    /// Check if a state diff exists for the given block.
+    fn has_state_diff(&self, block_number: u64) -> StateResult<bool> {
+        self.reader.has_state_diff(block_number)
+    }
+
+    /// Get the current block number stored in a specific namespace.
+    fn get_namespace_block(&self, namespace_idx: u8) -> StateResult<Option<u64>> {
+        self.reader.get_namespace_block(namespace_idx)
+    }
+
+    /// Get the buffer size configuration.
+    fn buffer_size(&self) -> u8 {
+        self.reader.buffer_size()
+    }
 }
 
 impl Writer for StateWriter {
@@ -333,6 +348,75 @@ impl Writer for StateWriter {
     ) -> Result<CommitStats, Self::Error> {
         unimplemented!()
     }
+
+    /// Store a state diff without committing the full block state.
+    ///
+    /// Used for recovery when intermediate diffs are missing. This stores
+    /// just the diff data so that future namespace rotations can succeed.
+    fn store_state_diff(&self, update: &BlockStateUpdate) -> StateResult<()> {
+        let client = self.reader.client();
+        let base_namespace = client.base_namespace.clone();
+
+        // Extract values we need before the closure (to avoid borrowing issues)
+        let block_number = update.block_number;
+        let block_hash = update.block_hash;
+        let state_root = update.state_root;
+
+        // Convert crate-level AccountState to Redis AccountState
+        let redis_update = RedisBlockStateUpdate {
+            block_number,
+            block_hash,
+            state_root,
+            accounts: update
+                .accounts
+                .iter()
+                .map(|a| {
+                    AccountState {
+                        address_hash: a.address_hash,
+                        balance: a.balance,
+                        nonce: a.nonce,
+                        code_hash: a.code_hash,
+                        code: a.code.clone(),
+                        storage: a.storage.clone(),
+                        deleted: a.deleted,
+                    }
+                })
+                .collect(),
+        };
+
+        client.with_connection(move |conn| {
+            let diff_key = get_diff_key(&base_namespace, block_number);
+            let diff_json = redis_update.to_json()?;
+
+            redis::cmd("SET")
+                .arg(&diff_key)
+                .arg(&diff_json)
+                .query::<()>(conn)?;
+
+            // Also store block metadata if it doesn't exist
+            let block_hash_key = get_block_hash_key(&base_namespace, block_number);
+            let state_root_key = get_state_root_key(&base_namespace, block_number);
+
+            // Use SETNX (set if not exists) to avoid overwriting existing metadata
+            redis::cmd("SETNX")
+                .arg(&block_hash_key)
+                .arg(encode_b256(block_hash))
+                .query::<()>(conn)?;
+
+            redis::cmd("SETNX")
+                .arg(&state_root_key)
+                .arg(encode_b256(state_root))
+                .query::<()>(conn)?;
+
+            debug!(
+                block_number,
+                diff_bytes = diff_json.len(),
+                "stored recovered state diff"
+            );
+
+            Ok(())
+        })
+    }
 }
 
 impl StateWriter {
@@ -392,7 +476,7 @@ impl StateWriter {
         let stale_timeout = self.chunked_config.stale_lock_timeout_secs;
         let chunk_size = self.chunked_config.chunk_size;
 
-        if namespace_idx >= buffer_size {
+        if namespace_idx >= usize::from(buffer_size) {
             return Err(StateError::InvalidNamespace(
                 namespace_idx as u64,
                 buffer_size,
@@ -439,7 +523,7 @@ impl RedisBlockStateUpdate {
 fn recover_all_stale_locks<C>(
     conn: &mut C,
     base_namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
     stale_timeout_secs: i64,
     chunk_size: usize,
 ) -> StateResult<Vec<StaleLockRecovery>>
@@ -490,7 +574,7 @@ fn recover_namespace_lock<C>(
     conn: &mut C,
     base_namespace: &str,
     namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
     stale_timeout_secs: i64,
     chunk_size: usize,
 ) -> StateResult<Option<StaleLockRecovery>>
@@ -748,7 +832,7 @@ fn write_block_metadata<C>(
     block_number: u64,
     block_hash: B256,
     state_root: B256,
-    buffer_size: usize,
+    buffer_size: u8,
 ) -> StateResult<()>
 where
     C: redis::ConnectionLike,
@@ -778,7 +862,7 @@ where
 pub(crate) fn commit_block_chunked<C>(
     conn: &mut C,
     base_namespace: &str,
-    buffer_size: usize,
+    buffer_size: u8,
     chunked_config: &ChunkedWriteConfig,
     writer_id: &str,
     update: &RedisBlockStateUpdate,
@@ -896,8 +980,8 @@ where
             .query::<()>(conn)?;
 
         // Delete old state diff
-        if update.block_number >= buffer_size as u64 {
-            let old_block = update.block_number - buffer_size as u64;
+        if update.block_number >= u64::from(buffer_size) {
+            let old_block = update.block_number - u64::from(buffer_size);
             let old_diff_key = get_diff_key(base_namespace, old_block);
             redis::cmd("DEL").arg(&old_diff_key).query::<()>(conn)?;
         }

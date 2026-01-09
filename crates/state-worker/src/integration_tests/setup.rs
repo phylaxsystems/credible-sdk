@@ -288,6 +288,15 @@ pub trait ReaderHelper: Send + Sync {
     ) -> Result<Option<U256>, String>;
 
     fn latest_block_number_boxed(&self) -> Result<Option<u64>, String>;
+
+    /// Check if a state diff exists for the given block number.
+    fn has_state_diff_boxed(&self, block_number: u64) -> Result<bool, String>;
+
+    /// Get the current block number stored in a specific namespace.
+    fn get_namespace_block_boxed(&self, namespace_idx: u8) -> Result<Option<u64>, String>;
+
+    /// Get the circular buffer size.
+    fn buffer_size_boxed(&self) -> u8;
 }
 
 struct RedisReaderWrapper(state_store::redis::StateReader);
@@ -316,6 +325,22 @@ impl ReaderHelper for RedisReaderWrapper {
 
     fn latest_block_number_boxed(&self) -> Result<Option<u64>, String> {
         self.0.latest_block_number().map_err(|e| e.to_string())
+    }
+
+    fn has_state_diff_boxed(&self, block_number: u64) -> Result<bool, String> {
+        self.0
+            .has_state_diff(block_number)
+            .map_err(|e| e.to_string())
+    }
+
+    fn get_namespace_block_boxed(&self, namespace_idx: u8) -> Result<Option<u64>, String> {
+        self.0
+            .get_namespace_block(namespace_idx)
+            .map_err(|e| e.to_string())
+    }
+
+    fn buffer_size_boxed(&self) -> u8 {
+        self.0.buffer_size()
     }
 }
 
@@ -346,5 +371,21 @@ impl ReaderHelper for MdbxReaderWrapper {
 
     fn latest_block_number_boxed(&self) -> Result<Option<u64>, String> {
         self.0.latest_block_number().map_err(|e| e.to_string())
+    }
+
+    fn has_state_diff_boxed(&self, block_number: u64) -> Result<bool, String> {
+        self.0
+            .has_state_diff(block_number)
+            .map_err(|e| e.to_string())
+    }
+
+    fn get_namespace_block_boxed(&self, namespace_idx: u8) -> Result<Option<u64>, String> {
+        self.0
+            .get_namespace_block(namespace_idx)
+            .map_err(|e| e.to_string())
+    }
+
+    fn buffer_size_boxed(&self) -> u8 {
+        self.0.buffer_size()
     }
 }

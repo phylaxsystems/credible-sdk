@@ -48,6 +48,35 @@ use tracing::{
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 
+/// Report of recovery operations performed during startup or health check.
+#[derive(Debug, Default)]
+pub struct RecoveryReport {
+    /// State of each namespace: (namespace_idx, block_number)
+    pub namespace_states: Vec<(u8, u64)>,
+    /// Blocks for which diffs were successfully recovered
+    pub recovered_diffs: Vec<u64>,
+    /// Blocks that failed recovery: (block_number, error_message)
+    pub failed_recoveries: Vec<(u64, String)>,
+    /// Whether the database is in a consistent state after recovery
+    pub is_consistent: bool,
+    /// Whether the database was bootstrapped (all namespaces at same block)
+    pub is_bootstrapped: bool,
+    /// The bootstrap block number (if bootstrapped)
+    pub bootstrap_block: Option<u64>,
+}
+
+impl RecoveryReport {
+    /// Returns true if any recovery operations were performed.
+    pub fn had_recoveries(&self) -> bool {
+        !self.recovered_diffs.is_empty()
+    }
+
+    /// Returns true if any recovery operations failed.
+    pub fn had_failures(&self) -> bool {
+        !self.failed_recoveries.is_empty()
+    }
+}
+
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker<WR>
 where
@@ -90,6 +119,37 @@ where
     ) -> Result<()> {
         // Recover from any stale locks left by crashed writers
         self.recover_stale_locks()?;
+
+        // Check database health and recover missing state diffs
+        let recovery_report = self.check_and_recover_state().await?;
+
+        if recovery_report.is_bootstrapped {
+            info!(
+                bootstrap_block = recovery_report.bootstrap_block,
+                "database was bootstrapped, no historical diff recovery needed"
+            );
+        }
+
+        if recovery_report.had_recoveries() {
+            info!(
+                recovered_count = recovery_report.recovered_diffs.len(),
+                "successfully recovered missing state diffs"
+            );
+        }
+
+        // If we had failures and it's NOT a bootstrap scenario, this is fatal
+        if recovery_report.had_failures() && !recovery_report.is_bootstrapped {
+            critical!(
+                failed_count = recovery_report.failed_recoveries.len(),
+                failed_blocks = ?recovery_report.failed_recoveries,
+                "failed to recover state diffs, database is inconsistent"
+            );
+            return Err(anyhow!(
+                "state recovery failed for {} blocks: {:?}",
+                recovery_report.failed_recoveries.len(),
+                recovery_report.failed_recoveries
+            ));
+        }
 
         let mut next_block = self.compute_start_block(start_override)?;
 
@@ -260,6 +320,17 @@ where
             return self.process_genesis_block().await;
         }
 
+        // Ensure all intermediate diffs exist before committing
+        // This recovers missing diffs by fetching from execution client
+        let recovered = self.ensure_intermediate_diffs(block_number).await?;
+        if recovered > 0 {
+            info!(
+                block_number,
+                recovered_diffs = recovered,
+                "recovered missing intermediate diffs before commit"
+            );
+        }
+
         let mut update = match self.trace_provider.fetch_block_state(block_number).await {
             Ok(update) => update,
             Err(err) => {
@@ -388,5 +459,274 @@ where
 
         info!(block_number = 0, "genesis block persisted to database");
         Ok(())
+    }
+
+    /// Ensure all intermediate state diffs exist for committing target_block.
+    ///
+    /// When rotating the circular buffer (e.g., block 103 replacing block 100
+    /// in namespace 1 with buffer_size=3), we need diffs for blocks 101 and 102
+    /// to reconstruct the correct state. If any diffs are missing, this method
+    /// fetches them from the execution client.
+    ///
+    /// Returns the number of diffs that were recovered.
+    async fn ensure_intermediate_diffs(&mut self, target_block: u64) -> Result<usize> {
+        let buffer_size = self.writer_reader.buffer_size();
+        let namespace_idx = (target_block % u64::from(buffer_size)) as u8;
+
+        // Get current block in the target namespace
+        let current_ns_block = self
+            .writer_reader
+            .get_namespace_block(namespace_idx)
+            .context("failed to get namespace block")?;
+
+        let Some(existing_block) = current_ns_block else {
+            // Namespace is empty, no intermediate diffs needed
+            return Ok(0);
+        };
+
+        // Calculate required diff range
+        let start_block = existing_block + 1;
+        if target_block <= start_block {
+            // No intermediate diffs needed
+            return Ok(0);
+        }
+
+        // Find missing diffs
+        let mut missing_diffs = Vec::new();
+        for diff_block in start_block..target_block {
+            let has_diff = self
+                .writer_reader
+                .has_state_diff(diff_block)
+                .context(format!("failed to check diff for block {diff_block}"))?;
+
+            if !has_diff {
+                missing_diffs.push(diff_block);
+            }
+        }
+
+        if missing_diffs.is_empty() {
+            return Ok(0);
+        }
+
+        info!(
+            target_block,
+            namespace_idx,
+            existing_block,
+            missing_count = missing_diffs.len(),
+            missing_blocks = ?missing_diffs,
+            "recovering missing state diffs"
+        );
+
+        // Recover each missing diff
+        for diff_block in &missing_diffs {
+            self.recover_state_diff(*diff_block).await?;
+        }
+
+        Ok(missing_diffs.len())
+    }
+
+    /// Recover a single state diff by fetching from the execution client.
+    async fn recover_state_diff(&mut self, block_number: u64) -> Result<()> {
+        info!(block_number, "fetching state diff from execution client");
+
+        // Fetch block state from execution client
+        let mut update = match self.trace_provider.fetch_block_state(block_number).await {
+            Ok(update) => update,
+            Err(err) => {
+                critical!(
+                    error = ?err,
+                    block_number,
+                    "failed to fetch block state for diff recovery"
+                );
+                return Err(anyhow!(
+                    "failed to recover state diff for block {block_number}: {err}"
+                ));
+            }
+        };
+
+        // Apply system calls (EIP-2935 & EIP-4788)
+        self.apply_system_calls(&mut update, block_number).await?;
+
+        // Store just the diff (not the full block state)
+        self.writer_reader
+            .store_state_diff(&update)
+            .context(format!(
+                "failed to store recovered diff for block {block_number}"
+            ))?;
+
+        info!(block_number, "successfully recovered state diff");
+        Ok(())
+    }
+
+    /// Detect if the database is in a bootstrapped state.
+    ///
+    /// A bootstrapped database has all namespaces populated with the same block number,
+    /// which happens when using `bootstrap_from_snapshot`. In this state, there are no
+    /// historical diffs stored (since bootstrap populates state directly), but this is
+    /// expected and not an error condition.
+    fn detect_bootstrap_state(&self) -> Result<Option<u64>> {
+        let buffer_size = self.writer_reader.buffer_size();
+        let mut namespace_blocks = Vec::new();
+
+        for ns in 0..buffer_size {
+            let ns_block = self
+                .writer_reader
+                .get_namespace_block(ns)
+                .context(format!("failed to get namespace {ns} block"))?;
+
+            match ns_block {
+                Some(block) => namespace_blocks.push(block),
+                None => {
+                    // If any namespace is empty, it's not a bootstrap state
+                    return Ok(None);
+                }
+            }
+        }
+
+        // Check if all namespaces have the same block
+        if namespace_blocks.is_empty() {
+            return Ok(None);
+        }
+
+        let first_block = namespace_blocks[0];
+        let all_same = namespace_blocks.iter().all(|&b| b == first_block);
+
+        if all_same {
+            Ok(Some(first_block))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Check database health and recover from any inconsistencies.
+    ///
+    /// This performs several checks:
+    /// 1. Detects if database was bootstrapped (all namespaces at same block)
+    /// 2. Verifies all namespaces are consistent
+    /// 3. Checks for missing state diffs in the buffer range
+    /// 4. Recovers missing diffs by fetching from execution client
+    ///
+    /// For bootstrapped databases, missing diffs for blocks <= bootstrap_block
+    /// are expected and not considered an error.
+    ///
+    /// Call this during startup for proactive recovery.
+    pub async fn check_and_recover_state(&mut self) -> Result<RecoveryReport> {
+        let mut report = RecoveryReport::default();
+
+        let buffer_size = self.writer_reader.buffer_size();
+        let latest = self
+            .writer_reader
+            .latest_block_number()
+            .context("failed to get latest block")?;
+
+        let Some(latest_block) = latest else {
+            info!("database is empty, no recovery needed");
+            report.is_consistent = true;
+            return Ok(report);
+        };
+
+        info!(
+            latest_block,
+            buffer_size, "checking database state for recovery"
+        );
+
+        // Check if this is a bootstrapped database
+        if let Some(bootstrap_block) = self.detect_bootstrap_state()? {
+            info!(
+                bootstrap_block,
+                "detected bootstrapped database state, all namespaces at same block"
+            );
+            report.is_bootstrapped = true;
+            report.bootstrap_block = Some(bootstrap_block);
+
+            // For bootstrapped state, we only need to verify diffs for blocks
+            // AFTER the bootstrap block (which shouldn't exist yet anyway)
+            // This is a valid state - no recovery needed
+            report.is_consistent = true;
+
+            // Still collect namespace states for the report
+            for ns in 0..buffer_size {
+                if let Some(block) = self
+                    .writer_reader
+                    .get_namespace_block(ns)
+                    .context(format!("failed to get namespace {ns} block"))?
+                {
+                    report.namespace_states.push((ns, block));
+                }
+            }
+
+            return Ok(report);
+        }
+
+        // Not a bootstrapped state - check each namespace and collect their states
+        for ns in 0..buffer_size {
+            let ns_block = self
+                .writer_reader
+                .get_namespace_block(ns)
+                .context(format!("failed to get namespace {ns} block"))?;
+
+            if let Some(block) = ns_block {
+                report.namespace_states.push((ns, block));
+            }
+        }
+
+        // Determine the range of blocks we should have diffs for
+        // We need diffs for blocks that might be needed for namespace rotation
+        let oldest_needed = latest_block.saturating_sub(u64::from(buffer_size) - 1);
+
+        // Check for missing diffs in the valid range
+        let mut missing_diffs = Vec::new();
+        for block in oldest_needed..=latest_block {
+            // Skip block 0 (genesis doesn't need a diff)
+            if block == 0 {
+                continue;
+            }
+
+            let has_diff = self
+                .writer_reader
+                .has_state_diff(block)
+                .context(format!("failed to check diff for block {block}"))?;
+
+            if !has_diff {
+                missing_diffs.push(block);
+            }
+        }
+
+        if !missing_diffs.is_empty() {
+            warn!(
+                missing_count = missing_diffs.len(),
+                blocks = ?missing_diffs,
+                "found missing state diffs, attempting recovery"
+            );
+
+            for block in missing_diffs {
+                match self.recover_state_diff(block).await {
+                    Ok(()) => {
+                        report.recovered_diffs.push(block);
+                    }
+                    Err(err) => {
+                        critical!(
+                            block,
+                            error = %err,
+                            "failed to recover state diff"
+                        );
+                        report.failed_recoveries.push((block, err.to_string()));
+                    }
+                }
+            }
+        }
+
+        // Database is consistent if we have no failed recoveries
+        report.is_consistent = report.failed_recoveries.is_empty();
+
+        if report.had_recoveries() {
+            info!(
+                recovered_count = report.recovered_diffs.len(),
+                recovered_blocks = ?report.recovered_diffs,
+                "state diff recovery complete"
+            );
+        }
+
+        Ok(report)
     }
 }

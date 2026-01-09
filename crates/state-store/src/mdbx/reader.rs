@@ -57,6 +57,7 @@ use crate::{
                 NamespaceIdx,
                 NamespacedAccounts,
                 NamespacedStorage,
+                StateDiffs,
             },
             types::{
                 CircularBufferConfig,
@@ -424,6 +425,33 @@ impl Reader for StateReader {
 
         Ok(result)
     }
+
+    /// Check if a state diff exists for the given block.
+    ///
+    /// Used for recovery to identify missing intermediate diffs.
+    fn has_state_diff(&self, block_number: u64) -> StateResult<bool> {
+        let tx = self.db.tx()?;
+        let diff = tx
+            .get::<StateDiffs>(BlockNumber(block_number))
+            .map_err(StateError::Database)?;
+        Ok(diff.is_some())
+    }
+
+    /// Get the current block number stored in a specific namespace.
+    ///
+    /// Returns `None` if the namespace is empty (no blocks written yet).
+    fn get_namespace_block(&self, namespace_idx: u8) -> StateResult<Option<u64>> {
+        let tx = self.db.tx()?;
+        let ns_block = tx
+            .get::<NamespaceBlocks>(NamespaceIdx(namespace_idx))
+            .map_err(StateError::Database)?;
+        Ok(ns_block.map(|b| b.0))
+    }
+
+    /// Get the buffer size configuration.
+    fn buffer_size(&self) -> u8 {
+        self.db.buffer_size()
+    }
 }
 
 impl StateReader {
@@ -441,11 +469,6 @@ impl StateReader {
     /// Get a reference to the underlying database.
     pub(crate) fn db(&self) -> &StateDb {
         &self.db
-    }
-
-    /// Get the configured buffer size.
-    pub fn buffer_size(&self) -> u8 {
-        self.db.buffer_size()
     }
 
     /// Get all storage slots for an account with statistics.
@@ -540,5 +563,19 @@ mod tests {
     fn test_buffer_size() {
         let (reader, _tmp) = create_test_reader();
         assert_eq!(reader.buffer_size(), 3);
+    }
+
+    #[test]
+    fn test_has_state_diff_empty() {
+        let (reader, _tmp) = create_test_reader();
+        assert!(!reader.has_state_diff(100).unwrap());
+    }
+
+    #[test]
+    fn test_get_namespace_block_empty() {
+        let (reader, _tmp) = create_test_reader();
+        assert_eq!(reader.get_namespace_block(0).unwrap(), None);
+        assert_eq!(reader.get_namespace_block(1).unwrap(), None);
+        assert_eq!(reader.get_namespace_block(2).unwrap(), None);
     }
 }
