@@ -17,7 +17,7 @@ members = [
     "crates/state-worker",
     "crates/shadow-driver",
     "crates/state-store",
-    "crates/state-checker",
+    "crates/state-checker", "scripts/geth_snapshop",
 ]
 exclude = ["fuzz"]
 resolver = "2"
@@ -69,8 +69,8 @@ hex = "0.4.3"
 tempfile = { version = "3.23.0" }
 wiremock = "0.6.5"
 redis = "1.0.1"
-testcontainers = "0.25"
-testcontainers-modules = { version = "0.13", features = ["redis"] }
+testcontainers = "0.26.0"
+testcontainers-modules = { version = "0.14.0", features = ["redis"] }
 directories = "6.0.0"
 bollard = "0.19.4"
 rustls = { version = "0.23.0", features = ["aws_lc_rs"] }

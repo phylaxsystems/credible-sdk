@@ -1,6 +1,6 @@
-//! Memory-efficient state root calculation from Redis-stored blockchain state.
+//! Memory-efficient state root calculation from state worker-stored blockchain state.
 //!
-//! This module reads account data from Redis and computes the Ethereum state root
+//! This module reads account data from state worker and computes the Ethereum state root
 //! by building a proper Merkle Patricia Trie using alloy-trie.
 //!
 //! **Key features:**
@@ -26,10 +26,7 @@ use anyhow::{
     anyhow,
 };
 use revm::primitives::KECCAK_EMPTY;
-use state_store::{
-    Reader,
-    redis::StateReader,
-};
+use state_store::Reader;
 use std::collections::HashMap;
 use tracing::info;
 
@@ -124,12 +121,15 @@ fn calculate_storage_root(storage: &HashMap<B256, U256>) -> B256 {
 }
 
 /// Memory-efficient state root calculator using streaming processing.
-pub struct StateRootCalculator {
-    reader: StateReader,
+pub struct StateRootCalculator<R: Reader> {
+    reader: R,
 }
 
-impl StateRootCalculator {
-    pub fn new(reader: &StateReader) -> Self {
+impl<R: Reader + Clone> StateRootCalculator<R>
+where
+    R::Error: std::error::Error + Send + Sync + 'static,
+{
+    pub fn new(reader: &R) -> Self {
         Self {
             reader: reader.clone(),
         }
@@ -179,7 +179,7 @@ impl StateRootCalculator {
                 );
             }
 
-            // Read a single account from Redis
+            // Read a single account from state worker
             let account_data = self
                 .reader
                 .get_full_account(*address_hash, block_number)
@@ -223,12 +223,15 @@ impl StateRootCalculator {
 }
 
 /// High-level service for state root calculation.
-pub struct StateRootService {
-    calculator: StateRootCalculator,
+pub struct StateRootService<R: Reader> {
+    calculator: StateRootCalculator<R>,
 }
 
-impl StateRootService {
-    pub fn new(reader: &StateReader) -> Self {
+impl<R: Reader + Clone> StateRootService<R>
+where
+    R::Error: std::error::Error + Send + Sync + 'static,
+{
+    pub fn new(reader: &R) -> Self {
         Self {
             calculator: StateRootCalculator::new(reader),
         }
@@ -236,7 +239,7 @@ impl StateRootService {
 
     /// Calculate state root for the latest available block.
     ///
-    /// 1. Find the latest block in Redis
+    /// 1. Find the latest block in the state worker
     /// 2. Calculate the state root using memory-efficient streaming
     pub fn calculate_latest_state_root(&self) -> Result<(u64, B256)> {
         // Get the latest block
@@ -245,9 +248,9 @@ impl StateRootService {
             .reader
             .latest_block_number()
             .context("Failed to get latest block")?
-            .ok_or_else(|| anyhow!("No blocks available in Redis"))?;
+            .ok_or_else(|| anyhow!("No blocks available in state worker"))?;
 
-        info!("Latest block in Redis: {latest_block}");
+        info!("Latest block in state worker: {latest_block}");
 
         // Calculate state root
         Ok((

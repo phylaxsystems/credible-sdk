@@ -1,0 +1,17 @@
+[package]
+name = "geth_snapshop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+alloy = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+state-store = { path = "../../crates/state-store" }
+regex = "1.12.2"

@@ -13,6 +13,7 @@ on:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "deny.toml"
       - ".github/workflows/rust-test-lint.yml"
   workflow_dispatch:
     inputs:
@@ -25,7 +26,7 @@ on:
 env:
   # Pin nightly to a specific version for consistent caching across workflow runs
   # Update this monthly or when new Rust features are needed
-  RUST_NIGHTLY_VERSION: "nightly-2024-12-15"
+  RUST_NIGHTLY_VERSION: ${{ vars.RUST_NIGHTLY_VERSION }}
 
 jobs:
   setup:
@@ -51,6 +52,7 @@ jobs:
       use-nextest: true
       foundry-command: "forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol"
       test-args: "--exclude state-store --exclude state-worker --no-tests=warn"
+      deny-checks: "advisories"
       feature-sets: '[
         "--no-default-features --features test",
         "--no-default-features --features test --features optimism"

@@ -319,6 +319,29 @@ impl Reader for StateReader {
             Ok(None)
         }
     }
+
+    /// Scan all account hashes (keccak of addresses) in a namespace for a specific block.
+    /// Returns a list of all keccak(address) hashes that have account data stored.
+    ///
+    /// Returns an error if the namespace is locked for writing.
+    #[instrument(skip(self), level = "debug")]
+    fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
+        let start = Instant::now();
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        let result = self.client.with_connection(move |conn| {
+            scan_account_hashes_at_block(conn, &base_namespace, buffer_size, block_number)
+        })?;
+
+        trace!(
+            accounts = result.len(),
+            duration_us = start.elapsed().as_micros(),
+            "scan_account_hashes complete"
+        );
+
+        Ok(result)
+    }
 }
 
 impl StateReader {
@@ -340,29 +363,6 @@ impl StateReader {
     /// Get a reference to the underlying client.
     pub(crate) fn client(&self) -> &RedisStateClient {
         &self.client
-    }
-
-    /// Scan all account hashes (keccak of addresses) in a namespace for a specific block.
-    /// Returns a list of all keccak(address) hashes that have account data stored.
-    ///
-    /// Returns an error if the namespace is locked for writing.
-    #[instrument(skip(self), level = "debug")]
-    pub fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
-        let start = Instant::now();
-        let base_namespace = self.client.base_namespace.clone();
-        let buffer_size = self.client.buffer_config.buffer_size;
-
-        let result = self.client.with_connection(move |conn| {
-            scan_account_hashes_at_block(conn, &base_namespace, buffer_size, block_number)
-        })?;
-
-        trace!(
-            accounts = result.len(),
-            duration_us = start.elapsed().as_micros(),
-            "scan_account_hashes complete"
-        );
-
-        Ok(result)
     }
 
     /// Check if a specific block number is available and not locked for writing.

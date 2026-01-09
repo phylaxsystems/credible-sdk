@@ -361,6 +361,16 @@ pub trait Reader {
     ///
     /// Returns `None` if no blocks have been written.
     fn get_available_block_range(&self) -> Result<Option<(u64, u64)>, Self::Error>;
+
+    /// Scan all account hashes in the buffer for a specific block.
+    ///
+    /// This returns the address hashes (keccak256 of addresses), not the
+    /// original addresses. Useful for iteration/debugging.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    fn scan_account_hashes(&self, block_number: u64) -> Result<Vec<AddressHash>, Self::Error>;
 }
 
 /// Trait for writing blockchain state to a storage backend.
