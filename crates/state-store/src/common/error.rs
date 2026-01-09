@@ -135,6 +135,10 @@ pub enum StateError {
         namespace: String,
         block_number: u64,
     },
+
+    /// Other error
+    #[error("Other: {0}")]
+    Other(String),
 }
 
 /// Result type alias for state operations.

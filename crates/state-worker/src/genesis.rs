@@ -21,6 +21,7 @@ use std::{
 
 /// Parsed representation of the genesis state. The worker consumes this when
 /// hydrating block 0 in Redis.
+#[derive(Clone)]
 pub struct GenesisState {
     accounts: Vec<AccountState>,
 }

@@ -1,3 +1,4 @@
+#![allow(clippy::unreadable_literal)]
 //! Core orchestration loop that keeps Redis in sync with the execution client.
 //!
 //! The worker bootstraps from the last persisted block, catches up to head via
@@ -29,7 +30,10 @@ use futures::StreamExt;
 use state_store::{
     StateReader,
     StateWriter,
-    common::BlockStateUpdate,
+    common::{
+        BlockStateUpdate,
+        error::StateError,
+    },
 };
 use std::{
     sync::Arc,
@@ -82,7 +86,7 @@ impl StateWorker {
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<()> {
         // Recover from any stale locks left by crashed writers
-        self.recover_stale_locks()?;
+        self.recover_stale_locks_with_healing().await?;
 
         let mut next_block = self.compute_start_block(start_override)?;
 
@@ -118,37 +122,228 @@ impl StateWorker {
         }
     }
 
-    /// Check for and recover from stale write locks.
+    /// Enhanced stale lock recovery with self-healing capabilities.
     ///
-    /// If recovery fails (e.g., missing diffs), the lock remains in place, and
-    /// the worker fails to start. This prevents readers from accessing corrupt data.
-    fn recover_stale_locks(&self) -> Result<()> {
-        match self.writer.recover_stale_locks() {
-            Ok(recoveries) => {
-                if recoveries.is_empty() {
-                    debug!("no stale locks detected");
-                } else {
-                    for recovery in &recoveries {
-                        info!(
-                            namespace = %recovery.namespace,
-                            target_block = recovery.target_block,
-                            previous_block = ?recovery.previous_block,
-                            writer_id = %recovery.writer_id,
-                            "recovered stale lock and repaired state"
-                        );
+    /// This method wraps the basic recovery and adds:
+    /// 1. Fetching missing state diffs from the trace provider
+    /// 2. Rebuilding corrupted namespaces from valid ones
+    async fn recover_stale_locks_with_healing(&mut self) -> Result<()> {
+        const MAX_RECOVERY_ATTEMPTS: usize = 8;
+
+        for attempt in 1..=MAX_RECOVERY_ATTEMPTS {
+            match self.writer.recover_stale_locks() {
+                Ok(recoveries) => {
+                    if recoveries.is_empty() {
+                        debug!("no stale locks detected");
+                    } else {
+                        for recovery in &recoveries {
+                            info!(
+                                namespace = %recovery.namespace,
+                                target_block = recovery.target_block,
+                                previous_block = ?recovery.previous_block,
+                                writer_id = %recovery.writer_id,
+                                "recovered stale lock and repaired state"
+                            );
+                        }
+                    }
+
+                    // After stale lock recovery succeeds, validate the circular buffer layout.
+                    // If any namespace is inconsistent, repair it from a valid snapshot.
+                    self.repair_corrupted_namespaces().await?;
+
+                    return Ok(());
+                }
+                Err(err) => {
+                    match err {
+                        // Missing diff: fetch from client, store, and retry recovery.
+                        StateError::MissingStateDiff {
+                            needed_block,
+                            target_block,
+                        } => {
+                            warn!(
+                                needed_block,
+                                target_block,
+                                attempt,
+                                "missing state diff detected during stale lock recovery; fetching from trace provider"
+                            );
+
+                            self.fetch_and_store_missing_diff(needed_block).await?;
+                        }
+
+                        // Stale lock detected: attempt to repair buffer layout first, then retry.
+                        StateError::StaleLockDetected {
+                            namespace,
+                            writer_id,
+                            started_at,
+                        } => {
+                            warn!(
+                                namespace = %namespace,
+                                writer_id = %writer_id,
+                                started_at,
+                                attempt,
+                                "stale lock detected; attempting namespace repair before retry"
+                            );
+
+                            self.repair_corrupted_namespaces().await?;
+                        }
+
+                        // Any other error: attempt a repair once, then retry.
+                        other => {
+                            warn!(
+                                error = %other,
+                                attempt,
+                                "stale lock recovery failed; attempting namespace repair and retry"
+                            );
+
+                            if let Err(repair_err) = self.repair_corrupted_namespaces().await {
+                                warn!(
+                                    error = %repair_err,
+                                    attempt,
+                                    "namespace repair failed during recovery; will continue retrying"
+                                );
+                            }
+
+                            if attempt == MAX_RECOVERY_ATTEMPTS {
+                                critical!(
+                                    error = %other,
+                                    "failed to recover stale lock, namespace remains locked, manual intervention required"
+                                );
+                                return Err(anyhow!(
+                                    "stale lock recovery failed after {attempt} attempts: {other}",
+                                ));
+                            }
+                        }
                     }
                 }
-                Ok(())
-            }
-            Err(err) => {
-                // Recovery failed. The lock remains in place to protect readers.
-                critical!(
-                    error = %err,
-                    "failed to recover stale lock, namespace remains locked, manual intervention required"
-                );
-                Err(anyhow!("stale lock recovery failed: {err}"))
             }
         }
+
+        Err(anyhow!(
+            "stale lock recovery failed after {MAX_RECOVERY_ATTEMPTS} attempts",
+        ))
+    }
+
+    /// Fetch a missing state diff from the trace provider and store it.
+    async fn fetch_and_store_missing_diff(&mut self, block_number: u64) -> Result<()> {
+        info!(
+            block_number,
+            "fetching missing state diff from trace provider"
+        );
+
+        // Fetch the block state from the trace provider
+        let mut update = self
+            .trace_provider
+            .fetch_block_state(block_number)
+            .await
+            .with_context(|| format!("failed to fetch block state for block {block_number}"))?;
+
+        // Apply system call state changes (EIP-2935 & EIP-4788)
+        self.apply_system_calls(&mut update, block_number).await?;
+
+        // Store the diff (this doesn't commit the block, just stores the diff for recovery)
+        self.writer
+            .store_diff_only(&update)
+            .with_context(|| format!("failed to store diff for block {block_number}"))?;
+
+        info!(block_number, "successfully stored missing state diff");
+        Ok(())
+    }
+
+    /// Detect corrupted namespaces (wrong metadata / missing block state keys / etc.)
+    /// and rebuild them by fetching the correct state from the trace provider.
+    ///
+    /// Instead of copying from a valid namespace (which would copy the wrong
+    /// block number), we fetch the correct state for each namespace's expected block
+    /// directly from the trace provider.
+    async fn repair_corrupted_namespaces(&mut self) -> Result<()> {
+        let Some((valid_idx, valid_block)) = self
+            .writer
+            .find_valid_namespace_state()
+            .context("failed to find valid namespace state")?
+        else {
+            // No valid namespace found - this is OK for fresh/empty Redis
+            // Nothing to repair, nothing to validate against
+            debug!("no valid namespace found; assuming fresh state, skipping repair");
+            return Ok(());
+        };
+
+        let buffer_size = self.writer.buffer_size();
+        let mut repaired_any = false;
+
+        debug!(
+            valid_idx,
+            valid_block, "found valid namespace snapshot; validating circular buffer layout"
+        );
+
+        for namespace_idx in 0..buffer_size {
+            if namespace_idx == valid_idx {
+                continue; // Skip the valid source namespace
+            }
+
+            let expected_block = self
+                .writer
+                .expected_block_for_namespace(namespace_idx, valid_block);
+
+            let actual_block = self
+                .writer
+                .get_namespace_block(namespace_idx)
+                .context("failed to read namespace block number")?;
+
+            if actual_block != Some(expected_block) {
+                warn!(
+                    namespace_idx,
+                    expected_block,
+                    actual_block = ?actual_block,
+                    valid_idx,
+                    valid_block,
+                    "namespace block number mismatch; repairing from valid state"
+                );
+
+                // First, ensure all required diffs exist
+                // We need diffs from (valid_block + 1) to expected_block
+                let start_diff = valid_block + 1;
+                for block_num in start_diff..=expected_block {
+                    if !self.writer.has_diff(block_num)? {
+                        info!(
+                            block_num,
+                            "fetching missing diff from trace provider for repair"
+                        );
+                        self.fetch_and_store_missing_diff(block_num).await?;
+                    }
+                }
+
+                // Now repair: copy from valid namespace, then apply diffs
+                self.writer
+                    .repair_namespace_from_valid_state(namespace_idx, valid_idx, expected_block)
+                    .with_context(|| {
+                        format!(
+                            "failed to repair namespace {namespace_idx} to block {expected_block}",
+                        )
+                    })?;
+
+                repaired_any = true;
+
+                info!(
+                    namespace_idx,
+                    expected_block,
+                    source_namespace = valid_idx,
+                    source_block = valid_block,
+                    "successfully repaired namespace from valid state + diffs"
+                );
+            }
+        }
+
+        if repaired_any {
+            info!(
+                valid_idx,
+                valid_block,
+                "repaired one or more corrupted namespaces; redis state is now consistent"
+            );
+        } else {
+            debug!("all namespaces match expected circular buffer layout");
+        }
+
+        Ok(())
     }
 
     /// Determine the next block to ingest. We respect manual overrides so
