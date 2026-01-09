@@ -315,6 +315,7 @@ fn build_previous_transaction_payload(tx_env: &TxEnv) -> PreviousTransactionPayl
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_transaction_data_payload(
     transaction: &ReconstructableTx,
 ) -> Result<TransactionDataPayload, TransactionObserverError> {

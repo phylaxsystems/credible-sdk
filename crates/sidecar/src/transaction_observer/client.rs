@@ -53,3 +53,43 @@ fn endpoint_base_url(endpoint: &str) -> String {
         .trim_end_matches('/')
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::endpoint_base_url;
+
+    #[test]
+    fn endpoint_base_url_strips_incidents_path() {
+        let endpoint = "https://dapp.phylax.systems/api/v1/enforcer/incidents";
+        assert_eq!(
+            endpoint_base_url(endpoint),
+            "https://dapp.phylax.systems/api/v1"
+        );
+    }
+
+    #[test]
+    fn endpoint_base_url_handles_root_path() {
+        let endpoint = "https://dapp.phylax.systems/enforcer/incidents";
+        assert_eq!(endpoint_base_url(endpoint), "https://dapp.phylax.systems");
+    }
+
+    #[test]
+    fn endpoint_base_url_preserves_unrelated_paths() {
+        let endpoint = "https://dapp.phylax.systems/api/v1/other";
+        assert_eq!(
+            endpoint_base_url(endpoint),
+            "https://dapp.phylax.systems/api/v1/other"
+        );
+    }
+
+    #[test]
+    fn endpoint_base_url_falls_back_without_scheme() {
+        let endpoint = "dapp.phylax.systems/api/v1/enforcer/incidents";
+        assert_eq!(endpoint_base_url(endpoint), "dapp.phylax.systems/api/v1");
+    }
+
+    #[test]
+    fn endpoint_base_url_returns_empty_for_whitespace() {
+        assert!(endpoint_base_url("   ").is_empty());
+    }
+}
