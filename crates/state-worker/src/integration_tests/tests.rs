@@ -1847,3 +1847,225 @@ async fn test_recovery_partial_diff_chain_fails(_instance: TestInstance) {
         .unwrap();
     assert!(exists, "lock should remain when recovery fails");
 }
+
+#[tokio::test]
+async fn test_mdbx_bootstrap_recovery_without_diffs() {
+    use alloy::primitives::{
+        B256,
+        U256,
+    };
+    use state_store::{
+        AccountState,
+        AddressHash,
+        BlockStateUpdate,
+        Reader,
+        Writer,
+        mdbx::{
+            StateWriter,
+            common::CircularBufferConfig,
+        },
+    };
+    use std::collections::HashMap;
+
+    let mdbx_dir = crate::integration_tests::mdbx_fixture::MdbxTestDir::new()
+        .expect("Failed to create MDBX test dir");
+    let mdbx_path = mdbx_dir.path_str();
+    let config = CircularBufferConfig::new(3).unwrap();
+
+    let writer = StateWriter::new(mdbx_path, config.clone()).unwrap();
+
+    let test_address_hash = AddressHash::from_hash(B256::repeat_byte(0xAA));
+    let mut storage = HashMap::new();
+    storage.insert(B256::repeat_byte(0x01), U256::from(100));
+    storage.insert(B256::repeat_byte(0x02), U256::from(200));
+
+    let accounts = vec![AccountState {
+        address_hash: test_address_hash,
+        balance: U256::from(1000),
+        nonce: 5,
+        code_hash: B256::repeat_byte(0xCC),
+        code: Some(alloy::primitives::Bytes::from(vec![0x60, 0x80])),
+        storage,
+        deleted: false,
+    }];
+
+    // =========================================================================
+    // Use bootstrap_from_snapshot instead of commit_block
+    // This simulates what geth-dump does: populate ALL namespaces with
+    // identical state, NO state diffs stored
+    // =========================================================================
+    let stats = writer
+        .bootstrap_from_snapshot(
+            accounts.clone(),
+            100,
+            B256::repeat_byte(0x11),
+            B256::repeat_byte(0x22),
+        )
+        .expect("bootstrap should succeed");
+
+    // Verify bootstrap wrote to all 3 namespaces
+    assert_eq!(
+        stats.accounts_written, 3,
+        "should write to all 3 namespaces"
+    );
+
+    let reader = writer.reader();
+
+    assert!(
+        reader.is_block_available(100).unwrap(),
+        "Block 100 should be available"
+    );
+    assert_eq!(reader.latest_block_number().unwrap(), Some(100));
+
+    // Verify account exists and has correct data
+    let account = reader
+        .get_account(test_address_hash, 100)
+        .expect("Should get account")
+        .expect("Account should exist");
+
+    assert_eq!(account.balance, U256::from(1000));
+    assert_eq!(account.nonce, 5);
+
+    // Verify storage
+    let slot_value = reader
+        .get_storage(test_address_hash, B256::repeat_byte(0x01), 100)
+        .expect("Should get storage")
+        .expect("Storage should exist");
+
+    assert_eq!(slot_value, U256::from(100));
+
+    // =========================================================================
+    // Now test that we can process subsequent blocks WITHOUT pre-existing diffs
+    // Block 101 → namespace 2 (101 % 3 = 2), namespace already has block 100
+    // No diffs needed because start_block = 101 and block_number = 101
+    // =========================================================================
+    let update_101 = BlockStateUpdate {
+        block_number: 101,
+        block_hash: B256::repeat_byte(0x33),
+        state_root: B256::repeat_byte(0x44),
+        accounts: vec![AccountState {
+            address_hash: test_address_hash,
+            balance: U256::from(1100),
+            nonce: 6,
+            code_hash: B256::repeat_byte(0xCC),
+            code: None,
+            storage: {
+                let mut s = HashMap::new();
+                s.insert(B256::repeat_byte(0x01), U256::from(101));
+                s
+            },
+            deleted: false,
+        }],
+    };
+
+    let stats_101 = writer
+        .commit_block(&update_101)
+        .expect("Block 101 should commit");
+
+    // KEY ASSERTION: No diffs needed for first block after bootstrap
+    assert_eq!(
+        stats_101.diffs_applied, 0,
+        "Block 101 should NOT need any diffs after bootstrap"
+    );
+
+    assert!(reader.is_block_available(101).unwrap());
+    assert_eq!(reader.latest_block_number().unwrap(), Some(101));
+
+    let account_101 = reader
+        .get_account(test_address_hash, 101)
+        .expect("Should get account")
+        .expect("Account should exist");
+
+    assert_eq!(account_101.balance, U256::from(1100));
+    assert_eq!(account_101.nonce, 6);
+
+    // =========================================================================
+    // Block 102 → namespace 0 (102 % 3 = 0), namespace has block 100
+    // Needs diff from block 101 (which was stored when we committed 101)
+    // =========================================================================
+    let update_102 = BlockStateUpdate {
+        block_number: 102,
+        block_hash: B256::repeat_byte(0x55),
+        state_root: B256::repeat_byte(0x66),
+        accounts: vec![AccountState {
+            address_hash: test_address_hash,
+            balance: U256::from(1200),
+            nonce: 7,
+            code_hash: B256::repeat_byte(0xCC),
+            code: None,
+            storage: {
+                let mut s = HashMap::new();
+                s.insert(B256::repeat_byte(0x01), U256::from(102));
+                s
+            },
+            deleted: false,
+        }],
+    };
+
+    let stats_102 = writer
+        .commit_block(&update_102)
+        .expect("Block 102 should commit");
+
+    // Block 102 needs 1 diff (block 101)
+    assert_eq!(
+        stats_102.diffs_applied, 1,
+        "Block 102 should apply 1 diff (block 101)"
+    );
+
+    assert!(reader.is_block_available(102).unwrap());
+
+    // =========================================================================
+    // Block 103 → namespace 1 (103 % 3 = 1), namespace has block 100
+    // Needs diffs from blocks 101 AND 102
+    // =========================================================================
+    let update_103 = BlockStateUpdate {
+        block_number: 103,
+        block_hash: B256::repeat_byte(0x77),
+        state_root: B256::repeat_byte(0x88),
+        accounts: vec![AccountState {
+            address_hash: test_address_hash,
+            balance: U256::from(1300),
+            nonce: 8,
+            code_hash: B256::repeat_byte(0xCC),
+            code: None,
+            storage: {
+                let mut s = HashMap::new();
+                s.insert(B256::repeat_byte(0x01), U256::from(103));
+                s
+            },
+            deleted: false,
+        }],
+    };
+
+    let stats_103 = writer
+        .commit_block(&update_103)
+        .expect("Block 103 should commit");
+
+    // Block 103 needs 2 diffs (blocks 101 and 102)
+    assert_eq!(
+        stats_103.diffs_applied, 2,
+        "Block 103 should apply 2 diffs (101, 102)"
+    );
+
+    assert!(reader.is_block_available(103).unwrap());
+    assert_eq!(reader.latest_block_number().unwrap(), Some(103));
+
+    let account_103 = reader
+        .get_account(test_address_hash, 103)
+        .expect("Should get account")
+        .expect("Account should exist");
+
+    assert_eq!(account_103.balance, U256::from(1300));
+    assert_eq!(account_103.nonce, 8);
+
+    // Verify old block rotated out
+    assert!(
+        !reader.is_block_available(100).unwrap(),
+        "Block 100 should be rotated out"
+    );
+
+    // Blocks 101, 102, 103 should all be available
+    assert!(reader.is_block_available(101).unwrap());
+    assert!(reader.is_block_available(102).unwrap());
+    assert!(reader.is_block_available(103).unwrap());
+}

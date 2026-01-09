@@ -323,6 +323,16 @@ impl Writer for StateWriter {
             )
         })
     }
+
+    fn bootstrap_from_snapshot(
+        &self,
+        _accounts: Vec<AccountState>,
+        _block_number: u64,
+        _block_hash: B256,
+        _state_root: B256,
+    ) -> Result<CommitStats, Self::Error> {
+        unimplemented!()
+    }
 }
 
 impl StateWriter {

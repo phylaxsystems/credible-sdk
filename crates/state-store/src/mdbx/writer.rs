@@ -276,9 +276,252 @@ impl WriteBatch {
     }
 }
 
-// ============================================================================
-// State Writer
-// ============================================================================
+/// Session for streaming bootstrap writes without loading all accounts into memory.
+///
+/// This allows writing accounts one at a time or in small batches,
+/// avoiding the need to load the entire state into memory.
+///
+/// ## Usage
+///
+/// ```ignore
+/// let mut bootstrap = writer.begin_bootstrap(block_number, block_hash, state_root)?;
+///
+/// // Stream accounts from geth dump or other source
+/// while let Some(account) = read_next_account()? {
+///     bootstrap.write_account(&account)?;
+///
+///     if count % 10000 == 0 {
+///         let (accts, slots, _) = bootstrap.progress();
+///         println!("Progress: {} accounts, {} storage slots", accts, slots);
+///     }
+/// }
+///
+/// // Update metadata if not known at start
+/// bootstrap.set_metadata(final_block_hash, final_state_root);
+///
+/// let stats = bootstrap.finalize()?;
+/// ```
+///
+/// ## Memory Efficiency
+///
+/// Unlike `bootstrap_from_snapshot` which requires all accounts in memory,
+/// this writes each account immediately and allows it to be garbage collected.
+/// Peak memory usage is O(1) accounts instead of O(n).
+pub struct BootstrapWriter {
+    tx: reth_db::mdbx::tx::Tx<reth_libmdbx::RW>,
+    block_number: u64,
+    block_hash: B256,
+    state_root: B256,
+    buffer_size: u8,
+    accounts_written: usize,
+    storage_slots_written: usize,
+    bytecodes_written: usize,
+    total_start: Instant,
+    // Batch buffers for cursor-based writes
+    account_batch: Vec<(NamespacedAccountKey, AccountInfo)>,
+    storage_batch: Vec<(NamespacedStorageKey, StorageValue)>,
+    bytecode_batch: Vec<(NamespacedBytecodeKey, Bytes)>,
+    batch_size: usize,
+}
+
+impl BootstrapWriter {
+    /// Default batch size for cursor-based writes
+    const DEFAULT_BATCH_SIZE: usize = 10_000;
+
+    /// Write a single account to all namespaces.
+    ///
+    /// Memory usage: Only this single account is held in memory.
+    pub fn write_account(&mut self, acc: &AccountState) -> StateResult<()> {
+        let info = AccountInfo {
+            address_hash: acc.address_hash,
+            balance: acc.balance,
+            nonce: acc.nonce,
+            code_hash: acc.code_hash,
+        };
+
+        // Write to ALL namespaces (circular buffer requirement)
+        for ns in 0..self.buffer_size {
+            // Queue account info
+            let account_key = NamespacedAccountKey::new(ns, acc.address_hash);
+            self.account_batch.push((account_key, info.clone()));
+
+            // Queue storage slots
+            for (slot_hash, value) in &acc.storage {
+                if !value.is_zero() {
+                    let storage_key = NamespacedStorageKey::new(ns, acc.address_hash, *slot_hash);
+                    self.storage_batch.push((storage_key, StorageValue(*value)));
+                }
+            }
+
+            // Queue bytecode (deduplicated by code_hash)
+            if let Some(ref code) = acc.code
+                && !code.is_empty()
+            {
+                let bytecode_key = NamespacedBytecodeKey::new(ns, acc.code_hash);
+                self.bytecode_batch.push((bytecode_key, code.clone()));
+            }
+        }
+
+        self.accounts_written += 1;
+        self.storage_slots_written += acc.storage.len();
+        if acc.code.as_ref().is_some_and(|c| !c.is_empty()) {
+            self.bytecodes_written += 1;
+        }
+
+        // Flush when batch is large enough
+        if self.account_batch.len() >= self.batch_size {
+            self.flush_batch()?;
+        }
+
+        Ok(())
+    }
+
+    /// Flush the current batch to the database using cursor-based writes.
+    fn flush_batch(&mut self) -> StateResult<()> {
+        if self.account_batch.is_empty()
+            && self.storage_batch.is_empty()
+            && self.bytecode_batch.is_empty()
+        {
+            return Ok(());
+        }
+
+        // Sort for optimal B-tree insertion
+        self.account_batch.sort_unstable_by_key(|(k, _)| *k);
+        self.storage_batch.sort_unstable_by_key(|(k, _)| *k);
+        self.bytecode_batch.sort_unstable_by_key(|(k, _)| *k);
+
+        // Write accounts with cursor
+        if !self.account_batch.is_empty() {
+            let mut cursor = self
+                .tx
+                .cursor_write::<NamespacedAccounts>()
+                .map_err(StateError::Database)?;
+            for (key, value) in self.account_batch.drain(..) {
+                cursor.upsert(key, &value).map_err(StateError::Database)?;
+            }
+        }
+
+        // Write storage with cursor
+        if !self.storage_batch.is_empty() {
+            let mut cursor = self
+                .tx
+                .cursor_write::<NamespacedStorage>()
+                .map_err(StateError::Database)?;
+            for (key, value) in self.storage_batch.drain(..) {
+                cursor.upsert(key, &value).map_err(StateError::Database)?;
+            }
+        }
+
+        // Write bytecodes with cursor
+        if !self.bytecode_batch.is_empty() {
+            let mut cursor = self
+                .tx
+                .cursor_write::<Bytecodes>()
+                .map_err(StateError::Database)?;
+            for (key, value) in self.bytecode_batch.drain(..) {
+                cursor
+                    .upsert(key, &Bytecode(value))
+                    .map_err(StateError::Database)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Write a batch of accounts (for callers that prefer batching).
+    pub fn write_batch(&mut self, accounts: &[AccountState]) -> StateResult<()> {
+        for acc in accounts {
+            self.write_account(acc)?;
+        }
+        Ok(())
+    }
+
+    /// Get current progress stats (useful for logging).
+    pub fn progress(&self) -> (usize, usize, usize) {
+        (
+            self.accounts_written,
+            self.storage_slots_written,
+            self.bytecodes_written,
+        )
+    }
+
+    /// Update block metadata before finalizing.
+    ///
+    /// Call this if you didn't know the correct `block_hash`/`state_root`
+    /// when starting the bootstrap (e.g., geth reports them at the end).
+    pub fn set_metadata(&mut self, block_hash: B256, state_root: B256) {
+        self.block_hash = block_hash;
+        self.state_root = state_root;
+    }
+
+    /// Update just the block number before finalizing.
+    pub fn set_block_number(&mut self, block_number: u64) {
+        self.block_number = block_number;
+    }
+
+    /// Finalize the bootstrap, writing metadata and committing the transaction.
+    ///
+    /// This MUST be called to complete the bootstrap. Dropping without
+    /// calling `finalize()` will roll back all writes.
+    pub fn finalize(mut self) -> StateResult<CommitStats> {
+        let mut stats = CommitStats::default();
+
+        // Flush any remaining batched writes
+        self.flush_batch()?;
+
+        // Mark all namespaces as containing this block
+        for ns in 0..self.buffer_size {
+            self.tx
+                .put::<NamespaceBlocks>(NamespaceIdx(ns), BlockNumber(self.block_number))
+                .map_err(StateError::Database)?;
+        }
+
+        // Write block metadata
+        self.tx
+            .put::<BlockMetadataTable>(
+                BlockNumber(self.block_number),
+                crate::mdbx::common::types::BlockMetadata {
+                    block_hash: self.block_hash,
+                    state_root: self.state_root,
+                },
+            )
+            .map_err(StateError::Database)?;
+
+        // Set global metadata
+        self.tx
+            .put::<Metadata>(
+                MetadataKey,
+                GlobalMetadata {
+                    latest_block: self.block_number,
+                    buffer_size: self.buffer_size,
+                },
+            )
+            .map_err(StateError::Database)?;
+
+        // Commit transaction
+        let commit_start = Instant::now();
+        self.tx
+            .commit()
+            .map_err(|e| StateError::CommitFailed(e.to_string()))?;
+        stats.commit_duration = commit_start.elapsed();
+
+        stats.accounts_written = self.accounts_written * usize::from(self.buffer_size);
+        stats.storage_slots_written = self.storage_slots_written * usize::from(self.buffer_size);
+        stats.bytecodes_written = self.bytecodes_written * usize::from(self.buffer_size);
+        stats.total_duration = self.total_start.elapsed();
+
+        debug!(
+            block = self.block_number,
+            accounts = self.accounts_written,
+            storage_slots = self.storage_slots_written,
+            namespaces = self.buffer_size,
+            total_ms = stats.total_duration.as_millis(),
+            "streaming bootstrap complete"
+        );
+
+        Ok(stats)
+    }
+}
 
 /// State writer for persisting blockchain state to MDBX.
 ///
@@ -692,6 +935,25 @@ impl Writer for StateWriter {
         trace!("recover_stale_locks called (no-op for MDBX)");
         Ok(vec![])
     }
+
+    /// Bootstrap the circular buffer from a single state snapshot.
+    ///
+    /// ## Memory Warning
+    ///
+    /// This method requires all accounts to be loaded in memory at once.
+    /// For large states (e.g., Ethereum mainnet with 200M+ accounts), this
+    /// will OOM. Use `begin_bootstrap()` or `bootstrap_from_iterator()` instead
+    /// for memory-efficient streaming writes.
+    fn bootstrap_from_snapshot(
+        &self,
+        accounts: Vec<AccountState>,
+        block_number: u64,
+        block_hash: B256,
+        state_root: B256,
+    ) -> StateResult<CommitStats> {
+        // Delegate to the streaming implementation for consistency
+        self.bootstrap_from_iterator(accounts.into_iter(), block_number, block_hash, state_root)
+    }
 }
 
 impl StateWriter {
@@ -713,6 +975,105 @@ impl StateWriter {
     /// Get the configured buffer size.
     pub fn buffer_size(&self) -> u8 {
         self.reader.buffer_size()
+    }
+
+    /// Begin a streaming bootstrap session.
+    ///
+    /// This allows writing accounts one at a time or in small batches,
+    /// avoiding the need to load the entire state into memory.
+    ///
+    /// ## Example
+    ///
+    /// ```ignore
+    /// let mut bootstrap = writer.begin_bootstrap(12345, block_hash, state_root)?;
+    ///
+    /// // Stream accounts from geth dump or other source
+    /// while let Some(account) = read_next_account()? {
+    ///     bootstrap.write_account(&account)?;
+    ///
+    ///     if count % 10000 == 0 {
+    ///         let (accts, slots, _) = bootstrap.progress();
+    ///         println!("Progress: {} accounts, {} storage slots", accts, slots);
+    ///     }
+    /// }
+    ///
+    /// // Update metadata if values weren't known at start
+    /// bootstrap.set_metadata(final_block_hash, final_state_root);
+    ///
+    /// let stats = bootstrap.finalize()?;
+    /// ```
+    ///
+    /// ## Memory Efficiency
+    ///
+    /// Peak memory usage is O(1) accounts instead of O(n), making this
+    /// suitable for bootstrapping from Ethereum mainnet state dumps.
+    pub fn begin_bootstrap(
+        &self,
+        block_number: u64,
+        block_hash: B256,
+        state_root: B256,
+    ) -> StateResult<BootstrapWriter> {
+        let db = self.reader.db();
+        let buffer_size = db.buffer_size();
+        let tx = db.tx_mut()?;
+
+        debug!(
+            block = block_number,
+            buffer_size = buffer_size,
+            "starting streaming bootstrap"
+        );
+
+        Ok(BootstrapWriter {
+            tx,
+            block_number,
+            block_hash,
+            state_root,
+            buffer_size,
+            accounts_written: 0,
+            storage_slots_written: 0,
+            bytecodes_written: 0,
+            total_start: Instant::now(),
+            account_batch: Vec::with_capacity(BootstrapWriter::DEFAULT_BATCH_SIZE),
+            storage_batch: Vec::with_capacity(BootstrapWriter::DEFAULT_BATCH_SIZE * 10),
+            bytecode_batch: Vec::with_capacity(BootstrapWriter::DEFAULT_BATCH_SIZE / 5),
+            batch_size: BootstrapWriter::DEFAULT_BATCH_SIZE,
+        })
+    }
+
+    /// Bootstrap from an iterator (streaming, memory-efficient).
+    ///
+    /// This is a convenience wrapper around `begin_bootstrap()` for cases
+    /// where you have an iterator of accounts.
+    ///
+    /// ## Example
+    ///
+    /// ```ignore
+    /// // From a file reader that yields accounts one at a time
+    /// let account_iter = AccountFileReader::new("state.jsonl")?;
+    /// let stats = writer.bootstrap_from_iterator(
+    ///     account_iter,
+    ///     block_number,
+    ///     block_hash,
+    ///     state_root,
+    /// )?;
+    /// ```
+    pub fn bootstrap_from_iterator<I>(
+        &self,
+        accounts: I,
+        block_number: u64,
+        block_hash: B256,
+        state_root: B256,
+    ) -> StateResult<CommitStats>
+    where
+        I: Iterator<Item = AccountState>,
+    {
+        let mut bootstrap = self.begin_bootstrap(block_number, block_hash, state_root)?;
+
+        for account in accounts {
+            bootstrap.write_account(&account)?;
+        }
+
+        bootstrap.finalize()
     }
 
     // ========================================================================
