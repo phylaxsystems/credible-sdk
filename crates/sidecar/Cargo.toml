@@ -128,3 +128,9 @@ name = "avg_block"
 path = "benches/avg_block.rs"
 harness = false
 required-features = ["bench-utils"]
+
+[[bench]]
+name = "worst_case_compute_with_observer"
+path = "benches/worst_case_compute_with_observer.rs"
+harness = false
+required-features = ["bench-utils"]

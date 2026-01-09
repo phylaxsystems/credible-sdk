@@ -10,6 +10,10 @@ use futures::stream::{
     FuturesUnordered,
     StreamExt,
 };
+use metrics::{
+    counter,
+    histogram,
+};
 use revm::{
     context::{
         BlockEnv,
@@ -45,7 +49,10 @@ use tokio::{
     sync::oneshot,
 };
 use tracing::{
+    debug,
     info,
+    instrument,
+    trace,
     warn,
 };
 
@@ -227,10 +234,22 @@ impl TransactionObserver {
 
     /// Stores an incident on disk.
     fn store_incident(&mut self, report: &IncidentReport) -> Result<(), TransactionObserverError> {
-        self.db.store(report)?;
+        counter!("transaction_observer_incidents_received_total").increment(1);
+        if let Err(err) = self.db.store(report) {
+            if matches!(err, TransactionObserverError::PersistFailed { .. }) {
+                counter!("transaction_observer_incidents_persist_failed_total").increment(1);
+            }
+            return Err(err);
+        }
         Ok(())
     }
 
+    #[instrument(
+        name = "transaction_observer::publish_invalidations",
+        skip(self),
+        fields(endpoint = %self.config.endpoint,),
+        level = "debug"
+    )]
     /// Publishes all invalidations to the dapp.
     ///
     /// Gets a consistent view of the db for unpublished incidents, and then
@@ -239,6 +258,10 @@ impl TransactionObserver {
     /// next run.
     fn publish_invalidations(&mut self) -> Result<(), TransactionObserverError> {
         if self.config.endpoint.trim().is_empty() || self.config.endpoint_rps_max == 0 {
+            warn!(
+                target = "transaction_observer",
+                "Dapp endpoint or rps empty/0; skipping incident publishing"
+            );
             return Ok(());
         }
 
@@ -251,8 +274,15 @@ impl TransactionObserver {
 
         let incidents = self.db.load_batch(self.config.endpoint_rps_max)?;
         if incidents.is_empty() {
+            trace!(target = "transaction_observer", "No incidents to publish");
             return Ok(());
         }
+        let publish_started_at = Instant::now();
+        debug!(
+            target = "transaction_observer",
+            incident_count = incidents.len(),
+            "Publishing incidents to dapp"
+        );
 
         let auth_token = Arc::new(self.config.auth_token.trim().to_string());
         let dapp_client = Arc::clone(dapp_client);
@@ -262,12 +292,14 @@ impl TransactionObserver {
                 let dapp_client = Arc::clone(&dapp_client);
                 let auth_token = Arc::clone(&auth_token);
                 tasks.push(async move {
+                    let (tx_hash, _) = &report.transaction_data;
                     let body = match build_incident_body(&report) {
                         Ok(body) => body,
                         Err(err) => {
                             warn!(
                                 target = "transaction_observer",
                                 error = ?err,
+                                tx_hash = ?tx_hash,
                                 "Failed to build incident payload"
                             );
                             return (key, false);
@@ -286,9 +318,16 @@ impl TransactionObserver {
                         .await;
                     let success = result.is_ok();
                     if let Err(err) = result {
+                        trace!(
+                            target = "transaction_observer",
+                            tx_hash = ?tx_hash,
+                            incidents_for_tx = report.failures.len(),
+                            "Incident publish failed"
+                        );
                         warn!(
                             target = "transaction_observer",
                             error = ?err,
+                            tx_hash = ?tx_hash,
                             "Failed to publish invalidation incident"
                         );
                     }
@@ -303,11 +342,24 @@ impl TransactionObserver {
             completed
         });
 
+        let total_results = results.len();
         let keys_to_delete: Vec<Vec<u8>> = results
             .into_iter()
             .filter_map(|(key, success)| success.then_some(key))
             .collect();
         self.db.delete_keys(&keys_to_delete)?;
+        let success_count = keys_to_delete.len();
+        let failure_count = total_results.saturating_sub(success_count);
+        counter!("transaction_observer_publish_success_total").increment(success_count as u64);
+        counter!("transaction_observer_publish_failure_total").increment(failure_count as u64);
+        histogram!("transaction_observer_publish_duration_seconds")
+            .record(publish_started_at.elapsed());
+        debug!(
+            target = "transaction_observer",
+            published = success_count,
+            failed = failure_count,
+            "Finished publishing incidents"
+        );
         Ok(())
     }
 }
