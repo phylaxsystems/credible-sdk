@@ -3,6 +3,9 @@
 //! These tests use httpmock to simulate API responses and test client behavior.
 //! They test the same scenarios as the real API but without external dependencies.
 
+mod common;
+
+use common::try_start_mock_server;
 use dapp_api_client::{
     AuthConfig,
     Client,
@@ -15,25 +18,6 @@ use httpmock::{
     prelude::*,
 };
 use serde_json::json;
-use std::net::TcpListener;
-
-fn try_start_mock_server() -> MockServer {
-    TcpListener::bind("127.0.0.1:0")
-        .map_err(|err| format!("Failed to bind localhost for httpmock: {err}"))
-        .and_then(|listener| {
-            drop(listener);
-            std::panic::catch_unwind(MockServer::start).map_err(|err| {
-                if let Some(msg) = err.downcast_ref::<&str>() {
-                    (*msg).to_string()
-                } else if let Some(msg) = err.downcast_ref::<String>() {
-                    msg.clone()
-                } else {
-                    "MockServer::start() panicked".to_string()
-                }
-            })
-        })
-        .expect("Failed to start httpmock server")
-}
 
 /// Helper function to create a mock with cleaner syntax
 fn setup_mock<F>(server: &MockServer, configure: F) -> Mock<'_>

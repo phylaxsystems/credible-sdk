@@ -25,11 +25,189 @@ use revm::{
         U256,
     },
 };
-use serde_json::{
-    Map,
-    Value,
-};
+use serde::Serialize;
 use tracing::warn;
+
+#[derive(Serialize)]
+struct IncidentPayload {
+    failures: Vec<FailurePayload>,
+    incident_timestamp: String,
+    transaction_data: TransactionDataPayload,
+    block_env: BlockEnvPayload,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    previous_transactions: Vec<PreviousTransactionPayload>,
+}
+
+#[derive(Serialize)]
+struct BlockEnvPayload {
+    basefee: String,
+    beneficiary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blob_excess_gas_and_price: Option<BlobExcessGasAndPricePayload>,
+    difficulty: String,
+    gas_limit: String,
+    number: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prevrandao: Option<String>,
+    timestamp: String,
+}
+
+#[derive(Serialize)]
+struct BlobExcessGasAndPricePayload {
+    blob_gasprice: String,
+    excess_blob_gas: String,
+}
+
+#[derive(Serialize)]
+struct FailurePayload {
+    assertion_adopter_address: String,
+    assertion_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assertion_fn_selector: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revert_reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PreviousTransactionPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    calldata: Option<String>,
+    from: String,
+    to: String,
+    value: String,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum TransactionDataPayload {
+    Legacy(TransactionDataLegacyPayload),
+    AccessList(TransactionDataAccessListPayload),
+    FeeMarket(TransactionDataFeeMarketPayload),
+    Blob(TransactionDataBlobPayload),
+    Authorization(TransactionDataAuthorizationPayload),
+}
+
+#[derive(Serialize)]
+struct TransactionDataLegacyPayload {
+    chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<String>,
+    from_address: String,
+    gas_limit: String,
+    gas_price: String,
+    nonce: String,
+    to_address: String,
+    transaction_hash: String,
+    #[serde(rename = "type")]
+    tx_type: u64,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct TransactionDataAccessListPayload {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    access_list: Vec<AccessListItemPayload>,
+    chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<String>,
+    from_address: String,
+    gas_limit: String,
+    gas_price: String,
+    nonce: String,
+    to_address: String,
+    transaction_hash: String,
+    #[serde(rename = "type")]
+    tx_type: u64,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct TransactionDataFeeMarketPayload {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    access_list: Vec<AccessListItemPayload>,
+    chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<String>,
+    from_address: String,
+    gas_limit: String,
+    max_fee_per_gas: String,
+    max_priority_fee_per_gas: String,
+    nonce: String,
+    to_address: String,
+    transaction_hash: String,
+    #[serde(rename = "type")]
+    tx_type: u64,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct TransactionDataBlobPayload {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    access_list: Vec<AccessListItemPayload>,
+    blob_versioned_hashes: Vec<String>,
+    chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<String>,
+    from_address: String,
+    gas_limit: String,
+    max_fee_per_blob_gas: String,
+    max_fee_per_gas: String,
+    max_priority_fee_per_gas: String,
+    nonce: String,
+    to_address: String,
+    transaction_hash: String,
+    #[serde(rename = "type")]
+    tx_type: u64,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct TransactionDataAuthorizationPayload {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    access_list: Vec<AccessListItemPayload>,
+    authorization_list: Vec<AuthorizationListItemPayload>,
+    chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<String>,
+    from_address: String,
+    gas_limit: String,
+    max_fee_per_gas: String,
+    max_priority_fee_per_gas: String,
+    nonce: String,
+    to_address: String,
+    transaction_hash: String,
+    #[serde(rename = "type")]
+    tx_type: u64,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct AccessListItemPayload {
+    address: String,
+    storage_keys: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct AuthorizationListItemPayload {
+    chain_id: String,
+    address: String,
+    nonce: String,
+    v: String,
+    r: String,
+    s: String,
+}
+
+struct TransactionCommonFields {
+    transaction_hash: String,
+    chain_id: u64,
+    nonce: String,
+    gas_limit: String,
+    to_address: String,
+    from_address: String,
+    value: String,
+    tx_type: u64,
+    data: Option<String>,
+}
 
 pub(super) fn build_incident_body(
     report: &IncidentReport,
@@ -41,32 +219,24 @@ pub(super) fn build_incident_body(
         .map(build_failure_payload)
         .collect::<Vec<_>>();
     let transaction_data = build_transaction_data_payload(&report.transaction_data)?;
-
-    let mut body = Map::new();
-    body.insert("failures".to_string(), Value::Array(failures));
-    body.insert(
-        "incident_timestamp".to_string(),
-        Value::String(incident_timestamp),
-    );
-    body.insert("transaction_data".to_string(), transaction_data);
-    body.insert(
-        "block_env".to_string(),
-        Value::Object(build_block_env_payload(&report.block_env)),
-    );
-
+    let block_env = build_block_env_payload(&report.block_env);
     let previous_transactions = build_previous_transactions_payload(&report.prev_txs);
-    if !previous_transactions.is_empty() {
-        body.insert(
-            "previous_transactions".to_string(),
-            Value::Array(previous_transactions),
-        );
-    }
 
-    serde_json::from_value(Value::Object(body)).map_err(|e| {
-        TransactionObserverError::PublishFailed {
-            reason: format!("Failed to build incident payload: {e}"),
-        }
-    })
+    let payload = IncidentPayload {
+        failures,
+        incident_timestamp,
+        transaction_data,
+        block_env,
+        previous_transactions,
+    };
+
+    serde_json::to_value(payload)
+        .and_then(serde_json::from_value)
+        .map_err(|e| {
+            TransactionObserverError::PublishFailed {
+                reason: format!("Failed to build incident payload: {e}"),
+            }
+        })
 }
 
 fn format_incident_timestamp(timestamp: u64) -> Result<String, TransactionObserverError> {
@@ -83,114 +253,71 @@ fn format_incident_timestamp(timestamp: u64) -> Result<String, TransactionObserv
     Ok(date_time.to_rfc3339())
 }
 
-fn build_block_env_payload(block_env: &BlockEnv) -> Map<String, Value> {
-    let mut payload = Map::new();
-    payload.insert(
-        "number".to_string(),
-        Value::String(block_env.number.to_string()),
-    );
-    payload.insert(
-        "beneficiary".to_string(),
-        Value::String(bytes_to_hex(block_env.beneficiary.as_slice())),
-    );
-    payload.insert(
-        "timestamp".to_string(),
-        Value::String(block_env.timestamp.to_string()),
-    );
-    payload.insert(
-        "gas_limit".to_string(),
-        Value::String(block_env.gas_limit.to_string()),
-    );
-    payload.insert(
-        "basefee".to_string(),
-        Value::String(block_env.basefee.to_string()),
-    );
-    payload.insert(
-        "difficulty".to_string(),
-        Value::String(block_env.difficulty.to_string()),
-    );
+fn build_block_env_payload(block_env: &BlockEnv) -> BlockEnvPayload {
+    let blob_excess_gas_and_price = block_env.blob_excess_gas_and_price.map(|blob| {
+        BlobExcessGasAndPricePayload {
+            excess_blob_gas: blob.excess_blob_gas.to_string(),
+            blob_gasprice: blob.blob_gasprice.to_string(),
+        }
+    });
+    let prevrandao = block_env
+        .prevrandao
+        .map(|prevrandao| bytes_to_hex(prevrandao.as_slice()));
 
-    if let Some(prevrandao) = block_env.prevrandao {
-        payload.insert(
-            "prevrandao".to_string(),
-            Value::String(bytes_to_hex(prevrandao.as_slice())),
-        );
+    BlockEnvPayload {
+        number: block_env.number.to_string(),
+        beneficiary: bytes_to_hex(block_env.beneficiary.as_slice()),
+        timestamp: block_env.timestamp.to_string(),
+        gas_limit: block_env.gas_limit.to_string(),
+        basefee: block_env.basefee.to_string(),
+        difficulty: block_env.difficulty.to_string(),
+        prevrandao,
+        blob_excess_gas_and_price,
     }
-
-    if let Some(blob) = block_env.blob_excess_gas_and_price {
-        let mut blob_payload = Map::new();
-        blob_payload.insert(
-            "excess_blob_gas".to_string(),
-            Value::String(blob.excess_blob_gas.to_string()),
-        );
-        blob_payload.insert(
-            "blob_gasprice".to_string(),
-            Value::String(blob.blob_gasprice.to_string()),
-        );
-        payload.insert(
-            "blob_excess_gas_and_price".to_string(),
-            Value::Object(blob_payload),
-        );
-    }
-
-    payload
 }
 
-fn build_failure_payload(failure: &IncidentData) -> Value {
-    let mut payload = Map::new();
-    payload.insert(
-        "assertion_adopter_address".to_string(),
-        Value::String(bytes_to_hex(failure.adopter_address.as_slice())),
-    );
-    payload.insert(
-        "assertion_id".to_string(),
-        Value::String(bytes_to_hex(failure.assertion_id.as_slice())),
-    );
-    payload.insert(
-        "assertion_fn_selector".to_string(),
-        Value::String(bytes_to_hex(failure.assertion_fn.as_slice())),
-    );
+fn build_failure_payload(failure: &IncidentData) -> FailurePayload {
+    let revert_reason = if failure.revert_data.is_empty() {
+        None
+    } else {
+        Some(bytes_to_hex(failure.revert_data.as_ref()))
+    };
 
-    if !failure.revert_data.is_empty() {
-        payload.insert(
-            "revert_reason".to_string(),
-            Value::String(bytes_to_hex(failure.revert_data.as_ref())),
-        );
+    FailurePayload {
+        assertion_adopter_address: bytes_to_hex(failure.adopter_address.as_slice()),
+        assertion_id: bytes_to_hex(failure.assertion_id.as_slice()),
+        assertion_fn_selector: Some(bytes_to_hex(failure.assertion_fn.as_slice())),
+        revert_reason,
     }
-
-    Value::Object(payload)
 }
 
-fn build_previous_transactions_payload(previous_txs: &[ReconstructableTx]) -> Vec<Value> {
+fn build_previous_transactions_payload(
+    previous_txs: &[ReconstructableTx],
+) -> Vec<PreviousTransactionPayload> {
     previous_txs
         .iter()
         .map(|(_, tx_env)| build_previous_transaction_payload(tx_env))
         .collect()
 }
 
-fn build_previous_transaction_payload(tx_env: &TxEnv) -> Value {
-    let mut payload = Map::new();
-    payload.insert(
-        "from".to_string(),
-        Value::String(bytes_to_hex(tx_env.caller.as_slice())),
-    );
-    payload.insert(
-        "to".to_string(),
-        Value::String(tx_kind_to_address(&tx_env.kind, false)),
-    );
-    payload.insert("value".to_string(), Value::String(tx_env.value.to_string()));
-    if !tx_env.data.is_empty() {
-        payload.insert(
-            "calldata".to_string(),
-            Value::String(bytes_to_hex(tx_env.data.as_ref())),
-        );
+fn build_previous_transaction_payload(tx_env: &TxEnv) -> PreviousTransactionPayload {
+    let calldata = if tx_env.data.is_empty() {
+        None
+    } else {
+        Some(bytes_to_hex(tx_env.data.as_ref()))
+    };
+
+    PreviousTransactionPayload {
+        from: bytes_to_hex(tx_env.caller.as_slice()),
+        to: tx_kind_to_address(&tx_env.kind, false),
+        value: tx_env.value.to_string(),
+        calldata,
     }
-    Value::Object(payload)
 }
 
 fn build_transaction_data_payload(
     transaction: &ReconstructableTx,
-) -> Result<Value, TransactionObserverError> {
+) -> Result<TransactionDataPayload, TransactionObserverError> {
     let (tx_hash, tx_env) = transaction;
     let chain_id = match tx_env.chain_id {
         Some(chain_id) if chain_id > 0 => chain_id,
@@ -201,135 +328,105 @@ fn build_transaction_data_payload(
         }
     };
 
-    let mut payload = Map::new();
-    insert_common_transaction_fields(&mut payload, tx_hash.as_slice(), tx_env, chain_id);
-    insert_tx_type_fields(&mut payload, tx_env)?;
-
-    Ok(Value::Object(payload))
-}
-
-fn insert_common_transaction_fields(
-    payload: &mut Map<String, Value>,
-    tx_hash: &[u8],
-    tx_env: &TxEnv,
-    chain_id: u64,
-) {
-    payload.insert(
-        "transaction_hash".to_string(),
-        Value::String(bytes_to_hex(tx_hash)),
-    );
-    payload.insert("chain_id".to_string(), Value::Number(chain_id.into()));
-    payload.insert("nonce".to_string(), Value::String(tx_env.nonce.to_string()));
-    payload.insert(
-        "gas_limit".to_string(),
-        Value::String(tx_env.gas_limit.to_string()),
-    );
-    payload.insert(
-        "to_address".to_string(),
-        Value::String(tx_kind_to_address(&tx_env.kind, true)),
-    );
-    payload.insert(
-        "from_address".to_string(),
-        Value::String(bytes_to_hex(tx_env.caller.as_slice())),
-    );
-    payload.insert("value".to_string(), Value::String(tx_env.value.to_string()));
-    payload.insert(
-        "type".to_string(),
-        Value::Number(u64::from(tx_env.tx_type).into()),
-    );
-    if !tx_env.data.is_empty() {
-        payload.insert(
-            "data".to_string(),
-            Value::String(bytes_to_hex(tx_env.data.as_ref())),
-        );
-    }
-}
-
-fn insert_tx_type_fields(
-    payload: &mut Map<String, Value>,
-    tx_env: &TxEnv,
-) -> Result<(), TransactionObserverError> {
+    let common_fields = build_common_transaction_fields(tx_hash.as_slice(), tx_env, chain_id);
     match tx_env.tx_type {
         0 => {
-            payload.insert(
-                "gas_price".to_string(),
-                Value::String(tx_env.gas_price.to_string()),
-            );
-            Ok(())
+            Ok(TransactionDataPayload::Legacy(
+                TransactionDataLegacyPayload {
+                    chain_id: common_fields.chain_id,
+                    data: common_fields.data,
+                    from_address: common_fields.from_address,
+                    gas_limit: common_fields.gas_limit,
+                    gas_price: tx_env.gas_price.to_string(),
+                    nonce: common_fields.nonce,
+                    to_address: common_fields.to_address,
+                    transaction_hash: common_fields.transaction_hash,
+                    tx_type: common_fields.tx_type,
+                    value: common_fields.value,
+                },
+            ))
         }
         1 => {
-            payload.insert(
-                "gas_price".to_string(),
-                Value::String(tx_env.gas_price.to_string()),
-            );
-            let access_list = access_list_payload(&tx_env.access_list);
-            if !access_list.is_empty() {
-                payload.insert("access_list".to_string(), Value::Array(access_list));
-            }
-            Ok(())
+            Ok(TransactionDataPayload::AccessList(
+                TransactionDataAccessListPayload {
+                    access_list: access_list_payload(&tx_env.access_list),
+                    chain_id: common_fields.chain_id,
+                    data: common_fields.data,
+                    from_address: common_fields.from_address,
+                    gas_limit: common_fields.gas_limit,
+                    gas_price: tx_env.gas_price.to_string(),
+                    nonce: common_fields.nonce,
+                    to_address: common_fields.to_address,
+                    transaction_hash: common_fields.transaction_hash,
+                    tx_type: common_fields.tx_type,
+                    value: common_fields.value,
+                },
+            ))
         }
         2 => {
-            payload.insert(
-                "max_fee_per_gas".to_string(),
-                Value::String(tx_env.gas_price.to_string()),
-            );
-            payload.insert(
-                "max_priority_fee_per_gas".to_string(),
-                Value::String(tx_env.gas_priority_fee.unwrap_or_default().to_string()),
-            );
-            let access_list = access_list_payload(&tx_env.access_list);
-            if !access_list.is_empty() {
-                payload.insert("access_list".to_string(), Value::Array(access_list));
-            }
-            Ok(())
+            Ok(TransactionDataPayload::FeeMarket(
+                TransactionDataFeeMarketPayload {
+                    access_list: access_list_payload(&tx_env.access_list),
+                    chain_id: common_fields.chain_id,
+                    data: common_fields.data,
+                    from_address: common_fields.from_address,
+                    gas_limit: common_fields.gas_limit,
+                    max_fee_per_gas: tx_env.gas_price.to_string(),
+                    max_priority_fee_per_gas: tx_env
+                        .gas_priority_fee
+                        .unwrap_or_default()
+                        .to_string(),
+                    nonce: common_fields.nonce,
+                    to_address: common_fields.to_address,
+                    transaction_hash: common_fields.transaction_hash,
+                    tx_type: common_fields.tx_type,
+                    value: common_fields.value,
+                },
+            ))
         }
         3 => {
-            payload.insert(
-                "max_fee_per_blob_gas".to_string(),
-                Value::String(tx_env.max_fee_per_blob_gas.to_string()),
-            );
-            payload.insert(
-                "max_fee_per_gas".to_string(),
-                Value::String(tx_env.gas_price.to_string()),
-            );
-            payload.insert(
-                "max_priority_fee_per_gas".to_string(),
-                Value::String(tx_env.gas_priority_fee.unwrap_or_default().to_string()),
-            );
-            payload.insert(
-                "blob_versioned_hashes".to_string(),
-                Value::Array(
-                    tx_env
-                        .blob_hashes
-                        .iter()
-                        .map(|hash| Value::String(bytes_to_hex(hash.as_slice())))
-                        .collect(),
-                ),
-            );
-            let access_list = access_list_payload(&tx_env.access_list);
-            if !access_list.is_empty() {
-                payload.insert("access_list".to_string(), Value::Array(access_list));
-            }
-            Ok(())
+            Ok(TransactionDataPayload::Blob(TransactionDataBlobPayload {
+                access_list: access_list_payload(&tx_env.access_list),
+                blob_versioned_hashes: tx_env
+                    .blob_hashes
+                    .iter()
+                    .map(|hash| bytes_to_hex(hash.as_slice()))
+                    .collect(),
+                chain_id: common_fields.chain_id,
+                data: common_fields.data,
+                from_address: common_fields.from_address,
+                gas_limit: common_fields.gas_limit,
+                max_fee_per_blob_gas: tx_env.max_fee_per_blob_gas.to_string(),
+                max_fee_per_gas: tx_env.gas_price.to_string(),
+                max_priority_fee_per_gas: tx_env.gas_priority_fee.unwrap_or_default().to_string(),
+                nonce: common_fields.nonce,
+                to_address: common_fields.to_address,
+                transaction_hash: common_fields.transaction_hash,
+                tx_type: common_fields.tx_type,
+                value: common_fields.value,
+            }))
         }
         4 => {
-            payload.insert(
-                "max_fee_per_gas".to_string(),
-                Value::String(tx_env.gas_price.to_string()),
-            );
-            payload.insert(
-                "max_priority_fee_per_gas".to_string(),
-                Value::String(tx_env.gas_priority_fee.unwrap_or_default().to_string()),
-            );
-            let access_list = access_list_payload(&tx_env.access_list);
-            if !access_list.is_empty() {
-                payload.insert("access_list".to_string(), Value::Array(access_list));
-            }
-            payload.insert(
-                "authorization_list".to_string(),
-                Value::Array(authorization_list_payload(&tx_env.authorization_list)),
-            );
-            Ok(())
+            Ok(TransactionDataPayload::Authorization(
+                TransactionDataAuthorizationPayload {
+                    access_list: access_list_payload(&tx_env.access_list),
+                    authorization_list: authorization_list_payload(&tx_env.authorization_list),
+                    chain_id: common_fields.chain_id,
+                    data: common_fields.data,
+                    from_address: common_fields.from_address,
+                    gas_limit: common_fields.gas_limit,
+                    max_fee_per_gas: tx_env.gas_price.to_string(),
+                    max_priority_fee_per_gas: tx_env
+                        .gas_priority_fee
+                        .unwrap_or_default()
+                        .to_string(),
+                    nonce: common_fields.nonce,
+                    to_address: common_fields.to_address,
+                    transaction_hash: common_fields.transaction_hash,
+                    tx_type: common_fields.tx_type,
+                    value: common_fields.value,
+                },
+            ))
         }
         tx_type => {
             Err(TransactionObserverError::PublishFailed {
@@ -339,32 +436,43 @@ fn insert_tx_type_fields(
     }
 }
 
-fn access_list_payload(access_list: &AccessList) -> Vec<Value> {
+fn build_common_transaction_fields(
+    tx_hash: &[u8],
+    tx_env: &TxEnv,
+    chain_id: u64,
+) -> TransactionCommonFields {
+    TransactionCommonFields {
+        transaction_hash: bytes_to_hex(tx_hash),
+        chain_id,
+        nonce: tx_env.nonce.to_string(),
+        gas_limit: tx_env.gas_limit.to_string(),
+        to_address: tx_kind_to_address(&tx_env.kind, true),
+        from_address: bytes_to_hex(tx_env.caller.as_slice()),
+        value: tx_env.value.to_string(),
+        tx_type: u64::from(tx_env.tx_type),
+        data: (!tx_env.data.is_empty()).then(|| bytes_to_hex(tx_env.data.as_ref())),
+    }
+}
+
+fn access_list_payload(access_list: &AccessList) -> Vec<AccessListItemPayload> {
     access_list
         .iter()
         .map(|item| {
-            let mut payload = Map::new();
-            payload.insert(
-                "address".to_string(),
-                Value::String(bytes_to_hex(item.address.as_slice())),
-            );
-            payload.insert(
-                "storage_keys".to_string(),
-                Value::Array(
-                    item.storage_keys
-                        .iter()
-                        .map(|key| Value::String(bytes_to_hex(key.as_slice())))
-                        .collect(),
-                ),
-            );
-            Value::Object(payload)
+            AccessListItemPayload {
+                address: bytes_to_hex(item.address.as_slice()),
+                storage_keys: item
+                    .storage_keys
+                    .iter()
+                    .map(|key| bytes_to_hex(key.as_slice()))
+                    .collect(),
+            }
         })
         .collect()
 }
 
 fn authorization_list_payload(
     authorization_list: &[Either<SignedAuthorization, RecoveredAuthorization>],
-) -> Vec<Value> {
+) -> Vec<AuthorizationListItemPayload> {
     authorization_list
         .iter()
         .map(|authorization| {
@@ -379,23 +487,14 @@ fn authorization_list_payload(
                 }
             };
 
-            let mut payload = Map::new();
-            payload.insert(
-                "chain_id".to_string(),
-                Value::String(u256_to_hex(*authorization.chain_id())),
-            );
-            payload.insert(
-                "address".to_string(),
-                Value::String(bytes_to_hex(authorization.address().as_slice())),
-            );
-            payload.insert(
-                "nonce".to_string(),
-                Value::String(u64_to_hex(authorization.nonce())),
-            );
-            payload.insert("v".to_string(), Value::String(u64_to_hex(u64::from(v))));
-            payload.insert("r".to_string(), Value::String(u256_to_hex(r)));
-            payload.insert("s".to_string(), Value::String(u256_to_hex(s)));
-            Value::Object(payload)
+            AuthorizationListItemPayload {
+                chain_id: u256_to_hex(*authorization.chain_id()),
+                address: bytes_to_hex(authorization.address().as_slice()),
+                nonce: u64_to_hex(authorization.nonce()),
+                v: u64_to_hex(u64::from(v)),
+                r: u256_to_hex(r),
+                s: u256_to_hex(s),
+            }
         })
         .collect()
 }

@@ -284,13 +284,13 @@ impl TransactionObserver {
             "Publishing incidents to dapp"
         );
 
-        let auth_token = Arc::new(self.config.auth_token.trim().to_string());
+        let auth_token = self.config.auth_token.trim().to_string();
         let dapp_client = Arc::clone(dapp_client);
         let results = self.runtime.block_on(async move {
             let mut tasks = FuturesUnordered::new();
             for (key, report) in incidents {
                 let dapp_client = Arc::clone(&dapp_client);
-                let auth_token = Arc::clone(&auth_token);
+                let auth_token = auth_token.clone();
                 tasks.push(async move {
                     let (tx_hash, _) = &report.transaction_data;
                     let body = match build_incident_body(&report) {
@@ -374,6 +374,10 @@ pub enum TransactionObserverError {
     DatabaseOpen { reason: String },
     #[error("Failed to persist incident report: {reason}")]
     PersistFailed { reason: String },
+    #[error("Incident report I/O failure: {reason}")]
+    IoFailure { reason: String },
+    #[error("Failed to decode incident report: {reason}")]
+    DeserializeFailed { reason: String },
 }
 
 impl From<&TransactionObserverError> for ErrorRecoverability {

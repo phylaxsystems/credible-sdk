@@ -336,6 +336,8 @@ pub struct CoreEngine<DB> {
     tx_receiver: TransactionQueueReceiver,
     /// Channel on which the core engine sends invalidation reports.
     incident_sender: Option<IncidentReportSender>,
+    /// Cache whether incident reporting is enabled.
+    report_incidents: bool,
     /// Core engines instance of the assertion executor, executes transactions and assertions
     assertion_executor: AssertionExecutor,
     /// Stores results of executed transactions
@@ -389,6 +391,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         incident_sender: Option<IncidentReportSender>,
         #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
     ) -> Self {
+        let report_incidents = incident_sender.is_some();
         #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
             let processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>> =
@@ -414,6 +417,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             sources: sources.clone(),
             tx_receiver,
             incident_sender,
+            report_incidents,
             assertion_executor,
             transaction_results: TransactionsResults::new(
                 state_results,
@@ -619,28 +623,28 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     }
 
     fn collect_incident_failures(rax: &TxValidationResult) -> Vec<IncidentData> {
-        let mut failures = Vec::new();
-        for assertion_execution in &rax.assertions_executions {
-            for fn_result in &assertion_execution.assertion_fns_results {
-                if fn_result.is_success() {
-                    continue;
-                }
-
-                let revert_data = fn_result
-                    .as_result()
-                    .clone()
-                    .into_output()
-                    .unwrap_or_default();
-                failures.push(IncidentData {
-                    adopter_address: assertion_execution.adopter,
-                    assertion_id: fn_result.id.assertion_contract_id,
-                    assertion_fn: fn_result.id.fn_selector,
-                    revert_data,
-                });
-            }
-        }
-
-        failures
+        rax.assertions_executions
+            .iter()
+            .flat_map(|assertion_execution| {
+                assertion_execution
+                    .assertion_fns_results
+                    .iter()
+                    .filter(|fn_result| !fn_result.is_success())
+                    .map(move |fn_result| {
+                        let revert_data = fn_result
+                            .as_result()
+                            .clone()
+                            .into_output()
+                            .unwrap_or_default();
+                        IncidentData {
+                            adopter_address: assertion_execution.adopter,
+                            assertion_id: fn_result.id.assertion_contract_id,
+                            assertion_fn: fn_result.id.fn_selector,
+                            revert_data,
+                        }
+                    })
+            })
+            .collect()
     }
 
     /// Execute transaction and relted assertions with the core engines blockenv.
@@ -660,7 +664,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_env: &TxEnv,
     ) -> Result<(), EngineError> {
         let block_id = tx_execution_id.as_block_execution_id();
-        let should_report = self.incident_sender.is_some();
+        let should_report = self.report_incidents;
 
         let current_block_iteration = self
             .current_block_iterations
@@ -702,7 +706,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             }
         };
 
-        let prev_txs = if should_report && !rax.is_valid() {
+        let is_valid = rax.is_valid();
+        let prev_txs = if should_report && !is_valid {
             Some(current_block_iteration.executed_txs.clone())
         } else {
             None
@@ -725,20 +730,20 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         self.trace_execute_transaction_result(tx_execution_id, tx_env, &rax);
 
-        let result_and_state = rax.result_and_state.clone();
-        self.add_transaction_result(
-            tx_execution_id,
-            &TransactionResult::ValidationCompleted {
-                is_valid: rax.is_valid(),
-                execution_result: result_and_state.result,
-            },
-            Some(result_and_state.state),
-        )?;
-
         let tx_data: ReconstructableTx = (tx_execution_id.tx_hash, tx_env.clone());
         if let Some(prev_txs) = prev_txs {
             self.emit_incident_report(tx_data.clone(), &block_env, prev_txs, &rax);
         }
+
+        let result_and_state = rax.result_and_state;
+        self.add_transaction_result(
+            tx_execution_id,
+            &TransactionResult::ValidationCompleted {
+                is_valid,
+                execution_result: result_and_state.result,
+            },
+            Some(result_and_state.state),
+        )?;
 
         let current_block_iteration = self
             .current_block_iterations

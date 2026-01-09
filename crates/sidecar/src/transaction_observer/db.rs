@@ -22,6 +22,7 @@ use reth_libmdbx::{
 use std::path::Path;
 
 const INCIDENT_REPORTS_TABLE: &str = "incident_reports";
+const MAX_INCIDENT_BATCH: usize = 10_000;
 
 /// Opens an MDBX database holding the incident reports.
 /// Used as the source of truth for what incidents we are
@@ -88,7 +89,7 @@ impl IncidentDb {
         // a random key
         //
         // we should never actually see duplicate incidents hit the observer
-        let key = random::<u32>().to_be_bytes();
+        let key = random::<u128>().to_be_bytes();
 
         let payload = bincode::serialize(report).map_err(|e| {
             TransactionObserverError::PersistFailed {
@@ -101,7 +102,6 @@ impl IncidentDb {
                 reason: e.to_string(),
             }
         })?;
-        let env = tx.inner.env().clone();
         tx.inner
             .put(self.dbi, key, &payload, WriteFlags::empty())
             .map_err(|e| {
@@ -114,7 +114,7 @@ impl IncidentDb {
                 reason: e.to_string(),
             }
         })?;
-        env.sync(true).map_err(|e| {
+        self.env.sync(true).map_err(|e| {
             TransactionObserverError::PersistFailed {
                 reason: e.to_string(),
             }
@@ -129,30 +129,31 @@ impl IncidentDb {
         &self,
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, IncidentReport)>, TransactionObserverError> {
+        let limit = limit.min(MAX_INCIDENT_BATCH);
         if limit == 0 {
             return Ok(Vec::new());
         }
 
         let tx = self.env.tx().map_err(|e| {
-            TransactionObserverError::PublishFailed {
+            TransactionObserverError::IoFailure {
                 reason: e.to_string(),
             }
         })?;
         let mut cursor = tx.inner.cursor_with_dbi(self.dbi).map_err(|e| {
-            TransactionObserverError::PublishFailed {
+            TransactionObserverError::IoFailure {
                 reason: e.to_string(),
             }
         })?;
 
         let mut reports = Vec::new();
         let mut next = cursor.first::<Vec<u8>, Vec<u8>>().map_err(|e| {
-            TransactionObserverError::PublishFailed {
+            TransactionObserverError::IoFailure {
                 reason: e.to_string(),
             }
         })?;
         while let Some((key, payload)) = next {
             let report = bincode::deserialize(&payload).map_err(|e| {
-                TransactionObserverError::PublishFailed {
+                TransactionObserverError::DeserializeFailed {
                     reason: e.to_string(),
                 }
             })?;
@@ -161,7 +162,7 @@ impl IncidentDb {
                 break;
             }
             next = cursor.next::<Vec<u8>, Vec<u8>>().map_err(|e| {
-                TransactionObserverError::PublishFailed {
+                TransactionObserverError::IoFailure {
                     reason: e.to_string(),
                 }
             })?;
@@ -177,19 +178,19 @@ impl IncidentDb {
         }
 
         let tx = self.env.tx_mut().map_err(|e| {
-            TransactionObserverError::PublishFailed {
+            TransactionObserverError::IoFailure {
                 reason: e.to_string(),
             }
         })?;
         for key in keys {
             tx.inner.del(self.dbi, key, None).map_err(|e| {
-                TransactionObserverError::PublishFailed {
+                TransactionObserverError::IoFailure {
                     reason: e.to_string(),
                 }
             })?;
         }
         tx.commit().map_err(|e| {
-            TransactionObserverError::PublishFailed {
+            TransactionObserverError::IoFailure {
                 reason: e.to_string(),
             }
         })?;
