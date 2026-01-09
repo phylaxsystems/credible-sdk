@@ -102,13 +102,31 @@ impl LocalInstance {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, writer, reader, genesis_state);
+        let mut worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer,
+            reader,
+            genesis_state.clone(),
+        );
         let (shutdown_tx, _) = broadcast::channel(1);
         let handle_worker = tokio::spawn(async move {
             if let Err(e) = worker.run(Some(0), shutdown_tx.subscribe()).await {
                 error!("worker server error: {}", e);
             }
         });
+
+        if genesis_state.is_none() {
+            let empty_trace = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": []
+            });
+            http_server_mock.add_response("trace_replayBlockTransactions", empty_trace);
+        }
+
+        // ADD: Wait for worker to be ready (subscription established)
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         Ok(LocalInstance {
             http_server_mock,

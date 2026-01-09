@@ -79,6 +79,47 @@ impl StateWriter {
         )
     }
 
+    /// Repair a corrupted namespace by:
+    /// 1. Copying cumulative state from a valid source namespace
+    /// 2. Applying diffs to reach the target block
+    ///
+    /// This ensures we never build state on top of corrupted data.
+    ///
+    /// Example: If namespace 0 should have block 100 but is corrupted:
+    /// - Copy from namespace 2 (which has valid state at block 98)
+    /// - Apply diff for block 99
+    /// - Apply diff for block 100
+    /// - Result: namespace 0 has correct cumulative state at block 100
+    pub fn repair_namespace_from_valid_state(
+        &self,
+        target_namespace_idx: usize,
+        source_namespace_idx: usize,
+        target_block: u64,
+    ) -> StateResult<()> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+        let chunk_size = self.chunked_config.chunk_size;
+
+        if target_namespace_idx >= buffer_size || source_namespace_idx >= buffer_size {
+            return Err(StateError::InvalidNamespace(
+                target_namespace_idx.max(source_namespace_idx) as u64,
+                buffer_size,
+            ));
+        }
+
+        self.client.with_connection(move |conn| {
+            repair_namespace_with_diffs(
+                conn,
+                &base_namespace,
+                source_namespace_idx,
+                target_namespace_idx,
+                target_block,
+                buffer_size,
+                chunk_size,
+            )
+        })
+    }
+
     /// Build a new writer with custom chunked write configuration.
     pub fn with_chunked_config(
         redis_url: &str,
@@ -142,6 +183,11 @@ impl StateWriter {
         &self.writer_id
     }
 
+    /// Get the buffer size for this writer.
+    pub fn buffer_size(&self) -> usize {
+        self.client.buffer_config.buffer_size
+    }
+
     /// Check for and recover from stale locks on all namespaces.
     ///
     /// Should be called during startup before processing blocks. For each stale lock:
@@ -201,6 +247,531 @@ impl StateWriter {
             )
         })
     }
+
+    /// Store only the state diff without committing the block.
+    /// Used during recovery when we need to fetch missing diffs.
+    pub fn store_diff_only(&self, update: &BlockStateUpdate) -> StateResult<()> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        let update = update.clone();
+
+        self.client.with_connection(move |conn| {
+            store_state_diff(conn, &base_namespace, &update, buffer_size)
+        })
+    }
+
+    /// Check if a state diff exists for a given block number.
+    pub fn has_diff(&self, block_number: u64) -> StateResult<bool> {
+        let base_namespace = self.client.base_namespace.clone();
+
+        self.client.with_connection(move |conn| {
+            let diff_key = get_diff_key(&base_namespace, block_number);
+            let exists: bool = redis::cmd("EXISTS").arg(&diff_key).query(conn)?;
+            Ok(exists)
+        })
+    }
+
+    /// Find the first valid (unlocked, consistent) namespace and return its index and block number.
+    /// Returns None if no valid namespace is found.
+    pub fn find_valid_namespace_state(&self) -> StateResult<Option<(usize, u64)>> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        self.client
+            .with_connection(move |conn| find_valid_namespace(conn, &base_namespace, buffer_size))
+    }
+
+    /// Get the current block number for a specific namespace.
+    pub fn get_namespace_block(&self, namespace_idx: usize) -> StateResult<Option<u64>> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        if namespace_idx >= buffer_size {
+            return Err(StateError::InvalidNamespace(
+                namespace_idx as u64,
+                buffer_size,
+            ));
+        }
+
+        self.client.with_connection(move |conn| {
+            let namespace = format!("{base_namespace}:{namespace_idx}");
+            read_namespace_block_number(conn, &namespace)
+        })
+    }
+
+    /// Calculate the expected block number for a namespace given the highest known valid block.
+    /// With circular buffer, namespace N should have block (`highest_block` - `offset`) where
+    /// offset depends on the namespace index relative to the highest block's namespace.
+    pub fn expected_block_for_namespace(
+        &self,
+        namespace_idx: usize,
+        highest_valid_block: u64,
+    ) -> u64 {
+        let buffer_size = self.client.buffer_config.buffer_size as u64;
+        let highest_ns_idx = highest_valid_block % buffer_size;
+        let ns_idx = namespace_idx as u64;
+
+        if ns_idx <= highest_ns_idx {
+            // This namespace should have a block from the same "round"
+            highest_valid_block - (highest_ns_idx - ns_idx)
+        } else {
+            // This namespace should have a block from the previous "round"
+            if highest_valid_block >= (ns_idx - highest_ns_idx) {
+                highest_valid_block - (buffer_size - (ns_idx - highest_ns_idx))
+            } else {
+                // Edge case: we're near the start, namespace hasn't been written yet
+                ns_idx
+            }
+        }
+    }
+
+    /// Reset a namespace by copying state from another valid namespace.
+    /// This clears the target namespace and copies all data from the source.
+    ///
+    /// WARNING: This copies the source namespace's block number too, which may not
+    /// be correct for the target namespace. Use `write_full_state_to_namespace`
+    /// instead when you need to set a specific block's state.
+    pub fn reset_namespace_from(
+        &self,
+        target_namespace_idx: usize,
+        source_namespace_idx: usize,
+    ) -> StateResult<()> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+        let chunk_size = self.chunked_config.chunk_size;
+
+        if target_namespace_idx >= buffer_size || source_namespace_idx >= buffer_size {
+            return Err(StateError::InvalidNamespace(
+                target_namespace_idx.max(source_namespace_idx) as u64,
+                buffer_size,
+            ));
+        }
+
+        self.client.with_connection(move |conn| {
+            copy_namespace_state(
+                conn,
+                &base_namespace,
+                source_namespace_idx,
+                target_namespace_idx,
+                chunk_size,
+            )
+        })
+    }
+
+    /// Write a complete `BlockStateUpdate` to a specific namespace.
+    /// This clears the namespace first, then writes the full state.
+    /// Used during repair to write the correct state for a namespace's expected block.
+    pub fn write_full_state_to_namespace(
+        &self,
+        namespace_idx: usize,
+        update: &BlockStateUpdate,
+    ) -> StateResult<()> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+        let chunk_size = self.chunked_config.chunk_size;
+
+        if namespace_idx >= buffer_size {
+            return Err(StateError::InvalidNamespace(
+                namespace_idx as u64,
+                buffer_size,
+            ));
+        }
+
+        let update = update.clone();
+
+        self.client.with_connection(move |conn| {
+            let namespace = format!("{base_namespace}:{namespace_idx}");
+
+            // Clear the namespace first
+            clear_namespace(conn, &namespace)?;
+
+            // Write all accounts
+            let accounts: Vec<&AccountState> = update.accounts.iter().collect();
+            for chunk in accounts.chunks(chunk_size) {
+                write_account_chunk(conn, &namespace, chunk)?;
+            }
+
+            // Write block metadata
+            write_block_metadata(
+                conn,
+                &namespace,
+                &base_namespace,
+                update.block_number,
+                update.block_hash,
+                update.state_root,
+                buffer_size,
+            )?;
+
+            Ok(())
+        })
+    }
+
+    /// Force release a lock on a namespace (use with caution - only for manual recovery).
+    pub fn force_release_lock(&self, namespace_idx: usize) -> StateResult<()> {
+        let base_namespace = self.client.base_namespace.clone();
+        let buffer_size = self.client.buffer_config.buffer_size;
+
+        if namespace_idx >= buffer_size {
+            return Err(StateError::InvalidNamespace(
+                namespace_idx as u64,
+                buffer_size,
+            ));
+        }
+
+        self.client.with_connection(move |conn| {
+            let namespace = format!("{base_namespace}:{namespace_idx}");
+            let lock_key = get_write_lock_key(&namespace);
+            redis::cmd("DEL").arg(&lock_key).query::<()>(conn)?;
+            Ok(())
+        })
+    }
+}
+
+/// Find a valid (unlocked, with data) namespace.
+fn find_valid_namespace<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    buffer_size: usize,
+) -> StateResult<Option<(usize, u64)>>
+where
+    C: redis::ConnectionLike,
+{
+    let mut best: Option<(usize, u64)> = None;
+
+    for idx in 0..buffer_size {
+        let namespace = format!("{base_namespace}:{idx}");
+
+        // Check if namespace is locked
+        if read_namespace_lock(conn, &namespace)?.is_some() {
+            continue;
+        }
+
+        // Get the block number for this namespace
+        if let Some(block_num) = read_namespace_block_number(conn, &namespace)? {
+            // Verify the namespace has actual data (not just a block number)
+            let block_key = get_block_key(&namespace);
+            let exists: bool = redis::cmd("EXISTS").arg(&block_key).query(conn)?;
+
+            if exists {
+                // Stronger validation: ensure the namespace contains at least one account key.
+                // This avoids selecting a partially written namespace as the recovery base.
+                //
+                // FIX: Use a proper SCAN loop instead of single scan with COUNT=1.
+                // SCAN is an iterator - we must loop until cursor returns to 0.
+                let account_pattern = format!("{namespace}:account:*");
+                let mut cursor = 0u64;
+                let mut has_accounts = false;
+
+                loop {
+                    let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                        .arg(cursor)
+                        .arg("MATCH")
+                        .arg(&account_pattern)
+                        .arg("COUNT")
+                        .arg(100) // Scan more slots per iteration for efficiency
+                        .query(conn)?;
+
+                    if !keys.is_empty() {
+                        has_accounts = true;
+                        break; // Found at least one account, no need to continue
+                    }
+
+                    cursor = new_cursor;
+                    if cursor == 0 {
+                        break; // Completed full scan, no accounts found
+                    }
+                }
+
+                if has_accounts {
+                    // Keep track of the highest valid block
+                    match best {
+                        None => best = Some((idx, block_num)),
+                        Some((_, best_block)) if block_num > best_block => {
+                            best = Some((idx, block_num));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(best)
+}
+
+/// Copy all state from one namespace to another.
+/// This is used to rebuild corrupted namespaces from valid ones.
+#[allow(clippy::too_many_lines)]
+fn copy_namespace_state<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    source_idx: usize,
+    target_idx: usize,
+    chunk_size: usize,
+) -> StateResult<()>
+where
+    C: redis::ConnectionLike,
+{
+    let source_namespace = format!("{base_namespace}:{source_idx}");
+    let target_namespace = format!("{base_namespace}:{target_idx}");
+
+    // First, clear the target namespace (delete all keys with this prefix)
+    clear_namespace(conn, &target_namespace)?;
+
+    // Scan and copy all account keys
+    let account_pattern = format!("{source_namespace}:account:*");
+    let mut cursor = 0u64;
+    let mut keys_to_copy = Vec::new();
+
+    loop {
+        let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&account_pattern)
+            .arg("COUNT")
+            .arg(100)
+            .query(conn)?;
+
+        keys_to_copy.extend(keys);
+        cursor = new_cursor;
+
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    // Copy account data in chunks
+    for chunk in keys_to_copy.chunks(chunk_size) {
+        let mut pipe = redis::pipe();
+
+        for source_key in chunk {
+            // Get the account hash from the key
+            let suffix = source_key
+                .strip_prefix(&format!("{source_namespace}:account:"))
+                .unwrap_or(source_key);
+            let target_key = format!("{target_namespace}:account:{suffix}");
+
+            // Copy the hash data
+            let data: std::collections::HashMap<String, String> =
+                redis::cmd("HGETALL").arg(source_key).query(conn)?;
+
+            if !data.is_empty() {
+                let fields: Vec<(&str, &str)> =
+                    data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                pipe.hset_multiple(&target_key, &fields);
+            }
+        }
+
+        pipe.query::<()>(conn)?;
+    }
+
+    // Copy storage keys
+    let storage_pattern = format!("{source_namespace}:storage:*");
+    cursor = 0;
+    keys_to_copy.clear();
+
+    loop {
+        let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&storage_pattern)
+            .arg("COUNT")
+            .arg(100)
+            .query(conn)?;
+
+        keys_to_copy.extend(keys);
+        cursor = new_cursor;
+
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    for chunk in keys_to_copy.chunks(chunk_size) {
+        let mut pipe = redis::pipe();
+
+        for source_key in chunk {
+            let suffix = source_key
+                .strip_prefix(&format!("{source_namespace}:storage:"))
+                .unwrap_or(source_key);
+            let target_key = format!("{target_namespace}:storage:{suffix}");
+
+            let data: std::collections::HashMap<String, String> =
+                redis::cmd("HGETALL").arg(source_key).query(conn)?;
+
+            if !data.is_empty() {
+                let fields: Vec<(&str, &str)> =
+                    data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                pipe.hset_multiple(&target_key, &fields);
+            }
+        }
+
+        pipe.query::<()>(conn)?;
+    }
+
+    // Copy code keys
+    let code_pattern = format!("{source_namespace}:code:*");
+    cursor = 0;
+    keys_to_copy.clear();
+
+    loop {
+        let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&code_pattern)
+            .arg("COUNT")
+            .arg(100)
+            .query(conn)?;
+
+        keys_to_copy.extend(keys);
+        cursor = new_cursor;
+
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    for chunk in keys_to_copy.chunks(chunk_size) {
+        let mut pipe = redis::pipe();
+
+        for source_key in chunk {
+            let suffix = source_key
+                .strip_prefix(&format!("{source_namespace}:code:"))
+                .unwrap_or(source_key);
+            let target_key = format!("{target_namespace}:code:{suffix}");
+
+            let data: Option<String> = redis::cmd("GET").arg(source_key).query(conn)?;
+
+            if let Some(code) = data {
+                pipe.set(&target_key, code);
+            }
+        }
+
+        pipe.query::<()>(conn)?;
+    }
+
+    // Copy the block number (this makes the namespace "valid")
+    let source_block: Option<String> = redis::cmd("GET")
+        .arg(get_block_key(&source_namespace))
+        .query(conn)?;
+
+    if let Some(block) = source_block {
+        redis::cmd("SET")
+            .arg(get_block_key(&target_namespace))
+            .arg(block)
+            .query::<()>(conn)?;
+    }
+
+    Ok(())
+}
+
+/// Clear all keys in a namespace.
+fn clear_namespace<C>(conn: &mut C, namespace: &str) -> StateResult<()>
+where
+    C: redis::ConnectionLike,
+{
+    let pattern = format!("{namespace}:*");
+    let mut cursor = 0u64;
+
+    loop {
+        let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(100)
+            .query(conn)?;
+
+        if !keys.is_empty() {
+            redis::cmd("DEL").arg(&keys).query::<()>(conn)?;
+        }
+
+        cursor = new_cursor;
+
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+/// Repair a namespace by copying valid state and applying diffs.
+///
+/// This is the SAFE way to repair - we never trust corrupted state.
+fn repair_namespace_with_diffs<C>(
+    conn: &mut C,
+    base_namespace: &str,
+    source_idx: usize,
+    target_idx: usize,
+    target_block: u64,
+    buffer_size: usize,
+    chunk_size: usize,
+) -> StateResult<()>
+where
+    C: redis::ConnectionLike,
+{
+    let source_namespace = format!("{base_namespace}:{source_idx}");
+    let target_namespace = format!("{base_namespace}:{target_idx}");
+
+    // Step 1: Get the source namespace's block number
+    let source_block = read_namespace_block_number(conn, &source_namespace)?
+        .ok_or_else(|| StateError::Other("Source namespace has no block number".into()))?;
+
+    // Sanity check: source should be BEFORE target
+    if source_block >= target_block {
+        return Err(StateError::Other(format!(
+            "Source block {source_block} must be before target block {target_block}",
+        )));
+    }
+
+    // Step 2: Verify all required diffs exist BEFORE we start modifying state
+    for block_num in (source_block + 1)..=target_block {
+        let diff_key = get_diff_key(base_namespace, block_num);
+        let exists: bool = redis::cmd("EXISTS").arg(&diff_key).query(conn)?;
+        if !exists {
+            return Err(StateError::MissingStateDiff {
+                needed_block: block_num,
+                target_block,
+            });
+        }
+    }
+
+    // Step 3: Copy cumulative state from source namespace
+    // This gives us a known-good base state
+    copy_namespace_state(conn, base_namespace, source_idx, target_idx, chunk_size)?;
+
+    // Step 4: Apply diffs sequentially to reach target block
+    for block_num in (source_block + 1)..=target_block {
+        let diff_key = get_diff_key(base_namespace, block_num);
+        let diff_json: String = redis::cmd("GET").arg(&diff_key).query(conn)?;
+        let diff = deserialize_state_diff(&diff_json, block_num)?;
+
+        // Apply account changes
+        let accounts: Vec<&AccountState> = diff.accounts.iter().collect();
+        for chunk in accounts.chunks(chunk_size) {
+            write_account_chunk(conn, &target_namespace, chunk)?;
+        }
+    }
+
+    // Step 5: Update metadata to reflect the target block
+    // We need to fetch the target block's hash and state root from the diff
+    let target_diff_key = get_diff_key(base_namespace, target_block);
+    let target_diff_json: String = redis::cmd("GET").arg(&target_diff_key).query(conn)?;
+    let target_diff = deserialize_state_diff(&target_diff_json, target_block)?;
+
+    write_block_metadata(
+        conn,
+        &target_namespace,
+        base_namespace,
+        target_block,
+        target_diff.block_hash,
+        target_diff.state_root,
+        buffer_size,
+    )?;
+
+    Ok(())
 }
 
 /// Recover all stale locks across all namespaces.
