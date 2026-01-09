@@ -882,7 +882,6 @@ impl Writer for StateWriter {
     /// For large states (e.g., Ethereum mainnet with 200M+ accounts), this
     /// will OOM. Use `begin_bootstrap()` or `bootstrap_from_iterator()` instead
     /// for memory-efficient streaming writes.
-    #[allow(clippy::too_many_lines)]
     fn bootstrap_from_snapshot(
         &self,
         accounts: Vec<AccountState>,
