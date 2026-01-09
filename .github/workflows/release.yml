@@ -1,66 +1,127 @@
-name: Release and Publish
+name: Tag, Release and Publish
 
 on:
   push:
-    tags:
-      - "*.*.*"
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+
 jobs:
-  check-version:
+  # Only runs on main branch push - creates tag if version changed
+  create-tag:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
-      version: ${{ steps.check.outputs.version }}
+      tag_created: ${{ steps.create-tag.outputs.tag_created }}
+      version: ${{ steps.create-tag.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Check version matches tag
-        id: check
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract versions and create tag if changed
+        id: create-tag
         run: |
-          # github.ref_name holds the tag name that triggered the workflow
-          TAG_VERSION="${{ github.ref_name }}"
-          # Clean up the tag if it has a 'v' prefix
-          if [[ $TAG_VERSION == v* ]]; then
-            TAG_VERSION="${TAG_VERSION:1}"
-          fi
-          
-          # Get version from pcl package using cargo metadata
-          CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "pcl") | .version')
-          
-          echo "version=${CARGO_VERSION}" >> $GITHUB_OUTPUT
-          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "Version mismatch: Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+          set -euo pipefail
+
+          get_version() {
+            awk '
+              /^\[workspace\.package\][[:space:]]*$/ { in_section=1; next }
+              /^\[/ { in_section=0 }
+              in_section && /^[[:space:]]*version[[:space:]]*=/ {
+                sub(/.*=[[:space:]]*"/, "")
+                sub(/".*/, "")
+                print; exit
+              }
+            ' "$1"
+          }
+
+          CURRENT="$(get_version Cargo.toml)"
+          if [[ -z "$CURRENT" ]]; then
+            echo "::error::Could not extract [workspace.package].version from Cargo.toml"
             exit 1
           fi
+          echo "Current version: $CURRENT"
+
+          BEFORE="${{ github.event.before }}"
+          PREVIOUS=""
+
+          if [[ "$BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+            if git cat-file -e "${BEFORE}:Cargo.toml" 2>/dev/null; then
+              git show "${BEFORE}:Cargo.toml" > /tmp/prev.toml
+              PREVIOUS="$(get_version /tmp/prev.toml || true)"
+            else
+              echo "::warning::Could not read Cargo.toml from before commit; treating as version change"
+            fi
+          fi
+
+          echo "Previous version: ${PREVIOUS:-none}"
+
+          if [[ -n "$PREVIOUS" && "$CURRENT" == "$PREVIOUS" ]]; then
+            echo "Version unchanged, skipping release"
+            echo "tag_created=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          TAG="${CURRENT}"
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag $TAG already exists locally"
+            exit 1
+          fi
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "::error::Tag $TAG already exists on remote"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+          echo "Created and pushed tag: $TAG"
+          echo "tag_created=true" >> $GITHUB_OUTPUT
+          echo "version=${CURRENT}" >> $GITHUB_OUTPUT
+
   build-pcl:
-    needs: check-version
+    needs: create-tag
+    if: needs.create-tag.outputs.tag_created == 'true'
     uses: phylaxsystems/actions/.github/workflows/rust-build-binary.yaml@main
     with:
       binary-name: pcl
-      version: ${{ needs.check-version.outputs.version }}
+      version: ${{ needs.create-tag.outputs.version }}
       artifact_name: pcl-binaries
       rust-channel: "nightly"
       package: "pcl"
 
   build-assertion-da:
-    needs: check-version
+    needs: create-tag
+    if: needs.create-tag.outputs.tag_created == 'true'
     uses: phylaxsystems/actions/.github/workflows/rust-build-binary.yaml@main
     with:
       binary-name: assertion-da
-      version: ${{ needs.check-version.outputs.version }}
+      version: ${{ needs.create-tag.outputs.version }}
       artifact_name: assertion-da-binaries
       rust-channel: "nightly"
       package: "assertion-da-server"
 
   build-sidecar:
-    needs: check-version
+    needs: create-tag
+    if: needs.create-tag.outputs.tag_created == 'true'
     uses: phylaxsystems/actions/.github/workflows/rust-build-binary.yaml@main
     with:
       binary-name: sidecar
-      version: ${{ needs.check-version.outputs.version }}
+      version: ${{ needs.create-tag.outputs.version }}
       artifact_name: sidecar-binaries
       rust-channel: "nightly"
       package: "sidecar"
 
   combine-artifacts:
-    needs: [ build-pcl, build-assertion-da, build-sidecar ]
+    needs: [create-tag, build-pcl, build-assertion-da, build-sidecar]
+    if: needs.create-tag.outputs.tag_created == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download PCL artifacts
@@ -97,13 +158,14 @@ jobs:
           retention-days: 1
 
   release-github:
-    needs: combine-artifacts
+    needs: [create-tag, combine-artifacts]
+    if: needs.create-tag.outputs.tag_created == 'true'
     uses: phylaxsystems/actions/.github/workflows/release-github.yaml@main
     permissions:
       contents: write
     with:
       artifact_name: release-artifacts
-      release_name: "${{ github.ref_name }}"
+      release_name: ${{ needs.create-tag.outputs.version }}
       generate_release_notes: true
       draft: false
       prerelease: false
