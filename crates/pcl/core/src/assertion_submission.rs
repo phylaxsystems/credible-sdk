@@ -1,4 +1,5 @@
 use crate::{
+    DEFAULT_DAPP_URL,
     config::{
         AssertionForSubmission,
         AssertionKey,
@@ -80,14 +81,14 @@ struct Project {
                   The -a flag with parentheses format is for specifying assertions with arguments."
 )]
 pub struct DappSubmitArgs {
-    /// Base URL for the Credible Layer dApp API
+    /// Base URL for the Credible Layer dApp API (e.g., <https://dapp.phylax.systems>)
     #[clap(
         short = 'u',
         long = "api-url",
         env = "PCL_API_URL",
         value_hint = ValueHint::Url,
         value_name = "API Endpoint",
-        default_value_t = crate::default_dapp_url_with("api/v1")
+        default_value = DEFAULT_DAPP_URL
     )]
     pub api_url: String,
 
@@ -304,8 +305,9 @@ impl DappSubmitArgs {
 
         let response = client
             .post(format!(
-                "{}/projects/{}/submitted-assertions",
-                self.api_url, project.project_id
+                "{}/api/v1/projects/{}/submitted-assertions",
+                self.api_url.trim_end_matches('/'),
+                project.project_id
             ))
             .header(
                 "Authorization",
@@ -415,8 +417,8 @@ impl DappSubmitArgs {
         let client = reqwest::Client::new();
         let projects: Vec<Project> = client
             .get(format!(
-                "{}/projects?user={}",
-                self.api_url,
+                "{}/api/v1/projects?user={}",
+                self.api_url.trim_end_matches('/'),
                 config
                     .auth
                     .as_ref()
