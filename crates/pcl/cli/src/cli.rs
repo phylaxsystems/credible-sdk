@@ -73,6 +73,24 @@ mod tests {
             Commands::Store(args) => {
                 assert_eq!(args.assertion_specs.len(), 1);
                 assert_eq!(args.assertion_specs[0].assertion_name, "TestAssertion");
+                assert!(args.positional_assertions.is_empty());
+            }
+            _ => panic!("expected store command"),
+        }
+    }
+
+    #[test]
+    fn parses_store_command_with_positional_specs() {
+        let cli =
+            Cli::try_parse_from(["pcl", "store", "TestAssertion", "OtherAssertion(arg1,arg2)"])
+                .unwrap();
+
+        match cli.command {
+            Commands::Store(args) => {
+                assert!(args.assertion_specs.is_empty());
+                assert_eq!(args.positional_assertions.len(), 2);
+                assert_eq!(args.positional_assertions[0], "TestAssertion");
+                assert_eq!(args.positional_assertions[1], "OtherAssertion(arg1,arg2)");
             }
             _ => panic!("expected store command"),
         }
