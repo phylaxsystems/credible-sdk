@@ -4006,3 +4006,486 @@ fn test_bootstrap_stress_many_accounts() {
         assert_eq!(acc.balance, u256(u64::from(i) * 100));
     }
 }
+
+#[test]
+fn test_fix_block_metadata_basic() {
+    // Simulate bootstrap that wrote block 0 instead of correct block number
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xaa);
+
+    // Bootstrap writes to block 0 (simulating missing --block-number)
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 5, [(1, 100)])],
+        0, // Wrong block number!
+        B256::repeat_byte(0x11),
+        B256::repeat_byte(0x22),
+    )
+    .unwrap();
+
+    assert_eq!(w.latest_block_number().unwrap(), Some(0));
+
+    // Fix the metadata to correct block number
+    let was_updated = w
+        .fix_block_metadata(19_000_000, B256::repeat_byte(0x33), None)
+        .unwrap();
+
+    assert!(was_updated);
+
+    // Verify new block number
+    assert_eq!(w.latest_block_number().unwrap(), Some(19_000_000));
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // Block 19_000_000 should be available
+    assert!(r.is_block_available(19_000_000).unwrap());
+    assert!(!r.is_block_available(0).unwrap());
+
+    // Data should still be accessible
+    let acc = r.get_account(a.into(), 19_000_000).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1000));
+    assert_eq!(acc.nonce, 5);
+
+    let storage = r.get_all_storage(a.into(), 19_000_000).unwrap();
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+}
+
+#[test]
+fn test_fix_block_metadata_preserves_state_root() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xbb);
+
+    let original_state_root = B256::repeat_byte(0xBB);
+
+    w.bootstrap_from_snapshot(
+        vec![simple_account(a, 1000, 0)],
+        0,
+        B256::repeat_byte(0xAA),
+        original_state_root,
+    )
+    .unwrap();
+
+    // Fix without providing state_root - should preserve original
+    let new_block_hash = B256::repeat_byte(0xCC);
+    w.fix_block_metadata(12345, new_block_hash, None).unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    let meta = r.get_block_metadata(12345).unwrap().unwrap();
+    assert_eq!(meta.block_hash, new_block_hash);
+    assert_eq!(meta.state_root, original_state_root); // Preserved
+}
+
+#[test]
+fn test_fix_block_metadata_with_custom_state_root() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xcc);
+
+    w.bootstrap_from_snapshot(
+        vec![simple_account(a, 1000, 0)],
+        0,
+        B256::repeat_byte(0x11), // Original
+        B256::repeat_byte(0x22), // Original
+    )
+    .unwrap();
+
+    let new_block_hash = B256::repeat_byte(0xDD);
+    let new_state_root = B256::repeat_byte(0xEE);
+
+    // Fix with custom hash and root
+    w.fix_block_metadata(99999, new_block_hash, Some(new_state_root))
+        .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    let meta = r.get_block_metadata(99999).unwrap().unwrap();
+    assert_eq!(meta.block_hash, new_block_hash);
+    assert_eq!(meta.state_root, new_state_root);
+}
+
+#[test]
+fn test_fix_block_metadata_no_op_when_same() {
+    let (w, _tmp) = writer_env(3);
+    let a = addr(0xdd);
+
+    w.bootstrap_from_snapshot(
+        vec![simple_account(a, 1000, 0)],
+        12345,
+        B256::repeat_byte(0x11),
+        B256::repeat_byte(0x22),
+    )
+    .unwrap();
+
+    // Try to "fix" to same block number
+    let was_updated = w
+        .fix_block_metadata(12345, B256::repeat_byte(0x33), None)
+        .unwrap();
+
+    assert!(!was_updated);
+}
+
+#[test]
+fn test_fix_block_metadata_then_commit_blocks() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xee);
+
+    // Bootstrap at wrong block
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        0,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Fix to correct block
+    w.fix_block_metadata(100, B256::repeat_byte(0x11), None)
+        .unwrap();
+
+    // Now commit subsequent blocks
+    w.commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(102, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(103, a, 1300, 3, [(4, 400)]))
+        .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // Block 100 should be rotated out
+    assert!(!r.is_block_available(100).unwrap());
+
+    // Blocks 101-103 should be available
+    assert!(r.is_block_available(101).unwrap());
+    assert!(r.is_block_available(102).unwrap());
+    assert!(r.is_block_available(103).unwrap());
+
+    // Verify cumulative state at block 103
+    let acc = r.get_account(a.into(), 103).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1300));
+    assert_eq!(acc.nonce, 3);
+
+    let storage = r.get_all_storage(a.into(), 103).unwrap();
+    assert_eq!(storage.len(), 4);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(4))), Some(&u256(400)));
+}
+
+#[test]
+fn test_fix_block_metadata_updates_all_namespaces() {
+    let (w, tmp) = writer_env(5);
+    let a = addr(0xff);
+
+    w.bootstrap_from_snapshot(vec![simple_account(a, 1000, 0)], 0, B256::ZERO, B256::ZERO)
+        .unwrap();
+
+    // Fix to high block number
+    w.fix_block_metadata(1_000_000, B256::repeat_byte(0x11), None)
+        .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 5);
+
+    // The block should be available (all namespaces updated)
+    assert!(r.is_block_available(1_000_000).unwrap());
+
+    // Data should be accessible
+    let acc = r.get_account(a.into(), 1_000_000).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1000));
+}
+
+#[test]
+fn test_fix_block_metadata_high_block_number() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x11);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(
+            a,
+            5000,
+            10,
+            [(1, 111), (2, 222)],
+        )],
+        0,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Fix to very high block number (mainnet-like)
+    let was_updated = w
+        .fix_block_metadata(21_500_000, B256::repeat_byte(0xAA), None)
+        .unwrap();
+
+    assert!(was_updated);
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    assert_eq!(r.latest_block_number().unwrap(), Some(21_500_000));
+    assert!(r.is_block_available(21_500_000).unwrap());
+
+    // Verify data integrity
+    let acc = r.get_account(a.into(), 21_500_000).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(5000));
+    assert_eq!(acc.nonce, 10);
+
+    let storage = r.get_all_storage(a.into(), 21_500_000).unwrap();
+    assert_eq!(storage.len(), 2);
+}
+
+#[test]
+fn test_fix_block_metadata_with_code() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x22);
+    let code = vec![0x60, 0x80, 0x60, 0x40, 0x52];
+    let code_hash = keccak256(&code);
+
+    w.bootstrap_from_snapshot(
+        vec![AccountState {
+            address_hash: AddressHash(keccak256(a)),
+            balance: u256(0),
+            nonce: 1,
+            code_hash,
+            code: Some(Bytes::from(code.clone())),
+            storage: HashMap::new(),
+            deleted: false,
+        }],
+        0,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    w.fix_block_metadata(50000, B256::repeat_byte(0x11), None)
+        .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // Code should still be accessible after fix
+    let acc = r.get_account(a.into(), 50000).unwrap().unwrap();
+    assert_eq!(acc.code_hash, code_hash);
+
+    let retrieved_code = r.get_code(code_hash, 50000).unwrap();
+    assert_eq!(retrieved_code, Some(Bytes::from(code)));
+}
+
+#[test]
+fn test_fix_block_metadata_override_state_root() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x44);
+
+    let original_block_hash = B256::repeat_byte(0xAA);
+
+    w.bootstrap_from_snapshot(
+        vec![simple_account(a, 1000, 0)],
+        0,
+        original_block_hash,
+        B256::ZERO, // No state root initially
+    )
+    .unwrap();
+
+    let new_block_hash = B256::repeat_byte(0xCC);
+    let new_state_root = B256::repeat_byte(0xBB);
+
+    // Fix with explicit state_root override
+    w.fix_block_metadata(12345, new_block_hash, Some(new_state_root))
+        .unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    let meta = r.get_block_metadata(12345).unwrap().unwrap();
+    assert_eq!(meta.block_hash, new_block_hash);
+    assert_eq!(meta.state_root, new_state_root);
+}
+
+#[test]
+fn test_fix_block_metadata_from_nonzero_block() {
+    // Test fixing from a non-zero block to another block
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x55);
+
+    // Bootstrap at block 100
+    w.bootstrap_from_snapshot(
+        vec![simple_account(a, 1000, 0)],
+        100,
+        B256::repeat_byte(0x11),
+        B256::repeat_byte(0x22),
+    )
+    .unwrap();
+
+    // Fix to block 200
+    let was_updated = w
+        .fix_block_metadata(200, B256::repeat_byte(0x33), None)
+        .unwrap();
+
+    assert!(was_updated);
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    assert!(!r.is_block_available(100).unwrap());
+    assert!(r.is_block_available(200).unwrap());
+
+    // Metadata should be at new block with new hash but preserved state_root
+    let meta = r.get_block_metadata(200).unwrap().unwrap();
+    assert_eq!(meta.block_hash, B256::repeat_byte(0x33));
+    assert_eq!(meta.state_root, B256::repeat_byte(0x22)); // Preserved
+
+    // Old block metadata should be gone
+    assert!(r.get_block_metadata(100).unwrap().is_none());
+}
+
+#[test]
+fn test_fix_block_metadata_buffer_size_one() {
+    let (w, tmp) = writer_env(1);
+    let a = addr(0x66);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        0,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    w.fix_block_metadata(5000, B256::ZERO, None).unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 1);
+
+    assert!(r.is_block_available(5000).unwrap());
+
+    let acc = r.get_account(a.into(), 5000).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1000));
+}
+
+#[test]
+fn test_fix_block_metadata_large_buffer_size() {
+    let (w, tmp) = writer_env(100);
+    let a = addr(0x77);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 2000, 5, [(1, 111)])],
+        0,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    w.fix_block_metadata(10_000, B256::ZERO, None).unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 100);
+
+    assert!(r.is_block_available(10_000).unwrap());
+
+    let acc = r.get_account(a.into(), 10_000).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(2000));
+    assert_eq!(acc.nonce, 5);
+}
+
+#[test]
+fn test_fix_block_metadata_then_full_rotation() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x88);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        0,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    w.fix_block_metadata(100, B256::ZERO, None).unwrap();
+
+    // Commit enough blocks for 2 full rotations
+    for block_num in 101..=106u64 {
+        w.commit_block(&update_with_storage(
+            block_num,
+            a,
+            block_num * 10,
+            block_num,
+            [(block_num, block_num * 100)],
+        ))
+        .unwrap();
+    }
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // Only blocks 104, 105, 106 should be available
+    assert!(!r.is_block_available(103).unwrap());
+    assert!(r.is_block_available(104).unwrap());
+    assert!(r.is_block_available(105).unwrap());
+    assert!(r.is_block_available(106).unwrap());
+
+    // Verify state is correctly accumulated
+    let storage = r.get_all_storage(a.into(), 106).unwrap();
+    assert_eq!(storage.len(), 7); // slot 1 from bootstrap + slots 101-106
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    for block_num in 101..=106u64 {
+        assert_eq!(
+            storage.get(&hash_slot(slot_b256(block_num))),
+            Some(&u256(block_num * 100))
+        );
+    }
+}
+
+#[test]
+fn test_fix_block_metadata_with_deletions_after() {
+    let (w, tmp) = writer_env(3);
+    let (a, b) = (addr(0x99), addr(0x9a));
+
+    w.bootstrap_from_snapshot(
+        vec![
+            account_state_with_storage(a, 1000, 0, [(1, 100)]),
+            account_state_with_storage(b, 2000, 0, [(1, 200)]),
+        ],
+        0,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    w.fix_block_metadata(100, B256::ZERO, None).unwrap();
+
+    // Delete account A in next block
+    w.commit_block(&block_update(101, vec![deleted_account(a)]))
+        .unwrap();
+
+    // Update account B
+    w.commit_block(&simple_update(102, b, 2500, 1)).unwrap();
+
+    // Rotation
+    w.commit_block(&simple_update(103, b, 3000, 2)).unwrap();
+
+    drop(w);
+    let r = reader_for(&tmp, 3);
+
+    // A should be deleted
+    assert!(r.get_account(a.into(), 103).unwrap().is_none());
+
+    // B should exist
+    let acc_b = r.get_account(b.into(), 103).unwrap().unwrap();
+    assert_eq!(acc_b.balance, u256(3000));
+}
+
+#[test]
+fn test_fix_block_metadata_empty_database_fails() {
+    let (w, _tmp) = writer_env(3);
+
+    // Don't bootstrap - database is empty
+    // Trying to fix should fail because there's no metadata
+    let result = w.fix_block_metadata(100, B256::ZERO, None);
+
+    assert!(result.is_err());
+}

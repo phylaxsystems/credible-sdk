@@ -62,6 +62,7 @@ use crate::{
     CommitStats,
     Reader,
     Writer,
+    mdbx,
     mdbx::{
         StateReader,
         common::{
@@ -874,7 +875,7 @@ impl Writer for StateWriter {
         )
         .map_err(StateError::Database)?;
 
-        // Update global metadata (latest_block)
+        // Update global metadata (`latest_block`)
         tx.put::<Metadata>(
             MetadataKey,
             GlobalMetadata {
@@ -1428,5 +1429,92 @@ impl StateWriter {
         }
 
         Ok(())
+    }
+
+    /// Fix metadata on an existing database after bootstrap with wrong block number.
+    ///
+    /// This updates:
+    /// - Global metadata (`latest_block`)
+    /// - All namespace block pointers
+    /// - Block metadata table (moves from old key to new key)
+    pub fn fix_block_metadata(
+        &self,
+        block_number: u64,
+        block_hash: B256,
+        state_root: Option<B256>,
+    ) -> StateResult<bool> {
+        let db = self.reader.db();
+        let buffer_size = db.buffer_size();
+
+        // Read current state
+        let (old_block_number, old_meta) = {
+            let tx = db.tx()?;
+
+            let current_meta = tx
+                .get::<Metadata>(MetadataKey)
+                .map_err(StateError::Database)?
+                .ok_or(StateError::MetadataNotAvailable)?;
+
+            let old_meta = tx
+                .get::<BlockMetadataTable>(BlockNumber(current_meta.latest_block))
+                .map_err(StateError::Database)?;
+
+            (current_meta.latest_block, old_meta)
+        };
+
+        if old_block_number == block_number {
+            return Ok(false);
+        }
+
+        let final_state_root = state_root
+            .or_else(|| old_meta.as_ref().map(|m| m.state_root))
+            .unwrap_or(B256::ZERO);
+
+        // Write updated metadata
+        let tx = db.tx_mut()?;
+
+        // 1. Update global metadata
+        tx.put::<Metadata>(
+            MetadataKey,
+            GlobalMetadata {
+                latest_block: block_number,
+                buffer_size,
+            },
+        )
+        .map_err(StateError::Database)?;
+
+        // 2. Update all namespace block pointers
+        for ns in 0..buffer_size {
+            tx.put::<NamespaceBlocks>(NamespaceIdx(ns), BlockNumber(block_number))
+                .map_err(StateError::Database)?;
+        }
+
+        // 3. Delete old block metadata entry if different from new
+        if old_block_number != block_number && old_meta.is_some() {
+            tx.delete::<BlockMetadataTable>(BlockNumber(old_block_number), None)
+                .map_err(StateError::Database)?;
+        }
+
+        // 4. Write block metadata at correct key
+        tx.put::<BlockMetadataTable>(
+            BlockNumber(block_number),
+            mdbx::common::types::BlockMetadata {
+                block_hash,
+                state_root: final_state_root,
+            },
+        )
+        .map_err(StateError::Database)?;
+
+        // Commit
+        tx.commit()
+            .map_err(|e| StateError::CommitFailed(e.to_string()))?;
+
+        debug!(
+            old_block = old_block_number,
+            new_block = block_number,
+            "fixed block metadata"
+        );
+
+        Ok(true)
     }
 }

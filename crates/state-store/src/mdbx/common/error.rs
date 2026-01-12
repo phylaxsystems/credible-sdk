@@ -52,6 +52,10 @@ pub enum StateError {
     #[error("Block {0} is not available in the circular buffer (oldest available: {1})")]
     BlockNotAvailable(u64, u64),
 
+    /// Metadata is not available
+    #[error("Metadata is not available")]
+    MetadataNotAvailable,
+
     /// Missing state diff needed for reconstruction
     #[error(
         "Missing state diff for block {needed_block} (required to reconstruct state at block {target_block})"
