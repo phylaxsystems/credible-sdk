@@ -39,6 +39,7 @@ use std::{
 use state_store::{
     AccountState,
     AddressHash,
+    Reader,
     mdbx::common::CircularBufferConfig,
 };
 
@@ -60,11 +61,11 @@ struct Args {
 
     /// Block number to dump
     #[arg(long)]
-    block_number: Option<u64>,
+    block_number: u64,
 
     /// Block hash to dump
     #[arg(long)]
-    block_hash: Option<String>,
+    block_hash: String,
 
     /// Starting key for iteration
     #[arg(long)]
@@ -94,6 +95,14 @@ struct Args {
     /// Verbose logging
     #[arg(long, short)]
     verbose: bool,
+
+    /// Fix metadata only - update block number on existing database without re-hydrating
+    #[arg(long)]
+    fix_metadata: bool,
+
+    /// State root (hex) - used with --fix-metadata
+    #[arg(long)]
+    state_root: Option<String>,
 }
 
 impl Args {
@@ -412,11 +421,9 @@ fn build_geth_command(args: &Args, mode: &str) -> Command {
     if let Some(ref start_key) = args.start_key {
         cmd.args(["--start", start_key]);
     }
-    if let Some(ref block_hash) = args.block_hash {
-        cmd.arg(block_hash);
-    } else if let Some(block_number) = args.block_number {
-        cmd.arg(block_number.to_string());
-    }
+
+    cmd.arg(args.block_hash.clone());
+    cmd.arg(args.block_number.to_string());
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd
@@ -499,10 +506,7 @@ fn parse_missing_trie_node(stderr: &str) -> Option<B256> {
 }
 
 /// Check for pruned state error and provide detailed message
-fn maybe_pruned_state_error(
-    errors: &[GethDumpError],
-    block_argument: Option<&str>,
-) -> Option<String> {
+fn maybe_pruned_state_error(errors: &[GethDumpError], block_hash: &str) -> Option<String> {
     let snapshot_error = errors.iter().find(|e| e.command == "snapshot dump")?;
     let trie_error = errors.iter().find(|e| e.command == "dump")?;
 
@@ -513,9 +517,8 @@ fn maybe_pruned_state_error(
         return None;
     }
 
-    let block_label = block_argument.unwrap_or("the requested block");
     Some(format!(
-        "Geth pruned the historical state needed for {block_label}: \
+        "Geth pruned the historical state needed for {block_hash}: \
          snapshot data only exists for head root {head_root:x}, \
          while the requested block requires state root {requested_root:x} \
          and the trie backend reported missing node {missing_node:x}. \
@@ -916,10 +919,6 @@ where
     };
 
     let mut errors: Vec<GethDumpError> = Vec::new();
-    let block_argument = args
-        .block_hash
-        .as_deref()
-        .or_else(|| args.block_number.map(|_| "block_number"));
 
     for mode in &backends {
         if args.verbose {
@@ -969,7 +968,7 @@ where
     }
 
     // Check for pruned state error with detailed message
-    if let Some(pruned_msg) = maybe_pruned_state_error(&errors, block_argument) {
+    if let Some(pruned_msg) = maybe_pruned_state_error(&errors, &args.block_hash) {
         bail!("{pruned_msg}");
     }
 
@@ -984,11 +983,53 @@ where
     )
 }
 
+/// Fix metadata on an existing MDBX database without re-hydrating
+fn fix_metadata(args: &Args) -> Result<()> {
+    let mdbx_path = args.mdbx_path.as_ref().context("--mdbx-path is required")?;
+    let new_block_number = args.block_number;
+
+    let block_hash = parse_hex_b256(&args.block_hash).context("Invalid block hash")?;
+
+    let state_root = args
+        .state_root
+        .as_ref()
+        .map(|r| parse_hex_b256(r))
+        .transpose()
+        .context("Invalid state root")?;
+
+    eprintln!("Opening database at: {mdbx_path}");
+
+    // Open writer with same buffer size (it will read actual buffer size from db)
+    let writer = StateWriter::new(mdbx_path, CircularBufferConfig::new(args.buffer_size)?)
+        .context("Failed to open MDBX database")?;
+
+    // Show current state
+    let current_block = writer.latest_block_number()?.unwrap_or(0);
+    eprintln!("Current latest_block: {current_block}");
+
+    if let Some(meta) = writer.get_block_metadata(current_block)? {
+        eprintln!("Current block_hash: {:?}", meta.block_hash);
+        eprintln!("Current state_root: {:?}", meta.state_root);
+    }
+
+    // Fix metadata
+    writer
+        .fix_block_metadata(new_block_number, block_hash, state_root)
+        .context("Failed to fix metadata")?;
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
     // Validate args
     args.validate()?;
+
+    // Handle --fix-metadata mode
+    if args.fix_metadata {
+        return fix_metadata(&args);
+    }
 
     // Setup MDBX writer if path provided
     let writer = if let Some(ref path) = args.mdbx_path {
@@ -1052,7 +1093,7 @@ fn main() -> Result<()> {
     };
 
     // Get final block info
-    let final_block_number = args.block_number.or(metadata.block_number).unwrap_or(0);
+    let final_block_number = args.block_number;
     let final_block_hash = metadata.block_hash.unwrap_or(B256::ZERO);
     let final_state_root = metadata.state_root.unwrap_or(B256::ZERO);
 
