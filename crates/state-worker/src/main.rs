@@ -13,6 +13,7 @@ mod worker;
 
 use crate::{
     cli::Args,
+    system_calls::SystemCalls,
     worker::StateWorker,
 };
 
@@ -74,12 +75,22 @@ async fn main() -> Result<()> {
     let contents = std::fs::read_to_string(file_path)
         .inspect_err(|e| warn!(error = ?e, file_path = file_path, "Failed to read genesis file"))
         .with_context(|| format!("failed to read genesis file: {file_path}"))?;
-    let genesis_state = Some(
-        genesis::parse_from_str(&contents)
-            .inspect_err(
-                |e| warn!(error = ?e, file_path = file_path, "Failed to parse genesis from file"),
-            )
-            .with_context(|| format!("failed to parse genesis from file: {file_path}"))?,
+    let genesis_state = genesis::parse_from_str(&contents)
+        .inspect_err(
+            |e| warn!(error = ?e, file_path = file_path, "Failed to parse genesis from file"),
+        )
+        .with_context(|| format!("failed to parse genesis from file: {file_path}"))?;
+
+    // Extract fork timestamps for system calls before consuming genesis
+    let system_calls = SystemCalls::new(
+        genesis_state.config().cancun_time,
+        genesis_state.config().prague_time,
+    );
+
+    info!(
+        cancun_time = ?system_calls.cancun_time,
+        prague_time = ?system_calls.prague_time,
+        "Configured system call fork timestamps"
     );
 
     // Create the trace provider based on config
@@ -102,7 +113,13 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut worker = StateWorker::new(provider, trace_provider, writer_reader, genesis_state);
+    let mut worker = StateWorker::new(
+        provider,
+        trace_provider,
+        writer_reader,
+        Some(genesis_state),
+        system_calls,
+    );
 
     match worker.run(args.start_block, shutdown_rx).await {
         Ok(()) => {

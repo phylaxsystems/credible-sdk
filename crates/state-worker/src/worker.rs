@@ -12,8 +12,8 @@ use crate::{
         TraceProvider,
     },
     system_calls::{
-        self,
         SystemCallConfig,
+        SystemCalls,
     },
 };
 use alloy::rpc::types::Header;
@@ -57,6 +57,7 @@ where
     trace_provider: Box<dyn TraceProvider>,
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
+    system_calls: SystemCalls,
     metrics: WorkerMetrics,
 }
 
@@ -71,12 +72,14 @@ where
         trace_provider: Box<dyn TraceProvider>,
         writer_reader: WR,
         genesis_state: Option<GenesisState>,
+        system_calls: SystemCalls,
     ) -> Self {
         Self {
             provider,
             trace_provider,
             writer_reader,
             genesis_state,
+            system_calls,
             metrics: WorkerMetrics::new(),
         }
     }
@@ -318,7 +321,10 @@ where
         };
 
         // Pass the reader to fetch existing account state
-        match system_calls::compute_system_call_states(&config, Some(&self.writer_reader)) {
+        match self
+            .system_calls
+            .compute_system_call_states(&config, Some(&self.writer_reader))
+        {
             Ok(states) => {
                 for state in states {
                     update.merge_account_state(state);
