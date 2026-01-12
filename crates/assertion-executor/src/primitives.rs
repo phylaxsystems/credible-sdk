@@ -123,6 +123,8 @@ impl TxValidationResult {
 /// Result of a single assertion contract execution
 #[derive(Debug, Default)]
 pub struct AssertionContractExecution {
+    /// Assertion adopter associated with this contract execution
+    pub adopter: Address,
     /// Results of the assertion functions executions
     pub assertion_fns_results: Vec<AssertionFunctionResult>,
     /// Total gas used to execute all the assertion functions of the assertion contract

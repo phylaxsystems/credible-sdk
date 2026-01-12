@@ -68,6 +68,12 @@ use crate::{
         BlockMetrics,
         TransactionMetrics,
     },
+    transaction_observer::{
+        IncidentData,
+        IncidentReport,
+        IncidentReportSender,
+        ReconstructableTx,
+    },
 };
 use assertion_executor::primitives::{
     EVMError,
@@ -285,6 +291,8 @@ struct BlockIterationData<DB> {
     n_transactions: u64,
     /// Stores last executed transactions for reorging
     last_executed_tx: LastExecutedTx,
+    /// Stores executed transactions for incident reporting
+    executed_txs: Vec<ReconstructableTx>,
     /// Iteration `BlockEnv`
     block_env: BlockEnv,
 }
@@ -326,6 +334,10 @@ pub struct CoreEngine<DB> {
     sources: Arc<Sources>,
     /// Channel on which the core engine receives events. Events include new transactions, blocks(block envs), reorgs.
     tx_receiver: TransactionQueueReceiver,
+    /// Channel on which the core engine sends invalidation reports.
+    incident_sender: Option<IncidentReportSender>,
+    /// Cache whether incident reporting is enabled.
+    report_incidents: bool,
     /// Core engines instance of the assertion executor, executes transactions and assertions
     assertion_executor: AssertionExecutor,
     /// Stores results of executed transactions
@@ -376,8 +388,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         state_sources_sync_timeout: Duration,
         source_monitoring_period: Duration,
         overlay_cache_invalidation_every_block: bool,
+        incident_sender: Option<IncidentReportSender>,
         #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
     ) -> Self {
+        let report_incidents = incident_sender.is_some();
         #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
             let processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>> =
@@ -402,6 +416,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             current_head: U256::ZERO,
             sources: sources.clone(),
             tx_receiver,
+            incident_sender,
+            report_incidents,
             assertion_executor,
             transaction_results: TransactionsResults::new(
                 state_results,
@@ -575,6 +591,62 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         }
     }
 
+    fn emit_incident_report(
+        &self,
+        tx_data: ReconstructableTx,
+        block_env: &BlockEnv,
+        prev_txs: Vec<ReconstructableTx>,
+        rax: &TxValidationResult,
+    ) {
+        let Some(sender) = &self.incident_sender else {
+            return;
+        };
+
+        let failures = Self::collect_incident_failures(rax);
+        if failures.is_empty() {
+            // TODO: make this error
+            return;
+        }
+
+        let incident_timestamp: u64 = block_env.timestamp.try_into().unwrap_or(u64::MAX);
+        let report = IncidentReport {
+            transaction_data: tx_data,
+            failures,
+            block_env: block_env.clone(),
+            incident_timestamp,
+            prev_txs,
+        };
+
+        if let Err(e) = sender.send(report) {
+            error!(target = "engine", error = ?e, "Failed to send incident report");
+        }
+    }
+
+    fn collect_incident_failures(rax: &TxValidationResult) -> Vec<IncidentData> {
+        rax.assertions_executions
+            .iter()
+            .flat_map(|assertion_execution| {
+                assertion_execution
+                    .assertion_fns_results
+                    .iter()
+                    .filter(|fn_result| !fn_result.is_success())
+                    .map(move |fn_result| {
+                        let revert_data = fn_result
+                            .as_result()
+                            .clone()
+                            .into_output()
+                            .unwrap_or_default();
+                        IncidentData {
+                            adopter_address: assertion_execution.adopter,
+                            assertion_id: fn_result.id.assertion_contract_id,
+                            assertion_fn: fn_result.id.fn_selector,
+                            revert_data,
+                        }
+                    })
+            })
+            .collect()
+    }
+
     /// Execute transaction and relted assertions with the core engines blockenv.
     #[instrument(
         name = "engine::execute_transaction",
@@ -592,6 +664,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_env: &TxEnv,
     ) -> Result<(), EngineError> {
         let block_id = tx_execution_id.as_block_execution_id();
+        let should_report = self.report_incidents;
 
         let current_block_iteration = self
             .current_block_iterations
@@ -618,7 +691,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let block_env = current_block_iteration.block_env.clone();
 
         let rax = self.assertion_executor.validate_transaction(
-            block_env,
+            block_env.clone(),
             tx_env,
             &mut current_block_iteration.fork_db,
             false,
@@ -631,6 +704,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             Err(e) => {
                 return self.process_transaction_validation_error(tx_execution_id, tx_env, &e);
             }
+        };
+
+        let is_valid = rax.is_valid();
+        let prev_txs = if should_report && !is_valid {
+            Some(current_block_iteration.executed_txs.clone())
+        } else {
+            None
         };
 
         // Batch metric updates
@@ -650,14 +730,26 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         self.trace_execute_transaction_result(tx_execution_id, tx_env, &rax);
 
+        let tx_data: ReconstructableTx = (tx_execution_id.tx_hash, tx_env.clone());
+        if let Some(prev_txs) = prev_txs {
+            self.emit_incident_report(tx_data.clone(), &block_env, prev_txs, &rax);
+        }
+
+        let result_and_state = rax.result_and_state;
         self.add_transaction_result(
             tx_execution_id,
             &TransactionResult::ValidationCompleted {
-                is_valid: rax.is_valid(),
-                execution_result: rax.result_and_state.result,
+                is_valid,
+                execution_result: result_and_state.result,
             },
-            Some(rax.result_and_state.state),
+            Some(result_and_state.state),
         )?;
+
+        let current_block_iteration = self
+            .current_block_iterations
+            .get_mut(&block_id)
+            .ok_or(EngineError::TransactionError)?;
+        current_block_iteration.executed_txs.push(tx_data);
 
         Ok(())
     }
@@ -930,6 +1022,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             fork_db: self.cache.fork(),
             n_transactions: 0,
             last_executed_tx: LastExecutedTx::new(),
+            executed_txs: Vec::new(),
             block_env: block_env.clone(),
         };
 
@@ -1241,6 +1334,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
             // Remove the last transaction from buffer, preserving the previous one if it exists
             current_block_iteration.last_executed_tx.remove_last();
+            current_block_iteration.executed_txs.pop();
 
             // Remove transaction from results
             self.transaction_results

@@ -33,11 +33,7 @@ pub fn check_and_fetch_spec() -> anyhow::Result<()> {
 }
 
 fn fetch_and_cache_spec() -> anyhow::Result<()> {
-    // Respect DAPP_ENV environment variable
-    let openapi_url = match env::var("DAPP_ENV").as_deref() {
-        Ok("development") | Ok("dev") => "http://localhost:3000/api/v1/openapi",
-        _ => "https://dapp.phylax.systems/api/v1/openapi",
-    };
+    let openapi_url = resolve_openapi_url();
     const TIMEOUT_SECONDS: u64 = 30;
 
     println!("cargo:warning=Fetching OpenAPI spec from {openapi_url}");
@@ -50,7 +46,7 @@ fn fetch_and_cache_spec() -> anyhow::Result<()> {
 
     // Fetch the OpenAPI spec
     let response = client
-        .get(openapi_url)
+        .get(&openapi_url)
         .send()
         .context("Failed to send HTTP request")?;
 
@@ -77,6 +73,21 @@ fn fetch_and_cache_spec() -> anyhow::Result<()> {
     cache_spec_with_metadata(spec_json)?;
 
     Ok(())
+}
+
+fn resolve_openapi_url() -> String {
+    if let Ok(url) = env::var("DAPP_OPENAPI_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    // Respect DAPP_ENV environment variable
+    match env::var("DAPP_ENV").as_deref() {
+        Ok("development") | Ok("dev") => "http://localhost:3000/api/v1/openapi".to_string(),
+        _ => "https://dapp.phylax.systems/api/v1/openapi".to_string(),
+    }
 }
 
 fn validate_openapi_spec(spec: &serde_json::Value) -> anyhow::Result<()> {
