@@ -14,6 +14,7 @@ use crate::{
         redis_fixture::get_shared_redis,
     },
     state,
+    system_calls::SystemCalls,
     worker::StateWorker,
 };
 use alloy::primitives::{
@@ -130,7 +131,19 @@ impl TestInstance {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, writer, genesis_state);
+        // Extract fork timestamps from genesis if available, otherwise use defaults
+        let system_calls = genesis_state
+            .as_ref()
+            .map(|g| SystemCalls::new(g.config().cancun_time, g.config().prague_time))
+            .unwrap_or_default();
+
+        let mut worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer,
+            genesis_state,
+            system_calls,
+        );
         let (shutdown_tx, _) = broadcast::channel(1);
         let handle_worker = tokio::spawn(async move {
             if let Err(e) = worker.run(Some(0), shutdown_tx.subscribe()).await {
@@ -220,7 +233,24 @@ impl TestInstance {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, writer_reader, genesis_state);
+        // Extract fork timestamps from genesis if available, otherwise use defaults
+        let system_calls = genesis_state
+            .as_ref()
+            .map(|g| {
+                SystemCalls::new(
+                    Some(g.config().cancun_time.unwrap_or_default()),
+                    Some(g.config().prague_time.unwrap_or_default()),
+                )
+            })
+            .unwrap_or_default();
+
+        let mut worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer_reader,
+            genesis_state,
+            system_calls,
+        );
         let (shutdown_tx, _) = broadcast::channel(1);
         let handle_worker = tokio::spawn(async move {
             if let Err(e) = worker.run(Some(0), shutdown_tx.subscribe()).await {

@@ -23,6 +23,7 @@ use std::{
 /// hydrating block 0 in Redis.
 pub struct GenesisState {
     accounts: Vec<AccountState>,
+    config: Config,
 }
 
 impl GenesisState {
@@ -36,12 +37,28 @@ impl GenesisState {
     pub fn into_accounts(self) -> Vec<AccountState> {
         self.accounts
     }
+
+    /// Immutable view of the parsed genesis config.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct GenesisFile {
     #[serde(default)]
+    config: Config,
+    #[serde(default)]
     alloc: HashMap<String, GenesisAccount>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Config {
+    #[serde(default)]
+    pub cancun_time: Option<u64>,
+    #[serde(default)]
+    pub prague_time: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -72,7 +89,10 @@ fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
     }
 
     accounts.sort_by(|a, b| a.address_hash.cmp(&b.address_hash));
-    Ok(GenesisState { accounts })
+    Ok(GenesisState {
+        accounts,
+        config: genesis.config,
+    })
 }
 
 fn convert_account(address: &str, account: GenesisAccount) -> Result<AccountState> {
