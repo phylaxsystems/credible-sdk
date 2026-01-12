@@ -64,15 +64,15 @@ impl TestSetup {
 
     pub async fn build(&self) -> Result<TestRunner, DaSubmitError> {
         let (handle, da_url) = deploy_test_da(SigningKey::random(&mut OsRng)).await;
-        let assertion_specs = if !self.assertion_specs.is_empty() {
-            self.assertion_specs.clone()
-        } else {
+        let assertion_specs = if self.assertion_specs.is_empty() {
             vec![AssertionKey::new(
                 self.assertion_contract
                     .clone()
                     .unwrap_or_else(|| "NoArgsAssertion".to_string()),
                 self.constructor_args.clone(),
             )]
+        } else {
+            self.assertion_specs.clone()
         };
         let da_store_args = DaStoreArgs {
             da_url: format!("http://{da_url}"),
