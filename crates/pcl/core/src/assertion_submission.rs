@@ -776,7 +776,7 @@ mod tests {
         let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "AssertionName");
-        assert_eq!(parsed[0].constructor_args, vec!["arg1", " arg2 ", " arg3"]);
+        assert_eq!(parsed[0].constructor_args, vec!["arg1", "arg2", "arg3"]);
     }
 
     #[test]
@@ -951,7 +951,7 @@ mod tests {
         assert_eq!(parsed[0].assertion_name, "StringAssertion");
         assert_eq!(
             parsed[0].constructor_args,
-            vec![r#""hello"#, r#" world""#, r#""test string""#]
+            vec![r#""hello"#, r#"world""#, r#""test string""#]
         );
     }
 
@@ -1217,13 +1217,11 @@ mod tests {
         let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 2);
 
-        // Note: The current parser doesn't trim whitespace from assertion names
-        assert_eq!(parsed[0].assertion_name, " SpacedAssertion ");
-        // The parser includes the closing paren with the last arg when there's space before it
-        assert_eq!(parsed[0].constructor_args, vec![" arg1 ", " arg2 ) "]);
+        assert_eq!(parsed[0].assertion_name, "SpacedAssertion");
+        assert_eq!(parsed[0].constructor_args, vec!["arg1", "arg2"]);
 
-        assert_eq!(parsed[1].assertion_name, "\tTabbedAssertion\t");
-        assert_eq!(parsed[1].constructor_args, vec!["\targ1\t", "\targ2\t)\t"]);
+        assert_eq!(parsed[1].assertion_name, "TabbedAssertion");
+        assert_eq!(parsed[1].constructor_args, vec!["arg1", "arg2"]);
     }
 
     #[test]
