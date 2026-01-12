@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags:
       - "*.*.*"
+      - "*.*.*-patch"
   workflow_dispatch:
 
 permissions:
