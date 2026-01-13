@@ -4,13 +4,15 @@ FROM rustlang/rust:nightly AS chef
 RUN rustup install nightly-2026-01-07 && \
     rustup default nightly-2026-01-07 && \
     cargo install cargo-chef && \
-    apt install -y libclang-dev clang
+    apt-get update && \
+    apt-get install -y libclang-dev clang
 
 WORKDIR /shadow-driver
 
 FROM chef AS planner
 
 COPY crates ./crates
+COPY scripts ./scripts
 COPY Cargo.* .
 
 RUN cargo chef prepare --recipe-path recipe.json
@@ -25,6 +27,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # Optional build flags
 ARG BUILD_FLAGS=""
 COPY crates ./crates
+COPY scripts ./scripts
 COPY Cargo.* .
 RUN cargo build --release --locked --bin shadow-driver $BUILD_FLAGS
 
