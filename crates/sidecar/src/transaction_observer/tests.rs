@@ -3,6 +3,7 @@ use super::{
     IncidentReport,
     TransactionObserver,
     TransactionObserverConfig,
+    TransactionObserverError,
 };
 use crate::{
     execution_ids::TxExecutionId,
@@ -247,6 +248,54 @@ fn incident_response_body(message: &str, tracking_id: &str) -> serde_json::Value
         "timestamp": format_timestamp(1_700_000_000),
         "tracking_id": tracking_id,
     })
+}
+
+#[test]
+fn incident_body_includes_previous_transactions_as_transaction_data() {
+    let mut report = build_incident_report();
+    let mut prev_tx = report.transaction_data.1.clone();
+    prev_tx.nonce = 6;
+    prev_tx.chain_id = Some(1);
+
+    let prev_hash = B256::from([0xbb; 32]);
+    report.prev_txs = vec![(prev_hash, prev_tx.clone())];
+
+    let body = super::payload::build_incident_body(&report).expect("build incident body");
+    let body_value = serde_json::to_value(body).expect("serialize body");
+    let previous_transactions = body_value
+        .get("previous_transactions")
+        .and_then(Value::as_array)
+        .expect("previous_transactions");
+    assert_eq!(previous_transactions.len(), 1);
+
+    let prev_tx_value = previous_transactions[0]
+        .as_object()
+        .expect("previous transaction object");
+    assert!(
+        prev_tx_value.contains_key("type"),
+        "previous transaction missing type discriminator"
+    );
+    assert!(
+        tx_data_matches(prev_tx_value, &prev_hash, &prev_tx),
+        "previous transaction did not match expected transaction data payload"
+    );
+}
+
+#[test]
+fn incident_body_rejects_previous_transactions_without_chain_id() {
+    let mut report = build_incident_report();
+    let mut prev_tx = report.transaction_data.1.clone();
+    prev_tx.chain_id = None;
+
+    let prev_hash = B256::from([0xcc; 32]);
+    report.prev_txs = vec![(prev_hash, prev_tx)];
+
+    let err = super::payload::build_incident_body(&report)
+        .expect_err("expected incident body build to fail");
+    assert!(
+        matches!(err, TransactionObserverError::PublishFailed { .. }),
+        "unexpected error when previous transaction is missing chain_id"
+    );
 }
 
 #[test]
