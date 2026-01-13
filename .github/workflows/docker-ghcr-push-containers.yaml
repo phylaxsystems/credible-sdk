@@ -2,7 +2,7 @@ name: Docker GHCR Push - Assertion DA
 
 on:
   push:
-    branches: [main]
+    branches: [main,  fix-dockerfile]
     tags:
       - "*.*.*"
       - "*.*.*-patch"
