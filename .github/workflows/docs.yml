@@ -8,6 +8,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/docs.yml'
+
   workflow_dispatch:
 
 permissions:
@@ -45,7 +46,7 @@ jobs:
 
       - name: Generate documentation
         run: |
-          RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --workspace --no-deps --document-private-items
+          RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo doc --workspace --no-deps --document-private-items
           
       - name: Verify docs generated
         run: |
