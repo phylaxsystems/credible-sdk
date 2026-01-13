@@ -34,6 +34,12 @@ struct IncidentPayload {
     incident_timestamp: String,
     transaction_data: TransactionDataPayload,
     block_env: BlockEnvPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    block_number: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_block_number: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enforcer_version: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     previous_transactions: Vec<TransactionDataPayload>,
 }
@@ -96,7 +102,6 @@ struct TransactionDataLegacyPayload {
 
 #[derive(Serialize)]
 struct TransactionDataAccessListPayload {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     access_list: Vec<AccessListItemPayload>,
     chain_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,7 +119,6 @@ struct TransactionDataAccessListPayload {
 
 #[derive(Serialize)]
 struct TransactionDataFeeMarketPayload {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     access_list: Vec<AccessListItemPayload>,
     chain_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,7 +137,6 @@ struct TransactionDataFeeMarketPayload {
 
 #[derive(Serialize)]
 struct TransactionDataBlobPayload {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     access_list: Vec<AccessListItemPayload>,
     blob_versioned_hashes: Vec<String>,
     chain_id: u64,
@@ -154,7 +157,6 @@ struct TransactionDataBlobPayload {
 
 #[derive(Serialize)]
 struct TransactionDataAuthorizationPayload {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     access_list: Vec<AccessListItemPayload>,
     authorization_list: Vec<AuthorizationListItemPayload>,
     chain_id: u64,
@@ -211,6 +213,7 @@ pub(super) fn build_incident_body(
         .collect::<Vec<_>>();
     let transaction_data = build_transaction_data_payload(&report.transaction_data)?;
     let block_env = build_block_env_payload(&report.block_env);
+    let (block_number, previous_block_number) = block_numbers_from_env(&report.block_env);
     let previous_transactions = build_previous_transactions_payload(&report.prev_txs)?;
 
     let payload = IncidentPayload {
@@ -218,6 +221,9 @@ pub(super) fn build_incident_body(
         incident_timestamp,
         transaction_data,
         block_env,
+        block_number,
+        previous_block_number,
+        enforcer_version: None,
         previous_transactions,
     };
 
@@ -242,6 +248,13 @@ fn format_incident_timestamp(timestamp: u64) -> Result<String, TransactionObserv
         }
     })?;
     Ok(date_time.to_rfc3339())
+}
+
+fn block_numbers_from_env(block_env: &BlockEnv) -> (Option<u64>, Option<u64>) {
+    let block_number = block_env.number.to_string().parse::<u64>().ok();
+    let block_number = block_number.filter(|value| *value > 0);
+    let previous_block_number = block_number.and_then(|value| value.checked_sub(1));
+    (block_number, previous_block_number)
 }
 
 fn build_block_env_payload(block_env: &BlockEnv) -> BlockEnvPayload {
@@ -314,7 +327,7 @@ fn build_transaction_data_payload(
                     data: common_fields.data,
                     from_address: common_fields.from_address,
                     gas_limit: common_fields.gas_limit,
-                    gas_price: tx_env.gas_price.to_string(),
+                    gas_price: u128_to_hex(tx_env.gas_price),
                     nonce: common_fields.nonce,
                     to_address: common_fields.to_address,
                     transaction_hash: common_fields.transaction_hash,
@@ -331,7 +344,7 @@ fn build_transaction_data_payload(
                     data: common_fields.data,
                     from_address: common_fields.from_address,
                     gas_limit: common_fields.gas_limit,
-                    gas_price: tx_env.gas_price.to_string(),
+                    gas_price: u128_to_hex(tx_env.gas_price),
                     nonce: common_fields.nonce,
                     to_address: common_fields.to_address,
                     transaction_hash: common_fields.transaction_hash,
@@ -348,11 +361,8 @@ fn build_transaction_data_payload(
                     data: common_fields.data,
                     from_address: common_fields.from_address,
                     gas_limit: common_fields.gas_limit,
-                    max_fee_per_gas: tx_env.gas_price.to_string(),
-                    max_priority_fee_per_gas: tx_env
-                        .gas_priority_fee
-                        .unwrap_or_default()
-                        .to_string(),
+                    max_fee_per_gas: u128_to_hex(tx_env.gas_price),
+                    max_priority_fee_per_gas: u128_to_hex(tx_env.gas_priority_fee.unwrap_or_default()),
                     nonce: common_fields.nonce,
                     to_address: common_fields.to_address,
                     transaction_hash: common_fields.transaction_hash,
@@ -373,9 +383,9 @@ fn build_transaction_data_payload(
                 data: common_fields.data,
                 from_address: common_fields.from_address,
                 gas_limit: common_fields.gas_limit,
-                max_fee_per_blob_gas: tx_env.max_fee_per_blob_gas.to_string(),
-                max_fee_per_gas: tx_env.gas_price.to_string(),
-                max_priority_fee_per_gas: tx_env.gas_priority_fee.unwrap_or_default().to_string(),
+                max_fee_per_blob_gas: u128_to_hex(tx_env.max_fee_per_blob_gas),
+                max_fee_per_gas: u128_to_hex(tx_env.gas_price),
+                max_priority_fee_per_gas: u128_to_hex(tx_env.gas_priority_fee.unwrap_or_default()),
                 nonce: common_fields.nonce,
                 to_address: common_fields.to_address,
                 transaction_hash: common_fields.transaction_hash,
@@ -392,11 +402,8 @@ fn build_transaction_data_payload(
                     data: common_fields.data,
                     from_address: common_fields.from_address,
                     gas_limit: common_fields.gas_limit,
-                    max_fee_per_gas: tx_env.gas_price.to_string(),
-                    max_priority_fee_per_gas: tx_env
-                        .gas_priority_fee
-                        .unwrap_or_default()
-                        .to_string(),
+                    max_fee_per_gas: u128_to_hex(tx_env.gas_price),
+                    max_priority_fee_per_gas: u128_to_hex(tx_env.gas_priority_fee.unwrap_or_default()),
                     nonce: common_fields.nonce,
                     to_address: common_fields.to_address,
                     transaction_hash: common_fields.transaction_hash,
@@ -421,13 +428,13 @@ fn build_common_transaction_fields(
     TransactionCommonFields {
         transaction_hash: bytes_to_hex(tx_hash),
         chain_id,
-        nonce: tx_env.nonce.to_string(),
-        gas_limit: tx_env.gas_limit.to_string(),
+        nonce: u64_to_hex(tx_env.nonce),
+        gas_limit: u64_to_hex(tx_env.gas_limit),
         to_address: tx_kind_to_address(&tx_env.kind, true),
         from_address: bytes_to_hex(tx_env.caller.as_slice()),
-        value: tx_env.value.to_string(),
+        value: u256_to_hex(tx_env.value),
         tx_type: u64::from(tx_env.tx_type),
-        data: (!tx_env.data.is_empty()).then(|| bytes_to_hex(tx_env.data.as_ref())),
+        data: Some(bytes_to_hex(tx_env.data.as_ref())),
     }
 }
 
@@ -494,6 +501,10 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 }
 
 fn u256_to_hex(value: U256) -> String {
+    format!("0x{value:x}")
+}
+
+fn u128_to_hex(value: u128) -> String {
     format!("0x{value:x}")
 }
 

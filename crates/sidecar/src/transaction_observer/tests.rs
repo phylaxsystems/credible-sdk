@@ -26,7 +26,10 @@ use revm::{
         BlockEnv,
         TxEnv,
     },
-    context_interface::transaction::AccessList,
+    context_interface::{
+        block::BlobExcessGasAndPrice,
+        transaction::AccessList,
+    },
     primitives::{
         Address,
         B256,
@@ -59,6 +62,51 @@ use tempfile::TempDir;
 
 fn hex_bytes(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
+}
+
+fn u64_hex(value: u64) -> String {
+    format!("0x{value:x}")
+}
+
+fn u128_hex(value: u128) -> String {
+    format!("0x{value:x}")
+}
+
+fn u256_hex(value: U256) -> String {
+    format!("0x{value:x}")
+}
+
+fn normalize_hex(value: &str) -> String {
+    format!("0x{}", value.trim_start_matches("0x").to_ascii_lowercase())
+}
+
+fn u64_from_hex(value: &str) -> u64 {
+    u64::from_str_radix(value.trim_start_matches("0x"), 16).expect("u64 hex decode")
+}
+
+fn u128_from_hex(value: &str) -> u128 {
+    u128::from_str_radix(value.trim_start_matches("0x"), 16).expect("u128 hex decode")
+}
+
+fn array_from_hex<const N: usize>(value: &str) -> [u8; N] {
+    let trimmed = value.trim_start_matches("0x");
+    let bytes = hex::decode(trimmed).expect("hex decode");
+    bytes
+        .as_slice()
+        .try_into()
+        .expect("hex length mismatch")
+}
+
+fn address_from_hex(value: &str) -> Address {
+    Address::from(array_from_hex::<20>(value))
+}
+
+fn fixed_bytes_from_hex(value: &str) -> FixedBytes<32> {
+    FixedBytes::from(array_from_hex::<32>(value))
+}
+
+fn b256_from_hex(value: &str) -> B256 {
+    B256::from(array_from_hex::<32>(value))
 }
 
 fn format_timestamp(timestamp: u64) -> String {
@@ -94,20 +142,18 @@ fn tx_data_matches(tx_data: &Map<String, Value>, tx_hash: &B256, tx_env: &TxEnv)
         return false;
     };
     let expected_hash = hex_bytes(tx_hash.as_slice());
-    let expected_nonce = tx_env.nonce.to_string();
-    let expected_gas_limit = tx_env.gas_limit.to_string();
+    let expected_nonce = u64_hex(tx_env.nonce);
+    let expected_gas_limit = u64_hex(tx_env.gas_limit);
     let expected_to_address = match &tx_env.kind {
         TxKind::Call(to) => hex_bytes(to.as_slice()),
         TxKind::Create => String::new(),
     };
     let expected_from_address = hex_bytes(tx_env.caller.as_slice());
-    let expected_value = tx_env.value.to_string();
-    let expected_gas_price = tx_env.gas_price.to_string();
-    let expected_data = if tx_env.data.is_empty() {
-        None
-    } else {
-        Some(hex_bytes(tx_env.data.as_ref()))
-    };
+    let expected_value = u256_hex(tx_env.value);
+    let expected_gas_price = u128_hex(tx_env.gas_price);
+    let expected_priority_fee = u128_hex(tx_env.gas_priority_fee.unwrap_or_default());
+    let expected_blob_fee = u128_hex(tx_env.max_fee_per_blob_gas);
+    let expected_data = hex_bytes(tx_env.data.as_ref());
 
     if tx_data.get("transaction_hash").and_then(Value::as_str) != Some(expected_hash.as_str()) {
         return false;
@@ -130,12 +176,29 @@ fn tx_data_matches(tx_data: &Map<String, Value>, tx_hash: &B256, tx_env: &TxEnv)
     if tx_data.get("value").and_then(Value::as_str) != Some(expected_value.as_str()) {
         return false;
     }
-    if tx_data.get("gas_price").and_then(Value::as_str) != Some(expected_gas_price.as_str()) {
+    if let Some(gas_price) = tx_data.get("gas_price").and_then(Value::as_str)
+        && gas_price != expected_gas_price
+    {
         return false;
     }
-    if let Some(expected_data) = expected_data
-        && tx_data.get("data").and_then(Value::as_str) != Some(expected_data.as_str())
+    if let Some(max_fee_per_gas) = tx_data.get("max_fee_per_gas").and_then(Value::as_str)
+        && max_fee_per_gas != expected_gas_price
     {
+        return false;
+    }
+    if let Some(max_priority_fee) = tx_data
+        .get("max_priority_fee_per_gas")
+        .and_then(Value::as_str)
+        && max_priority_fee != expected_priority_fee
+    {
+        return false;
+    }
+    if let Some(max_fee_per_blob_gas) = tx_data.get("max_fee_per_blob_gas").and_then(Value::as_str)
+        && max_fee_per_blob_gas != expected_blob_fee
+    {
+        return false;
+    }
+    if tx_data.get("data").and_then(Value::as_str) != Some(expected_data.as_str()) {
         return false;
     }
 
@@ -208,6 +271,89 @@ fn build_incident_report() -> IncidentReport {
     }
 }
 
+fn build_fee_market_incident_report() -> IncidentReport {
+    let max_fee_per_gas = u128_from_hex("0x2b6d453");
+    let max_priority_fee_per_gas = u128_from_hex("0x1");
+
+    let tx_env = TxEnv {
+        caller: address_from_hex("0x3B7F2cA306882D240634e01a3Bf71BD04C194C23"),
+        gas_limit: u64_from_hex("0x6fb0"),
+        gas_price: max_fee_per_gas,
+        kind: TxKind::Call(address_from_hex("0xdaA6eB4557F1AABBDEbBfb9A08BA0211C1316B2e")),
+        value: U256::ZERO,
+        data: Bytes::from(
+            hex::decode(
+                "f2fde38b00000000000000000000000080bec4d66a4fe4adb836b5c43389c349f8fa2c0b",
+            )
+            .expect("data decode"),
+        ),
+        nonce: u64_from_hex("0x2"),
+        chain_id: Some(2_151_908),
+        tx_type: 2,
+        access_list: AccessList::default(),
+        gas_priority_fee: Some(max_priority_fee_per_gas),
+        blob_hashes: Vec::new(),
+        max_fee_per_blob_gas: 0,
+        authorization_list: Vec::new(),
+    };
+
+    let prev_tx_env = TxEnv {
+        caller: address_from_hex("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+        gas_limit: u64_from_hex("0x5208"),
+        gas_price: max_fee_per_gas,
+        kind: TxKind::Call(address_from_hex("0x80BEc4d66a4fE4aDb836b5c43389c349f8Fa2C0B")),
+        value: U256::from(u128_from_hex("0xde0b6b3a7640000")),
+        data: Bytes::new(),
+        nonce: u64_from_hex("0x0"),
+        chain_id: Some(2_151_908),
+        tx_type: 2,
+        access_list: AccessList::default(),
+        gas_priority_fee: Some(max_priority_fee_per_gas),
+        blob_hashes: Vec::new(),
+        max_fee_per_blob_gas: 0,
+        authorization_list: Vec::new(),
+    };
+
+    IncidentReport {
+        transaction_data: (
+            fixed_bytes_from_hex(
+                "0x1c7fb0f1317eb71fea5034ee7e721bc22e72b3cd9b032e8249d2d20c1a0744b5",
+            ),
+            tx_env,
+        ),
+        failures: vec![IncidentData {
+            adopter_address: address_from_hex("0xdaA6eB4557F1AABBDEbBfb9A08BA0211C1316B2e"),
+            assertion_id: fixed_bytes_from_hex(
+                "0x2765138331bd91acf3ac6e1129dd3703028cea020db1b8984ae2b4eecc06353e",
+            ),
+            assertion_fn: FixedBytes::from([0x00; 4]),
+            revert_data: Bytes::new(),
+        }],
+        block_env: BlockEnv {
+            number: U256::from(31),
+            beneficiary: Address::ZERO,
+            timestamp: U256::from(1_767_993_930u64),
+            gas_limit: 30_000_000,
+            basefee: 19_922_148,
+            difficulty: U256::from(0u64),
+            prevrandao: Some(b256_from_hex(
+                "0xcf7afacf5468e3fbcd7f97aec67a454af149067001c6e3f613e422167270d4ca",
+            )),
+            blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
+                excess_blob_gas: 0,
+                blob_gasprice: 1,
+            }),
+        },
+        incident_timestamp: 1_767_993_930,
+        prev_txs: vec![(
+            fixed_bytes_from_hex(
+                "0xf2cfeba992c08d180209dc245b74e83a2936097b7714084a3bbd4c01d416c87e",
+            ),
+            prev_tx_env,
+        )],
+    }
+}
+
 fn expected_incident_body() -> serde_json::Value {
     json!({
         "failures": [
@@ -219,17 +365,19 @@ fn expected_incident_body() -> serde_json::Value {
             }
         ],
         "incident_timestamp": format_timestamp(1_700_000_000),
+        "block_number": 42,
+        "previous_block_number": 41,
         "transaction_data": {
             "transaction_hash": hex_bytes(&[0xaa; 32]),
             "chain_id": 1,
-            "nonce": "7",
-            "gas_limit": "21000",
+            "nonce": "0x7",
+            "gas_limit": "0x5208",
             "to_address": hex_bytes(&[0x02; 20]),
             "from_address": hex_bytes(&[0x01; 20]),
-            "value": "5",
+            "value": "0x5",
             "type": 0.0,
             "data": hex_bytes(&[0xde, 0xad, 0xbe, 0xef]),
-            "gas_price": "100"
+            "gas_price": "0x64"
         },
         "block_env": {
             "number": "42",
@@ -240,6 +388,70 @@ fn expected_incident_body() -> serde_json::Value {
             "difficulty": "123"
         }
     })
+}
+
+fn expected_fee_market_incident_body() -> serde_json::Value {
+    json!({
+        "failures": [
+            {
+                "assertion_adopter_address": normalize_hex("0xdaA6eB4557F1AABBDEbBfb9A08BA0211C1316B2e"),
+                "assertion_id": normalize_hex("0x2765138331bd91acf3ac6e1129dd3703028cea020db1b8984ae2b4eecc06353e"),
+                "assertion_fn_selector": "0x00000000"
+            }
+        ],
+        "incident_timestamp": format_timestamp(1_767_993_930),
+        "block_number": 31,
+        "previous_block_number": 30,
+        "transaction_data": {
+            "type": 2.0,
+            "transaction_hash": normalize_hex("0x1c7fb0f1317eb71fea5034ee7e721bc22e72b3cd9b032e8249d2d20c1a0744b5"),
+            "chain_id": 2_151_908,
+            "nonce": "0x2",
+            "gas_limit": "0x6fb0",
+            "to_address": normalize_hex("0xdaA6eB4557F1AABBDEbBfb9A08BA0211C1316B2e"),
+            "from_address": normalize_hex("0x3B7F2cA306882D240634e01a3Bf71BD04C194C23"),
+            "value": "0x0",
+            "data": normalize_hex("0xf2fde38b00000000000000000000000080bec4d66a4fe4adb836b5c43389c349f8fa2c0b"),
+            "max_fee_per_gas": "0x2b6d453",
+            "max_priority_fee_per_gas": "0x1"
+        },
+        "previous_transactions": [
+            {
+                "type": 2.0,
+                "transaction_hash": normalize_hex("0xf2cfeba992c08d180209dc245b74e83a2936097b7714084a3bbd4c01d416c87e"),
+                "chain_id": 2_151_908,
+                "nonce": "0x0",
+                "gas_limit": "0x5208",
+                "to_address": normalize_hex("0x80BEc4d66a4fE4aDb836b5c43389c349f8Fa2C0B"),
+                "from_address": normalize_hex("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"),
+                "value": "0xde0b6b3a7640000",
+                "data": "0x",
+                "max_fee_per_gas": "0x2b6d453",
+                "max_priority_fee_per_gas": "0x1"
+            }
+        ],
+        "block_env": {
+            "number": "31",
+            "beneficiary": "0x0000000000000000000000000000000000000000",
+            "timestamp": "1767993930",
+            "gas_limit": "30000000",
+            "basefee": "19922148",
+            "difficulty": "0",
+            "prevrandao": normalize_hex("0xcf7afacf5468e3fbcd7f97aec67a454af149067001c6e3f613e422167270d4ca"),
+            "blob_excess_gas_and_price": {
+                "excess_blob_gas": "0",
+                "blob_gasprice": "1"
+            }
+        }
+    })
+}
+
+#[test]
+fn incident_body_matches_openapi_example_format() {
+    let report = build_fee_market_incident_report();
+    let body = super::payload::build_incident_body(&report).expect("build incident body");
+    let body_value = serde_json::to_value(body).expect("serialize body");
+    assert_eq!(body_value, expected_fee_market_incident_body());
 }
 
 fn incident_response_body(message: &str, tracking_id: &str) -> serde_json::Value {
