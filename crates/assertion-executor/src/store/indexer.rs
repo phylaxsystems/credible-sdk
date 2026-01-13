@@ -46,6 +46,7 @@ use clap::ValueEnum;
 
 use crate::{
     ExecutorConfig,
+    metrics::IndexerMetrics,
     primitives::{
         Address,
         B256,
@@ -157,6 +158,7 @@ pub struct Indexer {
     /// Tag to use as the upper bound of pending modifications which should be applied to the
     /// store.
     pub await_tag: BlockTag,
+    metrics: IndexerMetrics,
 }
 
 /// Restricted version of `BlockNumberOrTag` enum.
@@ -185,6 +187,7 @@ type PubSubProvider = RootProvider;
 /// Different clients have different allowed ranges. If the sidecar errors,
 /// reduce this value to something acceptable in your case.
 const MAX_BLOCKS_PER_CALL: u64 = 50_000;
+const REORG_CHECK_DEPTH: u64 = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
@@ -273,6 +276,7 @@ impl Indexer {
             executor_config,
             is_synced: false,
             await_tag,
+            metrics: IndexerMetrics::new(),
         }
     }
 
@@ -498,28 +502,37 @@ impl Indexer {
     /// an existing chain from scratch.
     #[instrument(skip(self))]
     pub async fn sync(&self, update_block: UpdateBlock, max_blocks_per_call: u64) -> IndexerResult {
+        self.metrics.set_head_block(update_block.block_number);
         let last_indexed_block_num_hash = self.get_last_indexed_block_num_hash()?;
 
         let from;
         // If a block has been indexed, check if the new block is part of the same chain.
         if let Some(last_indexed_block_num_hash) = last_indexed_block_num_hash {
-            let is_reorg =
-                check_if_reorged(&self.provider, &update_block, last_indexed_block_num_hash)
-                    .await
-                    .map_err(IndexerError::CheckIfReorgedError)?;
+            let blocks_since_last_indexed = update_block
+                .block_number
+                .saturating_sub(last_indexed_block_num_hash.number);
+            if blocks_since_last_indexed <= REORG_CHECK_DEPTH {
+                let is_reorg =
+                    check_if_reorged(&self.provider, &update_block, last_indexed_block_num_hash)
+                        .await
+                        .map_err(IndexerError::CheckIfReorgedError)?;
 
-            if is_reorg {
-                let common_ancestor = self.find_common_ancestor(update_block.parent_hash).await?;
-                debug!(
-                    target = "assertion_executor::indexer",
-                    common_ancestor, "Reorg detected"
-                );
-                from = common_ancestor + 1;
-                self.prune_from(from)?;
-                self.insert_last_indexed_block_num_hash(BlockNumHash {
-                    number: common_ancestor,
-                    hash: update_block.parent_hash,
-                })?;
+                if is_reorg {
+                    let common_ancestor =
+                        self.find_common_ancestor(update_block.parent_hash).await?;
+                    debug!(
+                        target = "assertion_executor::indexer",
+                        common_ancestor, "Reorg detected"
+                    );
+                    from = common_ancestor + 1;
+                    self.prune_from(from)?;
+                    self.insert_last_indexed_block_num_hash(BlockNumHash {
+                        number: common_ancestor,
+                        hash: update_block.parent_hash,
+                    })?;
+                } else {
+                    from = last_indexed_block_num_hash.number + 1;
+                }
             } else {
                 from = last_indexed_block_num_hash.number + 1;
             }
@@ -567,9 +580,12 @@ impl Indexer {
                 modifications_count = pending_modifications.len(),
                 "Moving pending modifications to store",
             );
+            let pending_modifications_count = pending_modifications.len() as u64;
             self.store
                 .apply_pending_modifications(pending_modifications)
                 .map_err(IndexerError::AssertionStoreError)?;
+            self.metrics
+                .record_assertions_moved(pending_modifications_count);
         }
 
         Ok(())
@@ -608,6 +624,7 @@ impl Indexer {
                 .extract_pending_modifications(log.data(), log_index)
                 .await?
             {
+                self.metrics.record_assertions_seen(1);
                 pending_modifications
                     .entry(block_number)
                     .or_default()
