@@ -44,32 +44,26 @@ impl GenesisState {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
 struct GenesisFile {
-    #[serde(default)]
     config: Config,
-    #[serde(default)]
     alloc: HashMap<String, GenesisAccount>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct Config {
-    #[serde(default)]
     pub cancun_time: Option<u64>,
-    #[serde(default)]
     pub prague_time: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 struct GenesisAccount {
-    #[serde(default)]
     balance: Option<String>,
-    #[serde(default)]
     nonce: Option<String>,
-    #[serde(default)]
     code: Option<String>,
-    #[serde(default)]
     storage: HashMap<String, String>,
 }
 
