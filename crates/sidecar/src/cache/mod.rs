@@ -830,8 +830,7 @@ mod tests {
         // Should complete in 10ms because it's a fast source, not 100ms/slow source
         assert!(
             elapsed < Duration::from_millis(50),
-            "Should return fast source result, took {:?}",
-            elapsed
+            "Should return fast source result, took {elapsed:?}"
         );
 
         // Both sources were called in parallel
@@ -870,8 +869,7 @@ mod tests {
         // Didn't wait for slow failure
         assert!(
             elapsed < Duration::from_millis(50),
-            "Slow failure shouldn't block, took {:?}",
-            elapsed
+            "Slow failure shouldn't block, took {elapsed:?}"
         );
 
         // Both were called
