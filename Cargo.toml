@@ -25,7 +25,7 @@ resolver = "2"
 
 
 [workspace.package]
-version = "0.9.3"
+version = "0.9.4"
 edition = "2024"
 authors = ["Phylax Systems"]
 license = "BSL 1.1"
@@ -141,6 +141,9 @@ enum-as-inner = "0.6.1"
 url = "2.5.7"
 criterion = { version = "0.5.1" }
 evm-glue = { git = "https://git@github.com/Philogy/evm-glue.git", rev = "6be3e8c89a7d193b591ca0415ec2a48b1540c01e" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-libmdbx = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 
 
 # Maxperf profile for absolute maximum performance

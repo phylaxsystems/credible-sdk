@@ -82,30 +82,34 @@ impl fmt::Display for AssertionKey {
 
 impl From<String> for AssertionKey {
     fn from(assertion_key: String) -> Self {
-        if !assertion_key.contains('(') {
+        let trimmed = assertion_key.trim();
+
+        if !trimmed.contains('(') {
             return Self {
-                assertion_name: assertion_key,
+                assertion_name: trimmed.to_string(),
                 constructor_args: vec![],
             };
         }
 
-        let (assertion_name, mut args) = assertion_key
-            .split_once('(')
-            .expect("Invalid assertion key");
+        let (assertion_name, args_with_paren) =
+            trimmed.split_once('(').expect("Invalid assertion key");
 
-        args = args.trim_end_matches(')');
+        let cleaned_name = assertion_name.trim().to_string();
+        let args = args_with_paren.trim();
+        let args = args.trim_end_matches(')');
+        let args = args.trim();
 
-        if args.is_empty() {
+        if args.trim().is_empty() {
             return Self {
-                assertion_name: assertion_name.to_string(),
+                assertion_name: cleaned_name,
                 constructor_args: vec![],
             };
         }
 
-        let constructor_args = args.split(',').map(ToString::to_string).collect();
+        let constructor_args = args.split(',').map(|arg| arg.trim().to_string()).collect();
 
         Self {
-            assertion_name: assertion_name.to_string(),
+            assertion_name: cleaned_name,
             constructor_args,
         }
     }

@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags:
       - "*.*.*"
+      - "*.*.*-patch"
   workflow_dispatch:
 
 permissions:
@@ -14,7 +15,7 @@ permissions:
 jobs:
   check-version:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && !endsWith(github.ref, 'patch')
     steps:
       - uses: actions/checkout@v4
       - name: Check version matches tag

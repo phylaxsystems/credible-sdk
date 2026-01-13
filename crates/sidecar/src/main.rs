@@ -36,6 +36,10 @@ use sidecar::{
     event_sequencing::EventSequencing,
     health::HealthServer,
     indexer,
+    transaction_observer::{
+        TransactionObserver,
+        TransactionObserverConfig,
+    },
     transactions_state::{
         TransactionResultEvent,
         TransactionsState,
@@ -123,6 +127,8 @@ struct ThreadHandles {
     engine: Option<JoinHandle<Result<(), sidecar::engine::EngineError>>>,
     event_sequencing:
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
+    transaction_observer:
+        Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
 }
 
 impl ThreadHandles {
@@ -130,6 +136,7 @@ impl ThreadHandles {
         Self {
             engine: None,
             event_sequencing: None,
+            transaction_observer: None,
         }
     }
 
@@ -148,6 +155,15 @@ impl ThreadHandles {
                     tracing::error!(error = ?e, "Event sequencing thread exited with error");
                 }
                 Err(_) => tracing::error!("Event sequencing thread panicked"),
+            }
+        }
+        if let Some(handle) = self.transaction_observer.take() {
+            match handle.join() {
+                Ok(Ok(())) => tracing::info!("Transaction observer thread exited cleanly"),
+                Ok(Err(e)) => {
+                    tracing::error!(error = ?e, "Transaction observer thread exited with error");
+                }
+                Err(_) => tracing::error!("Transaction observer thread panicked"),
             }
         }
     }
@@ -208,6 +224,8 @@ async fn main() -> anyhow::Result<()> {
         let (transport_tx_sender, event_sequencing_rx) = unbounded();
         // Channel: EventSequencing -> CoreEngine
         let (event_sequencing_tx, engine_rx) = unbounded();
+        // Channel: CoreEngine -> TransactionObserver
+        let (incident_report_tx, incident_report_rx) = unbounded();
 
         let (engine_state_results, result_event_rx) = match config.transport.protocol {
             TransportProtocol::Grpc => {
@@ -243,12 +261,29 @@ async fn main() -> anyhow::Result<()> {
                 .credible
                 .overlay_cache_invalidation_every_block
                 .unwrap_or(false),
+            Some(incident_report_tx),
             #[cfg(feature = "cache_validation")]
             Some(&config.credible.cache_checker_ws_url),
         )
         .await;
         let (engine_handle, engine_exited) = engine.spawn(Arc::clone(&shutdown_flag))?;
         thread_handles.engine = Some(engine_handle);
+
+        // Spawn TransactionObserver on a dedicated OS thread
+        let transaction_observer_config = TransactionObserverConfig {
+            db_path: config.credible.transaction_observer_db_path.clone(),
+            endpoint: config.credible.transaction_observer_endpoint.clone(),
+            auth_token: config.credible.transaction_observer_auth_token.clone(),
+            endpoint_rps_max: config.credible.transaction_observer_endpoint_rps_max,
+            poll_interval: Duration::from_millis(
+                config.credible.transaction_observer_poll_interval_ms,
+            ),
+        };
+        let transaction_observer =
+            TransactionObserver::new(transaction_observer_config, incident_report_rx)?;
+        let (observer_handle, observer_exited) =
+            transaction_observer.spawn(Arc::clone(&shutdown_flag))?;
+        thread_handles.transaction_observer = Some(observer_handle);
 
         let mut health_server = HealthServer::new(health_bind_addr);
 
@@ -299,6 +334,19 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     Err(_) => tracing::error!("Event sequencing notification channel dropped"),
+                }
+            }
+            result = observer_exited => {
+                match result {
+                    Ok(Ok(())) => tracing::warn!("Transaction observer exited unexpectedly"),
+                    Ok(Err(e)) => {
+                        if ErrorRecoverability::from(&e).is_recoverable() {
+                            tracing::error!(error = ?e, "Transaction observer exited with recoverable error");
+                        } else {
+                            critical!(error = ?e, "Transaction observer exited with unrecoverable error");
+                        }
+                    }
+                    Err(_) => tracing::error!("Transaction observer notification channel dropped"),
                 }
             }
             result = health_server.run() => {

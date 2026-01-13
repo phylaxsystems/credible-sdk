@@ -25,13 +25,15 @@ tonic-prost = "0.14.2"
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
 tracing = { workspace = true }
 ctor = { version = "0.6.3", optional = true }
 tracing-subscriber.workspace = true
 sled = { workspace = true }
-reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 rustls = { workspace = true }
 assertion-da-client = { workspace = true }
+dapp-api-client = { path = "../dapp-api-client" }
 alloy-provider = { workspace = true }
 metrics = { workspace = true }
 futures = { workspace = true }
@@ -49,6 +51,12 @@ flume = "0.12.0"
 arrayvec = "0.7.6"
 parking_lot.workspace = true
 async-trait.workspace = true
+bincode.workspace = true
+
+# reth
+reth-db = { workspace = true }
+reth-db-api = { workspace = true }
+reth-libmdbx = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"
@@ -88,6 +96,7 @@ tracing-test = "0.2.5"
 int-test-utils = { path = "../int-test-utils" }
 tempfile = "3.23.0"
 criterion = { workspace = true }
+httpmock = "0.8"
 
 [profile.release]
 lto = "fat"
@@ -120,5 +129,11 @@ harness = false
 [[bench]]
 name = "avg_block"
 path = "benches/avg_block.rs"
+harness = false
+required-features = ["bench-utils"]
+
+[[bench]]
+name = "worst_case_compute_with_observer"
+path = "benches/worst_case_compute_with_observer.rs"
 harness = false
 required-features = ["bench-utils"]

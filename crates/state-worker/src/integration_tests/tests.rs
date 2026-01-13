@@ -12,6 +12,7 @@ use crate::{
         setup::TestBackend,
     },
     state,
+    system_calls::SystemCalls,
     worker::StateWorker,
 };
 use alloy::primitives::{
@@ -40,7 +41,6 @@ use tokio::{
     sync::broadcast,
     time::sleep,
 };
-
 // Re-import from parent module for use in test bodies
 use super::TestInstance;
 
@@ -761,7 +761,13 @@ async fn test_restart_continues_from_last_block(instance: TestInstance) {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let mut worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer_reader.clone(),
+            None,
+            SystemCalls::default(),
+        );
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         // Start worker in background
@@ -822,7 +828,13 @@ async fn test_restart_continues_from_last_block(instance: TestInstance) {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let mut worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer_reader.clone(),
+            None,
+            SystemCalls::default(),
+        );
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move {
@@ -903,7 +915,13 @@ async fn test_restart_with_buffer_wrap_applies_diffs(instance: TestInstance) {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let mut worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer_reader.clone(),
+            None,
+            SystemCalls::default(),
+        );
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
@@ -965,7 +983,13 @@ async fn test_restart_with_buffer_wrap_applies_diffs(instance: TestInstance) {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let mut worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer_reader.clone(),
+            None,
+            SystemCalls::default(),
+        );
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
@@ -1042,7 +1066,13 @@ async fn test_restart_after_mid_block_crash(instance: TestInstance) {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let mut worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer_reader.clone(),
+            None,
+            SystemCalls::default(),
+        );
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(Some(0), shutdown_rx).await });
@@ -1097,7 +1127,13 @@ async fn test_restart_after_mid_block_crash(instance: TestInstance) {
             Duration::from_secs(30),
         );
 
-        let mut worker = StateWorker::new(provider, trace_provider, writer_reader.clone(), None);
+        let mut worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer_reader.clone(),
+            None,
+            SystemCalls::default(),
+        );
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let worker_handle = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
@@ -1220,6 +1256,39 @@ async fn test_eip2935_and_eip4788_system_contracts(instance: TestInstance) {
         },
     };
     use state_store::redis::StateReader;
+
+    // Create genesis with a test account
+    let genesis_json = r#"{
+        "config": {
+            "pragueTime": 0,
+            "cancunTime": 0
+        },
+        "alloc": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+                "balance": "0x100",
+                "nonce": "0x0"
+            }
+        }
+    }"#;
+
+    let genesis_state =
+        genesis::parse_from_str(genesis_json).expect("failed to parse test genesis json");
+
+    // Create a new instance with genesis based on the backend
+    let instance = match instance.backend {
+        TestBackend::Redis => {
+            TestInstance::new_redis_with_genesis(genesis_state)
+                .await
+                .expect("Failed to create Redis instance with genesis")
+        }
+        TestBackend::Mdbx => {
+            TestInstance::new_mdbx_with_genesis(genesis_state)
+                .await
+                .expect("Failed to create MDBX instance with genesis")
+        }
+    };
+
+    sleep(Duration::from_millis(500)).await;
 
     let test_address = "0xdddddddddddddddddddddddddddddddddddddddd";
 
@@ -1347,6 +1416,10 @@ async fn test_genesis_block_skips_system_calls(instance: TestInstance) {
 
     // Create genesis with a test account
     let genesis_json = r#"{
+        "config": {
+            "pragueTime": 0,
+            "cancunTime": 0
+        },
         "alloc": {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
                 "balance": "0x100",

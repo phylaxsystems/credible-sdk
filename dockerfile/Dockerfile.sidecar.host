@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1.6
 FROM rustlang/rust:nightly AS chef
 
-RUN cargo install cargo-chef && apt update && apt install -y libclang-dev clang
+RUN rustup install nightly-2026-01-07 && \
+    rustup default nightly-2026-01-07 && \
+    cargo install cargo-chef && \
+    apt-get update && \
+    apt-get install -y libclang-dev clang
 
 WORKDIR /sidecar
 
@@ -9,6 +13,7 @@ FROM chef AS planner
 
 COPY Cargo.* .
 COPY crates ./crates
+COPY scripts ./scripts
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -24,6 +29,7 @@ RUN cargo chef cook --profile ${CARGO_PROFILE} --recipe-path recipe.json
 
 COPY Cargo.* .
 COPY crates ./crates
+COPY scripts ./scripts
 
 # Ensure we reuse the same target dir between phases
 ENV CARGO_TARGET_DIR=/sidecar/target

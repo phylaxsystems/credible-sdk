@@ -10,10 +10,12 @@ use int_test_utils::deploy_test_da;
 use pcl_common::args::CliArgs;
 use pcl_core::{
     assertion_da::DaStoreArgs,
-    config::CliConfig,
+    config::{
+        AssertionKey,
+        CliConfig,
+    },
     error::DaSubmitError,
 };
-use pcl_phoundry::build_and_flatten::BuildAndFlattenArgs;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -24,6 +26,7 @@ pub struct TestSetup {
     pub root: Option<PathBuf>,
     pub assertion_contract: Option<String>,
     pub constructor_args: Vec<String>,
+    pub assertion_specs: Vec<AssertionKey>,
     pub json: bool,
 }
 
@@ -34,6 +37,7 @@ impl TestSetup {
             assertion_contract: None,
             json: false,
             constructor_args: vec![],
+            assertion_specs: vec![],
         }
     }
 
@@ -49,6 +53,10 @@ impl TestSetup {
         self.constructor_args = constructor_args;
     }
 
+    pub fn set_assertion_specs(&mut self, assertion_specs: Vec<AssertionKey>) {
+        self.assertion_specs = assertion_specs;
+    }
+
     #[allow(dead_code)]
     pub fn set_json(&mut self, json: bool) {
         self.json = json;
@@ -56,22 +64,25 @@ impl TestSetup {
 
     pub async fn build(&self) -> Result<TestRunner, DaSubmitError> {
         let (handle, da_url) = deploy_test_da(SigningKey::random(&mut OsRng)).await;
-        let build_and_flatten_args = BuildAndFlattenArgs {
+        let assertion_specs = if self.assertion_specs.is_empty() {
+            vec![AssertionKey::new(
+                self.assertion_contract
+                    .clone()
+                    .unwrap_or_else(|| "NoArgsAssertion".to_string()),
+                self.constructor_args.clone(),
+            )]
+        } else {
+            self.assertion_specs.clone()
+        };
+        let da_store_args = DaStoreArgs {
+            da_url: format!("http://{da_url}"),
             root: Some(
                 self.root
                     .clone()
-                    .unwrap_or(PathBuf::from("../../../testdata/mock-protocol")),
+                    .unwrap_or_else(|| PathBuf::from("../../../testdata/mock-protocol")),
             ),
-            assertion_contract: self
-                .assertion_contract
-                .clone()
-                .unwrap_or("NoArgsAssertion".to_string()),
-        };
-
-        let da_store_args = DaStoreArgs {
-            da_url: format!("http://{da_url}"),
-            args: build_and_flatten_args,
-            constructor_args: self.constructor_args.clone(),
+            assertion_specs,
+            positional_assertions: vec![],
         };
 
         let cli_config = CliConfig {
@@ -109,11 +120,11 @@ impl TestRunner {
             .await?;
         Ok(())
     }
-    pub async fn assert_assertion_as_expected(&self, assertion_id: String) {
+    pub async fn assert_assertion_as_expected(&self, assertion_key: AssertionKey) {
         let assertion_for_submission = self
             .cli_config
             .assertions_for_submission
-            .get(&assertion_id.clone().into())
+            .get(&assertion_key)
             .unwrap();
 
         let assertion = self
@@ -133,7 +144,7 @@ impl TestRunner {
             hex::decode(assertion_for_submission.signature.clone()).unwrap()
         );
         assert_eq!(
-            self.da_store_args.constructor_args,
+            assertion_key.constructor_args,
             assertion_for_submission.constructor_args
         );
     }

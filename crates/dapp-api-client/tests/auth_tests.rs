@@ -6,6 +6,9 @@
 //! - Private endpoints fail without authentication
 //! - Private endpoints work with authentication
 
+mod common;
+
+use common::try_start_mock_server;
 use dapp_api_client::{
     AuthConfig,
     Client,
@@ -16,7 +19,7 @@ use serde_json::json;
 
 #[tokio::test]
 async fn test_public_endpoint_without_auth() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the public /projects endpoint
     let mock = server.mock(|when, then| {
@@ -27,7 +30,7 @@ async fn test_public_endpoint_without_auth() {
                 {
                     "project_id": "f22a0a2f-bde9-49b3-bd70-67599e1f178d",
                     "project_name": "Test Project",
-                    "project_networks": ["1"], // Using integer to match spec
+                    "project_networks": [1],
                     "project_manager": "0x1234567890123456789012345678901234567890",
                     "created_at": "2025-01-01T00:00:00Z",
                     "updated_at": "2025-01-01T00:00:00Z",
@@ -42,7 +45,7 @@ async fn test_public_endpoint_without_auth() {
 
     // Call public endpoint without auth
     let api = client.inner();
-    let result = api.get_projects(None, None).await;
+    let result = api.get_projects(None, None, None).await;
 
     // Should succeed
     if let Err(ref e) = result {
@@ -62,7 +65,7 @@ async fn test_public_endpoint_without_auth() {
 
 #[tokio::test]
 async fn test_public_endpoint_with_auth() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the public /projects endpoint
     let mock = server.mock(|when, then| {
@@ -75,7 +78,7 @@ async fn test_public_endpoint_with_auth() {
                 {
                     "project_id": "f22a0a2f-bde9-49b3-bd70-67599e1f178d",
                     "project_name": "Test Project",
-                    "project_networks": ["1"],
+                    "project_networks": [1],
                     "project_manager": "0x1234567890123456789012345678901234567890",
                     "created_at": "2025-01-01T00:00:00Z",
                     "updated_at": "2025-01-01T00:00:00Z",
@@ -92,7 +95,7 @@ async fn test_public_endpoint_with_auth() {
 
     // Call public endpoint with auth
     let api = client.inner();
-    let result = api.get_projects(None, None).await;
+    let result = api.get_projects(None, None, None).await;
 
     // Should succeed
     assert!(result.is_ok(), "Public endpoint should work with auth");
@@ -105,7 +108,7 @@ async fn test_public_endpoint_with_auth() {
 
 #[tokio::test]
 async fn test_private_endpoint_without_auth() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock a private endpoint that requires auth (e.g., saved projects)
     let mock = server.mock(|when, then| {
@@ -148,7 +151,7 @@ async fn test_private_endpoint_without_auth() {
 
 #[tokio::test]
 async fn test_private_endpoint_with_auth() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock a private endpoint with valid auth
     let mock = server.mock(|when, then| {
@@ -165,7 +168,7 @@ async fn test_private_endpoint_with_auth() {
                 {
                     "project_id": "c1e794ce-4030-487c-a4e6-917caeeb4875",
                     "project_name": "Saved Project",
-                    "project_networks": ["1"],
+                    "project_networks": [1],
                     "project_manager": "0x1234567890123456789012345678901234567890",
                     "created_at": "2025-01-01T00:00:00Z",
                     "updated_at": "2025-01-01T00:00:00Z",
@@ -198,7 +201,7 @@ async fn test_private_endpoint_with_auth() {
 
 #[tokio::test]
 async fn test_health_endpoint_without_auth() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the health endpoint (should be public)
     let mock = server.mock(|when, then| {

@@ -23,6 +23,7 @@ use std::{
 /// hydrating block 0 in Redis.
 pub struct GenesisState {
     accounts: Vec<AccountState>,
+    config: Config,
 }
 
 impl GenesisState {
@@ -36,23 +37,33 @@ impl GenesisState {
     pub fn into_accounts(self) -> Vec<AccountState> {
         self.accounts
     }
+
+    /// Immutable view of the parsed genesis config.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
 struct GenesisFile {
-    #[serde(default)]
+    config: Config,
     alloc: HashMap<String, GenesisAccount>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Config {
+    pub cancun_time: Option<u64>,
+    pub prague_time: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 struct GenesisAccount {
-    #[serde(default)]
     balance: Option<String>,
-    #[serde(default)]
     nonce: Option<String>,
-    #[serde(default)]
     code: Option<String>,
-    #[serde(default)]
     storage: HashMap<String, String>,
 }
 
@@ -72,7 +83,10 @@ fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
     }
 
     accounts.sort_by(|a, b| a.address_hash.cmp(&b.address_hash));
-    Ok(GenesisState { accounts })
+    Ok(GenesisState {
+        accounts,
+        config: genesis.config,
+    })
 }
 
 fn convert_account(address: &str, account: GenesisAccount) -> Result<AccountState> {

@@ -5,10 +5,8 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - ".github/workflows/benchmarks.yml"
-      - "crates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "!**/*.md"
+      - "crates/sidecar/**"
+      - "crates/assertion-executor/**"
   push:
     branches: [main]
   workflow_dispatch:

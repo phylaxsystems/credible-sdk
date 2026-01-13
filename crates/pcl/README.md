@@ -143,20 +143,41 @@ Display options:
 
 ### Assertion Submission
 
+`pcl store` uploads the assertion bytecode and flattened source to the Credible Assertion Data Availability (DA) service. Once the DA has the assertion, `pcl submit` (or the dApp) can link it to a project so that it can be enforced. The full workflow is documented at https://docs.phylax.systems/credible/store-submit-assertions.
+
 #### Store Assertions in Data Availability Layer
 
 ```bash
-pcl store [OPTIONS] <ASSERTION_CONTRACT> [CONSTRUCTOR_ARGS]...
+pcl store [OPTIONS] [ASSERTION]...
 
 Arguments:
-  <ASSERTION_CONTRACT>   Name of the assertion contract to build and flatten
-  [CONSTRUCTOR_ARGS]...  Constructor arguments for the assertion contract
-                         Format: <ARG0> <ARG1> <ARG2>
+  [ASSERTION]...  Assertion specs in the format 'Name' or 'Name(arg1,arg2)'. Multiple specs can be separated by whitespace or commas.
 
 Options:
+  -a, --assertion <ASSERTION>
+          Assertion contract in the format 'Name(arg1,arg2)'. Example: `-a OwnableAssertion(0xabc...,86400)`.
+          Repeat the flag or use positional specs to store multiple assertions in one run.
   -u, --da-url <DA_URL>  URL of the assertion-DA server [env: PCL_DA_URL=] [default: https://demo-21-assertion-da.phylax.systems]
       --root <ROOT>      Root directory of the project
   -h, --help             Print help (see a summary with '-h')
+```
+
+Examples:
+
+```bash
+# Store a single assertion without constructor args
+pcl store OwnableAssertion
+
+# Store a single assertion with constructor args inline
+pcl store "OwnableAssertion(0x0f6c13A04D358A5FEB9d073Da585bF6a2aF8d3d9, 3600)"
+
+# Store multiple assertions (whitespace or comma-separated)
+pcl store --root ./assertions \
+  NoArgsAssertion \
+  "MockAssertion(0x0f6c13A04D358A5FEB9d073Da585bF6a2aF8d3d9)"
+
+# Store multiple assertions (CSV)
+pcl store "NoArgsAssertion(),MockAssertion(0x0f6c13A04D358A5FEB9d073Da585bF6a2aF8d3d9)"
 ```
 
 #### Submit Assertions to dApps
@@ -217,7 +238,7 @@ pcl auth logout
 pcl test
 
 # Store and submit assertion with constructor args
-pcl store my_assertion arg1 arg2
+pcl store "my_assertion(arg1,arg2)"
 pcl submit my_assertion arg1 arg2 -p my_project
 
 # Or submit multiple assertions at once

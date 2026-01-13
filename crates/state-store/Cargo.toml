@@ -19,10 +19,10 @@ uuid = { version = "1.15", features = ["v4"] }
 chrono = { workspace = true }
 bytes = "1.11.0"
 modular-bitfield = "0.11.2"
-reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
-reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-db = { workspace = true }
+reth-db-api = { workspace = true }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
-reth-libmdbx = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-libmdbx = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }
 

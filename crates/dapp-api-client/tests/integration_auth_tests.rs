@@ -3,6 +3,9 @@
 //! These tests use httpmock to simulate API responses and test client behavior.
 //! They test the same scenarios as the real API but without external dependencies.
 
+mod common;
+
+use common::try_start_mock_server;
 use dapp_api_client::{
     AuthConfig,
     Client,
@@ -26,7 +29,7 @@ where
 
 #[tokio::test]
 async fn test_public_endpoint_without_auth_real_api() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the health endpoint (should be public)
     let mock = setup_mock(&server, |when, then| {
@@ -59,7 +62,7 @@ async fn test_public_endpoint_without_auth_real_api() {
 
 #[tokio::test]
 async fn test_private_endpoint_without_auth_real_api() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the private endpoint returning empty array for unauthenticated requests
     // (mimics real API behavior)
@@ -102,7 +105,7 @@ async fn test_private_endpoint_without_auth_real_api() {
 
 #[tokio::test]
 async fn test_private_endpoint_with_auth_real_api() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the private endpoint with valid auth returning data
     let mock = setup_mock(&server, |when, then| {
@@ -119,7 +122,7 @@ async fn test_private_endpoint_with_auth_real_api() {
                 {
                     "project_id": "c1e794ce-4030-487c-a4e6-917caeeb4875",
                     "project_name": "Saved Project",
-                    "project_networks": ["1"],
+                    "project_networks": [1],
                     "project_manager": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
                     "created_at": "2025-01-01T00:00:00Z",
                     "updated_at": "2025-01-01T00:00:00Z",
@@ -156,7 +159,7 @@ async fn test_private_endpoint_with_auth_real_api() {
 
 #[tokio::test]
 async fn test_public_endpoint_with_auth_real_api() {
-    let server = MockServer::start();
+    let server = try_start_mock_server();
 
     // Mock the health endpoint accepting auth (but not requiring it)
     let mock = setup_mock(&server, |when, then| {

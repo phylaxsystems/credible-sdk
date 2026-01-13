@@ -24,6 +24,7 @@ use crate::{
         EventSequencingError,
     },
     execution_ids::TxExecutionId,
+    transaction_observer::IncidentReportSender,
     transactions_state::TransactionResultEvent,
     transport::{
         Transport,
@@ -251,6 +252,7 @@ impl CommonSetup {
     async fn spawn_engine_with_sequencing(
         &self,
         transport_rx: TransactionQueueReceiver,
+        incident_sender: Option<IncidentReportSender>,
     ) -> (
         EngineThreadHandle,
         std::thread::JoinHandle<Result<(), EventSequencingError>>,
@@ -271,6 +273,7 @@ impl CommonSetup {
             Duration::from_millis(100),
             Duration::from_millis(20),
             false,
+            incident_sender,
             #[cfg(feature = "cache_validation")]
             Some(&self.eth_rpc_source_http_mock.ws_url()),
         )
@@ -301,18 +304,19 @@ pub struct LocalInstanceMockDriver {
 }
 
 impl LocalInstanceMockDriver {
-    pub async fn new_with_store(
-        assertion_store: AssertionStore,
+    async fn create(
+        assertion_store: Option<AssertionStore>,
+        incident_sender: Option<IncidentReportSender>,
     ) -> Result<LocalInstance<Self>, String> {
         info!(target: "test_transport", "Creating LocalInstance with MockTransport");
 
-        let setup = CommonSetup::new(Some(assertion_store), None).await?;
+        let setup = CommonSetup::new(assertion_store, None).await?;
 
         let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
         let (mock_tx, mock_rx) = flume::unbounded();
 
         let (engine_handle, _sequencing_handle) = setup
-            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, incident_sender)
             .await;
 
         let transport =
@@ -348,53 +352,30 @@ impl LocalInstanceMockDriver {
             },
         ))
     }
+
+    pub async fn new_with_store(
+        assertion_store: AssertionStore,
+    ) -> Result<LocalInstance<Self>, String> {
+        Self::create(Some(assertion_store), None).await
+    }
+
+    pub async fn new_with_store_and_incident_sender(
+        assertion_store: AssertionStore,
+        incident_sender: IncidentReportSender,
+    ) -> Result<LocalInstance<Self>, String> {
+        Self::create(Some(assertion_store), Some(incident_sender)).await
+    }
+
+    pub async fn new_with_incident_sender(
+        incident_sender: IncidentReportSender,
+    ) -> Result<LocalInstance<Self>, String> {
+        Self::create(None, Some(incident_sender)).await
+    }
 }
 
 impl TestTransport for LocalInstanceMockDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
-        info!(target: "test_transport", "Creating LocalInstance with MockTransport");
-
-        let setup = CommonSetup::new(None, None).await?;
-
-        let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
-        let (mock_tx, mock_rx) = flume::unbounded();
-
-        let (engine_handle, _sequencing_handle) = setup
-            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
-            .await;
-
-        let transport =
-            MockTransport::with_receiver(transport_tx_sender, mock_rx, setup.state_results.clone());
-
-        let transport_handle = tokio::spawn(async move {
-            info!(target: "test_transport", "Transport task started");
-            let result = transport.run().await;
-            match result {
-                Ok(()) => info!(target: "test_transport", "Transport run() completed successfully"),
-                Err(e) => warn!(target: "test_transport", "Transport stopped with error: {}", e),
-            }
-        });
-
-        Ok(LocalInstance::new_internal(
-            setup.underlying_db,
-            setup.sources.clone(),
-            setup.eth_rpc_source_http_mock,
-            setup.fallback_eth_rpc_source_http_mock,
-            setup.assertion_store,
-            Some(transport_handle),
-            Some(engine_handle),
-            U256::from(1),
-            setup.state_results,
-            setup.default_account,
-            None,
-            setup.list_of_sources,
-            LocalInstanceMockDriver {
-                mock_sender: mock_tx,
-                block_tx_hashes_by_iteration: HashMap::new(),
-                override_n_transactions: None,
-                override_last_tx_hash: None,
-            },
-        ))
+        Self::create(None, None).await
     }
 
     async fn new_block(
@@ -611,6 +592,7 @@ impl LocalInstanceHttpDriver {
 
     async fn create(
         assertion_store: Option<AssertionStore>,
+        incident_sender: Option<IncidentReportSender>,
     ) -> Result<LocalInstance<Self>, String> {
         info!(target: "LocalInstanceHttpDriver", "Creating LocalInstance with HttpTransport");
 
@@ -621,7 +603,7 @@ impl LocalInstanceHttpDriver {
 
         // Spawn engine and event sequencing
         let (engine_handle, _sequencing_handle) = setup
-            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, incident_sender)
             .await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -683,13 +665,20 @@ impl LocalInstanceHttpDriver {
     pub async fn new_with_store(
         assertion_store: AssertionStore,
     ) -> Result<LocalInstance<Self>, String> {
-        Self::create(Some(assertion_store)).await
+        Self::create(Some(assertion_store), None).await
+    }
+
+    pub async fn new_with_store_and_incident_sender(
+        assertion_store: AssertionStore,
+        incident_sender: IncidentReportSender,
+    ) -> Result<LocalInstance<Self>, String> {
+        Self::create(Some(assertion_store), Some(incident_sender)).await
     }
 }
 
 impl TestTransport for LocalInstanceHttpDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
-        Self::create(None).await
+        Self::create(None, None).await
     }
 
     async fn new_block(
@@ -1014,6 +1003,7 @@ impl LocalInstanceGrpcDriver {
 
     async fn create(
         assertion_store: Option<AssertionStore>,
+        incident_sender: Option<IncidentReportSender>,
     ) -> Result<LocalInstance<Self>, String> {
         info!(target: "LocalInstanceGrpcDriver", "Creating LocalInstance with streaming GrpcTransport");
 
@@ -1026,7 +1016,7 @@ impl LocalInstanceGrpcDriver {
         let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
 
         let (engine_handle, _sequencing_handle) = setup
-            .spawn_engine_with_sequencing(event_sequencing_tx_receiver)
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, incident_sender)
             .await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1138,13 +1128,20 @@ impl LocalInstanceGrpcDriver {
     pub async fn new_with_store(
         assertion_store: AssertionStore,
     ) -> Result<LocalInstance<Self>, String> {
-        Self::create(Some(assertion_store)).await
+        Self::create(Some(assertion_store), None).await
+    }
+
+    pub async fn new_with_store_and_incident_sender(
+        assertion_store: AssertionStore,
+        incident_sender: IncidentReportSender,
+    ) -> Result<LocalInstance<Self>, String> {
+        Self::create(Some(assertion_store), Some(incident_sender)).await
     }
 }
 
 impl TestTransport for LocalInstanceGrpcDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
-        Self::create(None).await
+        Self::create(None, None).await
     }
 
     async fn new_block(
