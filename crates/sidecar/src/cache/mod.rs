@@ -37,6 +37,7 @@ use revm::{
 use std::{
     fmt::Debug,
     sync::Arc,
+    thread,
     time::Instant,
 };
 use thiserror::Error;
@@ -97,6 +98,9 @@ pub struct Sources {
     max_depth: U256,
     /// Metrics for the cache.
     metrics: StateMetrics,
+    /// When enabled, queries all synced sources simultaneously and returns
+    /// the first successful response.
+    enable_parallel_sources: bool,
 }
 
 impl Sources {
@@ -112,18 +116,34 @@ impl Sources {
     ///
     /// A new `Cache` instance with the block number initialized to 0.
     pub fn new(sources: Vec<Arc<dyn Source>>, max_depth: u64) -> Self {
+        Self::build(sources, max_depth, false)
+    }
+
+    /// Creates a new cache with parallel source querying.
+    pub fn new_parallel(sources: Vec<Arc<dyn Source>>, max_depth: u64) -> Self {
+        Self::build(sources, max_depth, true)
+    }
+
+    /// Internal builder for the cache.
+    fn build(sources: Vec<Arc<dyn Source>>, max_depth: u64, enable_parallel_sources: bool) -> Self {
         Self {
             latest_head: RwLock::new(U256::ZERO),
             sources,
             latest_unprocessed_block: RwLock::new(U256::ZERO),
             max_depth: U256::from(max_depth),
             metrics: StateMetrics::new(),
+            enable_parallel_sources,
         }
     }
 
     /// Returns a list of configured sources for the cache
     pub fn list_configured_sources(&self) -> Vec<SourceName> {
         self.sources.iter().map(|s| s.name()).collect::<Vec<_>>()
+    }
+
+    /// Returns whether parallel source querying is enabled.
+    pub fn is_parallel_enabled(&self) -> bool {
+        self.enable_parallel_sources
     }
 
     /// Updates the current block number.
@@ -220,11 +240,57 @@ impl Sources {
     pub fn get_latest_unprocessed_block(&self) -> U256 {
         *self.latest_unprocessed_block.read()
     }
+
+    /// Queries all synced sources in parallel and returns the first successful result.
+    ///
+    /// Spawns a thread for each synced source, executes the query, and returns
+    /// as soon as any source succeeds.
+    ///
+    /// Only returns an error if all sources fail.
+    fn query_parallel<T, F>(&self, query: F) -> Result<T, CacheError>
+    where
+        F: Fn(&dyn Source) -> Result<T, SourceError> + Sync + Send,
+        T: Send,
+    {
+        let synced_sources: Vec<_> = self.iter_synced_sources().collect();
+
+        if synced_sources.is_empty() {
+            return Err(CacheError::NoCacheSourceAvailable);
+        }
+
+        let (tx, rx) = flume::unbounded();
+        let query = &query;
+
+        thread::scope(|s| {
+            for source in &synced_sources {
+                let tx = tx.clone();
+                s.spawn(move || {
+                    let result = query(source.as_ref());
+                    let _ = tx.send(result);
+                });
+            }
+            drop(tx);
+
+            rx.iter()
+                .find_map(|r| r.ok())
+                .ok_or(CacheError::NoCacheSourceAvailable)
+        })
+    }
 }
 
 impl DatabaseRef for Sources {
     type Error = CacheError;
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        // Route to parallel sources querying if enabled
+        if self.enable_parallel_sources {
+            let total_instant = Instant::now();
+            let result = self.query_parallel(|source| source.basic_ref(address));
+            self.metrics
+                .total_basic_ref_duration(total_instant.elapsed());
+            return result;
+        }
+
+        // Back to sequential querying
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();
@@ -283,6 +349,14 @@ impl DatabaseRef for Sources {
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+        if self.enable_parallel_sources {
+            let total_instant = Instant::now();
+            let result = self.query_parallel(|source| source.block_hash_ref(number));
+            self.metrics
+                .total_block_hash_ref_duration(total_instant.elapsed());
+            return result;
+        }
+
         let total_operation_instant = Instant::now();
         let result = self
             .iter_synced_sources()
@@ -319,6 +393,14 @@ impl DatabaseRef for Sources {
     }
 
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        if self.enable_parallel_sources {
+            let total_instant = Instant::now();
+            let result = self.query_parallel(|source| source.code_by_hash_ref(code_hash));
+            self.metrics
+                .total_code_by_hash_ref_duration(total_instant.elapsed());
+            return result;
+        }
+
         let total_operation_instant = Instant::now();
         let result = self
             .iter_synced_sources()
@@ -361,6 +443,14 @@ impl DatabaseRef for Sources {
         address: Address,
         index: StorageKey,
     ) -> Result<StorageValue, Self::Error> {
+        if self.enable_parallel_sources {
+            let total_instant = Instant::now();
+            let result = self.query_parallel(|source| source.storage_ref(address, index));
+            self.metrics
+                .total_storage_ref_duration(total_instant.elapsed());
+            return result;
+        }
+
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();
