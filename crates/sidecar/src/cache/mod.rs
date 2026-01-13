@@ -272,7 +272,7 @@ impl Sources {
             drop(tx);
 
             rx.iter()
-                .find_map(|r| r.ok())
+                .find_map(Result::ok)
                 .ok_or(CacheError::NoCacheSourceAvailable)
         })
     }
