@@ -17,6 +17,7 @@ FROM chef AS planner
 
 COPY Cargo.* .
 COPY crates ./crates
+COPY scripts ./scripts
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -32,6 +33,7 @@ RUN cargo chef cook --profile ${CARGO_PROFILE} --recipe-path recipe.json
 
 COPY Cargo.* .
 COPY crates ./crates
+COPY scripts ./scripts
 
 # Ensure we reuse the same target dir between phases
 ENV CARGO_TARGET_DIR=/sidecar/target

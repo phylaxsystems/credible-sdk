@@ -12,6 +12,7 @@ WORKDIR /assertion-da
 FROM chef AS planner
 
 COPY crates ./crates
+COPY scripts ./scripts
 COPY Cargo.* .
 
 RUN cargo chef prepare --recipe-path recipe.json
@@ -26,6 +27,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # Optional build flags
 ARG BUILD_FLAGS=""
 COPY crates ./crates
+COPY scripts ./scripts
 COPY Cargo.* .
 RUN cargo build --release --locked $BUILD_FLAGS
 

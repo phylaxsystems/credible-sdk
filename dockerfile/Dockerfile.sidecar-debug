@@ -12,6 +12,7 @@ WORKDIR /sidecar
 FROM chef AS planner
 
 COPY crates ./crates
+COPY scripts ./scripts
 COPY Cargo.* .
 
 RUN cargo chef prepare --recipe-path recipe.json
@@ -26,6 +27,7 @@ RUN cargo chef cook --profile debug-perf --recipe-path recipe.json
 # Optional build flags
 ARG BUILD_FLAGS=""
 COPY crates ./crates
+COPY scripts ./scripts
 COPY Cargo.* .
 RUN cargo build --profile debug-perf --locked --bin sidecar $BUILD_FLAGS
 
