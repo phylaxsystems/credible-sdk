@@ -445,7 +445,7 @@ impl DatabaseRef for Sources {
     ) -> Result<StorageValue, Self::Error> {
         if self.enable_parallel_sources {
             let total_instant = Instant::now();
-            let result = self.query_parallel( move|source| source.storage_ref(address, index));
+            let result = self.query_parallel(move |source| source.storage_ref(address, index));
             self.metrics
                 .total_storage_ref_duration(total_instant.elapsed());
             return result;
@@ -749,7 +749,7 @@ mod tests {
         cache.set_block_number(U256::from(1));
         let address = create_test_address();
 
-        let result = cache.query_parallel( move|s| s.basic_ref(address)).unwrap();
+        let result = cache.query_parallel(move |s| s.basic_ref(address)).unwrap();
         assert_eq!(result, Some(account_info));
 
         // Both sources should have been exercised in parallel
@@ -769,7 +769,7 @@ mod tests {
         cache.set_block_number(U256::from(1));
         let address = create_test_address();
 
-        let result = cache.query_parallel(move|s| s.basic_ref(address)).unwrap();
+        let result = cache.query_parallel(move |s| s.basic_ref(address)).unwrap();
         assert_eq!(result, Some(account_info));
         assert_eq!(cache_miss.basic_ref_call_count(), 1);
         assert_eq!(succeeding.basic_ref_call_count(), 1);
@@ -784,7 +784,7 @@ mod tests {
         cache.set_block_number(U256::from(1));
         let address = create_test_address();
 
-        let result = cache.query_parallel(move|s| s.basic_ref(address));
+        let result = cache.query_parallel(move |s| s.basic_ref(address));
         assert!(matches!(result, Err(CacheError::NoCacheSourceAvailable)));
         assert_eq!(failing1.basic_ref_call_count(), 1);
         assert_eq!(failing2.basic_ref_call_count(), 1);
@@ -795,7 +795,7 @@ mod tests {
         let cache = Sources::new_parallel(vec![], 10);
         let address = create_test_address();
 
-        let result = cache.query_parallel(move|s| s.basic_ref(address));
+        let result = cache.query_parallel(move |s| s.basic_ref(address));
         assert!(matches!(result, Err(CacheError::NoCacheSourceAvailable)));
     }
 
