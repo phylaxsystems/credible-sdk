@@ -35,7 +35,7 @@ struct IncidentPayload {
     transaction_data: TransactionDataPayload,
     block_env: BlockEnvPayload,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    previous_transactions: Vec<PreviousTransactionPayload>,
+    previous_transactions: Vec<TransactionDataPayload>,
 }
 
 #[derive(Serialize)]
@@ -66,15 +66,6 @@ struct FailurePayload {
     assertion_fn_selector: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_reason: Option<String>,
-}
-
-#[derive(Serialize)]
-struct PreviousTransactionPayload {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    calldata: Option<String>,
-    from: String,
-    to: String,
-    value: String,
 }
 
 #[derive(Serialize)]
@@ -220,7 +211,7 @@ pub(super) fn build_incident_body(
         .collect::<Vec<_>>();
     let transaction_data = build_transaction_data_payload(&report.transaction_data)?;
     let block_env = build_block_env_payload(&report.block_env);
-    let previous_transactions = build_previous_transactions_payload(&report.prev_txs);
+    let previous_transactions = build_previous_transactions_payload(&report.prev_txs)?;
 
     let payload = IncidentPayload {
         failures,
@@ -293,26 +284,11 @@ fn build_failure_payload(failure: &IncidentData) -> FailurePayload {
 
 fn build_previous_transactions_payload(
     previous_txs: &[ReconstructableTx],
-) -> Vec<PreviousTransactionPayload> {
+) -> Result<Vec<TransactionDataPayload>, TransactionObserverError> {
     previous_txs
         .iter()
-        .map(|(_, tx_env)| build_previous_transaction_payload(tx_env))
+        .map(build_transaction_data_payload)
         .collect()
-}
-
-fn build_previous_transaction_payload(tx_env: &TxEnv) -> PreviousTransactionPayload {
-    let calldata = if tx_env.data.is_empty() {
-        None
-    } else {
-        Some(bytes_to_hex(tx_env.data.as_ref()))
-    };
-
-    PreviousTransactionPayload {
-        from: bytes_to_hex(tx_env.caller.as_slice()),
-        to: tx_kind_to_address(&tx_env.kind, false),
-        value: tx_env.value.to_string(),
-        calldata,
-    }
 }
 
 #[allow(clippy::too_many_lines)]
