@@ -11097,6 +11097,7 @@ dependencies = [
  "arrayvec",
  "assertion-da-client 0.9.3",
  "assertion-executor 0.9.3",
+ "async-trait",
  "axum",
  "clap",
  "console-subscriber",
