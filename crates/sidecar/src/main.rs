@@ -220,12 +220,42 @@ async fn main() -> anyhow::Result<()> {
         let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
         let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
+        let transaction_observer_config = match (
+            &config.credible.transaction_observer_db_path,
+            &config.credible.transaction_observer_endpoint,
+            &config.credible.transaction_observer_auth_token,
+            config.credible.transaction_observer_endpoint_rps_max,
+            config.credible.transaction_observer_poll_interval_ms,
+        ) {
+            (
+                Some(db_path),
+                Some(endpoint),
+                Some(auth_token),
+                Some(endpoint_rps_max),
+                Some(poll_interval_ms),
+            ) => {
+                Some(TransactionObserverConfig {
+                    db_path: db_path.clone(),
+                    endpoint: endpoint.clone(),
+                    auth_token: auth_token.clone(),
+                    endpoint_rps_max,
+                    poll_interval: Duration::from_millis(poll_interval_ms),
+                })
+            }
+            _ => None,
+        };
+
         // Channel: Transport -> EventSequencing
         let (transport_tx_sender, event_sequencing_rx) = unbounded();
         // Channel: EventSequencing -> CoreEngine
         let (event_sequencing_tx, engine_rx) = unbounded();
         // Channel: CoreEngine -> TransactionObserver
-        let (incident_report_tx, incident_report_rx) = unbounded();
+        let (incident_report_tx, incident_report_rx) = if transaction_observer_config.is_some() {
+            let (tx, rx) = unbounded();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
 
         let (engine_state_results, result_event_rx) = match config.transport.protocol {
             TransportProtocol::Grpc => {
@@ -261,7 +291,7 @@ async fn main() -> anyhow::Result<()> {
                 .credible
                 .overlay_cache_invalidation_every_block
                 .unwrap_or(false),
-            Some(incident_report_tx),
+            incident_report_tx,
             #[cfg(feature = "cache_validation")]
             Some(&config.credible.cache_checker_ws_url),
         )
@@ -269,26 +299,33 @@ async fn main() -> anyhow::Result<()> {
         let (engine_handle, engine_exited) = engine.spawn(Arc::clone(&shutdown_flag))?;
         thread_handles.engine = Some(engine_handle);
 
-        // Spawn TransactionObserver on a dedicated OS thread
-        let transaction_observer_config = TransactionObserverConfig {
-            db_path: config.credible.transaction_observer_db_path.clone(),
-            endpoint: config.credible.transaction_observer_endpoint.clone(),
-            auth_token: config.credible.transaction_observer_auth_token.clone(),
-            endpoint_rps_max: config.credible.transaction_observer_endpoint_rps_max,
-            poll_interval: Duration::from_millis(
-                config.credible.transaction_observer_poll_interval_ms,
-            ),
-        };
-        let transaction_observer =
-            TransactionObserver::new(transaction_observer_config, incident_report_rx)?;
-        let (observer_handle, observer_exited) =
-            transaction_observer.spawn(Arc::clone(&shutdown_flag))?;
-        thread_handles.transaction_observer = Some(observer_handle);
+        let observer_exited_rx =
+            if let (Some(transaction_observer_config), Some(incident_report_rx)) =
+                (transaction_observer_config, incident_report_rx)
+            {
+                let transaction_observer =
+                    TransactionObserver::new(transaction_observer_config, incident_report_rx)?;
+                let (observer_handle, observer_exited) =
+                    transaction_observer.spawn(Arc::clone(&shutdown_flag))?;
+                thread_handles.transaction_observer = Some(observer_handle);
+                Some(observer_exited)
+            } else {
+                tracing::info!("Transaction observer disabled: missing config");
+                None
+            };
 
         let mut health_server = HealthServer::new(health_bind_addr);
 
         let indexer_cfg =
             init_indexer_config(&config, assertion_store.clone(), &executor_config).await?;
+
+        let observer_exited = async {
+            if let Some(observer_exited) = observer_exited_rx {
+                observer_exited.await
+            } else {
+                std::future::pending().await
+            }
+        };
 
         // Only async components run in tokio::select!
         // Transport, health server, and indexer need async for network I/O
