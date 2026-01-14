@@ -74,7 +74,10 @@ use std::{
     thread::JoinHandle,
     time::Duration,
 };
-use tracing::log::info;
+use tracing::{
+    error,
+    log::info,
+};
 
 /// Create transport with optional result streaming support.
 ///
@@ -199,12 +202,20 @@ async fn main() -> anyhow::Result<()> {
         if let (Some(state_worker_path), Some(state_worker_depth)) = (
             config.state.state_worker_mdbx_path.as_ref(),
             config.state.state_worker_depth,
-        ) && let Ok(state_worker_client) = StateReader::new(
-            state_worker_path,
-            CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
         ) {
-            sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+            match StateReader::new(
+                state_worker_path,
+                CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
+            ) {
+                Ok(state_worker_client) => {
+                    sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                }
+                Err(e) => {
+                    error!(error = ?e, "Failed to connect MDBX");
+                }
+            }
         }
+
         if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
             &config.state.eth_rpc_source_ws_url,
             &config.state.eth_rpc_source_http_url,
