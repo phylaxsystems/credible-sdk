@@ -594,7 +594,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             .current_block_iterations
             .get_mut(&block_id)
             .ok_or(EngineError::TransactionError)?;
-        current_block_iteration.n_transactions += 1;
 
         let instant = Instant::now();
 
@@ -650,6 +649,15 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_metrics.commit();
 
         self.trace_execute_transaction_result(tx_execution_id, tx_env, &rax);
+
+        // Only count transactions that pass validation (including reverts).
+        // Invalid transactions (validation errors) are not counted as they
+        // won't be included in the block.
+        let current_block_iteration = self
+            .current_block_iterations
+            .get_mut(&block_id)
+            .ok_or(EngineError::TransactionError)?;
+        current_block_iteration.n_transactions += 1;
 
         self.add_transaction_result(
             tx_execution_id,
