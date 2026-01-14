@@ -119,15 +119,15 @@ pub struct CredibleConfig {
     /// Path to the rpc store db
     pub assertion_store_db_path: String,
     /// Path to the transaction observer database
-    pub transaction_observer_db_path: String,
+    pub transaction_observer_db_path: Option<String>,
     /// Dapp API endpoint for incident publishing
-    pub transaction_observer_endpoint: String,
+    pub transaction_observer_endpoint: Option<String>,
     /// Dapp API auth token for incident publishing
-    pub transaction_observer_auth_token: String,
+    pub transaction_observer_auth_token: Option<String>,
     /// Max incident publish requests per poll interval
-    pub transaction_observer_endpoint_rps_max: usize,
+    pub transaction_observer_endpoint_rps_max: Option<usize>,
     /// Poll interval for incident publishing in milliseconds
-    pub transaction_observer_poll_interval_ms: u64,
+    pub transaction_observer_poll_interval_ms: Option<u64>,
     /// Block tag to use for indexing assertions.
     pub block_tag: BlockTag,
     /// Contract address of the state oracle contract, used to query assertion info
@@ -273,18 +273,24 @@ mod tests {
         assert_eq!(config.credible.assertion_store_db_path, "/tmp/store.db");
         assert_eq!(
             config.credible.transaction_observer_db_path,
-            "/tmp/observer.db"
+            Some("/tmp/observer.db".to_string())
         );
         assert_eq!(
             config.credible.transaction_observer_endpoint,
-            "http://localhost:3001/api/v1/enforcer/incidents"
+            Some("http://localhost:3001/api/v1/enforcer/incidents".to_string())
         );
         assert_eq!(
             config.credible.transaction_observer_auth_token,
-            "test-token"
+            Some("test-token".to_string())
         );
-        assert_eq!(config.credible.transaction_observer_endpoint_rps_max, 50);
-        assert_eq!(config.credible.transaction_observer_poll_interval_ms, 1000);
+        assert_eq!(
+            config.credible.transaction_observer_endpoint_rps_max,
+            Some(50)
+        );
+        assert_eq!(
+            config.credible.transaction_observer_poll_interval_ms,
+            Some(1000)
+        );
         assert_eq!(config.credible.state_oracle_deployment_block, 100);
         assert_eq!(config.credible.transaction_results_max_capacity, 10000);
 
