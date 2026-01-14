@@ -126,6 +126,7 @@ impl StateDb {
         // Configure MDBX
         let args = DatabaseArguments::new(ClientVersion::default())
             .with_geometry_max_size(Some(max_size))
+            .with_exclusive(Some(false))
             .with_max_read_transaction_duration(Some(
                 reth_libmdbx::MaxReadTransactionDuration::Unbounded,
             ));
@@ -190,6 +191,8 @@ impl StateDb {
         }
 
         let args = DatabaseArguments::new(ClientVersion::default())
+            .with_geometry_max_size(Some(DEFAULT_MAX_DB_SIZE))
+            .with_exclusive(Some(false))
             .with_max_read_transaction_duration(Some(
                 reth_libmdbx::MaxReadTransactionDuration::Unbounded,
             ));
