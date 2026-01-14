@@ -158,6 +158,14 @@ impl<DB> CoreEngine<DB> {
             .map(|entry| (*entry.key(), entry.value().clone()))
             .collect()
     }
+
+    /// Get the transaction count for a specific block iteration.
+    #[cfg(test)]
+    pub fn get_n_transactions(&self, block_execution_id: &BlockExecutionId) -> Option<u64> {
+        self.current_block_iterations
+            .get(block_execution_id)
+            .map(|data| data.n_transactions)
+    }
 }
 
 async fn create_test_engine_with_timeout(
@@ -2672,5 +2680,224 @@ async fn test_transaction_stalls_until_source_synced(mut instance: crate::utils:
     assert!(
         instance.is_transaction_successful(&tx).await.unwrap(),
         "Transaction should succeed after source syncs to current block"
+    );
+}
+
+/// Tests that reverted transactions (EVM reverts) ARE counted in n_transactions.
+/// Reverts are valid execution outcomes and their state should be committed.
+#[tokio::test]
+async fn test_reverted_transactions_are_counted() {
+    let (mut engine, _) = create_test_engine().await;
+
+    let block_env = create_test_block_env();
+    let block_execution_id = BlockExecutionId {
+        block_number: block_env.number,
+        iteration_id: 0,
+    };
+
+    // Create iteration
+    let new_iteration = queue::NewIteration {
+        block_env: block_env.clone(),
+        iteration_id: 0,
+    };
+    engine.process_iteration(&new_iteration).unwrap();
+
+    // Create a transaction that will revert (REVERT opcode: 0xfd)
+    // Bytecode: PUSH1 0x00, PUSH1 0x00, REVERT (60 00 60 00 fd)
+    let reverting_tx_env = TxEnv {
+        caller: Address::from([0x01; 20]),
+        gas_limit: 100_000,
+        gas_price: 0,
+        kind: TxKind::Create,
+        value: uint!(0_U256),
+        data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]),
+        nonce: 0,
+        ..Default::default()
+    };
+
+    let tx_hash = B256::from([0x11; 32]);
+    let tx_execution_id = TxExecutionId::new(block_env.number, 0, tx_hash, 0);
+
+    // Execute the reverting transaction
+    let result = engine.execute_transaction(tx_execution_id, &reverting_tx_env);
+    assert!(result.is_ok(), "Reverting transaction should execute without engine error");
+
+    // Verify the transaction result is a revert
+    let tx_result = engine
+        .get_transaction_result_cloned(&tx_execution_id)
+        .expect("Transaction result should exist");
+
+    match tx_result {
+        TransactionResult::ValidationCompleted { execution_result, .. } => {
+            assert!(
+                !execution_result.is_success(),
+                "Transaction should have reverted"
+            );
+        }
+        _ => panic!("Expected ValidationCompleted result"),
+    }
+
+    // Verify n_transactions is incremented for reverted transaction
+    let n_transactions = engine
+        .get_n_transactions(&block_execution_id)
+        .expect("Block iteration should exist");
+    assert_eq!(
+        n_transactions, 1,
+        "Reverted transactions SHOULD be counted in n_transactions"
+    );
+}
+
+/// Tests that invalid transactions (validation errors like insufficient funds, bad nonce)
+/// are NOT counted in n_transactions because their state is not committed.
+#[tokio::test]
+async fn test_invalid_transactions_not_counted() {
+    let (mut engine, _) = create_test_engine().await;
+
+    let block_env = create_test_block_env();
+    let block_execution_id = BlockExecutionId {
+        block_number: block_env.number,
+        iteration_id: 0,
+    };
+
+    // Create iteration
+    let new_iteration = queue::NewIteration {
+        block_env: block_env.clone(),
+        iteration_id: 0,
+    };
+    engine.process_iteration(&new_iteration).unwrap();
+
+    // Create a transaction that will fail validation (insufficient funds)
+    // Sending 1 ETH from an account with 0 balance
+    let invalid_tx_env = TxEnv {
+        caller: Address::from([0x99; 20]), // Account with no balance
+        gas_limit: 21_000,
+        gas_price: 0,
+        kind: TxKind::Call(Address::from([0x88; 20])),
+        value: uint!(1_000_000_000_000_000_000_U256), // 1 ETH
+        data: Bytes::new(),
+        nonce: 0,
+        ..Default::default()
+    };
+
+    let tx_hash = B256::from([0x22; 32]);
+    let tx_execution_id = TxExecutionId::new(block_env.number, 0, tx_hash, 0);
+
+    // Execute the invalid transaction - should return Ok but store ValidationError
+    let result = engine.execute_transaction(tx_execution_id, &invalid_tx_env);
+    assert!(
+        result.is_ok(),
+        "Invalid transaction should not cause engine error"
+    );
+
+    // Verify the transaction result is a ValidationError
+    let tx_result = engine
+        .get_transaction_result_cloned(&tx_execution_id)
+        .expect("Transaction result should exist");
+    assert!(
+        matches!(tx_result, TransactionResult::ValidationError(_)),
+        "Expected ValidationError for insufficient funds, got {:?}",
+        tx_result
+    );
+
+    // Verify n_transactions is NOT incremented for invalid transaction
+    let n_transactions = engine
+        .get_n_transactions(&block_execution_id)
+        .expect("Block iteration should exist");
+    assert_eq!(
+        n_transactions, 0,
+        "Invalid transactions should NOT be counted in n_transactions"
+    );
+}
+
+/// Tests the mixed scenario: valid transactions are counted, invalid are not.
+#[tokio::test]
+async fn test_mixed_valid_and_invalid_transactions_counting() {
+    let (mut engine, _) = create_test_engine().await;
+
+    let block_env = create_test_block_env();
+    let block_execution_id = BlockExecutionId {
+        block_number: block_env.number,
+        iteration_id: 0,
+    };
+
+    // Create iteration
+    let new_iteration = queue::NewIteration {
+        block_env: block_env.clone(),
+        iteration_id: 0,
+    };
+    engine.process_iteration(&new_iteration).unwrap();
+
+    // Transaction 1: Valid successful transaction
+    let valid_tx_env = TxEnv {
+        caller: Address::from([0x01; 20]),
+        gas_limit: 100_000,
+        gas_price: 0,
+        kind: TxKind::Create,
+        value: uint!(0_U256),
+        data: Bytes::from(vec![0x60, 0x00]), // PUSH1 0x00 - minimal valid bytecode
+        nonce: 0,
+        ..Default::default()
+    };
+    let tx1_hash = B256::from([0x11; 32]);
+    let tx1_id = TxExecutionId::new(block_env.number, 0, tx1_hash, 0);
+    engine.execute_transaction(tx1_id, &valid_tx_env).unwrap();
+
+    // Transaction 2: Invalid transaction (insufficient funds)
+    let invalid_tx_env = TxEnv {
+        caller: Address::from([0x99; 20]),
+        gas_limit: 21_000,
+        gas_price: 0,
+        kind: TxKind::Call(Address::from([0x88; 20])),
+        value: uint!(1_000_000_000_000_000_000_U256), // 1 ETH from empty account
+        data: Bytes::new(),
+        nonce: 0,
+        ..Default::default()
+    };
+    let tx2_hash = B256::from([0x22; 32]);
+    let tx2_id = TxExecutionId::new(block_env.number, 0, tx2_hash, 1);
+    engine.execute_transaction(tx2_id, &invalid_tx_env).unwrap();
+
+    // Transaction 3: Valid reverting transaction
+    let reverting_tx_env = TxEnv {
+        caller: Address::from([0x02; 20]),
+        gas_limit: 100_000,
+        gas_price: 0,
+        kind: TxKind::Create,
+        value: uint!(0_U256),
+        data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xfd]), // REVERT
+        nonce: 0,
+        ..Default::default()
+    };
+    let tx3_hash = B256::from([0x33; 32]);
+    let tx3_id = TxExecutionId::new(block_env.number, 0, tx3_hash, 2);
+    engine
+        .execute_transaction(tx3_id, &reverting_tx_env)
+        .unwrap();
+
+    // Verify results
+    let tx1_result = engine.get_transaction_result_cloned(&tx1_id).unwrap();
+    let tx2_result = engine.get_transaction_result_cloned(&tx2_id).unwrap();
+    let tx3_result = engine.get_transaction_result_cloned(&tx3_id).unwrap();
+
+    assert!(
+        matches!(tx1_result, TransactionResult::ValidationCompleted { .. }),
+        "TX1 should be ValidationCompleted"
+    );
+    assert!(
+        matches!(tx2_result, TransactionResult::ValidationError(_)),
+        "TX2 should be ValidationError"
+    );
+    assert!(
+        matches!(tx3_result, TransactionResult::ValidationCompleted { .. }),
+        "TX3 should be ValidationCompleted (revert)"
+    );
+
+    // Only valid transactions (TX1 and TX3) should be counted
+    let n_transactions = engine
+        .get_n_transactions(&block_execution_id)
+        .expect("Block iteration should exist");
+    assert_eq!(
+        n_transactions, 2,
+        "Only valid transactions (success + revert) should be counted, not invalid ones"
     );
 }

@@ -642,7 +642,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             .current_block_iterations
             .get_mut(&block_id)
             .ok_or(EngineError::TransactionError)?;
-        current_block_iteration.n_transactions += 1;
 
         let instant = Instant::now();
 
@@ -722,6 +721,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             .ok_or(EngineError::TransactionError)?;
         current_block_iteration.executed_txs.push(tx_execution_id);
         current_block_iteration.incident_txs.push(tx_data);
+        // Only count transactions that pass validation (including reverts).
+        // Invalid transactions (validation errors) are not counted as they
+        // won't be included in the block.
+        current_block_iteration.n_transactions += 1;
 
         Ok(())
     }
