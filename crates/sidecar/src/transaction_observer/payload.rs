@@ -552,10 +552,7 @@ mod tests {
             Some(expected_hash.as_str())
         );
         assert_eq!(tx_value.get("chain_id").and_then(Value::as_u64), Some(1));
-        assert_eq!(
-            tx_value.get("nonce").and_then(Value::as_str),
-            Some("7")
-        );
+        assert_eq!(tx_value.get("nonce").and_then(Value::as_str), Some("7"));
         assert_eq!(
             tx_value.get("gas_limit").and_then(Value::as_str),
             Some("21000")
@@ -568,10 +565,7 @@ mod tests {
             tx_value.get("from_address").and_then(Value::as_str),
             Some(expected_from.as_str())
         );
-        assert_eq!(
-            tx_value.get("value").and_then(Value::as_str),
-            Some("5")
-        );
+        assert_eq!(tx_value.get("value").and_then(Value::as_str), Some("5"));
         assert_eq!(
             tx_value.get("max_fee_per_gas").and_then(Value::as_str),
             Some("100")
@@ -582,10 +576,7 @@ mod tests {
                 .and_then(Value::as_str),
             Some("3")
         );
-        assert_eq!(
-            tx_value.get("type").and_then(Value::as_u64),
-            Some(2)
-        );
+        assert_eq!(tx_value.get("type").and_then(Value::as_u64), Some(2));
         assert_eq!(
             tx_value.get("data").and_then(Value::as_str),
             Some(expected_data.as_str())
