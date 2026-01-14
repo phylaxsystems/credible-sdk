@@ -287,6 +287,7 @@ fn expected_incident_body() -> serde_json::Value {
                 "revert_reason": hex_bytes(&[0x08, 0x04])
             }
         ],
+        "enforcer_version": env!("CARGO_PKG_VERSION"),
         "incident_timestamp": format_timestamp(1_700_000_000),
         "transaction_data": {
             "transaction_hash": hex_bytes(&[0xaa; 32]),
@@ -408,6 +409,11 @@ fn incident_body_builds_transaction_objects() {
 
     let body = super::payload::build_incident_body(&report).expect("build incident body");
     let body_value = serde_json::to_value(body).expect("serialize body");
+
+    assert_eq!(
+        body_value.get("enforcer_version").and_then(Value::as_str),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
 
     let tx_value = body_value
         .get("transaction_data")

@@ -28,9 +28,12 @@ use revm::{
 use serde::Serialize;
 use tracing::warn;
 
+const ENFORCER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Serialize)]
 struct IncidentPayload {
     failures: Vec<FailurePayload>,
+    enforcer_version: String,
     incident_timestamp: String,
     transaction_data: TransactionDataPayload,
     block_env: BlockEnvPayload,
@@ -215,6 +218,7 @@ pub(super) fn build_incident_body(
 
     let payload = IncidentPayload {
         failures,
+        enforcer_version: ENFORCER_VERSION.to_string(),
         incident_timestamp,
         transaction_data,
         block_env,
