@@ -165,8 +165,8 @@ pub trait TestTransport: Sized {
     async fn new_iteration(&mut self, iteration_id: u64, block_env: BlockEnv)
     -> Result<(), String>;
 
-    /// Send a new transaction reorg event. Removes the last executed transaction.
-    /// Transaction hash provided as an argument must match the last executed tx.
+    /// Send a new transaction reorg event. Removes the most recently executed transaction.
+    /// Transaction hash provided as an argument must match the tip tx.
     /// If not the call should succeed but the core engine should produce an error.
     async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String>;
 
@@ -1342,8 +1342,8 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Sends a reorg event to the core engine via a `Transport`.
     ///
-    /// A reorg will remove the last executed transaction, if the hash supplied
-    /// matches said transactions hash.
+    /// A reorg will remove the most recent transaction if the hash supplied
+    /// matches the tip transaction hash.
     /// If not, the core engine should error out and this function will
     /// return an error.
     pub async fn send_reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
@@ -1353,8 +1353,8 @@ impl<T: TestTransport> LocalInstance<T> {
         // Send reorg event
         self.transport.reorg(tx_execution_id).await?;
 
-        // Reorg was accepted by the engine and the last executed transaction
-        // was removed from the buffer. Mirror this in our local nonce tracking
+        // Reorg was accepted by the engine and the most recent transaction
+        // was removed. Mirror this in our local nonce tracking
         // so that subsequent transactions use the correct nonce again.
         let key = (self.default_account, tx_execution_id.iteration_id);
         if let Some(current_nonce) = self.iteration_nonce.get_mut(&key)

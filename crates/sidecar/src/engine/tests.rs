@@ -16,6 +16,7 @@ use alloy::eips::{
 };
 use assertion_executor::{
     ExecutorConfig,
+    db::VersionDb,
     primitives::AccountInfo,
     store::AssertionStore,
 };
@@ -324,76 +325,6 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     );
 }
 
-#[test]
-fn test_last_executed_tx_operations() {
-    // Test single push and pop
-    let mut txs = LastExecutedTx::new();
-    let h1 = B256::from([0x11; 32]);
-    let id1 = TxExecutionId::from_hash(h1);
-    let s1: EvmState = EvmState::default();
-
-    txs.push(id1, Some(s1));
-
-    let cur = txs.current().expect("should contain the pushed tx");
-    assert_eq!(cur.0, id1, "current should be the last pushed hash");
-
-    let popped = txs.remove_last().expect("should pop the only element");
-    assert_eq!(popped.0, id1, "popped should be the same hash");
-    assert!(txs.current().is_none(), "should be empty after pop");
-
-    // Test two elements LIFO
-    let mut txs = LastExecutedTx::new();
-    let h1 = B256::from([0x21; 32]);
-    let h2 = B256::from([0x22; 32]);
-    let id1 = TxExecutionId::from_hash(h1);
-    let id2 = TxExecutionId::from_hash(h2);
-    txs.push(id1, Some(EvmState::default()));
-    txs.push(id2, Some(EvmState::default()));
-
-    // LIFO: current is h2
-    assert_eq!(txs.current().unwrap().0, id2);
-    // Pop h2, current becomes h1
-    assert_eq!(txs.remove_last().unwrap().0, id2);
-    assert_eq!(txs.current().unwrap().0, id1);
-    // Pop h1, now empty
-    assert_eq!(txs.remove_last().unwrap().0, id1);
-    assert!(txs.current().is_none());
-
-    // Test overflow discards oldest
-    let mut txs = LastExecutedTx::new();
-    let h1 = B256::from([0x31; 32]);
-    let h2 = B256::from([0x32; 32]);
-    let h3 = B256::from([0x33; 32]);
-    let id1 = TxExecutionId::from_hash(h1);
-    let id2 = TxExecutionId::from_hash(h2);
-    let id3 = TxExecutionId::from_hash(h3);
-
-    // Fill to capacity
-    txs.push(id1, Some(EvmState::default()));
-    txs.push(id2, Some(EvmState::default()));
-    assert_eq!(txs.current().unwrap().0, id2);
-
-    // Push over capacity; should drop h1 and keep [h2, h3]
-    txs.push(id3, Some(EvmState::default()));
-    assert_eq!(
-        txs.current().unwrap().0,
-        id3,
-        "current should be newest after overflow"
-    );
-
-    // Removing last returns h3, and now current should be h2 (h1 was discarded)
-    assert_eq!(txs.remove_last().unwrap().0, id3);
-    assert_eq!(
-        txs.current().unwrap().0,
-        id2,
-        "previous should be preserved after pop"
-    );
-
-    // Removing last again returns h2 and leaves empty
-    assert_eq!(txs.remove_last().unwrap().0, id2);
-    assert!(txs.current().is_none());
-}
-
 #[crate::utils::engine_test(all)]
 async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {
     // Send an empty block to verify we can advance the chain with empty blocks
@@ -629,14 +560,14 @@ async fn test_core_engine_reorg_valid_then_previous_rejected(
         .await
         .expect("tx2 should be sent successfully");
 
-    // Valid reorg for the last executed tx should succeed (engine keeps running)
+    // Valid reorg for the most recent tx should succeed (engine keeps running)
     instance
         .send_reorg(tx2)
         .await
-        .expect("reorg of last executed tx should succeed");
+        .expect("reorg of tip tx should succeed");
 
     // Reorg for the previous tx (tx1) should be rejected
-    // Because the engine only keeps the last executed tx in the buffer
+    // Because reorg hashes must match the tail of executed transactions
     tx1.block_number += U256::from(1);
     assert!(
         instance.send_reorg(tx1).await.is_err(),
@@ -681,7 +612,7 @@ async fn test_core_engine_reorg_followed_by_blockenv_with_last_tx_hash(
         "Second transaction should execute successfully"
     );
 
-    // Reorg the second transaction; this should succeed and remove it from the buffer.
+    // Reorg the second transaction; this should succeed and remove it from the iteration.
     instance
         .send_reorg(tx2)
         .await
@@ -718,6 +649,390 @@ async fn test_core_engine_reorg_followed_by_blockenv_with_last_tx_hash(
     );
 }
 
+#[tokio::test]
+async fn test_execute_reorg_depth_truncates_tail() {
+    let (mut engine, _) = create_test_engine().await;
+
+    let block_number = U256::from(1);
+    let iteration_id = 1;
+    let block_execution_id = BlockExecutionId {
+        block_number,
+        iteration_id,
+    };
+
+    let tx1_hash = B256::from([0x11; 32]);
+    let tx2_hash = B256::from([0x22; 32]);
+    let tx3_hash = B256::from([0x33; 32]);
+
+    let tx1 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+    let tx2 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+    let tx3 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx3_hash,
+        index: 2,
+    };
+
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    // Add 3 successful transactions to the version db
+    version_db.commit(EvmState::default());
+    version_db.commit(EvmState::default());
+    version_db.commit(EvmState::default());
+
+    let current_block_iteration_id = BlockIterationData {
+        version_db,
+        n_transactions: 3,
+        executed_txs: vec![tx1, tx2, tx3],
+        incident_txs: Vec::new(),
+        block_env: BlockEnv {
+            number: block_number,
+            ..Default::default()
+        },
+    };
+
+    engine
+        .current_block_iterations
+        .insert(block_execution_id, current_block_iteration_id);
+
+    let reorg = queue::ReorgRequest {
+        tx_execution_id: tx3,
+        depth: 2,
+        tx_hashes: vec![tx2_hash, tx3_hash],
+    };
+
+    assert!(engine.execute_reorg(reorg).is_ok());
+
+    let current_block_iteration = engine
+        .current_block_iterations
+        .get(&block_execution_id)
+        .expect("block iteration should exist");
+    assert_eq!(current_block_iteration.executed_txs, vec![tx1]);
+    assert_eq!(current_block_iteration.depth(), 1);
+    assert_eq!(current_block_iteration.n_transactions, 1);
+}
+
+/// Tests that reorg works correctly when the remaining commit_log contains
+/// a failed transaction (None state). This is a regression test for a bug
+/// where rebuild_fork_db would fail on None entries.
+#[tokio::test]
+async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
+    let (mut engine, _) = create_test_engine().await;
+
+    let block_number = U256::from(1);
+    let iteration_id = 1;
+    let block_execution_id = BlockExecutionId {
+        block_number,
+        iteration_id,
+    };
+
+    let tx1_hash = B256::from([0x11; 32]);
+    let tx2_hash = B256::from([0x22; 32]);
+    let tx3_hash = B256::from([0x33; 32]);
+
+    let tx1 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+    let tx2 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+    let tx3 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx3_hash,
+        index: 2,
+    };
+
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    // TX1 succeeds, TX2 fails (None), TX3 succeeds
+    version_db.commit(EvmState::default()); // TX1 succeeded
+    version_db.commit_empty();               // TX2 failed (EVM error, no state)
+    version_db.commit(EvmState::default()); // TX3 succeeded
+
+    let current_block_iteration_data = BlockIterationData {
+        version_db,
+        n_transactions: 3,
+        executed_txs: vec![tx1, tx2, tx3],
+        incident_txs: Vec::new(),
+        block_env: BlockEnv {
+            number: block_number,
+            ..Default::default()
+        },
+    };
+
+    engine
+        .current_block_iterations
+        .insert(block_execution_id, current_block_iteration_data);
+
+    // Reorg TX3 only - should leave TX1 (Some) and TX2 (None) in commit_log
+    let reorg = queue::ReorgRequest {
+        tx_execution_id: tx3,
+        depth: 1,
+        tx_hashes: vec![tx3_hash],
+    };
+
+    // This should succeed even though TX2 has None in commit_log
+    let result = engine.execute_reorg(reorg);
+    assert!(
+        result.is_ok(),
+        "Reorg should succeed even with failed tx (None) in remaining commit_log: {:?}",
+        result
+    );
+
+    let current_block_iteration = engine
+        .current_block_iterations
+        .get(&block_execution_id)
+        .expect("block iteration should exist");
+    assert_eq!(current_block_iteration.executed_txs, vec![tx1, tx2]);
+    assert_eq!(current_block_iteration.depth(), 2);
+    assert_eq!(current_block_iteration.n_transactions, 2);
+}
+
+/// Tests that a reorg can remove ALL transactions, resetting to the base state.
+/// This is an edge case where depth equals the total number of transactions.
+#[tokio::test]
+async fn test_execute_reorg_removes_all_transactions() {
+    let (mut engine, _) = create_test_engine().await;
+
+    let block_number = U256::from(1);
+    let iteration_id = 1;
+    let block_execution_id = BlockExecutionId {
+        block_number,
+        iteration_id,
+    };
+
+    let tx1_hash = B256::from([0x11; 32]);
+    let tx2_hash = B256::from([0x22; 32]);
+    let tx3_hash = B256::from([0x33; 32]);
+
+    let tx1 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+    let tx2 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+    let tx3 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx3_hash,
+        index: 2,
+    };
+
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    version_db.commit(EvmState::default());
+    version_db.commit(EvmState::default());
+    version_db.commit(EvmState::default());
+
+    let current_block_iteration_data = BlockIterationData {
+        version_db,
+        n_transactions: 3,
+        executed_txs: vec![tx1, tx2, tx3],
+        incident_txs: Vec::new(),
+        block_env: BlockEnv {
+            number: block_number,
+            ..Default::default()
+        },
+    };
+
+    engine
+        .current_block_iterations
+        .insert(block_execution_id, current_block_iteration_data);
+
+    // Reorg ALL 3 transactions (depth=3)
+    let reorg = queue::ReorgRequest {
+        tx_execution_id: tx3,
+        depth: 3,
+        tx_hashes: vec![tx1_hash, tx2_hash, tx3_hash],
+    };
+
+    let result = engine.execute_reorg(reorg);
+    assert!(
+        result.is_ok(),
+        "Reorg should succeed when removing all transactions: {:?}",
+        result
+    );
+
+    let current_block_iteration = engine
+        .current_block_iterations
+        .get(&block_execution_id)
+        .expect("block iteration should exist");
+    assert!(
+        current_block_iteration.executed_txs.is_empty(),
+        "All transactions should be removed"
+    );
+    assert_eq!(current_block_iteration.depth(), 0, "Depth should be 0");
+    assert_eq!(current_block_iteration.n_transactions, 0);
+}
+
+/// Tests reorg when all transactions in the commit log were failures (commit_empty).
+/// This ensures the rollback handles the case where no state was ever committed.
+#[tokio::test]
+async fn test_execute_reorg_with_all_failed_transactions() {
+    let (mut engine, _) = create_test_engine().await;
+
+    let block_number = U256::from(1);
+    let iteration_id = 1;
+    let block_execution_id = BlockExecutionId {
+        block_number,
+        iteration_id,
+    };
+
+    let tx1_hash = B256::from([0x11; 32]);
+    let tx2_hash = B256::from([0x22; 32]);
+
+    let tx1 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+    let tx2 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    // Both transactions failed (no state changes)
+    version_db.commit_empty();
+    version_db.commit_empty();
+
+    let current_block_iteration_data = BlockIterationData {
+        version_db,
+        n_transactions: 2,
+        executed_txs: vec![tx1, tx2],
+        incident_txs: Vec::new(),
+        block_env: BlockEnv {
+            number: block_number,
+            ..Default::default()
+        },
+    };
+
+    engine
+        .current_block_iterations
+        .insert(block_execution_id, current_block_iteration_data);
+
+    // Reorg TX2 only
+    let reorg = queue::ReorgRequest {
+        tx_execution_id: tx2,
+        depth: 1,
+        tx_hashes: vec![tx2_hash],
+    };
+
+    let result = engine.execute_reorg(reorg);
+    assert!(
+        result.is_ok(),
+        "Reorg should succeed with all failed transactions: {:?}",
+        result
+    );
+
+    let current_block_iteration = engine
+        .current_block_iterations
+        .get(&block_execution_id)
+        .expect("block iteration should exist");
+    assert_eq!(current_block_iteration.executed_txs, vec![tx1]);
+    assert_eq!(current_block_iteration.depth(), 1);
+    assert_eq!(current_block_iteration.n_transactions, 1);
+}
+
+/// Tests a deep reorg (depth > 1) with an alternating success/failure pattern.
+/// Pattern: [Some, None, Some, None, Some] - reorg the last 4 (depth=4)
+/// Expected: Only the first transaction remains (index 0)
+#[tokio::test]
+async fn test_execute_reorg_deep_with_alternating_success_failure() {
+    let (mut engine, _) = create_test_engine().await;
+
+    let block_number = U256::from(1);
+    let iteration_id = 1;
+    let block_execution_id = BlockExecutionId {
+        block_number,
+        iteration_id,
+    };
+
+    let tx_hashes: Vec<B256> = (0..5).map(|i| B256::from([i as u8 + 0x11; 32])).collect();
+    let txs: Vec<TxExecutionId> = tx_hashes
+        .iter()
+        .enumerate()
+        .map(|(i, &tx_hash)| TxExecutionId {
+            block_number,
+            iteration_id,
+            tx_hash,
+            index: i as u64,
+        })
+        .collect();
+
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    // Alternating pattern: Some, None, Some, None, Some
+    version_db.commit(EvmState::default()); // TX0 succeeded
+    version_db.commit_empty();              // TX1 failed
+    version_db.commit(EvmState::default()); // TX2 succeeded
+    version_db.commit_empty();              // TX3 failed
+    version_db.commit(EvmState::default()); // TX4 succeeded
+
+    let current_block_iteration_data = BlockIterationData {
+        version_db,
+        n_transactions: 5,
+        executed_txs: txs.clone(),
+        incident_txs: Vec::new(),
+        block_env: BlockEnv {
+            number: block_number,
+            ..Default::default()
+        },
+    };
+
+    engine
+        .current_block_iterations
+        .insert(block_execution_id, current_block_iteration_data);
+
+    // Deep reorg: remove TX1, TX2, TX3, TX4 (depth=4)
+    let reorg = queue::ReorgRequest {
+        tx_execution_id: txs[4],
+        depth: 4,
+        tx_hashes: tx_hashes[1..5].to_vec(),
+    };
+
+    let result = engine.execute_reorg(reorg);
+    assert!(
+        result.is_ok(),
+        "Deep reorg with alternating pattern should succeed: {:?}",
+        result
+    );
+
+    let current_block_iteration = engine
+        .current_block_iterations
+        .get(&block_execution_id)
+        .expect("block iteration should exist");
+    assert_eq!(
+        current_block_iteration.executed_txs,
+        vec![txs[0]],
+        "Only TX0 should remain"
+    );
+    assert_eq!(current_block_iteration.depth(), 1, "Depth should be 1");
+    assert_eq!(current_block_iteration.n_transactions, 1);
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_database_commit_and_block_env_requirements() {
@@ -746,10 +1061,10 @@ async fn test_database_commit_and_block_env_requirements() {
     let initial_cache_count = engine.get_cache().cache_entry_count();
 
     let current_block_iteration_id = BlockIterationData {
-        fork_db: engine.cache.fork(),
+        version_db: VersionDb::new(engine.cache.clone()),
         n_transactions: 0,
-        last_executed_tx: LastExecutedTx::new(),
         executed_txs: Vec::new(),
+        incident_txs: Vec::new(),
         block_env,
     };
 
@@ -762,10 +1077,8 @@ async fn test_database_commit_and_block_env_requirements() {
 
     let result = engine.execute_transaction(tx_execution_id, &tx_env);
     assert!(result.is_ok(), "Transaction should execute successfully");
-    // We now need to advance the state by one block so we commit the transaction state
-    engine
-        .apply_state_buffer(tx_execution_id.as_block_execution_id())
-        .unwrap();
+    // Commit the iteration fork into the underlying cache
+    engine.finalize_previous_block(tx_execution_id.as_block_execution_id());
 
     // Verify the caller's account state was updated
     let caller_account = engine
@@ -1080,15 +1393,20 @@ async fn test_failed_transaction_commit() {
         tx_hash,
         index: 0,
     };
-    let mut last_executed_tx = LastExecutedTx::new();
-    last_executed_tx.push(tx_execution_id, None);
+
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    // Add a failed transaction (commit_empty) to simulate pending state
+    version_db.commit_empty();
 
     let current_block_iteration_id = BlockIterationData {
-        fork_db: engine.cache.fork(),
-        n_transactions: 0,
-        last_executed_tx,
-        executed_txs: Vec::new(),
-        block_env: BlockEnv::default(),
+        version_db,
+        n_transactions: 1,
+        executed_txs: vec![tx_execution_id],
+        incident_txs: Vec::new(),
+        block_env: BlockEnv {
+            number: U256::from(1),
+            ..Default::default()
+        },
     };
 
     engine
@@ -1096,7 +1414,13 @@ async fn test_failed_transaction_commit() {
         .entry(block_execution_id)
         .or_insert(current_block_iteration_id);
 
-    let result = engine.apply_state_buffer(block_execution_id);
+    let queue_transaction = queue::QueueTransaction {
+        tx_execution_id,
+        tx_env: TxEnv::default(),
+        prev_tx_hash: None,
+    };
+
+    let result = engine.process_transaction_event(queue_transaction);
     assert!(matches!(result, Err(EngineError::NothingToCommit)));
 }
 

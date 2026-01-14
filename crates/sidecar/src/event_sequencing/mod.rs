@@ -227,13 +227,22 @@ impl EventSequencing {
 
         // Handle reorg events
         if event_metadata.is_reorg() {
+            let reorg_depth = match &event_metadata {
+                EventMetadata::Reorg { depth, .. } => *depth,
+                _ => 0,
+            };
             // Check if we can cancel the last sent event right now
             let context = self.get_context_mut(block_number, "handle_current_context_event")?;
             let can_cancel = context
                 .sent_events
                 .get(&event_iteration_id)
-                .and_then(|q| q.back())
-                .is_some_and(|last| last.cancel_each_other(&event_metadata));
+                .is_some_and(|queue| {
+                    let tx_count = queue.iter().filter(|e| e.is_transaction()).count();
+                    tx_count >= reorg_depth as usize
+                        && queue
+                            .back()
+                            .is_some_and(|last| last.cancel_each_other(&event_metadata))
+                });
 
             if can_cancel {
                 // The last sent event is the TX we want to cancel
@@ -399,6 +408,7 @@ impl EventSequencing {
         let block_number = event.block_number();
         let iteration_id = event.iteration_id();
         let is_commit_head = event_metadata.is_commit_head();
+        let mut cancelled_events = Vec::new();
 
         // Clone tx_sender before getting mutable context to avoid borrow conflicts
         let tx_sender = self.tx_sender.clone();
@@ -409,24 +419,47 @@ impl EventSequencing {
         // Perform reorg validation inline to avoid borrow issues
         let should_send = if event_metadata.is_reorg() {
             let queue = context.sent_events.entry(iteration_id).or_default();
-            if let Some(last_sent_event) = queue.pop_back() {
-                if last_sent_event.cancel_each_other(event_metadata) {
-                    // If the last event sent is canceled by the reorg, send the reorg event to
-                    // the core engine and do not push back the last event sent to the `sent_events`
-                    // queue.
-                    true
-                } else {
-                    // If the last event sent is not canceled by the reorg, restore the last event
-                    // and do not send the reorg event, as it will not cancel anything.
-                    queue.push_back(last_sent_event);
-                    false
-                }
-            } else {
+            let reorg_depth = match event_metadata {
+                EventMetadata::Reorg { depth, .. } => *depth as usize,
+                _ => 0,
+            };
+
+            if reorg_depth == 0 {
                 error!(
                     target = "event_sequencing",
-                    "Received reorg event without previous event"
+                    "Received reorg event with zero depth"
                 );
                 false
+            } else {
+                let tx_count = queue.iter().filter(|e| e.is_transaction()).count();
+                if tx_count < reorg_depth {
+                    error!(
+                        target = "event_sequencing",
+                        "Received reorg event without enough transactions"
+                    );
+                    false
+                } else if let Some(last_sent_event) = queue.pop_back() {
+                    if last_sent_event.cancel_each_other(event_metadata) {
+                        cancelled_events.push(last_sent_event);
+                        for _ in 1..reorg_depth {
+                            if let Some(removed) = queue.pop_back() {
+                                cancelled_events.push(removed);
+                            }
+                        }
+                        true
+                    } else {
+                        // If the last event sent is not canceled by the reorg, restore the last event
+                        // and do not send the reorg event, as it will not cancel anything.
+                        queue.push_back(last_sent_event);
+                        false
+                    }
+                } else {
+                    error!(
+                        target = "event_sequencing",
+                        "Received reorg event without previous event"
+                    );
+                    false
+                }
             }
         } else {
             true
@@ -463,6 +496,12 @@ impl EventSequencing {
             .dependency_graph
             .remove(event_metadata)
             .unwrap_or_default();
+
+        if event_metadata.is_reorg() && should_send {
+            for cancelled in &cancelled_events {
+                context.dependency_graph.remove(cancelled);
+            }
+        }
 
         // Special handling for reorgs: after removing the cancelled TX, check if there are
         // events waiting for the new last event in sent_events

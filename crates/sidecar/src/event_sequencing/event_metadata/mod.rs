@@ -30,6 +30,7 @@ pub enum CompleteEventMetadata {
         iteration_id: u64,
         tx_hash: TxHash,
         index: u64,
+        depth: u64,
     },
     CommitHead {
         block_number: U256,
@@ -71,12 +72,14 @@ impl From<EventMetadata> for CompleteEventMetadata {
                 iteration_id,
                 tx_hash,
                 index,
+                depth,
             } => {
                 Self::Reorg {
                     block_number,
                     iteration_id,
                     tx_hash,
                     index,
+                    depth,
                 }
             }
             EventMetadata::CommitHead {
@@ -126,12 +129,14 @@ impl From<&CompleteEventMetadata> for EventMetadata {
                 block_number,
                 iteration_id,
                 index,
+                depth,
             } => {
                 Self::Reorg {
                     tx_hash: *tx_hash,
                     block_number: *block_number,
                     iteration_id: *iteration_id,
                     index: *index,
+                    depth: *depth,
                 }
             }
             CompleteEventMetadata::Transaction {
@@ -171,6 +176,7 @@ pub enum EventMetadata {
         iteration_id: u64,
         tx_hash: TxHash,
         index: u64,
+        depth: u64,
     },
     CommitHead {
         block_number: U256,
@@ -255,18 +261,24 @@ impl EventMetadata {
                 tx_hash,
                 index,
                 iteration_id,
+                depth,
             } => {
-                if *index == 0 {
+                // For a reorg of depth N at index I, we remove transactions from
+                // index (I - N + 1) to I inclusive. The previous event is the
+                // transaction at index (I - N), or NewIteration if I < N.
+                if *depth > *index {
+                    // Reorging more transactions than exist, goes back to NewIteration
                     Some(EventMetadata::NewIteration {
                         block_number: *block_number,
                         iteration_id: *iteration_id,
                     })
                 } else {
+                    let prev_index = *index - *depth;
                     Some(EventMetadata::Transaction {
                         block_number: *block_number,
                         iteration_id: *iteration_id,
                         tx_hash: *tx_hash,
-                        index: (*index).saturating_sub(1),
+                        index: prev_index,
                         prev_tx_hash: None,
                     })
                 }
@@ -323,6 +335,7 @@ impl EventMetadata {
                     iteration_id,
                     index,
                     tx_hash,
+                    ..
                 },
                 EventMetadata::Transaction {
                     block_number: other_block_number,
@@ -345,6 +358,7 @@ impl EventMetadata {
                     tx_hash,
                     index,
                     iteration_id,
+                    ..
                 },
             ) => {
                 block_number == other_block_number
@@ -387,12 +401,14 @@ impl Hash for EventMetadata {
                 block_number,
                 index,
                 iteration_id,
+                depth,
                 ..
             } => {
                 "reorg".hash(state);
                 block_number.hash(state);
                 iteration_id.hash(state);
                 index.hash(state);
+                depth.hash(state);
             }
             EventMetadata::CommitHead {
                 block_number,
@@ -436,10 +452,11 @@ impl From<&TxQueueContents> for EventMetadata {
             }
             TxQueueContents::Reorg(queue, _) => {
                 Self::Reorg {
-                    block_number: queue.block_number,
-                    iteration_id: queue.iteration_id,
-                    tx_hash: queue.tx_hash,
-                    index: queue.index,
+                    block_number: queue.tx_execution_id.block_number,
+                    iteration_id: queue.tx_execution_id.iteration_id,
+                    tx_hash: queue.tx_execution_id.tx_hash,
+                    index: queue.tx_execution_id.index,
+                    depth: queue.depth,
                 }
             }
             TxQueueContents::CommitHead(queue, _) => {

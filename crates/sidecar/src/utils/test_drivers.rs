@@ -15,6 +15,7 @@ use crate::{
         CommitHead,
         NewIteration,
         QueueTransaction,
+        ReorgRequest,
         TransactionQueueReceiver,
         TransactionQueueSender,
         TxQueueContents,
@@ -486,7 +487,14 @@ impl TestTransport for LocalInstanceMockDriver {
         }
 
         self.mock_sender
-            .send(TxQueueContents::Reorg(tx_execution_id, Span::current()))
+            .send(TxQueueContents::Reorg(
+                ReorgRequest {
+                    tx_execution_id,
+                    depth: 1,
+                    tx_hashes: vec![tracked_hash],
+                },
+                Span::current(),
+            ))
             .map_err(|e| format!("Failed to send reorg: {e}"))
     }
 
@@ -844,7 +852,14 @@ impl TestTransport for LocalInstanceHttpDriver {
             "id": 1,
             "jsonrpc": "2.0",
             "method": "reorg",
-            "params": serde_json::to_value(tx_execution_id).unwrap(),
+            "params": {
+                "block_number": tx_execution_id.block_number,
+                "iteration_id": tx_execution_id.iteration_id,
+                "tx_hash": tx_execution_id.tx_hash_hex(),
+                "index": tx_execution_id.index,
+                "depth": 1u64,
+                "tx_hashes": [tx_execution_id.tx_hash_hex()],
+            },
         });
 
         self.submit_json_request(&request).await
@@ -1279,6 +1294,8 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         let reorg_event = pb::ReorgEvent {
             tx_execution_id: Some(Self::build_pb_tx_execution_id(&tx_execution_id)),
+            depth: 1,
+            tx_hashes: vec![grpc_encode::b256(tx_execution_id.tx_hash)],
         };
 
         let event = Event {

@@ -109,6 +109,7 @@ fn test_reorg_returns_transaction() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
+        depth: 1,
     };
 
     let prev = reorg.calculate_previous_event().unwrap();
@@ -302,6 +303,7 @@ fn test_recursive_chain_from_reorg_to_new_iteration() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
+        depth: 1,
     };
 
     let chain = collect_event_chain_limited(&reorg, 10);
@@ -436,6 +438,7 @@ fn test_reorg_and_transaction_cancel() {
         block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
+        depth: 1,
         tx_hash: test_hash(1),
     };
 
@@ -457,6 +460,7 @@ fn test_transaction_and_reorg_different_tx_hash_dont_cancel() {
         block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
+        depth: 1,
         tx_hash: test_hash(2), // Different tx_hash
     };
 
@@ -478,6 +482,7 @@ fn test_transaction_and_reorg_different_index_dont_cancel() {
         block_number: U256::from(100),
         iteration_id: 5,
         index: 3, // Different index
+        depth: 1,
         tx_hash: test_hash(1),
     };
 
@@ -499,6 +504,7 @@ fn test_transaction_and_reorg_different_block_dont_cancel() {
         block_number: U256::from(101), // Different block
         iteration_id: 5,
         index: 2,
+        depth: 1,
         tx_hash: test_hash(1),
     };
 
@@ -520,6 +526,7 @@ fn test_transaction_and_reorg_different_iteration_dont_cancel() {
         block_number: U256::from(100),
         iteration_id: 6, // Different iteration
         index: 2,
+        depth: 1,
         tx_hash: test_hash(1),
     };
 
@@ -557,6 +564,7 @@ fn test_identical_reorgs_dont_cancel() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
+        depth: 1,
     };
 
     let reorg2 = EventMetadata::Reorg {
@@ -564,6 +572,7 @@ fn test_identical_reorgs_dont_cancel() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
+        depth: 1,
     };
 
     // Reorgs don't cancel each other, only Reorg and Transaction do
@@ -599,6 +608,7 @@ fn test_commit_head_and_reorg_dont_cancel() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
+        depth: 1,
     };
 
     let commit = EventMetadata::CommitHead {
@@ -638,6 +648,7 @@ fn test_new_iteration_and_reorg_dont_cancel() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
+        depth: 1,
     };
 
     let new_iter = EventMetadata::NewIteration {
@@ -795,6 +806,7 @@ fn test_hash_reorg_same_identity_different_tx_hash() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
+        depth: 1,
     };
 
     let reorg2 = EventMetadata::Reorg {
@@ -802,6 +814,7 @@ fn test_hash_reorg_same_identity_different_tx_hash() {
         iteration_id: 5,
         tx_hash: test_hash(99), // Different tx_hash
         index: 2,
+        depth: 1,
     };
 
     assert_eq!(calculate_hash(&reorg1), calculate_hash(&reorg2));
@@ -814,6 +827,7 @@ fn test_hash_reorg_different_index() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
+        depth: 1,
     };
 
     let reorg2 = EventMetadata::Reorg {
@@ -821,6 +835,7 @@ fn test_hash_reorg_different_index() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 3, // Different index
+        depth: 1,
     };
 
     assert_ne!(calculate_hash(&reorg1), calculate_hash(&reorg2));
@@ -962,6 +977,7 @@ fn test_hash_different_variants_same_fields() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
+        depth: 1,
     };
 
     // Different variants should hash differently even with same fields
@@ -1154,6 +1170,7 @@ fn test_reorg_equality_ignores_tx_hash() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
+        depth: 1,
         tx_hash: TxHash::random(),
     };
 
@@ -1161,6 +1178,7 @@ fn test_reorg_equality_ignores_tx_hash() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
+        depth: 1,
         tx_hash: TxHash::random(),
     };
 
@@ -1224,6 +1242,7 @@ fn test_different_variants_not_equal() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
+        depth: 1,
         tx_hash: TxHash::default(),
     };
 
@@ -1249,6 +1268,7 @@ fn test_cancel_each_other_transaction_and_reorg() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
+        depth: 1,
         tx_hash,
     };
 
@@ -1276,6 +1296,7 @@ fn test_cancel_each_other_different_tx_hash() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
+        depth: 1,
         tx_hash: TxHash::random(),
     };
 
@@ -1421,6 +1442,7 @@ fn test_all_variant_combinations_not_equal() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
+        depth: 1,
         tx_hash: TxHash::default(),
     };
 
@@ -1474,6 +1496,7 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
+        depth: 1,
         tx_hash: base_tx_hash,
     };
 
@@ -1487,6 +1510,7 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(101),
         iteration_id: 1,
         index: 5,
+        depth: 1,
         tx_hash: base_tx_hash,
     };
     assert!(
@@ -1503,6 +1527,7 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(100),
         iteration_id: 2,
         index: 5,
+        depth: 1,
         tx_hash: base_tx_hash,
     };
     assert!(
@@ -1519,6 +1544,7 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 6,
+        depth: 1,
         tx_hash: base_tx_hash,
     };
     assert!(
@@ -1535,6 +1561,7 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
+        depth: 1,
         tx_hash: TxHash::random(),
     };
     assert!(
@@ -1551,6 +1578,7 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(101),
         iteration_id: 2,
         index: 6,
+        depth: 1,
         tx_hash: TxHash::random(),
     };
     assert!(
@@ -1583,6 +1611,7 @@ fn test_cancel_each_other_prev_tx_hash_irrelevant() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
+        depth: 1,
         tx_hash,
     };
 
@@ -1594,4 +1623,67 @@ fn test_cancel_each_other_prev_tx_hash_irrelevant() {
         tx_without_prev.cancel_each_other(&reorg),
         "Transaction without prev_tx_hash should cancel with Reorg"
     );
+}
+
+/// Tests that calculate_previous_event for a deep reorg (depth > 1) correctly
+/// returns the event BEFORE all reorged transactions, not just before the tip.
+/// For example: TX0, TX1, TX2, TX3 with reorg depth=3 at index=3 (TX3)
+/// should return TX0 as the previous event, not TX2.
+#[test]
+fn test_reorg_calculate_previous_event_with_depth() {
+    // Scenario: reorg TX1, TX2, TX3 (depth=3, tip at index=3)
+    // The previous event after reorg should be TX0 (index=0), not TX2 (index=2)
+    let reorg = EventMetadata::Reorg {
+        block_number: U256::from(100),
+        iteration_id: 5,
+        tx_hash: test_hash(3),
+        index: 3,
+        depth: 3,
+    };
+
+    let prev = reorg.calculate_previous_event().unwrap();
+    match prev {
+        EventMetadata::Transaction {
+            block_number,
+            iteration_id,
+            index,
+            ..
+        } => {
+            assert_eq!(block_number, 100);
+            assert_eq!(iteration_id, 5);
+            // With depth=3 starting at index=3, previous should be at index=0
+            // (3 - 3 = 0, we're reorging indices 1, 2, 3)
+            assert_eq!(
+                index, 0,
+                "For depth=3 reorg at index=3, previous event should be at index=0"
+            );
+        }
+        _ => panic!("Expected Transaction"),
+    }
+}
+
+/// Tests that a deep reorg at index < depth returns NewIteration as previous
+#[test]
+fn test_reorg_calculate_previous_event_depth_reaches_start() {
+    // Reorg depth=3 at index=2 means we're reorging indices 0, 1, 2
+    // The previous event should be NewIteration
+    let reorg = EventMetadata::Reorg {
+        block_number: U256::from(100),
+        iteration_id: 5,
+        tx_hash: test_hash(2),
+        index: 2,
+        depth: 3,
+    };
+
+    let prev = reorg.calculate_previous_event().unwrap();
+    match prev {
+        EventMetadata::NewIteration {
+            block_number,
+            iteration_id,
+        } => {
+            assert_eq!(block_number, 100);
+            assert_eq!(iteration_id, 5);
+        }
+        _ => panic!("Expected NewIteration for deep reorg reaching start"),
+    }
 }
