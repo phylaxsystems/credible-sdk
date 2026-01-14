@@ -17,10 +17,7 @@ use chrono::{
     SecondsFormat,
     Utc,
 };
-use httpmock::{
-    Mock,
-    prelude::*,
-};
+use httpmock::prelude::*;
 use revm::{
     context::{
         BlockEnv,
@@ -142,13 +139,6 @@ fn tx_data_matches(tx_data: &Map<String, Value>, tx_hash: &B256, tx_env: &TxEnv)
     true
 }
 
-async fn wait_for_mock_calls(mock: &Mock<'_>, timeout: Duration) {
-    let start = Instant::now();
-    while mock.calls() == 0 && start.elapsed() < timeout {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
 fn collect_invalid_txs(
     pass_invalid: bool,
     fail_invalid: bool,
@@ -206,6 +196,85 @@ fn build_incident_report() -> IncidentReport {
         incident_timestamp: 1_700_000_000,
         prev_txs: Vec::new(),
     }
+}
+
+fn build_observer(db_path: &TempDir, endpoint: String) -> TransactionObserver {
+    let (_tx, rx) = flume::unbounded();
+    let config = TransactionObserverConfig {
+        poll_interval: Duration::from_millis(1),
+        endpoint_rps_max: 10,
+        endpoint,
+        auth_token: "test-token".to_string(),
+        db_path: db_path.path().to_string_lossy().to_string(),
+    };
+    TransactionObserver::new(config, rx).expect("observer")
+}
+
+fn build_report_with_prev_txs(
+    block_number: u64,
+    tx_hash: [u8; 32],
+    prev_hash_bytes: &[u8],
+) -> (IncidentReport, Vec<FixedBytes<32>>) {
+    let mut report = build_incident_report();
+    report.block_env.number = U256::from(block_number);
+    report.transaction_data.0 = FixedBytes::from(tx_hash);
+
+    let mut prev_hashes = Vec::new();
+    let mut prev_txs = Vec::new();
+    for (nonce, byte) in prev_hash_bytes.iter().enumerate() {
+        let mut prev_tx = report.transaction_data.1.clone();
+        prev_tx.nonce = nonce as u64;
+        prev_tx.value = U256::from((nonce + 1) as u64);
+        let prev_hash = FixedBytes::from([*byte; 32]);
+        prev_hashes.push(prev_hash);
+        prev_txs.push((prev_hash, prev_tx));
+    }
+    report.prev_txs = prev_txs;
+
+    (report, prev_hashes)
+}
+
+fn build_report_without_prev_txs(
+    block_number: u64,
+    tx_hash: [u8; 32],
+    nonce: u64,
+) -> IncidentReport {
+    let mut report = build_incident_report();
+    report.block_env.number = U256::from(block_number);
+    report.transaction_data.0 = FixedBytes::from(tx_hash);
+    report.transaction_data.1.nonce = nonce;
+    report.prev_txs = Vec::new();
+    report
+}
+
+fn collect_incidents_by_hash(bodies: Vec<String>) -> std::collections::HashMap<String, Value> {
+    let mut incidents_by_hash = std::collections::HashMap::new();
+    for body in bodies {
+        let incident: Value = serde_json::from_str(&body).expect("incident json");
+        let tx_hash = incident
+            .get("transaction_data")
+            .and_then(Value::as_object)
+            .and_then(|tx| tx.get("transaction_hash"))
+            .and_then(Value::as_str)
+            .expect("transaction_hash")
+            .to_string();
+        incidents_by_hash.entry(tx_hash).or_insert(incident);
+    }
+    incidents_by_hash
+}
+
+fn incident_prev_hashes(incident: &Value) -> Vec<String> {
+    incident
+        .get("previous_transactions")
+        .and_then(Value::as_array)
+        .map(|prev_txs| {
+            prev_txs
+                .iter()
+                .filter_map(|tx| tx.get("transaction_hash").and_then(Value::as_str))
+                .map(std::string::ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn expected_incident_body() -> serde_json::Value {
@@ -275,9 +344,226 @@ fn incident_body_includes_previous_transactions_as_transaction_data() {
         prev_tx_value.contains_key("type"),
         "previous transaction missing type discriminator"
     );
+    let expected_prev_hash = hex_bytes(prev_hash.as_slice());
+    let expected_prev_nonce = prev_tx.nonce.to_string();
+    let expected_prev_gas_limit = prev_tx.gas_limit.to_string();
+    let expected_prev_to_address = match &prev_tx.kind {
+        TxKind::Call(to) => hex_bytes(to.as_slice()),
+        TxKind::Create => String::new(),
+    };
+    let expected_prev_from_address = hex_bytes(prev_tx.caller.as_slice());
+    let expected_prev_value = prev_tx.value.to_string();
+    let expected_prev_data = if prev_tx.data.is_empty() {
+        None
+    } else {
+        Some(hex_bytes(prev_tx.data.as_ref()))
+    };
+    assert_eq!(
+        prev_tx_value
+            .get("transaction_hash")
+            .and_then(Value::as_str),
+        Some(expected_prev_hash.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("nonce").and_then(Value::as_str),
+        Some(expected_prev_nonce.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("gas_limit").and_then(Value::as_str),
+        Some(expected_prev_gas_limit.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("to_address").and_then(Value::as_str),
+        Some(expected_prev_to_address.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("from_address").and_then(Value::as_str),
+        Some(expected_prev_from_address.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("value").and_then(Value::as_str),
+        Some(expected_prev_value.as_str())
+    );
+    if let Some(expected_prev_data) = expected_prev_data {
+        assert_eq!(
+            prev_tx_value.get("data").and_then(Value::as_str),
+            Some(expected_prev_data.as_str())
+        );
+    }
     assert!(
         tx_data_matches(prev_tx_value, &prev_hash, &prev_tx),
         "previous transaction did not match expected transaction data payload"
+    );
+}
+
+#[test]
+fn incident_body_builds_transaction_objects() {
+    let mut report = build_incident_report();
+    let mut prev_tx = report.transaction_data.1.clone();
+    prev_tx.nonce = 6;
+    prev_tx.chain_id = Some(1);
+
+    let prev_hash = B256::from([0xbb; 32]);
+    report.prev_txs = vec![(prev_hash, prev_tx.clone())];
+
+    let body = super::payload::build_incident_body(&report).expect("build incident body");
+    let body_value = serde_json::to_value(body).expect("serialize body");
+
+    let tx_value = body_value
+        .get("transaction_data")
+        .and_then(Value::as_object)
+        .expect("transaction_data");
+    assert!(
+        tx_value.contains_key("type"),
+        "transaction_data missing type discriminator"
+    );
+    let tx_hash = B256::from_slice(report.transaction_data.0.as_slice());
+    assert!(
+        tx_data_matches(tx_value, &tx_hash, &report.transaction_data.1),
+        "transaction_data did not match expected transaction data payload"
+    );
+
+    let previous_transactions = body_value
+        .get("previous_transactions")
+        .and_then(Value::as_array)
+        .expect("previous_transactions");
+    assert_eq!(previous_transactions.len(), 1);
+
+    let prev_tx_value = previous_transactions[0]
+        .as_object()
+        .expect("previous transaction object");
+    assert!(
+        prev_tx_value.contains_key("type"),
+        "previous transaction missing type discriminator"
+    );
+    let expected_prev_hash = hex_bytes(prev_hash.as_slice());
+    let expected_prev_nonce = prev_tx.nonce.to_string();
+    let expected_prev_gas_limit = prev_tx.gas_limit.to_string();
+    let expected_prev_to_address = match &prev_tx.kind {
+        TxKind::Call(to) => hex_bytes(to.as_slice()),
+        TxKind::Create => String::new(),
+    };
+    let expected_prev_from_address = hex_bytes(prev_tx.caller.as_slice());
+    let expected_prev_value = prev_tx.value.to_string();
+    let expected_prev_data = if prev_tx.data.is_empty() {
+        None
+    } else {
+        Some(hex_bytes(prev_tx.data.as_ref()))
+    };
+    assert_eq!(
+        prev_tx_value
+            .get("transaction_hash")
+            .and_then(Value::as_str),
+        Some(expected_prev_hash.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("nonce").and_then(Value::as_str),
+        Some(expected_prev_nonce.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("gas_limit").and_then(Value::as_str),
+        Some(expected_prev_gas_limit.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("to_address").and_then(Value::as_str),
+        Some(expected_prev_to_address.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("from_address").and_then(Value::as_str),
+        Some(expected_prev_from_address.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("value").and_then(Value::as_str),
+        Some(expected_prev_value.as_str())
+    );
+    if let Some(expected_prev_data) = expected_prev_data {
+        assert_eq!(
+            prev_tx_value.get("data").and_then(Value::as_str),
+            Some(expected_prev_data.as_str())
+        );
+    }
+    assert!(
+        tx_data_matches(prev_tx_value, &prev_hash, &prev_tx),
+        "previous transaction did not match expected transaction data payload"
+    );
+}
+
+#[test]
+fn observer_persists_and_loads_incident_with_previous_transactions() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let (tx, rx) = flume::unbounded();
+    let config = TransactionObserverConfig {
+        poll_interval: Duration::from_millis(100),
+        endpoint_rps_max: 0,
+        endpoint: String::new(),
+        auth_token: String::new(),
+        db_path: tempdir.path().to_string_lossy().to_string(),
+    };
+    let mut observer = TransactionObserver::new(config, rx).expect("observer");
+    let tx_keepalive = tx.clone();
+
+    let mut report = build_incident_report();
+    let mut prev_tx = report.transaction_data.1.clone();
+    prev_tx.nonce = 6;
+    prev_tx.chain_id = Some(1);
+
+    let prev_hash = B256::from([0xbb; 32]);
+    report.prev_txs = vec![(prev_hash, prev_tx.clone())];
+
+    let expected_tx_hash = B256::from_slice(report.transaction_data.0.as_slice());
+    let expected_tx = report.transaction_data.1.clone();
+    let expected_prev_hash = prev_hash;
+    let expected_prev_tx = prev_tx;
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_sender = Arc::clone(&shutdown);
+    let sender = std::thread::spawn(move || {
+        tx.send(report).expect("send report");
+        std::thread::sleep(Duration::from_millis(200));
+        shutdown_sender.store(true, Ordering::Relaxed);
+    });
+
+    observer
+        .run_blocking(&Arc::clone(&shutdown))
+        .expect("observer run");
+    drop(tx_keepalive);
+    sender.join().expect("sender join");
+
+    let mut loaded = observer.db.load_batch(10).expect("load batch");
+    assert_eq!(loaded.len(), 1);
+    let (_key, loaded_report) = loaded.pop().expect("loaded report");
+
+    let body = super::payload::build_incident_body(&loaded_report).expect("build incident body");
+    let body_value = serde_json::to_value(body).expect("serialize body");
+    let tx_value = body_value
+        .get("transaction_data")
+        .and_then(Value::as_object)
+        .expect("transaction_data");
+    assert!(
+        tx_value.contains_key("type"),
+        "transaction_data missing type discriminator"
+    );
+    assert!(
+        tx_data_matches(tx_value, &expected_tx_hash, &expected_tx),
+        "transaction_data did not match persisted incident"
+    );
+
+    let previous_transactions = body_value
+        .get("previous_transactions")
+        .and_then(Value::as_array)
+        .expect("previous_transactions");
+    assert_eq!(previous_transactions.len(), 1);
+
+    let prev_tx_value = previous_transactions[0]
+        .as_object()
+        .expect("previous transaction object");
+    assert!(
+        prev_tx_value.contains_key("type"),
+        "previous transaction missing type discriminator"
+    );
+    assert!(
+        tx_data_matches(prev_tx_value, &expected_prev_hash, &expected_prev_tx),
+        "previous transaction did not match persisted incident"
     );
 }
 
@@ -503,10 +789,12 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
         !invalid_txs.is_empty(),
         "Expected at least one invalidating transaction"
     );
-    wait_for_mock_calls(&mock, Duration::from_secs(5)).await;
-    assert!(mock.calls() > 0, "timed out waiting for incident publish");
-    mock.assert();
-    let bodies: Vec<String> = body_rx.try_iter().collect();
+    let first_body = tokio::time::timeout(Duration::from_secs(8), body_rx.recv_async())
+        .await
+        .expect("timeout waiting for incident publish")
+        .expect("incident publish channel closed");
+    let mut bodies = vec![first_body];
+    bodies.extend(body_rx.try_iter());
     let matches_invalid = bodies.iter().any(|body| {
         let incident: Value = serde_json::from_str(body).expect("incident json");
         let tx_data = incident
@@ -532,4 +820,86 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
         .expect("observer join")
         .expect("observer error");
     observer_result.expect("observer error");
+}
+
+#[test]
+fn previous_transactions_only_include_same_block() {
+    let tempdir = TempDir::new().expect("tempdir");
+
+    let server_fail = MockServer::start();
+    let fail_mock = server_fail.mock(|when, then| {
+        when.method(POST).path("/api/v1/enforcer/incidents");
+        then.status(500)
+            .header("content-type", "application/json")
+            .json_body(incident_response_body("error", "tracking-fail"));
+    });
+
+    let mut observer = build_observer(&tempdir, server_fail.url("/api/v1/enforcer/incidents"));
+    let (report_block0, prev_hashes) =
+        build_report_with_prev_txs(0, [0x10; 32], &[0x01, 0x02, 0x03]);
+
+    observer
+        .store_incident(&report_block0)
+        .expect("store block 0 incident");
+    observer
+        .publish_invalidations()
+        .expect("publish failed incident");
+
+    fail_mock.assert_calls(1);
+    let remaining = observer.db.load_batch(10).expect("load batch");
+    assert_eq!(remaining.len(), 1, "incident should remain after failure");
+    drop(observer);
+
+    let server_success = MockServer::start();
+    let (body_tx, body_rx) = flume::unbounded();
+    let body_tx_handle = body_tx.clone();
+    let success_mock = server_success.mock(|when, then| {
+        when.method(POST)
+            .path("/api/v1/enforcer/incidents")
+            .is_true(move |req| body_tx_handle.send(req.body_string()).is_ok());
+        then.status(202)
+            .header("content-type", "application/json")
+            .json_body(incident_response_body("queued", "tracking-success"));
+    });
+
+    let mut observer = build_observer(&tempdir, server_success.url("/api/v1/enforcer/incidents"));
+    let report_block1 = build_report_without_prev_txs(1, [0x20; 32], 9);
+
+    observer
+        .store_incident(&report_block1)
+        .expect("store block 1 incident");
+    observer.publish_invalidations().expect("publish retry");
+
+    success_mock.assert_calls(2);
+    let incidents_by_hash = collect_incidents_by_hash(body_rx.try_iter().collect());
+
+    let block0_hash = hex_bytes(report_block0.transaction_data.0.as_slice());
+    let block1_hash = hex_bytes(report_block1.transaction_data.0.as_slice());
+    let expected_prev_hashes: Vec<String> = prev_hashes
+        .iter()
+        .map(|hash| hex_bytes(hash.as_slice()))
+        .collect();
+    assert_eq!(
+        incidents_by_hash.len(),
+        2,
+        "expected block 0 and block 1 incidents"
+    );
+
+    let block0_incident = incidents_by_hash
+        .get(&block0_hash)
+        .expect("block 0 incident body");
+    let block1_incident = incidents_by_hash
+        .get(&block1_hash)
+        .expect("block 1 incident body");
+
+    let block0_prev_hashes = incident_prev_hashes(block0_incident);
+    assert_eq!(
+        block0_prev_hashes, expected_prev_hashes,
+        "block 0 incident should keep previous transactions after retry"
+    );
+
+    assert!(
+        incident_prev_hashes(block1_incident).is_empty(),
+        "block 1 incident should have no previous transactions"
+    );
 }
