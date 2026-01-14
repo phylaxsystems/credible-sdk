@@ -67,6 +67,12 @@ pub struct EventSequencing {
     context: BTreeMap<U256, Context>,
 }
 
+#[derive(Clone, Copy)]
+enum Origin {
+    Main,
+    After,
+}
+
 /// The `Context` struct contains the context for a block. It is used to track the state of the block
 /// and the events that have been dispatched during the block build.
 #[derive(Debug, Default)]
@@ -591,12 +597,6 @@ impl EventSequencing {
         event: TxQueueContents,
         event_metadata: &EventMetadata,
     ) -> Result<bool, EventSequencingError> {
-        #[derive(Clone, Copy)]
-        enum Origin {
-            Main,
-            After,
-        }
-
         let block_number = event.block_number();
         let iteration_id = event.iteration_id();
         let is_commit_head = event_metadata.is_commit_head();
