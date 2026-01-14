@@ -275,6 +275,140 @@ fn incident_body_includes_previous_transactions_as_transaction_data() {
         prev_tx_value.contains_key("type"),
         "previous transaction missing type discriminator"
     );
+    let expected_prev_hash = hex_bytes(prev_hash.as_slice());
+    let expected_prev_nonce = prev_tx.nonce.to_string();
+    let expected_prev_gas_limit = prev_tx.gas_limit.to_string();
+    let expected_prev_to_address = match &prev_tx.kind {
+        TxKind::Call(to) => hex_bytes(to.as_slice()),
+        TxKind::Create => String::new(),
+    };
+    let expected_prev_from_address = hex_bytes(prev_tx.caller.as_slice());
+    let expected_prev_value = prev_tx.value.to_string();
+    let expected_prev_data = if prev_tx.data.is_empty() {
+        None
+    } else {
+        Some(hex_bytes(prev_tx.data.as_ref()))
+    };
+    assert_eq!(
+        prev_tx_value.get("transaction_hash").and_then(Value::as_str),
+        Some(expected_prev_hash.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("nonce").and_then(Value::as_str),
+        Some(expected_prev_nonce.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("gas_limit").and_then(Value::as_str),
+        Some(expected_prev_gas_limit.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("to_address").and_then(Value::as_str),
+        Some(expected_prev_to_address.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("from_address").and_then(Value::as_str),
+        Some(expected_prev_from_address.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("value").and_then(Value::as_str),
+        Some(expected_prev_value.as_str())
+    );
+    if let Some(expected_prev_data) = expected_prev_data {
+        assert_eq!(
+            prev_tx_value.get("data").and_then(Value::as_str),
+            Some(expected_prev_data.as_str())
+        );
+    }
+    assert!(
+        tx_data_matches(prev_tx_value, &prev_hash, &prev_tx),
+        "previous transaction did not match expected transaction data payload"
+    );
+}
+
+#[test]
+fn incident_body_builds_transaction_objects() {
+    let mut report = build_incident_report();
+    let mut prev_tx = report.transaction_data.1.clone();
+    prev_tx.nonce = 6;
+    prev_tx.chain_id = Some(1);
+
+    let prev_hash = B256::from([0xbb; 32]);
+    report.prev_txs = vec![(prev_hash, prev_tx.clone())];
+
+    let body = super::payload::build_incident_body(&report).expect("build incident body");
+    let body_value = serde_json::to_value(body).expect("serialize body");
+
+    let tx_value = body_value
+        .get("transaction_data")
+        .and_then(Value::as_object)
+        .expect("transaction_data");
+    assert!(
+        tx_value.contains_key("type"),
+        "transaction_data missing type discriminator"
+    );
+    let tx_hash = B256::from_slice(report.transaction_data.0.as_slice());
+    assert!(
+        tx_data_matches(tx_value, &tx_hash, &report.transaction_data.1),
+        "transaction_data did not match expected transaction data payload"
+    );
+
+    let previous_transactions = body_value
+        .get("previous_transactions")
+        .and_then(Value::as_array)
+        .expect("previous_transactions");
+    assert_eq!(previous_transactions.len(), 1);
+
+    let prev_tx_value = previous_transactions[0]
+        .as_object()
+        .expect("previous transaction object");
+    assert!(
+        prev_tx_value.contains_key("type"),
+        "previous transaction missing type discriminator"
+    );
+    let expected_prev_hash = hex_bytes(prev_hash.as_slice());
+    let expected_prev_nonce = prev_tx.nonce.to_string();
+    let expected_prev_gas_limit = prev_tx.gas_limit.to_string();
+    let expected_prev_to_address = match &prev_tx.kind {
+        TxKind::Call(to) => hex_bytes(to.as_slice()),
+        TxKind::Create => String::new(),
+    };
+    let expected_prev_from_address = hex_bytes(prev_tx.caller.as_slice());
+    let expected_prev_value = prev_tx.value.to_string();
+    let expected_prev_data = if prev_tx.data.is_empty() {
+        None
+    } else {
+        Some(hex_bytes(prev_tx.data.as_ref()))
+    };
+    assert_eq!(
+        prev_tx_value.get("transaction_hash").and_then(Value::as_str),
+        Some(expected_prev_hash.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("nonce").and_then(Value::as_str),
+        Some(expected_prev_nonce.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("gas_limit").and_then(Value::as_str),
+        Some(expected_prev_gas_limit.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("to_address").and_then(Value::as_str),
+        Some(expected_prev_to_address.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("from_address").and_then(Value::as_str),
+        Some(expected_prev_from_address.as_str())
+    );
+    assert_eq!(
+        prev_tx_value.get("value").and_then(Value::as_str),
+        Some(expected_prev_value.as_str())
+    );
+    if let Some(expected_prev_data) = expected_prev_data {
+        assert_eq!(
+            prev_tx_value.get("data").and_then(Value::as_str),
+            Some(expected_prev_data.as_str())
+        );
+    }
     assert!(
         tx_data_matches(prev_tx_value, &prev_hash, &prev_tx),
         "previous transaction did not match expected transaction data payload"

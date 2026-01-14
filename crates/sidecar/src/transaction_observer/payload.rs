@@ -500,3 +500,95 @@ fn u256_to_hex(value: U256) -> String {
 fn u64_to_hex(value: u64) -> String {
     format!("0x{value:x}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use revm::{
+        context_interface::transaction::AccessList,
+        primitives::{
+            Address,
+            Bytes,
+            FixedBytes,
+            TxKind,
+            U256,
+        },
+    };
+    use serde_json::Value;
+
+    #[test]
+    fn build_previous_transactions_payload_returns_full_transaction_object() {
+        let tx_hash = FixedBytes::from([0x11; 32]);
+        let tx_env = TxEnv {
+            caller: Address::from([0x01; 20]),
+            gas_limit: 21_000,
+            gas_price: 100u128,
+            kind: TxKind::Call(Address::from([0x02; 20])),
+            value: U256::from(5u64),
+            data: Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]),
+            nonce: 7,
+            chain_id: Some(1),
+            tx_type: 2,
+            access_list: AccessList::default(),
+            gas_priority_fee: Some(3u128),
+            blob_hashes: Vec::new(),
+            max_fee_per_blob_gas: 0,
+            authorization_list: Vec::new(),
+        };
+
+        let payload =
+            build_previous_transactions_payload(&[(tx_hash, tx_env)]).expect("build payload");
+        let payload_value = serde_json::to_value(payload).expect("serialize payload");
+        let payload_array = payload_value.as_array().expect("payload array");
+        assert_eq!(payload_array.len(), 1);
+
+        let tx_value = payload_array[0].as_object().expect("transaction object");
+        let expected_hash = bytes_to_hex(tx_hash.as_slice());
+        let expected_to = bytes_to_hex(&[0x02; 20]);
+        let expected_from = bytes_to_hex(&[0x01; 20]);
+        let expected_data = bytes_to_hex(&[0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(
+            tx_value.get("transaction_hash").and_then(Value::as_str),
+            Some(expected_hash.as_str())
+        );
+        assert_eq!(tx_value.get("chain_id").and_then(Value::as_u64), Some(1));
+        assert_eq!(
+            tx_value.get("nonce").and_then(Value::as_str),
+            Some("7")
+        );
+        assert_eq!(
+            tx_value.get("gas_limit").and_then(Value::as_str),
+            Some("21000")
+        );
+        assert_eq!(
+            tx_value.get("to_address").and_then(Value::as_str),
+            Some(expected_to.as_str())
+        );
+        assert_eq!(
+            tx_value.get("from_address").and_then(Value::as_str),
+            Some(expected_from.as_str())
+        );
+        assert_eq!(
+            tx_value.get("value").and_then(Value::as_str),
+            Some("5")
+        );
+        assert_eq!(
+            tx_value.get("max_fee_per_gas").and_then(Value::as_str),
+            Some("100")
+        );
+        assert_eq!(
+            tx_value
+                .get("max_priority_fee_per_gas")
+                .and_then(Value::as_str),
+            Some("3")
+        );
+        assert_eq!(
+            tx_value.get("type").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            tx_value.get("data").and_then(Value::as_str),
+            Some(expected_data.as_str())
+        );
+    }
+}
