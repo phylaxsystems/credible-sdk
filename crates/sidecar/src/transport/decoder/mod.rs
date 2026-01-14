@@ -13,6 +13,7 @@ use crate::{
         CommitHead,
         NewIteration,
         QueueTransaction,
+        ReorgRequest,
         TxQueueContents,
     },
     execution_ids::TxExecutionId,
@@ -170,8 +171,36 @@ impl Decoder for HttpTransactionDecoder {
             METHOD_SEND_EVENTS => Self::to_events(req),
             METHOD_REORG => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
-                let reorg = serde_json::from_value::<TxExecutionId>(params.clone())
+                let mut reorg_value = params.clone();
+                let mut depth = reorg_value
+                    .get("depth")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1);
+                let tx_hashes = parse_reorg_tx_hashes(&reorg_value)?;
+                if let Some(obj) = reorg_value.as_object_mut() {
+                    obj.remove("depth");
+                    obj.remove("tx_hashes");
+                }
+                let tx_execution_id = serde_json::from_value::<TxExecutionId>(reorg_value)
                     .map_err(|e| HttpDecoderError::ReorgValidation(e.to_string()))?;
+                if depth == 0 {
+                    depth = 1;
+                }
+                if tx_hashes.len() != depth as usize {
+                    return Err(HttpDecoderError::ReorgValidation(
+                        "tx_hashes length must match depth".to_string(),
+                    ));
+                }
+                if tx_hashes.last() != Some(&tx_execution_id.tx_hash) {
+                    return Err(HttpDecoderError::ReorgValidation(
+                        "tx_hashes last entry must match tx_hash".to_string(),
+                    ));
+                }
+                let reorg = ReorgRequest {
+                    tx_execution_id,
+                    depth,
+                    tx_hashes,
+                };
 
                 let current_span = tracing::Span::current();
                 Ok(vec![TxQueueContents::Reorg(reorg, current_span.clone())])
@@ -264,6 +293,39 @@ fn convert_commit_head_event(
 
 fn convert_new_iteration_event(new_iteration: NewIterationEvent) -> NewIteration {
     NewIteration::new(new_iteration.iteration_id, new_iteration.block_env)
+}
+
+fn parse_reorg_tx_hashes(value: &Value) -> Result<Vec<TxHash>, HttpDecoderError> {
+    let Some(raw) = value.get("tx_hashes") else {
+        return Err(HttpDecoderError::ReorgValidation(
+            "missing tx_hashes".to_string(),
+        ));
+    };
+
+    let Value::Array(values) = raw else {
+        return Err(HttpDecoderError::ReorgValidation(
+            "tx_hashes must be an array".to_string(),
+        ));
+    };
+
+    let mut tx_hashes = Vec::with_capacity(values.len());
+    for item in values {
+        let Value::String(hash) = item else {
+            return Err(HttpDecoderError::ReorgValidation(
+                "tx_hashes must be an array of strings".to_string(),
+            ));
+        };
+        let normalized = if hash.starts_with("0x") || hash.starts_with("0X") {
+            hash.clone()
+        } else {
+            format!("0x{hash}")
+        };
+        let parsed = TxHash::from_str(&normalized)
+            .map_err(|_| HttpDecoderError::ReorgValidation(format!("invalid tx_hash: {hash}")))?;
+        tx_hashes.push(parsed);
+    }
+
+    Ok(tx_hashes)
 }
 
 fn parse_block_env_payload(params: Value) -> Result<BlockEnvPayload, HttpDecoderError> {

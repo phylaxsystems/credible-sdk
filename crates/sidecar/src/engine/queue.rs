@@ -25,7 +25,7 @@
 //! current `BlockEnv`.
 //!
 //! Reorg events are signals from the driver to the engine that it should discard the last
-//! executed transaction.
+//! executed transaction(s).
 
 use crate::execution_ids::TxExecutionId;
 use alloy::primitives::{
@@ -62,6 +62,21 @@ pub struct QueueTransaction {
     pub prev_tx_hash: Option<TxHash>,
 }
 
+/// Reorg request for the last `depth` transactions in an iteration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReorgRequest {
+    pub tx_execution_id: TxExecutionId,
+    #[serde(default = "default_reorg_depth")]
+    pub depth: u64,
+    /// Ordered list of transaction hashes to reorg (oldest -> newest).
+    #[serde(default)]
+    pub tx_hashes: Vec<TxHash>,
+}
+
+const fn default_reorg_depth() -> u64 {
+    1
+}
+
 /// Contains the possible types that can be sent in the transaction queue.
 ///
 /// `CommitHead` advances the canonical chain head.
@@ -70,13 +85,14 @@ pub struct QueueTransaction {
 /// `Tx` should be used to append a new transaction to the current block,
 /// along with its transaction execution id for identification and tracing.
 ///
-/// `Reorg` should be used to signal to remove the last executed transaction.
+/// `Reorg` should be used to signal to remove the last executed transaction(s).
 /// To verify the transaction is indeed the correct one, we include the
-/// transaction execution id and should only process it as a valid event if it matches.
+/// transaction execution id plus the last `depth` tx hashes and should only
+/// process it as a valid event if it matches.
 #[derive(Debug, Clone)]
 pub enum TxQueueContents {
     Tx(QueueTransaction, tracing::Span),
-    Reorg(TxExecutionId, tracing::Span),
+    Reorg(ReorgRequest, tracing::Span),
     CommitHead(CommitHead, tracing::Span),
     NewIteration(NewIteration, tracing::Span),
 }
@@ -85,7 +101,7 @@ impl TxQueueContents {
     pub fn block_number(&self) -> U256 {
         match self {
             TxQueueContents::Tx(v, _) => v.tx_execution_id.block_number,
-            TxQueueContents::Reorg(v, _) => v.block_number,
+            TxQueueContents::Reorg(v, _) => v.tx_execution_id.block_number,
             TxQueueContents::CommitHead(v, _) => v.block_number,
             TxQueueContents::NewIteration(v, _) => v.block_env.number,
         }
@@ -94,7 +110,7 @@ impl TxQueueContents {
     pub fn iteration_id(&self) -> u64 {
         match self {
             TxQueueContents::Tx(v, _) => v.tx_execution_id.iteration_id,
-            TxQueueContents::Reorg(v, _) => v.iteration_id,
+            TxQueueContents::Reorg(v, _) => v.tx_execution_id.iteration_id,
             TxQueueContents::CommitHead(v, _) => v.selected_iteration_id,
             TxQueueContents::NewIteration(v, _) => v.iteration_id,
         }

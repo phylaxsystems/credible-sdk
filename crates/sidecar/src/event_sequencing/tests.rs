@@ -5,6 +5,7 @@ use crate::{
         CommitHead,
         NewIteration,
         QueueTransaction,
+        ReorgRequest,
         TransactionQueueReceiver,
         TransactionQueueSender,
         TxQueueContents,
@@ -105,7 +106,11 @@ fn build_dependency_graph_from_events(
                 TxQueueContents::Tx(tx, _) => {
                     (1, tx.tx_execution_id.iteration_id, tx.tx_execution_id.index)
                 }
-                TxQueueContents::Reorg(id, _) => (1, id.iteration_id, id.index),
+                TxQueueContents::Reorg(reorg, _) => (
+                    1,
+                    reorg.tx_execution_id.iteration_id,
+                    reorg.tx_execution_id.index,
+                ),
                 TxQueueContents::CommitHead(ch, _) => (2, ch.selected_iteration_id, 0u64),
             }
         });
@@ -142,7 +147,11 @@ fn build_dependency_graph_from_events(
                     TxQueueContents::Tx(tx, _) => {
                         (1, tx.tx_execution_id.iteration_id, tx.tx_execution_id.index)
                     }
-                    TxQueueContents::Reorg(id, _) => (1, id.iteration_id, id.index),
+                    TxQueueContents::Reorg(reorg, _) => (
+                        1,
+                        reorg.tx_execution_id.iteration_id,
+                        reorg.tx_execution_id.index,
+                    ),
                     TxQueueContents::CommitHead(ch, _) => (2, ch.selected_iteration_id, 0u64),
                 }
             });
@@ -218,7 +227,14 @@ fn create_reorg(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -> TxQu
         index,
     };
 
-    TxQueueContents::Reorg(tx_execution_id, tracing::Span::none())
+    TxQueueContents::Reorg(
+        ReorgRequest {
+            tx_execution_id,
+            depth: 1,
+            tx_hashes: vec![tx_hash],
+        },
+        tracing::Span::none(),
+    )
 }
 
 fn create_commit_head(

@@ -240,7 +240,7 @@ the [Transport Transaction Types Documentation](../README.md#transaction-example
 
 ### `reorg`
 
-Reorg the last sent transaction. Hash of the last sent transaction must be the same as `removedTxHash`.
+Reorg the last sent transaction(s). `tx_hashes` must list the last `depth` hashes in order (oldest -> newest), and the final entry must match `tx_hash`.
 
 **Request:**
 
@@ -253,7 +253,9 @@ Reorg the last sent transaction. Hash of the last sent transaction must be the s
     "block_number": 1000,
     "iteration_id": 1,
     "tx_hash": "0x1234567890abcdef...",
-    "index": 0
+    "index": 0,
+    "depth": 1,
+    "tx_hashes": ["0x1234567890abcdef..."]
   }
 }
 ```

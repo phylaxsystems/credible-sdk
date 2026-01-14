@@ -48,8 +48,8 @@ pub fn trace_tx_queue_contents(block_context: &BlockContext, tx_queue_contents: 
             span.record("tx.hash", display(tx.tx_execution_id));
         }
         // Record the tx hash of the reorg
-        TxQueueContents::Reorg(tx_execution_id, span) => {
-            span.record("tx.hash", display(tx_execution_id));
+        TxQueueContents::Reorg(reorg, span) => {
+            span.record("tx.hash", display(reorg.tx_execution_id));
         }
         // CommitHead events do not carry block env data, so there is nothing to trace.
         TxQueueContents::CommitHead(_, _) => {}

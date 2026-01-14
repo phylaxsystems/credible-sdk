@@ -52,6 +52,7 @@ use self::{
         CommitHead,
         NewIteration,
         QueueTransaction,
+        ReorgRequest,
         TransactionQueueReceiver,
         TxQueueContents,
     },
@@ -119,14 +120,14 @@ use alloy::primitives::{
     TxHash,
     U256,
 };
-use arrayvec::ArrayVec;
 use assertion_executor::{
     ExecutorError,
     ForkTxExecutionError,
     TxExecutionError,
     db::{
         Database,
-        fork_db::ForkDb,
+        RollbackDb,
+        VersionDb,
     },
 };
 use dashmap::DashMap;
@@ -169,46 +170,6 @@ fn unlikely(b: bool) -> bool {
     b
 }
 
-/// Contains the last two executed transaction identifiers and resulting states.
-#[derive(Debug)]
-struct LastExecutedTx {
-    execution_results: ArrayVec<(TxExecutionId, Option<EvmState>), 2>,
-}
-
-impl LastExecutedTx {
-    #[inline]
-    const fn new() -> Self {
-        Self {
-            execution_results: ArrayVec::new_const(),
-        }
-    }
-
-    #[inline]
-    fn push(&mut self, tx_execution_id: TxExecutionId, state: Option<EvmState>) {
-        if self.execution_results.is_full() {
-            self.execution_results.remove(0);
-        }
-        // Safety: we just ensured there's space by removing if full
-        // Using push is safe here, but we can use try_push for extra safety
-        let _ = self.execution_results.try_push((tx_execution_id, state));
-    }
-
-    #[inline]
-    fn remove_last(&mut self) -> Option<(TxExecutionId, Option<EvmState>)> {
-        self.execution_results.pop()
-    }
-
-    #[inline]
-    fn current(&self) -> Option<&(TxExecutionId, Option<EvmState>)> {
-        self.execution_results.last()
-    }
-
-    #[inline]
-    fn clear(&mut self) {
-        self.execution_results.clear();
-    }
-}
-
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum EngineError {
     #[error("Database error")]
@@ -225,7 +186,7 @@ pub enum EngineError {
     ChannelClosed,
     #[error("Get transaction result oneshot channel closed")]
     GetTxResultChannelClosed,
-    #[error("Hash supplied by the reorg event does not match the last executed transaction")]
+    #[error("Reorg transaction hashes do not match the executed transaction tail")]
     BadReorgHash,
     #[error(
         "Nothing to commit. We expect a reorg for a failed transaction due to an internal EVM error."
@@ -278,16 +239,17 @@ pub enum TransactionResult {
 }
 
 /// The `BlockIterationData` is a unique identifier for a block iteration state. It contains
-/// the state of the current block for a given iteration (e.i., `fork_db`, `n_transactions`,
-/// `last_executed_tx`)
+/// the state of the current block for a given iteration using a `VersionDb` for state management
+/// with rollback support.
 #[derive(Debug)]
 struct BlockIterationData<DB> {
-    /// Current block's fork. It is created once per block, accumulates all transaction changes
-    fork_db: ForkDb<OverlayDb<DB>>,
+    /// Versioned database managing state with rollback capability.
+    /// Handles base state, current state, and commit log internally.
+    version_db: VersionDb<OverlayDb<DB>>,
     /// How many transactions we have seen for each iteration in the `blockEnv` we are currently working on
     n_transactions: u64,
-    /// Stores last executed transactions for reorging
-    last_executed_tx: LastExecutedTx,
+    /// Ordered list of executed transactions for this iteration.
+    executed_txs: Vec<TxExecutionId>,
     /// Iteration `BlockEnv`
     block_env: BlockEnv,
 }
@@ -296,15 +258,19 @@ impl<DB> BlockIterationData<DB> {
     /// Checks if the last executed transaction matches the given transaction ID
     #[inline]
     fn has_last_tx(&self, tx_id: TxExecutionId) -> bool {
-        self.last_executed_tx
-            .current()
-            .is_some_and(|(id, _)| *id == tx_id)
+        self.executed_txs.last().is_some_and(|id| *id == tx_id)
     }
 
     /// Gets the transaction ID of the last executed transaction, if any
     #[inline]
     fn last_tx_id(&self) -> Option<TxExecutionId> {
-        self.last_executed_tx.current().map(|(id, _)| *id)
+        self.executed_txs.last().copied()
+    }
+
+    /// Returns the current depth (number of commits) in the version database.
+    #[inline]
+    fn depth(&self) -> usize {
+        self.version_db.depth()
     }
 }
 
@@ -498,8 +464,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         }
     }
 
-    /// Adds the result of a transaction to the transaction results and updates
-    /// the last executed transaction accordingly.
+    /// Adds the result of a transaction to the transaction results and tracks
+    /// the executed transaction for reorg validation.
     fn add_transaction_result(
         &mut self,
         tx_execution_id: TxExecutionId,
@@ -521,9 +487,15 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .insert(tx_execution_id.tx_hash, state.clone());
         }
 
-        current_block_iteration
-            .last_executed_tx
-            .push(tx_execution_id, state);
+        current_block_iteration.executed_txs.push(tx_execution_id);
+        match state {
+            Some(changes) => {
+                current_block_iteration.version_db.commit(changes);
+            }
+            None => {
+                current_block_iteration.version_db.commit_empty();
+            }
+        }
         self.transaction_results
             .add_transaction_result(tx_execution_id, result);
         Ok(())
@@ -641,16 +613,15 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         );
 
         // Validate transaction and run assertions
-        // Execute directly on the block fork
-        // Note: block_fork is ForkDb<OverlayDb<DB>>, so the error type will be
-        // ExecutorError<<ForkDb<OverlayDb<DB>> as DatabaseRef>::Error>
-        // which is ExecutorError<NotFoundError>
+        // Execute directly on the versioned database's internal ForkDb
+        // Note: validate_transaction returns the state changes but doesn't commit them,
+        // so we use state_mut() to get the ForkDb for execution
         let block_env = current_block_iteration.block_env.clone();
 
         let rax = self.assertion_executor.validate_transaction(
             block_env,
             tx_env,
-            &mut current_block_iteration.fork_db,
+            current_block_iteration.version_db.state_mut(),
             false,
         );
 
@@ -693,7 +664,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         Ok(())
     }
 
-    /// Invalidates the state, cache and last executed tx
+    /// Invalidates the state and cache for all block iterations
     fn invalidate_all(&mut self, commit_head: &CommitHead) {
         self.sources
             .reset_latest_unprocessed_block(commit_head.block_number);
@@ -884,9 +855,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                     self.verify_state_sources_synced_blocking(&shutdown)
                         .and_then(|()| self.process_transaction_event(queue_transaction))
                 }
-                TxQueueContents::Reorg(tx_execution_id, current_span) => {
+                TxQueueContents::Reorg(reorg, current_span) => {
                     let _guard = current_span.enter();
-                    self.execute_reorg(tx_execution_id)
+                    self.execute_reorg(reorg)
                 }
             };
 
@@ -1020,9 +991,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                         Err(e) => Err(e),
                     }
                 }
-                TxQueueContents::Reorg(tx_execution_id, current_span) => {
+                TxQueueContents::Reorg(reorg, current_span) => {
                     let _guard = current_span.enter();
-                    self.execute_reorg(tx_execution_id)
+                    self.execute_reorg(reorg)
                 }
             };
 
@@ -1093,10 +1064,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         let block_execution_id = BlockExecutionId::from(new_iteration);
 
+        // Create a VersionDb with a clone of the cache - VersionDb will create its own ForkDb internally
         let block_iteration_data = BlockIterationData {
-            fork_db: self.cache.fork(),
+            version_db: VersionDb::new(self.cache.clone()),
             n_transactions: 0,
-            last_executed_tx: LastExecutedTx::new(),
+            executed_txs: Vec::new(),
             block_env: block_env.clone(),
         };
 
@@ -1151,15 +1123,17 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let spec_id = self.get_spec_id();
         let system_calls = self.system_calls.clone();
 
+        if let Some(iteration) = self.current_block_iterations.get(&block_execution_id)
+            && iteration.version_db.last_commit_was_empty()
+        {
+            return Err(EngineError::NothingToCommit);
+        }
+
         // Finalize the previous block by committing its fork to the underlying state
-        // Apply the last transaction's state to the current block fork
         if self
             .current_block_iterations
             .contains_key(&block_execution_id)
         {
-            // Finalize the previous block by committing its fork to the underlying state
-            self.apply_state_buffer_to_fork(block_execution_id)?;
-
             self.finalize_previous_block(block_execution_id);
         }
 
@@ -1252,6 +1226,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         let expected_block_number = self.current_head + U256::from(1);
         let iteration_block_number = current_block_iteration.block_env.number;
+        let has_pending_state = current_block_iteration.version_db.last_commit_was_empty();
         if iteration_block_number != expected_block_number {
             warn!(
                 target = "engine",
@@ -1273,6 +1248,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         }
 
+        if has_pending_state {
+            return Err(EngineError::NothingToCommit);
+        }
+
         debug!(
             target = "engine",
             tx_hash = %tx_hash,
@@ -1284,32 +1263,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             "Processing transaction"
         );
 
-        // Apply the previously executed transaction state changes to the block fork
-        self.apply_state_buffer_to_fork(block_id)?;
-
         // Process the transaction with the current block environment
         self.execute_transaction(tx_execution_id, &tx_env)?;
 
-        Ok(())
-    }
-
-    /// Applies the state inside `self.last_executed_tx` to the current block fork.
-    fn apply_state_buffer_to_fork(
-        &mut self,
-        block_execution_id: BlockExecutionId,
-    ) -> Result<(), EngineError> {
-        let Some(current_block_iteration) =
-            self.current_block_iterations.get_mut(&block_execution_id)
-        else {
-            return Ok(());
-        };
-
-        if let Some((_, state)) = current_block_iteration.last_executed_tx.current() {
-            let changes = state.clone().ok_or(EngineError::NothingToCommit)?;
-            // Commit to the current block fork
-            current_block_iteration.fork_db.commit(changes);
-        }
-        current_block_iteration.last_executed_tx = LastExecutedTx::new();
         Ok(())
     }
 
@@ -1328,60 +1284,57 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         // Commit the entire block's state to the underlying OverlayDb
         self.cache
-            .commit_overlay_fork_db(current_block_iteration.fork_db.clone());
+            .commit_overlay_fork_db(current_block_iteration.version_db.state().clone());
     }
 
-    /// Applies the state inside `self.last_executed_tx` to `self.state`.
-    ///
-    /// If `self.last_executed_tx` is empty, we dont do anything.
-    #[cfg(test)]
-    fn apply_state_buffer(
-        &mut self,
-        block_execution_id: BlockExecutionId,
-    ) -> Result<(), EngineError> {
-        let Some(current_block_iteration) =
-            self.current_block_iterations.get_mut(&block_execution_id)
-        else {
-            return Ok(());
-        };
-
-        #[allow(clippy::used_underscore_binding)]
-        if let Some((_tx_execution_id, state)) = current_block_iteration.last_executed_tx.current()
-        {
-            let changes = state.clone().ok_or(EngineError::NothingToCommit)?;
-            self.cache.commit(changes);
-        }
-        current_block_iteration.last_executed_tx = LastExecutedTx::new();
-        Ok(())
-    }
-
-    /// Processes a reorg event. Checks if the execution id of the last executed tx
-    /// matches the identifier supplied by the reorg event.
-    /// If yes, we throw out the last executed tx buffer. If not, we throw
-    /// an error.
-    ///
-    /// This function is needed because we don't know if a transaction was
-    /// fully included in a block because a besu plugin might unselect it.
-    /// Because we are receiving transactions one-by-one for now, this is
-    /// an acceptable solution.
-    // TODO: when we star receiving tx bundles this should be expanded such
-    // that we can go `n` transactions deep inside of a block.
+    /// Processes a reorg event by validating the tail of executed transactions.
+    /// If valid, roll back the last `depth` transactions for the iteration.
     #[instrument(
         name = "engine::execute_reorg",
         skip_all,
         fields(
-            tx_hash = %tx_execution_id.tx_hash,
-            block_number = %tx_execution_id.block_number,
-            iteration_id = tx_execution_id.iteration_id
+            tx_hash = %reorg.tx_execution_id.tx_hash,
+            block_number = %reorg.tx_execution_id.block_number,
+            iteration_id = reorg.tx_execution_id.iteration_id,
+            depth = reorg.depth
         ),
         level = "info"
     )]
-    fn execute_reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), EngineError> {
+    fn execute_reorg(&mut self, reorg: ReorgRequest) -> Result<(), EngineError> {
+        let tx_execution_id = reorg.tx_execution_id;
+        let depth = reorg.depth as usize;
         trace!(
             target = "engine",
             tx_execution_id = %tx_execution_id.to_json_string(),
             "Checking reorg validity for hash"
         );
+
+        if depth == 0 {
+            error!(
+                target = "engine",
+                tx_execution_id = %tx_execution_id.to_json_string(),
+                "Received reorg with zero depth"
+            );
+            return Err(EngineError::ReorgError);
+        }
+        if reorg.tx_hashes.len() != depth {
+            error!(
+                target = "engine",
+                tx_execution_id = %tx_execution_id.to_json_string(),
+                depth = depth,
+                tx_hashes_len = reorg.tx_hashes.len(),
+                "Reorg depth does not match tx_hashes length"
+            );
+            return Err(EngineError::BadReorgHash);
+        }
+        if reorg.tx_hashes.last() != Some(&tx_execution_id.tx_hash) {
+            error!(
+                target = "engine",
+                tx_execution_id = %tx_execution_id.to_json_string(),
+                "Reorg tx_hashes tip does not match tx_hash"
+            );
+            return Err(EngineError::BadReorgHash);
+        }
 
         let Some(current_block_iteration) = self
             .current_block_iterations
@@ -1399,22 +1352,63 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         // Check if we have received a transaction at all and if it matches
         if current_block_iteration.has_last_tx(tx_execution_id) {
+            if depth > current_block_iteration.executed_txs.len() {
+                error!(
+                    target = "engine",
+                    tx_execution_id = %tx_execution_id.to_json_string(),
+                    depth = depth,
+                    executed = current_block_iteration.executed_txs.len(),
+                    "Reorg depth exceeds executed transactions"
+                );
+                return Err(EngineError::BadReorgHash);
+            }
+
+            let start = current_block_iteration.executed_txs.len() - depth;
+            let expected_hashes = current_block_iteration.executed_txs[start..]
+                .iter()
+                .map(|id| id.tx_hash);
+            if !expected_hashes.eq(reorg.tx_hashes.iter().copied()) {
+                error!(
+                    target = "engine",
+                    tx_execution_id = %tx_execution_id.to_json_string(),
+                    "Reorg tx_hashes do not match executed transaction tail"
+                );
+                return Err(EngineError::BadReorgHash);
+            }
+
             info!(
                 target = "engine",
                 tx_execution_id = %tx_execution_id.to_json_string(),
+                depth = depth,
                 "Executing reorg for hash"
             );
 
-            // Remove the last transaction from buffer, preserving the previous one if it exists
-            current_block_iteration.last_executed_tx.remove_last();
+            let new_len = start;
+            let removed_txs = current_block_iteration.executed_txs.split_off(new_len);
+            // Rollback the version database to the state before the removed transactions
+            // This handles both truncating the commit log and rebuilding state
+            current_block_iteration
+                .version_db
+                .rollback_to(new_len)
+                .expect("rollback depth validated above");
 
-            // Remove transaction from results
-            self.transaction_results
-                .remove_transaction_result(tx_execution_id);
+            for removed in removed_txs {
+                self.transaction_results
+                    .remove_transaction_result(removed);
+                #[cfg(feature = "cache_validation")]
+                if let Some(iteration) = self
+                    .iteration_pending_processed_transactions
+                    .get_mut(&removed.as_block_execution_id())
+                {
+                    iteration.remove(&removed.tx_hash);
+                }
+            }
 
             // Only decrement the counter if we haven't processed a new block yet
-            if current_block_iteration.n_transactions > 0 {
-                current_block_iteration.n_transactions -= 1;
+            if current_block_iteration.n_transactions >= depth as u64 {
+                current_block_iteration.n_transactions -= depth as u64;
+            } else {
+                current_block_iteration.n_transactions = 0;
             }
 
             return Ok(());

@@ -19,11 +19,15 @@ use crate::{
 /// Versioned database that reuses `ForkDb` for state management and keeps a
 /// shallow log of commits. Rolling back rebuilds state by replaying logged
 /// changes on top of the base snapshot.
+///
+/// The commit log uses `Option<EvmState>` to support tracking failed
+/// transactions that have no state changes but still occupy a slot in
+/// the transaction sequence (important for reorg rollbacks).
 #[derive(Debug, Clone)]
 pub struct VersionDb<Db> {
     base_state: ForkDb<Db>,
     state: ForkDb<Db>,
-    commit_log: Vec<EvmState>,
+    commit_log: Vec<Option<EvmState>>,
 }
 
 impl<Db> VersionDb<Db> {
@@ -41,10 +45,42 @@ impl<Db> VersionDb<Db> {
     // with proper interior mutability
     fn rebuild_state(&mut self, depth: usize) {
         self.state = self.base_state.clone();
-        for delta in self.commit_log.iter().take(depth) {
+        // Skip None entries (failed transactions with no state changes)
+        for delta in self.commit_log.iter().take(depth).flatten() {
             self.state.commit(delta.clone());
         }
         self.commit_log.truncate(depth);
+    }
+
+    /// Commits an empty slot for a failed transaction with no state changes.
+    /// This allows tracking the transaction's position for proper reorg rollback.
+    pub fn commit_empty(&mut self) {
+        self.commit_log.push(None);
+    }
+
+    /// Returns true if the last commit was empty (a failed transaction).
+    /// This is useful for checking if processing should be paused due to
+    /// a pending failed transaction state.
+    pub fn last_commit_was_empty(&self) -> bool {
+        matches!(self.commit_log.last(), Some(None))
+    }
+
+    /// Provides read-only access to the underlying state ForkDb.
+    pub fn state(&self) -> &ForkDb<Db> {
+        &self.state
+    }
+
+    /// Provides mutable access to the underlying state ForkDb.
+    /// Use with caution - modifications won't be tracked in the commit log.
+    /// This is primarily useful for read-execute operations that need mutable access
+    /// but commit changes through the VersionDb's commit method afterward.
+    pub fn state_mut(&mut self) -> &mut ForkDb<Db> {
+        &mut self.state
+    }
+
+    /// Provides read-only access to the base state ForkDb.
+    pub fn base_state(&self) -> &ForkDb<Db> {
+        &self.base_state
     }
 }
 
@@ -98,7 +134,7 @@ impl<Db: DatabaseRef> Database for VersionDb<Db> {
 impl<Db> DatabaseCommit for VersionDb<Db> {
     fn commit(&mut self, changes: EvmState) {
         self.state.commit(changes.clone());
-        self.commit_log.push(changes);
+        self.commit_log.push(Some(changes));
     }
 }
 
@@ -583,5 +619,146 @@ mod tests {
             .balance;
 
         assert_eq!(balance, uint!(5_U256));
+    }
+
+    #[test]
+    fn commit_empty_increases_depth_without_state_change() {
+        let mut version_db = VersionDb::new(MockDb::new());
+
+        // Commit a real state change
+        let mut first = EvmState::default();
+        first.insert(
+            address!("0000000000000000000000000000000000000001"),
+            Account {
+                info: mock_account_info(uint!(10_U256), 1, None),
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Touched,
+            },
+        );
+        version_db.commit(first);
+
+        // Commit an empty slot (simulating a failed transaction)
+        version_db.commit_empty();
+
+        // Commit another real state change
+        let mut third = EvmState::default();
+        third.insert(
+            address!("0000000000000000000000000000000000000001"),
+            Account {
+                info: mock_account_info(uint!(30_U256), 2, None),
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Touched,
+            },
+        );
+        version_db.commit(third);
+
+        // Depth should be 3 (real + empty + real)
+        assert_eq!(version_db.depth(), 3);
+        assert_eq!(
+            version_db
+                .basic_ref(address!("0000000000000000000000000000000000000001"))
+                .unwrap()
+                .unwrap()
+                .balance,
+            uint!(30_U256)
+        );
+
+        // Rollback to depth 2 (after the empty commit, before the third)
+        version_db.rollback_to(2).unwrap();
+        assert_eq!(version_db.depth(), 2);
+        // State should be at first commit (10), since empty commit has no state
+        assert_eq!(
+            version_db
+                .basic_ref(address!("0000000000000000000000000000000000000001"))
+                .unwrap()
+                .unwrap()
+                .balance,
+            uint!(10_U256)
+        );
+
+        // Rollback to depth 1 (before the empty commit)
+        version_db.rollback_to(1).unwrap();
+        assert_eq!(version_db.depth(), 1);
+        // State should still be at first commit (10)
+        assert_eq!(
+            version_db
+                .basic_ref(address!("0000000000000000000000000000000000000001"))
+                .unwrap()
+                .unwrap()
+                .balance,
+            uint!(10_U256)
+        );
+
+        // Rollback to depth 0 (base state)
+        version_db.rollback_to(0).unwrap();
+        assert_eq!(version_db.depth(), 0);
+        // Account should not exist in base state
+        assert!(
+            version_db
+                .basic_ref(address!("0000000000000000000000000000000000000001"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rollback_with_multiple_empty_commits() {
+        let mut version_db = VersionDb::new(MockDb::new());
+
+        // Commit real state
+        let mut first = EvmState::default();
+        first.insert(
+            address!("0000000000000000000000000000000000000001"),
+            Account {
+                info: mock_account_info(uint!(100_U256), 1, None),
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Touched,
+            },
+        );
+        version_db.commit(first);
+
+        // Commit multiple empty slots (simulating multiple failed transactions)
+        version_db.commit_empty();
+        version_db.commit_empty();
+        version_db.commit_empty();
+
+        // Commit another real state change
+        let mut fifth = EvmState::default();
+        fifth.insert(
+            address!("0000000000000000000000000000000000000001"),
+            Account {
+                info: mock_account_info(uint!(500_U256), 2, None),
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Touched,
+            },
+        );
+        version_db.commit(fifth);
+
+        // Depth should be 5
+        assert_eq!(version_db.depth(), 5);
+        assert_eq!(
+            version_db
+                .basic_ref(address!("0000000000000000000000000000000000000001"))
+                .unwrap()
+                .unwrap()
+                .balance,
+            uint!(500_U256)
+        );
+
+        // Rollback to just after the first real commit (remove all empty + last real)
+        version_db.rollback_to(1).unwrap();
+        assert_eq!(version_db.depth(), 1);
+        assert_eq!(
+            version_db
+                .basic_ref(address!("0000000000000000000000000000000000000001"))
+                .unwrap()
+                .unwrap()
+                .balance,
+            uint!(100_U256)
+        );
     }
 }
