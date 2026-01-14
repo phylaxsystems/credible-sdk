@@ -760,9 +760,15 @@ mod tests {
     #[test]
     fn test_query_parallel_cache_miss_then_success() {
         let account_info = create_test_account_info();
-        let cache_miss = Arc::new(MockSource::new(SourceName::Other).with_cache_miss_for_account());
+        let cache_miss = Arc::new(
+            MockSource::new(SourceName::Other)
+                .with_cache_miss_for_account()
+                .with_delay(Duration::from_millis(5)), // Small delay ensures thread starts
+        );
         let succeeding = Arc::new(
-            MockSource::new(SourceName::EthRpcSource).with_account_info(account_info.clone()),
+            MockSource::new(SourceName::EthRpcSource)
+                .with_account_info(account_info.clone())
+                .with_delay(Duration::from_millis(5)), // Same delay to ensure both threads start
         );
 
         let cache = Sources::new_parallel(vec![cache_miss.clone(), succeeding.clone()], 10);
