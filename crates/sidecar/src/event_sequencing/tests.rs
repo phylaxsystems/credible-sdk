@@ -1852,14 +1852,15 @@ fn test_reorg_in_future_block() {
 
     // Queue events for block 10 including a reorg
     let tx_hash = TxHash::random();
+    let tx_hash1 = TxHash::random();
     sequencing
         .process_event(create_new_iteration(10, 1))
         .unwrap();
     sequencing
-        .process_event(create_transaction(10, 1, 0, TxHash::random(), None))
+        .process_event(create_transaction(10, 1, 0, tx_hash1, None))
         .unwrap();
     sequencing
-        .process_event(create_transaction(10, 1, 1, tx_hash, None))
+        .process_event(create_transaction(10, 1, 1, tx_hash, Some(tx_hash1)))
         .unwrap();
     sequencing
         .process_event(create_reorg(10, 1, 1, tx_hash))
@@ -5069,4 +5070,76 @@ async fn test_reorg_enables_replacement_transaction_with_reorg_first(
         instance.get_transaction_result(&tx1_id).is_none(),
         "TX1.0 should not be processed"
     );
+}
+
+#[test]
+fn test_reorg_arrives_before_tx_it_cancels_is_not_dropped_future_block() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    // Start at block 1
+    sequencing
+        .process_event(create_commit_head(1, 1, 0, None))
+        .unwrap();
+    assert_eq!(sequencing.current_head, U256::from(1));
+    engine_recv.try_iter().for_each(drop);
+
+    // We'll queue block 10, but we'll send reorg(index=1, tx1_old_hash) BEFORE tx1_old arrives.
+    let tx0_hash = TxHash::random();
+    let tx1_old_hash = TxHash::random();
+
+    let new_iter_10 = create_new_iteration(10, 1);
+    let tx0 = create_transaction(10, 1, 0, tx0_hash, None);
+
+    // Reorg that is meant to cancel Tx1_old (index=1, tx_hash=tx1_old_hash)
+    let reorg_tx1_old = create_reorg(10, 1, 1, tx1_old_hash);
+
+    // Queue future block events (but DO NOT queue tx1_old yet)
+    sequencing.process_event(new_iter_10).unwrap();
+    sequencing.process_event(tx0).unwrap();
+    sequencing.process_event(reorg_tx1_old).unwrap();
+
+    // Nothing sent yet (still future block)
+    assert_eq!(engine_recv.len(), 0);
+
+    // Fill the gap: committing head 9 should start processing block 10
+    sequencing
+        .process_event(create_commit_head(9, 1, 0, None))
+        .unwrap();
+
+    // We expect: CommitHead(9) + NewIteration(10) + Tx0 = 3 events so far
+    let mut sent: Vec<TxQueueContents> = engine_recv.try_iter().collect();
+    assert_eq!(
+        sent.len(),
+        3,
+        "expected CommitHead(9), NewIteration(10), Tx0 to be sent"
+    );
+
+    // Basic ordering checks
+    match &sent[0] {
+        TxQueueContents::CommitHead(q, _) => assert_eq!(q.block_number, U256::from(9)),
+        other => panic!("expected CommitHead first, got: {other:?}"),
+    }
+    match &sent[1] {
+        TxQueueContents::NewIteration(q, _) => assert_eq!(q.block_env.number, U256::from(10)),
+        other => panic!("expected NewIteration second, got: {other:?}"),
+    }
+    match &sent[2] {
+        TxQueueContents::Tx(q, _) => {
+            assert_eq!(q.tx_execution_id.block_number, U256::from(10));
+            assert_eq!(q.tx_execution_id.iteration_id, 1);
+            assert_eq!(q.tx_execution_id.index, 0);
+            assert_eq!(q.tx_execution_id.tx_hash, tx0_hash);
+            assert_eq!(q.prev_tx_hash, None);
+        }
+        other => panic!("expected Tx0 third, got: {other:?}"),
+    }
+
+    // Now Tx1_old arrives AFTER Tx0 already got sent.
+    // Correct behavior (if the reorg wasn't dropped): Tx1_old should be cancelled and NOT sent.
+    let tx1_old = create_transaction(10, 1, 1, tx1_old_hash, Some(tx0_hash));
+    sequencing.process_event(tx1_old).unwrap();
+
+    // If the bug exists, Tx1_old will be sent (because the reorg was dropped when Tx0 fired).
+    let leaked: Vec<TxQueueContents> = engine_recv.try_iter().collect();
+    assert_eq!(leaked.len(), 0);
 }
