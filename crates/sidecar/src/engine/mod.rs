@@ -974,6 +974,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
             debug!(
                 target = "engine",
+                block_number = %self.current_head,
                 waited_ms = waited.as_millis(),
                 next_retry_ms = RETRY_INTERVAL.as_millis(),
                 timeout_ms = self.state_sources_sync_timeout.as_millis(),
