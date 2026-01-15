@@ -743,7 +743,6 @@ async fn test_execute_reorg_depth_truncates_tail() {
 
     let reorg = queue::ReorgRequest {
         tx_execution_id: tx3,
-        depth: 2,
         tx_hashes: vec![tx2_hash, tx3_hash],
     };
 
@@ -823,7 +822,6 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
     // Reorg TX3 only - should leave TX1 (Some) and TX2 (None) in commit_log
     let reorg = queue::ReorgRequest {
         tx_execution_id: tx3,
-        depth: 1,
         tx_hashes: vec![tx3_hash],
     };
 
@@ -894,7 +892,6 @@ async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
 
     let reorg = queue::ReorgRequest {
         tx_execution_id: tx2,
-        depth: 1,
         tx_hashes: vec![tx2_hash],
     };
 
@@ -972,10 +969,9 @@ async fn test_execute_reorg_removes_all_transactions() {
     record_validation_result(&mut engine, tx2, true);
     record_validation_result(&mut engine, tx3, true);
 
-    // Reorg ALL 3 transactions (depth=3)
+    // Reorg ALL 3 transactions
     let reorg = queue::ReorgRequest {
         tx_execution_id: tx3,
-        depth: 3,
         tx_hashes: vec![tx1_hash, tx2_hash, tx3_hash],
     };
 
@@ -1052,7 +1048,6 @@ async fn test_execute_reorg_with_all_failed_transactions() {
     // Reorg TX2 only
     let reorg = queue::ReorgRequest {
         tx_execution_id: tx2,
-        depth: 1,
         tx_hashes: vec![tx2_hash],
     };
 
@@ -1128,10 +1123,9 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
     record_validation_result(&mut engine, txs[3], false);
     record_validation_result(&mut engine, txs[4], true);
 
-    // Deep reorg: remove TX1, TX2, TX3, TX4 (depth=4)
+    // Deep reorg: remove TX1, TX2, TX3, TX4
     let reorg = queue::ReorgRequest {
         tx_execution_id: txs[4],
-        depth: 4,
         tx_hashes: tx_hashes[1..5].to_vec(),
     };
 
@@ -2020,11 +2014,11 @@ async fn test_arbitrary_depth_reorg_via_local_instance(mut instance: crate::util
     assert!(instance.is_transaction_successful(&tx2).await.unwrap());
     assert!(instance.is_transaction_successful(&tx3).await.unwrap());
 
-    // Reorg the last 3 transactions (depth=3): removes tx1, tx2, tx3
+    // Reorg the last 3 transactions: removes tx1, tx2, tx3
     // tx_hashes must be in chronological order (oldest first)
     let tx_hashes = vec![tx1.tx_hash, tx2.tx_hash, tx3.tx_hash];
     instance
-        .send_reorg_depth(tx3, 3, tx_hashes)
+        .send_reorg_depth(tx3, tx_hashes)
         .await
         .expect("depth-3 reorg should succeed");
 

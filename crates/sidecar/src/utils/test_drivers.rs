@@ -469,20 +469,19 @@ impl TestTransport for LocalInstanceMockDriver {
     }
 
     async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
-        self.reorg_depth(tx_execution_id, 1, vec![tx_execution_id.tx_hash])
+        self.reorg_depth(tx_execution_id, vec![tx_execution_id.tx_hash])
             .await
     }
 
     async fn reorg_depth(
         &mut self,
         tx_execution_id: TxExecutionId,
-        depth: u64,
         tx_hashes: Vec<TxHash>,
     ) -> Result<(), String> {
         info!(
             target: "test_transport",
             "LocalInstance sending reorg for: {:?} with depth {}",
-            tx_execution_id, depth
+            tx_execution_id, tx_hashes.len()
         );
         let iteration_id = tx_execution_id.iteration_id;
 
@@ -506,7 +505,6 @@ impl TestTransport for LocalInstanceMockDriver {
             .send(TxQueueContents::Reorg(
                 ReorgRequest {
                     tx_execution_id,
-                    depth,
                     tx_hashes,
                 },
                 Span::current(),
@@ -845,20 +843,19 @@ impl TestTransport for LocalInstanceHttpDriver {
     }
 
     async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
-        self.reorg_depth(tx_execution_id, 1, vec![tx_execution_id.tx_hash])
+        self.reorg_depth(tx_execution_id, vec![tx_execution_id.tx_hash])
             .await
     }
 
     async fn reorg_depth(
         &mut self,
         tx_execution_id: TxExecutionId,
-        depth: u64,
         tx_hashes: Vec<TxHash>,
     ) -> Result<(), String> {
         info!(
             target: "LocalInstanceHttpDriver",
             "LocalInstance sending reorg for: {:?} with depth {}",
-            tx_execution_id, depth
+            tx_execution_id, tx_hashes.len()
         );
 
         let iteration_id = tx_execution_id.iteration_id;
@@ -890,7 +887,6 @@ impl TestTransport for LocalInstanceHttpDriver {
                 "iteration_id": tx_execution_id.iteration_id,
                 "tx_hash": tx_execution_id.tx_hash_hex(),
                 "index": tx_execution_id.index,
-                "depth": depth,
                 "tx_hashes": tx_hashes_hex,
             },
         });
@@ -1306,20 +1302,19 @@ impl TestTransport for LocalInstanceGrpcDriver {
     }
 
     async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
-        self.reorg_depth(tx_execution_id, 1, vec![tx_execution_id.tx_hash])
+        self.reorg_depth(tx_execution_id, vec![tx_execution_id.tx_hash])
             .await
     }
 
     async fn reorg_depth(
         &mut self,
         tx_execution_id: TxExecutionId,
-        depth: u64,
         tx_hashes: Vec<TxHash>,
     ) -> Result<(), String> {
         info!(
             target: "LocalInstanceGrpcDriver",
             "LocalInstance sending reorg for: {:?} with depth {}",
-            tx_execution_id.tx_hash, depth
+            tx_execution_id.tx_hash, tx_hashes.len()
         );
 
         let iteration_id = tx_execution_id.iteration_id;
@@ -1342,7 +1337,6 @@ impl TestTransport for LocalInstanceGrpcDriver {
 
         let reorg_event = pb::ReorgEvent {
             tx_execution_id: Some(Self::build_pb_tx_execution_id(&tx_execution_id)),
-            depth,
             tx_hashes: tx_hashes.iter().map(|h| grpc_encode::b256(*h)).collect(),
         };
 

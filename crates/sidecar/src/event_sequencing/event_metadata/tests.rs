@@ -109,7 +109,7 @@ fn test_reorg_returns_transaction() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
-        depth: 1,
+        tx_hashes: vec![test_hash(1)],
     };
 
     let prev = reorg.calculate_previous_event().unwrap();
@@ -303,7 +303,7 @@ fn test_recursive_chain_from_reorg_to_new_iteration() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
-        depth: 1,
+        tx_hashes: vec![test_hash(1)],
     };
 
     let chain = collect_event_chain_limited(&reorg, 10);
@@ -438,8 +438,8 @@ fn test_reorg_and_transaction_cancel() {
         block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
-        depth: 1,
         tx_hash: test_hash(1),
+        tx_hashes: vec![test_hash(1)],
     };
 
     assert!(tx.cancel_each_other(&reorg));
@@ -460,8 +460,8 @@ fn test_transaction_and_reorg_different_tx_hash_dont_cancel() {
         block_number: U256::from(100),
         iteration_id: 5,
         index: 2,
-        depth: 1,
         tx_hash: test_hash(2), // Different tx_hash
+        tx_hashes: vec![test_hash(2)],
     };
 
     assert!(!tx.cancel_each_other(&reorg));
@@ -482,8 +482,8 @@ fn test_transaction_and_reorg_different_index_dont_cancel() {
         block_number: U256::from(100),
         iteration_id: 5,
         index: 3, // Different index
-        depth: 1,
         tx_hash: test_hash(1),
+        tx_hashes: vec![test_hash(1)],
     };
 
     assert!(!tx.cancel_each_other(&reorg));
@@ -504,8 +504,8 @@ fn test_transaction_and_reorg_different_block_dont_cancel() {
         block_number: U256::from(101), // Different block
         iteration_id: 5,
         index: 2,
-        depth: 1,
         tx_hash: test_hash(1),
+        tx_hashes: vec![test_hash(1)],
     };
 
     assert!(!tx.cancel_each_other(&reorg));
@@ -526,8 +526,8 @@ fn test_transaction_and_reorg_different_iteration_dont_cancel() {
         block_number: U256::from(100),
         iteration_id: 6, // Different iteration
         index: 2,
-        depth: 1,
         tx_hash: test_hash(1),
+        tx_hashes: vec![test_hash(1)],
     };
 
     assert!(!tx.cancel_each_other(&reorg));
@@ -564,7 +564,7 @@ fn test_identical_reorgs_dont_cancel() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
-        depth: 1,
+        tx_hashes: vec![test_hash(1)],
     };
 
     let reorg2 = EventMetadata::Reorg {
@@ -572,7 +572,7 @@ fn test_identical_reorgs_dont_cancel() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
-        depth: 1,
+        tx_hashes: vec![test_hash(1)],
     };
 
     // Reorgs don't cancel each other, only Reorg and Transaction do
@@ -608,7 +608,7 @@ fn test_commit_head_and_reorg_dont_cancel() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
-        depth: 1,
+        tx_hashes: vec![test_hash(1)],
     };
 
     let commit = EventMetadata::CommitHead {
@@ -648,7 +648,7 @@ fn test_new_iteration_and_reorg_dont_cancel() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
-        depth: 1,
+        tx_hashes: vec![test_hash(1)],
     };
 
     let new_iter = EventMetadata::NewIteration {
@@ -806,7 +806,7 @@ fn test_hash_reorg_same_identity_different_tx_hash() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
-        depth: 1,
+        tx_hashes: vec![test_hash(1)],
     };
 
     let reorg2 = EventMetadata::Reorg {
@@ -814,7 +814,7 @@ fn test_hash_reorg_same_identity_different_tx_hash() {
         iteration_id: 5,
         tx_hash: test_hash(99), // Different tx_hash
         index: 2,
-        depth: 1,
+        tx_hashes: vec![test_hash(99)],
     };
 
     assert_eq!(calculate_hash(&reorg1), calculate_hash(&reorg2));
@@ -827,7 +827,7 @@ fn test_hash_reorg_different_index() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
-        depth: 1,
+        tx_hashes: vec![test_hash(1)],
     };
 
     let reorg2 = EventMetadata::Reorg {
@@ -835,7 +835,7 @@ fn test_hash_reorg_different_index() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 3, // Different index
-        depth: 1,
+        tx_hashes: vec![test_hash(1)],
     };
 
     assert_ne!(calculate_hash(&reorg1), calculate_hash(&reorg2));
@@ -977,7 +977,7 @@ fn test_hash_different_variants_same_fields() {
         iteration_id: 5,
         tx_hash: test_hash(1),
         index: 2,
-        depth: 1,
+        tx_hashes: vec![test_hash(1)],
     };
 
     // Different variants should hash differently even with same fields
@@ -1170,16 +1170,16 @@ fn test_reorg_equality_ignores_tx_hash() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
-        depth: 1,
         tx_hash: TxHash::random(),
+        tx_hashes: vec![TxHash::random()],
     };
 
     let reorg2 = EventMetadata::Reorg {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
-        depth: 1,
         tx_hash: TxHash::random(),
+        tx_hashes: vec![TxHash::random()],
     };
 
     assert_eq!(
@@ -1242,8 +1242,8 @@ fn test_different_variants_not_equal() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
-        depth: 1,
         tx_hash: TxHash::default(),
+        tx_hashes: vec![TxHash::default()],
     };
 
     assert_ne!(
@@ -1268,8 +1268,8 @@ fn test_cancel_each_other_transaction_and_reorg() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
-        depth: 1,
         tx_hash,
+        tx_hashes: vec![tx_hash],
     };
 
     assert!(
@@ -1296,8 +1296,8 @@ fn test_cancel_each_other_different_tx_hash() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
-        depth: 1,
         tx_hash: TxHash::random(),
+        tx_hashes: vec![TxHash::random()],
     };
 
     assert!(
@@ -1442,8 +1442,8 @@ fn test_all_variant_combinations_not_equal() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
-        depth: 1,
         tx_hash: TxHash::default(),
+        tx_hashes: vec![TxHash::default()],
     };
 
     let new_iter = EventMetadata::NewIteration {
@@ -1496,8 +1496,8 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
-        depth: 1,
         tx_hash: base_tx_hash,
+        tx_hashes: vec![base_tx_hash],
     };
 
     assert!(
@@ -1510,8 +1510,8 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(101),
         iteration_id: 1,
         index: 5,
-        depth: 1,
         tx_hash: base_tx_hash,
+        tx_hashes: vec![base_tx_hash],
     };
     assert!(
         !tx_base.cancel_each_other(&reorg_diff_block),
@@ -1527,8 +1527,8 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(100),
         iteration_id: 2,
         index: 5,
-        depth: 1,
         tx_hash: base_tx_hash,
+        tx_hashes: vec![base_tx_hash],
     };
     assert!(
         !tx_base.cancel_each_other(&reorg_diff_iter),
@@ -1544,8 +1544,8 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 6,
-        depth: 1,
         tx_hash: base_tx_hash,
+        tx_hashes: vec![base_tx_hash],
     };
     assert!(
         !tx_base.cancel_each_other(&reorg_diff_index),
@@ -1561,8 +1561,8 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
-        depth: 1,
         tx_hash: TxHash::random(),
+        tx_hashes: vec![TxHash::random()],
     };
     assert!(
         !tx_base.cancel_each_other(&reorg_diff_hash),
@@ -1578,8 +1578,8 @@ fn test_cancel_each_other_all_field_combinations() {
         block_number: U256::from(101),
         iteration_id: 2,
         index: 6,
-        depth: 1,
         tx_hash: TxHash::random(),
+        tx_hashes: vec![TxHash::random()],
     };
     assert!(
         !tx_base.cancel_each_other(&reorg_multiple_diff),
@@ -1611,8 +1611,8 @@ fn test_cancel_each_other_prev_tx_hash_irrelevant() {
         block_number: U256::from(100),
         iteration_id: 1,
         index: 5,
-        depth: 1,
         tx_hash,
+        tx_hashes: vec![tx_hash],
     };
 
     assert!(
@@ -1638,7 +1638,7 @@ fn test_reorg_calculate_previous_event_with_depth() {
         iteration_id: 5,
         tx_hash: test_hash(3),
         index: 3,
-        depth: 3,
+        tx_hashes: vec![test_hash(1), test_hash(2), test_hash(3)],
     };
 
     let prev = reorg.calculate_previous_event().unwrap();
@@ -1672,7 +1672,7 @@ fn test_reorg_calculate_previous_event_depth_reaches_start() {
         iteration_id: 5,
         tx_hash: test_hash(2),
         index: 2,
-        depth: 3,
+        tx_hashes: vec![test_hash(0), test_hash(1), test_hash(2)],
     };
 
     let prev = reorg.calculate_previous_event().unwrap();

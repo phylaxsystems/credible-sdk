@@ -240,7 +240,7 @@ the [Transport Transaction Types Documentation](../README.md#transaction-example
 
 ### `reorg`
 
-Reorg the last sent transaction(s). `tx_hashes` must list the last `depth` hashes in order (oldest -> newest), and the final entry must match `tx_hash`. The `depth` field is intentionally redundant with `tx_hashes.len()` as a verification mechanism to ensure the driver and engine agree on the reorg scope.
+Reorg the last sent transaction(s). `tx_hashes` must list the transaction hashes to remove in order (oldest -> newest), and the final entry must match `tx_hash`. The depth of the reorg is determined by `tx_hashes.len()`.
 
 **Request:**
 
@@ -254,7 +254,6 @@ Reorg the last sent transaction(s). `tx_hashes` must list the last `depth` hashe
     "iteration_id": 1,
     "tx_hash": "0x1234567890abcdef...",
     "index": 0,
-    "depth": 1,
     "tx_hashes": ["0x1234567890abcdef..."]
   }
 }

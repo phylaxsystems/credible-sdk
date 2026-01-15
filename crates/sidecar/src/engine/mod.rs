@@ -1311,7 +1311,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             tx_hash = %reorg.tx_execution_id.tx_hash,
             block_number = %reorg.tx_execution_id.block_number,
             iteration_id = reorg.tx_execution_id.iteration_id,
-            depth = reorg.depth
+            depth = reorg.depth()
         ),
         level = "info"
     )]
@@ -1332,46 +1332,28 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     #[allow(clippy::too_many_lines)]
     fn execute_reorg(&mut self, reorg: &ReorgRequest) -> Result<(), EngineError> {
         let tx_execution_id = reorg.tx_execution_id;
-        let depth = usize::try_from(reorg.depth).map_err(|_| {
-            error!(
-                target = "engine",
-                tx_execution_id = %tx_execution_id.to_json_string(),
-                depth = reorg.depth,
-                "Reorg depth exceeds platform limits"
-            );
-            EngineError::BadReorgHash
-        })?;
+        // Depth is derived from tx_hashes length
+        let depth = reorg.depth();
         trace!(
             target = "engine",
             tx_execution_id = %tx_execution_id.to_json_string(),
+            depth = depth,
             "Checking reorg validity for hash"
         );
 
         // === Validation Phase ===
 
-        // Validation 1: depth must be positive
+        // Validation 1: tx_hashes must be non-empty (depth > 0)
         if depth == 0 {
             error!(
                 target = "engine",
                 tx_execution_id = %tx_execution_id.to_json_string(),
-                "Received reorg with zero depth"
+                "Received reorg with empty tx_hashes"
             );
             return Err(EngineError::ReorgError);
         }
 
-        // Validation 2: tx_hashes length must match depth
-        if reorg.tx_hashes.len() != depth {
-            error!(
-                target = "engine",
-                tx_execution_id = %tx_execution_id.to_json_string(),
-                depth = depth,
-                tx_hashes_len = reorg.tx_hashes.len(),
-                "Reorg depth does not match tx_hashes length"
-            );
-            return Err(EngineError::BadReorgHash);
-        }
-
-        // Validation 3: last hash in tx_hashes must match the reorg's tx_execution_id
+        // Validation 2: last hash in tx_hashes must match the reorg's tx_execution_id
         if reorg.tx_hashes.last() != Some(&tx_execution_id.tx_hash) {
             error!(
                 target = "engine",

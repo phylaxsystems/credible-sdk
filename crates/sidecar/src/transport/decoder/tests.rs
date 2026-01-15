@@ -1312,7 +1312,7 @@ fn test_reorg_valid() {
             );
             assert_eq!(reorg.tx_execution_id.block_number, 100);
             assert_eq!(reorg.tx_execution_id.iteration_id, 1);
-            assert_eq!(reorg.depth, 1);
+            assert_eq!(reorg.depth(), 1);
             assert_eq!(reorg.tx_hashes.len(), 1);
         }
         _ => panic!("Expected Reorg variant"),

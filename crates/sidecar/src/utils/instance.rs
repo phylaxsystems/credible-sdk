@@ -173,12 +173,11 @@ pub trait TestTransport: Sized {
     /// Send a reorg event to remove the last `depth` transactions.
     ///
     /// `tx_execution_id` identifies the LAST (newest) transaction being reorged.
-    /// `tx_hashes` must contain exactly `depth` hashes in chronological order (oldest first),
-    /// with `tx_hashes.last() == tx_execution_id.tx_hash`.
+    /// `tx_hashes` must be non-empty and contain hashes in chronological order (oldest first),
+    /// with `tx_hashes.last() == tx_execution_id.tx_hash`. The depth is derived from `tx_hashes.len()`.
     async fn reorg_depth(
         &mut self,
         tx_execution_id: TxExecutionId,
-        depth: u64,
         tx_hashes: Vec<TxHash>,
     ) -> Result<(), String>;
 
@@ -1373,29 +1372,30 @@ impl<T: TestTransport> LocalInstance<T> {
     /// If not, the core engine should error out and this function will
     /// return an error.
     pub async fn send_reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
-        self.send_reorg_depth(tx_execution_id, 1, vec![tx_execution_id.tx_hash])
+        self.send_reorg_depth(tx_execution_id, vec![tx_execution_id.tx_hash])
             .await
     }
 
-    /// Sends a reorg event to remove the last `depth` transactions.
+    /// Sends a reorg event to remove transactions.
     ///
     /// `tx_execution_id` identifies the LAST (newest) transaction being reorged.
-    /// `tx_hashes` must contain exactly `depth` hashes in chronological order (oldest first),
-    /// with `tx_hashes.last() == tx_execution_id.tx_hash`.
+    /// `tx_hashes` must be non-empty and contain hashes in chronological order (oldest first),
+    /// with `tx_hashes.last() == tx_execution_id.tx_hash`. The depth is derived from `tx_hashes.len()`.
     ///
     /// All transactions in `tx_hashes` will be verified as removed after the reorg.
     pub async fn send_reorg_depth(
         &mut self,
         tx_execution_id: TxExecutionId,
-        depth: u64,
         tx_hashes: Vec<TxHash>,
     ) -> Result<(), String> {
         // Make sure the tip tx exists
         let _ = self.is_transaction_invalid(&tx_execution_id).await?;
 
+        let depth = tx_hashes.len() as u64;
+
         // Send reorg event
         self.transport
-            .reorg_depth(tx_execution_id, depth, tx_hashes.clone())
+            .reorg_depth(tx_execution_id, tx_hashes.clone())
             .await?;
 
         // Reorg was accepted by the engine. Mirror this in our local nonce tracking

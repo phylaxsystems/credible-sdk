@@ -755,19 +755,15 @@ impl GrpcService {
                 })?;
                 let tx_execution_id = decode_tx_execution_id(&pb_id)
                     .map_err(|e| Status::invalid_argument(e.to_string()))?;
-                let depth = if reorg.depth == 0 { 1 } else { reorg.depth };
                 let mut tx_hashes = Vec::with_capacity(reorg.tx_hashes.len());
                 for raw_hash in &reorg.tx_hashes {
                     let parsed = decode_b256(raw_hash)
                         .map_err(|e| Status::invalid_argument(e.to_string()))?;
                     tx_hashes.push(parsed);
                 }
-                let depth_len = usize::try_from(depth)
-                    .map_err(|_| Status::invalid_argument("depth exceeds platform limits"))?;
-                if tx_hashes.len() != depth_len {
-                    return Err(Status::invalid_argument(
-                        "tx_hashes length must match depth",
-                    ));
+                // tx_hashes must be non-empty (depth is derived from length)
+                if tx_hashes.is_empty() {
+                    return Err(Status::invalid_argument("tx_hashes must not be empty"));
                 }
                 if tx_hashes.last() != Some(&tx_execution_id.tx_hash) {
                     return Err(Status::invalid_argument(
@@ -777,7 +773,6 @@ impl GrpcService {
                 let event = TxQueueContents::Reorg(
                     ReorgRequest {
                         tx_execution_id,
-                        depth,
                         tx_hashes,
                     },
                     tracing::Span::current(),

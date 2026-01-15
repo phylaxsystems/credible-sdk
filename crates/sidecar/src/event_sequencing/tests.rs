@@ -242,7 +242,6 @@ fn create_reorg_with_hashes(
     TxQueueContents::Reorg(
         ReorgRequest {
             tx_execution_id,
-            depth: tx_hashes.len() as u64,
             tx_hashes,
         },
         tracing::Span::none(),

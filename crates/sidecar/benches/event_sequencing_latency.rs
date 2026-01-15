@@ -90,7 +90,6 @@ fn create_reorg(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -> TxQu
     TxQueueContents::Reorg(
         ReorgRequest {
             tx_execution_id,
-            depth: 1,
             tx_hashes: vec![tx_hash],
         },
         tracing::Span::none(),

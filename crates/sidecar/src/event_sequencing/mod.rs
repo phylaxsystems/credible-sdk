@@ -356,7 +356,7 @@ impl EventSequencing {
         // being cancelled.
         if event_metadata.is_reorg() {
             let reorg_depth = match &event_metadata {
-                EventMetadata::Reorg { depth, .. } => *depth,
+                EventMetadata::Reorg { tx_hashes, .. } => tx_hashes.len() as u64,
                 _ => 0,
             };
 
@@ -576,9 +576,9 @@ impl EventSequencing {
         // Get context and extract what we need before sending
         let context = self.get_context_mut(block_number, "send_event_recursive")?;
 
-        let (reorg_depth, reorg_tx_hashes) = match (&event, event_metadata) {
-            (TxQueueContents::Reorg(reorg, _), EventMetadata::Reorg { depth, .. }) => {
-                (*depth, Some(reorg.tx_hashes.as_slice()))
+        let (reorg_depth, reorg_tx_hashes) = match &event {
+            TxQueueContents::Reorg(reorg, _) => {
+                (reorg.depth() as u64, Some(reorg.tx_hashes.as_slice()))
             }
             _ => (0, None),
         };
@@ -586,9 +586,7 @@ impl EventSequencing {
         // Reorg validation: ensures the reorg request is valid before forwarding to engine.
         // This is defense-in-depth - the engine also validates, but catching issues here
         // prevents unnecessary work and provides clearer error attribution.
-        let should_send = if !event_metadata.is_reorg() {
-            true
-        } else {
+        let should_send = if event_metadata.is_reorg() {
             let Some(reorg_tx_hashes) = reorg_tx_hashes else {
                 error!(target = "event_sequencing", "Reorg event metadata mismatch");
                 return Ok(false);
@@ -602,6 +600,8 @@ impl EventSequencing {
                 event_metadata,
                 &mut cancelled_events,
             )
+        } else {
+            true
         };
 
         // Send event

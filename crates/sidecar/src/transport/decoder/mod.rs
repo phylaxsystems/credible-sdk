@@ -59,14 +59,9 @@ struct ReorgParams {
     tx_hash: String,
     #[serde(default)]
     index: u64,
-    #[serde(default = "default_reorg_depth")]
-    depth: u64,
-    #[serde(default)]
+    /// Transaction hashes to reorg. Must be non-empty and sequential with
+    /// the last entry matching tx_hash.
     tx_hashes: Vec<TxHash>,
-}
-
-const fn default_reorg_depth() -> u64 {
-    1
 }
 
 /// Parses and validates reorg request parameters, returning a TxExecutionId.
@@ -77,22 +72,14 @@ fn parse_and_validate_reorg_params(
     let tx_hash = normalize_tx_hash(&params.tx_hash)
         .map_err(|_| HttpDecoderError::InvalidHash(params.tx_hash.clone()))?;
 
-    if params.depth == 0 {
+    // tx_hashes must be non-empty (depth is derived from its length)
+    if params.tx_hashes.is_empty() {
         return Err(HttpDecoderError::ReorgValidation(
-            "depth must be greater than 0".to_string(),
+            "tx_hashes must not be empty".to_string(),
         ));
     }
 
-    let depth_len = usize::try_from(params.depth).map_err(|_| {
-        HttpDecoderError::ReorgValidation("depth exceeds platform limits".to_string())
-    })?;
-
-    if params.tx_hashes.len() != depth_len {
-        return Err(HttpDecoderError::ReorgValidation(
-            "tx_hashes length must match depth".to_string(),
-        ));
-    }
-
+    // Last entry in tx_hashes must match the tx_hash parameter
     if params.tx_hashes.last() != Some(&tx_hash) {
         return Err(HttpDecoderError::ReorgValidation(
             "tx_hashes last entry must match tx_hash".to_string(),
@@ -247,7 +234,6 @@ impl Decoder for HttpTransactionDecoder {
 
                 let reorg = ReorgRequest {
                     tx_execution_id,
-                    depth: reorg_params.depth,
                     tx_hashes: reorg_params.tx_hashes,
                 };
 
