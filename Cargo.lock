@@ -11094,7 +11094,6 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-types-trace",
  "anyhow",
- "arrayvec",
  "assertion-da-client 0.10.0",
  "assertion-executor 0.10.0",
  "axum",

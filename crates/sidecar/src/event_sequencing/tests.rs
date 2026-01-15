@@ -5,6 +5,7 @@ use crate::{
         CommitHead,
         NewIteration,
         QueueTransaction,
+        ReorgRequest,
         TransactionQueueReceiver,
         TransactionQueueSender,
         TxQueueContents,
@@ -105,7 +106,13 @@ fn build_dependency_graph_from_events(
                 TxQueueContents::Tx(tx, _) => {
                     (1, tx.tx_execution_id.iteration_id, tx.tx_execution_id.index)
                 }
-                TxQueueContents::Reorg(id, _) => (1, id.iteration_id, id.index),
+                TxQueueContents::Reorg(reorg, _) => {
+                    (
+                        1,
+                        reorg.tx_execution_id.iteration_id,
+                        reorg.tx_execution_id.index,
+                    )
+                }
                 TxQueueContents::CommitHead(ch, _) => (2, ch.selected_iteration_id, 0u64),
             }
         });
@@ -142,7 +149,13 @@ fn build_dependency_graph_from_events(
                     TxQueueContents::Tx(tx, _) => {
                         (1, tx.tx_execution_id.iteration_id, tx.tx_execution_id.index)
                     }
-                    TxQueueContents::Reorg(id, _) => (1, id.iteration_id, id.index),
+                    TxQueueContents::Reorg(reorg, _) => {
+                        (
+                            1,
+                            reorg.tx_execution_id.iteration_id,
+                            reorg.tx_execution_id.index,
+                        )
+                    }
                     TxQueueContents::CommitHead(ch, _) => (2, ch.selected_iteration_id, 0u64),
                 }
             });
@@ -210,7 +223,15 @@ fn create_transaction(
     )
 }
 
-fn create_reorg(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -> TxQueueContents {
+fn create_reorg_with_hashes(
+    block: u64,
+    iteration: u64,
+    index: u64,
+    tx_hashes: Vec<TxHash>,
+) -> TxQueueContents {
+    let tx_hash = *tx_hashes
+        .last()
+        .expect("reorg request should include at least one tx hash");
     let tx_execution_id = TxExecutionId {
         block_number: U256::from(block),
         iteration_id: iteration,
@@ -218,7 +239,17 @@ fn create_reorg(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -> TxQu
         index,
     };
 
-    TxQueueContents::Reorg(tx_execution_id, tracing::Span::none())
+    TxQueueContents::Reorg(
+        ReorgRequest {
+            tx_execution_id,
+            tx_hashes,
+        },
+        tracing::Span::none(),
+    )
+}
+
+fn create_reorg(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -> TxQueueContents {
+    create_reorg_with_hashes(block, iteration, index, vec![tx_hash])
 }
 
 fn create_commit_head(
@@ -527,6 +558,66 @@ fn test_send_event_recursive_with_reorg() {
     let ctx = sequencing.context.get(&U256::from(100)).unwrap();
     let sent = ctx.sent_events.get(&1).unwrap();
     assert_eq!(sent.len(), 0); // Org event should be removed from sent_events
+}
+
+#[test]
+fn test_send_event_recursive_reorg_depth_matches_tail() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    let tx_hashes = [TxHash::random(), TxHash::random(), TxHash::random()];
+    let tx0 = create_transaction(100, 1, 0, tx_hashes[0], None);
+    let tx1 = create_transaction(100, 1, 1, tx_hashes[1], None);
+    let tx2 = create_transaction(100, 1, 2, tx_hashes[2], None);
+
+    let ctx = sequencing.context.entry(U256::from(100)).or_default();
+    let sent = ctx.sent_events.entry(1).or_default();
+    sent.push_back(EventMetadata::from(&tx0));
+    sent.push_back(EventMetadata::from(&tx1));
+    sent.push_back(EventMetadata::from(&tx2));
+
+    let reorg_event = create_reorg_with_hashes(100, 1, 2, vec![tx_hashes[1], tx_hashes[2]]);
+    let reorg_metadata = EventMetadata::from(&reorg_event);
+
+    sequencing
+        .send_event_recursive(reorg_event, &reorg_metadata)
+        .unwrap();
+
+    assert_eq!(engine_recv.len(), 1);
+    let ctx = sequencing.context.get(&U256::from(100)).unwrap();
+    let sent = ctx.sent_events.get(&1).unwrap();
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(
+        sent.back(),
+        Some(EventMetadata::Transaction { index: 0, .. })
+    ));
+}
+
+#[test]
+fn test_send_event_recursive_reorg_depth_hashes_mismatch() {
+    let (mut sequencing, engine_recv) = create_test_sequencing();
+
+    let tx_hashes = [TxHash::random(), TxHash::random(), TxHash::random()];
+    let tx0 = create_transaction(100, 1, 0, tx_hashes[0], None);
+    let tx1 = create_transaction(100, 1, 1, tx_hashes[1], None);
+    let tx2 = create_transaction(100, 1, 2, tx_hashes[2], None);
+
+    let ctx = sequencing.context.entry(U256::from(100)).or_default();
+    let sent = ctx.sent_events.entry(1).or_default();
+    sent.push_back(EventMetadata::from(&tx0));
+    sent.push_back(EventMetadata::from(&tx1));
+    sent.push_back(EventMetadata::from(&tx2));
+
+    let reorg_event = create_reorg_with_hashes(100, 1, 2, vec![TxHash::random(), tx_hashes[2]]);
+    let reorg_metadata = EventMetadata::from(&reorg_event);
+
+    sequencing
+        .send_event_recursive(reorg_event, &reorg_metadata)
+        .unwrap();
+
+    assert_eq!(engine_recv.len(), 0);
+    let ctx = sequencing.context.get(&U256::from(100)).unwrap();
+    let sent = ctx.sent_events.get(&1).unwrap();
+    assert_eq!(sent.len(), 3);
 }
 
 #[test]

@@ -1286,7 +1286,11 @@ fn test_reorg_valid() {
             "block_number": 100u64,
             "iteration_id": 1u64,
             "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-            "index": 0
+            "index": 0,
+            "depth": 1,
+            "tx_hashes": [
+                "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            ]
         })),
         id: Some(json!(1)),
     };
@@ -1298,16 +1302,18 @@ fn test_reorg_valid() {
     assert_eq!(contents.len(), 1);
 
     match &contents[0] {
-        TxQueueContents::Reorg(tx_execution_id, _) => {
+        TxQueueContents::Reorg(reorg, _) => {
             assert_eq!(
-                tx_execution_id.tx_hash,
+                reorg.tx_execution_id.tx_hash,
                 B256::from_str(
                     "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
                 )
                 .unwrap()
             );
-            assert_eq!(tx_execution_id.block_number, 100);
-            assert_eq!(tx_execution_id.iteration_id, 1);
+            assert_eq!(reorg.tx_execution_id.block_number, 100);
+            assert_eq!(reorg.tx_execution_id.iteration_id, 1);
+            assert_eq!(reorg.depth(), 1);
+            assert_eq!(reorg.tx_hashes.len(), 1);
         }
         _ => panic!("Expected Reorg variant"),
     }
@@ -1342,7 +1348,9 @@ fn test_reorg_hash_format_variations() {
                 "block_number": 100u64,
                 "iteration_id": 1u64,
                 "tx_hash": hash,
-                "index": 0
+                "index": 0,
+                "depth": 1,
+                "tx_hashes": [hash]
             })),
             id: Some(json!(1)),
         };
@@ -1374,7 +1382,11 @@ fn test_reorg_missing_fields() {
             json!({
                 "block_number": 100u64,
                 "iteration_id": 1u64,
-                "index": 0
+                "index": 0,
+                "depth": 1,
+                "tx_hashes": [
+                    "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                ]
             }),
         ),
         (
@@ -1382,7 +1394,11 @@ fn test_reorg_missing_fields() {
             json!({
                 "iteration_id": 1u64,
                 "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "index": 0
+                "index": 0,
+                "depth": 1,
+                "tx_hashes": [
+                    "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                ]
             }),
         ),
         (
@@ -1390,7 +1406,21 @@ fn test_reorg_missing_fields() {
             json!({
                 "block_number": 100u64,
                 "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "index": 0
+                "index": 0,
+                "depth": 1,
+                "tx_hashes": [
+                    "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                ]
+            }),
+        ),
+        (
+            "missing_tx_hashes",
+            json!({
+                "block_number": 100u64,
+                "iteration_id": 1u64,
+                "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+                "index": 0,
+                "depth": 1
             }),
         ),
     ];
@@ -1428,7 +1458,9 @@ fn test_reorg_invalid_hash_formats() {
                 "block_number": 100u64,
                 "iteration_id": 1u64,
                 "tx_hash": hash,
-                "index": 0
+                "index": 0,
+                "depth": 1,
+                "tx_hashes": [hash]
             })),
             id: Some(json!(1)),
         };
@@ -1458,7 +1490,11 @@ fn test_reorg_invalid_hash_types() {
                 "block_number": 100u64,
                 "iteration_id": 1u64,
                 "tx_hash": hash_value,
-                "index": 0
+                "index": 0,
+                "depth": 1,
+                "tx_hashes": [
+                    "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                ]
             })),
             id: Some(json!(1)),
         };
@@ -1488,7 +1524,11 @@ fn test_reorg_with_various_block_numbers() {
                 "block_number": block_number,
                 "iteration_id": 1u64,
                 "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "index": 0
+                "index": 0,
+                "depth": 1,
+                "tx_hashes": [
+                    "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                ]
             })),
             id: Some(json!(1)),
         };

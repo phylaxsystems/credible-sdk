@@ -13,6 +13,7 @@ use crate::{
         CommitHead,
         NewIteration,
         QueueTransaction,
+        ReorgRequest,
         TxQueueContents,
     },
     execution_ids::TxExecutionId,
@@ -46,6 +47,62 @@ pub trait Decoder {
     fn to_tx_queue_contents(
         raw_event: &Self::RawEvent,
     ) -> Result<Vec<TxQueueContents>, Self::Error>;
+}
+
+/// Parameters for a reorg request, supporting direct deserialization.
+/// Note: We parse fields manually instead of using #[serde(flatten)] because
+/// TxExecutionId has a custom Deserialize impl that doesn't work with flatten.
+#[derive(Debug, Deserialize)]
+struct ReorgParams {
+    block_number: U256,
+    iteration_id: u64,
+    tx_hash: String,
+    #[serde(default)]
+    index: u64,
+    /// Transaction hashes to reorg. Must be non-empty and sequential with
+    /// the last entry matching tx_hash.
+    tx_hashes: Vec<TxHash>,
+}
+
+/// Parses and validates reorg request parameters, returning a TxExecutionId.
+fn parse_and_validate_reorg_params(
+    params: &ReorgParams,
+) -> Result<TxExecutionId, HttpDecoderError> {
+    // Parse the tx_hash string
+    let tx_hash = normalize_tx_hash(&params.tx_hash)
+        .map_err(|_| HttpDecoderError::InvalidHash(params.tx_hash.clone()))?;
+
+    // tx_hashes must be non-empty (depth is derived from its length)
+    if params.tx_hashes.is_empty() {
+        return Err(HttpDecoderError::ReorgValidation(
+            "tx_hashes must not be empty".to_string(),
+        ));
+    }
+
+    // Last entry in tx_hashes must match the tx_hash parameter
+    if params.tx_hashes.last() != Some(&tx_hash) {
+        return Err(HttpDecoderError::ReorgValidation(
+            "tx_hashes last entry must match tx_hash".to_string(),
+        ));
+    }
+
+    Ok(TxExecutionId::new(
+        params.block_number,
+        params.iteration_id,
+        tx_hash,
+        params.index,
+    ))
+}
+
+/// Normalizes a transaction hash string, adding 0x prefix if missing.
+fn normalize_tx_hash(value: &str) -> Result<TxHash, alloy::primitives::hex::FromHexError> {
+    let trimmed = value.trim();
+    let normalized = if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+        trimmed.to_owned()
+    } else {
+        format!("0x{trimmed}")
+    };
+    TxHash::from_str(&normalized)
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -170,8 +227,15 @@ impl Decoder for HttpTransactionDecoder {
             METHOD_SEND_EVENTS => Self::to_events(req),
             METHOD_REORG => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
-                let reorg = serde_json::from_value::<TxExecutionId>(params.clone())
+                let reorg_params: ReorgParams = serde_json::from_value(params.clone())
                     .map_err(|e| HttpDecoderError::ReorgValidation(e.to_string()))?;
+
+                let tx_execution_id = parse_and_validate_reorg_params(&reorg_params)?;
+
+                let reorg = ReorgRequest {
+                    tx_execution_id,
+                    tx_hashes: reorg_params.tx_hashes,
+                };
 
                 let current_span = tracing::Span::current();
                 Ok(vec![TxQueueContents::Reorg(reorg, current_span.clone())])

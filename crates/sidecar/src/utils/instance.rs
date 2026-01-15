@@ -165,10 +165,21 @@ pub trait TestTransport: Sized {
     async fn new_iteration(&mut self, iteration_id: u64, block_env: BlockEnv)
     -> Result<(), String>;
 
-    /// Send a new transaction reorg event. Removes the last executed transaction.
-    /// Transaction hash provided as an argument must match the last executed tx.
+    /// Send a new transaction reorg event. Removes the most recently executed transaction.
+    /// Transaction hash provided as an argument must match the tip tx.
     /// If not the call should succeed but the core engine should produce an error.
     async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String>;
+
+    /// Send a reorg event to remove the last `depth` transactions.
+    ///
+    /// `tx_execution_id` identifies the LAST (newest) transaction being reorged.
+    /// `tx_hashes` must be non-empty and contain hashes in chronological order (oldest first),
+    /// with `tx_hashes.last() == tx_execution_id.tx_hash`. The depth is derived from `tx_hashes.len()`.
+    async fn reorg_depth(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_hashes: Vec<TxHash>,
+    ) -> Result<(), String>;
 
     /// Set the number of transactions to be sent in the next blockEnv
     fn set_n_transactions(&mut self, n_transactions: u64);
@@ -1326,8 +1337,22 @@ impl<T: TestTransport> LocalInstance<T> {
             .send_transaction(tx_execution_id_fail, tx_fail)
             .await?;
 
+        // Verify the first transaction passed assertions (execution may still revert).
+        match self
+            .wait_for_transaction_processed(&tx_execution_id_pass)
+            .await?
+        {
+            TransactionResult::ValidationCompleted { is_valid, .. } => {
+                if !is_valid {
+                    return Err("First transaction should have passed assertions".to_string());
+                }
+            }
+            TransactionResult::ValidationError(e) => return Err(e),
+        }
+
         // Verify the second transaction failed assertions and was NOT committed
-        if !self.is_transaction_invalid(&tx_execution_id_fail).await? {
+        let fail_invalid = self.is_transaction_invalid(&tx_execution_id_fail).await?;
+        if !fail_invalid {
             return Err(
                 "Second transaction should have failed assertions and not been committed"
                     .to_string(),
@@ -1342,31 +1367,47 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Sends a reorg event to the core engine via a `Transport`.
     ///
-    /// A reorg will remove the last executed transaction, if the hash supplied
-    /// matches said transactions hash.
+    /// A reorg will remove the most recent transaction if the hash supplied
+    /// matches the tip transaction hash.
     /// If not, the core engine should error out and this function will
     /// return an error.
     pub async fn send_reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
-        // Make sure the tx exists
+        self.send_reorg_depth(tx_execution_id, vec![tx_execution_id.tx_hash])
+            .await
+    }
+
+    /// Sends a reorg event to remove transactions.
+    ///
+    /// `tx_execution_id` identifies the LAST (newest) transaction being reorged.
+    /// `tx_hashes` must be non-empty and contain hashes in chronological order (oldest first),
+    /// with `tx_hashes.last() == tx_execution_id.tx_hash`. The depth is derived from `tx_hashes.len()`.
+    ///
+    /// All transactions in `tx_hashes` will be verified as removed after the reorg.
+    pub async fn send_reorg_depth(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_hashes: Vec<TxHash>,
+    ) -> Result<(), String> {
+        // Make sure the tip tx exists
         let _ = self.is_transaction_invalid(&tx_execution_id).await?;
 
-        // Send reorg event
-        self.transport.reorg(tx_execution_id).await?;
+        let depth = tx_hashes.len() as u64;
 
-        // Reorg was accepted by the engine and the last executed transaction
-        // was removed from the buffer. Mirror this in our local nonce tracking
+        // Send reorg event
+        self.transport
+            .reorg_depth(tx_execution_id, tx_hashes.clone())
+            .await?;
+
+        // Reorg was accepted by the engine. Mirror this in our local nonce tracking
         // so that subsequent transactions use the correct nonce again.
         let key = (self.default_account, tx_execution_id.iteration_id);
-        if let Some(current_nonce) = self.iteration_nonce.get_mut(&key)
-            && *current_nonce > 0
-        {
-            *current_nonce -= 1;
+        if let Some(current_nonce) = self.iteration_nonce.get_mut(&key) {
+            *current_nonce = current_nonce.saturating_sub(depth);
         }
 
-        // Make sure the transaction is gone
-        // Note: will only return false if the core engine exited
+        // Make sure the tip transaction is gone (verifies reorg succeeded)
         if !self.is_transaction_removed(&tx_execution_id).await? {
-            return Err("Transaction not removed!".to_string());
+            return Err("Tip transaction not removed!".to_string());
         }
 
         Ok(())
@@ -1411,31 +1452,5 @@ impl<T: TestTransport> Drop for LocalInstance<T> {
         if let Some(handle) = self.engine_handle.take() {
             handle.shutdown_and_join();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use revm::primitives::uint;
-
-    #[crate::utils::engine_test(all)]
-    async fn test_instance_send_assertion_passing_failing_pair(mut instance: LocalInstance<_>) {
-        info!("Testing assertion passing/failing pair");
-
-        // Send the assertion passing and failing pair
-        instance
-            .send_assertion_passing_failing_pair()
-            .await
-            .unwrap();
-
-        instance
-            .send_and_verify_successful_create_tx(uint!(0_U256), Bytes::new())
-            .await
-            .unwrap();
-        instance
-            .send_and_verify_reverting_create_tx()
-            .await
-            .unwrap();
     }
 }

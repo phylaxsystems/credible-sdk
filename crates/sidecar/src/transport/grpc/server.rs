@@ -39,6 +39,7 @@ use crate::{
             CommitHead,
             NewIteration,
             QueueTransaction,
+            ReorgRequest,
             TransactionQueueSender,
             TxQueueContents,
         },
@@ -754,8 +755,28 @@ impl GrpcService {
                 })?;
                 let tx_execution_id = decode_tx_execution_id(&pb_id)
                     .map_err(|e| Status::invalid_argument(e.to_string()))?;
-
-                let event = TxQueueContents::Reorg(tx_execution_id, tracing::Span::current());
+                let mut tx_hashes = Vec::with_capacity(reorg.tx_hashes.len());
+                for raw_hash in &reorg.tx_hashes {
+                    let parsed = decode_b256(raw_hash)
+                        .map_err(|e| Status::invalid_argument(e.to_string()))?;
+                    tx_hashes.push(parsed);
+                }
+                // tx_hashes must be non-empty (depth is derived from length)
+                if tx_hashes.is_empty() {
+                    return Err(Status::invalid_argument("tx_hashes must not be empty"));
+                }
+                if tx_hashes.last() != Some(&tx_execution_id.tx_hash) {
+                    return Err(Status::invalid_argument(
+                        "tx_hashes last entry must match tx_hash",
+                    ));
+                }
+                let event = TxQueueContents::Reorg(
+                    ReorgRequest {
+                        tx_execution_id,
+                        tx_hashes,
+                    },
+                    tracing::Span::current(),
+                );
                 self.transactions_results.add_accepted_tx(&event);
                 self.tx_sender
                     .send(event)

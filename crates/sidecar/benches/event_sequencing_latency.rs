@@ -20,6 +20,7 @@ use sidecar::{
         CommitHead,
         NewIteration,
         QueueTransaction,
+        ReorgRequest,
         TransactionQueueReceiver,
         TransactionQueueSender,
         TxQueueContents,
@@ -86,7 +87,13 @@ fn create_transaction(
 
 fn create_reorg(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -> TxQueueContents {
     let tx_execution_id = TxExecutionId::new(U256::from(block), iteration, tx_hash, index);
-    TxQueueContents::Reorg(tx_execution_id, tracing::Span::none())
+    TxQueueContents::Reorg(
+        ReorgRequest {
+            tx_execution_id,
+            tx_hashes: vec![tx_hash],
+        },
+        tracing::Span::none(),
+    )
 }
 
 fn create_commit_head(

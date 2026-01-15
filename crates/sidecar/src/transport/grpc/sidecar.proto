@@ -97,6 +97,7 @@ message NewIteration {
 // Reorg event - signals a chain reorganization.
 message ReorgEvent {
   TxExecutionId tx_execution_id = 1;                      // TX execution ID to reorg from
+  repeated bytes tx_hashes = 2;                          // Transaction hashes to reorg (oldest -> newest)
 }
 
 // Unified event wrapper for streaming.

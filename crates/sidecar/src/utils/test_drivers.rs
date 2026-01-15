@@ -15,6 +15,7 @@ use crate::{
         CommitHead,
         NewIteration,
         QueueTransaction,
+        ReorgRequest,
         TransactionQueueReceiver,
         TransactionQueueSender,
         TxQueueContents,
@@ -132,7 +133,8 @@ fn populate_test_database(underlying_db: &mut CacheDB<Arc<Sources>>) -> Address 
     underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
 
     // Create default account that will be used by this instance
-    let default_account = Address::from([0x01; 20]);
+    // NOTE: Must not collide with COUNTER_ADDRESS.
+    let default_account = Address::from([0x03; 20]);
     let default_account_info = AccountInfo {
         balance: U256::MAX,
         ..Default::default()
@@ -467,26 +469,46 @@ impl TestTransport for LocalInstanceMockDriver {
     }
 
     async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
-        info!(target: "test_transport", "LocalInstance sending reorg for: {:?}", tx_execution_id);
-        let tracked_hash: TxHash = tx_execution_id.tx_hash;
+        self.reorg_depth(tx_execution_id, vec![tx_execution_id.tx_hash])
+            .await
+    }
+
+    async fn reorg_depth(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_hashes: Vec<TxHash>,
+    ) -> Result<(), String> {
+        info!(
+            target: "test_transport",
+            "LocalInstance sending reorg for: {:?} with depth {}",
+            tx_execution_id, tx_hashes.len()
+        );
         let iteration_id = tx_execution_id.iteration_id;
 
-        if let Some(hashes) = self.block_tx_hashes_by_iteration.get_mut(&iteration_id)
-            && let Some(last_hash) = hashes.last()
-        {
-            if last_hash == &tracked_hash {
-                hashes.pop();
-            } else {
-                debug!(
-                    target: "test_transport",
-                    "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
-                    tracked_hash, last_hash, iteration_id
-                );
+        // Remove the reorged transactions from our local tracking
+        if let Some(hashes) = self.block_tx_hashes_by_iteration.get_mut(&iteration_id) {
+            for tx_hash in tx_hashes.iter().rev() {
+                if hashes.last() == Some(tx_hash) {
+                    hashes.pop();
+                } else {
+                    debug!(
+                        target: "test_transport",
+                        "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
+                        tx_hash, hashes.last(), iteration_id
+                    );
+                    break;
+                }
             }
         }
 
         self.mock_sender
-            .send(TxQueueContents::Reorg(tx_execution_id, Span::current()))
+            .send(TxQueueContents::Reorg(
+                ReorgRequest {
+                    tx_execution_id,
+                    tx_hashes,
+                },
+                Span::current(),
+            ))
             .map_err(|e| format!("Failed to send reorg: {e}"))
     }
 
@@ -821,30 +843,52 @@ impl TestTransport for LocalInstanceHttpDriver {
     }
 
     async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
-        info!(target: "LocalInstanceHttpDriver", "LocalInstance sending reorg for: {:?}", tx_execution_id);
+        self.reorg_depth(tx_execution_id, vec![tx_execution_id.tx_hash])
+            .await
+    }
 
-        let tracked_hash: TxHash = tx_execution_id.tx_hash;
+    async fn reorg_depth(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_hashes: Vec<TxHash>,
+    ) -> Result<(), String> {
+        info!(
+            target: "LocalInstanceHttpDriver",
+            "LocalInstance sending reorg for: {:?} with depth {}",
+            tx_execution_id, tx_hashes.len()
+        );
+
         let iteration_id = tx_execution_id.iteration_id;
 
-        if let Some(hashes) = self.block_tx_hashes_by_iteration.get_mut(&iteration_id)
-            && let Some(last_hash) = hashes.last()
-        {
-            if last_hash == &tracked_hash {
-                hashes.pop();
-            } else {
-                debug!(
-                    target: "LocalInstanceHttpDriver",
-                    "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
-                    tracked_hash, last_hash, iteration_id
-                );
+        // Remove the reorged transactions from our local tracking
+        if let Some(hashes) = self.block_tx_hashes_by_iteration.get_mut(&iteration_id) {
+            for tx_hash in tx_hashes.iter().rev() {
+                if hashes.last() == Some(tx_hash) {
+                    hashes.pop();
+                } else {
+                    debug!(
+                        target: "LocalInstanceHttpDriver",
+                        "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
+                        tx_hash, hashes.last(), iteration_id
+                    );
+                    break;
+                }
             }
         }
+
+        let tx_hashes_hex: Vec<String> = tx_hashes.iter().map(|h| format!("{h:#x}")).collect();
 
         let request = json!({
             "id": 1,
             "jsonrpc": "2.0",
             "method": "reorg",
-            "params": serde_json::to_value(tx_execution_id).unwrap(),
+            "params": {
+                "block_number": tx_execution_id.block_number,
+                "iteration_id": tx_execution_id.iteration_id,
+                "tx_hash": tx_execution_id.tx_hash_hex(),
+                "index": tx_execution_id.index,
+                "tx_hashes": tx_hashes_hex,
+            },
         });
 
         self.submit_json_request(&request).await
@@ -1258,27 +1302,42 @@ impl TestTransport for LocalInstanceGrpcDriver {
     }
 
     async fn reorg(&mut self, tx_execution_id: TxExecutionId) -> Result<(), String> {
-        info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending reorg for: {:?}", tx_execution_id.tx_hash);
+        self.reorg_depth(tx_execution_id, vec![tx_execution_id.tx_hash])
+            .await
+    }
 
-        let tracked_hash: TxHash = tx_execution_id.tx_hash;
+    async fn reorg_depth(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_hashes: Vec<TxHash>,
+    ) -> Result<(), String> {
+        info!(
+            target: "LocalInstanceGrpcDriver",
+            "LocalInstance sending reorg for: {:?} with depth {}",
+            tx_execution_id.tx_hash, tx_hashes.len()
+        );
+
         let iteration_id = tx_execution_id.iteration_id;
 
-        if let Some(hashes) = self.block_tx_hashes_by_iteration.get_mut(&iteration_id)
-            && let Some(last_hash) = hashes.last()
-        {
-            if last_hash == &tracked_hash {
-                hashes.pop();
-            } else {
-                debug!(
-                    target: "LocalInstanceGrpcDriver",
-                    "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
-                    tracked_hash, last_hash, iteration_id
-                );
+        // Remove the reorged transactions from our local tracking
+        if let Some(hashes) = self.block_tx_hashes_by_iteration.get_mut(&iteration_id) {
+            for tx_hash in tx_hashes.iter().rev() {
+                if hashes.last() == Some(tx_hash) {
+                    hashes.pop();
+                } else {
+                    debug!(
+                        target: "LocalInstanceGrpcDriver",
+                        "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
+                        tx_hash, hashes.last(), iteration_id
+                    );
+                    break;
+                }
             }
         }
 
         let reorg_event = pb::ReorgEvent {
             tx_execution_id: Some(Self::build_pb_tx_execution_id(&tx_execution_id)),
+            tx_hashes: tx_hashes.iter().map(|h| grpc_encode::b256(*h)).collect(),
         };
 
         let event = Event {

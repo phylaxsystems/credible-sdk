@@ -25,7 +25,7 @@
 //! current `BlockEnv`.
 //!
 //! Reorg events are signals from the driver to the engine that it should discard the last
-//! executed transaction.
+//! executed transaction(s).
 
 use crate::execution_ids::TxExecutionId;
 use alloy::primitives::{
@@ -62,6 +62,37 @@ pub struct QueueTransaction {
     pub prev_tx_hash: Option<TxHash>,
 }
 
+/// Reorg request to remove the specified transactions from an iteration.
+///
+/// The `tx_execution_id` identifies the LAST (newest) transaction being reorged.
+/// The `tx_hashes` list specifies which transactions to remove, in chronological
+/// order (oldest first). The depth is implicitly `tx_hashes.len()`.
+///
+/// For a reorg removing N transactions at index I, transactions from index
+/// `(I - N + 1)` to `I` inclusive are removed.
+///
+/// ## Validation
+/// Both the event sequencing layer and engine validate:
+/// 1. `tx_hashes` is non-empty
+/// 2. `tx_hashes.last() == tx_execution_id.tx_hash`
+/// 3. `tx_hashes` match the tail of executed/sent transactions
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReorgRequest {
+    /// Identifies the last (newest) transaction being reorged.
+    pub tx_execution_id: TxExecutionId,
+    /// Transaction hashes being reorged, in chronological order (oldest first).
+    /// Must be non-empty. The length determines the reorg depth.
+    pub tx_hashes: Vec<TxHash>,
+}
+
+impl ReorgRequest {
+    /// Returns the depth of the reorg (number of transactions to remove).
+    #[inline]
+    pub fn depth(&self) -> usize {
+        self.tx_hashes.len()
+    }
+}
+
 /// Contains the possible types that can be sent in the transaction queue.
 ///
 /// `CommitHead` advances the canonical chain head.
@@ -70,13 +101,14 @@ pub struct QueueTransaction {
 /// `Tx` should be used to append a new transaction to the current block,
 /// along with its transaction execution id for identification and tracing.
 ///
-/// `Reorg` should be used to signal to remove the last executed transaction.
+/// `Reorg` should be used to signal to remove the last executed transaction(s).
 /// To verify the transaction is indeed the correct one, we include the
-/// transaction execution id and should only process it as a valid event if it matches.
+/// transaction execution id plus the last `depth` tx hashes and should only
+/// process it as a valid event if it matches.
 #[derive(Debug, Clone)]
 pub enum TxQueueContents {
     Tx(QueueTransaction, tracing::Span),
-    Reorg(TxExecutionId, tracing::Span),
+    Reorg(ReorgRequest, tracing::Span),
     CommitHead(CommitHead, tracing::Span),
     NewIteration(NewIteration, tracing::Span),
 }
@@ -85,7 +117,7 @@ impl TxQueueContents {
     pub fn block_number(&self) -> U256 {
         match self {
             TxQueueContents::Tx(v, _) => v.tx_execution_id.block_number,
-            TxQueueContents::Reorg(v, _) => v.block_number,
+            TxQueueContents::Reorg(v, _) => v.tx_execution_id.block_number,
             TxQueueContents::CommitHead(v, _) => v.block_number,
             TxQueueContents::NewIteration(v, _) => v.block_env.number,
         }
@@ -94,7 +126,7 @@ impl TxQueueContents {
     pub fn iteration_id(&self) -> u64 {
         match self {
             TxQueueContents::Tx(v, _) => v.tx_execution_id.iteration_id,
-            TxQueueContents::Reorg(v, _) => v.iteration_id,
+            TxQueueContents::Reorg(v, _) => v.tx_execution_id.iteration_id,
             TxQueueContents::CommitHead(v, _) => v.selected_iteration_id,
             TxQueueContents::NewIteration(v, _) => v.iteration_id,
         }
