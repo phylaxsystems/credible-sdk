@@ -49,6 +49,75 @@ pub trait Decoder {
     ) -> Result<Vec<TxQueueContents>, Self::Error>;
 }
 
+/// Parameters for a reorg request, supporting direct deserialization.
+/// Note: We parse fields manually instead of using #[serde(flatten)] because
+/// TxExecutionId has a custom Deserialize impl that doesn't work with flatten.
+#[derive(Debug, Deserialize)]
+struct ReorgParams {
+    block_number: U256,
+    iteration_id: u64,
+    tx_hash: String,
+    #[serde(default)]
+    index: u64,
+    #[serde(default = "default_reorg_depth")]
+    depth: u64,
+    #[serde(default)]
+    tx_hashes: Vec<TxHash>,
+}
+
+const fn default_reorg_depth() -> u64 {
+    1
+}
+
+/// Parses and validates reorg request parameters, returning a TxExecutionId.
+fn parse_and_validate_reorg_params(
+    params: &ReorgParams,
+) -> Result<TxExecutionId, HttpDecoderError> {
+    // Parse the tx_hash string
+    let tx_hash = normalize_tx_hash(&params.tx_hash)
+        .map_err(|_| HttpDecoderError::InvalidHash(params.tx_hash.clone()))?;
+
+    if params.depth == 0 {
+        return Err(HttpDecoderError::ReorgValidation(
+            "depth must be greater than 0".to_string(),
+        ));
+    }
+
+    let depth_len = usize::try_from(params.depth).map_err(|_| {
+        HttpDecoderError::ReorgValidation("depth exceeds platform limits".to_string())
+    })?;
+
+    if params.tx_hashes.len() != depth_len {
+        return Err(HttpDecoderError::ReorgValidation(
+            "tx_hashes length must match depth".to_string(),
+        ));
+    }
+
+    if params.tx_hashes.last() != Some(&tx_hash) {
+        return Err(HttpDecoderError::ReorgValidation(
+            "tx_hashes last entry must match tx_hash".to_string(),
+        ));
+    }
+
+    Ok(TxExecutionId::new(
+        params.block_number,
+        params.iteration_id,
+        tx_hash,
+        params.index,
+    ))
+}
+
+/// Normalizes a transaction hash string, adding 0x prefix if missing.
+fn normalize_tx_hash(value: &str) -> Result<TxHash, alloy::primitives::hex::FromHexError> {
+    let trimmed = value.trim();
+    let normalized = if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
+        trimmed.to_owned()
+    } else {
+        format!("0x{trimmed}")
+    };
+    TxHash::from_str(&normalized)
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HttpTransactionDecoder;
 
@@ -171,38 +240,15 @@ impl Decoder for HttpTransactionDecoder {
             METHOD_SEND_EVENTS => Self::to_events(req),
             METHOD_REORG => {
                 let params = req.params.as_ref().ok_or(HttpDecoderError::MissingParams)?;
-                let mut reorg_value = params.clone();
-                let mut depth = reorg_value
-                    .get("depth")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(1);
-                let tx_hashes = parse_reorg_tx_hashes(&reorg_value)?;
-                if let Some(obj) = reorg_value.as_object_mut() {
-                    obj.remove("depth");
-                    obj.remove("tx_hashes");
-                }
-                let tx_execution_id = serde_json::from_value::<TxExecutionId>(reorg_value)
+                let reorg_params: ReorgParams = serde_json::from_value(params.clone())
                     .map_err(|e| HttpDecoderError::ReorgValidation(e.to_string()))?;
-                if depth == 0 {
-                    depth = 1;
-                }
-                let depth_len = usize::try_from(depth).map_err(|_| {
-                    HttpDecoderError::ReorgValidation("depth exceeds platform limits".to_string())
-                })?;
-                if tx_hashes.len() != depth_len {
-                    return Err(HttpDecoderError::ReorgValidation(
-                        "tx_hashes length must match depth".to_string(),
-                    ));
-                }
-                if tx_hashes.last() != Some(&tx_execution_id.tx_hash) {
-                    return Err(HttpDecoderError::ReorgValidation(
-                        "tx_hashes last entry must match tx_hash".to_string(),
-                    ));
-                }
+
+                let tx_execution_id = parse_and_validate_reorg_params(&reorg_params)?;
+
                 let reorg = ReorgRequest {
                     tx_execution_id,
-                    depth,
-                    tx_hashes,
+                    depth: reorg_params.depth,
+                    tx_hashes: reorg_params.tx_hashes,
                 };
 
                 let current_span = tracing::Span::current();
@@ -296,39 +342,6 @@ fn convert_commit_head_event(
 
 fn convert_new_iteration_event(new_iteration: NewIterationEvent) -> NewIteration {
     NewIteration::new(new_iteration.iteration_id, new_iteration.block_env)
-}
-
-fn parse_reorg_tx_hashes(value: &Value) -> Result<Vec<TxHash>, HttpDecoderError> {
-    let Some(raw) = value.get("tx_hashes") else {
-        return Err(HttpDecoderError::ReorgValidation(
-            "missing tx_hashes".to_string(),
-        ));
-    };
-
-    let Value::Array(values) = raw else {
-        return Err(HttpDecoderError::ReorgValidation(
-            "tx_hashes must be an array".to_string(),
-        ));
-    };
-
-    let mut tx_hashes = Vec::with_capacity(values.len());
-    for item in values {
-        let Value::String(hash) = item else {
-            return Err(HttpDecoderError::ReorgValidation(
-                "tx_hashes must be an array of strings".to_string(),
-            ));
-        };
-        let normalized = if hash.starts_with("0x") || hash.starts_with("0X") {
-            hash.clone()
-        } else {
-            format!("0x{hash}")
-        };
-        let parsed = TxHash::from_str(&normalized)
-            .map_err(|_| HttpDecoderError::ReorgValidation(format!("invalid tx_hash: {hash}")))?;
-        tx_hashes.push(parsed);
-    }
-
-    Ok(tx_hashes)
 }
 
 fn parse_block_env_payload(params: Value) -> Result<BlockEnvPayload, HttpDecoderError> {

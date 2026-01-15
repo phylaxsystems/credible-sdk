@@ -163,7 +163,6 @@ impl<DB> CoreEngine<DB> {
     }
 
     /// Get the transaction count for a specific block iteration.
-    #[cfg(test)]
     pub fn get_n_transactions(&self, block_execution_id: &BlockExecutionId) -> Option<u64> {
         self.current_block_iterations
             .get(block_execution_id)

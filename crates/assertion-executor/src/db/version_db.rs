@@ -52,8 +52,24 @@ impl<Db> VersionDb<Db> {
         self.commit_log.truncate(depth);
     }
 
+    /// Commits state changes or an empty slot for a failed transaction.
+    /// Accepts `Option<EvmState>` - `Some` commits the changes, `None` commits
+    /// an empty slot to track the transaction's position for proper reorg rollback.
+    pub fn commit_opt(&mut self, changes: Option<EvmState>) {
+        match changes {
+            Some(state) => {
+                self.state.commit(state.clone());
+                self.commit_log.push(Some(state));
+            }
+            None => {
+                self.commit_log.push(None);
+            }
+        }
+    }
+
     /// Commits an empty slot for a failed transaction with no state changes.
     /// This allows tracking the transaction's position for proper reorg rollback.
+    /// Equivalent to `commit_opt(None)`.
     pub fn commit_empty(&mut self) {
         self.commit_log.push(None);
     }

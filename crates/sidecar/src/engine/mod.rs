@@ -497,14 +497,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         }
 
         current_block_iteration.executed_txs.push(tx_execution_id);
-        match state {
-            Some(changes) => {
-                current_block_iteration.version_db.commit(changes);
-            }
-            None => {
-                current_block_iteration.version_db.commit_empty();
-            }
-        }
+        current_block_iteration.version_db.commit_opt(state);
         self.transaction_results
             .add_transaction_result(tx_execution_id, result);
         Ok(())
@@ -1404,13 +1397,15 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         // Validation 4 & 5: verify the reorg target matches our state
         if current_block_iteration.has_last_tx(tx_execution_id) {
+            let executed_len = current_block_iteration.executed_txs.len();
+
             // Validation 4: can't reorg more transactions than we've executed
-            if depth > current_block_iteration.executed_txs.len() {
+            if depth > executed_len {
                 error!(
                     target = "engine",
                     tx_execution_id = %tx_execution_id.to_json_string(),
                     depth = depth,
-                    executed = current_block_iteration.executed_txs.len(),
+                    executed = executed_len,
                     "Reorg depth exceeds executed transactions"
                 );
                 return Err(EngineError::BadReorgHash);
@@ -1419,8 +1414,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             // Validation 5: tx_hashes must match the tail of executed transactions
             // This ensures the driver and engine agree on what's being reorged.
             // tx_hashes are in chronological order (oldest first).
-            let start = current_block_iteration.executed_txs.len() - depth;
-            let expected_hashes = current_block_iteration.executed_txs[start..]
+            let start = executed_len.saturating_sub(depth);
+            let expected_hashes = current_block_iteration
+                .executed_txs
+                .get(start..)
+                .ok_or(EngineError::BadReorgHash)?
                 .iter()
                 .map(|id| id.tx_hash);
             if !expected_hashes.eq(reorg.tx_hashes.iter().copied()) {
@@ -1450,7 +1448,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             current_block_iteration
                 .version_db
                 .rollback_to(new_len)
-                .expect("rollback depth validated above");
+                .map_err(|_| EngineError::ReorgError)?;
 
             // Count how many of the removed transactions were valid.
             // Only valid transactions contribute to `n_transactions` (the count used

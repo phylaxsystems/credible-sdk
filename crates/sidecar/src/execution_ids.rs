@@ -28,7 +28,7 @@ use std::{
 /// for a variety of reasons. This struct is used to identify specific
 /// txs for specific blocks and iterations, since multiple hashes can
 /// belong to multiple iterations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct TxExecutionId {
     /// What block number the transaction was meant for.
     pub block_number: U256,

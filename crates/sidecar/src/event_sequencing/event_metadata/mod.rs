@@ -279,7 +279,7 @@ impl EventMetadata {
                         iteration_id: *iteration_id,
                     })
                 } else {
-                    let prev_index = *index - *depth;
+                    let prev_index = index.saturating_sub(*depth);
                     Some(EventMetadata::Transaction {
                         block_number: *block_number,
                         iteration_id: *iteration_id,

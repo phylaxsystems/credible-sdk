@@ -91,6 +91,16 @@ const fn default_reorg_depth() -> u64 {
     1
 }
 
+impl Default for ReorgRequest {
+    fn default() -> Self {
+        Self {
+            tx_execution_id: TxExecutionId::default(),
+            depth: default_reorg_depth(),
+            tx_hashes: Vec::new(),
+        }
+    }
+}
+
 /// Contains the possible types that can be sent in the transaction queue.
 ///
 /// `CommitHead` advances the canonical chain head.

@@ -96,16 +96,13 @@ impl EventSequencing {
             return Some(Vec::new());
         }
 
-        // Collect hashes by iterating backwards (newest first)
-        let mut hashes = Vec::with_capacity(depth);
-        for event in queue.iter().rev() {
-            if let EventMetadata::Transaction { tx_hash, .. } = event {
-                hashes.push(*tx_hash);
-                if hashes.len() == depth {
-                    break;
-                }
-            }
-        }
+        // Collect hashes by iterating backwards (newest first), then reverse
+        let mut hashes: Vec<_> = queue
+            .iter()
+            .rev()
+            .filter_map(EventMetadata::tx_hash)
+            .take(depth)
+            .collect();
 
         if hashes.len() == depth {
             // Reverse to get chronological order (oldest first)
@@ -114,6 +111,91 @@ impl EventSequencing {
         } else {
             None
         }
+    }
+
+    /// Validates a reorg request and applies it by removing events from the queue.
+    ///
+    /// Returns `true` if the reorg is valid and was applied, `false` otherwise.
+    /// On success, cancelled events are pushed to `cancelled_events`.
+    fn validate_and_apply_reorg(
+        queue: &mut VecDeque<EventMetadata>,
+        reorg_depth: u64,
+        reorg_tx_hashes: &[TxHash],
+        event_metadata: &EventMetadata,
+        cancelled_events: &mut Vec<EventMetadata>,
+    ) -> bool {
+        // Validation 1: depth must be positive
+        if reorg_depth == 0 {
+            error!(
+                target = "event_sequencing",
+                "Received reorg event with zero depth"
+            );
+            return false;
+        }
+
+        let Ok(reorg_depth_usize) = usize::try_from(reorg_depth) else {
+            error!(
+                target = "event_sequencing",
+                depth = reorg_depth,
+                "Reorg depth exceeds platform limits"
+            );
+            return false;
+        };
+
+        // Validation 2: tx_hashes length must match depth
+        if reorg_tx_hashes.len() != reorg_depth_usize {
+            error!(
+                target = "event_sequencing",
+                depth = reorg_depth,
+                tx_hashes_len = reorg_tx_hashes.len(),
+                "Received reorg event with mismatched tx_hashes length"
+            );
+            return false;
+        }
+
+        let tx_count = queue.iter().filter(|e| e.is_transaction()).count();
+
+        // Validation 3: must have enough transactions to reorg
+        if tx_count < reorg_depth_usize {
+            error!(
+                target = "event_sequencing",
+                "Received reorg event without enough transactions"
+            );
+            return false;
+        }
+
+        // Validation 4: tx_hashes must match the tail of sent transactions
+        if Self::collect_tail_tx_hashes(queue, reorg_depth).as_deref() != Some(reorg_tx_hashes) {
+            error!(
+                target = "event_sequencing",
+                "Received reorg event with tx_hashes that do not match sent events"
+            );
+            return false;
+        }
+
+        // Validation 5: last sent event must be cancellable by this reorg
+        let Some(last_sent_event) = queue.pop_back() else {
+            error!(
+                target = "event_sequencing",
+                "Received reorg event without previous event"
+            );
+            return false;
+        };
+
+        if !last_sent_event.cancel_each_other(event_metadata) {
+            // Last event doesn't match - restore it and reject reorg
+            queue.push_back(last_sent_event);
+            return false;
+        }
+
+        // All validations passed - remove `depth` events from sent queue
+        cancelled_events.push(last_sent_event);
+        for _ in 1..reorg_depth_usize {
+            if let Some(removed) = queue.pop_back() {
+                cancelled_events.push(removed);
+            }
+        }
+        true
     }
 
     /// Creates a new instance of the struct with the provided `tx_receiver` and `tx_sender`.
@@ -283,24 +365,15 @@ impl EventSequencing {
             // 1. We have at least `reorg_depth` transactions in the sent queue
             // 2. The most recent sent event matches the reorg's target (cancel_each_other)
             let context = self.get_context_mut(block_number, "handle_current_context_event")?;
-            let can_cancel = if let Some(queue) = context.sent_events.get(&event_iteration_id) {
-                let tx_count = queue.iter().filter(|e| e.is_transaction()).count();
-                let tx_count = if let Ok(count) = u64::try_from(tx_count) {
-                    count
-                } else {
-                    error!(
-                        target = "event_sequencing",
-                        "Transaction count exceeds platform limits"
-                    );
-                    0
-                };
-                tx_count >= reorg_depth
-                    && queue
-                        .back()
-                        .is_some_and(|last| last.cancel_each_other(&event_metadata))
-            } else {
-                false
-            };
+            let can_cancel = context
+                .sent_events
+                .get(&event_iteration_id)
+                .is_some_and(|queue| {
+                    let tx_count = u64::try_from(queue.iter().filter(|e| e.is_transaction()).count())
+                        .unwrap_or(0);
+                    tx_count >= reorg_depth
+                        && queue.back().is_some_and(|last| last.cancel_each_other(&event_metadata))
+                });
 
             if can_cancel {
                 // Scenario 1: All transactions to cancel have been sent. Process the reorg
@@ -510,85 +583,22 @@ impl EventSequencing {
         // Reorg validation: ensures the reorg request is valid before forwarding to engine.
         // This is defense-in-depth - the engine also validates, but catching issues here
         // prevents unnecessary work and provides clearer error attribution.
-        let should_send = if event_metadata.is_reorg() {
+        let should_send = if !event_metadata.is_reorg() {
+            true
+        } else {
             let Some(reorg_tx_hashes) = reorg_tx_hashes else {
                 error!(target = "event_sequencing", "Reorg event metadata mismatch");
                 return Ok(false);
             };
             let queue = context.sent_events.entry(iteration_id).or_default();
 
-            // Validation 1: depth must be positive
-            if reorg_depth == 0 {
-                error!(
-                    target = "event_sequencing",
-                    "Received reorg event with zero depth"
-                );
-                false
-            } else {
-                let Ok(reorg_depth_usize) = usize::try_from(reorg_depth) else {
-                    error!(
-                        target = "event_sequencing",
-                        depth = reorg_depth,
-                        "Reorg depth exceeds platform limits"
-                    );
-                    return Ok(false);
-                };
-
-                // Validation 2: tx_hashes length must match depth
-                if reorg_tx_hashes.len() == reorg_depth_usize {
-                    let tx_count = queue.iter().filter(|e| e.is_transaction()).count();
-
-                    // Validation 3: must have enough transactions to reorg
-                    if tx_count < reorg_depth_usize {
-                        error!(
-                            target = "event_sequencing",
-                            "Received reorg event without enough transactions"
-                        );
-                        false
-                    // Validation 4: tx_hashes must match the tail of sent transactions
-                    } else if Self::collect_tail_tx_hashes(queue, reorg_depth).as_deref()
-                        != Some(reorg_tx_hashes)
-                    {
-                        error!(
-                            target = "event_sequencing",
-                            "Received reorg event with tx_hashes that do not match sent events"
-                        );
-                        false
-                    // Validation 5: last sent event must be cancellable by this reorg
-                    } else if let Some(last_sent_event) = queue.pop_back() {
-                        if last_sent_event.cancel_each_other(event_metadata) {
-                            // All validations passed - remove `depth` events from sent queue
-                            cancelled_events.push(last_sent_event);
-                            for _ in 1..reorg_depth_usize {
-                                if let Some(removed) = queue.pop_back() {
-                                    cancelled_events.push(removed);
-                                }
-                            }
-                            true
-                        } else {
-                            // Last event doesn't match - restore it and reject reorg
-                            queue.push_back(last_sent_event);
-                            false
-                        }
-                    } else {
-                        error!(
-                            target = "event_sequencing",
-                            "Received reorg event without previous event"
-                        );
-                        false
-                    }
-                } else {
-                    error!(
-                        target = "event_sequencing",
-                        depth = reorg_depth,
-                        tx_hashes_len = reorg_tx_hashes.len(),
-                        "Received reorg event with mismatched tx_hashes length"
-                    );
-                    false
-                }
-            }
-        } else {
-            true
+            Self::validate_and_apply_reorg(
+                queue,
+                reorg_depth,
+                reorg_tx_hashes,
+                event_metadata,
+                &mut cancelled_events,
+            )
         };
 
         // Send event
