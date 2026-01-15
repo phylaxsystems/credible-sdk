@@ -17,7 +17,10 @@ use alloy::eips::{
 use assertion_executor::{
     ExecutorConfig,
     db::VersionDb,
-    primitives::AccountInfo,
+    primitives::{
+        AccountInfo,
+        ExecutionResult,
+    },
     store::AssertionStore,
 };
 use revm::{
@@ -213,6 +216,26 @@ fn create_test_block_env() -> BlockEnv {
         basefee: 0, // Set basefee to 0 to avoid balance issues
         ..Default::default()
     }
+}
+
+fn record_validation_result(
+    engine: &mut CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+    tx_execution_id: TxExecutionId,
+    is_valid: bool,
+) {
+    let result = TransactionResult::ValidationCompleted {
+        execution_result: ExecutionResult::Success {
+            reason: revm::context::result::SuccessReason::Stop,
+            gas_used: 0,
+            gas_refunded: 0,
+            logs: Vec::new(),
+            output: revm::context::result::Output::Call(Bytes::new()),
+        },
+        is_valid,
+    };
+    engine
+        .transaction_results
+        .add_transaction_result(tx_execution_id, &result);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -707,6 +730,10 @@ async fn test_execute_reorg_depth_truncates_tail() {
         .current_block_iterations
         .insert(block_execution_id, current_block_iteration_id);
 
+    record_validation_result(&mut engine, tx1, true);
+    record_validation_result(&mut engine, tx2, true);
+    record_validation_result(&mut engine, tx3, true);
+
     let reorg = queue::ReorgRequest {
         tx_execution_id: tx3,
         depth: 2,
@@ -769,7 +796,7 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        n_transactions: 3,
+        n_transactions: 2,
         executed_txs: vec![tx1, tx2, tx3],
         incident_txs: Vec::new(),
         block_env: BlockEnv {
@@ -781,6 +808,10 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
     engine
         .current_block_iterations
         .insert(block_execution_id, current_block_iteration_data);
+
+    record_validation_result(&mut engine, tx1, true);
+    record_validation_result(&mut engine, tx2, false);
+    record_validation_result(&mut engine, tx3, true);
 
     // Reorg TX3 only - should leave TX1 (Some) and TX2 (None) in commit_log
     let reorg = queue::ReorgRequest {
@@ -803,7 +834,76 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
         .expect("block iteration should exist");
     assert_eq!(current_block_iteration.executed_txs, vec![tx1, tx2]);
     assert_eq!(current_block_iteration.depth(), 2);
-    assert_eq!(current_block_iteration.n_transactions, 2);
+    assert_eq!(current_block_iteration.n_transactions, 1);
+}
+
+/// Tests that missing transaction results are treated as invalid for n_transactions.
+#[tokio::test]
+async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
+    let (mut engine, _) = create_test_engine().await;
+
+    let block_number = U256::from(1);
+    let iteration_id = 1;
+    let block_execution_id = BlockExecutionId {
+        block_number,
+        iteration_id,
+    };
+
+    let tx1_hash = B256::from([0x11; 32]);
+    let tx2_hash = B256::from([0x22; 32]);
+
+    let tx1 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx1_hash,
+        index: 0,
+    };
+    let tx2 = TxExecutionId {
+        block_number,
+        iteration_id,
+        tx_hash: tx2_hash,
+        index: 1,
+    };
+
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    version_db.commit(EvmState::default());
+    version_db.commit(EvmState::default());
+
+    let current_block_iteration_data = BlockIterationData {
+        version_db,
+        n_transactions: 1,
+        executed_txs: vec![tx1, tx2],
+        block_env: BlockEnv {
+            number: block_number,
+            ..Default::default()
+        },
+    };
+
+    engine
+        .current_block_iterations
+        .insert(block_execution_id, current_block_iteration_data);
+
+    record_validation_result(&mut engine, tx1, true);
+
+    let reorg = queue::ReorgRequest {
+        tx_execution_id: tx2,
+        depth: 1,
+        tx_hashes: vec![tx2_hash],
+    };
+
+    let result = engine.execute_reorg(reorg);
+    assert!(
+        result.is_ok(),
+        "Reorg should succeed even with missing tx results: {:?}",
+        result
+    );
+
+    let current_block_iteration = engine
+        .current_block_iterations
+        .get(&block_execution_id)
+        .expect("block iteration should exist");
+    assert_eq!(current_block_iteration.executed_txs, vec![tx1]);
+    assert_eq!(current_block_iteration.n_transactions, 1);
 }
 
 /// Tests that a reorg can remove ALL transactions, resetting to the base state.
@@ -861,6 +961,10 @@ async fn test_execute_reorg_removes_all_transactions() {
     engine
         .current_block_iterations
         .insert(block_execution_id, current_block_iteration_data);
+
+    record_validation_result(&mut engine, tx1, true);
+    record_validation_result(&mut engine, tx2, true);
+    record_validation_result(&mut engine, tx3, true);
 
     // Reorg ALL 3 transactions (depth=3)
     let reorg = queue::ReorgRequest {
@@ -924,7 +1028,7 @@ async fn test_execute_reorg_with_all_failed_transactions() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        n_transactions: 2,
+        n_transactions: 0,
         executed_txs: vec![tx1, tx2],
         incident_txs: Vec::new(),
         block_env: BlockEnv {
@@ -936,6 +1040,9 @@ async fn test_execute_reorg_with_all_failed_transactions() {
     engine
         .current_block_iterations
         .insert(block_execution_id, current_block_iteration_data);
+
+    record_validation_result(&mut engine, tx1, false);
+    record_validation_result(&mut engine, tx2, false);
 
     // Reorg TX2 only
     let reorg = queue::ReorgRequest {
@@ -957,7 +1064,7 @@ async fn test_execute_reorg_with_all_failed_transactions() {
         .expect("block iteration should exist");
     assert_eq!(current_block_iteration.executed_txs, vec![tx1]);
     assert_eq!(current_block_iteration.depth(), 1);
-    assert_eq!(current_block_iteration.n_transactions, 1);
+    assert_eq!(current_block_iteration.n_transactions, 0);
 }
 
 /// Tests a deep reorg (depth > 1) with an alternating success/failure pattern.
@@ -996,7 +1103,7 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        n_transactions: 5,
+        n_transactions: 3,
         executed_txs: txs.clone(),
         incident_txs: Vec::new(),
         block_env: BlockEnv {
@@ -1008,6 +1115,12 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
     engine
         .current_block_iterations
         .insert(block_execution_id, current_block_iteration_data);
+
+    record_validation_result(&mut engine, txs[0], true);
+    record_validation_result(&mut engine, txs[1], false);
+    record_validation_result(&mut engine, txs[2], true);
+    record_validation_result(&mut engine, txs[3], false);
+    record_validation_result(&mut engine, txs[4], true);
 
     // Deep reorg: remove TX1, TX2, TX3, TX4 (depth=4)
     let reorg = queue::ReorgRequest {

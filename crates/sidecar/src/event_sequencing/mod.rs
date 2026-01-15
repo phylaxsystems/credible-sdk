@@ -78,6 +78,32 @@ struct Context {
 }
 
 impl EventSequencing {
+    fn collect_tail_tx_hashes(
+        queue: &VecDeque<EventMetadata>,
+        depth: usize,
+    ) -> Option<Vec<TxHash>> {
+        if depth == 0 {
+            return Some(Vec::new());
+        }
+
+        let mut hashes = Vec::with_capacity(depth);
+        for event in queue.iter().rev() {
+            if let EventMetadata::Transaction { tx_hash, .. } = event {
+                hashes.push(*tx_hash);
+                if hashes.len() == depth {
+                    break;
+                }
+            }
+        }
+
+        if hashes.len() == depth {
+            hashes.reverse();
+            Some(hashes)
+        } else {
+            None
+        }
+    }
+
     /// Creates a new instance of the struct with the provided `tx_receiver` and `tx_sender`.
     ///
     /// # Arguments
@@ -416,18 +442,36 @@ impl EventSequencing {
         // Get context and extract what we need before sending
         let context = self.get_context_mut(block_number, "send_event_recursive")?;
 
+        let (reorg_depth, reorg_tx_hashes) = match (&event, event_metadata) {
+            (TxQueueContents::Reorg(reorg, _), EventMetadata::Reorg { depth, .. }) => {
+                (*depth as usize, Some(reorg.tx_hashes.as_slice()))
+            }
+            _ => (0, None),
+        };
+
         // Perform reorg validation inline to avoid borrow issues
         let should_send = if event_metadata.is_reorg() {
-            let queue = context.sent_events.entry(iteration_id).or_default();
-            let reorg_depth = match event_metadata {
-                EventMetadata::Reorg { depth, .. } => *depth as usize,
-                _ => 0,
+            let Some(reorg_tx_hashes) = reorg_tx_hashes else {
+                error!(
+                    target = "event_sequencing",
+                    "Reorg event metadata mismatch"
+                );
+                return Ok(false);
             };
+            let queue = context.sent_events.entry(iteration_id).or_default();
 
             if reorg_depth == 0 {
                 error!(
                     target = "event_sequencing",
                     "Received reorg event with zero depth"
+                );
+                false
+            } else if reorg_tx_hashes.len() != reorg_depth {
+                error!(
+                    target = "event_sequencing",
+                    depth = reorg_depth,
+                    tx_hashes_len = reorg_tx_hashes.len(),
+                    "Received reorg event with mismatched tx_hashes length"
                 );
                 false
             } else {
@@ -436,6 +480,15 @@ impl EventSequencing {
                     error!(
                         target = "event_sequencing",
                         "Received reorg event without enough transactions"
+                    );
+                    false
+                } else if Self::collect_tail_tx_hashes(queue, reorg_depth)
+                    .as_deref()
+                    != Some(reorg_tx_hashes)
+                {
+                    error!(
+                        target = "event_sequencing",
+                        "Received reorg event with tx_hashes that do not match sent events"
                     );
                     false
                 } else if let Some(last_sent_event) = queue.pop_back() {
