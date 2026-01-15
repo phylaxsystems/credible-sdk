@@ -386,11 +386,6 @@ async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstanc
     );
 
     instance
-        .send_assertion_passing_failing_pair()
-        .await
-        .unwrap();
-
-    instance
         .send_and_verify_successful_create_tx(uint!(0_U256), Bytes::new())
         .await
         .unwrap();

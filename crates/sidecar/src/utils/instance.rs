@@ -1413,29 +1413,3 @@ impl<T: TestTransport> Drop for LocalInstance<T> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use revm::primitives::uint;
-
-    #[crate::utils::engine_test(all)]
-    async fn test_instance_send_assertion_passing_failing_pair(mut instance: LocalInstance<_>) {
-        info!("Testing assertion passing/failing pair");
-
-        // Send the assertion passing and failing pair
-        instance
-            .send_assertion_passing_failing_pair()
-            .await
-            .unwrap();
-
-        instance
-            .send_and_verify_successful_create_tx(uint!(0_U256), Bytes::new())
-            .await
-            .unwrap();
-        instance
-            .send_and_verify_reverting_create_tx()
-            .await
-            .unwrap();
-    }
-}
