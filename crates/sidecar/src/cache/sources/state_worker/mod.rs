@@ -247,9 +247,6 @@ impl DatabaseRef for MdbxSource {
 impl Source for MdbxSource {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool {
-        if !self.sync_status.load(Ordering::Acquire) {
-            return false;
-        }
         let state_worker_observed_head = *self.observed_head.read();
         let state_worker_oldest_block = *self.oldest_block.read();
 
