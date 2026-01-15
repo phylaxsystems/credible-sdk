@@ -872,6 +872,7 @@ async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
         version_db,
         n_transactions: 1,
         executed_txs: vec![tx1, tx2],
+        incident_txs: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
             ..Default::default()
@@ -1974,6 +1975,85 @@ async fn test_reorg_in_specific_iteration(mut instance: crate::utils::LocalInsta
             .await
             .unwrap(),
         "Should work after reorg and correct iteration selection"
+    );
+}
+
+/// Tests arbitrary depth reorgs using `send_reorg_depth` via LocalInstance.
+///
+/// This test verifies that the full transport stack (LocalInstance -> Driver -> Engine)
+/// correctly handles depth-N reorgs where N > 1.
+#[crate::utils::engine_test(mock)]
+async fn test_arbitrary_depth_reorg_via_local_instance(mut instance: crate::utils::LocalInstance) {
+    info!("Testing arbitrary depth reorg (depth=3) via LocalInstance");
+
+    // Block 1
+    instance.new_block().await.unwrap();
+
+    // Execute 4 transactions in the same iteration
+    let tx0 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .expect("tx0 should succeed");
+    let tx1 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .expect("tx1 should succeed");
+    let tx2 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .expect("tx2 should succeed");
+    let tx3 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .expect("tx3 should succeed");
+
+    // Verify all transactions succeeded
+    assert!(instance.is_transaction_successful(&tx0).await.unwrap());
+    assert!(instance.is_transaction_successful(&tx1).await.unwrap());
+    assert!(instance.is_transaction_successful(&tx2).await.unwrap());
+    assert!(instance.is_transaction_successful(&tx3).await.unwrap());
+
+    // Reorg the last 3 transactions (depth=3): removes tx1, tx2, tx3
+    // tx_hashes must be in chronological order (oldest first)
+    let tx_hashes = vec![tx1.tx_hash, tx2.tx_hash, tx3.tx_hash];
+    instance
+        .send_reorg_depth(tx3, 3, tx_hashes)
+        .await
+        .expect("depth-3 reorg should succeed");
+
+    // Verify tx0 is still present, tx1/tx2/tx3 are removed
+    assert!(
+        instance.get_transaction_result(&tx0).is_some(),
+        "tx0 should still exist after reorg"
+    );
+    assert!(
+        instance.is_transaction_removed(&tx1).await.unwrap(),
+        "tx1 should be removed by reorg"
+    );
+    assert!(
+        instance.is_transaction_removed(&tx2).await.unwrap(),
+        "tx2 should be removed by reorg"
+    );
+    assert!(
+        instance.is_transaction_removed(&tx3).await.unwrap(),
+        "tx3 should be removed by reorg"
+    );
+
+    // Block 2: Continue with new transactions after reorg
+    // Using new_block() to get fresh state and verify engine is healthy
+    instance.new_block().await.unwrap();
+
+    let tx_after_reorg = instance
+        .send_successful_create_tx(uint!(0_U256), Bytes::new())
+        .await
+        .expect("tx after reorg should succeed");
+
+    assert!(
+        instance
+            .is_transaction_successful(&tx_after_reorg)
+            .await
+            .unwrap(),
+        "New transaction after reorg should succeed"
     );
 }
 
