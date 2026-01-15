@@ -104,7 +104,7 @@ impl TransactionsResults {
         self.transactions.is_empty()
     }
 
-    #[cfg(test)]
+    /// Gets the transaction result for the given `TxExecutionId` if it exists.
     pub fn get_transaction_result(
         &self,
         tx_execution_id: &TxExecutionId,

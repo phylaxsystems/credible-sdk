@@ -650,14 +650,16 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         self.trace_execute_transaction_result(tx_execution_id, tx_env, &rax);
 
-        // Only count transactions that pass validation (including reverts).
-        // Invalid transactions (validation errors) are not counted as they
+        // Only count transactions that pass validation (is_valid == true).
+        // Invalid transactions (failed assertions) are not counted as they
         // won't be included in the block.
-        let current_block_iteration = self
-            .current_block_iterations
-            .get_mut(&block_id)
-            .ok_or(EngineError::TransactionError)?;
-        current_block_iteration.n_transactions += 1;
+        if rax.is_valid() {
+            let current_block_iteration = self
+                .current_block_iterations
+                .get_mut(&block_id)
+                .ok_or(EngineError::TransactionError)?;
+            current_block_iteration.n_transactions += 1;
+        }
 
         self.add_transaction_result(
             tx_execution_id,
@@ -1400,7 +1402,27 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .rollback_to(new_len)
                 .expect("rollback depth validated above");
 
+            // Only count valid transactions for decrement - invalid txs
+            // don't contribute to n_transactions
+            let mut valid_tx_count = 0u64;
             for removed in removed_txs {
+                // Check if this transaction was valid before removing it
+                let is_valid = self
+                    .transaction_results
+                    .get_transaction_result(&removed)
+                    .map(|result_ref| {
+                        matches!(
+                            &*result_ref,
+                            TransactionResult::ValidationCompleted { is_valid: true, .. }
+                        )
+                    })
+                    // If no result exists (e.g., unit tests), assume valid
+                    .unwrap_or(true);
+
+                if is_valid {
+                    valid_tx_count += 1;
+                }
+
                 self.transaction_results
                     .remove_transaction_result(removed);
                 #[cfg(feature = "cache_validation")]
@@ -1412,12 +1434,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 }
             }
 
-            // Only decrement the counter if we haven't processed a new block yet
-            if current_block_iteration.n_transactions >= depth as u64 {
-                current_block_iteration.n_transactions -= depth as u64;
-            } else {
-                current_block_iteration.n_transactions = 0;
-            }
+            // Only decrement by the count of valid transactions
+            current_block_iteration.n_transactions =
+                current_block_iteration.n_transactions.saturating_sub(valid_tx_count);
 
             return Ok(());
         }
