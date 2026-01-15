@@ -62,6 +62,7 @@ use std::{
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::error;
 
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -247,14 +248,28 @@ impl DatabaseRef for MdbxSource {
 impl Source for MdbxSource {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool {
-        let state_worker_observed_head = *self.observed_head.read();
-        let state_worker_oldest_block = *self.oldest_block.read();
+        let (state_worker_oldest_block, state_worker_observed_head) = match self
+            .backend
+            .get_available_block_range()
+        {
+            Ok(Some((state_worker_oldest_block, state_worker_observed_head))) => {
+                (state_worker_oldest_block, state_worker_observed_head)
+            }
+            Err(e) => {
+                error!(target: "state_worker", error = ?e, "failed to get available block range");
+                return false;
+            }
+            Ok(None) => {
+                error!(target: "state_worker", "missing available block range");
+                return false;
+            }
+        };
 
         if let Some(target) = Self::calculate_target_block(
             min_synced_block,
             latest_head,
-            state_worker_oldest_block,
-            state_worker_observed_head,
+            U256::from(state_worker_oldest_block),
+            U256::from(state_worker_observed_head),
         ) {
             *self.target_block.write() = target;
             return true;
@@ -267,14 +282,28 @@ impl Source for MdbxSource {
         *self.cache_status.min_synced_block.write() = min_synced_block;
         *self.cache_status.latest_head.write() = latest_head;
 
-        let state_worker_observed_head = *self.observed_head.read();
-        let state_worker_oldest_block = *self.oldest_block.read();
+        let (state_worker_oldest_block, state_worker_observed_head) = match self
+            .backend
+            .get_available_block_range()
+        {
+            Ok(Some((state_worker_oldest_block, state_worker_observed_head))) => {
+                (state_worker_oldest_block, state_worker_observed_head)
+            }
+            Err(e) => {
+                error!(target: "state_worker", error = ?e, "failed to get available block range");
+                return;
+            }
+            Ok(None) => {
+                error!(target: "state_worker", "missing available block range");
+                return;
+            }
+        };
 
         if let Some(target) = Self::calculate_target_block(
             min_synced_block,
             latest_head,
-            state_worker_oldest_block,
-            state_worker_observed_head,
+            U256::from(state_worker_oldest_block),
+            U256::from(state_worker_observed_head),
         ) {
             *self.target_block.write() = target;
         }
