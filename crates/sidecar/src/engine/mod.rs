@@ -1416,8 +1416,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                             TransactionResult::ValidationCompleted { is_valid: true, .. }
                         )
                     })
-                    // If no result exists (e.g., unit tests), assume valid
-                    .unwrap_or(true);
+                    // If no result exists (e.g., evicted or missing), treat as invalid
+                    .unwrap_or(false);
 
                 if is_valid {
                     valid_tx_count += 1;
