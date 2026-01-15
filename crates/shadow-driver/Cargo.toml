@@ -7,8 +7,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+
+# internal crates
+credible-utils.workspace = true
+sidecar = { workspace = true }
+
+# alloy 
 alloy = { workspace = true, features = ["consensus"] }
 alloy-provider = { workspace = true }
+
+# misc
 anyhow = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
@@ -16,6 +24,5 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 rust-tracing = { workspace = true }
 rustls = { workspace = true }
-sidecar = { path = "../sidecar" }
 tonic = { version = "0.14.2", features = ["transport"] }
 tokio-stream = { workspace = true }

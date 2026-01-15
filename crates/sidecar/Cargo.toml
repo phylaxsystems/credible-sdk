@@ -7,13 +7,21 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-alloy = { workspace = true }
+
+# credible-internal
+
+assertion-executor = { workspace = true, default-features = false }
+assertion-da-client.workspace = true
+credible-utils.workspace=true
+dapp-api-client.workspace = true
+sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
+state-store = { workspace = true, features = ["reader"] }
+int-test-utils = { workspace = true, optional = true }
+
 clap = { workspace = true }
 dashmap = { workspace = true }
-revm = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-assertion-executor = { workspace = true, default-features = false }
 rust-tracing = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -32,9 +40,6 @@ tracing-subscriber.workspace = true
 sled = { workspace = true }
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 rustls = { workspace = true }
-assertion-da-client = { workspace = true }
-dapp-api-client = { path = "../dapp-api-client" }
-alloy-provider = { workspace = true }
 metrics = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
@@ -43,14 +48,18 @@ alloy-rpc-types-trace = { workspace = true, optional = true }
 url = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
 tokio-metrics = { workspace = true, optional = true }
-sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
-int-test-utils = { path = "../int-test-utils", optional = true }
-state-store = { path = "../state-store", features = ["reader"] }
 hashlink = "0.11.0"
 flume = "0.12.0"
 arrayvec = "0.7.6"
 parking_lot.workspace = true
 bincode.workspace = true
+
+# revm
+revm = { workspace = true }
+
+# alloy 
+alloy = { workspace = true }
+alloy-provider = { workspace = true }
 
 # reth
 reth-db = { workspace = true }
