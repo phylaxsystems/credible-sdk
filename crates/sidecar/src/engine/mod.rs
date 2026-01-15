@@ -719,7 +719,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             .current_block_iterations
             .get_mut(&block_id)
             .ok_or(EngineError::TransactionError)?;
-        current_block_iteration.executed_txs.push(tx_execution_id);
         current_block_iteration.incident_txs.push(tx_data);
         // Only count transactions that pass validation (is_valid == true).
         // Invalid transactions (failed assertions) are not counted as they
