@@ -37,6 +37,7 @@ use revm::{
 use std::{
     fmt::Debug,
     sync::Arc,
+    thread,
     time::Instant,
 };
 use thiserror::Error;
@@ -84,6 +85,7 @@ pub mod sources;
 /// // Query account information
 /// let account_info = cache.basic_ref(address)?;
 /// ```
+
 #[derive(Debug)]
 pub struct Sources {
     /// The current block number used to determine source synchronization status.
@@ -97,6 +99,9 @@ pub struct Sources {
     max_depth: U256,
     /// Metrics for the cache.
     metrics: StateMetrics,
+    /// When enabled, queries all synced sources simultaneously and returns
+    /// the first successful response.
+    enable_parallel_sources: bool,
 }
 
 impl Sources {
@@ -112,18 +117,34 @@ impl Sources {
     ///
     /// A new `Cache` instance with the block number initialized to 0.
     pub fn new(sources: Vec<Arc<dyn Source>>, max_depth: u64) -> Self {
+        Self::build(sources, max_depth, false)
+    }
+
+    /// Creates a new cache with parallel source querying.
+    pub fn new_parallel(sources: Vec<Arc<dyn Source>>, max_depth: u64) -> Self {
+        Self::build(sources, max_depth, true)
+    }
+
+    /// Internal builder for the cache.
+    fn build(sources: Vec<Arc<dyn Source>>, max_depth: u64, enable_parallel_sources: bool) -> Self {
         Self {
             latest_head: RwLock::new(U256::ZERO),
             sources,
             latest_unprocessed_block: RwLock::new(U256::ZERO),
             max_depth: U256::from(max_depth),
             metrics: StateMetrics::new(),
+            enable_parallel_sources,
         }
     }
 
     /// Returns a list of configured sources for the cache
     pub fn list_configured_sources(&self) -> Vec<SourceName> {
         self.sources.iter().map(|s| s.name()).collect::<Vec<_>>()
+    }
+
+    /// Returns whether parallel source querying is enabled.
+    pub fn is_parallel_enabled(&self) -> bool {
+        self.enable_parallel_sources
     }
 
     /// Updates the current block number.
@@ -220,11 +241,56 @@ impl Sources {
     pub fn get_latest_unprocessed_block(&self) -> U256 {
         *self.latest_unprocessed_block.read()
     }
+
+    /// Queries all synced sources in parallel and returns the first successful result.
+    ///
+    /// Spawns a thread for each synced source, executes the query, and returns
+    /// as soon as any source succeeds.
+    ///
+    /// Only returns an error if all sources fail.
+    fn query_parallel<T, F>(&self, query: F) -> Result<T, CacheError>
+    where
+        F: Fn(&dyn Source) -> Result<T, SourceError> + Sync + Send + 'static,
+        T: Send + 'static,
+    {
+        let synced_sources: Vec<_> = self.iter_synced_sources().collect();
+
+        if synced_sources.is_empty() {
+            return Err(CacheError::NoCacheSourceAvailable);
+        }
+
+        let (tx, rx) = flume::unbounded();
+        let query = Arc::new(query);
+
+        for source in synced_sources {
+            let tx = tx.clone();
+            let query = Arc::clone(&query);
+            thread::spawn(move || {
+                let result = query(source.as_ref());
+                let _ = tx.send(result);
+            });
+        }
+        drop(tx);
+
+        rx.iter()
+            .find_map(Result::ok)
+            .ok_or(CacheError::NoCacheSourceAvailable)
+    }
 }
 
 impl DatabaseRef for Sources {
     type Error = CacheError;
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        // Route to parallel sources querying if enabled
+        if self.enable_parallel_sources {
+            let total_instant = Instant::now();
+            let result = self.query_parallel(move |source| source.basic_ref(address));
+            self.metrics
+                .total_basic_ref_duration(total_instant.elapsed());
+            return result;
+        }
+
+        // Back to sequential querying
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();
@@ -283,6 +349,14 @@ impl DatabaseRef for Sources {
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+        if self.enable_parallel_sources {
+            let total_instant = Instant::now();
+            let result = self.query_parallel(move |source| source.block_hash_ref(number));
+            self.metrics
+                .total_block_hash_ref_duration(total_instant.elapsed());
+            return result;
+        }
+
         let total_operation_instant = Instant::now();
         let result = self
             .iter_synced_sources()
@@ -319,6 +393,14 @@ impl DatabaseRef for Sources {
     }
 
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        if self.enable_parallel_sources {
+            let total_instant = Instant::now();
+            let result = self.query_parallel(move |source| source.code_by_hash_ref(code_hash));
+            self.metrics
+                .total_code_by_hash_ref_duration(total_instant.elapsed());
+            return result;
+        }
+
         let total_operation_instant = Instant::now();
         let result = self
             .iter_synced_sources()
@@ -361,6 +443,14 @@ impl DatabaseRef for Sources {
         address: Address,
         index: StorageKey,
     ) -> Result<StorageValue, Self::Error> {
+        if self.enable_parallel_sources {
+            let total_instant = Instant::now();
+            let result = self.query_parallel(move |source| source.storage_ref(address, index));
+            self.metrics
+                .total_storage_ref_duration(total_instant.elapsed());
+            return result;
+        }
+
         let total_operation_instant = Instant::now();
         for source in self.iter_synced_sources() {
             let source_instant = Instant::now();
@@ -460,6 +550,7 @@ mod tests {
         storage_ref_calls: AtomicUsize,
         cache_miss_account: bool,
         cache_miss_storage: bool,
+        delay: Option<Duration>,
     }
 
     impl MockSource {
@@ -478,6 +569,7 @@ mod tests {
                 storage_ref_calls: AtomicUsize::new(0),
                 cache_miss_account: false,
                 cache_miss_storage: false,
+                delay: None,
             }
         }
 
@@ -521,6 +613,11 @@ mod tests {
             self
         }
 
+        fn with_delay(mut self, delay: Duration) -> Self {
+            self.delay = Some(delay);
+            self
+        }
+
         fn basic_ref_call_count(&self) -> usize {
             self.basic_ref_calls.load(Ordering::Acquire)
         }
@@ -535,6 +632,13 @@ mod tests {
 
         fn storage_ref_call_count(&self) -> usize {
             self.storage_ref_calls.load(Ordering::Acquire)
+        }
+
+        /// Simulates network latency if configured
+        fn mock_delay(&self) {
+            if let Some(delay) = self.delay {
+                std::thread::sleep(delay);
+            }
         }
     }
 
@@ -560,6 +664,9 @@ mod tests {
 
         fn basic_ref(&self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
             self.basic_ref_calls.fetch_add(1, Ordering::Release);
+
+            self.mock_delay();
+
             if self.cache_miss_account {
                 return Err(sources::SourceError::CacheMiss);
             }
@@ -571,6 +678,9 @@ mod tests {
 
         fn block_hash_ref(&self, _number: u64) -> Result<B256, Self::Error> {
             self.block_hash_ref_calls.fetch_add(1, Ordering::Release);
+
+            self.mock_delay();
+
             if self.should_error {
                 return Err(sources::SourceError::Other("Mock error".to_string()));
             }
@@ -579,6 +689,9 @@ mod tests {
 
         fn code_by_hash_ref(&self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             self.code_by_hash_ref_calls.fetch_add(1, Ordering::Release);
+
+            self.mock_delay();
+
             if self.should_error {
                 return Err(sources::SourceError::Other("Mock error".to_string()));
             }
@@ -593,6 +706,9 @@ mod tests {
             _index: StorageKey,
         ) -> Result<StorageValue, Self::Error> {
             self.storage_ref_calls.fetch_add(1, Ordering::Release);
+
+            self.mock_delay();
+
             if self.cache_miss_storage {
                 return Err(sources::SourceError::CacheMiss);
             }
@@ -619,6 +735,152 @@ mod tests {
 
     fn create_test_bytecode() -> Bytecode {
         Bytecode::new_raw(vec![0x60, 0x00, 0x60, 0x00].into())
+    }
+
+    #[test]
+    fn test_query_parallel_success_and_all_sources_called() {
+        let account_info = create_test_account_info();
+        let failing = Arc::new(MockSource::new(SourceName::Other).with_error());
+        let succeeding = Arc::new(
+            MockSource::new(SourceName::EthRpcSource).with_account_info(account_info.clone()),
+        );
+
+        let cache = Sources::new_parallel(vec![failing.clone(), succeeding.clone()], 10);
+        cache.set_block_number(U256::from(1));
+        let address = create_test_address();
+
+        let result = cache.query_parallel(move |s| s.basic_ref(address)).unwrap();
+        assert_eq!(result, Some(account_info));
+
+        // Both sources should have been exercised in parallel
+        assert_eq!(failing.basic_ref_call_count(), 1);
+        assert_eq!(succeeding.basic_ref_call_count(), 1);
+    }
+
+    #[test]
+    fn test_query_parallel_cache_miss_then_success() {
+        let account_info = create_test_account_info();
+        let cache_miss = Arc::new(
+            MockSource::new(SourceName::Other)
+                .with_cache_miss_for_account()
+                .with_delay(Duration::from_millis(5)), // Small delay ensures thread starts
+        );
+        let succeeding = Arc::new(
+            MockSource::new(SourceName::EthRpcSource)
+                .with_account_info(account_info.clone())
+                .with_delay(Duration::from_millis(5)), // Same delay to ensure both threads start
+        );
+
+        let cache = Sources::new_parallel(vec![cache_miss.clone(), succeeding.clone()], 10);
+        cache.set_block_number(U256::from(1));
+        let address = create_test_address();
+
+        let result = cache.query_parallel(move |s| s.basic_ref(address)).unwrap();
+        assert_eq!(result, Some(account_info));
+        assert_eq!(cache_miss.basic_ref_call_count(), 1);
+        assert_eq!(succeeding.basic_ref_call_count(), 1);
+    }
+
+    #[test]
+    fn test_query_parallel_all_fail() {
+        let failing1 = Arc::new(MockSource::new(SourceName::Other).with_error());
+        let failing2 = Arc::new(MockSource::new(SourceName::EthRpcSource).with_error());
+
+        let cache = Sources::new_parallel(vec![failing1.clone(), failing2.clone()], 10);
+        cache.set_block_number(U256::from(1));
+        let address = create_test_address();
+
+        let result = cache.query_parallel(move |s| s.basic_ref(address));
+        assert!(matches!(result, Err(CacheError::NoCacheSourceAvailable)));
+        assert_eq!(failing1.basic_ref_call_count(), 1);
+        assert_eq!(failing2.basic_ref_call_count(), 1);
+    }
+
+    #[test]
+    fn test_query_parallel_no_sources() {
+        let cache = Sources::new_parallel(vec![], 10);
+        let address = create_test_address();
+
+        let result = cache.query_parallel(move |s| s.basic_ref(address));
+        assert!(matches!(result, Err(CacheError::NoCacheSourceAvailable)));
+    }
+
+    #[test]
+    fn test_query_parallel_fastest_source_wins() {
+        let account_info = create_test_account_info();
+
+        // Slow source, 100ms - first in priority, has data
+        let slow_source = Arc::new(
+            MockSource::new(SourceName::Other)
+                .with_account_info(account_info.clone())
+                .with_delay(Duration::from_millis(100)),
+        );
+
+        // Fast source (10ms) - second in priority, has data
+        let fast_source = Arc::new(
+            MockSource::new(SourceName::EthRpcSource)
+                .with_account_info(account_info.clone())
+                .with_delay(Duration::from_millis(10)),
+        );
+
+        let cache = Sources::new_parallel(vec![slow_source.clone(), fast_source.clone()], 10);
+        cache.set_block_number(U256::from(1));
+        let address = create_test_address();
+
+        let start = Instant::now();
+        let result = cache.basic_ref(address).unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(result, Some(account_info));
+
+        // Should complete in 10ms because it's a fast source, not 100ms/slow source
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "Should return fast source result, took {elapsed:?}"
+        );
+
+        // Both sources were called in parallel
+        assert_eq!(slow_source.basic_ref_call_count(), 1);
+        assert_eq!(fast_source.basic_ref_call_count(), 1);
+    }
+
+    #[test]
+    fn test_query_parallel_slow_failure_doesnt_block() {
+        let account_info = create_test_account_info();
+
+        // Slow source (100ms) - will fail
+        let slow_failing = Arc::new(
+            MockSource::new(SourceName::Other)
+                .with_error()
+                .with_delay(Duration::from_millis(100)),
+        );
+
+        // Fast source (10ms) - succeeds
+        let fast_success = Arc::new(
+            MockSource::new(SourceName::EthRpcSource)
+                .with_account_info(account_info.clone())
+                .with_delay(Duration::from_millis(10)),
+        );
+
+        let cache = Sources::new_parallel(vec![slow_failing.clone(), fast_success.clone()], 10);
+        cache.set_block_number(U256::from(1));
+        let address = create_test_address();
+
+        let start = Instant::now();
+        let result = cache.basic_ref(address).unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(result, Some(account_info));
+
+        // Didn't wait for slow failure
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "Slow failure shouldn't block, took {elapsed:?}"
+        );
+
+        // Both were called
+        assert_eq!(slow_failing.basic_ref_call_count(), 1);
+        assert_eq!(fast_success.basic_ref_call_count(), 1);
     }
 
     #[test]

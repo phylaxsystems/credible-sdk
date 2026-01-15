@@ -49,6 +49,7 @@ int-test-utils = { path = "crates/int-test-utils" }
 # assertion-executor
 assertion-executor = { path = "crates/assertion-executor", default-features = false }
 
+# misc
 anyhow = "1.0.100"
 axum = "0.8.7"
 clap = { version = "4.5.53", features = ["derive", "env"] }
@@ -75,6 +76,9 @@ testcontainers-modules = { version = "0.14.0", features = ["redis"] }
 directories = "6.0.0"
 bollard = "0.19.4"
 rustls = { version = "0.23.0", features = ["aws_lc_rs"] }
+
+async-trait = "0.1.89"
+futures-util = "0.3"
 
 tracing = { version = "0.1.43", features = ["release_max_level_debug"] }
 tracing-subscriber = { version = "0.3.22", features = ["std", "env-filter"] }

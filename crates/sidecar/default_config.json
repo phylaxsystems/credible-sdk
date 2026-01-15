@@ -35,6 +35,7 @@
     "state_worker_depth": 3,
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
-    "sources_monitoring_period_ms": 500
+    "sources_monitoring_period_ms": 500,
+    "enable_parallel_sources": false
   }
 }
