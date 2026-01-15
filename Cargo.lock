@@ -2853,6 +2853,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "credible-utils"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "tokio",
+]
+
+[[package]]
 name = "criterion"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11046,6 +11054,7 @@ dependencies = [
  "alloy-provider",
  "anyhow",
  "clap",
+ "credible-utils",
  "futures",
  "rust-tracing",
  "rustls",
@@ -11101,6 +11110,7 @@ dependencies = [
  "chrono",
  "clap",
  "console-subscriber",
+ "credible-utils",
  "criterion",
  "ctor",
  "dapp-api-client",

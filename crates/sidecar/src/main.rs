@@ -20,6 +20,7 @@ use assertion_executor::{
     AssertionExecutor,
     db::overlay::OverlayDb,
 };
+use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
 use sidecar::{
     args::{
@@ -443,17 +444,5 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tracing::info!("Sidecar shutdown complete.");
-    Ok(())
-}
-
-async fn wait_for_sigterm() -> anyhow::Result<()> {
-    use tokio::signal::unix::{
-        SignalKind,
-        signal,
-    };
-    let mut sigterm = signal(SignalKind::terminate())
-        .map_err(|_| anyhow::anyhow!("Failed to install rustls crypto provider"))?;
-
-    sigterm.recv().await;
     Ok(())
 }

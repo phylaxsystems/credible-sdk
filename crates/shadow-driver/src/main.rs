@@ -6,10 +6,10 @@ use crate::{
     listener::Listener,
 };
 
-use rust_tracing::trace;
-
 use anyhow::Result;
 use clap::Parser;
+use credible_utils::shutdown::wait_for_sigterm;
+use rust_tracing::trace;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received Ctrl+C, shutting down gracefully...");
         }
-        () = wait_for_sigterm() => {
+        _ = wait_for_sigterm() => {
             tracing::info!("Received SIGTERM, shutting down gracefully...");
         }
         result = listener.run() => {
@@ -40,13 +40,4 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
-}
-
-async fn wait_for_sigterm() {
-    use tokio::signal::unix::{
-        SignalKind,
-        signal,
-    };
-    let mut sigterm = signal(SignalKind::terminate()).expect("failed to setup SIGTERM handler");
-    sigterm.recv().await;
 }
