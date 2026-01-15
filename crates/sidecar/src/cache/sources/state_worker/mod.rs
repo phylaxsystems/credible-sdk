@@ -3,25 +3,10 @@
 //! # State-worker backed cache source
 
 pub(crate) mod error;
-mod sync_task;
-pub(crate) mod utils;
 
 pub use error::StateWorkerCacheError;
 use state_store::mdbx::StateReader;
 
-use self::{
-    sync_task::publish_sync_state,
-    utils::{
-        decode_hex,
-        encode_hex,
-        encode_storage_key,
-        encode_u256_hex,
-        parse_b256,
-        parse_u64,
-        parse_u256,
-        to_hex_lower,
-    },
-};
 use crate::{
     Source,
     cache::sources::SourceName,
@@ -62,7 +47,10 @@ use std::{
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::error;
+use tracing::{
+    debug,
+    error,
+};
 
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -71,13 +59,7 @@ pub struct MdbxSource {
     backend: StateReader,
     /// Target block to request from state worker.
     target_block: Arc<RwLock<U256>>,
-    /// Records newest block the background poller has seen.
-    observed_head: Arc<RwLock<U256>>,
-    /// Oldest block that exists in state worker buffer. Used to prevent asking for a block state worker doesnt have.
-    oldest_block: Arc<RwLock<U256>>,
-    sync_status: Arc<AtomicBool>,
     cancel_token: CancellationToken,
-    sync_task: JoinHandle<()>,
     cache_status: Arc<CacheStatus>,
 }
 
@@ -91,47 +73,18 @@ impl MdbxSource {
     /// Creates a cache that stores entries under the default `state` namespace.
     pub fn new(backend: StateReader) -> Self {
         let target_block = Arc::new(RwLock::new(U256::ZERO));
-        let observed_head = Arc::new(RwLock::new(U256::ZERO));
-        let oldest_block = Arc::new(RwLock::new(U256::ZERO));
-        let sync_status = Arc::new(AtomicBool::new(false));
         let cancel_token = CancellationToken::new();
         let cache_status = Arc::new(CacheStatus {
             min_synced_block: RwLock::new(U256::ZERO),
             latest_head: RwLock::new(U256::ZERO),
         });
-        let sync_task = sync_task::spawn_sync_task(
-            cache_status.clone(),
-            backend.clone(),
-            target_block.clone(),
-            observed_head.clone(),
-            oldest_block.clone(),
-            sync_status.clone(),
-            cancel_token.clone(),
-            DEFAULT_SYNC_INTERVAL,
-        );
 
         Self {
             backend,
             target_block,
-            observed_head,
-            oldest_block,
-            sync_status,
             cancel_token,
-            sync_task,
             cache_status,
         }
-    }
-
-    fn mark_unsynced(&self) {
-        publish_sync_state(
-            self.cache_status.clone(),
-            None,
-            None,
-            &self.target_block,
-            &self.observed_head,
-            &self.oldest_block,
-            &self.sync_status,
-        );
     }
 
     /// Helper to convert U256 to u64 for backend calls.
@@ -265,6 +218,15 @@ impl Source for MdbxSource {
             }
         };
 
+        debug!(
+            target: "state_worker",
+            state_worker_oldest_block = state_worker_oldest_block,
+            state_worker_observed_head = state_worker_observed_head,
+            min_synced_block = %min_synced_block,
+            latest_head = %latest_head,
+            "is_synced"
+        );
+
         if let Some(target) = Self::calculate_target_block(
             min_synced_block,
             latest_head,
@@ -318,7 +280,6 @@ impl Source for MdbxSource {
 impl Drop for MdbxSource {
     fn drop(&mut self) {
         self.cancel_token.cancel();
-        self.sync_task.abort();
     }
 }
 
