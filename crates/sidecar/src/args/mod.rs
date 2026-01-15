@@ -178,7 +178,7 @@ pub struct StateConfig {
     /// State worker MDBX path
     pub state_worker_mdbx_path: Option<String>,
     /// State worker depth (how many blocks behind head state worker will have the data from)
-    pub state_worker_depth: Option<usize>,
+    pub state_worker_depth: Option<u8>,
     /// Minimum state diff to consider a cache synced
     pub minimum_state_diff: u64,
     /// Maximum time (ms) the engine will wait for a state source to report as  synced before
@@ -186,6 +186,12 @@ pub struct StateConfig {
     pub sources_sync_timeout_ms: u64,
     /// Period (ms) the engine will check if the state sources are synced.
     pub sources_monitoring_period_ms: u64,
+    /// Eth RPC archive node
+    pub state_worker_ws_url: Option<String>,
+    /// Network genesis file
+    pub state_worker_genesis_file: Option<String>,
+    /// Provider type
+    pub state_worker_provider_type: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
