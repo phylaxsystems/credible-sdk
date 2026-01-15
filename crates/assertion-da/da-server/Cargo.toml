@@ -37,7 +37,7 @@ r2d2 = "0.8"
 
 tracing.workspace = true
 rust-tracing.workspace = true
-futures-util = "0.3"
+futures-util.workspace = true
 uuid = { version = "1.15", features = ["v4"] }
 tempfile = "3.18"
 metrics.workspace = true
