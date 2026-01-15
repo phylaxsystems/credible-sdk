@@ -4,6 +4,17 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::unreadable_literal)]
 #![allow(clippy::similar_names)]
+#![deny(clippy::panic)]
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+#![deny(clippy::unreachable)]
+#![deny(clippy::todo)]
+#![deny(clippy::unimplemented)]
+#![warn(clippy::indexing_slicing)]
+#![cfg_attr(test, allow(clippy::panic))]
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+#![cfg_attr(test, allow(clippy::expect_used))]
+#![cfg_attr(test, allow(clippy::indexing_slicing))]
 
 use assertion_executor::{
     AssertionExecutor,
@@ -177,7 +188,7 @@ impl ThreadHandles {
 async fn main() -> anyhow::Result<()> {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
-        .expect("Failed to install rustls crypto provider");
+        .map_err(|_| anyhow::anyhow!("Failed to install rustls crypto provider"))?;
 
     let _guard = rust_tracing::trace();
     let config = Config::load()?;
@@ -345,7 +356,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("Received Ctrl+C, shutting down...");
                 should_shutdown = true;
             }
-            () = wait_for_sigterm() => {
+            _ = wait_for_sigterm() => {
                 tracing::info!("Received SIGTERM, shutting down...");
                 should_shutdown = true;
             }
@@ -435,11 +446,14 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn wait_for_sigterm() {
+async fn wait_for_sigterm() -> anyhow::Result<()> {
     use tokio::signal::unix::{
         SignalKind,
         signal,
     };
-    let mut sigterm = signal(SignalKind::terminate()).expect("failed to setup SIGTERM handler");
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|_| anyhow::anyhow!("Failed to install rustls crypto provider"))?;
+
     sigterm.recv().await;
+    Ok(())
 }

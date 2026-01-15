@@ -1,5 +1,16 @@
 #![recursion_limit = "1024"]
 #![doc = include_str!("../README.md")]
+#![deny(clippy::panic)]
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+#![deny(clippy::unreachable)]
+#![deny(clippy::todo)]
+#![deny(clippy::unimplemented)]
+#![warn(clippy::indexing_slicing)]
+#![cfg_attr(test, allow(clippy::panic))]
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+#![cfg_attr(test, allow(clippy::expect_used))]
+#![cfg_attr(test, allow(clippy::indexing_slicing))]
 
 mod cli;
 mod genesis;
@@ -52,7 +63,7 @@ async fn main() -> Result<()> {
     // Initialize the rustls CryptoProvider for HTTPS support
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
-        .expect("Failed to install rustls crypto provider");
+        .map_err(|_| anyhow::anyhow!("Failed to install rustls crypto provider"))?;
 
     // Install the shared tracing subscriber used across Credible services.
     let _guard = trace();
