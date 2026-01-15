@@ -164,6 +164,7 @@ impl MdbxSource {
     }
 
     /// Checks whether two block ranges have any overlap.
+    #[cfg(test)]
     #[inline]
     fn ranges_overlap(
         min_synced_block: U256,
@@ -252,12 +253,16 @@ impl Source for MdbxSource {
         let state_worker_observed_head = *self.observed_head.read();
         let state_worker_oldest_block = *self.oldest_block.read();
 
-        Self::ranges_overlap(
+        if let Some(target) = Self::calculate_target_block(
             min_synced_block,
             latest_head,
             state_worker_oldest_block,
             state_worker_observed_head,
-        )
+        ) {
+            *self.target_block.write() = target;
+            return true;
+        }
+        false
     }
 
     /// Updates the current cache status and set the target block
