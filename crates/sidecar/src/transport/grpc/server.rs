@@ -762,7 +762,9 @@ impl GrpcService {
                         .map_err(|e| Status::invalid_argument(e.to_string()))?;
                     tx_hashes.push(parsed);
                 }
-                if tx_hashes.len() != depth as usize {
+                let depth_len = usize::try_from(depth)
+                    .map_err(|_| Status::invalid_argument("depth exceeds platform limits"))?;
+                if tx_hashes.len() != depth_len {
                     return Err(Status::invalid_argument(
                         "tx_hashes length must match depth",
                     ));

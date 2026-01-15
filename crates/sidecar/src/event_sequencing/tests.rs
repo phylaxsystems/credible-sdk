@@ -106,11 +106,13 @@ fn build_dependency_graph_from_events(
                 TxQueueContents::Tx(tx, _) => {
                     (1, tx.tx_execution_id.iteration_id, tx.tx_execution_id.index)
                 }
-                TxQueueContents::Reorg(reorg, _) => (
-                    1,
-                    reorg.tx_execution_id.iteration_id,
-                    reorg.tx_execution_id.index,
-                ),
+                TxQueueContents::Reorg(reorg, _) => {
+                    (
+                        1,
+                        reorg.tx_execution_id.iteration_id,
+                        reorg.tx_execution_id.index,
+                    )
+                }
                 TxQueueContents::CommitHead(ch, _) => (2, ch.selected_iteration_id, 0u64),
             }
         });
@@ -147,11 +149,13 @@ fn build_dependency_graph_from_events(
                     TxQueueContents::Tx(tx, _) => {
                         (1, tx.tx_execution_id.iteration_id, tx.tx_execution_id.index)
                     }
-                    TxQueueContents::Reorg(reorg, _) => (
-                        1,
-                        reorg.tx_execution_id.iteration_id,
-                        reorg.tx_execution_id.index,
-                    ),
+                    TxQueueContents::Reorg(reorg, _) => {
+                        (
+                            1,
+                            reorg.tx_execution_id.iteration_id,
+                            reorg.tx_execution_id.index,
+                        )
+                    }
                     TxQueueContents::CommitHead(ch, _) => (2, ch.selected_iteration_id, 0u64),
                 }
             });
@@ -561,7 +565,7 @@ fn test_send_event_recursive_with_reorg() {
 fn test_send_event_recursive_reorg_depth_matches_tail() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
-    let tx_hashes = vec![TxHash::random(), TxHash::random(), TxHash::random()];
+    let tx_hashes = [TxHash::random(), TxHash::random(), TxHash::random()];
     let tx0 = create_transaction(100, 1, 0, tx_hashes[0], None);
     let tx1 = create_transaction(100, 1, 1, tx_hashes[1], None);
     let tx2 = create_transaction(100, 1, 2, tx_hashes[2], None);
@@ -572,8 +576,7 @@ fn test_send_event_recursive_reorg_depth_matches_tail() {
     sent.push_back(EventMetadata::from(&tx1));
     sent.push_back(EventMetadata::from(&tx2));
 
-    let reorg_event =
-        create_reorg_with_hashes(100, 1, 2, vec![tx_hashes[1], tx_hashes[2]]);
+    let reorg_event = create_reorg_with_hashes(100, 1, 2, vec![tx_hashes[1], tx_hashes[2]]);
     let reorg_metadata = EventMetadata::from(&reorg_event);
 
     sequencing
@@ -594,7 +597,7 @@ fn test_send_event_recursive_reorg_depth_matches_tail() {
 fn test_send_event_recursive_reorg_depth_hashes_mismatch() {
     let (mut sequencing, engine_recv) = create_test_sequencing();
 
-    let tx_hashes = vec![TxHash::random(), TxHash::random(), TxHash::random()];
+    let tx_hashes = [TxHash::random(), TxHash::random(), TxHash::random()];
     let tx0 = create_transaction(100, 1, 0, tx_hashes[0], None);
     let tx1 = create_transaction(100, 1, 1, tx_hashes[1], None);
     let tx2 = create_transaction(100, 1, 2, tx_hashes[2], None);
@@ -605,12 +608,7 @@ fn test_send_event_recursive_reorg_depth_hashes_mismatch() {
     sent.push_back(EventMetadata::from(&tx1));
     sent.push_back(EventMetadata::from(&tx2));
 
-    let reorg_event = create_reorg_with_hashes(
-        100,
-        1,
-        2,
-        vec![TxHash::random(), tx_hashes[2]],
-    );
+    let reorg_event = create_reorg_with_hashes(100, 1, 2, vec![TxHash::random(), tx_hashes[2]]);
     let reorg_metadata = EventMetadata::from(&reorg_event);
 
     sequencing
