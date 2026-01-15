@@ -417,6 +417,14 @@ async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstanc
         .unwrap();
 }
 
+#[crate::utils::engine_test(mock)]
+async fn test_execute_assertion_passing_failing_pair(mut instance: crate::utils::LocalInstance) {
+    instance
+        .send_assertion_passing_failing_pair()
+        .await
+        .unwrap();
+}
+
 #[crate::utils::engine_test(all)]
 async fn test_core_engine_reject_tx_before_blockenv(mut instance: crate::utils::LocalInstance) {
     // Send and verify a successful CREATE transaction

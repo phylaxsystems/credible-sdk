@@ -369,10 +369,13 @@ impl EventSequencing {
                 .sent_events
                 .get(&event_iteration_id)
                 .is_some_and(|queue| {
-                    let tx_count = u64::try_from(queue.iter().filter(|e| e.is_transaction()).count())
-                        .unwrap_or(0);
+                    let tx_count =
+                        u64::try_from(queue.iter().filter(|e| e.is_transaction()).count())
+                            .unwrap_or(0);
                     tx_count >= reorg_depth
-                        && queue.back().is_some_and(|last| last.cancel_each_other(&event_metadata))
+                        && queue
+                            .back()
+                            .is_some_and(|last| last.cancel_each_other(&event_metadata))
                 });
 
             if can_cancel {

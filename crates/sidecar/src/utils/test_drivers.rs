@@ -133,7 +133,8 @@ fn populate_test_database(underlying_db: &mut CacheDB<Arc<Sources>>) -> Address 
     underlying_db.insert_account_info(COUNTER_ADDRESS, counter_acct_info());
 
     // Create default account that will be used by this instance
-    let default_account = Address::from([0x01; 20]);
+    // NOTE: Must not collide with COUNTER_ADDRESS.
+    let default_account = Address::from([0x03; 20]);
     let default_account_info = AccountInfo {
         balance: U256::MAX,
         ..Default::default()

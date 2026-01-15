@@ -1338,8 +1338,22 @@ impl<T: TestTransport> LocalInstance<T> {
             .send_transaction(tx_execution_id_fail, tx_fail)
             .await?;
 
+        // Verify the first transaction passed assertions (execution may still revert).
+        match self
+            .wait_for_transaction_processed(&tx_execution_id_pass)
+            .await?
+        {
+            TransactionResult::ValidationCompleted { is_valid, .. } => {
+                if !is_valid {
+                    return Err("First transaction should have passed assertions".to_string());
+                }
+            }
+            TransactionResult::ValidationError(e) => return Err(e),
+        }
+
         // Verify the second transaction failed assertions and was NOT committed
-        if !self.is_transaction_invalid(&tx_execution_id_fail).await? {
+        let fail_invalid = self.is_transaction_invalid(&tx_execution_id_fail).await?;
+        if !fail_invalid {
             return Err(
                 "Second transaction should have failed assertions and not been committed"
                     .to_string(),
