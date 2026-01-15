@@ -186,7 +186,10 @@ impl Decoder for HttpTransactionDecoder {
                 if depth == 0 {
                     depth = 1;
                 }
-                if tx_hashes.len() != depth as usize {
+                let depth_len = usize::try_from(depth).map_err(|_| {
+                    HttpDecoderError::ReorgValidation("depth exceeds platform limits".to_string())
+                })?;
+                if tx_hashes.len() != depth_len {
                     return Err(HttpDecoderError::ReorgValidation(
                         "tx_hashes length must match depth".to_string(),
                     ));

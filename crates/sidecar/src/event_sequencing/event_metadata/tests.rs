@@ -1625,7 +1625,7 @@ fn test_cancel_each_other_prev_tx_hash_irrelevant() {
     );
 }
 
-/// Tests that calculate_previous_event for a deep reorg (depth > 1) correctly
+/// Tests that `calculate_previous_event` for a deep reorg (depth > 1) correctly
 /// returns the event BEFORE all reorged transactions, not just before the tip.
 /// For example: TX0, TX1, TX2, TX3 with reorg depth=3 at index=3 (TX3)
 /// should return TX0 as the previous event, not TX2.
@@ -1662,7 +1662,7 @@ fn test_reorg_calculate_previous_event_with_depth() {
     }
 }
 
-/// Tests that a deep reorg at index < depth returns NewIteration as previous
+/// Tests that a deep reorg at index < depth returns `NewIteration` as previous
 #[test]
 fn test_reorg_calculate_previous_event_depth_reaches_start() {
     // Reorg depth=3 at index=2 means we're reorging indices 0, 1, 2

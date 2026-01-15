@@ -740,7 +740,7 @@ async fn test_execute_reorg_depth_truncates_tail() {
         tx_hashes: vec![tx2_hash, tx3_hash],
     };
 
-    assert!(engine.execute_reorg(reorg).is_ok());
+    assert!(engine.execute_reorg(&reorg).is_ok());
 
     let current_block_iteration = engine
         .current_block_iterations
@@ -751,9 +751,9 @@ async fn test_execute_reorg_depth_truncates_tail() {
     assert_eq!(current_block_iteration.n_transactions, 1);
 }
 
-/// Tests that reorg works correctly when the remaining commit_log contains
+/// Tests that reorg works correctly when the remaining `commit_log` contains
 /// a failed transaction (None state). This is a regression test for a bug
-/// where rebuild_fork_db would fail on None entries.
+/// where `rebuild_fork_db` would fail on None entries.
 #[tokio::test]
 async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
     let (mut engine, _) = create_test_engine().await;
@@ -791,7 +791,7 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
     let mut version_db = VersionDb::new(engine.cache.clone());
     // TX1 succeeds, TX2 fails (None), TX3 succeeds
     version_db.commit(EvmState::default()); // TX1 succeeded
-    version_db.commit_empty();               // TX2 failed (EVM error, no state)
+    version_db.commit_empty(); // TX2 failed (EVM error, no state)
     version_db.commit(EvmState::default()); // TX3 succeeded
 
     let current_block_iteration_data = BlockIterationData {
@@ -821,11 +821,10 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
     };
 
     // This should succeed even though TX2 has None in commit_log
-    let result = engine.execute_reorg(reorg);
+    let result = engine.execute_reorg(&reorg);
     assert!(
         result.is_ok(),
-        "Reorg should succeed even with failed tx (None) in remaining commit_log: {:?}",
-        result
+        "Reorg should succeed even with failed tx (None) in remaining commit_log: {result:?}"
     );
 
     let current_block_iteration = engine
@@ -837,7 +836,7 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
     assert_eq!(current_block_iteration.n_transactions, 1);
 }
 
-/// Tests that missing transaction results are treated as invalid for n_transactions.
+/// Tests that missing transaction results are treated as invalid for `n_transactions`.
 #[tokio::test]
 async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
     let (mut engine, _) = create_test_engine().await;
@@ -891,11 +890,10 @@ async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
         tx_hashes: vec![tx2_hash],
     };
 
-    let result = engine.execute_reorg(reorg);
+    let result = engine.execute_reorg(&reorg);
     assert!(
         result.is_ok(),
-        "Reorg should succeed even with missing tx results: {:?}",
-        result
+        "Reorg should succeed even with missing tx results: {result:?}"
     );
 
     let current_block_iteration = engine
@@ -973,11 +971,10 @@ async fn test_execute_reorg_removes_all_transactions() {
         tx_hashes: vec![tx1_hash, tx2_hash, tx3_hash],
     };
 
-    let result = engine.execute_reorg(reorg);
+    let result = engine.execute_reorg(&reorg);
     assert!(
         result.is_ok(),
-        "Reorg should succeed when removing all transactions: {:?}",
-        result
+        "Reorg should succeed when removing all transactions: {result:?}"
     );
 
     let current_block_iteration = engine
@@ -992,7 +989,7 @@ async fn test_execute_reorg_removes_all_transactions() {
     assert_eq!(current_block_iteration.n_transactions, 0);
 }
 
-/// Tests reorg when all transactions in the commit log were failures (commit_empty).
+/// Tests reorg when all transactions in the commit log were failures (`commit_empty`).
 /// This ensures the rollback handles the case where no state was ever committed.
 #[tokio::test]
 async fn test_execute_reorg_with_all_failed_transactions() {
@@ -1051,11 +1048,10 @@ async fn test_execute_reorg_with_all_failed_transactions() {
         tx_hashes: vec![tx2_hash],
     };
 
-    let result = engine.execute_reorg(reorg);
+    let result = engine.execute_reorg(&reorg);
     assert!(
         result.is_ok(),
-        "Reorg should succeed with all failed transactions: {:?}",
-        result
+        "Reorg should succeed with all failed transactions: {result:?}"
     );
 
     let current_block_iteration = engine
@@ -1085,20 +1081,22 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
     let txs: Vec<TxExecutionId> = tx_hashes
         .iter()
         .enumerate()
-        .map(|(i, &tx_hash)| TxExecutionId {
-            block_number,
-            iteration_id,
-            tx_hash,
-            index: i as u64,
+        .map(|(i, &tx_hash)| {
+            TxExecutionId {
+                block_number,
+                iteration_id,
+                tx_hash,
+                index: i as u64,
+            }
         })
         .collect();
 
     let mut version_db = VersionDb::new(engine.cache.clone());
     // Alternating pattern: Some, None, Some, None, Some
     version_db.commit(EvmState::default()); // TX0 succeeded
-    version_db.commit_empty();              // TX1 failed
+    version_db.commit_empty(); // TX1 failed
     version_db.commit(EvmState::default()); // TX2 succeeded
-    version_db.commit_empty();              // TX3 failed
+    version_db.commit_empty(); // TX3 failed
     version_db.commit(EvmState::default()); // TX4 succeeded
 
     let current_block_iteration_data = BlockIterationData {
@@ -1129,11 +1127,10 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
         tx_hashes: tx_hashes[1..5].to_vec(),
     };
 
-    let result = engine.execute_reorg(reorg);
+    let result = engine.execute_reorg(&reorg);
     assert!(
         result.is_ok(),
-        "Deep reorg with alternating pattern should succeed: {:?}",
-        result
+        "Deep reorg with alternating pattern should succeed: {result:?}"
     );
 
     let current_block_iteration = engine
@@ -2791,7 +2788,7 @@ async fn test_transaction_stalls_until_source_synced(mut instance: crate::utils:
     );
 }
 
-/// Tests that reverted transactions (EVM reverts) ARE counted in n_transactions.
+/// Tests that reverted transactions (EVM reverts) ARE counted in `n_transactions`.
 /// Reverts are valid execution outcomes and their state should be committed.
 #[tokio::test]
 async fn test_reverted_transactions_are_counted() {
@@ -2828,7 +2825,10 @@ async fn test_reverted_transactions_are_counted() {
 
     // Execute the reverting transaction
     let result = engine.execute_transaction(tx_execution_id, &reverting_tx_env);
-    assert!(result.is_ok(), "Reverting transaction should execute without engine error");
+    assert!(
+        result.is_ok(),
+        "Reverting transaction should execute without engine error"
+    );
 
     // Verify the transaction result is a revert
     let tx_result = engine
@@ -2836,13 +2836,17 @@ async fn test_reverted_transactions_are_counted() {
         .expect("Transaction result should exist");
 
     match tx_result {
-        TransactionResult::ValidationCompleted { execution_result, .. } => {
+        TransactionResult::ValidationCompleted {
+            execution_result, ..
+        } => {
             assert!(
                 !execution_result.is_success(),
                 "Transaction should have reverted"
             );
         }
-        _ => panic!("Expected ValidationCompleted result"),
+        TransactionResult::ValidationError(_) => {
+            panic!("Expected ValidationCompleted result");
+        }
     }
 
     // Verify n_transactions is incremented for reverted transaction
@@ -2856,7 +2860,7 @@ async fn test_reverted_transactions_are_counted() {
 }
 
 /// Tests that invalid transactions (validation errors like insufficient funds, bad nonce)
-/// are NOT counted in n_transactions because their state is not committed.
+/// are NOT counted in `n_transactions` because their state is not committed.
 #[tokio::test]
 async fn test_invalid_transactions_not_counted() {
     let (mut engine, _) = create_test_engine().await;
@@ -2903,8 +2907,7 @@ async fn test_invalid_transactions_not_counted() {
         .expect("Transaction result should exist");
     assert!(
         matches!(tx_result, TransactionResult::ValidationError(_)),
-        "Expected ValidationError for insufficient funds, got {:?}",
-        tx_result
+        "Expected ValidationError for insufficient funds, got {tx_result:?}"
     );
 
     // Verify n_transactions is NOT incremented for invalid transaction

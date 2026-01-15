@@ -65,20 +65,20 @@ impl<Db> VersionDb<Db> {
         matches!(self.commit_log.last(), Some(None))
     }
 
-    /// Provides read-only access to the underlying state ForkDb.
+    /// Provides read-only access to the underlying state `ForkDb`.
     pub fn state(&self) -> &ForkDb<Db> {
         &self.state
     }
 
-    /// Provides mutable access to the underlying state ForkDb.
+    /// Provides mutable access to the underlying state `ForkDb`.
     /// Use with caution - modifications won't be tracked in the commit log.
     /// This is primarily useful for read-execute operations that need mutable access
-    /// but commit changes through the VersionDb's commit method afterward.
+    /// but commit changes through the `VersionDb`'s commit method afterward.
     pub fn state_mut(&mut self) -> &mut ForkDb<Db> {
         &mut self.state
     }
 
-    /// Provides read-only access to the base state ForkDb.
+    /// Provides read-only access to the base state `ForkDb`.
     pub fn base_state(&self) -> &ForkDb<Db> {
         &self.base_state
     }

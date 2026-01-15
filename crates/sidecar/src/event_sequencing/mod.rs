@@ -78,14 +78,25 @@ struct Context {
 }
 
 impl EventSequencing {
-    fn collect_tail_tx_hashes(
-        queue: &VecDeque<EventMetadata>,
-        depth: usize,
-    ) -> Option<Vec<TxHash>> {
+    /// Extracts the last `depth` transaction hashes from the sent events queue.
+    ///
+    /// Used to validate that a reorg request's `tx_hashes` match what was actually sent.
+    /// The queue may contain non-transaction events (e.g., `NewIteration`), which are
+    /// skipped when collecting hashes.
+    ///
+    /// Returns `None` if:
+    /// - `depth` exceeds platform limits (`usize::MAX`)
+    /// - There are fewer than `depth` transactions in the queue
+    ///
+    /// Returns hashes in chronological order (oldest first), matching the
+    /// `ReorgRequest.tx_hashes` format.
+    fn collect_tail_tx_hashes(queue: &VecDeque<EventMetadata>, depth: u64) -> Option<Vec<TxHash>> {
+        let depth = usize::try_from(depth).ok()?;
         if depth == 0 {
             return Some(Vec::new());
         }
 
+        // Collect hashes by iterating backwards (newest first)
         let mut hashes = Vec::with_capacity(depth);
         for event in queue.iter().rev() {
             if let EventMetadata::Transaction { tx_hash, .. } = event {
@@ -97,6 +108,7 @@ impl EventSequencing {
         }
 
         if hashes.len() == depth {
+            // Reverse to get chronological order (oldest first)
             hashes.reverse();
             Some(hashes)
         } else {
@@ -251,29 +263,53 @@ impl EventSequencing {
             return Ok(());
         };
 
-        // Handle reorg events
+        // Handle reorg events.
+        //
+        // A reorg can arrive in two scenarios:
+        // 1. AFTER the transactions it cancels have been sent - we can process immediately
+        // 2. BEFORE the transactions it cancels - we queue it in the dependency graph
+        //
+        // For a depth-N reorg at index I, it cancels transactions from index (I-N+1) to I.
+        // The reorg's `tx_execution_id.index` is the index of the LAST (newest) transaction
+        // being cancelled.
         if event_metadata.is_reorg() {
             let reorg_depth = match &event_metadata {
                 EventMetadata::Reorg { depth, .. } => *depth,
                 _ => 0,
             };
-            // Check if we can cancel the last sent event right now
+
+            // Check if we have enough sent transactions to cancel right now.
+            // Two conditions must be met:
+            // 1. We have at least `reorg_depth` transactions in the sent queue
+            // 2. The most recent sent event matches the reorg's target (cancel_each_other)
             let context = self.get_context_mut(block_number, "handle_current_context_event")?;
-            let can_cancel = context
-                .sent_events
-                .get(&event_iteration_id)
-                .is_some_and(|queue| {
-                    let tx_count = queue.iter().filter(|e| e.is_transaction()).count();
-                    tx_count >= reorg_depth as usize
-                        && queue
-                            .back()
-                            .is_some_and(|last| last.cancel_each_other(&event_metadata))
-                });
+            let can_cancel = if let Some(queue) = context.sent_events.get(&event_iteration_id) {
+                let tx_count = queue.iter().filter(|e| e.is_transaction()).count();
+                let tx_count = if let Ok(count) = u64::try_from(tx_count) {
+                    count
+                } else {
+                    error!(
+                        target = "event_sequencing",
+                        "Transaction count exceeds platform limits"
+                    );
+                    0
+                };
+                tx_count >= reorg_depth
+                    && queue
+                        .back()
+                        .is_some_and(|last| last.cancel_each_other(&event_metadata))
+            } else {
+                false
+            };
 
             if can_cancel {
-                // The last sent event is the TX we want to cancel
+                // Scenario 1: All transactions to cancel have been sent. Process the reorg
+                // immediately - `send_event_recursive` will validate hashes and remove events.
                 self.send_event_recursive(event, &event_metadata)?;
             } else if let Some(previous_event) = event_metadata.calculate_previous_event() {
+                // Scenario 2: Reorg arrived before its target transaction(s). Queue it in the
+                // dependency graph. When the target transaction arrives, `handle_sequential_event`
+                // will detect the pending reorg and cancel both events.
                 self.add_to_dependency_graph(block_number, previous_event, event_metadata, event)?;
             }
             return Ok(());
@@ -302,6 +338,11 @@ impl EventSequencing {
     }
 
     /// Handles sequential events (transactions and commit heads).
+    ///
+    /// This function handles the case where a reorg arrives BEFORE the transaction it cancels.
+    /// When a transaction arrives, we check if there's a pending reorg in the dependency graph
+    /// that would cancel it. If so, both the transaction and reorg are dropped (they cancel
+    /// each other out).
     fn handle_sequential_event(
         &mut self,
         event: TxQueueContents,
@@ -317,7 +358,13 @@ impl EventSequencing {
                 &event_metadata,
             )
         {
-            // Check if there's a pending reorg that would cancel this event
+            // Before sending this transaction, check if a reorg arrived earlier that
+            // would cancel it. This handles the "reorg before transaction" scenario.
+            //
+            // Note: For depth-1 reorgs, this is straightforward - the reorg and transaction
+            // cancel each other. For depth-N reorgs (N > 1), the reorg waits for its target
+            // transaction (the last one it cancels). Earlier transactions in the reorg range
+            // will have already been sent, and `send_event_recursive` handles removing them.
             let context = self.get_context_mut(block_number, "handle_sequential_event")?;
             let has_cancelling_reorg =
                 context
@@ -332,7 +379,9 @@ impl EventSequencing {
                     });
 
             if has_cancelling_reorg {
-                // Remove the reorg from the dependency graph
+                // A reorg was waiting for this transaction. Remove both from the system:
+                // - The reorg is removed from the dependency graph
+                // - The transaction is not sent (dropped here)
                 let context = self.get_context_mut(block_number, "handle_sequential_event")?;
                 if let Some(dependents) = context.dependency_graph.get_mut(&previous_event) {
                     dependents.retain(|existing, _| {
@@ -341,13 +390,12 @@ impl EventSequencing {
                             && event_metadata.cancel_each_other(&existing_meta))
                     });
                 }
-                // Don't send this TX, as it's been reorged
                 return Ok(());
             }
 
             self.send_event_recursive(event, &event_metadata)?;
         } else {
-            // Queue the event as a dependency
+            // Previous event hasn't been sent yet - queue this event as a dependency
             self.add_to_dependency_graph(block_number, previous_event, event_metadata, event)?;
         }
         Ok(())
@@ -426,6 +474,16 @@ impl EventSequencing {
     }
 
     /// Recursively sends an event and all its dependent events from the dependency graph.
+    ///
+    /// For reorg events, this function performs validation before sending to the engine:
+    /// 1. Validates `depth > 0`
+    /// 2. Validates `tx_hashes.len() == depth`
+    /// 3. Validates `tx_hashes` match the tail of sent transactions (integrity check)
+    /// 4. Validates the last sent event can be cancelled by this reorg
+    ///
+    /// If validation passes, removes `depth` events from the sent queue and forwards
+    /// the reorg to the engine for state rollback.
+    #[allow(clippy::too_many_lines)]
     fn send_event_recursive(
         &mut self,
         event: TxQueueContents,
@@ -444,72 +502,87 @@ impl EventSequencing {
 
         let (reorg_depth, reorg_tx_hashes) = match (&event, event_metadata) {
             (TxQueueContents::Reorg(reorg, _), EventMetadata::Reorg { depth, .. }) => {
-                (*depth as usize, Some(reorg.tx_hashes.as_slice()))
+                (*depth, Some(reorg.tx_hashes.as_slice()))
             }
             _ => (0, None),
         };
 
-        // Perform reorg validation inline to avoid borrow issues
+        // Reorg validation: ensures the reorg request is valid before forwarding to engine.
+        // This is defense-in-depth - the engine also validates, but catching issues here
+        // prevents unnecessary work and provides clearer error attribution.
         let should_send = if event_metadata.is_reorg() {
             let Some(reorg_tx_hashes) = reorg_tx_hashes else {
-                error!(
-                    target = "event_sequencing",
-                    "Reorg event metadata mismatch"
-                );
+                error!(target = "event_sequencing", "Reorg event metadata mismatch");
                 return Ok(false);
             };
             let queue = context.sent_events.entry(iteration_id).or_default();
 
+            // Validation 1: depth must be positive
             if reorg_depth == 0 {
                 error!(
                     target = "event_sequencing",
                     "Received reorg event with zero depth"
                 );
                 false
-            } else if reorg_tx_hashes.len() != reorg_depth {
-                error!(
-                    target = "event_sequencing",
-                    depth = reorg_depth,
-                    tx_hashes_len = reorg_tx_hashes.len(),
-                    "Received reorg event with mismatched tx_hashes length"
-                );
-                false
             } else {
-                let tx_count = queue.iter().filter(|e| e.is_transaction()).count();
-                if tx_count < reorg_depth {
+                let Ok(reorg_depth_usize) = usize::try_from(reorg_depth) else {
                     error!(
                         target = "event_sequencing",
-                        "Received reorg event without enough transactions"
+                        depth = reorg_depth,
+                        "Reorg depth exceeds platform limits"
                     );
-                    false
-                } else if Self::collect_tail_tx_hashes(queue, reorg_depth)
-                    .as_deref()
-                    != Some(reorg_tx_hashes)
-                {
-                    error!(
-                        target = "event_sequencing",
-                        "Received reorg event with tx_hashes that do not match sent events"
-                    );
-                    false
-                } else if let Some(last_sent_event) = queue.pop_back() {
-                    if last_sent_event.cancel_each_other(event_metadata) {
-                        cancelled_events.push(last_sent_event);
-                        for _ in 1..reorg_depth {
-                            if let Some(removed) = queue.pop_back() {
-                                cancelled_events.push(removed);
+                    return Ok(false);
+                };
+
+                // Validation 2: tx_hashes length must match depth
+                if reorg_tx_hashes.len() == reorg_depth_usize {
+                    let tx_count = queue.iter().filter(|e| e.is_transaction()).count();
+
+                    // Validation 3: must have enough transactions to reorg
+                    if tx_count < reorg_depth_usize {
+                        error!(
+                            target = "event_sequencing",
+                            "Received reorg event without enough transactions"
+                        );
+                        false
+                    // Validation 4: tx_hashes must match the tail of sent transactions
+                    } else if Self::collect_tail_tx_hashes(queue, reorg_depth).as_deref()
+                        != Some(reorg_tx_hashes)
+                    {
+                        error!(
+                            target = "event_sequencing",
+                            "Received reorg event with tx_hashes that do not match sent events"
+                        );
+                        false
+                    // Validation 5: last sent event must be cancellable by this reorg
+                    } else if let Some(last_sent_event) = queue.pop_back() {
+                        if last_sent_event.cancel_each_other(event_metadata) {
+                            // All validations passed - remove `depth` events from sent queue
+                            cancelled_events.push(last_sent_event);
+                            for _ in 1..reorg_depth_usize {
+                                if let Some(removed) = queue.pop_back() {
+                                    cancelled_events.push(removed);
+                                }
                             }
+                            true
+                        } else {
+                            // Last event doesn't match - restore it and reject reorg
+                            queue.push_back(last_sent_event);
+                            false
                         }
-                        true
                     } else {
-                        // If the last event sent is not canceled by the reorg, restore the last event
-                        // and do not send the reorg event, as it will not cancel anything.
-                        queue.push_back(last_sent_event);
+                        error!(
+                            target = "event_sequencing",
+                            "Received reorg event without previous event"
+                        );
                         false
                     }
                 } else {
                     error!(
                         target = "event_sequencing",
-                        "Received reorg event without previous event"
+                        depth = reorg_depth,
+                        tx_hashes_len = reorg_tx_hashes.len(),
+                        "Received reorg event with mismatched tx_hashes length"
                     );
                     false
                 }

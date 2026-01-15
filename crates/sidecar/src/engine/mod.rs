@@ -879,7 +879,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 }
                 TxQueueContents::Reorg(reorg, current_span) => {
                     let _guard = current_span.enter();
-                    self.execute_reorg(reorg)
+                    self.execute_reorg(&reorg)
                 }
             };
 
@@ -1012,7 +1012,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 }
                 TxQueueContents::Reorg(reorg, current_span) => {
                     let _guard = current_span.enter();
-                    self.execute_reorg(reorg)
+                    self.execute_reorg(&reorg)
                 }
             };
 
@@ -1323,15 +1323,41 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         ),
         level = "info"
     )]
-    fn execute_reorg(&mut self, reorg: ReorgRequest) -> Result<(), EngineError> {
+    /// Executes a reorg request, rolling back the last `depth` transactions.
+    ///
+    /// ## Validation Steps (defense-in-depth with event sequencing layer)
+    /// 1. `depth > 0` - must reorg at least one transaction
+    /// 2. `tx_hashes.len() == depth` - hash list must match depth
+    /// 3. `tx_hashes.last() == tx_execution_id.tx_hash` - tip hash consistency
+    /// 4. `depth <= executed_txs.len()` - can't reorg more than we have
+    /// 5. `tx_hashes` match the tail of `executed_txs` - integrity check
+    ///
+    /// ## State Rollback
+    /// Uses `VersionDb::rollback_to()` to restore state to before the reorged
+    /// transactions. Only decrements `n_transactions` by the count of VALID
+    /// transactions being removed (invalid transactions don't count toward
+    /// the block's transaction count).
+    #[allow(clippy::too_many_lines)]
+    fn execute_reorg(&mut self, reorg: &ReorgRequest) -> Result<(), EngineError> {
         let tx_execution_id = reorg.tx_execution_id;
-        let depth = reorg.depth as usize;
+        let depth = usize::try_from(reorg.depth).map_err(|_| {
+            error!(
+                target = "engine",
+                tx_execution_id = %tx_execution_id.to_json_string(),
+                depth = reorg.depth,
+                "Reorg depth exceeds platform limits"
+            );
+            EngineError::BadReorgHash
+        })?;
         trace!(
             target = "engine",
             tx_execution_id = %tx_execution_id.to_json_string(),
             "Checking reorg validity for hash"
         );
 
+        // === Validation Phase ===
+
+        // Validation 1: depth must be positive
         if depth == 0 {
             error!(
                 target = "engine",
@@ -1340,6 +1366,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
             return Err(EngineError::ReorgError);
         }
+
+        // Validation 2: tx_hashes length must match depth
         if reorg.tx_hashes.len() != depth {
             error!(
                 target = "engine",
@@ -1350,6 +1378,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
             return Err(EngineError::BadReorgHash);
         }
+
+        // Validation 3: last hash in tx_hashes must match the reorg's tx_execution_id
         if reorg.tx_hashes.last() != Some(&tx_execution_id.tx_hash) {
             error!(
                 target = "engine",
@@ -1373,8 +1403,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Err(EngineError::ReorgError);
         };
 
-        // Check if we have received a transaction at all and if it matches
+        // Validation 4 & 5: verify the reorg target matches our state
         if current_block_iteration.has_last_tx(tx_execution_id) {
+            // Validation 4: can't reorg more transactions than we've executed
             if depth > current_block_iteration.executed_txs.len() {
                 error!(
                     target = "engine",
@@ -1386,6 +1417,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 return Err(EngineError::BadReorgHash);
             }
 
+            // Validation 5: tx_hashes must match the tail of executed transactions
+            // This ensures the driver and engine agree on what's being reorged.
+            // tx_hashes are in chronological order (oldest first).
             let start = current_block_iteration.executed_txs.len() - depth;
             let expected_hashes = current_block_iteration.executed_txs[start..]
                 .iter()
@@ -1398,6 +1432,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 );
                 return Err(EngineError::BadReorgHash);
             }
+
+            // === Execution Phase ===
 
             info!(
                 target = "engine",
@@ -1417,29 +1453,28 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .rollback_to(new_len)
                 .expect("rollback depth validated above");
 
-            // Only count valid transactions for decrement - invalid txs
-            // don't contribute to n_transactions
+            // Count how many of the removed transactions were valid.
+            // Only valid transactions contribute to `n_transactions` (the count used
+            // in CommitHead validation), so we only decrement by the valid count.
+            // Invalid transactions (failed assertions) are tracked in executed_txs
+            // but don't affect n_transactions.
             let mut valid_tx_count = 0u64;
             for removed in removed_txs {
-                // Check if this transaction was valid before removing it
                 let is_valid = self
                     .transaction_results
                     .get_transaction_result(&removed)
-                    .map(|result_ref| {
+                    .is_some_and(|result_ref| {
                         matches!(
                             &*result_ref,
                             TransactionResult::ValidationCompleted { is_valid: true, .. }
                         )
-                    })
-                    // If no result exists (e.g., evicted or missing), treat as invalid
-                    .unwrap_or(false);
+                    });
 
                 if is_valid {
                     valid_tx_count += 1;
                 }
 
-                self.transaction_results
-                    .remove_transaction_result(removed);
+                self.transaction_results.remove_transaction_result(removed);
                 #[cfg(feature = "cache_validation")]
                 if let Some(iteration) = self
                     .iteration_pending_processed_transactions
@@ -1449,9 +1484,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 }
             }
 
-            // Only decrement by the count of valid transactions
-            current_block_iteration.n_transactions =
-                current_block_iteration.n_transactions.saturating_sub(valid_tx_count);
+            // Decrement n_transactions by valid count only (saturating to handle edge cases)
+            current_block_iteration.n_transactions = current_block_iteration
+                .n_transactions
+                .saturating_sub(valid_tx_count);
 
             return Ok(());
         }

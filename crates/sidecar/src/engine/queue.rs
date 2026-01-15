@@ -62,13 +62,27 @@ pub struct QueueTransaction {
     pub prev_tx_hash: Option<TxHash>,
 }
 
-/// Reorg request for the last `depth` transactions in an iteration.
+/// Reorg request to remove the last `depth` transactions from an iteration.
+///
+/// The `tx_execution_id` identifies the LAST (newest) transaction being reorged.
+/// For a depth-N reorg, transactions from index `(tx_execution_id.index - N + 1)`
+/// to `tx_execution_id.index` inclusive are removed.
+///
+/// ## Validation
+/// Both the event sequencing layer and engine validate:
+/// 1. `depth > 0`
+/// 2. `tx_hashes.len() == depth`
+/// 3. `tx_hashes.last() == tx_execution_id.tx_hash`
+/// 4. `tx_hashes` match the tail of executed/sent transactions
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReorgRequest {
+    /// Identifies the last (newest) transaction being reorged.
     pub tx_execution_id: TxExecutionId,
+    /// Number of transactions to remove from the tail. Must be >= 1.
     #[serde(default = "default_reorg_depth")]
     pub depth: u64,
-    /// Ordered list of transaction hashes to reorg (oldest -> newest).
+    /// Transaction hashes being reorged, in chronological order (oldest first).
+    /// Length must equal `depth`. Used for integrity validation.
     #[serde(default)]
     pub tx_hashes: Vec<TxHash>,
 }

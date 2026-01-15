@@ -263,11 +263,17 @@ impl EventMetadata {
                 iteration_id,
                 depth,
             } => {
-                // For a reorg of depth N at index I, we remove transactions from
-                // index (I - N + 1) to I inclusive. The previous event is the
-                // transaction at index (I - N), or NewIteration if I < N.
+                // For a depth-N reorg at index I, we remove transactions from
+                // index (I - N + 1) to I inclusive. The "previous event" (what we
+                // depend on) is the transaction at index (I - N), which is the last
+                // transaction that will remain after the reorg.
+                //
+                // Example: depth=2 reorg at index=3 removes txs at indices 2 and 3,
+                // leaving tx at index 1 as the new tip. Previous event = tx[1].
+                //
+                // Edge case: if depth > index (e.g., depth=3 at index=1), we're
+                // reorging back to before any transactions, so previous = NewIteration.
                 if *depth > *index {
-                    // Reorging more transactions than exist, goes back to NewIteration
                     Some(EventMetadata::NewIteration {
                         block_number: *block_number,
                         iteration_id: *iteration_id,
