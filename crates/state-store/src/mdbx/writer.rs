@@ -339,6 +339,7 @@ impl BootstrapWriter {
             nonce: acc.nonce,
             code_hash: acc.code_hash,
         };
+        debug!(target: "state-store", "writing account {:?}", acc);
 
         // Write to ALL namespaces (circular buffer requirement)
         for ns in 0..self.buffer_size {

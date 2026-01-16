@@ -83,10 +83,7 @@ use std::{
     path::Path,
     time::Instant,
 };
-use tracing::{
-    instrument,
-    trace,
-};
+use tracing::{debug, instrument, trace};
 
 /// State reader for querying blockchain state from MDBX.
 #[derive(Clone, Debug)]
@@ -147,6 +144,9 @@ impl Reader for StateReader {
             .map_err(StateError::Database)?;
 
         Ok(account.map(|a| {
+            debug!(target: "state-store",
+                "get_account: address_hash={:x?}, balance={}, nonce={}, code_hash={:x?}",
+                address_hash, a.balance, a.nonce, a.code_hash);
             AccountInfo {
                 address_hash,
                 balance: a.balance,
