@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.2
+FROM rustlang/rust:nightly AS chef
+
+RUN rustup install nightly-2026-01-07 && \
+    rustup default nightly-2026-01-07 && \
+    cargo install cargo-chef && \
+    apt-get update && \
+    apt-get install -y libclang-dev clang
+
+WORKDIR /state-worker
+
+FROM chef AS planner
+
+COPY crates ./crates
+COPY scripts ./scripts
+COPY Cargo.* .
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+
+COPY --from=planner /state-worker/recipe.json recipe.json
+
+# Build dependencies only, these remained cached
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Optional build flags
+ARG BUILD_FLAGS=""
+COPY crates ./crates
+COPY scripts ./scripts
+COPY Cargo.* .
+RUN cargo build --release --locked --bin state-worker $BUILD_FLAGS
+
+FROM ubuntu:24.04
+WORKDIR /usr/local/bin
+
+COPY --from=builder /state-worker/target/release/state-worker /usr/local/bin/state-worker
+
+ENTRYPOINT ["/usr/local/bin/state-worker"]

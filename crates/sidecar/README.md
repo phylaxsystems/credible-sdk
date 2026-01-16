@@ -133,10 +133,17 @@ The configuration file is a JSON file with the following schema:
         "indexer_rpc_url",
         "indexer_db_path",
         "assertion_store_db_path",
+        "transaction_observer_db_path",
+        "transaction_observer_endpoint",
+        "transaction_observer_auth_token",
+        "transaction_observer_endpoint_rps_max",
+        "transaction_observer_poll_interval_ms",
         "block_tag",
         "state_oracle",
         "state_oracle_deployment_block",
-        "transaction_results_max_capacity"
+        "transaction_results_max_capacity",
+        "assertion_store_prune_config_interval_ms",
+        "assertion_store_prune_config_retention_blocks"
       ],
       "properties": {
         "assertion_gas_limit": {
@@ -146,14 +153,6 @@ The configuration file is a JSON file with the following schema:
           "maximum": 9007199254740991,
           "examples": [
             30000000
-          ]
-        },
-        "overlay_cache_invalidation_every_block": {
-          "type": "boolean",
-          "description": "Whether the overlay cache should be invalidated every block",
-          "examples": [
-            true,
-            false
           ]
         },
         "cache_capacity_bytes": {
@@ -212,7 +211,7 @@ The configuration file is a JSON file with the following schema:
         },
         "transaction_observer_db_path": {
           "type": "string",
-          "description": "Path to the transaction observer database (optional)",
+          "description": "Path to the transaction observer database",
           "minLength": 1,
           "examples": [
             "/tmp/observer.db",
@@ -221,7 +220,7 @@ The configuration file is a JSON file with the following schema:
         },
         "transaction_observer_endpoint": {
           "type": "string",
-          "description": "Dapp API endpoint for incident publishing (optional, empty to disable)",
+          "description": "Dapp API endpoint for incident publishing (empty to disable)",
           "examples": [
             "https://dapp.phylax.systems/api/v1/enforcer/incidents",
             ""
@@ -237,7 +236,7 @@ The configuration file is a JSON file with the following schema:
         },
         "transaction_observer_endpoint_rps_max": {
           "type": "integer",
-          "description": "Max incident publish requests per poll interval (optional)",
+          "description": "Max incident publish requests per poll interval",
           "minimum": 0,
           "examples": [
             60
@@ -245,7 +244,7 @@ The configuration file is a JSON file with the following schema:
         },
         "transaction_observer_poll_interval_ms": {
           "type": "integer",
-          "description": "Poll interval for incident publishing in milliseconds (optional)",
+          "description": "Poll interval for incident publishing in milliseconds",
           "minimum": 0,
           "examples": [
             1000
@@ -302,7 +301,7 @@ The configuration file is a JSON file with the following schema:
         },
         "assertion_store_prune_config_interval_ms": {
           "type": "integer",
-          "description": "Interval between prune runs in milliseconds for the assertion store (optional)",
+          "description": "Interval between prune runs in milliseconds for the assertion store",
           "examples": [
             60000,
             120000
@@ -310,7 +309,7 @@ The configuration file is a JSON file with the following schema:
         },
         "assertion_store_prune_config_retention_blocks": {
           "type": "integer",
-          "description": "Number of blocks to keep after inactivation (buffer for reorgs) for the assertion store (optional)",
+          "description": "Number of blocks to keep after inactivation (buffer for reorgs) for the assertion store",
           "examples": [
             0,
             10
@@ -324,7 +323,9 @@ The configuration file is a JSON file with the following schema:
       "description": "Transport protocol configuration",
       "required": [
         "protocol",
-        "bind_addr"
+        "bind_addr",
+        "health_bind_addr",
+        "event_id_buffer_capacity"
       ],
       "properties": {
         "protocol": {
@@ -350,7 +351,7 @@ The configuration file is a JSON file with the following schema:
         },
         "health_bind_addr": {
           "type": "string",
-          "description": "Bind address for the always-on health probe server (default: 0.0.0.0:9547)",
+          "description": "Bind address for the always-on health probe server",
           "pattern": "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|[a-zA-Z0-9.-]+):[0-9]{1,5}$",
           "examples": [
             "127.0.0.1:3001",
@@ -359,9 +360,9 @@ The configuration file is a JSON file with the following schema:
         },
         "event_id_buffer_capacity": {
           "type": "integer",
-          "description": "Maximum number of events ID in the transport layer buffer before dropping new events (default: 1000)",
+          "description": "Maximum number of events ID in the transport layer buffer before dropping new events.",
           "examples": [
-            1000
+            "1000"
           ]
         }
       },
@@ -371,6 +372,8 @@ The configuration file is a JSON file with the following schema:
       "type": "object",
       "description": "State source configuration",
       "required": [
+        "state_worker_mdbx_path",
+        "state_worker_depth",
         "minimum_state_diff",
         "sources_sync_timeout_ms",
         "sources_monitoring_period_ms"
@@ -401,50 +404,18 @@ The configuration file is a JSON file with the following schema:
           "description": "State worker MDBX path (optional)",
           "format": "path",
           "examples": [
-            "/tmp",
-            "/data/state_worker.mdbx"
+            "/tmp"
           ]
         },
         "state_worker_depth": {
           "type": "integer",
-          "description": "State worker state depth - how many blocks behind head state worker will have the data from (optional)",
+          "description": "State worker state depth - how many blocks behind head state worker will have the data from",
           "minimum": 0,
-          "maximum": 255,
+          "maximum": 9007199254740991,
           "examples": [
-            3,
             100,
-            250
-          ]
-        },
-        "state_worker_ws_url": {
-          "type": "string",
-          "description": "Eth RPC archive node WebSocket URL for the embedded state worker (optional)",
-          "format": "uri",
-          "pattern": "^wss?://",
-          "examples": [
-            "ws://localhost:8546",
-            "wss://mainnet.infura.io/ws/v3/YOUR-PROJECT-ID"
-          ]
-        },
-        "state_worker_genesis_file": {
-          "type": "string",
-          "description": "Path to the network genesis file for state worker initialization (optional)",
-          "minLength": 1,
-          "examples": [
-            "/etc/genesis.json",
-            "./genesis.json"
-          ]
-        },
-        "state_worker_provider_type": {
-          "type": "string",
-          "description": "Provider type for the state worker trace provider (optional)",
-          "enum": [
-            "reth",
-            "geth"
-          ],
-          "examples": [
-            "reth",
-            "geth"
+            250,
+            500
           ]
         },
         "minimum_state_diff": {
@@ -492,7 +463,6 @@ The default configuration can be found in [default_config.json](default_config.j
   },
   "credible": {
     "assertion_gas_limit": 3000000,
-    "overlay_cache_invalidation_every_block": false,
     "cache_capacity_bytes": 256000000,
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://127.0.0.1:5001",
@@ -512,17 +482,13 @@ The default configuration can be found in [default_config.json](default_config.j
   "transport": {
     "protocol": "grpc",
     "bind_addr": "0.0.0.0:50051",
-    "health_bind_addr": "0.0.0.0:9547",
-    "event_id_buffer_capacity": 1000
+    "health_bind_addr": "0.0.0.0:9547"
   },
   "state": {
     "eth_rpc_source_ws_url": "ws://127.0.0.1:8546",
     "eth_rpc_source_http_url": "http://127.0.0.1:8545",
     "state_worker_mdbx_path": "/data/state_worker.mdbx",
     "state_worker_depth": 3,
-    "state_worker_ws_url": "ws://127.0.0.1:8546",
-    "state_worker_genesis_file": "./genesis.json",
-    "state_worker_provider_type": "reth",
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
     "sources_monitoring_period_ms": 500

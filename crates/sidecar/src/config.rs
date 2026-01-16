@@ -135,36 +135,3 @@ pub async fn init_indexer_config(
         await_tag: config.credible.block_tag,
     })
 }
-
-/// Try to build state worker config from sidecar config.
-/// Returns `None` if required fields are missing.
-pub fn init_state_worker_config(config: &Config) -> Option<state_worker::Config> {
-    let ws_url = config.state.state_worker_ws_url.as_ref()?;
-    let mdbx_path = config.state.state_worker_mdbx_path.as_ref()?;
-    let state_depth = config.state.state_worker_depth?;
-    let genesis_file = config.state.state_worker_genesis_file.as_ref()?;
-
-    let provider_type = config
-        .state
-        .state_worker_provider_type
-        .as_ref()
-        .and_then(|s| s.parse().ok())?;
-
-    info!(
-        ws_url = %ws_url,
-        mdbx_path = %mdbx_path,
-        state_depth = state_depth,
-        genesis_file = %genesis_file,
-        provider_type = ?provider_type,
-        "Initialized state worker config"
-    );
-
-    Some(state_worker::Config {
-        ws_url: ws_url.clone(),
-        mdbx_path: mdbx_path.clone(),
-        state_depth,
-        file_to_genesis: genesis_file.clone(),
-        start_block: None,
-        provider_type,
-    })
-}

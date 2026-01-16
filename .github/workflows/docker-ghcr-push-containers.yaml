@@ -2,7 +2,7 @@ name: Docker GHCR Push - Assertion DA
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     tags:
       - "*.*.*"
       - "*.*.*-patch"
@@ -59,3 +59,11 @@ jobs:
       rust-binary-name: shadow-driver
       requires-private-deps: false
       dockerfile-path: dockerfile/Dockerfile.shadow-driver
+  docker-ghcr-push-state-worker:
+    needs: check-version
+    if: always() && (needs.check-version.result == 'success' || needs.check-version.result == 'skipped')
+    uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
+    with:
+      rust-binary-name: state-worker
+      requires-private-deps: false
+      dockerfile-path: dockerfile/Dockerfile.state-worker

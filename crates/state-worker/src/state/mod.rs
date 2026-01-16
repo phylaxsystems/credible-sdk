@@ -148,18 +148,18 @@ impl BlockStateUpdateBuilder {
 
 /// Create a trace provider based on the provider type
 pub fn create_trace_provider(
-    provider_type: crate::config::ProviderType,
+    provider_type: crate::cli::ProviderType,
     provider: Arc<RootProvider>,
     trace_timeout: Duration,
 ) -> Box<dyn TraceProvider> {
     match provider_type {
-        crate::config::ProviderType::Geth => {
+        crate::cli::ProviderType::Geth => {
             Box::new(geth_provider::GethTraceProvider::new(
                 provider,
                 trace_timeout,
             ))
         }
-        crate::config::ProviderType::Parity => {
+        crate::cli::ProviderType::Parity => {
             Box::new(parity_provider::ParityTraceProvider::new(provider))
         }
     }
