@@ -57,7 +57,7 @@ pub struct ProfilingGuard;
 pub fn init_profiling(runtime: &Handle) -> Result<ProfilingGuard, String> {
     let console_layer = ConsoleLayer::builder().with_default_env().spawn();
 
-      let filter = tracing_subscriber::EnvFilter::from_default_env()
+    let filter = tracing_subscriber::EnvFilter::from_default_env()
         .add_directive(
             "alloy_rpc_client=warn"
                 .parse()
