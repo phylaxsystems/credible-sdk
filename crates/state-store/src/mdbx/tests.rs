@@ -3878,11 +3878,10 @@ fn test_bootstrap_available_block_range() {
     drop(w);
     let r = reader_for(&tmp, 5);
 
-    // get_available_block_range returns THEORETICAL range: (latest - buffer_size + 1, latest)
-    // With latest=102 and buffer_size=5: (102 - 5 + 1, 102) = (98, 102)
-    // This is NOT the same as which blocks actually exist!
+    // get_available_block_range returns the range of blocks that exist in the buffer.
+    // After bootstrap at 100 + commits at 101, 102, the buffer contains blocks 100..=102.
     let range = r.get_available_block_range().unwrap();
-    assert_eq!(range, Some((98, 102)));
+    assert_eq!(range, Some((100, 102)));
 
     // Use is_block_available to check actual block availability
     // After bootstrap at 100 + commits at 101, 102:
