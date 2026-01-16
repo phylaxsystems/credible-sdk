@@ -41,6 +41,7 @@ use serde::{
 use tracing::{
     debug,
     error,
+    info,
 };
 
 use std::collections::{
@@ -863,7 +864,7 @@ impl AssertionStore {
             let mut assertions: Vec<AssertionState> =
                 inner.backend.get(&assertion_adopter)?.unwrap_or_default();
 
-            debug!(
+            info!(
                 target: "assertion-executor::assertion_store",
                 pending_modifations_len = assertions.len(),
                 "Applying pending modifications"
@@ -881,7 +882,7 @@ impl AssertionStore {
                         activation_block,
                         ..
                     } => {
-                        debug!(
+                        info!(
                             target: "assertion-executor::assertion_store",
                             ?assertion_contract,
                             ?trigger_recorder,
@@ -916,7 +917,7 @@ impl AssertionStore {
                         inactivation_block,
                         ..
                     } => {
-                        debug!(
+                        info!(
                             target: "assertion-executor::assertion_store",
                             ?assertion_contract_id,
                             inactivation_block,
