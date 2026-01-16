@@ -369,15 +369,30 @@ impl Reader for StateReader {
     ///
     /// Returns `None` if no blocks have been written.
     fn get_available_block_range(&self) -> StateResult<Option<(u64, u64)>> {
-        let latest = self.latest_block_number()?;
+        // Compute from the `NamespaceBlocks` table, which reflects which blocks actually exist.
+        //
+        // This is especially important after `bootstrap_from_snapshot`, where ALL namespaces point
+        // to the same block number until enough new blocks have been committed to fully rotate the
+        // buffer. In that case, the "theoretical" range `(latest - buffer_size + 1, latest)` would
+        // include blocks that never existed and cannot be read.
+        let tx = self.db.tx()?;
+        let mut cursor = tx
+            .cursor_read::<NamespaceBlocks>()
+            .map_err(StateError::Database)?;
 
-        match latest {
-            Some(latest_block) => {
-                let oldest = latest_block.saturating_sub(u64::from(self.db.buffer_size()) - 1);
-                Ok(Some((oldest, latest_block)))
-            }
-            None => Ok(None),
+        let Some((_ns, first_block)) = cursor.first().map_err(StateError::Database)? else {
+            return Ok(None);
+        };
+
+        let mut oldest = first_block.0;
+        let mut latest = first_block.0;
+
+        while let Some((_ns, block)) = cursor.next().map_err(StateError::Database)? {
+            oldest = oldest.min(block.0);
+            latest = latest.max(block.0);
         }
+
+        Ok(Some((oldest, latest)))
     }
 
     /// Scan all account hashes in the buffer for a specific block.

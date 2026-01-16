@@ -937,4 +937,52 @@ mod tests {
         assert_eq!(cache.get_target_block(), 98);
         assert!(!cache.is_synced(90, 94));
     }
+
+    #[test]
+    fn mdbx_source_not_synced_for_nonexistent_blocks_after_bootstrap() {
+        use state_store::{
+            AccountState,
+            AddressHash,
+            Reader as _,
+            Writer as _,
+            mdbx::{
+                StateReader,
+                StateWriter,
+                common::CircularBufferConfig,
+            },
+        };
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("state");
+        let config = CircularBufferConfig::new(5).unwrap();
+
+        let writer = StateWriter::new(&path, config.clone()).unwrap();
+        let addr = Address::repeat_byte(0x11);
+        writer
+            .bootstrap_from_snapshot(
+                vec![AccountState {
+                    address_hash: AddressHash(keccak256(addr)),
+                    balance: u(1000),
+                    nonce: 0,
+                    code_hash: B256::ZERO,
+                    code: None,
+                    storage: HashMap::new(),
+                    deleted: false,
+                }],
+                100,
+                B256::ZERO,
+                B256::ZERO,
+            )
+            .unwrap();
+        drop(writer);
+
+        let reader = StateReader::new(&path, config).unwrap();
+        let source = MdbxSource::new(reader);
+
+        // Requesting blocks below the bootstrap block should not consider the MDBX source synced
+        assert!(!source.is_synced(u(99), u(99)));
+        assert!(source.is_synced(u(100), u(100)));
+    }
 }
