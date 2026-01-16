@@ -39,7 +39,6 @@ use sidecar::{
         init_assertion_store,
         init_executor_config,
         init_indexer_config,
-        init_state_worker_config,
     },
     critical,
     engine::{
@@ -49,7 +48,6 @@ use sidecar::{
     event_sequencing::EventSequencing,
     health::HealthServer,
     indexer,
-    state_worker::spawn_state_worker,
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -90,8 +88,7 @@ use std::{
 };
 use tracing::{
     error,
-    info,
-    warn,
+    log::info,
 };
 
 /// Create transport with optional result streaming support.
@@ -147,7 +144,6 @@ struct ThreadHandles {
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
     transaction_observer:
         Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
-    state_worker: Option<JoinHandle<()>>,
 }
 
 impl ThreadHandles {
@@ -156,37 +152,33 @@ impl ThreadHandles {
             engine: None,
             event_sequencing: None,
             transaction_observer: None,
-            state_worker: None,
         }
     }
 
     fn join_all(&mut self) {
         if let Some(handle) = self.engine.take() {
             match handle.join() {
-                Ok(Ok(())) => info!("Engine thread exited cleanly"),
-                Ok(Err(e)) => error!(error = ?e, "Engine thread exited with error"),
-                Err(_) => error!("Engine thread panicked"),
+                Ok(Ok(())) => tracing::info!("Engine thread exited cleanly"),
+                Ok(Err(e)) => tracing::error!(error = ?e, "Engine thread exited with error"),
+                Err(_) => tracing::error!("Engine thread panicked"),
             }
         }
         if let Some(handle) = self.event_sequencing.take() {
             match handle.join() {
-                Ok(Ok(())) => info!("Event sequencing thread exited cleanly"),
-                Ok(Err(e)) => error!(error = ?e, "Event sequencing thread exited with error"),
-                Err(_) => error!("Event sequencing thread panicked"),
+                Ok(Ok(())) => tracing::info!("Event sequencing thread exited cleanly"),
+                Ok(Err(e)) => {
+                    tracing::error!(error = ?e, "Event sequencing thread exited with error");
+                }
+                Err(_) => tracing::error!("Event sequencing thread panicked"),
             }
         }
         if let Some(handle) = self.transaction_observer.take() {
             match handle.join() {
-                Ok(Ok(())) => info!("Transaction observer thread exited cleanly"),
-                Ok(Err(e)) => error!(error = ?e, "Transaction observer thread exited with error"),
-                Err(_) => error!("Transaction observer thread panicked"),
-            }
-        }
-        if let Some(handle) = self.state_worker.take() {
-            if let Ok(()) = handle.join() {
-                info!("State worker thread exited cleanly");
-            } else {
-                error!("State worker thread panicked");
+                Ok(Ok(())) => tracing::info!("Transaction observer thread exited cleanly"),
+                Ok(Err(e)) => {
+                    tracing::error!(error = ?e, "Transaction observer thread exited with error");
+                }
+                Err(_) => tracing::error!("Transaction observer thread panicked"),
             }
         }
     }
@@ -210,14 +202,6 @@ async fn main() -> anyhow::Result<()> {
         AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
     let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
 
-    // Build state worker config (optional)
-    let state_worker_config = init_state_worker_config(&config);
-    if state_worker_config.is_some() {
-        info!("State worker enabled");
-    } else {
-        info!("State worker disabled: missing required config fields");
-    }
-
     let mut should_shutdown = false;
 
     while !should_shutdown {
@@ -226,22 +210,6 @@ async fn main() -> anyhow::Result<()> {
         // Shared shutdown flag for this iteration
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-        // Spawn state worker thread (if configured)
-        let state_worker_exited_rx = if let Some(ref sw_config) = state_worker_config
-            && let Ok((handle, exited_rx)) =
-                spawn_state_worker(sw_config.clone(), Arc::clone(&shutdown_flag))
-        {
-            thread_handles.state_worker = Some(handle);
-            Some(exited_rx)
-        } else {
-            None
-        };
-
-        // Wait a moment for state worker to initialize before starting sources
-        if state_worker_config.is_some() {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-
         let mut sources: Vec<Arc<dyn Source>> = vec![];
         if let (Some(state_worker_path), Some(state_worker_depth)) = (
             config.state.state_worker_mdbx_path.as_ref(),
@@ -249,7 +217,7 @@ async fn main() -> anyhow::Result<()> {
         ) {
             match StateReader::new(
                 state_worker_path,
-                CircularBufferConfig::new(state_worker_depth)?,
+                CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
             ) {
                 Ok(state_worker_client) => {
                     sources.push(Arc::new(MdbxSource::new(state_worker_client)));
@@ -263,20 +231,13 @@ async fn main() -> anyhow::Result<()> {
         if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
             &config.state.eth_rpc_source_ws_url,
             &config.state.eth_rpc_source_http_url,
-        ) {
-            match EthRpcSource::try_build(
-                eth_rpc_source_ws_url.as_str(),
-                eth_rpc_source_http_url.as_str(),
-            )
-            .await
-            {
-                Ok(eth_rpc_source) => {
-                    sources.push(eth_rpc_source);
-                }
-                Err(e) => {
-                    error!(error = ?e, "Failed to connect to ETH RPC source");
-                }
-            }
+        ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
+            eth_rpc_source_ws_url.as_str(),
+            eth_rpc_source_http_url.as_str(),
+        )
+        .await
+        {
+            sources.push(eth_rpc_source);
         }
 
         let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
@@ -374,7 +335,7 @@ async fn main() -> anyhow::Result<()> {
                 thread_handles.transaction_observer = Some(observer_handle);
                 Some(observer_exited)
             } else {
-                info!("Transaction observer disabled: missing config");
+                tracing::info!("Transaction observer disabled: missing config");
                 None
             };
 
@@ -383,37 +344,29 @@ async fn main() -> anyhow::Result<()> {
         let indexer_cfg =
             init_indexer_config(&config, assertion_store.clone(), &executor_config).await?;
 
-        // Create futures that wait forever if the component isn't enabled
         let observer_exited = async {
-            if let Some(rx) = observer_exited_rx {
-                rx.await
+            if let Some(observer_exited) = observer_exited_rx {
+                observer_exited.await
             } else {
                 std::future::pending().await
             }
         };
 
-        let state_worker_exited = async {
-            if let Some(rx) = state_worker_exited_rx {
-                rx.recv_async().await.ok()
-            } else {
-                std::future::pending().await
-            }
-        };
-
-        // Main event loop
+        // Only async components run in tokio::select!
+        // Transport, health server, and indexer need async for network I/O
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                info!("Received Ctrl+C, shutting down...");
+                tracing::info!("Received Ctrl+C, shutting down...");
                 should_shutdown = true;
             }
             _ = wait_for_sigterm() => {
-                info!("Received SIGTERM, shutting down...");
+                tracing::info!("Received SIGTERM, shutting down...");
                 should_shutdown = true;
             }
             result = transport.run() => {
                 if let Err(e) = result {
                     if ErrorRecoverability::from(&e).is_recoverable() {
-                        error!(error = ?e, "Transport exited");
+                        tracing::error!(error = ?e, "Transport exited");
                     } else {
                         critical!(error = ?e, "Transport exited");
                     }
@@ -421,46 +374,41 @@ async fn main() -> anyhow::Result<()> {
             }
             result = engine_exited => {
                 match result {
-                    Ok(Ok(())) => warn!("Engine exited unexpectedly"),
+                    Ok(Ok(())) => tracing::warn!("Engine exited unexpectedly"),
                     Ok(Err(e)) => {
                         if ErrorRecoverability::from(&e).is_recoverable() {
-                            error!(error = ?e, "Engine exited with recoverable error");
+                            tracing::error!(error = ?e, "Engine exited with recoverable error");
                         } else {
                             critical!(error = ?e, "Engine exited with unrecoverable error");
                         }
                     }
-                    Err(_) => error!("Engine notification channel dropped"),
+                    Err(_) => tracing::error!("Engine notification channel dropped"),
                 }
-            }
-            _ = state_worker_exited => {
-                // State worker has its own restart loop, so if we get here
-                // it means the loop exited (shutdown requested or gave up)
-                warn!("State worker thread exited");
             }
             result = seq_exited => {
                 match result {
-                    Ok(Ok(())) => warn!("Event sequencing exited unexpectedly"),
+                    Ok(Ok(())) => tracing::warn!("Event sequencing exited unexpectedly"),
                     Ok(Err(e)) => {
                         if ErrorRecoverability::from(&e).is_recoverable() {
-                            error!(error = ?e, "Event sequencing exited with recoverable error");
+                            tracing::error!(error = ?e, "Event sequencing exited with recoverable error");
                         } else {
                             critical!(error = ?e, "Event sequencing exited with unrecoverable error");
                         }
                     }
-                    Err(_) => error!("Event sequencing notification channel dropped"),
+                    Err(_) => tracing::error!("Event sequencing notification channel dropped"),
                 }
             }
             result = observer_exited => {
                 match result {
-                    Ok(Ok(())) => warn!("Transaction observer exited unexpectedly"),
+                    Ok(Ok(())) => tracing::warn!("Transaction observer exited unexpectedly"),
                     Ok(Err(e)) => {
                         if ErrorRecoverability::from(&e).is_recoverable() {
-                            error!(error = ?e, "Transaction observer exited with recoverable error");
+                            tracing::error!(error = ?e, "Transaction observer exited with recoverable error");
                         } else {
                             critical!(error = ?e, "Transaction observer exited with unrecoverable error");
                         }
                     }
-                    Err(_) => error!("Transaction observer notification channel dropped"),
+                    Err(_) => tracing::error!("Transaction observer notification channel dropped"),
                 }
             }
             result = health_server.run() => {
@@ -471,7 +419,7 @@ async fn main() -> anyhow::Result<()> {
             result = indexer::run_indexer(indexer_cfg) => {
                 if let Err(e) = result {
                     if ErrorRecoverability::from(&e).is_recoverable() {
-                        error!(error = ?e, "Indexer exited");
+                        tracing::error!(error = ?e, "Indexer exited");
                     } else {
                         critical!(error = ?e, "Indexer exited");
                     }
@@ -479,8 +427,8 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Signal all threads to stop
-        info!("Signaling threads to shutdown...");
+        // Signal threads to stop
+        tracing::info!("Signaling threads to shutdown...");
         shutdown_flag.store(true, Ordering::Relaxed);
 
         // Cleanup async components
@@ -489,14 +437,14 @@ async fn main() -> anyhow::Result<()> {
         drop(transport);
         drop(health_server);
 
-        // Wait for all threads to finish
+        // Wait for threads
         thread_handles.join_all();
 
         if !should_shutdown {
-            warn!("Sidecar restarting...");
+            tracing::warn!("Sidecar restarting...");
         }
     }
 
-    info!("Sidecar shutdown complete.");
+    tracing::info!("Sidecar shutdown complete.");
     Ok(())
 }

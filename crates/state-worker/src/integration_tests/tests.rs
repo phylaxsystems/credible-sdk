@@ -4,7 +4,7 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use crate::{
-    config::ProviderType,
+    cli::ProviderType,
     connect_provider,
     genesis,
     integration_tests::{
