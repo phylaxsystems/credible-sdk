@@ -57,12 +57,24 @@ pub struct ProfilingGuard;
 pub fn init_profiling(runtime: &Handle) -> Result<ProfilingGuard, String> {
     let console_layer = ConsoleLayer::builder().with_default_env().spawn();
 
+    let filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive(
+            "alloy_rpc_client=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        )
+        .add_directive(
+            "alloy_transport=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        );
+
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(IsTerminal::is_terminal(&std::io::stderr()))
         .with_writer(std::io::stderr);
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(filter)
         .with(console_layer)
         .with(fmt_layer)
         .try_init()
@@ -101,10 +113,23 @@ pub fn init_profiling(runtime: &Handle) -> Result<ProfilingGuard, String> {
 /// No-op placeholder when the `tokio-console` feature is disabled.
 #[cfg(not(feature = "tokio-console"))]
 pub fn init_profiling(_runtime: &tokio::runtime::Handle) -> Result<ProfilingGuard, String> {
+    let filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive(
+            "alloy_rpc_client=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        )
+        .add_directive(
+            "alloy_transport=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        );
+
     let subscriber = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(filter)
         .finish();
+
     tracing::subscriber::set_global_default(subscriber)
         .map_err(|e| format!("failed to initialize tracing subscriber: {e}"))?;
     Ok(ProfilingGuard)
