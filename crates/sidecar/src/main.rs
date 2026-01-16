@@ -95,6 +95,8 @@ use tracing::{
 };
 
 /// Create transport with optional result streaming support.
+///
+/// For gRPC transport with `result_event_rx`, enables `SubscribeResults` streaming.
 fn create_transport_from_args(
     config: &Config,
     tx_sender: TransactionQueueSender,

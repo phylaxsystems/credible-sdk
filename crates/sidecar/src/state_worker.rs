@@ -26,6 +26,9 @@ use tracing::{
     warn,
 };
 
+/// A constant representing the delay duration before a restart is attempted.
+const RESTART_DELAY: Duration = Duration::from_secs(5);
+
 /// Spawns the state worker on a dedicated OS thread with automatic restart.
 ///
 /// The worker runs in an infinite loop, restarting on crashes unless
@@ -53,8 +56,6 @@ pub fn spawn_state_worker(
 ///
 /// Creates a new tokio runtime for each iteration and restarts on failure.
 fn run_state_worker_loop(config: state_worker::Config, shutdown_flag: Arc<AtomicBool>) {
-    const RESTART_DELAY: Duration = Duration::from_secs(5);
-
     while !shutdown_flag.load(Ordering::Relaxed) {
         info!("Starting state worker...");
 
