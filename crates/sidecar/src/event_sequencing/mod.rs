@@ -67,6 +67,12 @@ pub struct EventSequencing {
     context: BTreeMap<U256, Context>,
 }
 
+#[derive(Clone, Copy)]
+enum Origin {
+    Main,
+    After,
+}
+
 /// The `Context` struct contains the context for a block. It is used to track the state of the block
 /// and the events that have been dispatched during the block build.
 #[derive(Debug, Default)]
@@ -406,7 +412,6 @@ impl EventSequencing {
             event_metadata,
             &previous_sent_event,
             previous_event,
-            event_iteration_id,
             block_number,
         )?;
 
@@ -425,7 +430,6 @@ impl EventSequencing {
         event_metadata: EventMetadata,
         previous_sent_event: &EventMetadata,
         previous_event: EventMetadata,
-        event_iteration_id: u64,
         block_number: U256,
     ) -> Result<(), EventSequencingError> {
         if *previous_sent_event == previous_event
@@ -549,6 +553,31 @@ impl EventSequencing {
         Ok(())
     }
 
+    /// Helper: is a reorg *currently* eligible to fire (i.e. would cancel the last sent event)?
+    fn is_reorg_ready_now(
+        &self,
+        block_number: U256,
+        iteration_id: u64,
+        reorg_meta: &EventMetadata,
+    ) -> bool {
+        self.context
+            .get(&block_number)
+            .and_then(|ctx| ctx.sent_events.get(&iteration_id))
+            .and_then(|q| q.back())
+            .is_some_and(|last| last.cancel_each_other(reorg_meta))
+    }
+
+    /// Helper: deterministic dependent ordering (important for tests + correctness).
+    fn dependent_sort_key(meta: &CompleteEventMetadata) -> (u8, u64) {
+        match meta {
+            CompleteEventMetadata::NewIteration { iteration_id, .. } => (0, *iteration_id),
+            CompleteEventMetadata::Transaction { index, .. } => (1, *index),
+            // Reorg must come after the tx at the same index.
+            CompleteEventMetadata::Reorg { index, .. } => (2, *index),
+            CompleteEventMetadata::CommitHead { .. } => (3, 0),
+        }
+    }
+
     /// Recursively sends an event and all its dependent events from the dependency graph.
     ///
     /// For reorg events, this function performs validation before sending to the engine:
@@ -559,6 +588,9 @@ impl EventSequencing {
     ///
     /// If validation passes, removes `depth` events from the sent queue and forwards
     /// the reorg to the engine for state rollback.
+    /// IMPORTANT: We must not drop dependents that are not yet eligible (e.g., a reorg that cannot
+    /// cancel the current last-sent tx, or a tx whose `prev_tx_hash` doesn't match). Those must be
+    /// reinserted into the same bucket.
     #[allow(clippy::too_many_lines)]
     fn send_event_recursive(
         &mut self,
@@ -630,8 +662,11 @@ impl EventSequencing {
             }
         }
 
-        // Extract any events that were waiting for this event to complete
-        let mut dependent_events = context
+        // We are going to drain dependency buckets, so we must be careful to reinsert leftovers.
+        let origin_main = event_metadata.clone();
+
+        // Drain dependents waiting on the current event
+        let deps_main: HashMap<CompleteEventMetadata, TxQueueContents> = context
             .dependency_graph
             .remove(event_metadata)
             .unwrap_or_default();
@@ -643,7 +678,10 @@ impl EventSequencing {
         }
 
         // Special handling for reorgs: after removing the cancelled TX, check if there are
-        // events waiting for the new last event in sent_events
+        // events waiting for the new last event in sent_events.
+        let mut origin_after: Option<EventMetadata> = None;
+        let mut deps_after: HashMap<CompleteEventMetadata, TxQueueContents> = HashMap::new();
+
         if event_metadata.is_reorg()
             && should_send
             && let Some(new_last_event) = context
@@ -652,19 +690,52 @@ impl EventSequencing {
                 .and_then(|queue| queue.back())
                 .cloned()
         {
-            // Get any events that were waiting for the new last event
-            if let Some(waiting_events) = context.dependency_graph.remove(&new_last_event) {
-                dependent_events.extend(waiting_events);
-            }
+            origin_after = Some(new_last_event.clone());
+            deps_after = context
+                .dependency_graph
+                .remove(&new_last_event)
+                .unwrap_or_default();
         }
 
         // Drop the mutable borrow before recursing
         let _ = context;
 
+        // Build a combined list of dependents with deterministic ordering.
+        let mut combined: Vec<(Origin, CompleteEventMetadata, TxQueueContents)> = Vec::new();
+        combined.extend(deps_main.into_iter().map(|(m, e)| (Origin::Main, m, e)));
+        combined.extend(deps_after.into_iter().map(|(m, e)| (Origin::After, m, e)));
+
+        combined.sort_by(|a, b| {
+            let ka = Self::dependent_sort_key(&a.1);
+            let kb = Self::dependent_sort_key(&b.1);
+            ka.cmp(&kb)
+        });
+
+        // Leftovers that must be reinserted (NOT dropped).
+        let mut leftovers_main: HashMap<CompleteEventMetadata, TxQueueContents> = HashMap::new();
+        let mut leftovers_after: HashMap<CompleteEventMetadata, TxQueueContents> = HashMap::new();
+
         let mut commit_head_found = false;
-        // Recursively process all dependent events
-        for (dependent_metadata, dependent_event) in dependent_events {
-            // Validate prev_tx_hash if present
+
+        for (origin, dependent_metadata, dependent_event) in combined {
+            let dep_meta: EventMetadata = (&dependent_metadata).into();
+
+            // If this dependent is a reorg but it cannot cancel *right now*, keep it queued.
+            if dep_meta.is_reorg()
+                && !self.is_reorg_ready_now(block_number, iteration_id, &dep_meta)
+            {
+                match origin {
+                    Origin::Main => {
+                        leftovers_main.insert(dependent_metadata, dependent_event);
+                    }
+                    Origin::After => {
+                        leftovers_after.insert(dependent_metadata, dependent_event);
+                    }
+                }
+                continue;
+            }
+
+            // Validate prev_tx_hash if present; if it doesn't match, keep queued.
             if let (
                 EventMetadata::Transaction {
                     tx_hash: sent_hash, ..
@@ -674,14 +745,52 @@ impl EventSequencing {
                 && let Some(prev_hash) = queue.prev_tx_hash
                 && prev_hash != *sent_hash
             {
-                // Skip this dependent - its prev_tx_hash doesn't match
+                match origin {
+                    Origin::Main => {
+                        leftovers_main.insert(dependent_metadata, dependent_event);
+                    }
+                    Origin::After => {
+                        leftovers_after.insert(dependent_metadata, dependent_event);
+                    }
+                }
                 continue;
             }
 
+            // Try to send it.
             if self.send_event_recursive(dependent_event, &(&dependent_metadata).into())? {
                 commit_head_found = true;
+                // Remaining dependents are irrelevant if the commit head cleaned up context.
                 break;
             }
+        }
+
+        // If a commit head was found downstream, or the context got cleaned up, do not reinsert.
+        if is_commit_head || commit_head_found || !self.context.contains_key(&block_number) {
+            // Handle CommitHead logic if the current event itself is a commit head.
+            if is_commit_head {
+                self.handle_commit_head_completion(event_metadata)?;
+            }
+            return Ok(is_commit_head || commit_head_found);
+        }
+
+        // Reinsert leftovers back into the same buckets (so we don't drop events).
+        if !leftovers_main.is_empty()
+            && let Some(ctx) = self.context.get_mut(&block_number)
+        {
+            ctx.dependency_graph
+                .entry(origin_main)
+                .or_default()
+                .extend(leftovers_main);
+        }
+
+        if let Some(origin2) = origin_after
+            && !leftovers_after.is_empty()
+            && let Some(ctx) = self.context.get_mut(&block_number)
+        {
+            ctx.dependency_graph
+                .entry(origin2)
+                .or_default()
+                .extend(leftovers_after);
         }
 
         // After all dependencies are processed, handle CommitHead logic

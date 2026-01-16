@@ -886,6 +886,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                         self.cache.invalidate_all();
                         self.sources
                             .reset_latest_unprocessed_block(self.current_head);
+                        self.current_block_iterations.clear();
                     }
                     ErrorRecoverability::Unrecoverable => {
                         critical!(
