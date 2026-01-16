@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_lines)]
 //! Core orchestration loop that keeps Redis in sync with the execution client.
 //!
 //! The worker bootstraps from the last persisted block, catches up to head via
@@ -74,6 +75,16 @@ const MAX_EVENT_RETRIES: u32 = 3;
 const RETRY_DELAY_MS: u64 = 500;
 const MAX_GRPC_CONNECTION_RETRIES: u32 = 3;
 const GRPC_RETRY_DELAY_SECS: u64 = 2;
+
+// Timeout constants
+const WS_CONNECT_TIMEOUT_SECS: u64 = 30;
+const GRPC_CONNECT_TIMEOUT_SECS: u64 = 30;
+const RPC_CALL_TIMEOUT_SECS: u64 = 30;
+const BLOCK_FETCH_TIMEOUT_SECS: u64 = 60;
+const TX_RESULT_COMPARISON_TIMEOUT_SECS: u64 = 120;
+const GET_TX_RECEIPT_TIMEOUT_SECS: u64 = 15;
+const GRPC_GET_TRANSACTIONS_TIMEOUT_SECS: u64 = 30;
+const SUBSCRIPTION_SETUP_TIMEOUT_SECS: u64 = 30;
 
 /// Pending event awaiting acknowledgment
 struct PendingEvent {
@@ -287,10 +298,13 @@ impl Listener {
 
     async fn connect_provider_with_url(ws_url: &str) -> Result<Arc<RootProvider>> {
         let ws = WsConnect::new(ws_url);
-        let provider = ProviderBuilder::new()
-            .connect_ws(ws)
+        let connect_future = ProviderBuilder::new().connect_ws(ws);
+
+        let provider = time::timeout(Duration::from_secs(WS_CONNECT_TIMEOUT_SECS), connect_future)
             .await
+            .context("timeout connecting to websocket provider")?
             .context("failed to connect to websocket provider")?;
+
         Ok(Arc::new(provider.root().clone()))
     }
 
@@ -302,11 +316,17 @@ impl Listener {
 
     /// Connect to the gRPC sidecar endpoint
     async fn connect_grpc(&self) -> Result<SidecarTransportClient<Channel>> {
-        let channel = Channel::from_shared(self.grpc_endpoint.clone())
-            .context("invalid gRPC endpoint")?
-            .connect()
-            .await
-            .context("failed to connect to gRPC endpoint")?;
+        let channel =
+            Channel::from_shared(self.grpc_endpoint.clone()).context("invalid gRPC endpoint")?;
+
+        let channel = time::timeout(
+            Duration::from_secs(GRPC_CONNECT_TIMEOUT_SECS),
+            channel.connect(),
+        )
+        .await
+        .context("timeout connecting to gRPC endpoint")?
+        .context("failed to connect to gRPC endpoint")?;
+
         Ok(SidecarTransportClient::new(channel))
     }
 
@@ -419,10 +439,13 @@ impl Listener {
     ) -> Result<()> {
         let (tx, rx) = tokio::sync::mpsc::channel::<Event>(EVENT_CHANNEL_BUFFER_SIZE);
 
-        let response = client
-            .stream_events(ReceiverStream::new(rx))
-            .await
-            .context("failed to establish event stream")?;
+        let response = time::timeout(
+            Duration::from_secs(GRPC_CONNECT_TIMEOUT_SECS),
+            client.stream_events(ReceiverStream::new(rx)),
+        )
+        .await
+        .context("timeout establishing event stream")?
+        .context("failed to establish event stream")?;
 
         let mut ack_stream = response.into_inner();
 
@@ -466,9 +489,21 @@ impl Listener {
             .await
             .context("failed to catch up on missed blocks")?;
 
-        // Subscribe to new blocks
-        let subscription = self.provider.subscribe_full_blocks().full();
-        let mut block_stream = subscription.into_stream().await?;
+        // Subscribe to new blocks with timeout
+        let subscription = time::timeout(
+            Duration::from_secs(SUBSCRIPTION_SETUP_TIMEOUT_SECS),
+            async { self.provider.subscribe_full_blocks().full() },
+        )
+        .await
+        .context("timeout setting up block subscription")?;
+
+        let mut block_stream = time::timeout(
+            Duration::from_secs(SUBSCRIPTION_SETUP_TIMEOUT_SECS),
+            subscription.into_stream(),
+        )
+        .await
+        .context("timeout converting subscription to stream")?
+        .context("failed to convert subscription to stream")?;
 
         info!("Started block subscription with gRPC streaming");
 
@@ -569,12 +604,14 @@ impl Listener {
             return Err(anyhow!("stream is dead, cannot catch up on missed blocks"));
         }
 
-        // Get the current head block
-        let current_block = self
-            .provider
-            .get_block_number()
-            .await
-            .context("failed to get current block number")?;
+        // Get the current head block with timeout
+        let current_block = time::timeout(
+            Duration::from_secs(RPC_CALL_TIMEOUT_SECS),
+            self.provider.get_block_number(),
+        )
+        .await
+        .context("timeout getting current block number")?
+        .context("failed to get current block number")?;
 
         // Determine which block to use for the initial CommitHead.
         // This must be sent on EVERY new gRPC connection to sync state with the sidecar.
@@ -598,14 +635,17 @@ impl Listener {
 
         info!("Sending initial CommitHead for block {initial_commit_block} to sync with sidecar");
 
-        // Fetch the block to get proper timestamp and hash
-        let initial_block = self
-            .provider
-            .get_block_by_number(initial_commit_block.into())
-            .full()
-            .await
-            .context("failed to fetch initial commit block")?
-            .ok_or_else(|| anyhow!("initial commit block {initial_commit_block} not found"))?;
+        // Fetch the block to get proper timestamp and hash with timeout
+        let initial_block = time::timeout(
+            Duration::from_secs(BLOCK_FETCH_TIMEOUT_SECS),
+            self.provider
+                .get_block_by_number(initial_commit_block.into())
+                .full(),
+        )
+        .await
+        .context("timeout fetching initial commit block")?
+        .context("failed to fetch initial commit block")?
+        .ok_or_else(|| anyhow!("initial commit block {initial_commit_block} not found"))?;
 
         // Send CommitHead with no transactions (we're just syncing state with sidecar)
         self.send_commit_head_with_retry(
@@ -727,12 +767,15 @@ impl Listener {
         client: &mut SidecarTransportClient<Channel>,
         block_num: u64,
     ) -> Result<()> {
-        match self
-            .provider
-            .get_block_by_number(block_num.into())
-            .full()
-            .await
-        {
+        // Fetch block with timeout
+        let block_result = time::timeout(
+            Duration::from_secs(BLOCK_FETCH_TIMEOUT_SECS),
+            self.provider.get_block_by_number(block_num.into()).full(),
+        )
+        .await
+        .context(format!("timeout fetching block {block_num}"))?;
+
+        match block_result {
             Ok(Some(block)) => {
                 info!("Processing block {block_num}");
                 self.process_block(stream, client, &block).await
@@ -918,15 +961,31 @@ impl Listener {
                 // Small delay to allow sidecar to process results
                 time::sleep(Duration::from_millis(100)).await;
 
-                if let Err(e) = Self::compare_transaction_results(
-                    client_clone,
-                    provider,
-                    block_number,
-                    tx_hashes,
+                // Wrap the entire comparison in a timeout
+                match time::timeout(
+                    Duration::from_secs(TX_RESULT_COMPARISON_TIMEOUT_SECS),
+                    Self::compare_transaction_results(
+                        client_clone,
+                        provider,
+                        block_number,
+                        tx_hashes,
+                    ),
                 )
                 .await
                 {
-                    warn!("Failed to compare transaction results for block {block_number}: {e}");
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        warn!(
+                            "Failed to compare transaction results for block {block_number}: {e}"
+                        );
+                    }
+                    Err(_) => {
+                        warn!(
+                            "Timeout comparing transaction results for block {block_number} \
+                             (exceeded {}s)",
+                            TX_RESULT_COMPARISON_TIMEOUT_SECS
+                        );
+                    }
                 }
             });
         }
@@ -964,12 +1023,15 @@ impl Listener {
             })
             .collect();
 
-        // Query sidecar for results
-        let sidecar_response = client
-            .get_transactions(GetTransactionsRequest { tx_execution_ids })
-            .await
-            .context("failed to query sidecar for transaction results")?
-            .into_inner();
+        // Query sidecar for results with timeout
+        let sidecar_response = time::timeout(
+            Duration::from_secs(GRPC_GET_TRANSACTIONS_TIMEOUT_SECS),
+            client.get_transactions(GetTransactionsRequest { tx_execution_ids }),
+        )
+        .await
+        .context("timeout querying sidecar for transaction results")?
+        .context("failed to query sidecar for transaction results")?
+        .into_inner();
 
         // Build a map of tx_hash -> sidecar result
         let sidecar_results: HashMap<Vec<u8>, &TransactionResult> = sidecar_response
@@ -986,19 +1048,45 @@ impl Listener {
             );
         }
 
+        // Query provider receipts in parallel
+        let receipt_futures: Vec<_> = tx_hashes
+            .iter()
+            .map(|tx_hash| {
+                let provider = provider.clone();
+                let tx_hash = *tx_hash;
+                async move {
+                    let result = time::timeout(
+                        Duration::from_secs(GET_TX_RECEIPT_TIMEOUT_SECS),
+                        provider.get_transaction_receipt(tx_hash),
+                    )
+                    .await;
+                    (tx_hash, result)
+                }
+            })
+            .collect();
+
+        let receipt_results = futures::future::join_all(receipt_futures).await;
+
         let mut mismatches = 0;
         let mut matches = 0;
 
-        // Query provider receipts and compare
-        for tx_hash in &tx_hashes {
-            let receipt = match provider.get_transaction_receipt(*tx_hash).await {
-                Ok(Some(r)) => r,
-                Ok(None) => {
+        // Compare results
+        for (tx_hash, receipt_result) in receipt_results {
+            let receipt = match receipt_result {
+                Ok(Ok(Some(r))) => r,
+                Ok(Ok(None)) => {
                     warn!("Transaction receipt not found from provider for {tx_hash}");
                     continue;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!("Failed to get transaction receipt for {tx_hash}: {e}");
+                    continue;
+                }
+                Err(_) => {
+                    warn!(
+                        "Timeout getting transaction receipt for {tx_hash} (exceeded {}s)",
+                        GET_TX_RECEIPT_TIMEOUT_SECS
+                    );
                     continue;
                 }
             };
