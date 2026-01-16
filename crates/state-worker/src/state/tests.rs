@@ -569,6 +569,7 @@ fn test_complex_scenario_produces_identical_output() {
         },
     );
 
+    // Account 3: Balance changed, nonce and code also specified for consistency
     parity_diff.0.insert(
         addr3,
         AccountDiff {
@@ -576,8 +577,8 @@ fn test_complex_scenario_produces_identical_output() {
                 from: U256::from(500),
                 to: U256::ZERO,
             }),
-            nonce: Delta::Unchanged,
-            code: Delta::Unchanged,
+            nonce: Delta::Added(U64::from(5)), // Changed: specify the nonce value
+            code: Delta::Added(Bytes::from(vec![0x00])), // Changed: specify the code
             storage: BTreeMap::new(),
         },
     );
@@ -623,8 +624,8 @@ fn test_complex_scenario_produces_identical_output() {
         addr3,
         GethAccountState {
             balance: Some(U256::ZERO),
-            nonce: None,
-            code: None,
+            nonce: None, // Unchanged - will use pre-state value (5)
+            code: None,  // Unchanged - will use pre-state value (0x00)
             storage: BTreeMap::new(),
         },
     );

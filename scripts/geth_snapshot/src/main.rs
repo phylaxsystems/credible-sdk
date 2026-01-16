@@ -2,6 +2,7 @@ use alloy::{
     primitives::{
         B256,
         Bytes,
+        KECCAK256_EMPTY,
         U256,
         keccak256,
     },
@@ -15,7 +16,15 @@ use anyhow::{
 use clap::Parser;
 use regex::Regex;
 use serde::Deserialize;
-use state_store::mdbx::StateWriter;
+use state_store::{
+    AccountState,
+    AddressHash,
+    Reader,
+    mdbx::{
+        StateWriter,
+        common::CircularBufferConfig,
+    },
+};
 use std::{
     collections::HashMap,
     fs::File,
@@ -34,13 +43,6 @@ use std::{
         sync_channel,
     },
     thread,
-};
-
-use state_store::{
-    AccountState,
-    AddressHash,
-    Reader,
-    mdbx::common::CircularBufferConfig,
 };
 
 #[derive(Parser)]
@@ -351,12 +353,6 @@ fn parse_storage(raw: StorageFormat) -> Result<HashMap<B256, U256>> {
     Ok(storage)
 }
 
-/// The empty code hash (keccak256 of empty bytes) - used to identify accounts without code
-const EMPTY_CODE_HASH: B256 = B256::new([
-    0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d, 0xb2, 0xdc, 0xc7, 0x03, 0xc0,
-    0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b, 0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70,
-]);
-
 fn parse_account(raw: GethAccount) -> Result<AccountState> {
     let address_hash = AddressHash::from_hash(parse_hex_b256(&raw.key)?);
     let balance = raw
@@ -369,7 +365,7 @@ fn parse_account(raw: GethAccount) -> Result<AccountState> {
         .code_hash
         .map(|h| parse_hex_b256(&h))
         .transpose()?
-        .unwrap_or(B256::ZERO);
+        .unwrap_or(KECCAK256_EMPTY);
     let code = raw
         .code
         .filter(|c| c != "0x")
@@ -387,7 +383,7 @@ fn parse_account(raw: GethAccount) -> Result<AccountState> {
         }
     } else {
         // If no code, the code_hash should be either zero or the empty code hash
-        if code_hash != B256::ZERO && code_hash != EMPTY_CODE_HASH {
+        if code_hash != B256::ZERO && code_hash != KECCAK256_EMPTY {
             bail!("Account {address_hash:?} has no code but non-empty code hash: {code_hash:x}",);
         }
     }
