@@ -109,6 +109,7 @@ async fn main() -> Result<()> {
         args.provider_type,
         provider.clone(),
         Duration::from_secs(30), // default timeout
+        writer_reader.reader().clone(),
     );
 
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);

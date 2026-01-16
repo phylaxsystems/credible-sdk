@@ -759,6 +759,7 @@ async fn test_restart_continues_from_last_block(instance: TestInstance) {
             ProviderType::Parity,
             provider.clone(),
             Duration::from_secs(30),
+            writer_reader.reader().clone(),
         );
 
         let mut worker = StateWorker::new(
@@ -826,6 +827,7 @@ async fn test_restart_continues_from_last_block(instance: TestInstance) {
             ProviderType::Parity,
             provider.clone(),
             Duration::from_secs(30),
+            writer_reader.reader().clone(),
         );
 
         let mut worker = StateWorker::new(
@@ -913,6 +915,7 @@ async fn test_restart_with_buffer_wrap_applies_diffs(instance: TestInstance) {
             ProviderType::Parity,
             provider.clone(),
             Duration::from_secs(30),
+            writer_reader.reader().clone(),
         );
 
         let mut worker = StateWorker::new(
@@ -981,6 +984,7 @@ async fn test_restart_with_buffer_wrap_applies_diffs(instance: TestInstance) {
             ProviderType::Parity,
             provider.clone(),
             Duration::from_secs(30),
+            writer_reader.reader().clone(),
         );
 
         let mut worker = StateWorker::new(
@@ -1064,6 +1068,7 @@ async fn test_restart_after_mid_block_crash(instance: TestInstance) {
             ProviderType::Parity,
             provider.clone(),
             Duration::from_secs(30),
+            writer_reader.reader().clone(),
         );
 
         let mut worker = StateWorker::new(
@@ -1125,6 +1130,7 @@ async fn test_restart_after_mid_block_crash(instance: TestInstance) {
             ProviderType::Parity,
             provider.clone(),
             Duration::from_secs(30),
+            writer_reader.reader().clone(),
         );
 
         let mut worker = StateWorker::new(

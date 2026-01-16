@@ -26,6 +26,7 @@ use state_store::{
     AddressHash,
     Reader,
     Writer,
+    redis::StateReader,
 };
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -125,10 +126,18 @@ impl TestInstance {
         )
         .map_err(|e| format!("Failed to initialize redis writer: {e}"))?;
 
+        let reader = StateReader::new(
+            &redis_url,
+            &namespace,
+            CircularBufferConfig::new(3).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("Failed to initialize redis writer: {e}"))?;
+
         let trace_provider = state::create_trace_provider(
             ProviderType::Parity,
             provider.clone(),
             Duration::from_secs(30),
+            reader,
         );
 
         // Extract fork timestamps from genesis if available, otherwise use defaults
@@ -231,6 +240,7 @@ impl TestInstance {
             ProviderType::Parity,
             provider.clone(),
             Duration::from_secs(30),
+            mdbx_reader.clone(),
         );
 
         // Extract fork timestamps from genesis if available, otherwise use defaults

@@ -1,30 +1,42 @@
 //! Geth-specific trace parsing logic.
 //!
-//! Processes `prestateTracer` output from Geth nodes and converts
-//! them into our normalized `AccountState` format.
+//! Processes `prestateTracer` output from Geth nodes to identify which accounts
+//! and storage slots were touched during block execution.
 //!
 //! ## Post-Cancun SELFDESTRUCT (EIP-6780)
 //!
 //! Post-Cancun, SELFDESTRUCT on an existing account only transfers balance. Code, storage, and nonce
 //! remain intact. The tracer reports only the balance change, no deletion.
+//!
+//! ## State Fetching Strategy
+//!
+//! Geth's prestateTracer in diff mode only includes fields that CHANGED in the transaction.
+//! This means if a contract's storage changes but balance/nonce/code don't, those fields
+//! are omitted from both pre and post state.
+//!
+//! To ensure 100% state correctness, we:
+//! 1. Use traces to identify WHICH accounts and storage slots were touched
+//! 2. Read existing state from StateReader at block N-1
+//! 3. Apply POST diff values on top of existing state
+//! 4. Fall back to RPC if `StateReader` unavailable
 
-use super::AccountSnapshot;
 use alloy::primitives::{
-    U256,
-    keccak256,
+    Address,
+    B256,
 };
 use alloy_rpc_types_trace::geth::{
+    AccountState as GethAccountState,
     PreStateFrame,
     TraceResult,
 };
-use state_store::{
-    AccountState,
-    AddressHash,
+use std::collections::{
+    HashMap,
+    HashSet,
 };
-use std::collections::HashMap;
 
-pub fn process_geth_traces(traces: Vec<TraceResult>) -> Vec<AccountState> {
-    let mut accounts: HashMap<AddressHash, AccountSnapshot> = HashMap::new();
+/// Extract all addresses touched in the traces (from both pre and post)
+pub fn extract_touched_addresses(traces: &[TraceResult]) -> HashSet<Address> {
+    let mut addresses = HashSet::new();
 
     for trace in traces {
         if let TraceResult::Success {
@@ -32,104 +44,103 @@ pub fn process_geth_traces(traces: Vec<TraceResult>) -> Vec<AccountState> {
             ..
         } = trace
         {
-            process_frame(&mut accounts, frame);
-        }
-    }
-
-    accounts
-        .into_iter()
-        .filter_map(|(address, snapshot)| snapshot.finalize(address))
-        .collect()
-}
-
-fn process_frame(accounts: &mut HashMap<AddressHash, AccountSnapshot>, frame: PreStateFrame) {
-    match frame {
-        PreStateFrame::Default(prestate_mode) => {
-            for (address, account_state) in prestate_mode.0 {
-                let snapshot = accounts.entry(address.into()).or_default();
-
-                if let Some(balance) = account_state.balance {
-                    snapshot.balance = Some(balance);
-                    snapshot.touched = true;
+            match frame {
+                PreStateFrame::Default(prestate) => {
+                    addresses.extend(prestate.0.keys().copied());
                 }
-
-                if let Some(nonce) = account_state.nonce {
-                    snapshot.nonce = Some(nonce);
-                    snapshot.touched = true;
-                }
-
-                if let Some(code) = account_state.code {
-                    snapshot.code = Some(code);
-                    snapshot.touched = true;
-                }
-
-                // Hash storage slots exactly like Parity does
-                for (slot, value) in &account_state.storage {
-                    let slot_hash = keccak256(slot.0);
-                    let value_u256 = U256::from_be_bytes((*value).into());
-                    snapshot.storage_updates.insert(slot_hash, value_u256);
-                    snapshot.touched = true;
+                PreStateFrame::Diff(diff) => {
+                    addresses.extend(diff.pre.keys().copied());
+                    addresses.extend(diff.post.keys().copied());
                 }
             }
         }
-        PreStateFrame::Diff(diff) => {
-            process_diff_frame(accounts, &diff);
-        }
     }
+
+    addresses
 }
 
-fn process_diff_frame(
-    accounts: &mut HashMap<AddressHash, AccountSnapshot>,
-    diff: &alloy_rpc_types_trace::geth::DiffMode,
-) {
-    // Process pre-state first as baseline for ACCOUNT FIELDS (balance, nonce, code).
-    // These are properties of the account that persist if unchanged.
-    //
-    // NOTE: We do NOT process pre.storage here because:
-    // - pre.storage contains OLD values (before the transaction)
-    // - post.storage contains NEW values of slots that CHANGED
-    // - We only want to track changed slots with their new values
-    for (address, account) in &diff.pre {
-        let snapshot = accounts.entry((*address).into()).or_default();
+/// Extract storage slots that were touched for each address.
+/// Returns raw (unhashed) slot keys - hashing is done when building final state.
+pub fn extract_touched_storage(traces: &[TraceResult]) -> HashMap<Address, HashSet<B256>> {
+    let mut storage_by_address: HashMap<Address, HashSet<B256>> = HashMap::new();
 
-        // Set baseline values from pre-state (only if not already set by earlier tx)
-        if snapshot.balance.is_none() {
-            snapshot.balance = account.balance;
-        }
-        if snapshot.nonce.is_none() {
-            snapshot.nonce = account.nonce;
-        }
-        if snapshot.code.is_none()
-            && let Some(code) = &account.code
+    for trace in traces {
+        if let TraceResult::Success {
+            result: alloy_rpc_types_trace::geth::GethTrace::PreStateTracer(frame),
+            ..
+        } = trace
         {
-            snapshot.code = Some(code.clone());
+            match frame {
+                PreStateFrame::Default(prestate) => {
+                    for (addr, account) in &prestate.0 {
+                        let slots = storage_by_address.entry(*addr).or_default();
+                        slots.extend(account.storage.keys().copied());
+                    }
+                }
+                PreStateFrame::Diff(diff) => {
+                    for (addr, account) in &diff.pre {
+                        let slots = storage_by_address.entry(*addr).or_default();
+                        slots.extend(account.storage.keys().copied());
+                    }
+                    for (addr, account) in &diff.post {
+                        let slots = storage_by_address.entry(*addr).or_default();
+                        slots.extend(account.storage.keys().copied());
+                    }
+                }
+            }
         }
     }
 
-    // Process post-state to apply final values (overrides pre-state)
-    for (address, account) in &diff.post {
-        let snapshot = accounts.entry((*address).into()).or_default();
-        snapshot.touched = true;
+    storage_by_address
+}
 
-        if let Some(balance) = account.balance {
-            snapshot.balance = Some(balance);
-        }
+/// Extract the final POST state values for each address from diff mode traces.
+///
+/// When multiple transactions touch the same address, this accumulates changes
+/// so the final state reflects all transactions in the block.
+///
+/// Returns a map of address to their POST state. Fields that are `None` in
+/// `GethAccountState` indicate the field did not change during the block.
+pub fn extract_post_state(traces: &[TraceResult]) -> HashMap<Address, GethAccountState> {
+    let mut post_state: HashMap<Address, GethAccountState> = HashMap::new();
 
-        if let Some(nonce) = account.nonce {
-            snapshot.nonce = Some(nonce);
-        }
+    for trace in traces {
+        if let TraceResult::Success {
+            result: alloy_rpc_types_trace::geth::GethTrace::PreStateTracer(frame),
+            ..
+        } = trace
+        {
+            if let PreStateFrame::Diff(diff) = frame {
+                for (addr, account) in &diff.post {
+                    let entry = post_state.entry(*addr).or_insert_with(|| {
+                        GethAccountState {
+                            balance: None,
+                            nonce: None,
+                            code: None,
+                            storage: std::collections::BTreeMap::new(),
+                        }
+                    });
 
-        if let Some(code) = &account.code {
-            snapshot.code = Some(code.clone());
-        }
-
-        // Storage from post contains NEW values of changed slots
-        for (slot, value) in &account.storage {
-            let slot_hash = keccak256(slot.0);
-            let value_u256 = U256::from_be_bytes((*value).into());
-            snapshot.storage_updates.insert(slot_hash, value_u256);
+                    // Later transactions override earlier ones
+                    if account.balance.is_some() {
+                        entry.balance = account.balance;
+                    }
+                    if account.nonce.is_some() {
+                        entry.nonce = account.nonce;
+                    }
+                    if account.code.is_some() {
+                        entry.code.clone_from(&account.code);
+                    }
+                    // Merge storage - later values override
+                    for (slot, value) in &account.storage {
+                        entry.storage.insert(*slot, *value);
+                    }
+                }
+            }
         }
     }
+
+    post_state
 }
 
 #[cfg(test)]
@@ -139,12 +150,14 @@ mod tests {
         Address,
         B256,
         Bytes,
+        U256,
     };
     use alloy_rpc_types_trace::geth::{
         AccountState as GethAccountState,
         DiffMode,
         GethTrace,
         PreStateFrame,
+        PreStateMode,
     };
     use std::collections::BTreeMap;
 
@@ -155,261 +168,906 @@ mod tests {
         }
     }
 
+    fn make_diff_trace(
+        pre: BTreeMap<Address, GethAccountState>,
+        post: BTreeMap<Address, GethAccountState>,
+    ) -> TraceResult {
+        make_trace_result(PreStateFrame::Diff(DiffMode { pre, post }))
+    }
+
+    fn make_default_trace(prestate: BTreeMap<Address, GethAccountState>) -> TraceResult {
+        make_trace_result(PreStateFrame::Default(PreStateMode(prestate)))
+    }
+
+    // ==================== extract_touched_addresses tests ====================
+
     #[test]
-    fn test_selfdestruct_only_balance_changes() {
-        // Post-Cancun: SELFDESTRUCT only transfers balance, account remains in post
+    fn test_extract_addresses_from_diff_mode_pre_only() {
         let address = Address::from([0x42u8; 20]);
 
-        let mut pre = std::collections::BTreeMap::new();
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![make_diff_trace(pre, BTreeMap::new())];
+        let addresses = extract_touched_addresses(&traces);
+
+        assert_eq!(addresses.len(), 1);
+        assert!(addresses.contains(&address));
+    }
+
+    #[test]
+    fn test_extract_addresses_from_diff_mode_post_only() {
+        let address = Address::from([0x42u8; 20]);
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![make_diff_trace(BTreeMap::new(), post)];
+        let addresses = extract_touched_addresses(&traces);
+
+        assert_eq!(addresses.len(), 1);
+        assert!(addresses.contains(&address));
+    }
+
+    #[test]
+    fn test_extract_addresses_from_diff_mode_both_pre_and_post() {
+        let address1 = Address::from([0x01u8; 20]);
+        let address2 = Address::from([0x02u8; 20]);
+
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            address1,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address2,
+            GethAccountState {
+                balance: Some(U256::from(200)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![make_diff_trace(pre, post)];
+        let addresses = extract_touched_addresses(&traces);
+
+        assert_eq!(addresses.len(), 2);
+        assert!(addresses.contains(&address1));
+        assert!(addresses.contains(&address2));
+    }
+
+    #[test]
+    fn test_extract_addresses_deduplicates_same_address_in_pre_and_post() {
+        let address = Address::from([0x42u8; 20]);
+
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(200)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![make_diff_trace(pre, post)];
+        let addresses = extract_touched_addresses(&traces);
+
+        assert_eq!(addresses.len(), 1);
+        assert!(addresses.contains(&address));
+    }
+
+    #[test]
+    fn test_extract_addresses_from_default_mode() {
+        let address1 = Address::from([0x01u8; 20]);
+        let address2 = Address::from([0x02u8; 20]);
+
+        let mut prestate = BTreeMap::new();
+        prestate.insert(
+            address1,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+        prestate.insert(
+            address2,
+            GethAccountState {
+                balance: Some(U256::from(200)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![make_default_trace(prestate)];
+        let addresses = extract_touched_addresses(&traces);
+
+        assert_eq!(addresses.len(), 2);
+        assert!(addresses.contains(&address1));
+        assert!(addresses.contains(&address2));
+    }
+
+    #[test]
+    fn test_extract_addresses_from_multiple_traces() {
+        let address1 = Address::from([0x01u8; 20]);
+        let address2 = Address::from([0x02u8; 20]);
+        let address3 = Address::from([0x03u8; 20]);
+
+        let mut post1 = BTreeMap::new();
+        post1.insert(
+            address1,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let mut post2 = BTreeMap::new();
+        post2.insert(
+            address2,
+            GethAccountState {
+                balance: Some(U256::from(200)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+        post2.insert(
+            address3,
+            GethAccountState {
+                balance: Some(U256::from(300)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![
+            make_diff_trace(BTreeMap::new(), post1),
+            make_diff_trace(BTreeMap::new(), post2),
+        ];
+        let addresses = extract_touched_addresses(&traces);
+
+        assert_eq!(addresses.len(), 3);
+        assert!(addresses.contains(&address1));
+        assert!(addresses.contains(&address2));
+        assert!(addresses.contains(&address3));
+    }
+
+    #[test]
+    fn test_extract_addresses_empty_traces() {
+        let traces: Vec<TraceResult> = vec![];
+        let addresses = extract_touched_addresses(&traces);
+        assert!(addresses.is_empty());
+    }
+
+    #[test]
+    fn test_extract_addresses_empty_diff() {
+        let traces = vec![make_diff_trace(BTreeMap::new(), BTreeMap::new())];
+        let addresses = extract_touched_addresses(&traces);
+        assert!(addresses.is_empty());
+    }
+
+    #[test]
+    fn test_extract_addresses_ignores_failed_traces() {
+        let traces = vec![TraceResult::Error {
+            error: "execution reverted".to_string(),
+            tx_hash: None,
+        }];
+        let addresses = extract_touched_addresses(&traces);
+        assert!(addresses.is_empty());
+    }
+
+    // ==================== extract_touched_storage tests ====================
+
+    #[test]
+    fn test_extract_storage_from_diff_mode_pre_only() {
+        let address = Address::from([0x42u8; 20]);
+        let slot = B256::from([0x01u8; 32]);
+
+        let mut pre_storage = BTreeMap::new();
+        pre_storage.insert(slot, B256::from([0xAAu8; 32]));
+
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: pre_storage,
+            },
+        );
+
+        let traces = vec![make_diff_trace(pre, BTreeMap::new())];
+        let storage = extract_touched_storage(&traces);
+
+        assert_eq!(storage.len(), 1);
+        assert!(storage.get(&address).unwrap().contains(&slot));
+    }
+
+    #[test]
+    fn test_extract_storage_from_diff_mode_post_only() {
+        let address = Address::from([0x42u8; 20]);
+        let slot = B256::from([0x01u8; 32]);
+
+        let mut post_storage = BTreeMap::new();
+        post_storage.insert(slot, B256::from([0xBBu8; 32]));
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: post_storage,
+            },
+        );
+
+        let traces = vec![make_diff_trace(BTreeMap::new(), post)];
+        let storage = extract_touched_storage(&traces);
+
+        assert_eq!(storage.len(), 1);
+        assert!(storage.get(&address).unwrap().contains(&slot));
+    }
+
+    #[test]
+    fn test_extract_storage_combines_pre_and_post_slots() {
+        let address = Address::from([0x42u8; 20]);
+        let slot1 = B256::from([0x01u8; 32]);
+        let slot2 = B256::from([0x02u8; 32]);
+
+        let mut pre_storage = BTreeMap::new();
+        pre_storage.insert(slot1, B256::from([0xAAu8; 32]));
+
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: pre_storage,
+            },
+        );
+
+        let mut post_storage = BTreeMap::new();
+        post_storage.insert(slot2, B256::from([0xBBu8; 32]));
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: post_storage,
+            },
+        );
+
+        let traces = vec![make_diff_trace(pre, post)];
+        let storage = extract_touched_storage(&traces);
+
+        assert_eq!(storage.len(), 1);
+        let slots = storage.get(&address).unwrap();
+        assert_eq!(slots.len(), 2);
+        assert!(slots.contains(&slot1));
+        assert!(slots.contains(&slot2));
+    }
+
+    #[test]
+    fn test_extract_storage_deduplicates_same_slot_in_pre_and_post() {
+        let address = Address::from([0x42u8; 20]);
+        let slot = B256::from([0x01u8; 32]);
+
+        let mut pre_storage = BTreeMap::new();
+        pre_storage.insert(slot, B256::from([0xAAu8; 32]));
+
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: pre_storage,
+            },
+        );
+
+        let mut post_storage = BTreeMap::new();
+        post_storage.insert(slot, B256::from([0xBBu8; 32]));
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: post_storage,
+            },
+        );
+
+        let traces = vec![make_diff_trace(pre, post)];
+        let storage = extract_touched_storage(&traces);
+
+        assert_eq!(storage.len(), 1);
+        assert_eq!(storage.get(&address).unwrap().len(), 1);
+        assert!(storage.get(&address).unwrap().contains(&slot));
+    }
+
+    #[test]
+    fn test_extract_storage_multiple_addresses() {
+        let address1 = Address::from([0x01u8; 20]);
+        let address2 = Address::from([0x02u8; 20]);
+        let slot1 = B256::from([0x01u8; 32]);
+        let slot2 = B256::from([0x02u8; 32]);
+
+        let mut storage1 = BTreeMap::new();
+        storage1.insert(slot1, B256::from([0xAAu8; 32]));
+
+        let mut storage2 = BTreeMap::new();
+        storage2.insert(slot2, B256::from([0xBBu8; 32]));
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address1,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: storage1,
+            },
+        );
+        post.insert(
+            address2,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: storage2,
+            },
+        );
+
+        let traces = vec![make_diff_trace(BTreeMap::new(), post)];
+        let storage = extract_touched_storage(&traces);
+
+        assert_eq!(storage.len(), 2);
+        assert!(storage.get(&address1).unwrap().contains(&slot1));
+        assert!(storage.get(&address2).unwrap().contains(&slot2));
+    }
+
+    #[test]
+    fn test_extract_storage_from_multiple_traces() {
+        let address = Address::from([0x42u8; 20]);
+        let slot1 = B256::from([0x01u8; 32]);
+        let slot2 = B256::from([0x02u8; 32]);
+
+        let mut storage1 = BTreeMap::new();
+        storage1.insert(slot1, B256::from([0xAAu8; 32]));
+
+        let mut post1 = BTreeMap::new();
+        post1.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: storage1,
+            },
+        );
+
+        let mut storage2 = BTreeMap::new();
+        storage2.insert(slot2, B256::from([0xBBu8; 32]));
+
+        let mut post2 = BTreeMap::new();
+        post2.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: storage2,
+            },
+        );
+
+        let traces = vec![
+            make_diff_trace(BTreeMap::new(), post1),
+            make_diff_trace(BTreeMap::new(), post2),
+        ];
+        let storage = extract_touched_storage(&traces);
+
+        assert_eq!(storage.len(), 1);
+        let slots = storage.get(&address).unwrap();
+        assert_eq!(slots.len(), 2);
+        assert!(slots.contains(&slot1));
+        assert!(slots.contains(&slot2));
+    }
+
+    #[test]
+    fn test_extract_storage_from_default_mode() {
+        let address = Address::from([0x42u8; 20]);
+        let slot = B256::from([0x01u8; 32]);
+
+        let mut storage = BTreeMap::new();
+        storage.insert(slot, B256::from([0xAAu8; 32]));
+
+        let mut prestate = BTreeMap::new();
+        prestate.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage,
+            },
+        );
+
+        let traces = vec![make_default_trace(prestate)];
+        let result = extract_touched_storage(&traces);
+
+        assert_eq!(result.len(), 1);
+        assert!(result.get(&address).unwrap().contains(&slot));
+    }
+
+    #[test]
+    fn test_extract_storage_ignores_failed_traces() {
+        let traces = vec![TraceResult::Error {
+            error: "execution reverted".to_string(),
+            tx_hash: None,
+        }];
+        let storage = extract_touched_storage(&traces);
+        assert!(storage.is_empty());
+    }
+
+    // ==================== extract_post_state tests ====================
+
+    #[test]
+    fn test_extract_post_state_single_transaction() {
+        let address = Address::from([0x42u8; 20]);
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: Some(5),
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![make_diff_trace(BTreeMap::new(), post)];
+        let post_state = extract_post_state(&traces);
+
+        assert_eq!(post_state.len(), 1);
+        let account = post_state.get(&address).unwrap();
+        assert_eq!(account.balance, Some(U256::from(100)));
+        assert_eq!(account.nonce, Some(5));
+        assert!(account.code.is_none());
+    }
+
+    #[test]
+    fn test_extract_post_state_multiple_transactions_same_address() {
+        let address = Address::from([0x42u8; 20]);
+
+        let mut post1 = BTreeMap::new();
+        post1.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: Some(1),
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let mut post2 = BTreeMap::new();
+        post2.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(200)),
+                nonce: Some(2),
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![
+            make_diff_trace(BTreeMap::new(), post1),
+            make_diff_trace(BTreeMap::new(), post2),
+        ];
+        let post_state = extract_post_state(&traces);
+
+        assert_eq!(post_state.len(), 1);
+        let account = post_state.get(&address).unwrap();
+        // Later transaction should override
+        assert_eq!(account.balance, Some(U256::from(200)));
+        assert_eq!(account.nonce, Some(2));
+    }
+
+    #[test]
+    fn test_extract_post_state_partial_updates() {
+        let address = Address::from([0x42u8; 20]);
+
+        // First tx changes balance only
+        let mut post1 = BTreeMap::new();
+        post1.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        // Second tx changes nonce only
+        let mut post2 = BTreeMap::new();
+        post2.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: Some(5),
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![
+            make_diff_trace(BTreeMap::new(), post1),
+            make_diff_trace(BTreeMap::new(), post2),
+        ];
+        let post_state = extract_post_state(&traces);
+
+        let account = post_state.get(&address).unwrap();
+        // Should have both values accumulated
+        assert_eq!(account.balance, Some(U256::from(100)));
+        assert_eq!(account.nonce, Some(5));
+    }
+
+    #[test]
+    fn test_extract_post_state_storage_merge() {
+        let address = Address::from([0x42u8; 20]);
+        let slot1 = B256::from([0x01u8; 32]);
+        let slot2 = B256::from([0x02u8; 32]);
+
+        let mut storage1 = BTreeMap::new();
+        storage1.insert(slot1, B256::from([0xAAu8; 32]));
+
+        let mut post1 = BTreeMap::new();
+        post1.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: storage1,
+            },
+        );
+
+        let mut storage2 = BTreeMap::new();
+        storage2.insert(slot2, B256::from([0xBBu8; 32]));
+
+        let mut post2 = BTreeMap::new();
+        post2.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: storage2,
+            },
+        );
+
+        let traces = vec![
+            make_diff_trace(BTreeMap::new(), post1),
+            make_diff_trace(BTreeMap::new(), post2),
+        ];
+        let post_state = extract_post_state(&traces);
+
+        let account = post_state.get(&address).unwrap();
+        assert_eq!(account.storage.len(), 2);
+        assert_eq!(account.storage.get(&slot1), Some(&B256::from([0xAAu8; 32])));
+        assert_eq!(account.storage.get(&slot2), Some(&B256::from([0xBBu8; 32])));
+    }
+
+    #[test]
+    fn test_extract_post_state_ignores_default_mode() {
+        let address = Address::from([0x42u8; 20]);
+
+        let mut prestate = BTreeMap::new();
+        prestate.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: Some(1),
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![make_default_trace(prestate)];
+        let post_state = extract_post_state(&traces);
+
+        // Default mode has no POST, so should be empty
+        assert!(post_state.is_empty());
+    }
+
+    #[test]
+    fn test_extract_post_state_ignores_failed_traces() {
+        let traces = vec![TraceResult::Error {
+            error: "execution reverted".to_string(),
+            tx_hash: None,
+        }];
+        let post_state = extract_post_state(&traces);
+        assert!(post_state.is_empty());
+    }
+
+    #[test]
+    fn test_bug_demonstration_storage_only_change_extracts_address() {
+        let address = Address::from([0x42u8; 20]);
+        let slot = B256::from([0x01u8; 32]);
+        let old_value = B256::from([0xAAu8; 32]);
+        let new_value = B256::from([0xBBu8; 32]);
+
+        let mut pre_storage = BTreeMap::new();
+        pre_storage.insert(slot, old_value);
+
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: pre_storage,
+            },
+        );
+
+        let mut post_storage = BTreeMap::new();
+        post_storage.insert(slot, new_value);
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: post_storage,
+            },
+        );
+
+        let traces = vec![make_diff_trace(pre, post)];
+
+        let addresses = extract_touched_addresses(&traces);
+        assert!(
+            addresses.contains(&address),
+            "Should identify address even with storage-only changes"
+        );
+
+        let storage = extract_touched_storage(&traces);
+        assert!(
+            storage.get(&address).unwrap().contains(&slot),
+            "Should identify touched storage slot"
+        );
+
+        let post_state = extract_post_state(&traces);
+        let account = post_state.get(&address).unwrap();
+        assert_eq!(account.storage.get(&slot), Some(&new_value));
+        // Balance/nonce/code should be None (not changed)
+        assert!(account.balance.is_none());
+        assert!(account.nonce.is_none());
+        assert!(account.code.is_none());
+    }
+
+    #[test]
+    fn test_selfdestruct_scenario() {
+        let address = Address::from([0x42u8; 20]);
+
+        let mut pre = BTreeMap::new();
         pre.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(1000)),
-                nonce: Some(5),
-                code: Some(Bytes::from(vec![0x60, 0x80])),
-                storage: BTreeMap::default(),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
             },
         );
 
-        let mut post = std::collections::BTreeMap::new();
+        let mut post = BTreeMap::new();
         post.insert(
             address,
             GethAccountState {
                 balance: Some(U256::ZERO),
                 nonce: None,
                 code: None,
-                storage: BTreeMap::default(),
+                storage: BTreeMap::new(),
             },
         );
 
-        let diff = DiffMode { pre, post };
+        let traces = vec![make_diff_trace(pre, post)];
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let addresses = extract_touched_addresses(&traces);
+        assert!(addresses.contains(&address));
 
-        assert_eq!(results.len(), 1);
-        assert!(!results[0].deleted);
-        assert_eq!(results[0].balance, U256::ZERO);
+        let post_state = extract_post_state(&traces);
+        assert_eq!(post_state.get(&address).unwrap().balance, Some(U256::ZERO));
     }
 
     #[test]
-    fn test_storage_updated() {
+    fn test_new_contract_creation() {
         let address = Address::from([0x42u8; 20]);
-        let slot = B256::from([0x01u8; 32]);
-        let new_value = B256::from([0xBBu8; 32]);
+        let code = Bytes::from(vec![0x60, 0x80, 0x60, 0x40]);
 
-        let mut post = std::collections::BTreeMap::new();
-        let mut storage = std::collections::BTreeMap::new();
-        storage.insert(slot, new_value);
-
+        let mut post = BTreeMap::new();
         post.insert(
             address,
             GethAccountState {
-                balance: Some(U256::from(100)),
+                balance: Some(U256::from(0)),
                 nonce: Some(1),
+                code: Some(code.clone()),
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![make_diff_trace(BTreeMap::new(), post)];
+
+        let addresses = extract_touched_addresses(&traces);
+        assert!(addresses.contains(&address));
+
+        let post_state = extract_post_state(&traces);
+        let account = post_state.get(&address).unwrap();
+        assert_eq!(account.code, Some(code));
+    }
+
+    #[test]
+    fn test_many_storage_slots() {
+        let address = Address::from([0x42u8; 20]);
+
+        let mut post_storage = BTreeMap::new();
+        for i in 0..100 {
+            let mut slot_bytes = [0u8; 32];
+            slot_bytes[31] = i;
+            post_storage.insert(B256::from(slot_bytes), B256::from([0xAAu8; 32]));
+        }
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
+                code: None,
+                storage: post_storage,
+            },
+        );
+
+        let traces = vec![make_diff_trace(BTreeMap::new(), post)];
+        let storage = extract_touched_storage(&traces);
+
+        assert_eq!(storage.get(&address).unwrap().len(), 100);
+    }
+
+    #[test]
+    fn test_zero_address_handled() {
+        let zero_address = Address::ZERO;
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            zero_address,
+            GethAccountState {
+                balance: Some(U256::from(100)),
+                nonce: None,
+                code: None,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let traces = vec![make_diff_trace(BTreeMap::new(), post)];
+
+        let addresses = extract_touched_addresses(&traces);
+        assert!(addresses.contains(&zero_address));
+    }
+
+    #[test]
+    fn test_zero_storage_slot_handled() {
+        let address = Address::from([0x42u8; 20]);
+        let zero_slot = B256::ZERO;
+
+        let mut storage = BTreeMap::new();
+        storage.insert(zero_slot, B256::from([0xAAu8; 32]));
+
+        let mut post = BTreeMap::new();
+        post.insert(
+            address,
+            GethAccountState {
+                balance: None,
+                nonce: None,
                 code: None,
                 storage,
             },
         );
 
-        let diff = DiffMode {
-            pre: std::collections::BTreeMap::new(),
-            post,
-        };
+        let traces = vec![make_diff_trace(BTreeMap::new(), post)];
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
-
-        assert_eq!(results.len(), 1);
-        let slot_hash = keccak256(slot.0);
-        assert_eq!(
-            results[0].storage.get(&slot_hash),
-            Some(&U256::from_be_bytes(new_value.0))
-        );
+        let storage_map = extract_touched_storage(&traces);
+        assert!(storage_map.get(&address).unwrap().contains(&zero_slot));
     }
 
     #[test]
-    fn test_new_account_created() {
+    fn test_mixed_success_and_failed_transactions() {
         let address = Address::from([0x42u8; 20]);
 
-        let mut post = std::collections::BTreeMap::new();
+        let mut post = BTreeMap::new();
         post.insert(
             address,
             GethAccountState {
-                balance: Some(U256::from(1000)),
-                nonce: Some(0),
-                code: Some(Bytes::from(vec![0x60, 0x80, 0x60, 0x40])),
-                storage: BTreeMap::default(),
-            },
-        );
-
-        let diff = DiffMode {
-            pre: std::collections::BTreeMap::new(),
-            post,
-        };
-
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
-
-        assert_eq!(results.len(), 1);
-        assert!(!results[0].deleted);
-        assert_eq!(results[0].balance, U256::from(1000));
-        assert_eq!(results[0].nonce, 0);
-        assert!(results[0].code.is_some());
-    }
-
-    #[test]
-    fn test_balance_transfer() {
-        let sender = Address::from([0x01u8; 20]);
-        let receiver = Address::from([0x02u8; 20]);
-
-        let mut post = std::collections::BTreeMap::new();
-        post.insert(
-            sender,
-            GethAccountState {
-                balance: Some(U256::from(900)),
-                nonce: Some(6),
-                code: None,
-                storage: BTreeMap::default(),
-            },
-        );
-        post.insert(
-            receiver,
-            GethAccountState {
-                balance: Some(U256::from(600)),
+                balance: Some(U256::from(100)),
                 nonce: None,
                 code: None,
-                storage: BTreeMap::default(),
+                storage: BTreeMap::new(),
             },
         );
 
-        let diff = DiffMode {
-            pre: std::collections::BTreeMap::new(),
-            post,
-        };
-
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
-
-        assert_eq!(results.len(), 2);
-
-        let sender_state = results
-            .iter()
-            .find(|a| a.balance == U256::from(900))
-            .unwrap();
-        assert_eq!(sender_state.nonce, 6);
-        assert!(!sender_state.deleted);
-
-        let receiver_state = results
-            .iter()
-            .find(|a| a.balance == U256::from(600))
-            .unwrap();
-        assert!(!receiver_state.deleted);
-    }
-
-    #[test]
-    fn test_multiple_transactions() {
-        let address = Address::from([0x42u8; 20]);
-
-        let mut post1 = std::collections::BTreeMap::new();
-        post1.insert(
-            address,
-            GethAccountState {
-                balance: Some(U256::from(900)),
-                nonce: Some(6),
-                code: None,
-                storage: BTreeMap::default(),
+        let traces = vec![
+            TraceResult::Error {
+                error: "reverted".to_string(),
+                tx_hash: None,
             },
-        );
-        let diff1 = DiffMode {
-            pre: std::collections::BTreeMap::new(),
-            post: post1,
-        };
-
-        let mut post2 = std::collections::BTreeMap::new();
-        post2.insert(
-            address,
-            GethAccountState {
-                balance: Some(U256::from(800)),
-                nonce: Some(7),
-                code: None,
-                storage: BTreeMap::default(),
+            make_diff_trace(BTreeMap::new(), post),
+            TraceResult::Error {
+                error: "out of gas".to_string(),
+                tx_hash: None,
             },
-        );
-        let diff2 = DiffMode {
-            pre: std::collections::BTreeMap::new(),
-            post: post2,
-        };
+        ];
 
-        let results = process_geth_traces(vec![
-            make_trace_result(PreStateFrame::Diff(diff1)),
-            make_trace_result(PreStateFrame::Diff(diff2)),
-        ]);
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].balance, U256::from(800));
-        assert_eq!(results[0].nonce, 7);
-    }
-
-    #[test]
-    fn test_empty_diff_returns_nothing() {
-        let diff = DiffMode {
-            pre: std::collections::BTreeMap::new(),
-            post: std::collections::BTreeMap::new(),
-        };
-
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
-
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn test_code_preserved_when_only_storage_changes() {
-        // This test verifies the fix: when only storage changes, code should be
-        // preserved from pre-state since it won't appear in post-state
-        let address = Address::from([0x42u8; 20]);
-        let slot = B256::from([0x01u8; 32]);
-        let old_value = B256::from([0xAAu8; 32]);
-        let new_value = B256::from([0xBBu8; 32]);
-        let code = Bytes::from(vec![0x60, 0x80, 0x60, 0x40]);
-
-        let mut pre_storage = std::collections::BTreeMap::new();
-        pre_storage.insert(slot, old_value);
-
-        let mut pre = std::collections::BTreeMap::new();
-        pre.insert(
-            address,
-            GethAccountState {
-                balance: Some(U256::from(1000)),
-                nonce: Some(5),
-                code: Some(code.clone()),
-                storage: pre_storage,
-            },
-        );
-
-        let mut post_storage = std::collections::BTreeMap::new();
-        post_storage.insert(slot, new_value);
-
-        let mut post = std::collections::BTreeMap::new();
-        post.insert(
-            address,
-            GethAccountState {
-                balance: None, // Not changed
-                nonce: None,   // Not changed
-                code: None,    // Not changed - but we need to preserve it!
-                storage: post_storage,
-            },
-        );
-
-        let diff = DiffMode { pre, post };
-
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].balance, U256::from(1000));
-        assert_eq!(results[0].nonce, 5);
-        assert_eq!(results[0].code, Some(code));
-
-        let slot_hash = keccak256(slot.0);
-        assert_eq!(
-            results[0].storage.get(&slot_hash),
-            Some(&U256::from_be_bytes(new_value.0))
-        );
+        let addresses = extract_touched_addresses(&traces);
+        assert_eq!(addresses.len(), 1);
+        assert!(addresses.contains(&address));
     }
 }

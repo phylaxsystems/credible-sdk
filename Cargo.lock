@@ -11594,6 +11594,7 @@ dependencies = [
  "serde_json",
  "state-store",
  "state-worker-test-macros",
+ "tempfile",
  "testcontainers",
  "testcontainers-modules",
  "tokio",
