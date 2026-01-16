@@ -60,6 +60,7 @@ fn process_frame(accounts: &mut HashMap<AddressHash, AccountSnapshot>, frame: Pr
 
                 if let Some(code) = account_state.code {
                     snapshot.code = Some(code);
+                    snapshot.code_changed = true;
                     snapshot.touched = true;
                 }
 
@@ -98,6 +99,7 @@ fn process_diff_frame(
 
         if let Some(code) = &account.code {
             snapshot.code = Some(code.clone());
+            snapshot.code_changed = true;
             snapshot.touched = true;
         }
 

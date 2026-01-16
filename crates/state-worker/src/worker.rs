@@ -16,7 +16,13 @@ use crate::{
         SystemCalls,
     },
 };
-use alloy::rpc::types::Header;
+use alloy::{
+    primitives::{
+        B256,
+        KECCAK256_EMPTY,
+    },
+    rpc::types::Header,
+};
 use alloy_provider::{
     Provider,
     RootProvider,
@@ -274,6 +280,7 @@ where
 
         // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
+        self.backfill_unchanged_code_hashes(&mut update)?;
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
@@ -342,6 +349,27 @@ where
                 Ok(())
             }
         }
+    }
+
+    fn backfill_unchanged_code_hashes(&self, update: &mut BlockStateUpdate) -> Result<()> {
+        if update.block_number == 0 {
+            return Ok(());
+        }
+
+        let prev_block = update.block_number - 1;
+        for account in &mut update.accounts {
+            if account.deleted || account.code_hash != B256::ZERO {
+                continue;
+            }
+
+            let prev = self
+                .writer_reader
+                .get_account(account.address_hash, prev_block)?;
+
+            account.code_hash = prev.map_or(KECCAK256_EMPTY, |acc| acc.code_hash);
+        }
+
+        Ok(())
     }
 
     /// Process block 0 using the configured genesis state

@@ -84,14 +84,17 @@ fn process_diff(accounts: &mut HashMap<AddressHash, AccountSnapshot>, state_diff
             Delta::Unchanged => {}
             Delta::Added(code) => {
                 snapshot.code = Some(code.clone());
+                snapshot.code_changed = true;
                 snapshot.touched = true;
             }
             Delta::Removed(_) => {
                 snapshot.code = None;
+                snapshot.code_changed = true;
                 snapshot.touched = true;
             }
             Delta::Changed(change) => {
                 snapshot.code = Some(change.to.clone());
+                snapshot.code_changed = true;
                 snapshot.touched = true;
             }
         }

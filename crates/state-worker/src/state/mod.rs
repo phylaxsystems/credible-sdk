@@ -59,6 +59,7 @@ pub(crate) struct AccountSnapshot {
     pub(crate) balance: Option<U256>,
     pub(crate) nonce: Option<u64>,
     pub(crate) code: Option<Bytes>,
+    pub(crate) code_changed: bool,
     pub(crate) storage_updates: HashMap<B256, U256>,
     pub(crate) touched: bool,
 }
@@ -69,20 +70,27 @@ impl AccountSnapshot {
             return None;
         }
 
-        let code_bytes = self.code.take().unwrap_or_default();
+        let (code_hash, code) = if self.code_changed {
+            let code_bytes = self.code.take().unwrap_or_default();
 
-        // Existing account without code: keccak256("") per EIP-1052
-        // Existing account with code: keccak256(code)
-        let code_hash = if code_bytes.is_empty() {
-            KECCAK_EMPTY
-        } else {
-            keccak256(&code_bytes)
-        };
+            // Existing account without code: keccak256("") per EIP-1052
+            // Existing account with code: keccak256(code)
+            let code_hash = if code_bytes.is_empty() {
+                KECCAK_EMPTY
+            } else {
+                keccak256(&code_bytes)
+            };
 
-        let code = if code_bytes.is_empty() {
-            None
+            let code = if code_bytes.is_empty() {
+                None
+            } else {
+                Some(code_bytes)
+            };
+
+            (code_hash, code)
         } else {
-            Some(code_bytes)
+            // Sentinel for unchanged code; caller must backfill from previous state.
+            (B256::ZERO, None)
         };
 
         Some(AccountState {
@@ -179,6 +187,7 @@ mod account_deletion_tests {
             balance: Some(U256::from(100)),
             nonce: Some(1),
             code: None,
+            code_changed: true,
             storage_updates: HashMap::new(),
             touched: true,
         };
@@ -199,6 +208,7 @@ mod account_deletion_tests {
             balance: Some(U256::from(100)),
             nonce: Some(1),
             code: Some(Bytes::from_iter(code)),
+            code_changed: true,
             storage_updates: HashMap::new(),
             touched: true,
         };
@@ -207,5 +217,22 @@ mod account_deletion_tests {
 
         assert_eq!(state.code_hash, expected_hash);
         assert!(!state.deleted);
+    }
+
+    #[test]
+    fn unchanged_code_uses_zero_sentinel() {
+        let snapshot = AccountSnapshot {
+            balance: Some(U256::from(100)),
+            nonce: Some(1),
+            code: None,
+            code_changed: false,
+            storage_updates: HashMap::new(),
+            touched: true,
+        };
+
+        let state = snapshot.finalize(test_address()).unwrap();
+
+        assert_eq!(state.code_hash, B256::ZERO);
+        assert!(state.code.is_none());
     }
 }
