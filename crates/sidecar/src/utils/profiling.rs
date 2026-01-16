@@ -101,10 +101,15 @@ pub fn init_profiling(runtime: &Handle) -> Result<ProfilingGuard, String> {
 /// No-op placeholder when the `tokio-console` feature is disabled.
 #[cfg(not(feature = "tokio-console"))]
 pub fn init_profiling(_runtime: &tokio::runtime::Handle) -> Result<ProfilingGuard, String> {
+    let filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive("alloy_rpc_client=warn".parse().unwrap())
+        .add_directive("alloy_transport=warn".parse().unwrap());
+
     let subscriber = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(filter)
         .finish();
+
     tracing::subscriber::set_global_default(subscriber)
         .map_err(|e| format!("failed to initialize tracing subscriber: {e}"))?;
     Ok(ProfilingGuard)
