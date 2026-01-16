@@ -97,6 +97,10 @@ pub struct ChainConfig {
     pub spec_id: SpecId,
     /// Chain ID
     pub chain_id: u64,
+    /// Cancun fork activation timestamp (enables EIP-4788)
+    pub cancun_time: Option<u64>,
+    /// Prague fork activation timestamp (enables EIP-2935)
+    pub prague_time: Option<u64>,
 }
 
 /// Credible configuration from file
