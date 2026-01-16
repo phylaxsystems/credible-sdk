@@ -41,7 +41,7 @@ use serde::{
 use tracing::{
     debug,
     error,
-    info
+    info,
 };
 
 use std::collections::{
