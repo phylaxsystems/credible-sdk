@@ -275,6 +275,8 @@ impl CommonSetup {
             Duration::from_millis(100),
             Duration::from_millis(20),
             false,
+            None,
+            None,
             incident_sender,
             #[cfg(feature = "cache_validation")]
             Some(&self.eth_rpc_source_http_mock.ws_url()),
