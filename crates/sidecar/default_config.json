@@ -36,6 +36,9 @@
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
     "sources_monitoring_period_ms": 500,
-    "enable_parallel_sources": false
+    "enable_parallel_sources": false,
+    "state_worker_ws_url": "ws://127.0.0.1:8546",
+    "state_worker_genesis_file": "/etc/ethereum/genesis.json",
+    "state_worker_provider_type": "geth"
   }
 }

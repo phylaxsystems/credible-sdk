@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use crate::{
-    cli::ProviderType,
+    config::ProviderType,
     connect_provider,
     genesis::GenesisState,
     integration_tests::{

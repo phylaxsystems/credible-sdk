@@ -1,7 +1,7 @@
 //! Prometheus `metrics`
 //!
 //! Contains data types for containing metrics before sending them to the
-//! global prometheus server spawned in `main.rs`
+//! global prometheus server spawned in `lib`
 //!
 //! The prometheus exporter lives by default at `0.0.0.0:9000`.
 //! The port on which to bind it to can be specified with the

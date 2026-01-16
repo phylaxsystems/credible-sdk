@@ -16,6 +16,7 @@ pub mod execution_ids;
 pub mod health;
 pub mod indexer;
 pub mod metrics;
+pub mod state_worker;
 pub mod transaction_observer;
 pub mod transactions_state;
 pub mod transport;
