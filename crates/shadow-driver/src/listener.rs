@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_lines)]
+#![allow(clippy::format_collect)]
 //! Core orchestration loop that keeps Redis in sync with the execution client.
 //!
 //! The worker bootstraps from the last persisted block, catches up to head via
@@ -53,6 +54,7 @@ use std::{
 use tokio::{
     sync::{
         Mutex,
+        mpsc,
         watch,
     },
     time,
@@ -81,10 +83,11 @@ const WS_CONNECT_TIMEOUT_SECS: u64 = 30;
 const GRPC_CONNECT_TIMEOUT_SECS: u64 = 30;
 const RPC_CALL_TIMEOUT_SECS: u64 = 30;
 const BLOCK_FETCH_TIMEOUT_SECS: u64 = 60;
-const TX_RESULT_COMPARISON_TIMEOUT_SECS: u64 = 120;
-const GET_TX_RECEIPT_TIMEOUT_SECS: u64 = 15;
-const GRPC_GET_TRANSACTIONS_TIMEOUT_SECS: u64 = 30;
+const TX_RESULT_COMPARISON_TIMEOUT_SECS: u64 = 300;
+const GET_TX_RECEIPT_TIMEOUT_SECS: u64 = 60;
+const GRPC_GET_TRANSACTIONS_TIMEOUT_SECS: u64 = 120;
 const SUBSCRIPTION_SETUP_TIMEOUT_SECS: u64 = 30;
+const COMPARISON_CHANNEL_BUFFER_SIZE: usize = 256;
 
 /// Pending event awaiting acknowledgment
 struct PendingEvent {
@@ -262,6 +265,64 @@ impl EventStream {
     }
 }
 
+/// Request to compare transaction results for a block
+struct ComparisonRequest {
+    block_number: u64,
+    tx_hashes: Vec<alloy::primitives::B256>,
+    client: SidecarTransportClient<Channel>,
+    provider: Arc<RootProvider>,
+}
+
+/// Background worker that processes transaction result comparisons
+struct ComparisonWorker {
+    rx: mpsc::Receiver<ComparisonRequest>,
+}
+
+impl ComparisonWorker {
+    fn new(rx: mpsc::Receiver<ComparisonRequest>) -> Self {
+        Self { rx }
+    }
+
+    async fn run(mut self) {
+        info!("Comparison worker started");
+
+        while let Some(request) = self.rx.recv().await {
+            let block_number = request.block_number;
+
+            // Small delay to allow sidecar to process results
+            time::sleep(Duration::from_millis(100)).await;
+
+            // Process comparison without blocking the sender
+            match time::timeout(
+                Duration::from_secs(TX_RESULT_COMPARISON_TIMEOUT_SECS),
+                Listener::compare_transaction_results(
+                    request.client,
+                    request.provider,
+                    request.block_number,
+                    request.tx_hashes,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    debug!("Comparison completed for block {block_number}");
+                }
+                Ok(Err(e)) => {
+                    warn!("Failed to compare results for block {block_number}: {e}");
+                }
+                Err(_) => {
+                    warn!(
+                        "Timeout comparing results for block {block_number} (exceeded {}s)",
+                        TX_RESULT_COMPARISON_TIMEOUT_SECS
+                    );
+                }
+            }
+        }
+
+        info!("Comparison worker shutting down");
+    }
+}
+
 /// Coordinates block ingestion, tracing, and persistence via gRPC streaming.
 pub struct Listener {
     ws_url: String,
@@ -272,6 +333,8 @@ pub struct Listener {
     starting_block: Option<u64>,
     /// Flag to enable/disable transaction result querying
     query_results: bool,
+    /// Channel to send comparison requests to background worker
+    comparison_tx: Option<mpsc::Sender<ComparisonRequest>>,
 }
 
 impl Listener {
@@ -286,6 +349,7 @@ impl Listener {
             last_committed_block: None,
             starting_block,
             query_results: false,
+            comparison_tx: None,
         }
     }
 
@@ -311,6 +375,16 @@ impl Listener {
     /// Enable transaction result querying and comparison
     pub fn with_result_querying(mut self, enabled: bool) -> Self {
         self.query_results = enabled;
+
+        if enabled {
+            // Create channel and spawn background worker
+            let (tx, rx) = mpsc::channel::<ComparisonRequest>(COMPARISON_CHANNEL_BUFFER_SIZE);
+            self.comparison_tx = Some(tx);
+
+            let worker = ComparisonWorker::new(rx);
+            tokio::spawn(worker.run());
+        }
+
         self
     }
 
@@ -950,44 +1024,30 @@ impl Listener {
             transactions.len()
         );
 
-        // STEP 5: Compare transaction results if enabled
-        // Spawn this as a separate task to not block the main loop
-        if self.query_results && !successful_tx_hashes.is_empty() {
-            let client_clone = client.clone();
-            let tx_hashes = successful_tx_hashes.clone();
-            let provider = self.provider.clone();
+        // STEP 5: Queue transaction result comparison (non-blocking)
+        if self.query_results
+            && !successful_tx_hashes.is_empty()
+            && let Some(ref comparison_tx) = self.comparison_tx
+        {
+            let request = ComparisonRequest {
+                block_number,
+                tx_hashes: successful_tx_hashes,
+                client: client.clone(),
+                provider: self.provider.clone(),
+            };
 
-            tokio::spawn(async move {
-                // Small delay to allow sidecar to process results
-                time::sleep(Duration::from_millis(100)).await;
-
-                // Wrap the entire comparison in a timeout
-                match time::timeout(
-                    Duration::from_secs(TX_RESULT_COMPARISON_TIMEOUT_SECS),
-                    Self::compare_transaction_results(
-                        client_clone,
-                        provider,
-                        block_number,
-                        tx_hashes,
-                    ),
-                )
-                .await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
-                        warn!(
-                            "Failed to compare transaction results for block {block_number}: {e}"
-                        );
-                    }
-                    Err(_) => {
-                        warn!(
-                            "Timeout comparing transaction results for block {block_number} \
-                             (exceeded {}s)",
-                            TX_RESULT_COMPARISON_TIMEOUT_SECS
-                        );
-                    }
+            // Use try_send to never block - drop if channel is full
+            match comparison_tx.try_send(request) {
+                Ok(()) => {
+                    debug!("Queued comparison for block {block_number}");
                 }
-            });
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("Comparison queue full, skipping comparison for block {block_number}");
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    warn!("Comparison worker closed, skipping comparison for block {block_number}");
+                }
+            }
         }
 
         Ok(())
@@ -1033,7 +1093,30 @@ impl Listener {
         .context("failed to query sidecar for transaction results")?
         .into_inner();
 
-        // Build a map of tx_hash -> sidecar result
+        // Log and build a map of tx_hash -> sidecar result
+        info!(
+            "Received {} transaction results from sidecar for block {block_number}",
+            sidecar_response.results.len()
+        );
+
+        // Print each sidecar result immediately
+        for result in &sidecar_response.results {
+            let tx_hash = result.tx_execution_id.as_ref().map_or_else(
+                || "unknown".to_string(),
+                |id| format!("0x{}", bytes_to_hex(&id.tx_hash)),
+            );
+            let status_str = result_status_to_string(result.status);
+            info!(
+                "Sidecar result for {tx_hash}: status={status_str}, gas_used={}, error={}",
+                result.gas_used,
+                if result.error.is_empty() {
+                    "none"
+                } else {
+                    &result.error
+                }
+            );
+        }
+
         let sidecar_results: HashMap<Vec<u8>, &TransactionResult> = sidecar_response
             .results
             .iter()
@@ -1046,9 +1129,18 @@ impl Listener {
                 "Sidecar did not find {} transactions for block {block_number}",
                 sidecar_response.not_found.len()
             );
+            for not_found in &sidecar_response.not_found {
+                let tx_hash = format!("0x{}", bytes_to_hex(not_found));
+                warn!("  Not found: {tx_hash}");
+            }
         }
 
         // Query provider receipts in parallel
+        info!(
+            "Fetching {} transaction receipts from provider for block {block_number}",
+            tx_hashes.len()
+        );
+
         let receipt_futures: Vec<_> = tx_hashes
             .iter()
             .map(|tx_hash| {
@@ -1066,6 +1158,11 @@ impl Listener {
             .collect();
 
         let receipt_results = futures::future::join_all(receipt_futures).await;
+
+        info!(
+            "Fetched {} transaction receipts from provider for block {block_number}",
+            receipt_results.len()
+        );
 
         let mut mismatches = 0;
         let mut matches = 0;
@@ -1377,6 +1474,10 @@ fn u256_to_bytes(val: U256) -> Vec<u8> {
 
 fn u128_to_bytes(val: u128) -> Vec<u8> {
     val.to_be_bytes().to_vec()
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Convert `ResultStatus` enum value to human-readable string
