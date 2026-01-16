@@ -505,6 +505,12 @@ impl Indexer {
         self.metrics.set_head_block(update_block.block_number);
         let last_indexed_block_num_hash = self.get_last_indexed_block_num_hash()?;
 
+        debug!(
+            target = "assertion_executor::indexer",
+            ?last_indexed_block_num_hash,
+            "Starting sync"
+        );
+
         let from;
         // If a block has been indexed, check if the new block is part of the same chain.
         if let Some(last_indexed_block_num_hash) = last_indexed_block_num_hash {
@@ -595,7 +601,7 @@ impl Indexer {
     /// Store the events in the `pending_modifications` tree for the indexed blocks.
     #[allow(clippy::too_many_lines)]
     async fn index_range(&self, from: u64, to: u64) -> IndexerResult {
-        trace!(
+        info!(
             target = "assertion_executor::indexer",
             from, to, "Indexing range"
         );
@@ -745,6 +751,13 @@ impl Indexer {
                 "No block to move, skipping"
             );
         }
+        debug!(
+            target = "assertion_executor::indexer",
+            from,
+            to,
+            logs_count = logs.len(),
+            "Fetched logs from provider"
+        );
         Ok(())
     }
 
@@ -767,7 +780,7 @@ impl Indexer {
 
                 let event = AssertionAdded::new(topics, data);
 
-                trace!(
+                info!(
                     target = "assertion_executor::indexer",
                     ?event,
                     "AssertionAdded event decoded"
@@ -803,7 +816,7 @@ impl Indexer {
                             .try_into()
                             .map_err(|_| IndexerError::BlockNumberExceedsU64)?;
 
-                        debug!(
+                        info!(
                             target = "assertion_executor::indexer",
                             assertion_id=?assertion_contract.id,
                             activation_block,
@@ -851,7 +864,7 @@ impl Indexer {
                     .try_into()
                     .map_err(|_| IndexerError::BlockNumberExceedsU64)?;
 
-                debug!(
+                info!(
                     target = "assertion_executor::indexer",
                     assertion_id=?event.assertionId,
                     inactivation_block,
