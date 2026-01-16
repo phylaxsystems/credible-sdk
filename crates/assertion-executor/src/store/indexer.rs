@@ -601,7 +601,7 @@ impl Indexer {
     /// Store the events in the `pending_modifications` tree for the indexed blocks.
     #[allow(clippy::too_many_lines)]
     async fn index_range(&self, from: u64, to: u64) -> IndexerResult {
-        info!(
+        debug!(
             target = "assertion_executor::indexer",
             from, to, "Indexing range"
         );
