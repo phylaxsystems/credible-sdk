@@ -82,30 +82,55 @@ fn process_diff_frame(
     accounts: &mut HashMap<AddressHash, AccountSnapshot>,
     diff: &alloy_rpc_types_trace::geth::DiffMode,
 ) {
-    // Process post-state only,  the final state after transaction
+    // Process pre-state first as baseline. The pre-state contains ALL fields
+    // for touched accounts, which we need because post-state only contains
+    // fields that actually changed.
+    for (address, account) in &diff.pre {
+        let snapshot = accounts.entry((*address).into()).or_default();
+
+        // Set baseline values from pre-state (only if not already set by earlier tx)
+        if snapshot.balance.is_none() {
+            snapshot.balance = account.balance;
+        }
+        if snapshot.nonce.is_none() {
+            snapshot.nonce = account.nonce;
+        }
+        if snapshot.code.is_none()
+            && let Some(code) = &account.code
+        {
+            snapshot.code = Some(code.clone());
+        }
+        for (slot, value) in &account.storage {
+            let slot_hash = keccak256(slot.0);
+            let value_u256 = U256::from_be_bytes((*value).into());
+            snapshot
+                .storage_updates
+                .entry(slot_hash)
+                .or_insert(value_u256);
+        }
+    }
+
+    // Process post-state to apply final values (overrides pre-state)
     for (address, account) in &diff.post {
         let snapshot = accounts.entry((*address).into()).or_default();
+        snapshot.touched = true;
 
         if let Some(balance) = account.balance {
             snapshot.balance = Some(balance);
-            snapshot.touched = true;
         }
 
         if let Some(nonce) = account.nonce {
             snapshot.nonce = Some(nonce);
-            snapshot.touched = true;
         }
 
         if let Some(code) = &account.code {
             snapshot.code = Some(code.clone());
-            snapshot.touched = true;
         }
 
         for (slot, value) in &account.storage {
             let slot_hash = keccak256(slot.0);
             let value_u256 = U256::from_be_bytes((*value).into());
             snapshot.storage_updates.insert(slot_hash, value_u256);
-            snapshot.touched = true;
         }
     }
 }
@@ -335,5 +360,59 @@ mod tests {
         let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
 
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_code_preserved_when_only_storage_changes() {
+        // This test verifies the fix: when only storage changes, code should be
+        // preserved from pre-state since it won't appear in post-state
+        let address = Address::from([0x42u8; 20]);
+        let slot = B256::from([0x01u8; 32]);
+        let old_value = B256::from([0xAAu8; 32]);
+        let new_value = B256::from([0xBBu8; 32]);
+        let code = Bytes::from(vec![0x60, 0x80, 0x60, 0x40]);
+
+        let mut pre_storage = std::collections::BTreeMap::new();
+        pre_storage.insert(slot, old_value);
+
+        let mut pre = std::collections::BTreeMap::new();
+        pre.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(1000)),
+                nonce: Some(5),
+                code: Some(code.clone()),
+                storage: pre_storage,
+            },
+        );
+
+        let mut post_storage = std::collections::BTreeMap::new();
+        post_storage.insert(slot, new_value);
+
+        let mut post = std::collections::BTreeMap::new();
+        post.insert(
+            address,
+            GethAccountState {
+                balance: None, // Not changed
+                nonce: None,   // Not changed
+                code: None,    // Not changed - but we need to preserve it!
+                storage: post_storage,
+            },
+        );
+
+        let diff = DiffMode { pre, post };
+
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].balance, U256::from(1000));
+        assert_eq!(results[0].nonce, 5);
+        assert_eq!(results[0].code, Some(code));
+
+        let slot_hash = keccak256(slot.0);
+        assert_eq!(
+            results[0].storage.get(&slot_hash),
+            Some(&U256::from_be_bytes(new_value.0))
+        );
     }
 }
