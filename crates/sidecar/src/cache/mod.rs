@@ -752,8 +752,6 @@ mod tests {
         let result = cache.query_parallel(move |s| s.basic_ref(address)).unwrap();
         assert_eq!(result, Some(account_info));
 
-        thread::sleep(std::time::Duration::from_millis(10));
-
         // Both sources should have been exercised in parallel
         assert_eq!(failing.basic_ref_call_count(), 1);
         assert_eq!(succeeding.basic_ref_call_count(), 1);
