@@ -220,10 +220,23 @@ fn test_storage_updates_produce_identical_output() {
     let mut parity_accounts = parity::process_parity_traces(parity_traces);
 
     // === Geth format (using post-state) ===
-    let mut geth_storage = BTreeMap::new();
-    geth_storage.insert(slot1, B256::from(U256::from(100)));
-    geth_storage.insert(slot2, B256::from(U256::from(300)));
-    geth_storage.insert(slot3, B256::ZERO); // Removed = zero
+    let mut geth_pre_storage = BTreeMap::new();
+    geth_pre_storage.insert(slot3, B256::from(U256::from(400)));
+
+    let mut geth_pre = BTreeMap::new();
+    geth_pre.insert(
+        address,
+        GethAccountState {
+            balance: Some(U256::ZERO),
+            nonce: Some(0),
+            code: None,
+            storage: geth_pre_storage,
+        },
+    );
+
+    let mut geth_post_storage = BTreeMap::new();
+    geth_post_storage.insert(slot1, B256::from(U256::from(100)));
+    geth_post_storage.insert(slot2, B256::from(U256::from(300)));
 
     let mut geth_post = BTreeMap::new();
     geth_post.insert(
@@ -232,13 +245,13 @@ fn test_storage_updates_produce_identical_output() {
             balance: Some(U256::ZERO),
             nonce: Some(0),
             code: None,
-            storage: geth_storage,
+            storage: geth_post_storage,
         },
     );
 
     let geth_trace = TraceResult::Success {
         result: GethTrace::PreStateTracer(PreStateFrame::Diff(DiffMode {
-            pre: BTreeMap::new(),
+            pre: geth_pre,
             post: geth_post,
         })),
         tx_hash: Some(B256::ZERO),
@@ -356,8 +369,6 @@ fn test_selfdestruct_balance_transfer_produces_identical_output() {
 #[test]
 fn test_selfdestruct_storage_persists_produces_identical_output() {
     let address = address!("0x5555555555555555555555555555555555555555");
-    let slot1 = B256::from(U256::from(10));
-
     let mut parity_diff = StateDiff::default();
     parity_diff.0.insert(
         address,
@@ -376,15 +387,13 @@ fn test_selfdestruct_storage_persists_produces_identical_output() {
     let mut parity_accounts = parity::process_parity_traces(parity_traces);
 
     let mut geth_pre = BTreeMap::new();
-    let mut pre_storage = BTreeMap::new();
-    pre_storage.insert(slot1, B256::from(U256::from(111)));
     geth_pre.insert(
         address,
         GethAccountState {
             balance: Some(U256::from(5000)),
             nonce: Some(10),
             code: Some(Bytes::from(vec![0x60])),
-            storage: pre_storage,
+            storage: BTreeMap::new(),
         },
     );
 
@@ -427,6 +436,256 @@ fn test_selfdestruct_storage_persists_produces_identical_output() {
 
     assert_eq!(parity_account.storage.len(), 0);
     assert_eq!(geth_account.storage.len(), 0);
+}
+
+#[test]
+fn test_account_deletion_produces_identical_output() {
+    let address = address!("0x7777777777777777777777777777777777777777");
+
+    let mut parity_diff = StateDiff::default();
+    parity_diff.0.insert(
+        address,
+        AccountDiff {
+            balance: Delta::Removed(U256::from(1000)),
+            nonce: Delta::Removed(U64::from(9)),
+            code: Delta::Removed(Bytes::from(vec![0x60, 0x80])),
+            storage: BTreeMap::new(),
+        },
+    );
+
+    let parity_traces = vec![create_parity_trace(B256::ZERO, parity_diff)];
+    let mut parity_accounts = parity::process_parity_traces(parity_traces);
+
+    let mut geth_pre = BTreeMap::new();
+    geth_pre.insert(
+        address,
+        GethAccountState {
+            balance: Some(U256::from(1000)),
+            nonce: Some(9),
+            code: Some(Bytes::from(vec![0x60, 0x80])),
+            storage: BTreeMap::new(),
+        },
+    );
+
+    let geth_trace = TraceResult::Success {
+        result: GethTrace::PreStateTracer(PreStateFrame::Diff(DiffMode {
+            pre: geth_pre,
+            post: BTreeMap::new(),
+        })),
+        tx_hash: Some(B256::ZERO),
+    };
+
+    let mut geth_accounts = geth::process_geth_traces(vec![geth_trace]);
+
+    assert_eq!(parity_accounts.len(), 1);
+    assert_eq!(geth_accounts.len(), 1);
+
+    parity_accounts.sort_by_key(|a| a.address_hash);
+    geth_accounts.sort_by_key(|a| a.address_hash);
+
+    let parity_account = &parity_accounts[0];
+    let geth_account = &geth_accounts[0];
+
+    assert_eq!(parity_account.address_hash, geth_account.address_hash);
+    assert!(parity_account.deleted);
+    assert!(geth_account.deleted);
+}
+
+#[test]
+fn test_account_deletion_overrides_storage_updates_produces_identical_output() {
+    let address = address!("0x8888888888888888888888888888888888888888");
+    let slot = B256::from(U256::from(7));
+    let value = B256::from(U256::from(42));
+
+    let mut parity_diff1 = StateDiff::default();
+    let mut parity_storage1 = BTreeMap::new();
+    parity_storage1.insert(slot, Delta::Added(value));
+    parity_diff1.0.insert(
+        address,
+        AccountDiff {
+            balance: Delta::Added(U256::from(10)),
+            nonce: Delta::Added(U64::from(1)),
+            code: Delta::Unchanged,
+            storage: parity_storage1,
+        },
+    );
+
+    let mut parity_diff2 = StateDiff::default();
+    parity_diff2.0.insert(
+        address,
+        AccountDiff {
+            balance: Delta::Removed(U256::from(10)),
+            nonce: Delta::Removed(U64::from(1)),
+            code: Delta::Removed(Bytes::from(vec![0x60, 0x80])),
+            storage: BTreeMap::new(),
+        },
+    );
+
+    let parity_traces = vec![
+        create_parity_trace(B256::ZERO, parity_diff1),
+        create_parity_trace(B256::ZERO, parity_diff2),
+    ];
+    let mut parity_accounts = parity::process_parity_traces(parity_traces);
+
+    let mut geth_post1 = BTreeMap::new();
+    let mut geth_storage1 = BTreeMap::new();
+    geth_storage1.insert(slot, value);
+    geth_post1.insert(
+        address,
+        GethAccountState {
+            balance: Some(U256::from(10)),
+            nonce: Some(1),
+            code: None,
+            storage: geth_storage1,
+        },
+    );
+
+    let geth_trace1 = TraceResult::Success {
+        result: GethTrace::PreStateTracer(PreStateFrame::Diff(DiffMode {
+            pre: BTreeMap::new(),
+            post: geth_post1,
+        })),
+        tx_hash: Some(B256::ZERO),
+    };
+
+    let mut geth_pre2 = BTreeMap::new();
+    geth_pre2.insert(
+        address,
+        GethAccountState {
+            balance: Some(U256::from(10)),
+            nonce: Some(1),
+            code: Some(Bytes::from(vec![0x60, 0x80])),
+            storage: BTreeMap::new(),
+        },
+    );
+
+    let geth_trace2 = TraceResult::Success {
+        result: GethTrace::PreStateTracer(PreStateFrame::Diff(DiffMode {
+            pre: geth_pre2,
+            post: BTreeMap::new(),
+        })),
+        tx_hash: Some(B256::ZERO),
+    };
+
+    let mut geth_accounts = geth::process_geth_traces(vec![geth_trace1, geth_trace2]);
+
+    assert_eq!(parity_accounts.len(), 1);
+    assert_eq!(geth_accounts.len(), 1);
+
+    parity_accounts.sort_by_key(|a| a.address_hash);
+    geth_accounts.sort_by_key(|a| a.address_hash);
+
+    let parity_account = &parity_accounts[0];
+    let geth_account = &geth_accounts[0];
+
+    assert_eq!(parity_account.address_hash, geth_account.address_hash);
+    assert!(parity_account.deleted);
+    assert!(geth_account.deleted);
+    assert!(parity_account.storage.is_empty());
+    assert!(geth_account.storage.is_empty());
+}
+
+#[test]
+fn test_account_deleted_then_recreated_produces_identical_output() {
+    let address = address!("0x9999999999999999999999999999999999999999");
+    let slot = B256::from(U256::from(9));
+    let value = B256::from(U256::from(77));
+    let code = Bytes::from(vec![0x60, 0x80, 0x60]);
+
+    let mut parity_diff1 = StateDiff::default();
+    parity_diff1.0.insert(
+        address,
+        AccountDiff {
+            balance: Delta::Removed(U256::from(10)),
+            nonce: Delta::Removed(U64::from(1)),
+            code: Delta::Removed(code.clone()),
+            storage: BTreeMap::new(),
+        },
+    );
+
+    let mut parity_diff2 = StateDiff::default();
+    let mut parity_storage2 = BTreeMap::new();
+    parity_storage2.insert(slot, Delta::Added(value));
+    parity_diff2.0.insert(
+        address,
+        AccountDiff {
+            balance: Delta::Added(U256::from(50)),
+            nonce: Delta::Added(U64::from(2)),
+            code: Delta::Added(code.clone()),
+            storage: parity_storage2,
+        },
+    );
+
+    let parity_traces = vec![
+        create_parity_trace(B256::ZERO, parity_diff1),
+        create_parity_trace(B256::ZERO, parity_diff2),
+    ];
+    let mut parity_accounts = parity::process_parity_traces(parity_traces);
+
+    let mut geth_pre1 = BTreeMap::new();
+    geth_pre1.insert(
+        address,
+        GethAccountState {
+            balance: Some(U256::from(10)),
+            nonce: Some(1),
+            code: Some(code.clone()),
+            storage: BTreeMap::new(),
+        },
+    );
+
+    let geth_trace1 = TraceResult::Success {
+        result: GethTrace::PreStateTracer(PreStateFrame::Diff(DiffMode {
+            pre: geth_pre1,
+            post: BTreeMap::new(),
+        })),
+        tx_hash: Some(B256::ZERO),
+    };
+
+    let mut geth_post2 = BTreeMap::new();
+    let mut geth_storage2 = BTreeMap::new();
+    geth_storage2.insert(slot, value);
+    geth_post2.insert(
+        address,
+        GethAccountState {
+            balance: Some(U256::from(50)),
+            nonce: Some(2),
+            code: Some(code.clone()),
+            storage: geth_storage2,
+        },
+    );
+
+    let geth_trace2 = TraceResult::Success {
+        result: GethTrace::PreStateTracer(PreStateFrame::Diff(DiffMode {
+            pre: BTreeMap::new(),
+            post: geth_post2,
+        })),
+        tx_hash: Some(B256::ZERO),
+    };
+
+    let mut geth_accounts = geth::process_geth_traces(vec![geth_trace1, geth_trace2]);
+
+    assert_eq!(parity_accounts.len(), 1);
+    assert_eq!(geth_accounts.len(), 1);
+
+    parity_accounts.sort_by_key(|a| a.address_hash);
+    geth_accounts.sort_by_key(|a| a.address_hash);
+
+    let parity_account = &parity_accounts[0];
+    let geth_account = &geth_accounts[0];
+
+    assert_eq!(parity_account.address_hash, geth_account.address_hash);
+    assert!(!parity_account.deleted);
+    assert!(!geth_account.deleted);
+    assert_eq!(parity_account.balance, U256::from(50));
+    assert_eq!(geth_account.balance, U256::from(50));
+    let slot_hash = keccak256(slot.0);
+    assert_eq!(
+        parity_account.storage.get(&slot_hash),
+        Some(&U256::from(77))
+    );
+    assert_eq!(geth_account.storage.get(&slot_hash), Some(&U256::from(77)));
+    assert_eq!(parity_account.code, Some(code.clone()));
+    assert_eq!(geth_account.code, Some(code));
 }
 
 #[test]

@@ -40,10 +40,28 @@ pub fn process_parity_traces(traces: Vec<TraceResultsWithTransactionHash>) -> Ve
         .collect()
 }
 
+fn is_account_deleted(account_diff: &alloy_rpc_types_trace::parity::AccountDiff) -> bool {
+    matches!(account_diff.balance, Delta::Removed(_))
+        && matches!(account_diff.nonce, Delta::Removed(_))
+        && matches!(account_diff.code, Delta::Removed(_))
+}
+
 /// Merge a single transaction diff into the pending account snapshots.
 fn process_diff(accounts: &mut HashMap<AddressHash, AccountSnapshot>, state_diff: &StateDiff) {
     for (address, account_diff) in &state_diff.0 {
         let snapshot = accounts.entry((*address).into()).or_default();
+
+        if is_account_deleted(account_diff) {
+            snapshot.deleted = true;
+            snapshot.touched = true;
+            snapshot.balance = None;
+            snapshot.nonce = None;
+            snapshot.code = None;
+            snapshot.storage_updates.clear();
+            continue;
+        }
+
+        snapshot.deleted = false;
 
         // Handle balance changes
         match &account_diff.balance {
@@ -268,6 +286,115 @@ mod tests {
         assert_eq!(results.len(), 1);
         let slot_hash = keccak256(slot.0);
         assert_eq!(results[0].storage.get(&slot_hash), Some(&U256::ZERO));
+    }
+
+    #[test]
+    fn test_account_deletion_sets_deleted() {
+        let mut state_diff = StateDiff::default();
+        let address = Address::from([0x42u8; 20]);
+
+        state_diff.0.insert(
+            address,
+            AccountDiff {
+                balance: Delta::Removed(U256::from(1000)),
+                nonce: Delta::Removed(U64::from(5)),
+                code: Delta::Removed(Bytes::from(vec![0x60, 0x80])),
+                storage: BTreeMap::default(),
+            },
+        );
+
+        let results = process_parity_traces(vec![make_trace_result(state_diff)]);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].deleted);
+    }
+
+    #[test]
+    fn test_account_deletion_overrides_prior_storage_updates_in_block() {
+        let address = Address::from([0x52u8; 20]);
+        let slot = B256::from([0x01u8; 32]);
+        let value = B256::from([0x22u8; 32]);
+
+        let mut state_diff1 = StateDiff::default();
+        let mut storage1 = std::collections::BTreeMap::new();
+        storage1.insert(slot, Delta::Added(value));
+        state_diff1.0.insert(
+            address,
+            AccountDiff {
+                balance: Delta::Added(U256::from(10)),
+                nonce: Delta::Added(U64::from(1)),
+                code: Delta::Unchanged,
+                storage: storage1,
+            },
+        );
+
+        let mut state_diff2 = StateDiff::default();
+        state_diff2.0.insert(
+            address,
+            AccountDiff {
+                balance: Delta::Removed(U256::from(10)),
+                nonce: Delta::Removed(U64::from(1)),
+                code: Delta::Removed(Bytes::from(vec![0x60, 0x80])),
+                storage: BTreeMap::default(),
+            },
+        );
+
+        let results = process_parity_traces(vec![
+            make_trace_result(state_diff1),
+            make_trace_result(state_diff2),
+        ]);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].deleted);
+        assert!(results[0].storage.is_empty());
+    }
+
+    #[test]
+    fn test_account_deleted_then_recreated_in_later_tx() {
+        let address = Address::from([0x53u8; 20]);
+        let slot = B256::from([0x02u8; 32]);
+        let value = B256::from([0x33u8; 32]);
+        let code = Bytes::from(vec![0x60, 0x80]);
+
+        let mut state_diff1 = StateDiff::default();
+        state_diff1.0.insert(
+            address,
+            AccountDiff {
+                balance: Delta::Removed(U256::from(10)),
+                nonce: Delta::Removed(U64::from(1)),
+                code: Delta::Removed(code.clone()),
+                storage: BTreeMap::default(),
+            },
+        );
+
+        let mut state_diff2 = StateDiff::default();
+        let mut storage2 = std::collections::BTreeMap::new();
+        storage2.insert(slot, Delta::Added(value));
+        state_diff2.0.insert(
+            address,
+            AccountDiff {
+                balance: Delta::Added(U256::from(50)),
+                nonce: Delta::Added(U64::from(2)),
+                code: Delta::Added(code.clone()),
+                storage: storage2,
+            },
+        );
+
+        let results = process_parity_traces(vec![
+            make_trace_result(state_diff1),
+            make_trace_result(state_diff2),
+        ]);
+
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].deleted);
+        assert_eq!(results[0].balance, U256::from(50));
+        assert_eq!(results[0].nonce, 2);
+        let slot_hash = keccak256(slot.0);
+        assert_eq!(
+            results[0].storage.get(&slot_hash),
+            Some(&U256::from_be_bytes(value.0))
+        );
+        assert_eq!(results[0].code, Some(code));
     }
 
     #[test]

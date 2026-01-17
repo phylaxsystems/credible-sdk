@@ -61,12 +61,25 @@ pub(crate) struct AccountSnapshot {
     pub(crate) code: Option<Bytes>,
     pub(crate) storage_updates: HashMap<B256, U256>,
     pub(crate) touched: bool,
+    pub(crate) deleted: bool,
 }
 
 impl AccountSnapshot {
     pub(crate) fn finalize(mut self, address: AddressHash) -> Option<AccountState> {
-        if !self.touched && self.storage_updates.is_empty() {
+        if !self.touched && self.storage_updates.is_empty() && !self.deleted {
             return None;
+        }
+
+        if self.deleted {
+            return Some(AccountState {
+                address_hash: address,
+                balance: U256::ZERO,
+                nonce: 0,
+                code_hash: B256::ZERO,
+                code: None,
+                storage: HashMap::new(),
+                deleted: true,
+            });
         }
 
         let code_bytes = self.code.take().unwrap_or_default();
@@ -181,6 +194,7 @@ mod account_deletion_tests {
             code: None,
             storage_updates: HashMap::new(),
             touched: true,
+            deleted: false,
         };
 
         let state = snapshot.finalize(test_address()).unwrap();
@@ -201,6 +215,7 @@ mod account_deletion_tests {
             code: Some(Bytes::from_iter(code)),
             storage_updates: HashMap::new(),
             touched: true,
+            deleted: false,
         };
 
         let state = snapshot.finalize(test_address()).unwrap();
