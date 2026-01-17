@@ -178,8 +178,11 @@ rustflags = [
 debug = "line-tables-only"
 
 [profile.bench]
-opt-level = 1
-lto = "off"
+debug = 2
+opt-level = 2
+lto = false
+codegen-units = 16
+split-debuginfo = "unpacked"
 
 # Temporary due to a requirement in phoundry
 [patch.crates-io]

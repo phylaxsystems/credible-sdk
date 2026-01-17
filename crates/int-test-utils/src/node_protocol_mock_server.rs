@@ -33,6 +33,7 @@ use std::sync::{
 use tokio::{
     net::TcpListener,
     sync::broadcast,
+    task::AbortHandle,
 };
 
 /// Mock server that supports both HTTP and WebSocket JSON-RPC connections
@@ -44,6 +45,8 @@ pub struct DualProtocolMockServer {
     current_block: Arc<AtomicU64>,
     ws_port: u16,
     notification_tx: broadcast::Sender<Value>,
+    http_server_handle: AbortHandle,
+    ws_server_handle: AbortHandle,
 }
 
 impl DualProtocolMockServer {
@@ -57,25 +60,38 @@ impl DualProtocolMockServer {
 
         let (notification_tx, _) = broadcast::channel(100);
 
-        let server = Self {
-            responses: Arc::new(DashMap::new()),
-            eth_balance_counter: Arc::new(DashMap::new()),
-            http_port,
-            current_block: Arc::new(AtomicU64::new(0)),
-            ws_port,
-            notification_tx,
-        };
+        let responses = Arc::new(DashMap::new());
+        let eth_balance_counter = Arc::new(DashMap::new());
+        let current_block = Arc::new(AtomicU64::new(0));
 
         // Configure default responses for all RPC methods
-        server.setup_default_responses();
+        Self::setup_default_responses_static(&responses, &current_block);
 
         // Start HTTP server
-        server.start_http_server(http_listener);
+        let http_server_handle = Self::start_http_server(
+            Arc::clone(&responses),
+            Arc::clone(&eth_balance_counter),
+            http_listener,
+        );
 
         // Start WebSocket server
-        server.start_ws_server(ws_listener);
+        let ws_server_handle = Self::start_ws_server(
+            Arc::clone(&responses),
+            Arc::clone(&eth_balance_counter),
+            notification_tx.clone(),
+            ws_listener,
+        );
 
-        Ok(server)
+        Ok(Self {
+            responses,
+            eth_balance_counter,
+            http_port,
+            current_block,
+            ws_port,
+            notification_tx,
+            http_server_handle,
+            ws_server_handle,
+        })
     }
 
     /// Generate a mock parent beacon block root for a given block number
@@ -185,26 +201,27 @@ impl DualProtocolMockServer {
         }
     }
 
-    /// Setup default empty/valid responses for all RPC methods
-    fn setup_default_responses(&self) {
+    /// Setup default empty/valid responses for all RPC methods (static version for use in constructor)
+    fn setup_default_responses_static(
+        responses: &Arc<DashMap<String, Value>>,
+        current_block: &Arc<AtomicU64>,
+    ) {
         // Default balance: 0
         let balance_response = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "result": "0x0"
         });
-        self.responses
-            .insert("eth_getBalance".to_string(), balance_response);
+        responses.insert("eth_getBalance".to_string(), balance_response);
 
         // Default block number response
         let block_number_response = json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": format!("0x{:x}", self.current_block.load(Ordering::Acquire))
+            "result": format!("0x{:x}", current_block.load(Ordering::Acquire))
         });
 
-        self.responses
-            .insert("eth_blockNumber".to_string(), block_number_response);
+        responses.insert("eth_blockNumber".to_string(), block_number_response);
 
         // Default nonce: 0
         let nonce_response = json!({
@@ -212,8 +229,7 @@ impl DualProtocolMockServer {
             "id": 1,
             "result": "0x0"
         });
-        self.responses
-            .insert("eth_getTransactionCount".to_string(), nonce_response);
+        responses.insert("eth_getTransactionCount".to_string(), nonce_response);
 
         // Default code: empty (0x)
         let code_response = json!({
@@ -221,8 +237,7 @@ impl DualProtocolMockServer {
             "id": 1,
             "result": "0x"
         });
-        self.responses
-            .insert("eth_getCode".to_string(), code_response);
+        responses.insert("eth_getCode".to_string(), code_response);
 
         // Default storage: zero value
         let storage_response = json!({
@@ -230,26 +245,22 @@ impl DualProtocolMockServer {
             "id": 1,
             "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
         });
-        self.responses
-            .insert("eth_getStorageAt".to_string(), storage_response);
+        responses.insert("eth_getStorageAt".to_string(), storage_response);
 
         let trace_response = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "result": []  // Empty array for blocks with no transactions
         });
-        self.responses
-            .insert("debug_traceBlockByHash".to_string(), trace_response.clone());
-        self.responses
-            .insert("debug_traceBlockByNumber".to_string(), trace_response);
+        responses.insert("debug_traceBlockByHash".to_string(), trace_response.clone());
+        responses.insert("debug_traceBlockByNumber".to_string(), trace_response);
 
         let replay_response = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "result": []
         });
-        self.responses
-            .insert("trace_replayBlockTransactions".to_string(), replay_response);
+        responses.insert("trace_replayBlockTransactions".to_string(), replay_response);
 
         // Default block: genesis-like block
         let block_response = json!({
@@ -279,12 +290,10 @@ impl DualProtocolMockServer {
                 "uncles": []
             }
         });
-        self.responses
-            .insert("eth_getBlockByNumber".to_string(), block_response.clone());
+        responses.insert("eth_getBlockByNumber".to_string(), block_response.clone());
 
         // Also handle the block by hash variant
-        self.responses
-            .insert("eth_getBlockByHash".to_string(), block_response.clone());
+        responses.insert("eth_getBlockByHash".to_string(), block_response.clone());
     }
 
     fn update_block_responses(&self) {
@@ -365,10 +374,11 @@ impl DualProtocolMockServer {
     }
 
     /// Start HTTP server
-    fn start_http_server(&self, listener: TcpListener) {
-        let responses = Arc::clone(&self.responses);
-        let basic_ref_counter = Arc::clone(&self.eth_balance_counter);
-
+    fn start_http_server(
+        responses: Arc<DashMap<String, Value>>,
+        basic_ref_counter: Arc<DashMap<Address, u64>>,
+        listener: TcpListener,
+    ) -> AbortHandle {
         tokio::spawn(async move {
             let app = Router::new()
                 .route("/", post(Self::handle_http_request))
@@ -379,15 +389,17 @@ impl DualProtocolMockServer {
             if let Err(e) = server.await {
                 eprintln!("HTTP server error: {e}");
             }
-        });
+        })
+        .abort_handle()
     }
 
     /// Start WebSocket server
-    fn start_ws_server(&self, listener: TcpListener) {
-        let responses = Arc::clone(&self.responses);
-        let basic_ref_counter = Arc::clone(&self.eth_balance_counter);
-        let notification_tx = self.notification_tx.clone();
-
+    fn start_ws_server(
+        responses: Arc<DashMap<String, Value>>,
+        basic_ref_counter: Arc<DashMap<Address, u64>>,
+        notification_tx: broadcast::Sender<Value>,
+        listener: TcpListener,
+    ) -> AbortHandle {
         tokio::spawn(async move {
             let app = Router::new()
                 .route("/", get(Self::handle_ws_upgrade))
@@ -398,7 +410,8 @@ impl DualProtocolMockServer {
             if let Err(e) = server.await {
                 eprintln!("WebSocket server error: {e}");
             }
-        });
+        })
+        .abort_handle()
     }
 
     /// Handle HTTP requests
@@ -629,5 +642,12 @@ impl DualProtocolMockServer {
                 }
             }
         }
+    }
+}
+
+impl Drop for DualProtocolMockServer {
+    fn drop(&mut self) {
+        self.http_server_handle.abort();
+        self.ws_server_handle.abort();
     }
 }

@@ -144,3 +144,9 @@ name = "worst_case_compute_with_observer"
 path = "benches/worst_case_compute_with_observer.rs"
 harness = false
 required-features = ["bench-utils"]
+
+[[bench]]
+name = "reorg_per_tx"
+path = "benches/reorg_per_tx.rs"
+harness = false
+required-features = ["bench-utils"]
