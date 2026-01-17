@@ -11,6 +11,7 @@ alloy = { workspace = true }
 alloy-trie = "0.9.1"
 anyhow = { workspace = true }
 clap = { workspace = true }
+rayon = { workspace = true }
 revm = { workspace = true }
 rust-tracing = { workspace = true }
 tracing = { workspace = true }
@@ -19,3 +20,6 @@ rustls = { workspace = true }
 tokio = { workspace = true }
 hex = { workspace = true }
 log = "0.4.29"
+
+[dev-dependencies]
+tempfile = { workspace = true }
