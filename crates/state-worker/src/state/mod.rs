@@ -16,13 +16,11 @@
 //! - **Different-tx SELFDESTRUCT**: Account persists, only balance zeroed.
 //!   The trace won't show this as a deletion, just a balance change.
 //!
-//! The trace provider (Geth/Parity) already implements EIP-6780 correctly,
+//! The trace provider (Geth) already implements EIP-6780 correctly,
 //! so we just need to interpret the traces accurately.
 
 pub mod geth;
 pub mod geth_provider;
-pub mod parity;
-pub mod parity_provider;
 #[cfg(test)]
 mod tests;
 
@@ -33,7 +31,6 @@ use alloy::primitives::{
     keccak256,
 };
 use alloy_provider::RootProvider;
-use alloy_rpc_types_trace::parity::TraceResultsWithTransactionHash;
 use anyhow::Result;
 use async_trait::async_trait;
 use revm::primitives::KECCAK_EMPTY;
@@ -114,21 +111,6 @@ impl AccountSnapshot {
 pub struct BlockStateUpdateBuilder;
 
 impl BlockStateUpdateBuilder {
-    pub fn from_parity_traces(
-        block_number: u64,
-        block_hash: B256,
-        state_root: B256,
-        traces: Vec<TraceResultsWithTransactionHash>,
-    ) -> BlockStateUpdate {
-        let accounts = parity::process_parity_traces(traces);
-        BlockStateUpdate {
-            block_number,
-            block_hash,
-            state_root,
-            accounts,
-        }
-    }
-
     pub fn from_geth_traces(
         block_number: u64,
         block_hash: B256,
@@ -159,23 +141,15 @@ impl BlockStateUpdateBuilder {
     }
 }
 
-/// Create a trace provider based on the provider type
+/// Create a trace provider.
 pub fn create_trace_provider(
-    provider_type: crate::cli::ProviderType,
     provider: Arc<RootProvider>,
     trace_timeout: Duration,
 ) -> Box<dyn TraceProvider> {
-    match provider_type {
-        crate::cli::ProviderType::Geth => {
-            Box::new(geth_provider::GethTraceProvider::new(
-                provider,
-                trace_timeout,
-            ))
-        }
-        crate::cli::ProviderType::Parity => {
-            Box::new(parity_provider::ParityTraceProvider::new(provider))
-        }
-    }
+    Box::new(geth_provider::GethTraceProvider::new(
+        provider,
+        trace_timeout,
+    ))
 }
 
 #[cfg(test)]
