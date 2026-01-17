@@ -105,11 +105,7 @@ async fn main() -> Result<()> {
     );
 
     // Create the trace provider based on config
-    let trace_provider = state::create_trace_provider(
-        args.provider_type,
-        provider.clone(),
-        Duration::from_secs(30), // default timeout
-    );
+    let trace_provider = state::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
