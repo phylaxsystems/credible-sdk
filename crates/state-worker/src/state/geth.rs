@@ -82,13 +82,9 @@ fn process_diff_frame(
     accounts: &mut HashMap<AddressHash, AccountSnapshot>,
     diff: &alloy_rpc_types_trace::geth::DiffMode,
 ) {
-    // Process pre-state first as baseline for ACCOUNT FIELDS (balance, nonce, code).
-    // These are properties of the account that persist if unchanged.
-    //
-    // NOTE: We do NOT process pre.storage here because:
-    // - pre.storage contains OLD values (before the transaction)
-    // - post.storage contains NEW values of slots that CHANGED
-    // - We only want to track changed slots with their new values
+    // Process pre-state first as baseline. The pre-state contains ALL fields
+    // for touched accounts, which we need because post-state only contains
+    // fields that actually changed.
     for (address, account) in &diff.pre {
         let snapshot = accounts.entry((*address).into()).or_default();
 
@@ -103,6 +99,14 @@ fn process_diff_frame(
             && let Some(code) = &account.code
         {
             snapshot.code = Some(code.clone());
+        }
+        for (slot, value) in &account.storage {
+            let slot_hash = keccak256(slot.0);
+            let value_u256 = U256::from_be_bytes((*value).into());
+            snapshot
+                .storage_updates
+                .entry(slot_hash)
+                .or_insert(value_u256);
         }
     }
 
@@ -123,7 +127,6 @@ fn process_diff_frame(
             snapshot.code = Some(code.clone());
         }
 
-        // Storage from post contains NEW values of changed slots
         for (slot, value) in &account.storage {
             let slot_hash = keccak256(slot.0);
             let value_u256 = U256::from_be_bytes((*value).into());
