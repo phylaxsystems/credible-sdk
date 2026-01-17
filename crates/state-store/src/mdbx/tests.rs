@@ -821,21 +821,50 @@ fn test_storage_delete_then_recreate_same_slot() {
 fn test_account_delete_then_recreate() {
     let (w, tmp) = writer_env(4);
     let a = addr(0xcc);
+    let code0 = vec![0x60, 0x80, 0x60, 0x40];
+    let code0_hash = keccak256(&code0);
+    let code2 = vec![0x61, 0x01, 0x60, 0x00];
+    let code2_hash = keccak256(&code2);
 
     // Block 0: Create account with storage
-    w.commit_block(&update_with_storage(0, a, 1000, 1, [(1, 100), (2, 200)]))
-        .unwrap();
+    w.commit_block(&test_update(
+        0,
+        B256::ZERO,
+        a,
+        1000,
+        1,
+        storage([(1, 100), (2, 200)]),
+        Some(code0.clone()),
+    ))
+    .unwrap();
 
     // Block 1: Delete account
     w.commit_block(&block_update(1, vec![deleted_account(a)]))
         .unwrap();
 
     // Block 2: Recreate account with different storage
-    w.commit_block(&update_with_storage(2, a, 5000, 0, [(3, 300)]))
-        .unwrap();
+    w.commit_block(&test_update(
+        2,
+        B256::ZERO,
+        a,
+        5000,
+        0,
+        storage([(3, 300)]),
+        Some(code2.clone()),
+    ))
+    .unwrap();
 
     // Block 3: Update to test persistence
-    w.commit_block(&simple_update(3, a, 5500, 1)).unwrap();
+    w.commit_block(&test_update(
+        3,
+        B256::ZERO,
+        a,
+        5500,
+        1,
+        HashMap::new(),
+        Some(code2.clone()),
+    ))
+    .unwrap();
 
     drop(w);
     let r = reader_for(&tmp, 4);
@@ -845,6 +874,11 @@ fn test_account_delete_then_recreate() {
         r.get_account(a.into(), 0).unwrap().unwrap().balance,
         u256(1000)
     );
+    assert_eq!(
+        r.get_account(a.into(), 0).unwrap().unwrap().code_hash,
+        code0_hash
+    );
+    assert_eq!(r.get_code(code0_hash, 0).unwrap(), Some(Bytes::from(code0)));
     let s0 = r.get_all_storage(a.into(), 0).unwrap();
     assert_eq!(s0.len(), 2);
 
@@ -856,6 +890,11 @@ fn test_account_delete_then_recreate() {
     let acc2 = r.get_account(a.into(), 2).unwrap().unwrap();
     assert_eq!(acc2.balance, u256(5000));
     assert_eq!(acc2.nonce, 0);
+    assert_eq!(acc2.code_hash, code2_hash);
+    assert_eq!(
+        r.get_code(code2_hash, 2).unwrap(),
+        Some(Bytes::from(code2.clone()))
+    );
     let s2 = r.get_all_storage(a.into(), 2).unwrap();
     assert_eq!(s2.len(), 1);
     assert_eq!(s2.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
@@ -864,6 +903,7 @@ fn test_account_delete_then_recreate() {
     // Block 3: persists
     let acc3 = r.get_account(a.into(), 3).unwrap().unwrap();
     assert_eq!(acc3.balance, u256(5500));
+    assert_eq!(acc3.code_hash, code2_hash);
     let s3 = r.get_all_storage(a.into(), 3).unwrap();
     assert_eq!(s3.len(), 1);
 }

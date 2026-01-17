@@ -118,10 +118,24 @@ fn process_diff_frame(
         }
     }
 
+    // Account deletions: present in pre, missing in post (Geth diff mode encoding).
+    for address in diff.pre.keys() {
+        if !diff.post.contains_key(address) {
+            let snapshot = accounts.entry((*address).into()).or_default();
+            snapshot.deleted = true;
+            snapshot.touched = true;
+            snapshot.balance = None;
+            snapshot.nonce = None;
+            snapshot.code = None;
+            snapshot.storage_updates.clear();
+        }
+    }
+
     // Process post-state to apply final values (overrides pre-state)
     for (address, account) in &diff.post {
         let snapshot = accounts.entry((*address).into()).or_default();
         snapshot.touched = true;
+        snapshot.deleted = false;
 
         if let Some(balance) = account.balance {
             snapshot.balance = Some(balance);
@@ -467,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_deletion_not_inferred_without_post_account() {
+    fn test_account_deletion_inferred_when_post_missing() {
         let address = Address::from([0x24u8; 20]);
         let slot = B256::from([0x02u8; 32]);
         let old_value = B256::from([0x11u8; 32]);
@@ -493,7 +507,8 @@ mod tests {
 
         let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
 
-        assert!(results.is_empty());
+        assert_eq!(results.len(), 1);
+        assert!(results[0].deleted);
     }
 
     #[test]
@@ -598,5 +613,113 @@ mod tests {
         assert_eq!(results.len(), 1);
         let slot_hash = keccak256(slot.0);
         assert_eq!(results[0].storage.get(&slot_hash), Some(&U256::from(9)));
+    }
+
+    #[test]
+    fn test_account_deletion_overrides_prior_storage_updates_in_block() {
+        let address = Address::from([0x21u8; 20]);
+        let slot = B256::from([0x09u8; 32]);
+        let value = B256::from([0xAAu8; 32]);
+
+        let mut post1 = std::collections::BTreeMap::new();
+        let mut storage1 = std::collections::BTreeMap::new();
+        storage1.insert(slot, value);
+        post1.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(10)),
+                nonce: Some(1),
+                code: None,
+                storage: storage1,
+            },
+        );
+
+        let diff1 = DiffMode {
+            pre: std::collections::BTreeMap::new(),
+            post: post1,
+        };
+
+        let mut pre2 = std::collections::BTreeMap::new();
+        pre2.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(10)),
+                nonce: Some(1),
+                code: None,
+                storage: std::collections::BTreeMap::new(),
+            },
+        );
+
+        let diff2 = DiffMode {
+            pre: pre2,
+            post: std::collections::BTreeMap::new(),
+        };
+
+        let results = process_geth_traces(vec![
+            make_trace_result(PreStateFrame::Diff(diff1)),
+            make_trace_result(PreStateFrame::Diff(diff2)),
+        ]);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].deleted);
+        assert!(results[0].storage.is_empty());
+    }
+
+    #[test]
+    fn test_account_deleted_then_recreated_in_later_tx() {
+        let address = Address::from([0x22u8; 20]);
+        let slot = B256::from([0x0Au8; 32]);
+        let value = B256::from([0xBBu8; 32]);
+        let code = Bytes::from(vec![0x60, 0x80]);
+
+        let mut pre1 = std::collections::BTreeMap::new();
+        pre1.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(10)),
+                nonce: Some(1),
+                code: Some(code.clone()),
+                storage: std::collections::BTreeMap::new(),
+            },
+        );
+
+        let diff1 = DiffMode {
+            pre: pre1,
+            post: std::collections::BTreeMap::new(),
+        };
+
+        let mut post2 = std::collections::BTreeMap::new();
+        let mut storage2 = std::collections::BTreeMap::new();
+        storage2.insert(slot, value);
+        post2.insert(
+            address,
+            GethAccountState {
+                balance: Some(U256::from(50)),
+                nonce: Some(2),
+                code: Some(code.clone()),
+                storage: storage2,
+            },
+        );
+
+        let diff2 = DiffMode {
+            pre: std::collections::BTreeMap::new(),
+            post: post2,
+        };
+
+        let results = process_geth_traces(vec![
+            make_trace_result(PreStateFrame::Diff(diff1)),
+            make_trace_result(PreStateFrame::Diff(diff2)),
+        ]);
+
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].deleted);
+        assert_eq!(results[0].balance, U256::from(50));
+        assert_eq!(results[0].nonce, 2);
+        let slot_hash = keccak256(slot.0);
+        assert_eq!(
+            results[0].storage.get(&slot_hash),
+            Some(&U256::from_be_bytes(value.0))
+        );
+        assert_eq!(results[0].code, Some(code));
     }
 }
