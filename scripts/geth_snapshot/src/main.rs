@@ -288,32 +288,45 @@ fn parse_hex_bytes(s: &str) -> Result<Bytes> {
     Ok(Bytes::from(bytes))
 }
 
+fn slot_hash_from_preimage(key: &str) -> Result<B256> {
+    let preimage = parse_hex_b256(key)
+        .with_context(|| format!("Invalid storage slot key: {}", &key[..key.len().min(80)]))?;
+    Ok(keccak256(preimage))
+}
+
 fn parse_storage(raw: StorageFormat) -> Result<HashMap<B256, U256>> {
     let mut storage = HashMap::new();
 
     match raw {
         StorageFormat::Dict(dict) => {
             for (hashed_slot, value) in dict {
-                let (slot_key, slot_value) = match value {
-                    StorageValue::Simple(v) => (hashed_slot, v),
+                let (slot_key, slot_value, slot_is_preimage) = match value {
+                    StorageValue::Simple(v) => (hashed_slot, v, false),
                     StorageValue::Object {
                         key,
-                        hash: _,
+                        hash,
                         value,
                     } => {
-                        // Use "key" field if present, otherwise use the dict key
-                        let k = key.unwrap_or(hashed_slot);
+                        // Prefer "hash" if present; otherwise treat "key" as preimage.
+                        let has_hash = hash.is_some();
+                        let has_key = key.is_some();
+                        let k = hash.or(key).unwrap_or(hashed_slot);
                         let v = value.unwrap_or_else(|| "0x0".to_string());
-                        (k, v)
+                        let is_preimage = !has_hash && has_key;
+                        (k, v, is_preimage)
                     }
                 };
 
-                let slot = parse_hex_b256(&slot_key).with_context(|| {
-                    format!(
-                        "Invalid storage slot key: {}",
-                        &slot_key[..slot_key.len().min(80)]
-                    )
-                })?;
+                let slot = if slot_is_preimage {
+                    slot_hash_from_preimage(&slot_key)?
+                } else {
+                    parse_hex_b256(&slot_key).with_context(|| {
+                        format!(
+                            "Invalid storage slot key: {}",
+                            &slot_key[..slot_key.len().min(80)]
+                        )
+                    })?
+                };
                 // Storage values are RLP-encoded in geth snapshot dumps
                 let val = parse_storage_value(&slot_value).with_context(|| {
                     format!(
@@ -329,12 +342,18 @@ fn parse_storage(raw: StorageFormat) -> Result<HashMap<B256, U256>> {
         StorageFormat::List(list) => {
             for entry in list {
                 if let StorageValue::Object { key, hash, value } = entry {
-                    // Use "key" or "hash" field
-                    let slot_key = key.or(hash);
+                    // Prefer "hash" if present; otherwise treat "key" as preimage.
+                    let has_hash = hash.is_some();
+                    let has_key = key.is_some();
+                    let slot_key = hash.or(key);
                     if let (Some(k), Some(v)) = (slot_key, value) {
-                        let slot = parse_hex_b256(&k).with_context(|| {
-                            format!("Invalid storage slot key: {}", &k[..k.len().min(80)])
-                        })?;
+                        let slot = if !has_hash && has_key {
+                            slot_hash_from_preimage(&k)?
+                        } else {
+                            parse_hex_b256(&k).with_context(|| {
+                                format!("Invalid storage slot key: {}", &k[..k.len().min(80)])
+                            })?
+                        };
                         // Storage values are RLP-encoded in geth snapshot dumps
                         let val = parse_storage_value(&v).with_context(|| {
                             format!(
