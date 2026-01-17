@@ -263,3 +263,48 @@ make format
 # Run linter
 make lint
 ```
+
+### Phoundry Subtree Workflow
+
+`pcl-phoundry` depends on the subtree at `vendor/phoundry`. This is the only
+copy we work on. Changes are committed in the `credible-sdk` repo.
+
+#### One-time setup
+
+```bash
+git remote add foundry-upstream https://github.com/foundry-rs/foundry.git
+```
+
+#### Daily workflow (edit + test)
+
+1. Edit code inside `vendor/phoundry`.
+2. Run PCL tests/lints as usual.
+3. Commit changes in `credible-sdk`.
+
+#### Pull upstream Foundry updates
+
+```bash
+git fetch foundry-upstream master
+git subtree pull --prefix vendor/phoundry foundry-upstream master --squash
+```
+
+If there are conflicts:
+1. Fix them under `vendor/phoundry`.
+2. `git add vendor/phoundry`
+3. Commit in `credible-sdk`.
+
+`git subtree pull` merges upstream changes into the subtree while preserving
+your local edits. No manual rebase is needed.
+
+#### Update checklist
+
+1. `git status`
+2. `git fetch foundry-upstream master`
+3. `git subtree pull --prefix vendor/phoundry foundry-upstream master --squash`
+4. Resolve conflicts, then commit in `credible-sdk`
+5. Run the usual PCL checks/tests
+
+#### Why squash?
+
+We use `--squash` so upstream history stays clean in the monorepo while still
+capturing the full code changes.

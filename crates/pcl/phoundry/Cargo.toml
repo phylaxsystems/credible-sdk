@@ -8,16 +8,11 @@ repository.workspace = true
 
 
 [dependencies]
-# Foundry deps
-#forge = { path = "../../../../phoundry/crates/forge" }
-#foundry-config = { path = "../../../../phoundry/crates/config" }
-#foundry-cli = { path = "../../../../phoundry/crates/cli" }
-#foundry-common = { path = "../../../../phoundry/crates/common" }
-
-forge = { git = "https://github.com/phylaxsystems/phoundry.git", branch = "main" }
-foundry-config = { git = "https://github.com/phylaxsystems/phoundry.git", branch = "main" }
-foundry-cli = { git = "https://github.com/phylaxsystems/phoundry.git", branch = "main" }
-foundry-common = { git = "https://github.com/phylaxsystems/phoundry.git", branch = "main" }
+# Foundry deps (subtree at vendor/phoundry)
+forge = { path = "../../../vendor/phoundry/crates/forge" }
+foundry-config = { path = "../../../vendor/phoundry/crates/config" }
+foundry-cli = { path = "../../../vendor/phoundry/crates/cli" }
+foundry-common = { path = "../../../vendor/phoundry/crates/common" }
 
 foundry-compilers = { version = "0.19.10", default-features = false }
 

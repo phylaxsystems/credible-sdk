@@ -19,7 +19,7 @@ members = [
     "crates/state-store",
     "crates/state-checker",
 ]
-exclude = ["fuzz"]
+exclude = ["fuzz", "vendor/phoundry"]
 resolver = "2"
 
 
