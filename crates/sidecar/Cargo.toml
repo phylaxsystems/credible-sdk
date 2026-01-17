@@ -150,3 +150,9 @@ name = "reorg_per_tx"
 path = "benches/reorg_per_tx.rs"
 harness = false
 required-features = ["bench-utils"]
+
+[[bench]]
+name = "deep_reorg"
+path = "benches/deep_reorg.rs"
+harness = false
+required-features = ["bench-utils"]
