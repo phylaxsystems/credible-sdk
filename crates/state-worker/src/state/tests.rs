@@ -220,10 +220,23 @@ fn test_storage_updates_produce_identical_output() {
     let mut parity_accounts = parity::process_parity_traces(parity_traces);
 
     // === Geth format (using post-state) ===
-    let mut geth_storage = BTreeMap::new();
-    geth_storage.insert(slot1, B256::from(U256::from(100)));
-    geth_storage.insert(slot2, B256::from(U256::from(300)));
-    geth_storage.insert(slot3, B256::ZERO); // Removed = zero
+    let mut geth_pre_storage = BTreeMap::new();
+    geth_pre_storage.insert(slot3, B256::from(U256::from(400)));
+
+    let mut geth_pre = BTreeMap::new();
+    geth_pre.insert(
+        address,
+        GethAccountState {
+            balance: Some(U256::ZERO),
+            nonce: Some(0),
+            code: None,
+            storage: geth_pre_storage,
+        },
+    );
+
+    let mut geth_post_storage = BTreeMap::new();
+    geth_post_storage.insert(slot1, B256::from(U256::from(100)));
+    geth_post_storage.insert(slot2, B256::from(U256::from(300)));
 
     let mut geth_post = BTreeMap::new();
     geth_post.insert(
@@ -232,13 +245,13 @@ fn test_storage_updates_produce_identical_output() {
             balance: Some(U256::ZERO),
             nonce: Some(0),
             code: None,
-            storage: geth_storage,
+            storage: geth_post_storage,
         },
     );
 
     let geth_trace = TraceResult::Success {
         result: GethTrace::PreStateTracer(PreStateFrame::Diff(DiffMode {
-            pre: BTreeMap::new(),
+            pre: geth_pre,
             post: geth_post,
         })),
         tx_hash: Some(B256::ZERO),
@@ -356,8 +369,6 @@ fn test_selfdestruct_balance_transfer_produces_identical_output() {
 #[test]
 fn test_selfdestruct_storage_persists_produces_identical_output() {
     let address = address!("0x5555555555555555555555555555555555555555");
-    let slot1 = B256::from(U256::from(10));
-
     let mut parity_diff = StateDiff::default();
     parity_diff.0.insert(
         address,
@@ -376,15 +387,13 @@ fn test_selfdestruct_storage_persists_produces_identical_output() {
     let mut parity_accounts = parity::process_parity_traces(parity_traces);
 
     let mut geth_pre = BTreeMap::new();
-    let mut pre_storage = BTreeMap::new();
-    pre_storage.insert(slot1, B256::from(U256::from(111)));
     geth_pre.insert(
         address,
         GethAccountState {
             balance: Some(U256::from(5000)),
             nonce: Some(10),
             code: Some(Bytes::from(vec![0x60])),
-            storage: pre_storage,
+            storage: BTreeMap::new(),
         },
     );
 
