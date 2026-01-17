@@ -63,7 +63,7 @@ fn process_frame(accounts: &mut HashMap<AddressHash, AccountSnapshot>, frame: Pr
                     snapshot.touched = true;
                 }
 
-                // Hash storage slots exactly like Parity does
+                // Hash storage slots
                 for (slot, value) in &account_state.storage {
                     let slot_hash = keccak256(slot.0);
                     let value_u256 = U256::from_be_bytes((*value).into());

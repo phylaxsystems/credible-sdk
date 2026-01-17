@@ -6,7 +6,6 @@
 #![allow(dead_code)]
 
 use crate::{
-    cli::ProviderType,
     connect_provider,
     genesis::GenesisState,
     integration_tests::{
@@ -125,11 +124,8 @@ impl TestInstance {
         )
         .map_err(|e| format!("Failed to initialize redis writer: {e}"))?;
 
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
+        let trace_provider =
+            state::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
         // Extract fork timestamps from genesis if available, otherwise use defaults
         let system_calls = genesis_state
@@ -227,11 +223,8 @@ impl TestInstance {
         // so the cloned reader shares the same underlying database connection.
         let mdbx_reader = writer_reader.reader().clone();
 
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
+        let trace_provider =
+            state::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
         // Extract fork timestamps from genesis if available, otherwise use defaults
         let system_calls = genesis_state
