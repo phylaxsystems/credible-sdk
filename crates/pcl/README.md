@@ -288,6 +288,12 @@ git fetch foundry-upstream master
 git subtree pull --prefix vendor/phoundry foundry-upstream master --squash
 ```
 
+Or simply:
+
+```bash
+make subtree-update
+```
+
 If there are conflicts:
 1. Fix them under `vendor/phoundry`.
 2. `git add vendor/phoundry`
@@ -299,10 +305,9 @@ your local edits. No manual rebase is needed.
 #### Update checklist
 
 1. `git status`
-2. `git fetch foundry-upstream master`
-3. `git subtree pull --prefix vendor/phoundry foundry-upstream master --squash`
-4. Resolve conflicts, then commit in `credible-sdk`
-5. Run the usual PCL checks/tests
+2. `make subtree-update` (or the git commands above)
+3. Resolve conflicts, then commit in `credible-sdk`
+4. Run the usual PCL checks/tests
 
 #### Why squash?
 

@@ -48,6 +48,12 @@ git fetch foundry-upstream master
 git subtree pull --prefix vendor/phoundry foundry-upstream master --squash
 ```
 
+Or simply:
+
+```bash
+make subtree-update
+```
+
 If there are conflicts, resolve them in `vendor/phoundry` and commit as usual in
 `credible-sdk`.
 
@@ -63,10 +69,9 @@ your local edits. No manual rebase is needed.
 ### Update checklist
 
 1. `git status` (ensure a clean working tree)
-2. `git fetch foundry-upstream master`
-3. `git subtree pull --prefix vendor/phoundry foundry-upstream master --squash`
-4. Resolve conflicts (if any), then commit in `credible-sdk`
-5. Run `cargo check -p pcl-phoundry` or the usual test suite
+2. `make subtree-update` (or run the git commands above)
+3. Resolve conflicts (if any), then commit in `credible-sdk`
+4. Run `cargo check -p pcl-phoundry` or the usual test suite
 
 ### Notes
 

@@ -58,6 +58,20 @@ compose:
 compose-dev:
 	docker compose -f etc/docker-compose-dev.yaml up
 
+# Phoundry subtree helpers (Foundry upstream)
+FOUNDRY_UPSTREAM ?= foundry-upstream
+FOUNDRY_REPO ?= https://github.com/foundry-rs/foundry.git
+FOUNDRY_BRANCH ?= master
+PHOUNDRY_PREFIX ?= vendor/phoundry
+
+subtree-setup:
+	@git remote get-url $(FOUNDRY_UPSTREAM) >/dev/null 2>&1 || \
+		git remote add $(FOUNDRY_UPSTREAM) $(FOUNDRY_REPO)
+
+subtree-update: subtree-setup
+	git fetch $(FOUNDRY_UPSTREAM) $(FOUNDRY_BRANCH)
+	git subtree pull --prefix $(PHOUNDRY_PREFIX) $(FOUNDRY_UPSTREAM) $(FOUNDRY_BRANCH) --squash
+
 # Regenerate dapp-api-client from latest OpenAPI spec
 regenerate:
 	@echo "Regenerating dapp-api-client from latest OpenAPI spec..."
@@ -70,6 +84,7 @@ regenerate-dev:
 	cd crates/dapp-api-client && DAPP_ENV=development FORCE_SPEC_REGENERATE=true cargo build --features regenerate
 	@echo "Client regenerated! Review changes with: git diff crates/dapp-api-client/src/generated/"
 
+.PHONY: subtree-setup subtree-update
 .PHONY: run-sidecar-host
 run-sidecar-host:
 	./scripts/run-sidecar-host.sh
