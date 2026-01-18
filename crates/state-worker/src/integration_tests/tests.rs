@@ -4,7 +4,6 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use crate::{
-    cli::ProviderType,
     connect_provider,
     genesis,
     integration_tests::{
@@ -197,63 +196,110 @@ async fn test_state_worker_hydrates_genesis_state(instance: TestInstance) {
 async fn test_state_worker_processes_multiple_state_changes(instance: TestInstance) {
     sleep(Duration::from_millis(200)).await;
 
-    let parity_trace_block_1 = json!({
+    let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
+    let slot_one_hash = keccak256(U256::from(1).to_be_bytes::<32>());
+
+    let geth_trace_block_1 = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "result": [
             {
-                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
+                "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "result": {
+                    "pre": {},
+                    "post": {
+                        test_address: {
+                            "balance": "0x1",
+                            "nonce": 1,
+                            "code": "0x",
+                            "storage": {
+                                "0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000000000000000000000000000000000000000000000000000002"
+                            }
+                        }
+                    }
+                }
             }
         ]
     });
 
-    let parity_trace_block_2 = json!({
+    let geth_trace_block_2 = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "result": [
             {
-                "transactionHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
+                "txHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "result": {
+                    "pre": {
+                        test_address: {
+                            "balance": "0x1",
+                            "nonce": 1,
+                            "code": "0x",
+                            "storage": {
+                                "0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000000000000000000000000000000000000000000000000000002"
+                            }
+                        }
+                    },
+                    "post": {
+                        test_address: {
+                            "balance": "0x2",
+                            "nonce": 1,
+                            "code": "0x",
+                            "storage": {}
+                        }
+                    }
+                }
             }
         ]
     });
 
-    let parity_trace_block_3 = json!({
+    let geth_trace_block_3 = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "result": [
             {
-                "transactionHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
+                "txHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+                "result": {
+                    "pre": {
+                        test_address: {
+                            "balance": "0x2",
+                            "nonce": 1,
+                            "code": "0x",
+                            "storage": {
+                                "0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000000000000000000000000000000000000000000000000000002"
+                            }
+                        }
+                    },
+                    "post": {
+                        test_address: {
+                            "balance": "0x2",
+                            "nonce": 1,
+                            "code": "0x",
+                            "storage": {
+                                "0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000000000000000000000000000000000000000000000000000003"
+                            }
+                        }
+                    }
+                }
             }
         ]
     });
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+        .add_response("debug_traceBlockByNumber", geth_trace_block_1);
     instance.http_server_mock.send_new_head();
     sleep(Duration::from_millis(200)).await;
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_2);
+        .add_response("debug_traceBlockByNumber", geth_trace_block_2);
     instance.http_server_mock.send_new_head();
     sleep(Duration::from_millis(200)).await;
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_3);
+        .add_response("debug_traceBlockByNumber", geth_trace_block_3);
     instance.http_server_mock.send_new_head();
     sleep(Duration::from_millis(200)).await;
 
@@ -276,28 +322,33 @@ async fn test_state_worker_processes_multiple_state_changes(instance: TestInstan
         Some(3),
         "Expected current block to be 3, got {latest_block:?}",
     );
+
+    let account = reader
+        .get_account_boxed(address_hash.into(), 3)
+        .expect("Failed to get account")
+        .expect("Account should exist");
+    assert_eq!(account.balance, U256::from(2));
+    assert_eq!(account.nonce, 1);
+
+    let storage_value = reader
+        .get_storage_boxed(address_hash.into(), slot_one_hash, 3)
+        .expect("Failed to get storage")
+        .expect("Storage slot should exist");
+    assert_eq!(storage_value, U256::from(3));
 }
 
 #[database_test(all)]
 async fn test_state_worker_handles_rapid_state_changes(instance: TestInstance) {
-    for i in 0..5 {
-        let parity_trace = json!({
+    for _ in 0..5 {
+        let geth_trace = json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": [
-                {
-                    "transactionHash": format!("0x{:064x}", i + 1),
-                    "trace": [],
-                    "vmTrace": null,
-                    "stateDiff": {},
-                    "output": "0x"
-                }
-            ]
+            "result": []
         });
 
         instance
             .http_server_mock
-            .add_response("trace_replayBlockTransactions", parity_trace);
+            .add_response("debug_traceBlockByNumber", geth_trace);
         instance.http_server_mock.send_new_head();
         sleep(Duration::from_millis(100)).await;
     }
@@ -327,54 +378,36 @@ async fn test_state_worker_handles_rapid_state_changes(instance: TestInstance) {
 
 #[traced_database_test(all)]
 async fn test_state_worker_non_consecutive_blocks_critical_alert(instance: TestInstance) {
-    // Setup valid trace response for block 1 with empty stateDiff
-    let valid_parity_trace_1 = json!({
+    // Setup valid trace response for block 1 with no traces
+    let valid_geth_trace_1 = json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "result": [
-            {
-                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
-            }
-        ]
+        "result": []
     });
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", valid_parity_trace_1);
+        .add_response("debug_traceBlockByNumber", valid_geth_trace_1);
     instance.http_server_mock.send_new_head_with_block_number(1);
     sleep(Duration::from_millis(50)).await;
 
     // Mock an error for block 2 to simulate it not existing
-    instance.http_server_mock.mock_rpc_error(
-        "trace_replayBlockTransactions",
-        -32000,
-        "block not found",
-    );
+    instance
+        .http_server_mock
+        .mock_rpc_error("debug_traceBlockByNumber", -32000, "block not found");
     instance.http_server_mock.send_new_head_with_block_number(2);
     sleep(Duration::from_millis(50)).await;
 
-    // Setup valid trace response for block 3 with empty stateDiff
-    let valid_parity_trace_3 = json!({
+    // Setup valid trace response for block 3 with no traces
+    let valid_geth_trace_3 = json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "result": [
-            {
-                "transactionHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
-            }
-        ]
+        "result": []
     });
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", valid_parity_trace_3);
+        .add_response("debug_traceBlockByNumber", valid_geth_trace_3);
     instance.http_server_mock.send_new_head_with_block_number(3);
     sleep(Duration::from_millis(50)).await;
 
@@ -383,43 +416,27 @@ async fn test_state_worker_non_consecutive_blocks_critical_alert(instance: TestI
 
 #[traced_database_test(all)]
 async fn test_state_worker_missing_state_critical_alert(instance: TestInstance) {
-    let parity_trace_block_1 = json!({
+    let geth_trace_block_1 = json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "result": [
-            {
-                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
-            }
-        ]
+        "result": []
     });
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+        .add_response("debug_traceBlockByNumber", geth_trace_block_1);
     instance.http_server_mock.send_new_head_with_block_number(1);
     sleep(Duration::from_millis(50)).await;
 
-    let parity_trace_block_3 = json!({
+    let geth_trace_block_3 = json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "result": [
-            {
-                "transactionHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
-            }
-        ]
+        "result": []
     });
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_3);
+        .add_response("debug_traceBlockByNumber", geth_trace_block_3);
     instance.http_server_mock.send_new_head_with_block_number(3);
     sleep(Duration::from_millis(50)).await;
 
@@ -428,24 +445,16 @@ async fn test_state_worker_missing_state_critical_alert(instance: TestInstance) 
 
 #[database_test(all)]
 async fn test_circular_buffer_rotation_with_state_diffs(instance: TestInstance) {
-    for i in 0..6 {
-        let parity_trace = json!({
+    for _ in 0..6 {
+        let geth_trace = json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": [
-                {
-                    "transactionHash": format!("0x{:064x}", i + 1),
-                    "trace": [],
-                    "vmTrace": null,
-                    "stateDiff": {},
-                    "output": "0x"
-                }
-            ]
+            "result": []
         });
 
         instance
             .http_server_mock
-            .add_response("trace_replayBlockTransactions", parity_trace);
+            .add_response("debug_traceBlockByNumber", geth_trace);
         instance.http_server_mock.send_new_head();
         sleep(Duration::from_millis(100)).await;
     }
@@ -473,33 +482,33 @@ async fn test_zero_storage_values_are_deleted(instance: TestInstance) {
     let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
 
     // Block 1: Set storage slots 0 and 1 to non-zero values
-    let parity_trace_block_1 = json!({
+    let geth_trace_block_1 = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "result": [
             {
-                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {
-                    test_address: {
-                        "balance": { "+": "0x100" },
-                        "nonce": { "+": "0x1" },
-                        "code": { "+": "0x" },
-                        "storage": {
-                            "0x0000000000000000000000000000000000000000000000000000000000000000": { "+": "0x0000000000000000000000000000000000000000000000000000000000000001" },
-                            "0x0000000000000000000000000000000000000000000000000000000000000001": { "+": "0x0000000000000000000000000000000000000000000000000000000000000002" }
+                "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "result": {
+                    "pre": {},
+                    "post": {
+                        test_address: {
+                            "balance": "0x100",
+                            "nonce": 1,
+                            "code": "0x",
+                            "storage": {
+                                "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                                "0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000000000000000000000000000000000000000000000000000002"
+                            }
                         }
                     }
-                },
-                "output": "0x"
+                }
             }
         ]
     });
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+        .add_response("debug_traceBlockByNumber", geth_trace_block_1);
     instance.http_server_mock.send_new_head();
     sleep(Duration::from_millis(200)).await;
 
@@ -530,37 +539,36 @@ async fn test_zero_storage_values_are_deleted(instance: TestInstance) {
     assert!(slot_one.is_some(), "Slot 1 should exist after block 1");
 
     // Block 2: Set slot 1 to zero (should be deleted)
-    let parity_trace_block_2 = json!({
+    let geth_trace_block_2 = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "result": [
             {
-                "transactionHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {
-                    test_address: {
-                        "balance": "=",
-                        "nonce": "=",
-                        "code": "=",
-                        "storage": {
-                            "0x0000000000000000000000000000000000000000000000000000000000000001": {
-                                "*": {
-                                    "from": "0x0000000000000000000000000000000000000000000000000000000000000002",
-                                    "to": "0x0000000000000000000000000000000000000000000000000000000000000000"
-                                }
+                "txHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                "result": {
+                    "pre": {
+                        test_address: {
+                            "balance": "0x100",
+                            "nonce": 1,
+                            "code": "0x",
+                            "storage": {
+                                "0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000000000000000000000000000000000000000000000000000002"
                             }
                         }
+                    },
+                    "post": {
+                        test_address: {
+                            "storage": {}
+                        }
                     }
-                },
-                "output": "0x"
+                }
             }
         ]
     });
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_2);
+        .add_response("debug_traceBlockByNumber", geth_trace_block_2);
     instance.http_server_mock.send_new_head();
     sleep(Duration::from_millis(200)).await;
 
@@ -599,34 +607,34 @@ async fn test_get_account_does_not_load_storage(instance: TestInstance) {
     let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
 
     // Block 1: Create account with multiple storage slots
-    let parity_trace_block_1 = json!({
+    let geth_trace_block_1 = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "result": [
             {
-                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {
-                    test_address: {
-                        "balance": { "+": "0x100" },
-                        "nonce": { "+": "0x1" },
-                        "code": { "+": "0x6080" },
-                        "storage": {
-                            "0x0000000000000000000000000000000000000000000000000000000000000000": { "+": "0x0000000000000000000000000000000000000000000000000000000000000001" },
-                            "0x0000000000000000000000000000000000000000000000000000000000000001": { "+": "0x0000000000000000000000000000000000000000000000000000000000000002" },
-                            "0x0000000000000000000000000000000000000000000000000000000000000002": { "+": "0x0000000000000000000000000000000000000000000000000000000000000003" }
+                "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "result": {
+                    "pre": {},
+                    "post": {
+                        test_address: {
+                            "balance": "0x100",
+                            "nonce": 1,
+                            "code": "0x6080",
+                            "storage": {
+                                "0x0000000000000000000000000000000000000000000000000000000000000000": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                                "0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                                "0x0000000000000000000000000000000000000000000000000000000000000002": "0x0000000000000000000000000000000000000000000000000000000000000003"
+                            }
                         }
                     }
-                },
-                "output": "0x"
+                }
             }
         ]
     });
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+        .add_response("debug_traceBlockByNumber", geth_trace_block_1);
     instance.http_server_mock.send_new_head();
     sleep(Duration::from_millis(300)).await;
 
@@ -656,32 +664,32 @@ async fn test_get_storage_returns_individual_slot(instance: TestInstance) {
     let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
 
     // Block 1: Create account with storage
-    let parity_trace_block_1 = json!({
+    let geth_trace_block_1 = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "result": [
             {
-                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {
-                    test_address: {
-                        "balance": { "+": "0x300" },
-                        "nonce": { "+": "0x1" },
-                        "code": { "+": "0x" },
-                        "storage": {
-                            "0x0000000000000000000000000000000000000000000000000000000000000005": { "+": "0x00000000000000000000000000000000000000000000000000000000000000ff" }
+                "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "result": {
+                    "pre": {},
+                    "post": {
+                        test_address: {
+                            "balance": "0x300",
+                            "nonce": 1,
+                            "code": "0x",
+                            "storage": {
+                                "0x0000000000000000000000000000000000000000000000000000000000000005": "0x00000000000000000000000000000000000000000000000000000000000000ff"
+                            }
                         }
                     }
-                },
-                "output": "0x"
+                }
             }
         ]
     });
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+        .add_response("debug_traceBlockByNumber", geth_trace_block_1);
     instance.http_server_mock.send_new_head();
     sleep(Duration::from_millis(300)).await;
 
@@ -727,19 +735,13 @@ async fn test_restart_continues_from_last_block(instance: TestInstance) {
         .expect("Failed to create mock server");
 
     // Setup traces for blocks 1-3
-    for i in 1..=3 {
-        let parity_trace = json!({
+    for _ in 1..=3 {
+        let geth_trace = json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": [{
-                "transactionHash": format!("0x{:064x}", i),
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
-            }]
+            "result": []
         });
-        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+        http_server_mock.add_response("debug_traceBlockByNumber", geth_trace);
     }
 
     // First run: process blocks 1-3
@@ -755,11 +757,8 @@ async fn test_restart_continues_from_last_block(instance: TestInstance) {
         )
         .unwrap();
 
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
+        let trace_provider =
+            state::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
         let mut worker = StateWorker::new(
             provider,
@@ -790,19 +789,13 @@ async fn test_restart_continues_from_last_block(instance: TestInstance) {
     }
 
     // Setup traces for blocks 4-6
-    for i in 4..=6 {
-        let parity_trace = json!({
+    for _ in 4..=6 {
+        let geth_trace = json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": [{
-                "transactionHash": format!("0x{:064x}", i),
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
-            }]
+            "result": []
         });
-        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+        http_server_mock.add_response("debug_traceBlockByNumber", geth_trace);
     }
 
     // Second run: restart and process blocks 4-6
@@ -822,11 +815,8 @@ async fn test_restart_continues_from_last_block(instance: TestInstance) {
         let start_block = writer_reader.latest_block_number().unwrap();
         assert_eq!(start_block, Some(3), "Should resume from block 3");
 
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
+        let trace_provider =
+            state::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
         let mut worker = StateWorker::new(
             provider,
@@ -883,19 +873,13 @@ async fn test_restart_with_buffer_wrap_applies_diffs(instance: TestInstance) {
 
     // First run: process blocks to wrap the buffer (blocks 0-4)
     {
-        for i in 0..=4 {
-            let parity_trace = json!({
+        for _ in 0..=4 {
+            let geth_trace = json!({
                 "jsonrpc": "2.0",
                 "id": 1,
-                "result": [{
-                    "transactionHash": format!("0x{:064x}", i),
-                    "trace": [],
-                    "vmTrace": null,
-                    "stateDiff": {},
-                    "output": "0x"
-                }]
+                "result": []
             });
-            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+            http_server_mock.add_response("debug_traceBlockByNumber", geth_trace);
         }
 
         let provider = connect_provider(&http_server_mock.ws_url())
@@ -909,11 +893,8 @@ async fn test_restart_with_buffer_wrap_applies_diffs(instance: TestInstance) {
         )
         .unwrap();
 
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
+        let trace_provider =
+            state::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
         let mut worker = StateWorker::new(
             provider,
@@ -951,19 +932,13 @@ async fn test_restart_with_buffer_wrap_applies_diffs(instance: TestInstance) {
     // Second run: restart and verify diffs are still available for reconstruction
     {
         // Add traces for blocks 5-7
-        for i in 5..=7 {
-            let parity_trace = json!({
+        for _ in 5..=7 {
+            let geth_trace = json!({
                 "jsonrpc": "2.0",
                 "id": 1,
-                "result": [{
-                    "transactionHash": format!("0x{:064x}", i),
-                    "trace": [],
-                    "vmTrace": null,
-                    "stateDiff": {},
-                    "output": "0x"
-                }]
+                "result": []
             });
-            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+            http_server_mock.add_response("debug_traceBlockByNumber", geth_trace);
         }
 
         let provider = connect_provider(&http_server_mock.ws_url())
@@ -977,11 +952,8 @@ async fn test_restart_with_buffer_wrap_applies_diffs(instance: TestInstance) {
         )
         .unwrap();
 
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
+        let trace_provider =
+            state::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
         let mut worker = StateWorker::new(
             provider,
@@ -1033,19 +1005,13 @@ async fn test_restart_after_mid_block_crash(instance: TestInstance) {
         .expect("Failed to create mock server");
 
     // Process blocks 0-2 successfully
-    for i in 0..=2 {
-        let parity_trace = json!({
+    for _ in 0..=2 {
+        let geth_trace = json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": [{
-                "transactionHash": format!("0x{:064x}", i),
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {},
-                "output": "0x"
-            }]
+            "result": []
         });
-        http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+        http_server_mock.add_response("debug_traceBlockByNumber", geth_trace);
     }
 
     {
@@ -1060,11 +1026,8 @@ async fn test_restart_after_mid_block_crash(instance: TestInstance) {
         )
         .unwrap();
 
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
+        let trace_provider =
+            state::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
         let mut worker = StateWorker::new(
             provider,
@@ -1091,19 +1054,13 @@ async fn test_restart_after_mid_block_crash(instance: TestInstance) {
 
     // Restart: should continue from block 3
     {
-        for i in 3..=5 {
-            let parity_trace = json!({
+        for _ in 3..=5 {
+            let geth_trace = json!({
                 "jsonrpc": "2.0",
                 "id": 1,
-                "result": [{
-                    "transactionHash": format!("0x{:064x}", i),
-                    "trace": [],
-                    "vmTrace": null,
-                    "stateDiff": {},
-                    "output": "0x"
-                }]
+                "result": []
             });
-            http_server_mock.add_response("trace_replayBlockTransactions", parity_trace);
+            http_server_mock.add_response("debug_traceBlockByNumber", geth_trace);
         }
 
         let provider = connect_provider(&http_server_mock.ws_url())
@@ -1121,11 +1078,8 @@ async fn test_restart_after_mid_block_crash(instance: TestInstance) {
         let start_block = writer_reader.latest_block_number().unwrap();
         assert_eq!(start_block, Some(2), "Should detect last completed block");
 
-        let trace_provider = state::create_trace_provider(
-            ProviderType::Parity,
-            provider.clone(),
-            Duration::from_secs(30),
-        );
+        let trace_provider =
+            state::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
         let mut worker = StateWorker::new(
             provider,
@@ -1163,33 +1117,33 @@ async fn test_get_full_account_returns_all_slots(instance: TestInstance) {
     let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
 
     // Block 1: Create account with storage
-    let parity_trace_block_1 = json!({
+    let geth_trace_block_1 = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "result": [
             {
-                "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {
-                    test_address: {
-                        "balance": { "+": "0x200" },
-                        "nonce": { "+": "0x5" },
-                        "code": { "+": "0x" },
-                        "storage": {
-                            "0x0000000000000000000000000000000000000000000000000000000000000000": { "+": "0x000000000000000000000000000000000000000000000000000000000000000a" },
-                            "0x0000000000000000000000000000000000000000000000000000000000000001": { "+": "0x000000000000000000000000000000000000000000000000000000000000000b" }
+                "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "result": {
+                    "pre": {},
+                    "post": {
+                        test_address: {
+                            "balance": "0x200",
+                            "nonce": 5,
+                            "code": "0x",
+                            "storage": {
+                                "0x0000000000000000000000000000000000000000000000000000000000000000": "0x000000000000000000000000000000000000000000000000000000000000000a",
+                                "0x0000000000000000000000000000000000000000000000000000000000000001": "0x000000000000000000000000000000000000000000000000000000000000000b"
+                            }
                         }
                     }
-                },
-                "output": "0x"
+                }
             }
         ]
     });
 
     instance
         .http_server_mock
-        .add_response("trace_replayBlockTransactions", parity_trace_block_1);
+        .add_response("debug_traceBlockByNumber", geth_trace_block_1);
     instance.http_server_mock.send_new_head();
     sleep(Duration::from_millis(300)).await;
 
@@ -1294,27 +1248,27 @@ async fn test_eip2935_and_eip4788_system_contracts(instance: TestInstance) {
 
     // Process 3 blocks with a regular transaction to verify system calls merge with trace state
     for i in 1..=3 {
-        let parity_trace = json!({
+        let geth_trace = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "result": [{
-                "transactionHash": format!("0x{:064x}", i),
-                "trace": [],
-                "vmTrace": null,
-                "stateDiff": {
-                    test_address: {
-                        "balance": { "+": format!("0x{:x}", i * 0x100) },
-                        "nonce": { "+": format!("0x{:x}", i) },
-                        "code": { "+": "0x" },
-                        "storage": {}
+                "txHash": format!("0x{:064x}", i),
+                "result": {
+                    "pre": {},
+                    "post": {
+                        test_address: {
+                            "balance": format!("0x{:x}", i * 0x100),
+                            "nonce": i,
+                            "code": "0x",
+                            "storage": {}
+                        }
                     }
-                },
-                "output": "0x"
+                }
             }]
         });
         instance
             .http_server_mock
-            .add_response("trace_replayBlockTransactions", parity_trace);
+            .add_response("debug_traceBlockByNumber", geth_trace);
         instance.http_server_mock.send_new_head();
         sleep(Duration::from_millis(150)).await;
     }

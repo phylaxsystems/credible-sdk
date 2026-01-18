@@ -5,10 +5,7 @@ an external mdbx database.
 
 The `state-worker` subscribes to the `newHeads` subscription over WS and then for every new block.
 
-- If configured with provider type `parity`: it uses `trace_replayBlockTransactions` to get the state changes made in a
-  block which later get collapsed into a single block which gets committed to mdbx.
-- If configured with provider type `geth`: it uses `debug_traceByBlockHash` and `debug_traceByBlockNumber` to get the
-  state changes made in a block.
+- It uses `debug_traceByBlockHash` and `debug_traceByBlockNumber` to get the state changes made in a block.
 
 The changes are stored in a `revm::DatabaseRef` compatible format so we can consume the mdbx cache directly
 in the sidecar by calling into it.
