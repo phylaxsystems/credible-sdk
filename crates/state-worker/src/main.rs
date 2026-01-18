@@ -71,6 +71,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let provider = connect_provider(&args.ws_url).await?;
+
+    // Validate Geth version for prestateTracer diffMode EIP-6780 correctness
+    validate_geth_version(&provider).await?;
     let writer_reader = StateWriter::new(
         args.mdbx_path.as_str(),
         CircularBufferConfig::new(args.state_depth)?,
@@ -179,4 +182,206 @@ async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>> {
         .await
         .context("failed to connect to websocket provider")?;
     Ok(Arc::new(provider.root().clone()))
+}
+
+/// Minimum required Geth version for correct prestateTracer diffMode behavior.
+///
+/// Geth versions before 1.16.6 have a bug (go-ethereum#33049) where the
+/// `prestateTracer` diffMode incorrectly reports post-Cancun SELFDESTRUCT
+/// operations as full account deletions (pre present, post absent), even
+/// though the contract still exists per EIP-6780 semantics.
+///
+/// This was fixed by PR #33050, merged Oct 31 2025, assigned to milestone 1.16.6.
+const MIN_GETH_VERSION: (u64, u64, u64) = (1, 16, 6);
+
+/// How often to retry version check when Geth version is incompatible.
+const VERSION_CHECK_RETRY_SECS: u64 = 60;
+
+/// Validate that the connected execution client meets version requirements.
+///
+/// Specifically, if the client is Geth, it must be version 1.16.6 or later
+/// to ensure correct prestateTracer diffMode behavior for post-Cancun
+/// SELFDESTRUCT (EIP-6780).
+///
+/// If Geth version is too old, this function blocks and retries periodically
+/// rather than crashing, since the state-worker runs on the same pod as other
+/// services that must remain available.
+async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
+    let (min_major, min_minor, min_patch) = MIN_GETH_VERSION;
+
+    loop {
+        let client_version = match provider.get_client_version().await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    retry_secs = VERSION_CHECK_RETRY_SECS,
+                    "failed to get client version, retrying"
+                );
+                tokio::time::sleep(Duration::from_secs(VERSION_CHECK_RETRY_SECS)).await;
+                continue;
+            }
+        };
+
+        info!(client_version = %client_version, "connected to execution client");
+
+        // Parse Geth version string format: "Geth/v1.16.5-stable-abc123/linux-amd64/go1.23"
+        // or similar variations like "Geth/v1.16.5/..."
+        if let Some((major, minor, patch)) = parse_geth_version(&client_version) {
+            let version_ok = (major, minor, patch) >= (min_major, min_minor, min_patch);
+
+            if version_ok {
+                info!(
+                    geth_version = format!("{major}.{minor}.{patch}"),
+                    "Geth version validated (>= {min_major}.{min_minor}.{min_patch})"
+                );
+                return Ok(());
+            }
+
+            // Geth version is too old - log error and wait for upgrade
+            // We don't crash because the sidecar runs on the same pod
+            tracing::error!(
+                geth_version = format!("{major}.{minor}.{patch}"),
+                min_version = format!("{min_major}.{min_minor}.{min_patch}"),
+                retry_secs = VERSION_CHECK_RETRY_SECS,
+                "Geth version is below minimum required. Geth <{min_major}.{min_minor}.{min_patch} \
+                 has a known prestateTracer diffMode bug (go-ethereum#33049) that incorrectly \
+                 reports post-Cancun SELFDESTRUCT as account deletions, violating EIP-6780. \
+                 Fixed by go-ethereum#33050. Please upgrade Geth. Waiting for upgrade..."
+            );
+            tokio::time::sleep(Duration::from_secs(VERSION_CHECK_RETRY_SECS)).await;
+        } else {
+            // Not Geth or unrecognized format - allow to proceed
+            // Other clients (Erigon, Nethermind, etc.) may have their own implementations
+            warn!(
+                client_version = %client_version,
+                "connected client is not Geth or version could not be parsed; \
+                 skipping prestateTracer version validation. Ensure your client \
+                 correctly implements EIP-6780 SELFDESTRUCT semantics in traces."
+            );
+            return Ok(());
+        }
+    }
+}
+
+/// Parse a Geth version string and extract the semantic version tuple.
+///
+/// Expected formats:
+/// - `Geth/v1.16.6-stable-abc123/linux-amd64/go1.23`
+/// - `Geth/v1.16.6/linux-amd64/go1.23`
+/// - `Geth/v1.16.6-unstable/...`
+///
+/// Returns `Some((major, minor, patch))` if this is a Geth client with
+/// a parseable version, `None` otherwise.
+fn parse_geth_version(client_version: &str) -> Option<(u64, u64, u64)> {
+    // Must start with "Geth/" (case-insensitive check for robustness)
+    if !client_version.to_lowercase().starts_with("geth/") {
+        return None;
+    }
+
+    // Extract the version part after "Geth/v" or "Geth/"
+    let version_start = if client_version.len() > 6 && &client_version[5..6] == "v" {
+        6
+    } else {
+        5
+    };
+
+    let remainder = &client_version[version_start..];
+
+    // Find the end of the version number (before "-" or "/" or end of string)
+    let version_end = remainder.find(['-', '/']).unwrap_or(remainder.len());
+
+    let version_str = &remainder[..version_end];
+
+    // Parse "major.minor.patch"
+    let parts: Vec<&str> = version_str.split('.').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let major = parts.first()?.parse().ok()?;
+    let minor = parts.get(1)?.parse().ok()?;
+    let patch = parts.get(2)?.parse().ok()?;
+
+    Some((major, minor, patch))
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_geth_version_standard() {
+        assert_eq!(
+            parse_geth_version("Geth/v1.16.6-stable-abc123/linux-amd64/go1.23"),
+            Some((1, 16, 6))
+        );
+    }
+
+    #[test]
+    fn test_parse_geth_version_without_suffix() {
+        assert_eq!(
+            parse_geth_version("Geth/v1.16.6/linux-amd64/go1.23"),
+            Some((1, 16, 6))
+        );
+    }
+
+    #[test]
+    fn test_parse_geth_version_unstable() {
+        assert_eq!(
+            parse_geth_version("Geth/v1.17.0-unstable-deadbeef/linux-amd64/go1.24"),
+            Some((1, 17, 0))
+        );
+    }
+
+    #[test]
+    fn test_parse_geth_version_old() {
+        assert_eq!(
+            parse_geth_version("Geth/v1.16.5-stable-abc123/linux-amd64/go1.23"),
+            Some((1, 16, 5))
+        );
+    }
+
+    #[test]
+    fn test_parse_geth_version_without_v_prefix() {
+        assert_eq!(
+            parse_geth_version("Geth/1.16.6-stable/linux-amd64/go1.23"),
+            Some((1, 16, 6))
+        );
+    }
+
+    #[test]
+    fn test_parse_geth_version_not_geth() {
+        assert_eq!(
+            parse_geth_version("Erigon/v2.60.0/linux-amd64/go1.23"),
+            None
+        );
+        assert_eq!(
+            parse_geth_version("Nethermind/v1.25.0/linux-x64/dotnet8"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_geth_version_invalid() {
+        assert_eq!(parse_geth_version("Geth/invalid"), None);
+        assert_eq!(parse_geth_version("Geth/v1.16"), None);
+        assert_eq!(parse_geth_version(""), None);
+    }
+
+    #[test]
+    fn test_version_comparison() {
+        let min = MIN_GETH_VERSION;
+
+        // Versions that should pass
+        assert!((1, 16, 6) >= min);
+        assert!((1, 16, 7) >= min);
+        assert!((1, 17, 0) >= min);
+        assert!((2, 0, 0) >= min);
+
+        // Versions that should fail
+        assert!((1, 16, 5) < min);
+        assert!((1, 15, 10) < min);
+        assert!((0, 99, 99) < min);
+    }
 }
