@@ -12,7 +12,6 @@ use alloy::{
     primitives::{
         B256,
         U256,
-        keccak256,
     },
     rlp::Encodable,
 };
@@ -25,7 +24,7 @@ use anyhow::{
     Result,
     anyhow,
 };
-use revm::primitives::KECCAK_EMPTY;
+use rayon::prelude::*;
 use state_store::Reader;
 use std::collections::HashMap;
 use tracing::info;
@@ -35,6 +34,9 @@ pub const EMPTY_TRIE_ROOT: B256 = B256::new([
     0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6, 0xff, 0x83, 0x45, 0xe6, 0x92, 0xc0, 0xf8, 0x6e,
     0x5b, 0x48, 0xe0, 0x1b, 0x99, 0x6c, 0xad, 0xc0, 0x01, 0x62, 0x2f, 0xb5, 0xe3, 0x63, 0xb4, 0x21,
 ]);
+
+const MIN_CHUNK_SIZE: usize = 256;
+const LOG_EVERY_N_ACCOUNTS: usize = 10_000;
 
 /// Ethereum account state for state trie construction.
 #[derive(Debug, Clone, PartialEq)]
@@ -86,26 +88,23 @@ fn calculate_storage_root(storage: &HashMap<B256, U256>) -> B256 {
     }
 
     // Convert to sorted entries for deterministic trie construction
-    let mut entries: Vec<(B256, Vec<u8>)> = storage
-        .iter()
-        .filter_map(|(slot, value)| {
-            // Skip zero values - they don't exist in the trie
-            if value.is_zero() {
-                return None;
-            }
+    let mut entries = Vec::with_capacity(storage.len());
+    for (slot, value) in storage {
+        // Skip zero values - they don't exist in the trie
+        if value.is_zero() {
+            continue;
+        }
 
-            // Key: keccak256(rlp(slot))
-            let mut slot_rlp = Vec::new();
-            slot.encode(&mut slot_rlp);
-            let key_hash = keccak256(&slot_rlp);
+        // Storage keys from state-store are already keccak256(pad32(slot)).
+        // Use them directly to avoid double-hashing.
+        let key_hash = *slot;
 
-            // Value: RLP-encoded value (will trim leading zeros automatically)
-            let mut value_rlp = Vec::new();
-            value.encode(&mut value_rlp);
+        // Value: RLP-encoded value (will trim leading zeros automatically)
+        let mut value_rlp = Vec::new();
+        value.encode(&mut value_rlp);
 
-            Some((key_hash, value_rlp))
-        })
-        .collect();
+        entries.push((key_hash, value_rlp));
+    }
 
     // Sort by key hash for proper trie construction
     entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -127,6 +126,7 @@ pub struct StateRootCalculator<R: Reader> {
 
 impl<R: Reader + Clone> StateRootCalculator<R>
 where
+    R: Send + Sync,
     R::Error: std::error::Error + Send + Sync + 'static,
 {
     pub fn new(reader: &R) -> Self {
@@ -153,7 +153,7 @@ where
 
         if account_hashes.is_empty() {
             info!("No accounts found - returning empty state root");
-            return Ok(KECCAK_EMPTY);
+            return Ok(EMPTY_TRIE_ROOT);
         }
 
         info!("Found {} accounts to process", account_hashes.len());
@@ -166,52 +166,59 @@ where
         // Step 3: Create a hash builder for the state trie
         let mut hash_builder = HashBuilder::default();
 
-        // Step 4: Process each account ONE AT A TIME (memory efficient)
+        // Step 4: Process accounts in bounded parallel chunks
         info!("Processing accounts...");
-        for (idx, address_hash) in account_hashes.iter().enumerate() {
-            // Progress reporting every 1000 accounts
-            if idx > 0 && idx % 1000 == 0 {
+        let total_accounts = account_hashes.len();
+        let chunk_size = (rayon::current_num_threads() * MIN_CHUNK_SIZE).max(MIN_CHUNK_SIZE);
+        let mut processed = 0usize;
+
+        for chunk in account_hashes.chunks(chunk_size) {
+            let account_rlps: Vec<Option<Vec<u8>>> = chunk
+                .par_iter()
+                .map(|address_hash| -> Result<Option<Vec<u8>>> {
+                    let account_data = self
+                        .reader
+                        .get_full_account(*address_hash, block_number)
+                        .with_context(|| format!("Failed to read account {address_hash:?}"))?;
+
+                    let Some(data) = account_data else {
+                        return Ok(None);
+                    };
+
+                    // Calculate storage root for this account
+                    // (Storage is loaded temporarily here, then dropped)
+                    let storage_root = calculate_storage_root(&data.storage);
+
+                    // Create an account state
+                    let account = AccountState {
+                        nonce: data.nonce,
+                        balance: data.balance,
+                        storage_root,
+                        code_hash: data.code_hash,
+                    };
+
+                    // RLP encode the account
+                    Ok(Some(account.rlp_encode()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            for (address_hash, account_rlp) in chunk.iter().zip(account_rlps.into_iter()) {
+                if let Some(rlp) = account_rlp {
+                    let nibbles = Nibbles::unpack(*address_hash);
+                    hash_builder.add_leaf(nibbles, &rlp);
+                }
+            }
+
+            processed += chunk.len();
+            if processed.is_multiple_of(LOG_EVERY_N_ACCOUNTS) || processed == total_accounts {
                 info!(
                     "Processed {}/{} accounts ({:.1}%)",
-                    idx,
-                    account_hashes.len(),
-                    (idx as f64 / account_hashes.len() as f64) * 100.0
+                    processed,
+                    total_accounts,
+                    (processed as f64 / total_accounts as f64) * 100.0
                 );
             }
-
-            // Read a single account from state worker
-            let account_data = self
-                .reader
-                .get_full_account(*address_hash, block_number)
-                .context(format!("Failed to read account {address_hash:?}"))?;
-
-            if let Some(data) = account_data {
-                // Calculate storage root for this account
-                // (Storage is loaded temporarily here, then dropped)
-                let storage_root = calculate_storage_root(&data.storage);
-
-                // Create an account state
-                let account = AccountState {
-                    nonce: data.nonce,
-                    balance: data.balance,
-                    storage_root,
-                    code_hash: data.code_hash,
-                };
-
-                // RLP encode the account
-                let account_rlp = account.rlp_encode();
-
-                // Add to state trie
-                let nibbles = Nibbles::unpack(*address_hash);
-                hash_builder.add_leaf(nibbles, &account_rlp);
-            }
         }
-
-        info!(
-            "Processed {}/{} accounts (100%)",
-            account_hashes.len(),
-            account_hashes.len()
-        );
 
         // Step 5: Compute the final state root
         info!("Computing final state root...");
@@ -229,6 +236,7 @@ pub struct StateRootService<R: Reader> {
 
 impl<R: Reader + Clone> StateRootService<R>
 where
+    R: Send + Sync,
     R::Error: std::error::Error + Send + Sync + 'static,
 {
     pub fn new(reader: &R) -> Self {
@@ -267,7 +275,20 @@ mod tests {
     use alloy::primitives::{
         Address,
         address,
+        keccak256,
     };
+    use revm::primitives::KECCAK_EMPTY;
+    use state_store::{
+        AccountState as StoreAccountState,
+        AddressHash,
+        BlockStateUpdate,
+        Writer,
+        mdbx::{
+            StateWriter,
+            common::CircularBufferConfig,
+        },
+    };
+    use tempfile::TempDir;
 
     #[test]
     fn test_empty_storage_root() {
@@ -503,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_empty_state_produces_empty_root() {
-        // An empty state trie should produce KECCAK_EMPTY
+        // An empty state trie should produce EMPTY_TRIE_ROOT
         let mut hash_builder = HashBuilder::default();
         let root = hash_builder.root();
         assert_eq!(root, EMPTY_TRIE_ROOT);
@@ -812,5 +833,118 @@ mod tests {
 
         let root = hash_builder.root();
         assert_ne!(root, KECCAK_EMPTY);
+    }
+
+    #[test]
+    fn test_mdbx_state_root_matches_metadata_with_hashed_storage_keys() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config = CircularBufferConfig::new(3).expect("buffer config");
+        let writer = StateWriter::new(temp_dir.path(), config).expect("state writer");
+
+        let block_number = 1;
+        let block_hash = B256::repeat_byte(0x11);
+
+        let address1 = address!("0000000000000000000000000000000000000001");
+        let address2 = address!("0000000000000000000000000000000000000002");
+        let address_hash1 = AddressHash(keccak256(address1));
+        let address_hash2 = AddressHash(keccak256(address2));
+
+        let mut storage1 = HashMap::new();
+        let slot1 = U256::from(1u64).to_be_bytes::<32>();
+        let slot2 = U256::from(2u64).to_be_bytes::<32>();
+        storage1.insert(keccak256(slot1), U256::from(100u64));
+        storage1.insert(keccak256(slot2), U256::from(200u64));
+
+        let storage_root1 = {
+            let mut entries: Vec<(B256, Vec<u8>)> = storage1
+                .iter()
+                .filter_map(|(slot_hash, value)| {
+                    if value.is_zero() {
+                        return None;
+                    }
+                    let mut value_rlp = Vec::new();
+                    value.encode(&mut value_rlp);
+                    Some((*slot_hash, value_rlp))
+                })
+                .collect();
+            entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+            let mut hash_builder = HashBuilder::default();
+            for (slot_hash, value_rlp) in entries {
+                let nibbles = Nibbles::unpack(slot_hash);
+                hash_builder.add_leaf(nibbles, &value_rlp);
+            }
+            hash_builder.root()
+        };
+
+        let account1 = AccountState {
+            nonce: 1,
+            balance: U256::from(1000u64),
+            storage_root: storage_root1,
+            code_hash: B256::repeat_byte(0x22),
+        };
+
+        let account2 = AccountState {
+            nonce: 2,
+            balance: U256::from(2000u64),
+            storage_root: EMPTY_TRIE_ROOT,
+            code_hash: B256::repeat_byte(0x33),
+        };
+
+        let mut entries: Vec<(B256, Vec<u8>)> = vec![
+            (address_hash1.0, account1.rlp_encode()),
+            (address_hash2.0, account2.rlp_encode()),
+        ];
+        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+        let mut hash_builder = HashBuilder::default();
+        for (addr_hash, rlp) in entries {
+            let nibbles = Nibbles::unpack(addr_hash);
+            hash_builder.add_leaf(nibbles, &rlp);
+        }
+        let expected_root = hash_builder.root();
+
+        let update = BlockStateUpdate {
+            block_number,
+            block_hash,
+            state_root: expected_root,
+            accounts: vec![
+                StoreAccountState {
+                    address_hash: address_hash1,
+                    balance: account1.balance,
+                    nonce: account1.nonce,
+                    code_hash: account1.code_hash,
+                    code: None,
+                    storage: storage1.clone(),
+                    deleted: false,
+                },
+                StoreAccountState {
+                    address_hash: address_hash2,
+                    balance: account2.balance,
+                    nonce: account2.nonce,
+                    code_hash: account2.code_hash,
+                    code: None,
+                    storage: HashMap::new(),
+                    deleted: false,
+                },
+            ],
+        };
+
+        writer.commit_block(&update).expect("commit block");
+
+        let reader = writer.reader().clone();
+        let calculator = StateRootCalculator::new(&reader);
+        let calculated_root = calculator
+            .calculate_for_block(block_number)
+            .expect("calculate root");
+
+        let metadata_root = reader
+            .get_block_metadata(block_number)
+            .expect("metadata read")
+            .expect("metadata exists")
+            .state_root;
+
+        assert_eq!(calculated_root, expected_root);
+        assert_eq!(calculated_root, metadata_root);
     }
 }

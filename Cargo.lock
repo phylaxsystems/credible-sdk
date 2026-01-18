@@ -11536,10 +11536,12 @@ dependencies = [
  "clap",
  "hex",
  "log",
+ "rayon",
  "revm",
  "rust-tracing",
  "rustls",
  "state-store",
+ "tempfile",
  "tokio",
  "tracing",
 ]
