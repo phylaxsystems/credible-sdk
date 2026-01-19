@@ -11101,7 +11101,6 @@ name = "sidecar"
 version = "0.10.1"
 dependencies = [
  "alloy",
- "alloy-eips",
  "alloy-provider",
  "alloy-rpc-types-trace",
  "anyhow",

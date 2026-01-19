@@ -799,11 +799,11 @@ mod overlay_db_tests {
         assert_eq!(result2, hash1);
         assert_eq!(mock_db_arc.get_block_hash_calls(), 1); // No new call
 
-        // 4. Read non-existent block hash (miss)
+        // 4. Read non-existent block hash (miss), returns B256::ZERO per EVM spec
         let result3 = overlay_db.block_hash_ref(num_non_existent);
-        assert!(result3.is_err());
+        assert_eq!(result3.unwrap(), B256::ZERO);
         assert_eq!(mock_db_arc.get_block_hash_calls(), 2);
-        assert!(!overlay_db.is_cached(&key_non_existent)); // Errors/absence not cached
+        assert!(!overlay_db.is_cached(&key_non_existent)); // Zero results from missing blocks not cached
     }
 
     #[test]
