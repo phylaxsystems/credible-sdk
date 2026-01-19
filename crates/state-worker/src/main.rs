@@ -186,12 +186,13 @@ async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>> {
 
 /// Minimum required Geth version for correct prestateTracer diffMode behavior.
 ///
-/// Geth versions before 1.16.6 have a bug (go-ethereum#33049) where the
-/// `prestateTracer` diffMode incorrectly reports post-Cancun SELFDESTRUCT
-/// operations as full account deletions (pre present, post absent), even
-/// though the contract still exists per EIP-6780 semantics.
+/// Geth versions before 1.16.6 have a bug where the `prestateTracer` diffMode
+/// incorrectly reports post-Cancun SELFDESTRUCT operations as full account
+/// deletions (pre present, post absent), even though the contract still exists
+/// per EIP-6780 semantics.
 ///
-/// This was fixed by PR #33050, merged Oct 31 2025, assigned to milestone 1.16.6.
+/// Issue: <https://github.com/ethereum/go-ethereum/issues/33049>
+/// Fix: <https://github.com/ethereum/go-ethereum/pull/33050>
 const MIN_GETH_VERSION: (u64, u64, u64) = (1, 16, 6);
 
 /// How often to retry version check when Geth version is incompatible.
@@ -245,9 +246,10 @@ async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
                 min_version = format!("{min_major}.{min_minor}.{min_patch}"),
                 retry_secs = VERSION_CHECK_RETRY_SECS,
                 "Geth version is below minimum required. Geth <{min_major}.{min_minor}.{min_patch} \
-                 has a known prestateTracer diffMode bug (go-ethereum#33049) that incorrectly \
-                 reports post-Cancun SELFDESTRUCT as account deletions, violating EIP-6780. \
-                 Fixed by go-ethereum#33050. Please upgrade Geth. Waiting for upgrade..."
+                 has a known prestateTracer diffMode bug that incorrectly reports post-Cancun \
+                 SELFDESTRUCT as account deletions, violating EIP-6780. \
+                 See https://github.com/ethereum/go-ethereum/issues/33049. \
+                 Please upgrade Geth. Waiting for upgrade..."
             );
             tokio::time::sleep(Duration::from_secs(VERSION_CHECK_RETRY_SECS)).await;
         } else {
