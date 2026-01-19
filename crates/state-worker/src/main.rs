@@ -199,8 +199,6 @@ async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>> {
 /// Returns an error if Geth version is too old or if the client version
 /// cannot be retrieved.
 async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
-    let (min_major, min_minor, min_patch) = MIN_GETH_VERSION;
-
     let client_version = provider
         .get_client_version()
         .await
@@ -210,20 +208,19 @@ async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
 
     // Parse Geth version string format: "Geth/v1.16.5-stable-abc123/linux-amd64/go1.23"
     // or similar variations like "Geth/v1.16.5/..."
-    if let Some((major, minor, patch)) = parse_geth_version(&client_version) {
-        let version_ok = (major, minor, patch) >= (min_major, min_minor, min_patch);
-
-        if version_ok {
+    if let Some(version) = parse_geth_version(&client_version) {
+        if version >= MIN_GETH_VERSION {
             info!(
-                geth_version = format!("{major}.{minor}.{patch}"),
-                "Geth version validated (>= {min_major}.{min_minor}.{min_patch})"
+                geth_version = %version,
+                min_version = %MIN_GETH_VERSION,
+                "Geth version validated"
             );
             return Ok(());
         }
 
         // Geth version is too old
         return Err(GethVersionError {
-            current: (major, minor, patch),
+            current: version,
             minimum: MIN_GETH_VERSION,
         }
         .into());
