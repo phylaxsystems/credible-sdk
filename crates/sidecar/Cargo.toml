@@ -140,7 +140,7 @@ harness = false
 required-features = ["bench-utils"]
 
 [[bench]]
-name = "worst_case_compute_with_observer"
-path = "benches/worst_case_compute_with_observer.rs"
+name = "reorg"
+path = "benches/reorg.rs"
 harness = false
 required-features = ["bench-utils"]

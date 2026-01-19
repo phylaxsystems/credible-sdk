@@ -1,5 +1,8 @@
-//! `worst-case-compute` benchmark.
-//! Send 100 transactions targeting the same adopter (500 total assertion executions)
+//! `worst-case-compute` benchmarks.
+//!
+//! Send 100 transactions targeting the same adopter (500 total assertion executions).
+//! - `worst_case_compute`: Basic benchmark without observer
+//! - `worst_case_compute_with_observer`: With transaction observer enabled
 
 use assertion_executor::{
     primitives::{
@@ -17,6 +20,8 @@ use assertion_executor::{
 use criterion::{
     BatchSize,
     Criterion,
+    criterion_group,
+    criterion_main,
 };
 use revm::{
     context::tx::TxEnvBuilder,
@@ -24,6 +29,13 @@ use revm::{
 };
 use sidecar::{
     execution_ids::TxExecutionId,
+    transaction_observer::{
+        IncidentReportReceiver,
+        IncidentReportSender,
+        TransactionObserver,
+        TransactionObserverConfig,
+        TransactionObserverError,
+    },
     utils::{
         instance::{
             LocalInstance,
@@ -33,53 +45,34 @@ use sidecar::{
             self,
             ProfilingGuard,
         },
-        test_drivers::{
-            LocalInstanceGrpcDriver,
-            LocalInstanceHttpDriver,
-            LocalInstanceMockDriver,
-        },
+        test_drivers::LocalInstanceMockDriver,
     },
 };
 use std::{
     fs::File,
     future::Future,
     io::BufReader,
-    sync::Arc,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
+    },
+    thread::JoinHandle,
     time::Duration,
 };
+use tempfile::TempDir;
 use tokio::runtime::Runtime;
-
-use serde::{
-    Deserialize,
-    de::value::StringDeserializer,
-};
 
 const ASSERTIONS_PER_ADOPTER: usize = 5;
 const GAS_LIMIT_PER_TX: u64 = 50_000;
+const OBSERVER_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum BenchTransport {
-    Mock,
-    Http,
-    Grpc,
-}
-
-impl Default for BenchTransport {
-    fn default() -> Self {
-        Self::Mock
-    }
-}
-
-impl BenchTransport {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Mock => "mock",
-            Self::Http => "http",
-            Self::Grpc => "grpc",
-        }
-    }
-}
+// ============================================================================
+// Shared utilities
+// ============================================================================
 
 fn read_assertions_file(input: &str) -> Vec<Bytes> {
     let file = File::open(input).expect("Failed to open assertions file");
@@ -135,8 +128,21 @@ fn build_assertion_store(bytecodes: &[Bytes], adopters: &[Address]) -> Assertion
     store
 }
 
-// Setup function: creates instance and builds transactions (not measured)
-async fn setup_iteration<T, F, Fut>(
+fn get_bench_paths() -> (PathBuf, PathBuf) {
+    let mut working_dir = std::env::current_dir().expect("Failed to read current directory");
+    if working_dir.ends_with("credible-sdk") {
+        working_dir = working_dir.join("crates/sidecar");
+    }
+    let assertions_path = working_dir.join("benches/assertions.json");
+    let adopters_path = working_dir.join("benches/adopters.json");
+    (assertions_path, adopters_path)
+}
+
+// ============================================================================
+// Basic worst_case_compute benchmark
+// ============================================================================
+
+async fn setup_basic_iteration<T, F, Fut>(
     bytecodes: Arc<Vec<Bytes>>,
     adopters: Arc<Vec<Address>>,
     builder: F,
@@ -146,7 +152,6 @@ where
     F: FnOnce(AssertionStore) -> Fut,
     Fut: Future<Output = Result<LocalInstance<T>, String>>,
 {
-    // this creates 1 adopter with 5 assertions, 5 total assertions in the store
     let store = build_assertion_store(&bytecodes, &adopters[..1]);
     let mut instance = builder(store)
         .await
@@ -154,8 +159,6 @@ where
 
     instance.new_block().await.unwrap();
 
-    // build 100 transactions all targeting the same adopter
-    // each transaction will execute against all 5 assertions for that adopter
     let adopter = adopters[0];
     let mut transactions = Vec::with_capacity(100);
     let block_execution_id = instance.current_block_execution_id();
@@ -190,13 +193,10 @@ where
     (instance, transactions)
 }
 
-// Execution function: sends transactions and waits for completion (measured)
-async fn execute_iteration<T: TestTransport>(
+async fn execute_basic_iteration<T: TestTransport>(
     mut instance: LocalInstance<T>,
     transactions: Vec<(TxExecutionId, TxEnv)>,
 ) {
-    // send all 100 transactions to the engine in a single block
-    // 100 transactions with 5 assertions, 500 assertion executions
     let last_tx_execution_id = transactions
         .last()
         .map(|(tx_execution_id, _)| *tx_execution_id)
@@ -217,10 +217,6 @@ async fn execute_iteration<T: TestTransport>(
             .unwrap();
     }
 
-    // wait for the last transaction to complete
-    //
-    // txs are processed sequentially so the only way this
-    // can be successful if all tx before are successful
     tracing::debug!(
         "Waiting for last transaction {} to complete",
         last_tx_execution_id
@@ -250,99 +246,230 @@ async fn execute_iteration<T: TestTransport>(
     }
 }
 
-fn run_benchmark_for_driver<T, SetupFn, Fut>(
-    criterion: &mut Criterion,
-    runtime: &Runtime,
-    label: &str,
+// ============================================================================
+// Observer-enabled worst_case_compute benchmark
+// ============================================================================
+
+struct ObserverHandle {
+    shutdown: Arc<AtomicBool>,
+    handle: Option<JoinHandle<Result<(), TransactionObserverError>>>,
+    _tempdir: TempDir,
+}
+
+impl ObserverHandle {
+    fn new(incident_rx: IncidentReportReceiver) -> Self {
+        let tempdir = TempDir::new().expect("Failed to create observer temp dir");
+        let config = TransactionObserverConfig {
+            poll_interval: OBSERVER_POLL_INTERVAL,
+            endpoint_rps_max: 0,
+            endpoint: String::new(),
+            auth_token: String::new(),
+            db_path: tempdir.path().to_string_lossy().to_string(),
+        };
+        let observer = TransactionObserver::new(config, incident_rx)
+            .expect("Failed to create transaction observer");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (handle, _exit_rx) = observer
+            .spawn(Arc::clone(&shutdown))
+            .expect("Failed to spawn transaction observer");
+        Self {
+            shutdown,
+            handle: Some(handle),
+            _tempdir: tempdir,
+        }
+    }
+}
+
+impl Drop for ObserverHandle {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+struct ObservedInstance<T: TestTransport> {
+    instance: LocalInstance<T>,
+    _observer: ObserverHandle,
+}
+
+async fn setup_observer_iteration<T, F, Fut>(
     bytecodes: Arc<Vec<Bytes>>,
     adopters: Arc<Vec<Address>>,
-    setup_fn: SetupFn,
-) where
-    T: TestTransport + 'static,
-    SetupFn: Fn(AssertionStore) -> Fut + Copy + Send + 'static,
+    builder: F,
+) -> (ObservedInstance<T>, Vec<(TxExecutionId, TxEnv)>)
+where
+    T: TestTransport,
+    F: FnOnce(AssertionStore, IncidentReportSender) -> Fut,
     Fut: Future<Output = Result<LocalInstance<T>, String>>,
 {
-    criterion.bench_function(label, |b| {
+    let store = build_assertion_store(&bytecodes, &adopters[..1]);
+    let (incident_tx, incident_rx) = flume::unbounded();
+    let observer = ObserverHandle::new(incident_rx);
+    let mut instance = builder(store, incident_tx)
+        .await
+        .expect("Failed to create LocalInstance");
+
+    instance.new_block().await.unwrap();
+
+    let adopter = adopters[0];
+    let mut transactions = Vec::with_capacity(100);
+    let block_execution_id = instance.current_block_execution_id();
+
+    for idx in 0..100 {
+        let mut payload = vec![0u8; 32];
+        payload[..4].copy_from_slice(&(idx as u32).to_be_bytes());
+        let call_data = Bytes::from(payload);
+
+        let nonce = instance.next_nonce(instance.default_account(), block_execution_id);
+        let tx_env = TxEnvBuilder::new()
+            .caller(instance.default_account())
+            .gas_limit(GAS_LIMIT_PER_TX)
+            .gas_price(0)
+            .value(U256::ZERO)
+            .nonce(nonce)
+            .kind(TxKind::Call(adopter))
+            .data(call_data)
+            .build()
+            .expect("Failed to build transaction");
+
+        let tx_hash = LocalInstance::<T>::generate_random_tx_hash();
+        let tx_execution_id = TxExecutionId::new(
+            block_execution_id.block_number,
+            block_execution_id.iteration_id,
+            tx_hash,
+            idx as u64,
+        );
+        transactions.push((tx_execution_id, tx_env));
+    }
+
+    (
+        ObservedInstance {
+            instance,
+            _observer: observer,
+        },
+        transactions,
+    )
+}
+
+async fn execute_observer_iteration<T: TestTransport>(
+    mut observed_instance: ObservedInstance<T>,
+    transactions: Vec<(TxExecutionId, TxEnv)>,
+) {
+    let instance = &mut observed_instance.instance;
+    let last_tx_execution_id = transactions
+        .last()
+        .map(|(tx_execution_id, _)| *tx_execution_id)
+        .expect("expected at least one transaction");
+
+    for (idx, (tx_execution_id, tx_env)) in transactions.into_iter().enumerate() {
+        tracing::debug!(
+            "Sending transaction {}/{}: {}",
+            idx + 1,
+            100,
+            tx_execution_id
+        );
+
+        instance
+            .transport
+            .send_transaction(tx_execution_id, tx_env)
+            .await
+            .unwrap();
+    }
+
+    tracing::debug!(
+        "Waiting for last transaction {} to complete",
+        last_tx_execution_id
+    );
+    loop {
+        match instance
+            .is_transaction_successful(&last_tx_execution_id)
+            .await
+        {
+            Ok(success) => {
+                tracing::debug!(
+                    "Transaction {} completed with success={}",
+                    last_tx_execution_id,
+                    success
+                );
+                break;
+            }
+            Err(e) => {
+                if e.to_string().contains("Timeout") {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    continue;
+                } else {
+                    panic!("error getting hash {last_tx_execution_id:?}: {}", e)
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Benchmark registration
+// ============================================================================
+
+fn worst_case_compute_benchmarks(c: &mut Criterion) {
+    let runtime = Runtime::new().unwrap();
+    let _profiling_guard: ProfilingGuard = profiling::init_profiling(runtime.handle())
+        .expect("Failed to initialize profiling utilities");
+
+    let (assertions_path, adopters_path) = get_bench_paths();
+    let bytecodes = Arc::new(read_assertions_file(&assertions_path.to_string_lossy()));
+    let adopters = Arc::new(read_adopters_file(&adopters_path.to_string_lossy()));
+
+    let mut group = c.benchmark_group("worst_case_compute");
+
+    // Basic worst_case_compute (mock transport only)
+    group.bench_function("mock", |b| {
         let bytecodes = Arc::clone(&bytecodes);
         let adopters = Arc::clone(&adopters);
         b.iter_batched(
             || {
                 let bytecodes = Arc::clone(&bytecodes);
                 let adopters = Arc::clone(&adopters);
-                runtime.block_on(setup_iteration::<T, _, _>(bytecodes, adopters, setup_fn))
+                runtime.block_on(setup_basic_iteration::<LocalInstanceMockDriver, _, _>(
+                    bytecodes,
+                    adopters,
+                    LocalInstanceMockDriver::new_with_store,
+                ))
             },
             |(instance, transactions)| {
-                std::hint::black_box(
-                    runtime
-                        .block_on(async move { execute_iteration(instance, transactions).await }),
-                );
+                std::hint::black_box(runtime.block_on(async move {
+                    execute_basic_iteration(instance, transactions).await
+                }));
             },
             BatchSize::SmallInput,
         );
     });
+
+    // With observer (mock transport only)
+    group.bench_function("with_observer", |b| {
+        let bytecodes = Arc::clone(&bytecodes);
+        let adopters = Arc::clone(&adopters);
+        b.iter_batched(
+            || {
+                let bytecodes = Arc::clone(&bytecodes);
+                let adopters = Arc::clone(&adopters);
+                runtime.block_on(setup_observer_iteration::<LocalInstanceMockDriver, _, _>(
+                    bytecodes,
+                    adopters,
+                    LocalInstanceMockDriver::new_with_store_and_incident_sender,
+                ))
+            },
+            |(instance, transactions)| {
+                std::hint::black_box(runtime.block_on(async move {
+                    execute_observer_iteration(instance, transactions).await;
+                }));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
 }
 
-fn main() {
-    let runtime = Runtime::new().unwrap();
-    let _profiling_guard: ProfilingGuard = profiling::init_profiling(runtime.handle())
-        .expect("Failed to initialize profiling utilities");
-
-    // for flamegraphs w/ root: .../credible-sdk
-    // for non root its: ...credible-sdk/crates/sidecar
-    let mut working_dir = std::env::current_dir().expect("Failed to read current directory");
-    if working_dir.ends_with("credible-sdk") {
-        working_dir = working_dir.join("crates/sidecar");
-    }
-    let assertions_path = working_dir.join("benches/assertions.json");
-    let adopters_path = working_dir.join("benches/adopters.json");
-
-    let bytecodes = Arc::new(read_assertions_file(&assertions_path.to_string_lossy()));
-    let adopters = Arc::new(read_adopters_file(&adopters_path.to_string_lossy()));
-
-    let mut criterion = Criterion::default();
-
-    let transport = std::env::var("SIDECAR_BENCH_TRANSPORT")
-        .ok()
-        .and_then(|raw| {
-            let de = StringDeserializer::<serde::de::value::Error>::new(raw.to_ascii_lowercase());
-            BenchTransport::deserialize(de).ok()
-        })
-        .unwrap_or_default();
-    let bench_label = format!("worst_case_compute ({})", transport.as_str());
-    tracing::info!("Running benchmark with `{}` transport", transport.as_str());
-
-    match transport {
-        BenchTransport::Grpc => {
-            run_benchmark_for_driver::<LocalInstanceGrpcDriver, _, _>(
-                &mut criterion,
-                &runtime,
-                &bench_label,
-                Arc::clone(&bytecodes),
-                Arc::clone(&adopters),
-                LocalInstanceGrpcDriver::new_with_store,
-            )
-        }
-        BenchTransport::Http => {
-            run_benchmark_for_driver::<LocalInstanceHttpDriver, _, _>(
-                &mut criterion,
-                &runtime,
-                &bench_label,
-                Arc::clone(&bytecodes),
-                Arc::clone(&adopters),
-                LocalInstanceHttpDriver::new_with_store,
-            )
-        }
-        BenchTransport::Mock => {
-            run_benchmark_for_driver::<LocalInstanceMockDriver, _, _>(
-                &mut criterion,
-                &runtime,
-                &bench_label,
-                Arc::clone(&bytecodes),
-                Arc::clone(&adopters),
-                LocalInstanceMockDriver::new_with_store,
-            )
-        }
-    }
-
-    criterion.final_summary();
-}
+criterion_group!(benches, worst_case_compute_benchmarks);
+criterion_main!(benches);
