@@ -2,7 +2,11 @@
 
 use alloy::primitives::U256;
 use assertion_executor::primitives::ExecutionResult;
-use criterion::Criterion;
+use criterion::{
+    Criterion,
+    criterion_group,
+    criterion_main,
+};
 use revm::{
     context::result::{
         Output,
@@ -49,44 +53,44 @@ fn build_tx_ids() -> Vec<TxExecutionId> {
         .collect()
 }
 
-fn bench_add_transaction_result_prune(criterion: &mut Criterion) {
+fn transactions_results_benchmarks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("transactions_results");
+
     let tx_ids = build_tx_ids();
     let dummy = dummy_result();
 
-    let transactions_state = TransactionsState::new();
-    let mut results = TransactionsResults::new(transactions_state, MAX_CAPACITY);
+    // Benchmark: add_transaction_result_prune
+    {
+        let transactions_state = TransactionsState::new();
+        let mut results = TransactionsResults::new(transactions_state, MAX_CAPACITY);
 
-    for tx_execution_id in tx_ids.iter().take(MAX_CAPACITY).copied() {
-        results.add_transaction_result(tx_execution_id, &dummy);
-    }
+        for tx_execution_id in tx_ids.iter().take(MAX_CAPACITY).copied() {
+            results.add_transaction_result(tx_execution_id, &dummy);
+        }
 
-    criterion.bench_function("transactions_results/add_transaction_result_prune", |b| {
-        let mut idx = MAX_CAPACITY;
-        b.iter(|| {
-            let tx_execution_id = tx_ids[idx];
-            idx += 1;
-            if idx >= tx_ids.len() {
-                idx = MAX_CAPACITY;
-            }
-            results.add_transaction_result(tx_execution_id, std::hint::black_box(&dummy));
+        group.bench_function("add_transaction_result_prune", |b| {
+            let mut idx = MAX_CAPACITY;
+            b.iter(|| {
+                let tx_execution_id = tx_ids[idx];
+                idx += 1;
+                if idx >= tx_ids.len() {
+                    idx = MAX_CAPACITY;
+                }
+                results.add_transaction_result(tx_execution_id, std::hint::black_box(&dummy));
+            });
         });
-    });
-}
-
-fn bench_add_transaction_result_update_existing(criterion: &mut Criterion) {
-    let tx_ids = build_tx_ids();
-    let dummy = dummy_result();
-
-    let transactions_state = TransactionsState::new();
-    let mut results = TransactionsResults::new(transactions_state, MAX_CAPACITY);
-
-    for tx_execution_id in tx_ids.iter().take(MAX_CAPACITY).copied() {
-        results.add_transaction_result(tx_execution_id, &dummy);
     }
 
-    criterion.bench_function(
-        "transactions_results/add_transaction_result_update_existing",
-        |b| {
+    // Benchmark: add_transaction_result_update_existing
+    {
+        let transactions_state = TransactionsState::new();
+        let mut results = TransactionsResults::new(transactions_state, MAX_CAPACITY);
+
+        for tx_execution_id in tx_ids.iter().take(MAX_CAPACITY).copied() {
+            results.add_transaction_result(tx_execution_id, &dummy);
+        }
+
+        group.bench_function("add_transaction_result_update_existing", |b| {
             let mut idx = 0usize;
             b.iter(|| {
                 let tx_execution_id = tx_ids[idx];
@@ -96,13 +100,11 @@ fn bench_add_transaction_result_update_existing(criterion: &mut Criterion) {
                 }
                 results.add_transaction_result(tx_execution_id, std::hint::black_box(&dummy));
             });
-        },
-    );
+        });
+    }
+
+    group.finish();
 }
 
-fn main() {
-    let mut criterion = Criterion::default();
-    bench_add_transaction_result_prune(&mut criterion);
-    bench_add_transaction_result_update_existing(&mut criterion);
-    criterion.final_summary();
-}
+criterion_group!(benches, transactions_results_benchmarks);
+criterion_main!(benches);
