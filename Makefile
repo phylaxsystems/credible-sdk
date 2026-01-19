@@ -22,7 +22,7 @@ test-default: build-contracts
 test-state-worker:
 	cargo nextest run --package state-store --package state-worker --locked --cargo-profile release --no-default-features --test-threads=2
 
-make test: test-optimism test-default test-state-worker test-cleanup
+test: test-optimism test-default test-state-worker test-cleanup
 
 # Run tests without full tests (skips Docker-dependent tests and integration tests)
 test-no-full:

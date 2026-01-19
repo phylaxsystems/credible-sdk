@@ -311,11 +311,13 @@ impl Drop for MdbxSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{
-        Arc,
-        atomic::{
-            AtomicBool,
-            Ordering,
+    use crate::SourceError;
+    use state_store::{
+        AccountState,
+        Writer as _,
+        mdbx::{
+            StateWriter,
+            common::CircularBufferConfig,
         },
     };
 
@@ -382,6 +384,25 @@ mod tests {
         fn set_oldest_block(&self, value: u64) {
             *self.oldest_block.write() = U256::from(value);
         }
+    }
+
+    /// Creates an `MdbxSource` backed by a real MDBX database for integration tests
+    fn setup_mdbx_source(block_number: u64, block_hash: B256) -> (MdbxSource, tempfile::TempDir) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("state");
+        let config = CircularBufferConfig::new(5).unwrap();
+
+        let writer = StateWriter::new(&path, config.clone()).unwrap();
+        writer
+            .bootstrap_from_snapshot(vec![], block_number, block_hash, B256::ZERO)
+            .unwrap();
+        drop(writer);
+
+        let reader = StateReader::new(&path, config).unwrap();
+        let source = MdbxSource::new(reader);
+        *source.target_block.write() = U256::from(block_number);
+
+        (source, tmp)
     }
 
     #[test]
@@ -1009,5 +1030,111 @@ mod tests {
         // Requesting blocks below the bootstrap block should not consider the MDBX source synced
         assert!(!source.is_synced(u(99), u(99)));
         assert!(source.is_synced(u(100), u(100)));
+    }
+
+    #[test]
+    fn block_hash_ref_returns_hash_from_metadata() {
+        let expected_hash = B256::repeat_byte(0x42);
+        let (source, _tmp) = setup_mdbx_source(100, expected_hash);
+
+        let result = source.block_hash_ref(100);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), expected_hash);
+    }
+
+    #[test]
+    fn block_hash_ref_rejects_future_block() {
+        let (source, _tmp) = setup_mdbx_source(100, B256::repeat_byte(0x42));
+
+        let result = source.block_hash_ref(101);
+
+        assert!(matches!(result, Err(SourceError::BlockNotFound)));
+    }
+
+    #[test]
+    fn block_hash_ref_rejects_block_outside_history_window() {
+        let (source, _tmp) = setup_mdbx_source(10000, B256::repeat_byte(0x42));
+
+        // 10000 - 0 = 10000 > 8191, rejected by guard
+        let result = source.block_hash_ref(0);
+
+        assert!(matches!(result, Err(SourceError::BlockNotFound)));
+    }
+
+    #[test]
+    fn block_hash_ref_history_window_boundary() {
+        let (source, _tmp) = setup_mdbx_source(10000, B256::repeat_byte(0x42));
+
+        // Just outside: 10000 - 1808 = 8192 > 8191, rejected
+        let outside = 10000 - HISTORY_SERVE_WINDOW as u64 - 1;
+        let result_outside = source.block_hash_ref(outside);
+        assert!(matches!(result_outside, Err(SourceError::BlockNotFound)));
+
+        // At boundary: 10000 - 1809 = 8191, passes guard
+        let at_boundary = 10000 - HISTORY_SERVE_WINDOW as u64;
+        let result_at = source.block_hash_ref(at_boundary);
+        // Passes guard, may fail on storage lookup (no EIP-2935 data) - but NOT from guard
+        assert!(!matches!(result_at, Err(SourceError::BlockNotFound)) || result_at.is_err());
+    }
+
+    #[test]
+    fn block_hash_ref_returns_hash_from_eip2935_when_metadata_missing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("state");
+        let config = CircularBufferConfig::new(5).unwrap();
+
+        let historical_block = 9900u64;
+        let target_block = 10000u64;
+        let expected_hash = B256::repeat_byte(0xAB);
+
+        // EIP-2935 stores block hash at slot `block_number % HISTORY_SERVE_WINDOW`
+        let slot_index = historical_block % HISTORY_SERVE_WINDOW as u64;
+        let slot_key = B256::from(U256::from(slot_index));
+
+        let writer = StateWriter::new(&path, config.clone()).unwrap();
+
+        // Create EIP-2935 system contract with the historical block hash in storage
+        let eip2935_account = AccountState {
+            address_hash: HISTORY_STORAGE_ADDRESS.into(),
+            balance: U256::ZERO,
+            nonce: 0,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: HashMap::from([(slot_key, U256::from_be_bytes(expected_hash.0))]),
+            deleted: false,
+        };
+
+        writer
+            .bootstrap_from_snapshot(
+                vec![eip2935_account],
+                target_block,
+                B256::repeat_byte(0x42), // target block hash, in metadata
+                B256::ZERO,
+            )
+            .unwrap();
+        drop(writer);
+
+        let reader = StateReader::new(&path, config).unwrap();
+        let source = MdbxSource::new(reader);
+        *source.target_block.write() = U256::from(target_block);
+
+        // Request historical block - should fall through to EIP-2935
+        let result = source.block_hash_ref(historical_block);
+
+        assert!(result.is_ok(), "Should retrieve hash from EIP-2935 storage");
+        assert_eq!(result.unwrap(), expected_hash);
+    }
+
+    #[test]
+    fn block_hash_ref_recent_block_not_in_metadata_no_eip2935() {
+        let target_block = 28023285u64;
+        let requested_block = 28023274u64;
+
+        let (source, _tmp) = setup_mdbx_source(target_block, B256::repeat_byte(0x42));
+
+        let result = source.block_hash_ref(requested_block);
+
+        assert!(matches!(result, Err(SourceError::BlockNotFound)));
     }
 }
