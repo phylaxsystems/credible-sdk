@@ -170,8 +170,10 @@ impl DatabaseRef for MdbxSource {
     /// for recent blocks (~3), falling back to EIP-2935 storage for older blocks (up to 8191).
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
         // Fast path: BlockMetadataTable (recent ~3 blocks)
-        if let Ok(Some(hash)) = self.backend.get_block_hash(number) {
-            return Ok(hash);
+        match self.backend.get_block_hash(number) {
+            Ok(Some(hash)) => return Ok(hash),
+            Ok(None) => (),  // Fall through to EIP-2935
+            Err(e) => return Err(Self::Error::StateWorkerBlockHash(e)),
         }
 
         let target_block = Self::u256_to_u64(*self.target_block.read());
