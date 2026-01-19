@@ -12,6 +12,7 @@ use {
         task::JoinHandle,
     },
     tracing_subscriber::{
+        fmt::format::FmtSpan,
         layer::SubscriberExt,
         util::SubscriberInitExt,
     },
@@ -71,7 +72,8 @@ pub fn init_profiling(runtime: &Handle) -> Result<ProfilingGuard, String> {
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(IsTerminal::is_terminal(&std::io::stderr()))
-        .with_writer(std::io::stderr);
+        .with_writer(std::io::stderr)
+        .with_span_events(FmtSpan::CLOSE);
 
     tracing_subscriber::registry()
         .with(filter)
@@ -128,6 +130,7 @@ pub fn init_profiling(_runtime: &tokio::runtime::Handle) -> Result<ProfilingGuar
     let subscriber = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(filter)
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber)

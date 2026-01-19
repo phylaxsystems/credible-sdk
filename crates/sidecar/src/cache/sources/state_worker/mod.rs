@@ -50,6 +50,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{
     debug,
     error,
+    instrument,
     trace,
 };
 
@@ -138,6 +139,12 @@ impl DatabaseRef for MdbxSource {
     type Error = super::SourceError;
 
     /// Reconstructs an account from cached metadata, returning `None` when absent.
+    #[instrument(
+        name = "cache_source::basic_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), address = %address)
+    )]
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let target_block = *self.target_block.read();
         let target_block_u64 = Self::u256_to_u64(target_block)?;
@@ -160,6 +167,12 @@ impl DatabaseRef for MdbxSource {
     }
 
     /// Looks up the canonical hash for the requested block number.
+    #[instrument(
+        name = "cache_source::block_hash_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), block_number = number)
+    )]
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
         let block_hash = self
             .backend
@@ -170,6 +183,12 @@ impl DatabaseRef for MdbxSource {
     }
 
     /// Loads bytecode previously stored for a code hash.
+    #[instrument(
+        name = "cache_source::code_by_hash_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), code_hash = %code_hash)
+    )]
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
         let target_block = *self.target_block.read();
         let target_block_u64 = Self::u256_to_u64(target_block)?;
@@ -183,6 +202,12 @@ impl DatabaseRef for MdbxSource {
     }
 
     /// Reads a storage slot for an account, defaulting to zero when missing.
+    #[instrument(
+        name = "cache_source::storage_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), address = %address, index = %index)
+    )]
     fn storage_ref(
         &self,
         address: Address,
