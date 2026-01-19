@@ -139,7 +139,7 @@ impl HttpTransactionDecoder {
                     let prev_tx_hash = transaction.prev_tx_hash;
 
                     if matches!(tx_env.chain_id, None | Some(0)) {
-                        debug!(
+                        trace!(
                             target = "transport::http",
                             tx_execution_id = ?tx_execution_id,
                             chain_id = ?tx_env.chain_id,
@@ -214,7 +214,7 @@ impl HttpTransactionDecoder {
             let tx_execution_id = transaction.tx_execution_id;
             let current_span = tracing::Span::current();
             if matches!(transaction.tx_env.chain_id, None | Some(0)) {
-                debug!(
+                trace!(
                     target = "transport::http",
                     tx_execution_id = ?tx_execution_id,
                     chain_id = ?transaction.tx_env.chain_id,
