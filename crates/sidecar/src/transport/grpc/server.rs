@@ -1013,8 +1013,12 @@ impl SidecarTransport for GrpcService {
 
         // Subscribe to the broadcast channel
         let mut rx = self.inner.result_broadcaster.subscribe();
+        crate::metrics::set_grpc_result_subscribers(
+            u64::try_from(self.inner.result_broadcaster.receiver_count()).unwrap_or(u64::MAX),
+        );
 
         let (tx, stream_rx) = mpsc::channel(256);
+        let broadcaster = self.inner.result_broadcaster.clone();
 
         // Spawn task to filter and forward results to the gRPC stream
         tokio::spawn(async move {
@@ -1052,6 +1056,10 @@ impl SidecarTransport for GrpcService {
                     }
                 }
             }
+
+            crate::metrics::set_grpc_result_subscribers(
+                u64::try_from(broadcaster.receiver_count()).unwrap_or(u64::MAX),
+            );
         });
 
         let output_stream = tokio_stream::wrappers::ReceiverStream::new(stream_rx);
