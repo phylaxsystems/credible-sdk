@@ -192,15 +192,15 @@ impl DatabaseRef for MdbxSource {
             Err(e) => return Err(Self::Error::StateWorkerBlockHash(e)),
         }
 
-        let target_block = Self::u256_to_u64(*self.target_block.read());
+        let latest_head = Self::u256_to_u64(*self.cache_status.latest_head.read());
 
         // Guard: ensure requested block is within EIP-2935 ring buffer bounds
-        if number >= target_block || target_block - number > HISTORY_SERVE_WINDOW as u64 {
-            let diff = target_block.saturating_sub(number);
+        if number >= latest_head || latest_head - number > HISTORY_SERVE_WINDOW as u64 {
+            let diff = latest_head.saturating_sub(number);
             debug!(
                 target: "state_worker",
                 requested = number,
-                head = target_block,
+                head = latest_head,
                 diff,
                 window = HISTORY_SERVE_WINDOW,
                 "block_hash_ref rejected, outside EIP-2935 bounds"
@@ -212,7 +212,7 @@ impl DatabaseRef for MdbxSource {
         let slot_index = U256::from(number % HISTORY_SERVE_WINDOW as u64);
         let hash = self
             .backend
-            .get_storage_by_raw_slot(HISTORY_STORAGE_ADDRESS.into(), slot_index, target_block)
+            .get_storage_by_raw_slot(HISTORY_STORAGE_ADDRESS.into(), slot_index, latest_head)
             .map_err(Self::Error::StateWorkerStorage)?
             .ok_or(Self::Error::BlockNotFound)?;
 
@@ -436,7 +436,7 @@ mod tests {
 
         let reader = StateReader::new(&path, config).unwrap();
         let source = MdbxSource::new(reader);
-        *source.target_block.write() = U256::from(block_number);
+        *source.cache_status.latest_head.write() = U256::from(block_number);
 
         (source, tmp)
     }
