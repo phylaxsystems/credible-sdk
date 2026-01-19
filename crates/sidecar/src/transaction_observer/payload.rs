@@ -83,7 +83,8 @@ enum TransactionDataPayload {
 
 #[derive(Serialize)]
 struct TransactionDataLegacyPayload {
-    chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
     from_address: String,
@@ -101,7 +102,8 @@ struct TransactionDataLegacyPayload {
 struct TransactionDataAccessListPayload {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     access_list: Vec<AccessListItemPayload>,
-    chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
     from_address: String,
@@ -119,7 +121,8 @@ struct TransactionDataAccessListPayload {
 struct TransactionDataFeeMarketPayload {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     access_list: Vec<AccessListItemPayload>,
-    chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
     from_address: String,
@@ -139,7 +142,8 @@ struct TransactionDataBlobPayload {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     access_list: Vec<AccessListItemPayload>,
     blob_versioned_hashes: Vec<String>,
-    chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
     from_address: String,
@@ -160,7 +164,8 @@ struct TransactionDataAuthorizationPayload {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     access_list: Vec<AccessListItemPayload>,
     authorization_list: Vec<AuthorizationListItemPayload>,
-    chain_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
     from_address: String,
@@ -193,7 +198,7 @@ struct AuthorizationListItemPayload {
 
 struct TransactionCommonFields {
     transaction_hash: String,
-    chain_id: u64,
+    chain_id: Option<String>,
     nonce: String,
     gas_limit: String,
     to_address: String,
@@ -300,15 +305,10 @@ fn build_transaction_data_payload(
     transaction: &ReconstructableTx,
 ) -> Result<TransactionDataPayload, TransactionObserverError> {
     let (tx_hash, tx_env) = transaction;
-    let chain_id = match tx_env.chain_id {
-        Some(chain_id) if chain_id > 0 => chain_id,
-        _ => {
-            return Err(TransactionObserverError::PublishFailed {
-                reason: "Transaction chain_id missing or invalid".to_string(),
-            });
-        }
-    };
-
+    let chain_id = tx_env
+        .chain_id
+        .filter(|chain_id| *chain_id > 0)
+        .map(|chain_id| chain_id.to_string());
     let common_fields = build_common_transaction_fields(tx_hash.as_slice(), tx_env, chain_id);
     match tx_env.tx_type {
         0 => {
@@ -420,7 +420,7 @@ fn build_transaction_data_payload(
 fn build_common_transaction_fields(
     tx_hash: &[u8],
     tx_env: &TxEnv,
-    chain_id: u64,
+    chain_id: Option<String>,
 ) -> TransactionCommonFields {
     TransactionCommonFields {
         transaction_hash: bytes_to_hex(tx_hash),
@@ -555,7 +555,7 @@ mod tests {
             tx_value.get("transaction_hash").and_then(Value::as_str),
             Some(expected_hash.as_str())
         );
-        assert_eq!(tx_value.get("chain_id").and_then(Value::as_u64), Some(1));
+        assert_eq!(tx_value.get("chain_id").and_then(Value::as_str), Some("1"));
         assert_eq!(tx_value.get("nonce").and_then(Value::as_str), Some("7"));
         assert_eq!(
             tx_value.get("gas_limit").and_then(Value::as_str),
