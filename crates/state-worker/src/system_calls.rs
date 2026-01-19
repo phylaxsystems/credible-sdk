@@ -449,10 +449,7 @@ mod tests {
 
         // Should only have EIP-2935, not EIP-4788
         assert_eq!(states.len(), 1);
-        assert_eq!(
-            states[0].address_hash,
-            HISTORY_STORAGE_ADDRESS.into()
-        );
+        assert_eq!(states[0].address_hash, HISTORY_STORAGE_ADDRESS.into());
     }
 
     #[test]
