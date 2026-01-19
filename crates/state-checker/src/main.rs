@@ -6,7 +6,18 @@ use crate::{
     cli::Args,
     state_root::StateRootService,
 };
-use anyhow::Result;
+use alloy::{
+    primitives::B256,
+    rpc::types::BlockNumberOrTag,
+};
+use alloy_provider::{
+    Provider,
+    ProviderBuilder,
+};
+use anyhow::{
+    Context,
+    Result,
+};
 use clap::Parser;
 use log::error;
 use rust_tracing::trace;
@@ -21,6 +32,49 @@ use tracing::info;
 
 mod cli;
 mod state_root;
+
+async fn fetch_state_root_from_node<P>(
+    provider: &P,
+    block_number: u64,
+    block_hash: Option<B256>,
+) -> Result<(B256, &'static str)>
+where
+    P: Provider,
+{
+    if let Some(hash) = block_hash
+        && let Some(state_root) = fetch_state_root_by_hash(provider, hash).await?
+    {
+        return Ok((state_root, "ethereum node (hash)"));
+    }
+
+    let state_root = fetch_state_root_by_number(provider, block_number).await?;
+    Ok((state_root, "ethereum node (number)"))
+}
+
+async fn fetch_state_root_by_number<P>(provider: &P, block_number: u64) -> Result<B256>
+where
+    P: Provider,
+{
+    let block = provider
+        .get_block_by_number(BlockNumberOrTag::Number(block_number))
+        .await
+        .context("Failed to call Ethereum node")?
+        .with_context(|| format!("Ethereum node returned no block for number {block_number}"))?;
+
+    Ok(block.header.state_root)
+}
+
+async fn fetch_state_root_by_hash<P>(provider: &P, block_hash: B256) -> Result<Option<B256>>
+where
+    P: Provider,
+{
+    let block = provider
+        .get_block_by_hash(block_hash)
+        .await
+        .context("Failed to call Ethereum node")?;
+
+    Ok(block.map(|block| block.header.state_root))
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -48,24 +102,37 @@ async fn main() -> Result<()> {
         hex::encode(root)
     );
 
-    let block_number = reader.latest_block_number()?.expect("No blocks in Redis");
-
-    let block_metadata_state_root = reader
+    let block_metadata = reader
         .get_block_metadata(block_number)?
-        .expect("No block metadata in Redis")
-        .state_root;
-    info!(
-        "Block metadata state root: 0x{}",
-        hex::encode(block_metadata_state_root)
-    );
+        .expect("No block metadata in Redis");
 
-    if root == block_metadata_state_root {
+    let (expected_state_root, expected_source) = if let Some(node_url) = args.rpc_url.as_deref() {
+        let provider = ProviderBuilder::new()
+            .connect_http(node_url.parse().context("Invalid Ethereum node URL")?);
+        let (state_root, source) =
+            fetch_state_root_from_node(&provider, block_number, Some(block_metadata.block_hash))
+                .await?;
+        info!(
+            "Ethereum node state root: 0x{} (block {block_number}, hash 0x{})",
+            hex::encode(state_root),
+            hex::encode(block_metadata.block_hash)
+        );
+        (state_root, source)
+    } else {
+        info!(
+            "Block metadata state root: 0x{}",
+            hex::encode(block_metadata.state_root)
+        );
+        (block_metadata.state_root, "state store")
+    };
+
+    if root == expected_state_root {
         info!("State roots match: 0x{}", hex::encode(root));
     } else {
         error!(
-            "State roots do not match: 0x{} != 0x{}",
+            "State roots do not match: 0x{} != 0x{} (source: {expected_source})",
             hex::encode(root),
-            hex::encode(block_metadata_state_root)
+            hex::encode(expected_state_root)
         );
     }
 
