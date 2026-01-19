@@ -378,6 +378,14 @@ pub fn decode_transaction(t: &Transaction) -> Result<TxQueueContents, HttpDecode
         .ok_or(DecodeError::MissingTxExecutionId)?;
 
     let tx_execution_id = decode_tx_execution_id(pb_id)?;
+    if matches!(tx_env.chain_id, None | Some(0)) {
+        debug!(
+            target = "transport::grpc",
+            tx_hash = ?tx_execution_id.tx_hash,
+            chain_id = ?tx_env.chain_id,
+            "Received transaction without chain_id"
+        );
+    }
 
     let prev_tx_hash = t
         .prev_tx_hash

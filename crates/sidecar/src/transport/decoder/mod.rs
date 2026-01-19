@@ -39,6 +39,7 @@ use revm::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::str::FromStr;
+use tracing::debug;
 
 pub trait Decoder {
     type RawEvent: Send + Clone + Sized;
@@ -137,6 +138,15 @@ impl HttpTransactionDecoder {
                     let tx_env = transaction.tx_env;
                     let prev_tx_hash = transaction.prev_tx_hash;
 
+                    if matches!(tx_env.chain_id, None | Some(0)) {
+                        debug!(
+                            target = "transport::http",
+                            tx_execution_id = ?tx_execution_id,
+                            chain_id = ?tx_env.chain_id,
+                            "Received transaction without chain_id"
+                        );
+                    }
+
                     queue_events.push(TxQueueContents::Tx(
                         QueueTransaction {
                             tx_execution_id,
@@ -203,6 +213,14 @@ impl HttpTransactionDecoder {
         for transaction in send_params.transactions {
             let tx_execution_id = transaction.tx_execution_id;
             let current_span = tracing::Span::current();
+            if matches!(transaction.tx_env.chain_id, None | Some(0)) {
+                debug!(
+                    target = "transport::http",
+                    tx_execution_id = ?tx_execution_id,
+                    chain_id = ?transaction.tx_env.chain_id,
+                    "Received transaction without chain_id"
+                );
+            }
             queue_transactions.push(TxQueueContents::Tx(
                 QueueTransaction {
                     tx_execution_id,

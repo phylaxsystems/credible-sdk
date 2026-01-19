@@ -276,7 +276,7 @@ impl TransactionObserver {
 
         let (tx_hash, tx_env) = &mut report.transaction_data;
         set_chain_id(tx_hash, tx_env);
-        for (tx_hash, tx_env) in report.prev_txs.iter_mut() {
+        for (tx_hash, tx_env) in &mut report.prev_txs {
             set_chain_id(tx_hash, tx_env);
         }
     }
@@ -314,7 +314,7 @@ impl TransactionObserver {
             trace!(target = "transaction_observer", "No incidents to publish");
             return Ok(());
         }
-        for (_, report) in incidents.iter_mut() {
+        for (_, report) in &mut incidents {
             self.apply_default_chain_id(report);
         }
         let publish_started_at = Instant::now();

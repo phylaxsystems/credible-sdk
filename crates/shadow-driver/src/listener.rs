@@ -1302,6 +1302,22 @@ impl Listener {
         prev_tx_hash: Option<Vec<u8>>,
     ) -> Result<()> {
         let tx_hash = tx.inner.hash();
+        let chain_id = tx.chain_id();
+        if matches!(chain_id, None | Some(0)) {
+            warn!(
+                tx_hash = ?tx_hash,
+                block_number,
+                index,
+                "Sending transaction without chain_id"
+            );
+        }
+        debug!(
+            tx_hash = ?tx_hash,
+            block_number,
+            index,
+            chain_id = ?chain_id,
+            "Sending transaction"
+        );
         let tx_env = Self::to_proto_tx_env(tx);
 
         stream
