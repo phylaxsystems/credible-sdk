@@ -3,7 +3,6 @@ use super::{
     IncidentReport,
     TransactionObserver,
     TransactionObserverConfig,
-    TransactionObserverError,
 };
 use crate::{
     execution_ids::TxExecutionId,
@@ -574,7 +573,7 @@ fn observer_persists_and_loads_incident_with_previous_transactions() {
 }
 
 #[test]
-fn incident_body_rejects_previous_transactions_without_chain_id() {
+fn incident_body_allows_previous_transactions_without_chain_id() {
     let mut report = build_incident_report();
     let mut prev_tx = report.transaction_data.1.clone();
     prev_tx.chain_id = None;
@@ -582,11 +581,66 @@ fn incident_body_rejects_previous_transactions_without_chain_id() {
     let prev_hash = B256::from([0xcc; 32]);
     report.prev_txs = vec![(prev_hash, prev_tx)];
 
-    let err = super::payload::build_incident_body(&report)
-        .expect_err("expected incident body build to fail");
+    let body = super::payload::build_incident_body(&report).expect("build incident body");
+    let body_value = serde_json::to_value(body).expect("serialize body");
+    let previous_transactions = body_value
+        .get("previous_transactions")
+        .and_then(Value::as_array)
+        .expect("previous_transactions");
+    let prev_tx_value = previous_transactions[0]
+        .as_object()
+        .expect("previous transaction object");
     assert!(
-        matches!(err, TransactionObserverError::PublishFailed { .. }),
-        "unexpected error when previous transaction is missing chain_id"
+        !prev_tx_value.contains_key("chain_id"),
+        "chain_id should be omitted when missing"
+    );
+}
+
+#[test]
+fn observer_posts_incident_without_chain_id() {
+    let server = MockServer::start();
+    let (body_tx, body_rx) = flume::unbounded();
+    let body_tx_handle = body_tx.clone();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/v1/enforcer/incidents")
+            .is_true(move |req| body_tx_handle.send(req.body_string()).is_ok());
+        then.status(202)
+            .header("content-type", "application/json")
+            .json_body(incident_response_body("queued", "tracking-skip"));
+    });
+
+    let tempdir = TempDir::new().expect("tempdir");
+    let mut observer = build_observer(&tempdir, server.url("/api/v1/enforcer/incidents"));
+
+    let mut report = build_incident_report();
+    report.transaction_data.1.chain_id = None;
+
+    observer
+        .store_incident(&report)
+        .expect("store incident");
+    observer
+        .publish_invalidations()
+        .expect("publish invalidations");
+
+    mock.assert_calls(1);
+    let body = body_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("incident publish body");
+    let incident: Value = serde_json::from_str(&body).expect("incident json");
+    let tx_data = incident
+        .get("transaction_data")
+        .and_then(Value::as_object)
+        .expect("transaction_data");
+    assert!(
+        !tx_data.contains_key("chain_id"),
+        "chain_id should be omitted when missing"
+    );
+
+    let remaining = observer.db.load_batch(10).expect("load batch");
+    assert!(
+        remaining.is_empty(),
+        "incident should be removed after a successful publish"
     );
 }
 
