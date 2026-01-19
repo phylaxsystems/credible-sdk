@@ -16,4 +16,8 @@ pub struct Args {
     /// Optional state depth (how many blocks behind head in the state worker will have the data from)
     #[arg(long, env = "STATE_CHECKER_STATE_DEPTH", default_value = "3")]
     pub state_depth: u8,
+
+    /// Optional HTTP RPC URL for comparing the state root.
+    #[arg(long, env = "STATE_CHECKER_RPC_URL")]
+    pub rpc_url: Option<String>,
 }

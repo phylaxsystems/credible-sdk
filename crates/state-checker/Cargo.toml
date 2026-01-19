@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 alloy = { workspace = true }
+alloy-provider = { workspace = true }
 alloy-trie = "0.9.1"
 anyhow = { workspace = true }
 clap = { workspace = true }
