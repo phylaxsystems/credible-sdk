@@ -766,7 +766,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             warn!(
                 current_head = %self.current_head,
                 commit_head = %commit_head.block_number,
-                "CommitHead not +1 from current head"
+                "Invalidating cache: CommitHead not +1 from current head"
             );
             self.invalidate_all(commit_head);
         } else if tx_hash_mismatch {
@@ -774,7 +774,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 warn!(
                     prev_tx_hash = %prev_id.tx_hash,
                     current_tx_hash = ?commit_head.last_tx_hash,
-                    "Last transaction hash mismatch"
+                    "Invalidating cache: Last transaction hash mismatch"
                 );
             }
             self.invalidate_all(commit_head);
@@ -782,7 +782,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             warn!(
                 sidecar_n_transactions = n_transactions,
                 block_env_n_transactions = commit_head.n_transactions,
-                "Transaction count mismatch"
+                "Invalidating cache: Transaction count mismatch"
             );
             self.invalidate_all(commit_head);
         }
