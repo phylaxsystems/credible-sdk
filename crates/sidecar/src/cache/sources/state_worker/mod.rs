@@ -89,10 +89,11 @@ impl MdbxSource {
     }
 
     /// Helper to convert U256 to u64 for backend calls.
-    /// Panics if the value overflows u64 (should never happen for block numbers in practice).
     #[inline]
-    fn u256_to_u64(value: U256) -> u64 {
-        value.try_into().expect("block number overflow u64")
+    fn u256_to_u64(value: U256) -> Result<u64, super::SourceError> {
+        value
+            .try_into()
+            .map_err(|_| super::SourceError::BlockNumberOverflow(value))
     }
 
     /// Computes the intersection of two block ranges and returns the target block.
@@ -139,7 +140,7 @@ impl DatabaseRef for MdbxSource {
     /// Reconstructs an account from cached metadata, returning `None` when absent.
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let target_block = *self.target_block.read();
-        let target_block_u64 = Self::u256_to_u64(target_block);
+        let target_block_u64 = Self::u256_to_u64(target_block)?;
         let Some(account) = self
             .backend
             .get_account(address.into(), target_block_u64)
@@ -171,7 +172,7 @@ impl DatabaseRef for MdbxSource {
     /// Loads bytecode previously stored for a code hash.
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
         let target_block = *self.target_block.read();
-        let target_block_u64 = Self::u256_to_u64(target_block);
+        let target_block_u64 = Self::u256_to_u64(target_block)?;
         let bytecode = Bytecode::new_raw(
             self.backend
                 .get_code(code_hash, target_block_u64)
@@ -189,7 +190,7 @@ impl DatabaseRef for MdbxSource {
     ) -> Result<StorageValue, Self::Error> {
         let slot_hash = keccak256(index.to_be_bytes::<32>());
         let target_block = *self.target_block.read();
-        let target_block_u64 = Self::u256_to_u64(target_block);
+        let target_block_u64 = Self::u256_to_u64(target_block)?;
         let value = self
             .backend
             .get_storage(address.into(), slot_hash, target_block_u64)

@@ -153,6 +153,8 @@ pub enum SourceError {
     Other(String),
     #[error("Storage not found")]
     StorageNotFound,
+    #[error("block number {0} overflows u64")]
+    BlockNumberOverflow(U256),
 }
 
 impl DBErrorMarker for SourceError {}
