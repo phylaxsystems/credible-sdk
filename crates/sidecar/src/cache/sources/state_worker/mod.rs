@@ -50,6 +50,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{
     debug,
     error,
+    trace,
 };
 
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
@@ -218,7 +219,7 @@ impl Source for MdbxSource {
             }
         };
 
-        debug!(
+        trace!(
             target: "state_worker",
             state_worker_oldest_block = state_worker_oldest_block,
             state_worker_observed_head = state_worker_observed_head,
