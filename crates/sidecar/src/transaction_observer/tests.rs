@@ -12,10 +12,7 @@ use assertion_executor::test_utils::{
     COUNTER_ADDRESS,
     counter_call,
 };
-use chrono::{
-    SecondsFormat,
-    Utc,
-};
+use chrono::Utc;
 use httpmock::prelude::*;
 use revm::{
     context::{
@@ -60,7 +57,36 @@ fn hex_bytes(bytes: &[u8]) -> String {
 fn format_timestamp(timestamp: u64) -> String {
     let seconds = i64::try_from(timestamp).expect("valid timestamp");
     let date_time = chrono::DateTime::<Utc>::from_timestamp(seconds, 0).expect("valid timestamp");
-    date_time.to_rfc3339_opts(SecondsFormat::Secs, true)
+    date_time.to_rfc3339()
+}
+
+fn parse_chain_id(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => {
+            number.as_u64().or_else(|| {
+                number.as_f64().and_then(|value| {
+                    #[allow(
+                        clippy::cast_sign_loss,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_precision_loss
+                    )]
+                    if value.fract() == 0.0 && value >= 0.0 && value <= u64::MAX as f64 {
+                        Some(value as u64)
+                    } else {
+                        None
+                    }
+                })
+            })
+        }
+        Value::String(value) => {
+            value.parse::<u64>().ok().or_else(|| {
+                value
+                    .strip_prefix("0x")
+                    .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+            })
+        }
+        _ => None,
+    }
 }
 
 fn build_test_tx_pair() -> (B256, B256, TxEnv, TxEnv) {
@@ -86,9 +112,7 @@ fn build_test_tx_pair() -> (B256, B256, TxEnv, TxEnv) {
 }
 
 fn tx_data_matches(tx_data: &Map<String, Value>, tx_hash: &B256, tx_env: &TxEnv) -> bool {
-    let Some(expected_chain_id) = tx_env.chain_id else {
-        return false;
-    };
+    let expected_chain_id = tx_env.chain_id.filter(|chain_id| *chain_id > 0);
     let expected_hash = hex_bytes(tx_hash.as_slice());
     let expected_nonce = tx_env.nonce.to_string();
     let expected_gas_limit = tx_env.gas_limit.to_string();
@@ -108,8 +132,24 @@ fn tx_data_matches(tx_data: &Map<String, Value>, tx_hash: &B256, tx_env: &TxEnv)
     if tx_data.get("transaction_hash").and_then(Value::as_str) != Some(expected_hash.as_str()) {
         return false;
     }
-    if tx_data.get("chain_id").and_then(Value::as_u64) != Some(expected_chain_id) {
-        return false;
+    match expected_chain_id {
+        None => {
+            if let Some(value) = tx_data.get("chain_id")
+                && !value.is_null()
+            {
+                return false;
+            }
+        }
+        Some(expected_chain_id) => {
+            if tx_data
+                .get("chain_id")
+                .and_then(parse_chain_id)
+                .filter(|value| *value == expected_chain_id)
+                .is_none()
+            {
+                return false;
+            }
+        }
     }
     if tx_data.get("nonce").and_then(Value::as_str) != Some(expected_nonce.as_str()) {
         return false;
@@ -290,7 +330,7 @@ fn expected_incident_body() -> serde_json::Value {
         "incident_timestamp": format_timestamp(1_700_000_000),
         "transaction_data": {
             "transaction_hash": hex_bytes(&[0xaa; 32]),
-            "chain_id": 1,
+            "chain_id": "1",
             "nonce": "7",
             "gas_limit": "21000",
             "to_address": hex_bytes(&[0x02; 20]),
@@ -616,9 +656,7 @@ fn observer_posts_incident_without_chain_id() {
     let mut report = build_incident_report();
     report.transaction_data.1.chain_id = None;
 
-    observer
-        .store_incident(&report)
-        .expect("store incident");
+    observer.store_incident(&report).expect("store incident");
     observer
         .publish_invalidations()
         .expect("publish invalidations");

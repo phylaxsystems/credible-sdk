@@ -84,7 +84,7 @@ enum TransactionDataPayload {
 #[derive(Serialize)]
 struct TransactionDataLegacyPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
-    chain_id: Option<u64>,
+    chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
     from_address: String,
@@ -103,7 +103,7 @@ struct TransactionDataAccessListPayload {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     access_list: Vec<AccessListItemPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    chain_id: Option<u64>,
+    chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
     from_address: String,
@@ -122,7 +122,7 @@ struct TransactionDataFeeMarketPayload {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     access_list: Vec<AccessListItemPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    chain_id: Option<u64>,
+    chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
     from_address: String,
@@ -143,7 +143,7 @@ struct TransactionDataBlobPayload {
     access_list: Vec<AccessListItemPayload>,
     blob_versioned_hashes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    chain_id: Option<u64>,
+    chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
     from_address: String,
@@ -165,7 +165,7 @@ struct TransactionDataAuthorizationPayload {
     access_list: Vec<AccessListItemPayload>,
     authorization_list: Vec<AuthorizationListItemPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    chain_id: Option<u64>,
+    chain_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<String>,
     from_address: String,
@@ -198,7 +198,7 @@ struct AuthorizationListItemPayload {
 
 struct TransactionCommonFields {
     transaction_hash: String,
-    chain_id: Option<u64>,
+    chain_id: Option<String>,
     nonce: String,
     gas_limit: String,
     to_address: String,
@@ -305,7 +305,10 @@ fn build_transaction_data_payload(
     transaction: &ReconstructableTx,
 ) -> Result<TransactionDataPayload, TransactionObserverError> {
     let (tx_hash, tx_env) = transaction;
-    let chain_id = tx_env.chain_id.filter(|chain_id| *chain_id > 0);
+    let chain_id = tx_env
+        .chain_id
+        .filter(|chain_id| *chain_id > 0)
+        .map(|chain_id| chain_id.to_string());
     let common_fields = build_common_transaction_fields(tx_hash.as_slice(), tx_env, chain_id);
     match tx_env.tx_type {
         0 => {
@@ -417,7 +420,7 @@ fn build_transaction_data_payload(
 fn build_common_transaction_fields(
     tx_hash: &[u8],
     tx_env: &TxEnv,
-    chain_id: Option<u64>,
+    chain_id: Option<String>,
 ) -> TransactionCommonFields {
     TransactionCommonFields {
         transaction_hash: bytes_to_hex(tx_hash),
@@ -552,7 +555,7 @@ mod tests {
             tx_value.get("transaction_hash").and_then(Value::as_str),
             Some(expected_hash.as_str())
         );
-        assert_eq!(tx_value.get("chain_id").and_then(Value::as_u64), Some(1));
+        assert_eq!(tx_value.get("chain_id").and_then(Value::as_str), Some("1"));
         assert_eq!(tx_value.get("nonce").and_then(Value::as_str), Some("7"));
         assert_eq!(
             tx_value.get("gas_limit").and_then(Value::as_str),
