@@ -520,7 +520,7 @@ impl StateReader {
         Ok(())
     }
 
-    /// Helper to retrieve a storage slot value by hashing the provided slot index.
+    /// Helper to retrieve a storage slot value with slot index.
     pub fn get_storage_by_raw_slot(
         &self,
         address_hash: AddressHash,
