@@ -34,6 +34,7 @@ use crate::{
     worker::StateWorker,
 };
 
+use futures::FutureExt;
 use rust_tracing::trace;
 use tracing::{
     info,
@@ -59,6 +60,7 @@ use state_store::{
     },
 };
 use std::{
+    panic::AssertUnwindSafe,
     sync::Arc,
     time::Duration,
 };
@@ -67,15 +69,60 @@ use tokio::sync::broadcast;
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize the rustls CryptoProvider for HTTPS support
-    rustls::crypto::aws_lc_rs::default_provider()
+    if rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
-        .map_err(|_| anyhow::anyhow!("Failed to install rustls crypto provider"))?;
+        .is_err()
+    {
+        warn!("Failed to install rustls crypto provider; continuing without default provider");
+    }
 
     // Install the shared tracing subscriber used across Credible services.
     let _guard = trace();
 
-    let args = Args::parse();
+    let args = match Args::try_parse() {
+        Ok(args) => args,
+        Err(err) => {
+            critical!(error = %err, "Failed to parse CLI args; waiting for restart");
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        }
+    };
 
+    let mut restart_count: u64 = 0;
+    loop {
+        let result = AssertUnwindSafe(run_once(&args)).catch_unwind().await;
+
+        match result {
+            Ok(Ok(())) => {
+                warn!("state worker exited; restarting");
+            }
+            Ok(Err(err)) => {
+                warn!(error = %err, "state worker failed; restarting");
+            }
+            Err(panic_payload) => {
+                if let Some(message) = panic_payload.downcast_ref::<&str>() {
+                    warn!(panic = %message, "state worker panicked; restarting");
+                } else if let Some(message) = panic_payload.downcast_ref::<String>() {
+                    warn!(panic = %message, "state worker panicked; restarting");
+                } else {
+                    warn!("state worker panicked; restarting");
+                }
+            }
+        }
+
+        restart_count = restart_count.saturating_add(1);
+        let restart_delay = Duration::from_secs(1);
+        info!(
+            restart_count,
+            restart_delay_secs = restart_delay.as_secs(),
+            "restarting state worker"
+        );
+        tokio::time::sleep(restart_delay).await;
+    }
+}
+
+async fn run_once(args: &Args) -> Result<()> {
     let provider = connect_provider(&args.ws_url).await?;
 
     // Validate Geth version for prestateTracer diffMode EIP-6780 correctness
