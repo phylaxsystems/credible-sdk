@@ -145,4 +145,15 @@ mod tests {
         assert!((1, 15, 10) < min);
         assert!((0, 99, 99) < min);
     }
+
+    #[test]
+    fn test_parsed_version_comparison() {
+        let old = parse_geth_version("Geth/v1.16.5-stable-abc/linux-amd64/go1.23").unwrap();
+        let exact = parse_geth_version("Geth/v1.16.6-stable-abc/linux-amd64/go1.23").unwrap();
+        let new = parse_geth_version("Geth/v1.17.0-stable-abc/linux-amd64/go1.23").unwrap();
+
+        assert!(old < MIN_GETH_VERSION);
+        assert!(exact >= MIN_GETH_VERSION);
+        assert!(new >= MIN_GETH_VERSION);
+    }
 }
