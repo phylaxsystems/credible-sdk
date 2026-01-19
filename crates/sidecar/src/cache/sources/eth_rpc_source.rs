@@ -43,6 +43,7 @@ use tracing::{
     debug,
     error,
     info,
+    instrument,
     warn,
 };
 
@@ -182,6 +183,12 @@ impl EthRpcSourceInner {
 
 impl DatabaseRef for EthRpcSource {
     type Error = SourceError;
+    #[instrument(
+        name = "cache_source::basic_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), address = %address)
+    )]
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         self.inner
             .json_rpc_db
@@ -189,6 +196,12 @@ impl DatabaseRef for EthRpcSource {
             .map_err(Into::into)
     }
 
+    #[instrument(
+        name = "cache_source::code_by_hash_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), code_hash = %code_hash)
+    )]
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
         self.inner
             .json_rpc_db
@@ -196,6 +209,12 @@ impl DatabaseRef for EthRpcSource {
             .map_err(Into::into)
     }
 
+    #[instrument(
+        name = "cache_source::block_hash_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), block_number = number)
+    )]
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
         self.inner
             .json_rpc_db
@@ -203,6 +222,12 @@ impl DatabaseRef for EthRpcSource {
             .map_err(Into::into)
     }
 
+    #[instrument(
+        name = "cache_source::storage_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), address = %address, index = %index)
+    )]
     fn storage_ref(
         &self,
         address: Address,
