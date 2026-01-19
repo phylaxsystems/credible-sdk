@@ -1051,18 +1051,25 @@ mod tests {
 
     #[test]
     fn block_hash_ref_history_window_boundary() {
-        let (source, _tmp) = setup_mdbx_source(10000, B256::repeat_byte(0x42));
+        const TARGET_BLOCK: u64 = 10000;
+        let (source, _tmp) = setup_mdbx_source(TARGET_BLOCK, B256::repeat_byte(0x42));
 
-        // Just outside: 10000 - 1808 = 8192 > 8191, rejected
-        let outside = 10000 - HISTORY_SERVE_WINDOW as u64 - 1;
+        // Just outside the history window (diff = 8192 > 8191)
+        let outside = TARGET_BLOCK - HISTORY_SERVE_WINDOW as u64 - 1;
+        assert_eq!(outside, 1808);
+        assert_eq!(TARGET_BLOCK - outside, HISTORY_SERVE_WINDOW as u64 + 1); // 8192
+
         let result_outside = source.block_hash_ref(outside);
         assert!(matches!(result_outside, Err(SourceError::BlockNotFound)));
 
-        // At boundary: 10000 - 1809 = 8191, passes guard
-        let at_boundary = 10000 - HISTORY_SERVE_WINDOW as u64;
+        // Exactly at the history window boundary (diff = 8191 == HISTORY_SERVE_WINDOW)
+        let at_boundary = TARGET_BLOCK - HISTORY_SERVE_WINDOW as u64;
+        assert_eq!(at_boundary, 1809);
+        assert_eq!(TARGET_BLOCK - at_boundary, HISTORY_SERVE_WINDOW as u64); // 8191
+
         let result_at = source.block_hash_ref(at_boundary);
-        // Passes guard, may fail on storage lookup (no EIP-2935 data) - but NOT from guard
-        assert!(!matches!(result_at, Err(SourceError::BlockNotFound)) || result_at.is_err());
+        // Passes guard, fails on storage lookup (EIP-2935 data not populated)
+        assert!(result_at.is_err());
     }
 
     #[test]
