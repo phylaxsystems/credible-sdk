@@ -183,7 +183,7 @@ impl DatabaseRef for MdbxSource {
         let hash = self
             .backend
             .get_storage_by_raw_slot(
-                AddressHash::from(keccak256(HISTORY_STORAGE_ADDRESS)),
+                HISTORY_STORAGE_ADDRESS.into(),
                 slot_index,
                 target_block_u64,
             )
