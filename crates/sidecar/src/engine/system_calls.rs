@@ -729,4 +729,53 @@ mod tests {
         assert_eq!(account.info.balance, existing_balance);
         assert_eq!(account.info.nonce, existing_nonce);
     }
+
+    #[test]
+    fn test_block_hash_cache_populated() {
+        let mut db = MockDb::default();
+        let system_calls = SystemCalls::new(None, None);
+
+        let block_hash = B256::repeat_byte(0xab);
+        let config = SystemCallsConfig {
+            spec_id: SpecId::SHANGHAI, // Pre-Prague, only caching should happen
+            block_number: U256::from(100),
+            timestamp: U256::from(1234567890),
+            block_hash: Some(block_hash),
+            parent_beacon_block_root: None,
+        };
+
+        let result = system_calls.apply_system_calls(&config, &mut db);
+        assert!(result.is_ok());
+
+        // Verify block hash was cached for BLOCKHASH opcode
+        let cached_hash = db.block_hash_cache.borrow().get(&99).copied();
+        assert_eq!(
+            cached_hash,
+            Some(block_hash),
+            "Parent block hash should be cached at block 99"
+        );
+    }
+
+    #[test]
+    fn test_block_hash_cache_not_populated_for_genesis() {
+        let mut db = MockDb::default();
+        let system_calls = SystemCalls::new(None, None);
+
+        let config = SystemCallsConfig {
+            spec_id: SpecId::SHANGHAI,
+            block_number: U256::from(0), // Genesis
+            timestamp: U256::from(0),
+            block_hash: Some(B256::repeat_byte(0xab)),
+            parent_beacon_block_root: None,
+        };
+
+        let result = system_calls.apply_system_calls(&config, &mut db);
+        assert!(result.is_ok());
+
+        // Genesis has no parent, so nothing should be cached
+        assert!(
+            db.block_hash_cache.borrow().is_empty(),
+            "No hash should be cached for genesis"
+        );
+    }
 }
