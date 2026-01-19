@@ -280,34 +280,23 @@ async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
 /// Returns `Some((major, minor, patch))` if this is a Geth client with
 /// a parseable version, `None` otherwise.
 fn parse_geth_version(client_version: &str) -> Option<(u64, u64, u64)> {
-    // Must start with "Geth/" (case-insensitive check for robustness)
-    if !client_version.to_lowercase().starts_with("geth/") {
-        return None;
-    }
+    // Strip "Geth/" prefix (case-sensitive, but also check lowercase)
+    let remainder = client_version
+        .strip_prefix("Geth/")
+        .or_else(|| client_version.strip_prefix("geth/"))?;
 
-    // Extract the version part after "Geth/v" or "Geth/"
-    let version_start = if client_version.len() > 6 && &client_version[5..6] == "v" {
-        6
-    } else {
-        5
-    };
-
-    let remainder = &client_version[version_start..];
+    // Strip optional 'v' prefix
+    let remainder = remainder.strip_prefix('v').unwrap_or(remainder);
 
     // Find the end of the version number (before "-" or "/" or end of string)
     let version_end = remainder.find(['-', '/']).unwrap_or(remainder.len());
-
-    let version_str = &remainder[..version_end];
+    let version = remainder.get(..version_end)?;
 
     // Parse "major.minor.patch"
-    let parts: Vec<&str> = version_str.split('.').collect();
-    if parts.len() < 3 {
-        return None;
-    }
-
-    let major = parts.first()?.parse().ok()?;
-    let minor = parts.get(1)?.parse().ok()?;
-    let patch = parts.get(2)?.parse().ok()?;
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
 
     Some((major, minor, patch))
 }
