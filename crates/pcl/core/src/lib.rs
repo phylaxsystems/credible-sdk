@@ -10,10 +10,10 @@ pub mod config;
 pub mod error;
 
 /// Default dapp url. URL suffixes added on demand.
-pub const DEFAULT_DAPP_URL: &str = "https://dapp.internal.phylax.systems";
+pub const DEFAULT_DAPP_URL: &str = "https://app.phylax.systems";
 
 /// Default da url. URL suffixes added on demand.
-pub const DEFAULT_DA_URL: &str = "https://da.linea-internal.phylax.systems";
+pub const DEFAULT_DA_URL: &str = "https://da.phylax.systems";
 
 /// Build a URL by appending a path segment to the default dapp URL.
 pub fn default_dapp_url_with(path: &str) -> String {
