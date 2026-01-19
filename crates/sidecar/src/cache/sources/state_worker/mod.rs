@@ -3,15 +3,17 @@
 //! # State-worker backed cache source
 
 pub(crate) mod error;
-
 pub use error::StateWorkerCacheError;
-use state_store::mdbx::StateReader;
 
 use crate::{
     Source,
     cache::sources::SourceName,
 };
 use alloy::primitives::keccak256;
+use alloy_eips::eip2935::{
+    HISTORY_SERVE_WINDOW,
+    HISTORY_STORAGE_ADDRESS,
+};
 use assertion_executor::primitives::{
     AccountInfo,
     Address,
@@ -27,7 +29,11 @@ use revm::{
         StorageValue,
     },
 };
-use state_store::Reader;
+use state_store::{
+    AddressHash,
+    Reader,
+    mdbx::StateReader,
+};
 use std::{
     collections::HashMap,
     fmt::{
@@ -158,13 +164,33 @@ impl DatabaseRef for MdbxSource {
     }
 
     /// Looks up the canonical hash for the requested block number.
+    ///
+    /// Called by revm for the `BLOCKHASH` opcode. Revm enforces the 256-block window internally,
+    /// so this is only invoked for valid requests. Uses a fast path via `BlockMetadataTable`
+    /// for recent blocks (~3), falling back to EIP-2935 storage for older blocks (up to 8191).
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        let block_hash = self
+        // Fast path: BlockMetadataTable (recent ~3 blocks)
+        if let Ok(Some(hash)) = self.backend.get_block_hash(number) {
+            return Ok(hash);
+        }
+
+        // Fallback to EIP-2935 contract storage, up to 8191 blocks
+        let target_block = *self.target_block.read();
+        let target_block_u64 = Self::u256_to_u64(target_block);
+
+        // EIP-2935 stores at raw slot index (block_number % 8191)
+        let slot_index = U256::from(number % HISTORY_SERVE_WINDOW as u64);
+        let hash = self
             .backend
-            .get_block_hash(number)
-            .map_err(Self::Error::StateWorkerBlockHash)?
+            .get_storage_by_raw_slot(
+                AddressHash::from(keccak256(HISTORY_STORAGE_ADDRESS)),
+                slot_index,
+                target_block_u64,
+            )
+            .map_err(Self::Error::StateWorkerStorage)?
             .ok_or(Self::Error::BlockNotFound)?;
-        Ok(block_hash)
+
+        Ok(B256::from(hash))
     }
 
     /// Loads bytecode previously stored for a code hash.
