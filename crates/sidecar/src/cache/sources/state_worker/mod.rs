@@ -311,6 +311,7 @@ impl Drop for MdbxSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
     use crate::SourceError;
     use state_store::{
         AccountState,
@@ -986,19 +987,6 @@ mod tests {
 
     #[test]
     fn mdbx_source_not_synced_for_nonexistent_blocks_after_bootstrap() {
-        use state_store::{
-            AccountState,
-            AddressHash,
-            Reader as _,
-            Writer as _,
-            mdbx::{
-                StateReader,
-                StateWriter,
-                common::CircularBufferConfig,
-            },
-        };
-        use std::collections::HashMap;
-        use tempfile::TempDir;
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("state");
