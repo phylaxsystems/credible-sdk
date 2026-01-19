@@ -311,7 +311,6 @@ impl Drop for MdbxSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use crate::SourceError;
     use state_store::{
         AccountState,
@@ -321,6 +320,7 @@ mod tests {
             common::CircularBufferConfig,
         },
     };
+    use tempfile::TempDir;
 
     fn u(n: u64) -> U256 {
         U256::from(n)
@@ -987,7 +987,6 @@ mod tests {
 
     #[test]
     fn mdbx_source_not_synced_for_nonexistent_blocks_after_bootstrap() {
-
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("state");
         let config = CircularBufferConfig::new(5).unwrap();
