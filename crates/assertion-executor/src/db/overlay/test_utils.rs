@@ -1,4 +1,5 @@
 #![allow(clippy::missing_panics_doc)]
+use super::OverlayDb;
 use crate::{
     db::{
         Database,
@@ -16,10 +17,9 @@ use crate::{
     },
 };
 use alloy_primitives::KECCAK256_EMPTY;
-use revm::database::InMemoryDB;
-
-use super::OverlayDb;
 use dashmap::DashMap;
+use parking_lot::RwLock;
+use revm::database::InMemoryDB;
 use std::{
     collections::HashMap,
     sync::{
@@ -33,6 +33,7 @@ impl<Db> OverlayDb<Db> {
         OverlayDb {
             underlying_db: Some(Arc::new(InMemoryDB::default())),
             overlay: Arc::new(DashMap::new()),
+            latest_head: RwLock::new(0),
         }
     }
 }

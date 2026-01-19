@@ -16,7 +16,10 @@ use alloy::eips::{
 };
 use assertion_executor::{
     ExecutorConfig,
-    db::VersionDb,
+    db::{
+        BlockHashCache,
+        VersionDb,
+    },
     primitives::{
         AccountInfo,
         ExecutionResult,
@@ -44,11 +47,15 @@ use revm::{
         uint,
     },
 };
-use std::sync::{
-    Arc,
-    atomic::{
-        AtomicBool,
-        Ordering,
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
     },
 };
 use thiserror::Error;
@@ -2652,6 +2659,7 @@ async fn test_system_calls_with_reorg(mut instance: crate::utils::LocalInstance)
 #[derive(Debug, Default)]
 struct MockDb {
     accounts: HashMap<Address, revm::state::Account>,
+    block_hash_cache: RefCell<HashMap<u64, B256>>,
 }
 
 #[derive(Error, Debug)]
@@ -2679,8 +2687,19 @@ impl DatabaseRef for MockDb {
             .map_or(U256::ZERO, |slot| slot.present_value))
     }
 
-    fn block_hash_ref(&self, _number: u64) -> Result<B256, Self::Error> {
-        Ok(B256::ZERO)
+    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+        Ok(self
+            .block_hash_cache
+            .borrow()
+            .get(&number)
+            .copied()
+            .unwrap_or(B256::ZERO))
+    }
+}
+
+impl BlockHashCache for MockDb {
+    fn cache_block_hash(&self, number: u64, hash: B256) {
+        self.block_hash_cache.borrow_mut().insert(number, hash);
     }
 }
 

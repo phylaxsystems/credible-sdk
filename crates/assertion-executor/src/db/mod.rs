@@ -20,6 +20,14 @@ pub use revm::database::{
     DatabaseRef,
 };
 
+use alloy_primitives::B256;
+
+/// Trait for caching block hashes for BLOCKHASH opcode lookups.
+pub trait BlockHashCache {
+    /// Cache a block hash for BLOCKHASH opcode lookups.
+    fn cache_block_hash(&self, number: u64, hash: B256);
+}
+
 pub trait PhDB: DatabaseRef + Sync + Send {}
 
 impl<T> PhDB for T where T: DatabaseRef + Sync + Send {}

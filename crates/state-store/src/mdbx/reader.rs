@@ -73,7 +73,6 @@ use alloy::primitives::{
     Bytes,
     KECCAK256_EMPTY,
     U256,
-    keccak256,
 };
 use reth_db_api::{
     cursor::DbCursorRO,
@@ -518,17 +517,6 @@ impl StateReader {
         }
 
         Ok(())
-    }
-
-    /// Helper to retrieve a storage slot value with slot index.
-    pub fn get_storage_by_raw_slot(
-        &self,
-        address_hash: AddressHash,
-        slot: U256,
-        block_number: u64,
-    ) -> StateResult<Option<U256>> {
-        let slot_hash = keccak256(slot.to_be_bytes::<32>());
-        self.get_storage(address_hash, slot_hash, block_number)
     }
 }
 

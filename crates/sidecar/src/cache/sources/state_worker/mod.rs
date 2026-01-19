@@ -3,17 +3,15 @@
 //! # State-worker backed cache source
 
 pub(crate) mod error;
+
 pub use error::StateWorkerCacheError;
+use state_store::mdbx::StateReader;
 
 use crate::{
     Source,
     cache::sources::SourceName,
 };
 use alloy::primitives::keccak256;
-use alloy_eips::eip2935::{
-    HISTORY_SERVE_WINDOW,
-    HISTORY_STORAGE_ADDRESS,
-};
 use assertion_executor::primitives::{
     AccountInfo,
     Address,
@@ -29,11 +27,7 @@ use revm::{
         StorageValue,
     },
 };
-use state_store::{
-    AddressHash,
-    Reader,
-    mdbx::StateReader,
-};
+use state_store::Reader;
 use std::{
     collections::HashMap,
     fmt::{
@@ -56,6 +50,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{
     debug,
     error,
+    instrument,
+    trace,
 };
 
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
@@ -94,10 +90,11 @@ impl MdbxSource {
     }
 
     /// Helper to convert U256 to u64 for backend calls.
-    /// Panics if the value overflows u64 (should never happen for block numbers in practice).
     #[inline]
-    fn u256_to_u64(value: U256) -> u64 {
-        value.try_into().expect("block number overflow u64")
+    fn u256_to_u64(value: U256) -> Result<u64, super::SourceError> {
+        value
+            .try_into()
+            .map_err(|_| super::SourceError::BlockNumberOverflow(value))
     }
 
     /// Computes the intersection of two block ranges and returns the target block.
@@ -142,9 +139,15 @@ impl DatabaseRef for MdbxSource {
     type Error = super::SourceError;
 
     /// Reconstructs an account from cached metadata, returning `None` when absent.
+    #[instrument(
+        name = "cache_source::basic_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), address = %address)
+    )]
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let target_block = *self.target_block.read();
-        let target_block_u64 = Self::u256_to_u64(target_block);
+        let target_block_u64 = Self::u256_to_u64(target_block)?;
         let Some(account) = self
             .backend
             .get_account(address.into(), target_block_u64)
@@ -164,73 +167,31 @@ impl DatabaseRef for MdbxSource {
     }
 
     /// Looks up the canonical hash for the requested block number.
-    ///
-    /// Called by revm for the `BLOCKHASH` opcode. Revm enforces the 256-block window internally,
-    /// so this is only invoked for valid requests. Uses a fast path via `BlockMetadataTable`
-    /// for recent blocks (~3), falling back to EIP-2935 storage for older blocks (up to 8191).
+    #[instrument(
+        name = "cache_source::block_hash_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), block_number = number)
+    )]
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        // Fast path: BlockMetadataTable (recent ~3 blocks)
-        match self.backend.get_block_hash(number) {
-            Ok(Some(hash)) => {
-                debug!(
-                    target: "state_worker",
-                    source = "mdbx_metadata",
-                    requested = number,
-                    "block_hash_ref hit"
-                );
-                return Ok(hash);
-            }
-            Ok(None) => {
-                debug!(
-                    target: "state_worker",
-                    source = "mdbx_metadata",
-                    requested = number,
-                    "block_hash_ref miss"
-                );
-                // Fall through to EIP-2935
-            }
-            Err(e) => return Err(Self::Error::StateWorkerBlockHash(e)),
-        }
-
-        let latest_head = Self::u256_to_u64(*self.cache_status.latest_head.read());
-
-        // Guard: ensure requested block is within EIP-2935 ring buffer bounds
-        if number >= latest_head || latest_head - number > HISTORY_SERVE_WINDOW as u64 {
-            let diff = latest_head.saturating_sub(number);
-            debug!(
-                target: "state_worker",
-                requested = number,
-                head = latest_head,
-                diff,
-                window = HISTORY_SERVE_WINDOW,
-                "block_hash_ref rejected, outside EIP-2935 bounds"
-            );
-            return Err(Self::Error::BlockNotFound);
-        }
-
-        // EIP-2935 stores at raw slot index (block_number % 8191)
-        let slot_index = U256::from(number % HISTORY_SERVE_WINDOW as u64);
-        let hash = self
+        let block_hash = self
             .backend
-            .get_storage_by_raw_slot(HISTORY_STORAGE_ADDRESS.into(), slot_index, latest_head)
-            .map_err(Self::Error::StateWorkerStorage)?
+            .get_block_hash(number)
+            .map_err(Self::Error::StateWorkerBlockHash)?
             .ok_or(Self::Error::BlockNotFound)?;
-
-        debug!(
-            target: "state_worker",
-            source = "eip2935",
-            requested = number,
-            slot = %slot_index,
-            "block_hash_ref hit"
-        );
-
-        Ok(B256::from(hash))
+        Ok(block_hash)
     }
 
     /// Loads bytecode previously stored for a code hash.
+    #[instrument(
+        name = "cache_source::code_by_hash_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), code_hash = %code_hash)
+    )]
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
         let target_block = *self.target_block.read();
-        let target_block_u64 = Self::u256_to_u64(target_block);
+        let target_block_u64 = Self::u256_to_u64(target_block)?;
         let bytecode = Bytecode::new_raw(
             self.backend
                 .get_code(code_hash, target_block_u64)
@@ -241,6 +202,12 @@ impl DatabaseRef for MdbxSource {
     }
 
     /// Reads a storage slot for an account, defaulting to zero when missing.
+    #[instrument(
+        name = "cache_source::storage_ref",
+        level = "trace",
+        skip(self),
+        fields(source = %self.name(), address = %address, index = %index)
+    )]
     fn storage_ref(
         &self,
         address: Address,
@@ -248,7 +215,7 @@ impl DatabaseRef for MdbxSource {
     ) -> Result<StorageValue, Self::Error> {
         let slot_hash = keccak256(index.to_be_bytes::<32>());
         let target_block = *self.target_block.read();
-        let target_block_u64 = Self::u256_to_u64(target_block);
+        let target_block_u64 = Self::u256_to_u64(target_block)?;
         let value = self
             .backend
             .get_storage(address.into(), slot_hash, target_block_u64)
@@ -278,7 +245,7 @@ impl Source for MdbxSource {
             }
         };
 
-        debug!(
+        trace!(
             target: "state_worker",
             state_worker_oldest_block = state_worker_oldest_block,
             state_worker_observed_head = state_worker_observed_head,
@@ -346,16 +313,13 @@ impl Drop for MdbxSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SourceError;
-    use state_store::{
-        AccountState,
-        Writer as _,
-        mdbx::{
-            StateWriter,
-            common::CircularBufferConfig,
+    use std::sync::{
+        Arc,
+        atomic::{
+            AtomicBool,
+            Ordering,
         },
     };
-    use tempfile::TempDir;
 
     fn u(n: u64) -> U256 {
         U256::from(n)
@@ -420,25 +384,6 @@ mod tests {
         fn set_oldest_block(&self, value: u64) {
             *self.oldest_block.write() = U256::from(value);
         }
-    }
-
-    /// Creates an `MdbxSource` backed by a real MDBX database for integration tests
-    fn setup_mdbx_source(block_number: u64, block_hash: B256) -> (MdbxSource, tempfile::TempDir) {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("state");
-        let config = CircularBufferConfig::new(5).unwrap();
-
-        let writer = StateWriter::new(&path, config.clone()).unwrap();
-        writer
-            .bootstrap_from_snapshot(vec![], block_number, block_hash, B256::ZERO)
-            .unwrap();
-        drop(writer);
-
-        let reader = StateReader::new(&path, config).unwrap();
-        let source = MdbxSource::new(reader);
-        *source.cache_status.latest_head.write() = U256::from(block_number);
-
-        (source, tmp)
     }
 
     #[test]
@@ -1022,6 +967,20 @@ mod tests {
 
     #[test]
     fn mdbx_source_not_synced_for_nonexistent_blocks_after_bootstrap() {
+        use state_store::{
+            AccountState,
+            AddressHash,
+            Reader as _,
+            Writer as _,
+            mdbx::{
+                StateReader,
+                StateWriter,
+                common::CircularBufferConfig,
+            },
+        };
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("state");
         let config = CircularBufferConfig::new(5).unwrap();
@@ -1052,118 +1011,5 @@ mod tests {
         // Requesting blocks below the bootstrap block should not consider the MDBX source synced
         assert!(!source.is_synced(u(99), u(99)));
         assert!(source.is_synced(u(100), u(100)));
-    }
-
-    #[test]
-    fn block_hash_ref_returns_hash_from_metadata() {
-        let expected_hash = B256::repeat_byte(0x42);
-        let (source, _tmp) = setup_mdbx_source(100, expected_hash);
-
-        let result = source.block_hash_ref(100);
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), expected_hash);
-    }
-
-    #[test]
-    fn block_hash_ref_rejects_future_block() {
-        let (source, _tmp) = setup_mdbx_source(100, B256::repeat_byte(0x42));
-
-        let result = source.block_hash_ref(101);
-
-        assert!(matches!(result, Err(SourceError::BlockNotFound)));
-    }
-
-    #[test]
-    fn block_hash_ref_rejects_block_outside_history_window() {
-        let (source, _tmp) = setup_mdbx_source(10000, B256::repeat_byte(0x42));
-
-        // 10000 - 0 = 10000 > 8191, rejected by guard
-        let result = source.block_hash_ref(0);
-
-        assert!(matches!(result, Err(SourceError::BlockNotFound)));
-    }
-
-    #[test]
-    fn block_hash_ref_history_window_boundary() {
-        const TARGET_BLOCK: u64 = 10000;
-        let (source, _tmp) = setup_mdbx_source(TARGET_BLOCK, B256::repeat_byte(0x42));
-
-        // Just outside the history window (diff = 8192 > 8191)
-        let outside = TARGET_BLOCK - HISTORY_SERVE_WINDOW as u64 - 1;
-        assert_eq!(outside, 1808);
-        assert_eq!(TARGET_BLOCK - outside, HISTORY_SERVE_WINDOW as u64 + 1); // 8192
-
-        let result_outside = source.block_hash_ref(outside);
-        assert!(matches!(result_outside, Err(SourceError::BlockNotFound)));
-
-        // Exactly at the history window boundary (diff = 8191 == HISTORY_SERVE_WINDOW)
-        let at_boundary = TARGET_BLOCK - HISTORY_SERVE_WINDOW as u64;
-        assert_eq!(at_boundary, 1809);
-        assert_eq!(TARGET_BLOCK - at_boundary, HISTORY_SERVE_WINDOW as u64); // 8191
-
-        let result_at = source.block_hash_ref(at_boundary);
-        // Passes guard, fails on storage lookup (EIP-2935 data not populated)
-        assert!(result_at.is_err());
-    }
-
-    #[test]
-    fn block_hash_ref_returns_hash_from_eip2935_when_metadata_missing() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("state");
-        let config = CircularBufferConfig::new(5).unwrap();
-
-        let historical_block = 9900u64;
-        let target_block = 10000u64;
-        let expected_hash = B256::repeat_byte(0xAB);
-
-        // EIP-2935 stores block hash at slot `block_number % HISTORY_SERVE_WINDOW`
-        let slot_index = historical_block % HISTORY_SERVE_WINDOW as u64;
-        let slot_key = B256::from(U256::from(slot_index));
-
-        let writer = StateWriter::new(&path, config.clone()).unwrap();
-
-        // Create EIP-2935 system contract with the historical block hash in storage
-        let eip2935_account = AccountState {
-            address_hash: HISTORY_STORAGE_ADDRESS.into(),
-            balance: U256::ZERO,
-            nonce: 0,
-            code_hash: B256::ZERO,
-            code: None,
-            storage: HashMap::from([(slot_key, U256::from_be_bytes(expected_hash.0))]),
-            deleted: false,
-        };
-
-        writer
-            .bootstrap_from_snapshot(
-                vec![eip2935_account],
-                target_block,
-                B256::repeat_byte(0x42), // target block hash, in metadata
-                B256::ZERO,
-            )
-            .unwrap();
-        drop(writer);
-
-        let reader = StateReader::new(&path, config).unwrap();
-        let source = MdbxSource::new(reader);
-        *source.target_block.write() = U256::from(target_block);
-
-        // Request historical block - should fall through to EIP-2935
-        let result = source.block_hash_ref(historical_block);
-
-        assert!(result.is_ok(), "Should retrieve hash from EIP-2935 storage");
-        assert_eq!(result.unwrap(), expected_hash);
-    }
-
-    #[test]
-    fn block_hash_ref_recent_block_not_in_metadata_no_eip2935() {
-        let target_block = 28023285u64;
-        let requested_block = 28023274u64;
-
-        let (source, _tmp) = setup_mdbx_source(target_block, B256::repeat_byte(0x42));
-
-        let result = source.block_hash_ref(requested_block);
-
-        assert!(matches!(result, Err(SourceError::BlockNotFound)));
     }
 }

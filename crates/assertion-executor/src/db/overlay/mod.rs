@@ -45,6 +45,7 @@ use metrics::{
     counter,
     gauge,
 };
+use parking_lot::RwLock;
 use rapidhash::fast::RandomState;
 use std::{
     cell::UnsafeCell,
@@ -89,6 +90,7 @@ pub enum TableValue {
 pub struct OverlayDb<Db> {
     underlying_db: Option<Arc<Db>>,
     pub overlay: Arc<DashMap<TableKey, TableValue>>,
+    latest_head: RwLock<u64>,
 }
 
 impl<Db> Clone for OverlayDb<Db> {
@@ -96,6 +98,7 @@ impl<Db> Clone for OverlayDb<Db> {
         Self {
             underlying_db: self.underlying_db.clone(),
             overlay: self.overlay.clone(),
+            latest_head: RwLock::new(*self.latest_head.read()),
         }
     }
 }
@@ -105,6 +108,7 @@ impl<Db> Default for OverlayDb<Db> {
         Self {
             underlying_db: None,
             overlay: Arc::new(DashMap::new()),
+            latest_head: RwLock::new(0),
         }
     }
 }
@@ -115,6 +119,7 @@ impl<Db> OverlayDb<Db> {
         Self {
             underlying_db,
             overlay: Arc::new(DashMap::new()),
+            latest_head: RwLock::new(0),
         }
     }
 
@@ -124,6 +129,7 @@ impl<Db> OverlayDb<Db> {
         Self {
             underlying_db,
             overlay: Arc::new(DashMap::new()),
+            latest_head: RwLock::new(0),
         }
     }
 
@@ -176,6 +182,10 @@ impl<Db> OverlayDb<Db> {
     /// Does not trigger a cache hit.
     pub fn is_cached(&self, key: &TableKey) -> bool {
         self.overlay.contains_key(key)
+    }
+
+    pub fn set_latest_head(&self, block_number: u64) {
+        *self.latest_head.write() = block_number;
     }
 
     /// Returns the number of entries inside the cache.
@@ -332,26 +342,31 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+        // Enforce BLOCKHASH 256-block limit
+        let latest_head = *self.latest_head.read();
+        if latest_head > 0 && (number >= latest_head || latest_head - number > 256) {
+            return Ok(B256::ZERO);
+        }
         let key = TableKey::BlockHash(number);
         if let Some(value) = self.overlay.get(&key) {
             // Found in cache
             counter!("assex_overlay_db_block_hash_ref_hits").increment(1);
-            let block_hash = *value.as_block_hash().unwrap();
-            return Ok(block_hash); // unwrap safe
+            return Ok(*value.as_block_hash().unwrap()); // unwrap safe
         }
 
         counter!("assex_overlay_db_block_hash_ref_misses").increment(1);
 
         // Not in cache, try underlying DB
         if let Some(db) = self.underlying_db.as_ref() {
-            // Underlying DB returns Result<B256, Error>
-            let block_hash = db.block_hash_ref(number).map_err(|_| NotFoundError)?;
-            // Found in DB, cache it
-            self.overlay.insert(key, TableValue::BlockHash(block_hash));
-            Ok(block_hash)
+            match db.block_hash_ref(number) {
+                Ok(block_hash) => {
+                    self.overlay.insert(key, TableValue::BlockHash(block_hash));
+                    Ok(block_hash)
+                }
+                Err(_) => Ok(B256::ZERO), // Return zero instead of error per EVM spec
+            }
         } else {
-            // No underlying DB and not in cache
-            Err(NotFoundError) // Indicate not found
+            Ok(B256::ZERO) // No DB, return zero per EVM spec
         }
     }
 }
@@ -446,6 +461,16 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
                 }
             }
         }
+    }
+}
+
+/// Implementation of `BlockHashCache` for `OverlayDb`.
+///
+/// This caches block hashes in the overlay for BLOCKHASH opcode lookups.
+impl<Db> crate::db::BlockHashCache for OverlayDb<Db> {
+    fn cache_block_hash(&self, number: u64, hash: B256) {
+        self.overlay
+            .insert(TableKey::BlockHash(number), TableValue::BlockHash(hash));
     }
 }
 

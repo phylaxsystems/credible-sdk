@@ -34,6 +34,7 @@ use alloy::{
         keccak256,
     },
 };
+use assertion_executor::db::BlockHashCache;
 use revm::{
     DatabaseCommit,
     DatabaseRef,
@@ -169,11 +170,27 @@ impl SystemCalls {
     ///
     /// This should be called at the start of each block iteration,
     /// before processing any user transactions.
-    pub fn apply_system_calls<DB: DatabaseRef + DatabaseCommit>(
+    pub fn apply_system_calls<DB: DatabaseRef + DatabaseCommit + BlockHashCache>(
         &self,
         config: &SystemCallsConfig,
         db: &mut DB,
     ) -> Result<(), SystemCallError> {
+        // Cache block hash for BLOCKHASH opcode lookups, all forks.
+        if let Some(block_hash) = config.block_hash
+            && config.block_number > U256::ZERO
+        {
+            let parent_block_number: u64 = (config.block_number - U256::from(1))
+                .try_into()
+                .unwrap_or(u64::MAX);
+            db.cache_block_hash(parent_block_number, block_hash);
+            trace!(
+                target = "system_calls",
+                parent_block_number = %parent_block_number,
+                %block_hash,
+                "Block hash cached for BLOCKHASH opcode"
+            );
+        }
+
         // Apply EIP-4788 first (Cancun+)
         if self.is_cancun_active(config) {
             self.apply_eip4788(config, db)?;
@@ -376,12 +393,16 @@ impl SystemCalls {
 mod tests {
     use super::*;
     use revm::database::DBErrorMarker;
-    use std::collections::HashMap;
+    use std::{
+        cell::RefCell,
+        collections::HashMap,
+    };
 
     /// Simple mock database for testing
     #[derive(Debug, Default)]
     struct MockDb {
         accounts: HashMap<Address, Account>,
+        block_hash_cache: RefCell<HashMap<u64, B256>>,
     }
 
     #[derive(Error, Debug)]
@@ -409,8 +430,13 @@ mod tests {
                 .map_or(U256::ZERO, |slot| slot.present_value))
         }
 
-        fn block_hash_ref(&self, _number: u64) -> Result<B256, Self::Error> {
-            Ok(B256::ZERO)
+        fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+            Ok(self
+                .block_hash_cache
+                .borrow()
+                .get(&number)
+                .copied()
+                .unwrap_or(B256::ZERO))
         }
     }
 
@@ -419,6 +445,12 @@ mod tests {
             for (address, account) in changes {
                 self.accounts.insert(address, account);
             }
+        }
+    }
+
+    impl BlockHashCache for MockDb {
+        fn cache_block_hash(&self, number: u64, hash: B256) {
+            self.block_hash_cache.borrow_mut().insert(number, hash);
         }
     }
 
