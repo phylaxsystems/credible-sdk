@@ -141,19 +141,7 @@ impl Reader for StateReader {
         // Verify the block is in namespace
         Self::verify_block_available(&tx, namespace_idx, block_number)?;
 
-        let key = NamespacedAccountKey::new(namespace_idx, address_hash);
-        let account = tx
-            .get::<NamespacedAccounts>(key)
-            .map_err(StateError::Database)?;
-
-        Ok(account.map(|a| {
-            AccountInfo {
-                address_hash,
-                balance: a.balance,
-                nonce: a.nonce,
-                code_hash: a.code_hash,
-            }
-        }))
+        self.get_account_with_tx(&tx, namespace_idx, address_hash)
     }
 
     /// Get a specific storage slot value.
@@ -176,12 +164,7 @@ impl Reader for StateReader {
         // Verify the block is in namespace
         Self::verify_block_available(&tx, namespace_idx, block_number)?;
 
-        let key = NamespacedStorageKey::new(namespace_idx, address_hash, slot_hash);
-        let value = tx
-            .get::<NamespacedStorage>(key)
-            .map_err(StateError::Database)?;
-
-        Ok(value.map(|v| v.0))
+        self.get_storage_with_tx(&tx, namespace_idx, address_hash, slot_hash)
     }
 
     /// Get all storage slots for an account.
@@ -257,10 +240,7 @@ impl Reader for StateReader {
         // Verify block exists
         Self::verify_block_available(&tx, namespace_idx, block_number)?;
 
-        let result = tx
-            .get::<Bytecodes>(NamespacedBytecodeKey::new(namespace_idx, code_hash))
-            .map_err(StateError::Database)?;
-        Ok(result.map(|b| b.0))
+        self.get_code_with_tx(&tx, namespace_idx, code_hash)
     }
 
     /// Get complete account state including storage.
@@ -458,6 +438,16 @@ impl StateReader {
         &self.db
     }
 
+    /// Start a read-only transaction.
+    pub fn read_tx(&self) -> StateResult<reth_db::mdbx::tx::Tx<reth_libmdbx::RO>> {
+        self.db.tx()
+    }
+
+    /// Get the namespace index for a block number.
+    pub fn namespace_for_block(&self, block_number: u64) -> StateResult<u8> {
+        self.db.namespace_for_block(block_number)
+    }
+
     /// Get the configured buffer size.
     pub fn buffer_size(&self) -> u8 {
         self.db.buffer_size()
@@ -491,6 +481,67 @@ impl StateReader {
         let tx = self.db.tx()?;
         tx.get::<BlockMetadataTable>(BlockNumber(block_number))
             .map_err(StateError::Database)
+    }
+
+    /// Get account info from an existing read-only transaction.
+    pub fn get_account_with_tx<TX: DbTx>(
+        &self,
+        tx: &TX,
+        namespace_idx: u8,
+        address_hash: AddressHash,
+    ) -> StateResult<Option<AccountInfo>> {
+        let key = NamespacedAccountKey::new(namespace_idx, address_hash);
+        let account = tx
+            .get::<NamespacedAccounts>(key)
+            .map_err(StateError::Database)?;
+
+        Ok(account.map(|a| {
+            AccountInfo {
+                address_hash,
+                balance: a.balance,
+                nonce: a.nonce,
+                code_hash: a.code_hash,
+            }
+        }))
+    }
+
+    /// Get a storage slot from an existing read-only transaction.
+    pub fn get_storage_with_tx<TX: DbTx>(
+        &self,
+        tx: &TX,
+        namespace_idx: u8,
+        address_hash: AddressHash,
+        slot_hash: B256,
+    ) -> StateResult<Option<U256>> {
+        let key = NamespacedStorageKey::new(namespace_idx, address_hash, slot_hash);
+        let value = tx
+            .get::<NamespacedStorage>(key)
+            .map_err(StateError::Database)?;
+
+        Ok(value.map(|v| v.0))
+    }
+
+    /// Get bytecode from an existing read-only transaction.
+    pub fn get_code_with_tx<TX: DbTx>(
+        &self,
+        tx: &TX,
+        namespace_idx: u8,
+        code_hash: B256,
+    ) -> StateResult<Option<Bytes>> {
+        let result = tx
+            .get::<Bytecodes>(NamespacedBytecodeKey::new(namespace_idx, code_hash))
+            .map_err(StateError::Database)?;
+        Ok(result.map(|b| b.0))
+    }
+
+    /// Verify that the block is in the expected namespace using an existing transaction.
+    pub fn verify_block_available_with_tx<TX: DbTx>(
+        &self,
+        tx: &TX,
+        namespace_idx: u8,
+        block_number: u64,
+    ) -> StateResult<()> {
+        Self::verify_block_available(tx, namespace_idx, block_number)
     }
 
     /// Verify that the block is in the expected namespace.

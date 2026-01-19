@@ -20,6 +20,8 @@ use assertion_executor::primitives::{
     U256,
 };
 use parking_lot::RwLock;
+use reth_db::mdbx::tx::Tx;
+use reth_libmdbx::RO;
 use revm::{
     DatabaseRef,
     primitives::{
@@ -27,7 +29,10 @@ use revm::{
         StorageValue,
     },
 };
-use state_store::Reader;
+use state_store::{
+    Reader,
+    mdbx::common::error::StateResult,
+};
 use std::{
     collections::HashMap,
     fmt::{
@@ -44,6 +49,10 @@ use std::{
     },
     time::Duration,
 };
+use std::{
+    cell::RefCell,
+    sync::atomic::AtomicU64,
+};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -55,10 +64,27 @@ use tracing::{
 };
 
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
+const INITIAL_CACHE_ID: u64 = 1;
+
+type MdbxReadTx = Tx<RO>;
+
+#[derive(Debug)]
+struct VerifiedTx {
+    block_number: u64,
+    namespace_idx: u8,
+    tx: MdbxReadTx,
+}
+
+thread_local! {
+    static MDBX_TX_CACHE: RefCell<HashMap<u64, VerifiedTx>> = RefCell::new(HashMap::new());
+}
+
+static NEXT_CACHE_ID: AtomicU64 = AtomicU64::new(INITIAL_CACHE_ID);
 
 #[derive(Debug)]
 pub struct MdbxSource {
     backend: StateReader,
+    cache_id: u64,
     /// Target block to request from state worker.
     target_block: Arc<RwLock<U256>>,
     cancel_token: CancellationToken,
@@ -80,9 +106,11 @@ impl MdbxSource {
             min_synced_block: RwLock::new(U256::ZERO),
             latest_head: RwLock::new(U256::ZERO),
         });
+        let cache_id = NEXT_CACHE_ID.fetch_add(1, Ordering::Relaxed);
 
         Self {
             backend,
+            cache_id,
             target_block,
             cancel_token,
             cache_status,
@@ -133,6 +161,50 @@ impl MdbxSource {
         let upper_bound = latest_head.min(state_worker_observed_head);
         lower_bound <= upper_bound
     }
+
+    fn set_target_block(&self, target: U256) {
+        let mut current = self.target_block.write();
+        if *current != target {
+            *current = target;
+            self.invalidate_cached_tx();
+        }
+    }
+
+    fn invalidate_cached_tx(&self) {
+        MDBX_TX_CACHE.with(|cache| {
+            cache.borrow_mut().remove(&self.cache_id);
+        });
+    }
+
+    fn with_verified_tx<F, T>(&self, target_block: u64, f: F) -> StateResult<T>
+    where
+        F: FnOnce(&MdbxReadTx, u8) -> StateResult<T>,
+    {
+        MDBX_TX_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+
+            if let Some(entry) = cache.get_mut(&self.cache_id)
+                && entry.block_number == target_block
+            {
+                return f(&entry.tx, entry.namespace_idx);
+            }
+
+            let tx = self.backend.read_tx()?;
+            let namespace_idx = self.backend.namespace_for_block(target_block)?;
+            self.backend
+                .verify_block_available_with_tx(&tx, namespace_idx, target_block)?;
+
+            let entry = VerifiedTx {
+                block_number: target_block,
+                namespace_idx,
+                tx,
+            };
+
+            let result = f(&entry.tx, entry.namespace_idx);
+            cache.insert(self.cache_id, entry);
+            result
+        })
+    }
 }
 
 impl DatabaseRef for MdbxSource {
@@ -149,8 +221,10 @@ impl DatabaseRef for MdbxSource {
         let target_block = *self.target_block.read();
         let target_block_u64 = Self::u256_to_u64(target_block)?;
         let Some(account) = self
-            .backend
-            .get_account(address.into(), target_block_u64)
+            .with_verified_tx(target_block_u64, |tx, namespace_idx| {
+                self.backend
+                    .get_account_with_tx(tx, namespace_idx, address.into())
+            })
             .map_err(Self::Error::StateWorkerAccount)?
         else {
             return Ok(None);
@@ -193,10 +267,11 @@ impl DatabaseRef for MdbxSource {
         let target_block = *self.target_block.read();
         let target_block_u64 = Self::u256_to_u64(target_block)?;
         let bytecode = Bytecode::new_raw(
-            self.backend
-                .get_code(code_hash, target_block_u64)
-                .map_err(Self::Error::StateWorkerCodeByHash)?
-                .ok_or(Self::Error::CodeByHashNotFound)?,
+            self.with_verified_tx(target_block_u64, |tx, namespace_idx| {
+                self.backend.get_code_with_tx(tx, namespace_idx, code_hash)
+            })
+            .map_err(Self::Error::StateWorkerCodeByHash)?
+            .ok_or(Self::Error::CodeByHashNotFound)?,
         );
         Ok(bytecode)
     }
@@ -217,8 +292,10 @@ impl DatabaseRef for MdbxSource {
         let target_block = *self.target_block.read();
         let target_block_u64 = Self::u256_to_u64(target_block)?;
         let value = self
-            .backend
-            .get_storage(address.into(), slot_hash, target_block_u64)
+            .with_verified_tx(target_block_u64, |tx, namespace_idx| {
+                self.backend
+                    .get_storage_with_tx(tx, namespace_idx, address.into(), slot_hash)
+            })
             .map_err(Self::Error::StateWorkerStorage)?
             .unwrap_or_default();
         Ok(value)
@@ -260,7 +337,7 @@ impl Source for MdbxSource {
             U256::from(state_worker_oldest_block),
             U256::from(state_worker_observed_head),
         ) {
-            *self.target_block.write() = target;
+            self.set_target_block(target);
             return true;
         }
         false
@@ -294,7 +371,7 @@ impl Source for MdbxSource {
             U256::from(state_worker_oldest_block),
             U256::from(state_worker_observed_head),
         ) {
-            *self.target_block.write() = target;
+            self.set_target_block(target);
         }
     }
 
