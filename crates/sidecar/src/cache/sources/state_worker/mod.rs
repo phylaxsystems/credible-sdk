@@ -174,19 +174,18 @@ impl DatabaseRef for MdbxSource {
             return Ok(hash);
         }
 
-        // Fallback to EIP-2935 contract storage, up to 8191 blocks
-        let target_block = *self.target_block.read();
-        let target_block_u64 = Self::u256_to_u64(target_block);
+        let target_block = Self::u256_to_u64(*self.target_block.read());
+
+        // Guard: ensure requested block is within EIP-2935 ring buffer bounds
+        if number >= target_block || target_block - number > HISTORY_SERVE_WINDOW as u64 {
+            return Err(Self::Error::BlockNotFound);
+        }
 
         // EIP-2935 stores at raw slot index (block_number % 8191)
         let slot_index = U256::from(number % HISTORY_SERVE_WINDOW as u64);
         let hash = self
             .backend
-            .get_storage_by_raw_slot(
-                HISTORY_STORAGE_ADDRESS.into(),
-                slot_index,
-                target_block_u64,
-            )
+            .get_storage_by_raw_slot(HISTORY_STORAGE_ADDRESS.into(), slot_index, target_block)
             .map_err(Self::Error::StateWorkerStorage)?
             .ok_or(Self::Error::BlockNotFound)?;
 
