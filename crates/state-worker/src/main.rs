@@ -195,8 +195,30 @@ async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>> {
 /// Fix: <https://github.com/ethereum/go-ethereum/pull/33050>
 const MIN_GETH_VERSION: (u64, u64, u64) = (1, 16, 6);
 
-/// How often to retry version check when Geth version is incompatible.
-const VERSION_CHECK_RETRY_SECS: u64 = 60;
+/// Error returned when the connected Geth node version is too old.
+#[derive(Debug)]
+pub struct GethVersionError {
+    pub current: (u64, u64, u64),
+    pub minimum: (u64, u64, u64),
+}
+
+impl std::fmt::Display for GethVersionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (cur_major, cur_minor, cur_patch) = self.current;
+        let (min_major, min_minor, min_patch) = self.minimum;
+        write!(
+            f,
+            "Geth version {cur_major}.{cur_minor}.{cur_patch} is below minimum required version \
+             {min_major}.{min_minor}.{min_patch}. Geth versions before {min_major}.{min_minor}.{min_patch} \
+             have a known prestateTracer diffMode bug that incorrectly reports post-Cancun \
+             SELFDESTRUCT as account deletions, violating EIP-6780. \
+             See https://github.com/ethereum/go-ethereum/issues/33049 for details. \
+             Please upgrade your Geth node."
+        )
+    }
+}
+
+impl std::error::Error for GethVersionError {}
 
 /// Validate that the connected execution client meets version requirements.
 ///
@@ -204,66 +226,48 @@ const VERSION_CHECK_RETRY_SECS: u64 = 60;
 /// to ensure correct prestateTracer diffMode behavior for post-Cancun
 /// SELFDESTRUCT (EIP-6780).
 ///
-/// If Geth version is too old, this function blocks and retries periodically
-/// rather than crashing, since the state-worker runs on the same pod as other
-/// services that must remain available.
+/// Returns an error if Geth version is too old or if the client version
+/// cannot be retrieved.
 async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
     let (min_major, min_minor, min_patch) = MIN_GETH_VERSION;
 
-    loop {
-        let client_version = match provider.get_client_version().await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    retry_secs = VERSION_CHECK_RETRY_SECS,
-                    "failed to get client version, retrying"
-                );
-                tokio::time::sleep(Duration::from_secs(VERSION_CHECK_RETRY_SECS)).await;
-                continue;
-            }
-        };
+    let client_version = provider
+        .get_client_version()
+        .await
+        .context("failed to get client version via web3_clientVersion")?;
 
-        info!(client_version = %client_version, "connected to execution client");
+    info!(client_version = %client_version, "connected to execution client");
 
-        // Parse Geth version string format: "Geth/v1.16.5-stable-abc123/linux-amd64/go1.23"
-        // or similar variations like "Geth/v1.16.5/..."
-        if let Some((major, minor, patch)) = parse_geth_version(&client_version) {
-            let version_ok = (major, minor, patch) >= (min_major, min_minor, min_patch);
+    // Parse Geth version string format: "Geth/v1.16.5-stable-abc123/linux-amd64/go1.23"
+    // or similar variations like "Geth/v1.16.5/..."
+    if let Some((major, minor, patch)) = parse_geth_version(&client_version) {
+        let version_ok = (major, minor, patch) >= (min_major, min_minor, min_patch);
 
-            if version_ok {
-                info!(
-                    geth_version = format!("{major}.{minor}.{patch}"),
-                    "Geth version validated (>= {min_major}.{min_minor}.{min_patch})"
-                );
-                return Ok(());
-            }
-
-            // Geth version is too old - log error and wait for upgrade
-            // We don't crash because the sidecar runs on the same pod
-            tracing::error!(
+        if version_ok {
+            info!(
                 geth_version = format!("{major}.{minor}.{patch}"),
-                min_version = format!("{min_major}.{min_minor}.{min_patch}"),
-                retry_secs = VERSION_CHECK_RETRY_SECS,
-                "Geth version is below minimum required. Geth <{min_major}.{min_minor}.{min_patch} \
-                 has a known prestateTracer diffMode bug that incorrectly reports post-Cancun \
-                 SELFDESTRUCT as account deletions, violating EIP-6780. \
-                 See https://github.com/ethereum/go-ethereum/issues/33049. \
-                 Please upgrade Geth. Waiting for upgrade..."
-            );
-            tokio::time::sleep(Duration::from_secs(VERSION_CHECK_RETRY_SECS)).await;
-        } else {
-            // Not Geth or unrecognized format - allow to proceed
-            // Other clients (Erigon, Nethermind, etc.) may have their own implementations
-            warn!(
-                client_version = %client_version,
-                "connected client is not Geth or version could not be parsed; \
-                 skipping prestateTracer version validation. Ensure your client \
-                 correctly implements EIP-6780 SELFDESTRUCT semantics in traces."
+                "Geth version validated (>= {min_major}.{min_minor}.{min_patch})"
             );
             return Ok(());
         }
+
+        // Geth version is too old
+        return Err(GethVersionError {
+            current: (major, minor, patch),
+            minimum: MIN_GETH_VERSION,
+        }
+        .into());
     }
+
+    // Not Geth or unrecognized format - allow to proceed
+    // Other clients (Erigon, Nethermind, etc.) may have their own implementations
+    warn!(
+        client_version = %client_version,
+        "connected client is not Geth or version could not be parsed; \
+         skipping prestateTracer version validation. Ensure your client \
+         correctly implements EIP-6780 SELFDESTRUCT semantics in traces."
+    );
+    Ok(())
 }
 
 /// Parse a Geth version string and extract the semantic version tuple.
