@@ -108,6 +108,7 @@ pub struct TransactionObserverConfig {
     pub endpoint: String,
     pub auth_token: String,
     pub db_path: String,
+    pub chain_id: u64,
 }
 
 impl Default for TransactionObserverConfig {
@@ -118,6 +119,7 @@ impl Default for TransactionObserverConfig {
             endpoint: String::default(),
             auth_token: String::default(),
             db_path: String::default(),
+            chain_id: 0,
         }
     }
 }
@@ -218,7 +220,10 @@ impl TransactionObserver {
             }
 
             match self.incident_rx.recv_timeout(RECV_TIMEOUT) {
-                Ok(report) => self.store_incident(&report)?,
+                Ok(mut report) => {
+                    self.apply_default_chain_id(&mut report);
+                    self.store_incident(&report)?;
+                }
                 Err(flume::RecvTimeoutError::Timeout) => {}
                 Err(flume::RecvTimeoutError::Disconnected) => {
                     return Err(TransactionObserverError::ChannelClosed);
@@ -242,6 +247,38 @@ impl TransactionObserver {
             return Err(err);
         }
         Ok(())
+    }
+
+    fn apply_default_chain_id(&self, report: &mut IncidentReport) {
+        let default_chain_id = self.config.chain_id;
+        let mut set_chain_id = |tx_hash: &FixedBytes<32>, tx_env: &mut TxEnv| {
+            if matches!(tx_env.chain_id, Some(chain_id) if chain_id > 0) {
+                return;
+            }
+            if default_chain_id == 0 {
+                debug!(
+                    target = "transaction_observer",
+                    tx_hash = ?tx_hash,
+                    chain_id = ?tx_env.chain_id,
+                    "Transaction missing/invalid chain_id; no default chain_id configured"
+                );
+                return;
+            }
+            debug!(
+                target = "transaction_observer",
+                tx_hash = ?tx_hash,
+                chain_id = ?tx_env.chain_id,
+                default_chain_id,
+                "Transaction missing/invalid chain_id; defaulting to configured chain_id"
+            );
+            tx_env.chain_id = Some(default_chain_id);
+        };
+
+        let (tx_hash, tx_env) = &mut report.transaction_data;
+        set_chain_id(tx_hash, tx_env);
+        for (tx_hash, tx_env) in report.prev_txs.iter_mut() {
+            set_chain_id(tx_hash, tx_env);
+        }
     }
 
     #[instrument(
@@ -272,10 +309,13 @@ impl TransactionObserver {
             return Ok(());
         };
 
-        let incidents = self.db.load_batch(self.config.endpoint_rps_max)?;
+        let mut incidents = self.db.load_batch(self.config.endpoint_rps_max)?;
         if incidents.is_empty() {
             trace!(target = "transaction_observer", "No incidents to publish");
             return Ok(());
+        }
+        for (_, report) in incidents.iter_mut() {
+            self.apply_default_chain_id(report);
         }
         let publish_started_at = Instant::now();
         debug!(

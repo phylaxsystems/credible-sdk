@@ -112,6 +112,7 @@ impl ObserverHandle {
             endpoint: String::new(),
             auth_token: String::new(),
             db_path: tempdir.path().to_string_lossy().to_string(),
+            chain_id: 1,
         };
         let observer = TransactionObserver::new(config, incident_rx)
             .expect("Failed to create transaction observer");

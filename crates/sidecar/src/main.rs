@@ -263,6 +263,7 @@ async fn main() -> anyhow::Result<()> {
                     auth_token: auth_token.clone(),
                     endpoint_rps_max,
                     poll_interval: Duration::from_millis(poll_interval_ms),
+                    chain_id: config.chain.chain_id,
                 })
             }
             _ => None,
