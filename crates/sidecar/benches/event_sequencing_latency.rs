@@ -281,8 +281,10 @@ fn scenario_dependency_tree(base_head: u64) -> Scenario {
 }
 
 fn bench_event_sequencing_latency(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("event_sequencing/latency");
+
     // Scenario 1: no dependencies (linear happy path).
-    criterion.bench_function("event_sequencing/latency/no_dependencies", |b| {
+    group.bench_function("no_dependencies", |b| {
         let harness = SequencerHarness::new();
         let mut block = 1u64;
         b.iter_batched(
@@ -302,7 +304,7 @@ fn bench_event_sequencing_latency(criterion: &mut Criterion) {
     });
 
     // Scenario 2: a single TX arrives before its dependency (NewIteration).
-    criterion.bench_function("event_sequencing/latency/with_dependencies", |b| {
+    group.bench_function("with_dependencies", |b| {
         let harness = SequencerHarness::new();
         let mut block = 1u64;
         b.iter_batched(
@@ -322,7 +324,7 @@ fn bench_event_sequencing_latency(criterion: &mut Criterion) {
     });
 
     // Scenario 3: chain of dependencies (reverse-send `CHAIN_LEN` txs).
-    criterion.bench_function("event_sequencing/latency/dependency_chain", |b| {
+    group.bench_function("dependency_chain", |b| {
         let harness = SequencerHarness::new();
         let mut block = 1u64;
         b.iter_batched(
@@ -342,7 +344,7 @@ fn bench_event_sequencing_latency(criterion: &mut Criterion) {
     });
 
     // Scenario 4: reorg cancels the last TX in an iteration.
-    criterion.bench_function("event_sequencing/latency/reorg", |b| {
+    group.bench_function("reorg", |b| {
         let harness = SequencerHarness::new();
         let mut block = 1u64;
         b.iter_batched(
@@ -362,7 +364,7 @@ fn bench_event_sequencing_latency(criterion: &mut Criterion) {
     });
 
     // Scenario 5: dependency tree (many NewIteration roots gated by a CommitHead).
-    criterion.bench_function("event_sequencing/latency/dependency_tree", |b| {
+    group.bench_function("dependency_tree", |b| {
         let harness = SequencerHarness::new();
         let mut base_head = 0u64;
         b.iter_batched(
@@ -380,6 +382,8 @@ fn bench_event_sequencing_latency(criterion: &mut Criterion) {
             BatchSize::SmallInput,
         );
     });
+
+    group.finish();
 }
 
 fn main() {

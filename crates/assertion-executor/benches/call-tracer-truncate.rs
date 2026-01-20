@@ -85,8 +85,10 @@ fn build_tracer_with_deep_pending_calls(
 }
 
 fn call_tracer_truncate_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("call_tracer_truncate");
+
     // Replicates a series of successful calls ending in a root-level revert.
-    c.bench_function("call_tracer_truncate_15k", |b| {
+    group.bench_function("15k", |b| {
         b.iter_batched(
             || build_tracer_with_entries_to_truncate(N_TRUNCATE_ENTRIES),
             |(mut tracer, mut journal)| {
@@ -99,7 +101,7 @@ fn call_tracer_truncate_benchmark(c: &mut Criterion) {
     });
 
     // Replicates a series of recursive calls where the last call reverts and then bubbles up.
-    c.bench_function("call_tracer_truncate_15k_deep_pending", |b| {
+    group.bench_function("15k_deep_pending", |b| {
         b.iter_batched(
             || build_tracer_with_deep_pending_calls(N_TRUNCATE_ENTRIES),
             |(mut tracer, mut journal)| {
@@ -118,7 +120,7 @@ fn call_tracer_truncate_benchmark(c: &mut Criterion) {
     });
 
     // Replicates a series of successful calls ending in a root-level revert.
-    c.bench_function("call_tracer_truncate_500", |b| {
+    group.bench_function("500", |b| {
         b.iter_batched(
             || build_tracer_with_entries_to_truncate(500),
             |(mut tracer, mut journal)| {
@@ -131,7 +133,7 @@ fn call_tracer_truncate_benchmark(c: &mut Criterion) {
     });
 
     // Replicates a series of recursive calls where the last call reverts and then bubbles up.
-    c.bench_function("call_tracer_truncate_500_deep_pending", |b| {
+    group.bench_function("500_deep_pending", |b| {
         b.iter_batched(
             || build_tracer_with_deep_pending_calls(500),
             |(mut tracer, mut journal)| {
@@ -148,6 +150,8 @@ fn call_tracer_truncate_benchmark(c: &mut Criterion) {
             BatchSize::LargeInput,
         );
     });
+
+    group.finish();
 }
 
 criterion_group!(benches, call_tracer_truncate_benchmark);

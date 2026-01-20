@@ -79,10 +79,11 @@ impl JsonRpcDb {
     }
 
     /// Helper to convert U256 to u64 for RPC calls.
-    /// Panics if the value overflows u64 (should never happen for block numbers in practice).
     #[inline]
-    fn u256_to_u64(value: U256) -> u64 {
-        value.try_into().expect("block number overflow u64")
+    fn u256_to_u64(value: U256) -> Result<u64, JsonRpcDbError> {
+        value
+            .try_into()
+            .map_err(|_| JsonRpcDbError::BlockNumberOverflow(value))
     }
 
     /// Executes an async future on the Tokio runtime from any thread.
@@ -107,7 +108,7 @@ impl DatabaseRef for JsonRpcDb {
 
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let provider = self.provider.clone();
-        let target_block = Self::u256_to_u64(self.target_block());
+        let target_block = Self::u256_to_u64(self.target_block())?;
 
         self.block_on(async move {
             // Get balance, nonce, and code in parallel for efficiency
@@ -152,7 +153,7 @@ impl DatabaseRef for JsonRpcDb {
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
         let provider = self.provider.clone();
-        let target_block = Self::u256_to_u64(self.target_block());
+        let target_block = Self::u256_to_u64(self.target_block())?;
 
         self.block_on(async move {
             let value = provider
@@ -192,6 +193,8 @@ pub enum JsonRpcDbError {
     CodeByHashNotFound,
     #[error("Runtime error")]
     Runtime,
+    #[error("block number {0} overflows u64")]
+    BlockNumberOverflow(U256),
 }
 
 impl From<JsonRpcDbError> for super::SourceError {
@@ -202,6 +205,9 @@ impl From<JsonRpcDbError> for super::SourceError {
             JsonRpcDbError::BlockNotFound => super::SourceError::BlockNotFound,
             JsonRpcDbError::CodeByHashNotFound => super::SourceError::CodeByHashNotFound,
             JsonRpcDbError::Runtime => super::SourceError::Other("Runtime error".to_string()),
+            JsonRpcDbError::BlockNumberOverflow(_) => {
+                super::SourceError::Other("Block number overflow".to_string())
+            }
         }
     }
 }

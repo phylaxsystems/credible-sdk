@@ -22,6 +22,7 @@ use assertion_executor::{
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
+use metrics::gauge;
 use sidecar::{
     args::{
         Config,
@@ -48,6 +49,12 @@ use sidecar::{
     event_sequencing::EventSequencing,
     health::HealthServer,
     indexer,
+    metrics::{
+        EngineTransactionsResultMetrics,
+        get_grpc_result_subscribers,
+        get_transport_pending_receives_len,
+        u64_to_f64,
+    },
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -135,6 +142,50 @@ fn create_transport_from_args(
             Ok(AnyTransport::Grpc(t))
         }
     }
+}
+
+fn spawn_queue_metrics_sampler(
+    transport_tx: TransactionQueueSender,
+    engine_tx: TransactionQueueSender,
+    incident_tx: Option<sidecar::transaction_observer::IncidentReportSender>,
+    result_event_tx: Option<flume::Sender<TransactionResultEvent>>,
+    transactions_state: Arc<TransactionsState>,
+    shutdown_flag: Arc<AtomicBool>,
+) {
+    let metrics = EngineTransactionsResultMetrics::default();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            if shutdown_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            gauge!("sidecar_transport_event_queue_len")
+                .set(sidecar::metrics::usize_to_f64(transport_tx.len()));
+            gauge!("sidecar_engine_event_queue_len")
+                .set(sidecar::metrics::usize_to_f64(engine_tx.len()));
+            if let Some(ref tx) = incident_tx {
+                gauge!("sidecar_transaction_observer_queue_len")
+                    .set(sidecar::metrics::usize_to_f64(tx.len()));
+            }
+            if let Some(ref tx) = result_event_tx {
+                gauge!("sidecar_grpc_result_event_queue_len")
+                    .set(sidecar::metrics::usize_to_f64(tx.len()));
+                metrics.set_engine_result_event_queue_len(tx.len());
+            }
+            gauge!("sidecar_grpc_result_subscribers")
+                .set(u64_to_f64(get_grpc_result_subscribers()));
+            gauge!("sidecar_transport_transactions_result_pending_receives_length")
+                .set(u64_to_f64(get_transport_pending_receives_len()));
+
+            let (accepted_len, pending_len, results_len) = transactions_state.get_all_lengths();
+            metrics.set_engine_transactions_state_accepted_txs_length(accepted_len);
+            metrics.set_engine_transactions_state_transaction_results_pending_requests_length(
+                pending_len,
+            );
+            metrics.set_engine_transactions_state_transaction_results_length(results_len);
+        }
+    });
 }
 
 /// Holds handles to spawned threads for graceful shutdown
@@ -280,20 +331,34 @@ async fn main() -> anyhow::Result<()> {
             (None, None)
         };
 
-        let (engine_state_results, result_event_rx) = match config.transport.protocol {
-            TransportProtocol::Grpc => {
-                let (tx, rx) = unbounded();
-                (TransactionsState::with_result_sender(tx), Some(rx))
-            }
-            TransportProtocol::Http => (TransactionsState::new(), None),
-        };
+        let (engine_state_results, result_event_rx, result_event_tx) =
+            match config.transport.protocol {
+                TransportProtocol::Grpc => {
+                    let (tx, rx) = unbounded();
+                    (
+                        TransactionsState::with_result_sender(tx.clone()),
+                        Some(rx),
+                        Some(tx),
+                    )
+                }
+                TransportProtocol::Http => (TransactionsState::new(), None, None),
+            };
 
         let mut transport = create_transport_from_args(
             &config,
-            transport_tx_sender,
+            transport_tx_sender.clone(),
             engine_state_results.clone(),
             result_event_rx,
         )?;
+
+        spawn_queue_metrics_sampler(
+            transport_tx_sender.clone(),
+            event_sequencing_tx.clone(),
+            incident_report_tx.clone(),
+            result_event_tx,
+            engine_state_results.clone(),
+            Arc::clone(&shutdown_flag),
+        );
 
         // Spawn EventSequencing on a dedicated OS thread
         let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);

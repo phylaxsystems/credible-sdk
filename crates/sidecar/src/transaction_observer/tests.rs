@@ -3,7 +3,6 @@ use super::{
     IncidentReport,
     TransactionObserver,
     TransactionObserverConfig,
-    TransactionObserverError,
 };
 use crate::{
     execution_ids::TxExecutionId,
@@ -13,10 +12,7 @@ use assertion_executor::test_utils::{
     COUNTER_ADDRESS,
     counter_call,
 };
-use chrono::{
-    SecondsFormat,
-    Utc,
-};
+use chrono::Utc;
 use httpmock::prelude::*;
 use revm::{
     context::{
@@ -61,7 +57,36 @@ fn hex_bytes(bytes: &[u8]) -> String {
 fn format_timestamp(timestamp: u64) -> String {
     let seconds = i64::try_from(timestamp).expect("valid timestamp");
     let date_time = chrono::DateTime::<Utc>::from_timestamp(seconds, 0).expect("valid timestamp");
-    date_time.to_rfc3339_opts(SecondsFormat::Secs, true)
+    date_time.to_rfc3339()
+}
+
+fn parse_chain_id(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => {
+            number.as_u64().or_else(|| {
+                number.as_f64().and_then(|value| {
+                    #[allow(
+                        clippy::cast_sign_loss,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_precision_loss
+                    )]
+                    if value.fract() == 0.0 && value >= 0.0 && value <= u64::MAX as f64 {
+                        Some(value as u64)
+                    } else {
+                        None
+                    }
+                })
+            })
+        }
+        Value::String(value) => {
+            value.parse::<u64>().ok().or_else(|| {
+                value
+                    .strip_prefix("0x")
+                    .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+            })
+        }
+        _ => None,
+    }
 }
 
 fn build_test_tx_pair() -> (B256, B256, TxEnv, TxEnv) {
@@ -87,9 +112,7 @@ fn build_test_tx_pair() -> (B256, B256, TxEnv, TxEnv) {
 }
 
 fn tx_data_matches(tx_data: &Map<String, Value>, tx_hash: &B256, tx_env: &TxEnv) -> bool {
-    let Some(expected_chain_id) = tx_env.chain_id else {
-        return false;
-    };
+    let expected_chain_id = tx_env.chain_id.filter(|chain_id| *chain_id > 0);
     let expected_hash = hex_bytes(tx_hash.as_slice());
     let expected_nonce = tx_env.nonce.to_string();
     let expected_gas_limit = tx_env.gas_limit.to_string();
@@ -109,8 +132,24 @@ fn tx_data_matches(tx_data: &Map<String, Value>, tx_hash: &B256, tx_env: &TxEnv)
     if tx_data.get("transaction_hash").and_then(Value::as_str) != Some(expected_hash.as_str()) {
         return false;
     }
-    if tx_data.get("chain_id").and_then(Value::as_u64) != Some(expected_chain_id) {
-        return false;
+    match expected_chain_id {
+        None => {
+            if let Some(value) = tx_data.get("chain_id")
+                && !value.is_null()
+            {
+                return false;
+            }
+        }
+        Some(expected_chain_id) => {
+            if tx_data
+                .get("chain_id")
+                .and_then(parse_chain_id)
+                .filter(|value| *value == expected_chain_id)
+                .is_none()
+            {
+                return false;
+            }
+        }
     }
     if tx_data.get("nonce").and_then(Value::as_str) != Some(expected_nonce.as_str()) {
         return false;
@@ -291,7 +330,7 @@ fn expected_incident_body() -> serde_json::Value {
         "incident_timestamp": format_timestamp(1_700_000_000),
         "transaction_data": {
             "transaction_hash": hex_bytes(&[0xaa; 32]),
-            "chain_id": 1,
+            "chain_id": "1",
             "nonce": "7",
             "gas_limit": "21000",
             "to_address": hex_bytes(&[0x02; 20]),
@@ -574,7 +613,7 @@ fn observer_persists_and_loads_incident_with_previous_transactions() {
 }
 
 #[test]
-fn incident_body_rejects_previous_transactions_without_chain_id() {
+fn incident_body_allows_previous_transactions_without_chain_id() {
     let mut report = build_incident_report();
     let mut prev_tx = report.transaction_data.1.clone();
     prev_tx.chain_id = None;
@@ -582,11 +621,64 @@ fn incident_body_rejects_previous_transactions_without_chain_id() {
     let prev_hash = B256::from([0xcc; 32]);
     report.prev_txs = vec![(prev_hash, prev_tx)];
 
-    let err = super::payload::build_incident_body(&report)
-        .expect_err("expected incident body build to fail");
+    let body = super::payload::build_incident_body(&report).expect("build incident body");
+    let body_value = serde_json::to_value(body).expect("serialize body");
+    let previous_transactions = body_value
+        .get("previous_transactions")
+        .and_then(Value::as_array)
+        .expect("previous_transactions");
+    let prev_tx_value = previous_transactions[0]
+        .as_object()
+        .expect("previous transaction object");
     assert!(
-        matches!(err, TransactionObserverError::PublishFailed { .. }),
-        "unexpected error when previous transaction is missing chain_id"
+        !prev_tx_value.contains_key("chain_id"),
+        "chain_id should be omitted when missing"
+    );
+}
+
+#[test]
+fn observer_posts_incident_without_chain_id() {
+    let server = MockServer::start();
+    let (body_tx, body_rx) = flume::unbounded();
+    let body_tx_handle = body_tx.clone();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/v1/enforcer/incidents")
+            .is_true(move |req| body_tx_handle.send(req.body_string()).is_ok());
+        then.status(202)
+            .header("content-type", "application/json")
+            .json_body(incident_response_body("queued", "tracking-skip"));
+    });
+
+    let tempdir = TempDir::new().expect("tempdir");
+    let mut observer = build_observer(&tempdir, server.url("/api/v1/enforcer/incidents"));
+
+    let mut report = build_incident_report();
+    report.transaction_data.1.chain_id = None;
+
+    observer.store_incident(&report).expect("store incident");
+    observer
+        .publish_invalidations()
+        .expect("publish invalidations");
+
+    mock.assert_calls(1);
+    let body = body_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("incident publish body");
+    let incident: Value = serde_json::from_str(&body).expect("incident json");
+    let tx_data = incident
+        .get("transaction_data")
+        .and_then(Value::as_object)
+        .expect("transaction_data");
+    assert!(
+        !tx_data.contains_key("chain_id"),
+        "chain_id should be omitted when missing"
+    );
+
+    let remaining = observer.db.load_batch(10).expect("load batch");
+    assert!(
+        remaining.is_empty(),
+        "incident should be removed after a successful publish"
     );
 }
 

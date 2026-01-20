@@ -233,8 +233,8 @@ impl SystemCalls {
         let block_number = config.block_number;
 
         // Calculate storage slot using ring buffer modulo
-        // EIP-2935: slot = block.number % HISTORY_SERVE_WINDOW
-        let slot = U256::from(block_number % U256::from(HISTORY_SERVE_WINDOW));
+        // EIP-2935: slot = (block.number - 1) % HISTORY_SERVE_WINDOW
+        let slot = (block_number - U256::from(1u64)) % U256::from(HISTORY_SERVE_WINDOW);
 
         debug!(
             target = "system_calls",
@@ -478,8 +478,8 @@ mod tests {
         let account = account.unwrap();
 
         // Verify storage slot
-        // EIP-2935: slot = block_number % HISTORY_SERVE_WINDOW = 99 % 8191 = 99
-        let slot = U256::from(99u64);
+        // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 98 % 8191 = 98
+        let slot = U256::from(98u64);
 
         assert!(account.storage.contains_key(&slot), "Slot should exist");
 
@@ -646,8 +646,8 @@ mod tests {
 
         let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS).unwrap();
 
-        // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8291 % 8191 = 99
-        let expected_slot = U256::from(99u64);
+        // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8289 % 8191 = 98
+        let expected_slot = U256::from(98u64);
         assert!(account.storage.contains_key(&expected_slot));
     }
 

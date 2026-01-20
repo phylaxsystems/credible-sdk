@@ -2732,8 +2732,8 @@ fn test_ring_buffer_and_slot_calculations() {
     assert!(result.is_ok());
 
     let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS).unwrap();
-    // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8290 % 8191 = 99
-    let expected_slot = U256::from(99u64);
+    // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8289 % 8191 = 98
+    let expected_slot = U256::from(98u64);
     assert!(account.storage.contains_key(&expected_slot));
 
     // EIP-4788: Test with timestamp that wraps around
@@ -2757,15 +2757,15 @@ fn test_ring_buffer_and_slot_calculations() {
     let expected_slot = U256::from(500u64);
     assert!(account.storage.contains_key(&expected_slot));
 
-    // EIP-2935: parent block number 100, slot = 100 % 8191 = 100
+    // EIP-2935: parent block number 100, slot = (100 - 1) % 8191 = 99
     let block_number = 100u64;
-    let slot_index = block_number % HISTORY_SERVE_WINDOW as u64;
-    assert_eq!(slot_index, 100);
+    let slot_index = block_number.saturating_sub(1) % HISTORY_SERVE_WINDOW as u64;
+    assert_eq!(slot_index, 99);
 
     let number_slot = U256::from(slot_index);
     let hash_slot = U256::from(slot_index + HISTORY_SERVE_WINDOW as u64);
-    assert_eq!(number_slot, U256::from(100u64));
-    assert_eq!(hash_slot, U256::from(8291u64)); // 100 + 8191
+    assert_eq!(number_slot, U256::from(99u64));
+    assert_eq!(hash_slot, U256::from(8290u64)); // 99 + 8191
 
     // EIP-4788: timestamp 1700000000, slot = 1700000000 % 8191 = 7096
     let timestamp = 1700000000u64;
