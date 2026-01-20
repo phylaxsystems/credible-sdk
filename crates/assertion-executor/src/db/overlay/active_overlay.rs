@@ -201,10 +201,11 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
             self.active_db
                 .as_mut_unchecked()
                 .block_hash(number)
-                .map_err(|_| NotFoundError)?
+                .unwrap_or(B256::ZERO) // Evm spec defines missing blockhashes as zero
         };
-        // Found in DB, cache it
-        self.overlay.insert(key, TableValue::BlockHash(block_hash));
+        if block_hash != B256::ZERO {
+            self.overlay.insert(key, TableValue::BlockHash(block_hash));
+        }
         Ok(block_hash)
     }
 }
@@ -599,8 +600,8 @@ mod active_overlay_tests {
         assert_eq!(get_mock_db_field!(mock_db_arc, get_block_hash_calls), 1); // No new call
 
         // 4. Read non-existent block hash (miss) -> Expect Error
-        let result3 = active_overlay.block_hash_ref(num_non_existent);
-        assert!(result3.is_err());
+        let result3 = active_overlay.block_hash_ref(num_non_existent).unwrap();
+        assert_eq!(result3, B256::ZERO);
         assert_eq!(get_mock_db_field!(mock_db_arc, get_block_hash_calls), 2);
         // Error/absence not cached
         assert!(!active_overlay.is_cached(&key_non_existent));

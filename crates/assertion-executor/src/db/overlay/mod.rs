@@ -45,7 +45,6 @@ use metrics::{
     counter,
     gauge,
 };
-use parking_lot::RwLock;
 use rapidhash::fast::RandomState;
 use std::{
     cell::UnsafeCell,
@@ -90,7 +89,6 @@ pub enum TableValue {
 pub struct OverlayDb<Db> {
     underlying_db: Option<Arc<Db>>,
     pub overlay: Arc<DashMap<TableKey, TableValue>>,
-    latest_head: RwLock<u64>,
 }
 
 impl<Db> Clone for OverlayDb<Db> {
@@ -98,7 +96,6 @@ impl<Db> Clone for OverlayDb<Db> {
         Self {
             underlying_db: self.underlying_db.clone(),
             overlay: self.overlay.clone(),
-            latest_head: RwLock::new(*self.latest_head.read()),
         }
     }
 }
@@ -108,7 +105,6 @@ impl<Db> Default for OverlayDb<Db> {
         Self {
             underlying_db: None,
             overlay: Arc::new(DashMap::new()),
-            latest_head: RwLock::new(0),
         }
     }
 }
@@ -119,7 +115,6 @@ impl<Db> OverlayDb<Db> {
         Self {
             underlying_db,
             overlay: Arc::new(DashMap::new()),
-            latest_head: RwLock::new(0),
         }
     }
 
@@ -129,7 +124,6 @@ impl<Db> OverlayDb<Db> {
         Self {
             underlying_db,
             overlay: Arc::new(DashMap::new()),
-            latest_head: RwLock::new(0),
         }
     }
 
@@ -182,10 +176,6 @@ impl<Db> OverlayDb<Db> {
     /// Does not trigger a cache hit.
     pub fn is_cached(&self, key: &TableKey) -> bool {
         self.overlay.contains_key(key)
-    }
-
-    pub fn set_latest_head(&self, block_number: u64) {
-        *self.latest_head.write() = block_number;
     }
 
     /// Returns the number of entries inside the cache.
@@ -342,11 +332,6 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        // Enforce BLOCKHASH 256-block limit
-        let latest_head = *self.latest_head.read();
-        if latest_head > 0 && (number >= latest_head || latest_head - number > 256) {
-            return Ok(B256::ZERO);
-        }
         let key = TableKey::BlockHash(number);
         if let Some(value) = self.overlay.get(&key) {
             // Found in cache
