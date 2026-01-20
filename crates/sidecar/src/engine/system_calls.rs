@@ -176,8 +176,7 @@ impl SystemCalls {
         db: &mut DB,
     ) -> Result<(), SystemCallError> {
         // Cache block hash for BLOCKHASH opcode lookups, all forks.
-        if  config.block_number > U256::ZERO
-        {
+        if config.block_number > U256::ZERO {
             let block_hash = config.block_hash;
             let block_number: u64 = config.block_number.saturating_to::<u64>(); // Should not realistically overflow
             db.store_block_hash(block_number, block_hash);
@@ -805,7 +804,7 @@ mod tests {
                 spec_id: SpecId::SHANGHAI,
                 block_number: U256::from(block_num),
                 timestamp: U256::from(1234567890 + block_num),
-                block_hash:hash,
+                block_hash: hash,
                 parent_beacon_block_root: None,
             };
             system_calls.apply_system_calls(&config, &mut db).unwrap();
