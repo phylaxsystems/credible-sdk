@@ -426,13 +426,12 @@ fn decode_commit_head(pb: &PbCommitHead) -> Result<CommitHead, Status> {
     }
 
     // Decode block_hash (EIP-2935)
-    let block_hash = pb
-        .block_hash
-        .as_ref()
-        .filter(|b| !b.is_empty())
-        .map(|b| decode_b256(b))
-        .transpose()
-        .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_HASH))?;
+    let block_hash = if pb.block_hash.is_empty() {
+        return Err(Status::invalid_argument("block_hash is required"));
+    } else {
+        decode_b256(&pb.block_hash)
+            .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_HASH))?
+    };
 
     // Decode parent_beacon_block_root (EIP-4788)
     let parent_beacon_block_root = pb

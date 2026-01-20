@@ -1336,7 +1336,7 @@ impl Listener {
         last_tx_hash: Option<Vec<u8>>,
         n_transactions: usize,
         timestamp: u64,
-        block_hash: Option<alloy::primitives::B256>,
+        block_hash: lloy::primitives::B256,
         parent_beacon_block_root: Option<alloy::primitives::B256>,
     ) -> Result<()> {
         let block_hash_bytes = block_hash.map(|h| h.to_vec());

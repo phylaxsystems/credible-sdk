@@ -301,7 +301,7 @@ async fn test_tx_block_mismatch_yields_validation_error() {
         0,
         None,
         0,
-        Some(B256::ZERO),
+        B256::ZERO,
         Some(B256::ZERO),
         U256::from(1),
     );
@@ -2451,7 +2451,7 @@ async fn test_system_calls_configurations(mut instance: crate::utils::LocalInsta
     assert!(instance.is_transaction_successful(&tx1).await.unwrap());
 
     // Block 2: No hashes (None, None)
-    instance.new_block_with_hashes(None, None).await.unwrap();
+    instance.new_block_with_hashes(B256::ZERO, None).await.unwrap();
     instance.new_iteration(1).await.unwrap();
     let tx2 = instance
         .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
@@ -2465,7 +2465,7 @@ async fn test_system_calls_configurations(mut instance: crate::utils::LocalInsta
     // Block 3: Only parent hash
     let hash = B256::repeat_byte(0xab);
     instance
-        .new_block_with_hashes(Some(hash), None)
+        .new_block_with_hashes(hash, None)
         .await
         .unwrap();
     instance.new_iteration(1).await.unwrap();
@@ -2481,7 +2481,7 @@ async fn test_system_calls_configurations(mut instance: crate::utils::LocalInsta
     // Block 4: Only beacon root
     let beacon_root = B256::repeat_byte(0xcd);
     instance
-        .new_block_with_hashes(None, Some(beacon_root))
+        .new_block_with_hashes(B256::ZERO, Some(beacon_root))
         .await
         .unwrap();
     instance.new_iteration(1).await.unwrap();
@@ -2498,7 +2498,7 @@ async fn test_system_calls_configurations(mut instance: crate::utils::LocalInsta
     let hash = B256::repeat_byte(0xef);
     let beacon_root = B256::repeat_byte(0x12);
     instance
-        .new_block_with_hashes(Some(hash), Some(beacon_root))
+        .new_block_with_hashes(hash, Some(beacon_root))
         .await
         .unwrap();
     instance.new_iteration(1).await.unwrap();
@@ -2532,7 +2532,7 @@ async fn test_system_calls_sequential_blocks(mut instance: crate::utils::LocalIn
         let hash = B256::from([i as u8; 32]);
         let beacon_root = B256::from([(i + 100) as u8; 32]);
         instance
-            .new_block_with_hashes(Some(hash), Some(beacon_root))
+            .new_block_with_hashes(hash, Some(beacon_root))
             .await
             .unwrap();
     }
@@ -2569,7 +2569,7 @@ async fn test_system_calls_after_cache_flush(mut instance: crate::utils::LocalIn
             Box::pin(async move {
                 instance
                     .new_block_with_hashes(
-                        Some(B256::repeat_byte(0x11)),
+                        B256::repeat_byte(0x11),
                         Some(B256::repeat_byte(0x22)),
                     )
                     .await?;
@@ -2591,7 +2591,7 @@ async fn test_system_calls_after_cache_flush(mut instance: crate::utils::LocalIn
     let hash = B256::repeat_byte(0x33);
     let beacon_root = B256::repeat_byte(0x44);
     instance
-        .new_block_with_hashes(Some(hash), Some(beacon_root))
+        .new_block_with_hashes(hash, Some(beacon_root))
         .await
         .unwrap();
     instance.new_iteration(1).await.unwrap();
@@ -2632,7 +2632,7 @@ async fn test_system_calls_with_reorg(mut instance: crate::utils::LocalInstance)
     let hash = B256::repeat_byte(0x55);
     let beacon_root = B256::repeat_byte(0x66);
     instance
-        .new_block_with_hashes(Some(hash), Some(beacon_root))
+        .new_block_with_hashes(hash, Some(beacon_root))
         .await
         .unwrap();
     instance.new_iteration(1).await.unwrap();
@@ -2705,7 +2705,7 @@ fn test_ring_buffer_and_slot_calculations() {
         spec_id: SpecId::PRAGUE,
         block_number: U256::from(block_number),
         timestamp: U256::from(1234567890),
-        block_hash: Some(hash),
+        block_hash: hash,
         parent_beacon_block_root: None,
     };
 
@@ -2726,7 +2726,7 @@ fn test_ring_buffer_and_slot_calculations() {
         spec_id: SpecId::CANCUN,
         block_number: U256::from(100),
         timestamp: U256::from(timestamp),
-        block_hash: None,
+        block_hash: B256::ZERO,
         parent_beacon_block_root: Some(beacon_root),
     };
 
@@ -2776,7 +2776,7 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::SHANGHAI,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: Some(B256::repeat_byte(0x11)),
+        block_hash: B256::repeat_byte(0x11),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
@@ -2792,7 +2792,7 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::CANCUN,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: Some(B256::repeat_byte(0x11)),
+        block_hash: B256::repeat_byte(0x11),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
@@ -2808,7 +2808,7 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::PRAGUE,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: Some(B256::repeat_byte(0x11)),
+        block_hash: B256::repeat_byte(0x11),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 

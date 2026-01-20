@@ -148,9 +148,9 @@ pub struct CommitHead {
     pub(crate) last_tx_hash: Option<TxHash>,
     /// Number of txs included in the block.
     pub(crate) n_transactions: u64,
-    /// Block hash for EIP-2935 (Prague+)
+    /// Current block hash for EIP-2935 (Prague+)
     /// Required for historical block hash storage
-    pub(crate) block_hash: Option<B256>,
+    pub(crate) block_hash: B256,
     /// Parent beacon block root for EIP-4788 (Cancun+)
     /// Required for beacon chain root storage
     pub(crate) parent_beacon_block_root: Option<B256>,
@@ -165,7 +165,7 @@ impl CommitHead {
         selected_iteration_id: u64,
         last_tx_hash: Option<TxHash>,
         n_transactions: u64,
-        block_hash: Option<B256>,
+        block_hash: B256,
         parent_beacon_block_root: Option<B256>,
         timestamp: U256,
     ) -> Self {

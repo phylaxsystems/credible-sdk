@@ -80,8 +80,8 @@ pub struct SystemCallsConfig {
     pub block_number: U256,
     /// Current block timestamp
     pub timestamp: U256,
-    /// Parent block hash (required for EIP-2935)
-    pub block_hash: Option<B256>,
+    /// Current block hash (required for EIP-2935)
+    pub block_hash: B256,
     /// Parent beacon block root (required for EIP-4788)
     /// This comes from the consensus layer
     pub parent_beacon_block_root: Option<B256>,
@@ -93,7 +93,7 @@ impl SystemCallsConfig {
         spec_id: SpecId,
         block_number: U256,
         timestamp: U256,
-        block_hash: Option<B256>,
+        block_hash: B256,
         beacon_block_root: Option<B256>,
     ) -> Self {
         Self {
@@ -209,9 +209,7 @@ impl SystemCalls {
             return Ok(());
         }
 
-        let block_hash = config
-            .block_hash
-            .ok_or(SystemCallError::MissingParentBlockHash)?;
+        let block_hash = config.block_hash;
 
         let block_number = config.block_number;
 
@@ -432,7 +430,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(99),
             timestamp: U256::from(1234567890),
-            block_hash: Some(hash),
+            block_hash: hash,
             parent_beacon_block_root: None,
         };
 
@@ -468,7 +466,7 @@ mod tests {
             spec_id: SpecId::CANCUN,
             block_number: U256::from(100),
             timestamp: U256::from(timestamp),
-            block_hash: None,
+            block_hash: B256::ZERO,
             parent_beacon_block_root: Some(beacon_root),
         };
 
@@ -509,7 +507,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(0),
             timestamp: U256::from(0),
-            block_hash: Some(B256::ZERO),
+            block_hash: B256::ZERO,
             parent_beacon_block_root: Some(B256::ZERO),
         };
 
@@ -532,7 +530,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(100),
             timestamp: U256::from(1234567890),
-            block_hash: None,
+            block_hash: B256::ZERO,
             parent_beacon_block_root: None,
         };
 
@@ -562,7 +560,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(100),
             timestamp: U256::from(1700000000),
-            block_hash: Some(B256::repeat_byte(0xab)),
+            block_hash: B256::repeat_byte(0xab),
             parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
@@ -583,7 +581,7 @@ mod tests {
             spec_id: SpecId::CANCUN,
             block_number: U256::from(100),
             timestamp: U256::from(100),
-            block_hash: None,
+            block_hash: B256::ZERO,
             parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
@@ -605,7 +603,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(block_number),
             timestamp: U256::from(1234567890),
-            block_hash: Some(hash),
+            block_hash: hash,
             parent_beacon_block_root: None,
         };
 
@@ -646,7 +644,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(100),
             timestamp: U256::from(1234567890),
-            block_hash: Some(hash),
+            block_hash: hash,
             parent_beacon_block_root: None,
         };
 
@@ -685,7 +683,7 @@ mod tests {
             spec_id: SpecId::CANCUN,
             block_number: U256::from(100),
             timestamp: U256::from(1700000000),
-            block_hash: None,
+            block_hash: B256::ZERO,
             parent_beacon_block_root: Some(beacon_root),
         };
 

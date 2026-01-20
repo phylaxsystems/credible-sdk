@@ -568,7 +568,7 @@ impl<T: TestTransport> LocalInstance<T> {
     async fn send_block(&mut self, block_number: U256, send_rpc_node: bool) -> Result<(), String> {
         // Always provide parent hashes for EIP-2935 and EIP-4788 system calls
         // These are required when running on Cancun+ specs
-        let block_hash = Some(Self::generate_random_tx_hash());
+        let block_hash = Self::generate_random_tx_hash();
         let beacon_block_root = if block_number == U256::ZERO {
             Some(B256::ZERO)
         } else {
@@ -587,7 +587,7 @@ impl<T: TestTransport> LocalInstance<T> {
     async fn send_block_with_hashes_internal(
         &mut self,
         block_number: U256,
-        block_hash: Option<B256>,
+        block_hash: B256,
         beacon_block_root: Option<B256>,
         send_rpc_node: bool,
     ) -> Result<(), String> {
@@ -637,11 +637,9 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Public method to create a new block with explicit parent hashes (EIP-2935 and EIP-4788)
     pub async fn new_block_with_hashes(
         &mut self,
-        block_hash: Option<B256>,
+        block_hash: B256,
         beacon_block_root: Option<B256>,
     ) -> Result<(), String> {
-        // If None provided, use random hashes as defaults for Cancun+ compatibility
-        let block_hash = block_hash.or_else(|| Some(Self::generate_random_tx_hash()));
         let beacon_block_root = beacon_block_root.or_else(|| Some(Self::generate_random_tx_hash()));
 
         self.send_block_with_hashes_internal(

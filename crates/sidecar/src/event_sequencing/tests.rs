@@ -16,6 +16,7 @@ use alloy::primitives::TxHash;
 use assertion_executor::primitives::{
     Bytes,
     U256,
+    B256
 };
 use revm::{
     context::{
@@ -264,7 +265,7 @@ fn create_commit_head(
             iteration,
             last_tx_hash,
             n_txs,
-            None,
+            B256::ZERO,
             None,
             U256::ZERO,
         ),

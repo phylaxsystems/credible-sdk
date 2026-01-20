@@ -574,7 +574,7 @@ mod tests {
         let zero_hash = B256::ZERO;
 
         instance
-            .new_block_with_hashes(Some(zero_hash), Some(zero_hash))
+            .new_block_with_hashes(zero_hash, Some(zero_hash))
             .await
             .expect("new_block with zero hashes should succeed");
 
