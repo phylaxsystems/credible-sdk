@@ -179,7 +179,7 @@ impl SystemCalls {
         if let Some(block_hash) = config.block_hash
             && config.block_number > U256::ZERO
         {
-            let parent_block_number: u64 = (config.block_number - U256::from(1))
+            let parent_block_number: u64 = (config.block_number.saturating_sub(U256::from(1)))
                 .try_into()
                 .unwrap_or(u64::MAX); // Should not realistically overflow
             db.store_parent_hash(parent_block_number, block_hash);
