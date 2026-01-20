@@ -203,6 +203,7 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
                 .block_hash(number)
                 .unwrap_or(B256::ZERO) // Evm spec defines missing blockhashes as zero
         };
+        // Don't cache zero values - the block may not exist yet in Mdbx
         if block_hash != B256::ZERO {
             self.overlay.insert(key, TableValue::BlockHash(block_hash));
         }
