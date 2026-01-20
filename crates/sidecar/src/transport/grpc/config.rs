@@ -29,9 +29,14 @@ impl Default for GrpcTransportConfig {
 impl TryFrom<TransportConfig> for GrpcTransportConfig {
     type Error = AddrParseError;
     fn try_from(value: TransportConfig) -> Result<Self, Self::Error> {
+        let pending_receive_ttl = if value.pending_receive_ttl_ms.is_zero() {
+            Duration::from_millis(1)
+        } else {
+            value.pending_receive_ttl_ms
+        };
         Ok(Self {
             bind_addr: value.bind_addr.parse()?,
-            pending_receive_ttl: Duration::from_millis(value.pending_receive_ttl_ms.max(1)),
+            pending_receive_ttl,
         })
     }
 }

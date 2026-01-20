@@ -335,31 +335,43 @@ async fn main() -> anyhow::Result<()> {
             match config.transport.protocol {
                 TransportProtocol::Grpc => {
                     let (tx, rx) = unbounded();
+                    let pending_requests_ttl =
+                        if config.credible.transaction_results_pending_requests_ttl_ms.is_zero() {
+                            Duration::from_millis(1)
+                        } else {
+                            config.credible.transaction_results_pending_requests_ttl_ms
+                        };
+                    let accepted_txs_ttl = if config.credible.accepted_txs_ttl_ms.is_zero() {
+                        Duration::from_millis(1)
+                    } else {
+                        config.credible.accepted_txs_ttl_ms
+                    };
                     (
                         TransactionsState::with_result_sender_and_ttls(
                             tx.clone(),
-                            Duration::from_millis(
-                                config
-                                    .credible
-                                    .transaction_results_pending_requests_ttl_ms
-                                    .max(1),
-                            ),
-                            Duration::from_millis(config.credible.accepted_txs_ttl_ms.max(1)),
+                            pending_requests_ttl,
+                            accepted_txs_ttl,
                         ),
                         Some(rx),
                         Some(tx),
                     )
                 }
                 TransportProtocol::Http => {
+                    let pending_requests_ttl =
+                        if config.credible.transaction_results_pending_requests_ttl_ms.is_zero() {
+                            Duration::from_millis(1)
+                        } else {
+                            config.credible.transaction_results_pending_requests_ttl_ms
+                        };
+                    let accepted_txs_ttl = if config.credible.accepted_txs_ttl_ms.is_zero() {
+                        Duration::from_millis(1)
+                    } else {
+                        config.credible.accepted_txs_ttl_ms
+                    };
                     (
                         TransactionsState::new_with_ttls(
-                            Duration::from_millis(
-                                config
-                                    .credible
-                                    .transaction_results_pending_requests_ttl_ms
-                                    .max(1),
-                            ),
-                            Duration::from_millis(config.credible.accepted_txs_ttl_ms.max(1)),
+                            pending_requests_ttl,
+                            accepted_txs_ttl,
                         ),
                         None,
                         None,
