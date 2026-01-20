@@ -11,9 +11,12 @@ use criterion::{
     BatchSize,
     Criterion,
 };
-use revm::context::{
-    BlockEnv,
-    TxEnv,
+use revm::{
+    context::{
+        BlockEnv,
+        TxEnv,
+    },
+    primitives::B256,
 };
 use sidecar::{
     engine::queue::{
@@ -108,7 +111,7 @@ fn create_commit_head(
             iteration,
             last_tx_hash,
             n_txs,
-            None,
+            B256::ZERO,
             None,
             U256::ZERO,
         ),

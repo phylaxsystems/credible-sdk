@@ -1199,7 +1199,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
 
         // Use random hashes for EIP-2935 and EIP-4788
-        let block_hash = Some(B256::random());
+        let block_hash = B256::random();
         let mut parent_beacon_block_root = Some(B256::random());
 
         if block_number == U256::from(0) {
