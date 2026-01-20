@@ -16,7 +16,10 @@ use tokio::{
 use crate::{
     engine::queue::TxQueueContents,
     execution_ids::TxExecutionId,
-    metrics::TransportTransactionsResultMetrics,
+    metrics::{
+        TransportTransactionsResultMetrics,
+        set_transport_pending_receives_len_u64,
+    },
     transactions_state::{
         RequestTransactionResult,
         TransactionsState,
@@ -27,7 +30,6 @@ use tracing::debug;
 
 /// How much we wait for txs to be received
 pub const TRANSACTION_RECEIVE_WAIT: u64 = 250;
-
 #[derive(Debug)]
 /// Represents the state of a transaction, we either have received a transaction
 /// in which case we return `Yes` or we haven't yet, in which case we return
@@ -83,9 +85,6 @@ impl QueryTransactionsResults {
         &self,
         tx_queue_contents: &TxQueueContents,
     ) -> QueryTransactionsResultsResult {
-        self.metrics
-            .set_transport_pending_receives_length(self.pending_receives.len());
-
         let TxQueueContents::Tx(tx, _) = tx_queue_contents else {
             self.transactions_state.add_accepted_tx(tx_queue_contents);
             return Ok(());
@@ -124,6 +123,7 @@ impl QueryTransactionsResults {
         }
 
         let pending_clone = self.pending_receives.clone();
+        let metrics = self.metrics.clone();
         let task = tokio::task::spawn(async move {
             // Use slightly longer interval to reduce contention
             let mut cleanup_interval =
@@ -136,6 +136,9 @@ impl QueryTransactionsResults {
                     // Keep entries that have active receivers
                     sender.receiver_count() > 0
                 });
+                let len = pending_clone.len();
+                metrics.set_transport_pending_receives_length(len);
+                set_transport_pending_receives_len_u64(u64::try_from(len).unwrap_or(u64::MAX));
             }
         });
 
