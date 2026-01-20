@@ -854,7 +854,7 @@ mod overlay_db_tests {
         assert!(overlay_db.code_by_hash_ref(code_hash1).is_err());
 
         // Read block hash - should return Error
-        assert_eq!(overlay_db.block_hash_ref(block_num1).unwrap(), B256::ZERO);
+        assert!(overlay_db.block_hash_ref(block_num1).is_err());
 
         // Ensure nothing was cached
         assert!(!overlay_db.is_cached(&TableKey::Basic(addr1)));
