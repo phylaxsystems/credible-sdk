@@ -36,16 +36,17 @@ fn default_event_id_buffer_capacity() -> usize {
 }
 
 fn default_pending_receive_ttl_ms() -> Duration {
-    Duration::from_millis(5_000)
+    Duration::from_secs(2)
 }
 
 fn default_pending_request_ttl_ms() -> Duration {
-    Duration::from_millis(600_000)
+    Duration::from_secs(2)
 }
 
 fn default_accepted_txs_ttl_ms() -> Duration {
-    Duration::from_millis(600_000)
+    Duration::from_secs(2)
 }
+
 /// Configuration loaded from JSON file
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Config {
