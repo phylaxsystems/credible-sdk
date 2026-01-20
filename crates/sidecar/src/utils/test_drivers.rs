@@ -752,7 +752,6 @@ impl TestTransport for LocalInstanceHttpDriver {
         // Add block_hash if provided (EIP-2935)
         let hash = commit_head.block_hash;
         commit_head_json["block_hash"] = json!(hash.to_string());
-        
 
         // Add parent_beacon_block_root if provided (EIP-4788)
         if let Some(mut root) = commit_head.parent_beacon_block_root {

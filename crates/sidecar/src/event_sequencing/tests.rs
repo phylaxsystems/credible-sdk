@@ -14,9 +14,9 @@ use crate::{
 };
 use alloy::primitives::TxHash;
 use assertion_executor::primitives::{
+    B256,
     Bytes,
     U256,
-    B256
 };
 use revm::{
     context::{

@@ -2451,7 +2451,10 @@ async fn test_system_calls_configurations(mut instance: crate::utils::LocalInsta
     assert!(instance.is_transaction_successful(&tx1).await.unwrap());
 
     // Block 2: No hashes (None, None)
-    instance.new_block_with_hashes(B256::ZERO, None).await.unwrap();
+    instance
+        .new_block_with_hashes(B256::ZERO, None)
+        .await
+        .unwrap();
     instance.new_iteration(1).await.unwrap();
     let tx2 = instance
         .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
@@ -2464,10 +2467,7 @@ async fn test_system_calls_configurations(mut instance: crate::utils::LocalInsta
 
     // Block 3: Only parent hash
     let hash = B256::repeat_byte(0xab);
-    instance
-        .new_block_with_hashes(hash, None)
-        .await
-        .unwrap();
+    instance.new_block_with_hashes(hash, None).await.unwrap();
     instance.new_iteration(1).await.unwrap();
     let tx3 = instance
         .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
@@ -2568,10 +2568,7 @@ async fn test_system_calls_after_cache_flush(mut instance: crate::utils::LocalIn
         .expect_cache_flush(|instance| {
             Box::pin(async move {
                 instance
-                    .new_block_with_hashes(
-                        B256::repeat_byte(0x11),
-                        Some(B256::repeat_byte(0x22)),
-                    )
+                    .new_block_with_hashes(B256::repeat_byte(0x11), Some(B256::repeat_byte(0x22)))
                     .await?;
                 Ok(())
             })
