@@ -19,6 +19,7 @@ use super::fork_db::{
 };
 use crate::{
     db::{
+        BlockHashStore,
         Database,
         DatabaseCommit,
         DatabaseRef,
@@ -449,11 +450,11 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
     }
 }
 
-/// Implementation of `BlockHashCache` for `OverlayDb`.
+/// Implementation of `BlockHashStore` for `OverlayDb`.
 ///
 /// This caches block hashes in the overlay for BLOCKHASH opcode lookups.
-impl<Db> crate::db::BlockHashCache for OverlayDb<Db> {
-    fn cache_block_hash(&self, number: u64, hash: B256) {
+impl<Db> BlockHashStore for OverlayDb<Db> {
+    fn store_parent_hash(&self, number: u64, hash: B256) {
         self.overlay
             .insert(TableKey::BlockHash(number), TableValue::BlockHash(hash));
     }

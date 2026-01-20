@@ -34,7 +34,7 @@ use alloy::{
         keccak256,
     },
 };
-use assertion_executor::db::BlockHashCache;
+use assertion_executor::db::BlockHashStore;
 use revm::{
     DatabaseCommit,
     DatabaseRef,
@@ -170,7 +170,7 @@ impl SystemCalls {
     ///
     /// This should be called at the start of each block iteration,
     /// before processing any user transactions.
-    pub fn apply_system_calls<DB: DatabaseRef + DatabaseCommit + BlockHashCache>(
+    pub fn apply_system_calls<DB: DatabaseRef + DatabaseCommit + BlockHashStore>(
         &self,
         config: &SystemCallsConfig,
         db: &mut DB,
@@ -182,7 +182,7 @@ impl SystemCalls {
             let parent_block_number: u64 = (config.block_number - U256::from(1))
                 .try_into()
                 .unwrap_or(u64::MAX);
-            db.cache_block_hash(parent_block_number, block_hash);
+            db.store_parent_hash(parent_block_number, block_hash);
             trace!(
                 target = "system_calls",
                 parent_block_number = %parent_block_number,
@@ -448,8 +448,8 @@ mod tests {
         }
     }
 
-    impl BlockHashCache for MockDb {
-        fn cache_block_hash(&self, number: u64, hash: B256) {
+    impl BlockHashStore for MockDb {
+        fn store_parent_hash(&self, number: u64, hash: B256) {
             self.block_hash_cache.borrow_mut().insert(number, hash);
         }
     }
