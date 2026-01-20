@@ -778,4 +778,55 @@ mod tests {
             "No hash should be cached for genesis"
         );
     }
+    #[test]
+    fn test_block_hash_cache_with_no_hash_provided() {
+        let mut db = MockDb::default();
+        let system_calls = SystemCalls::new(None, None);
+
+        let config = SystemCallsConfig {
+            spec_id: SpecId::SHANGHAI,
+            block_number: U256::from(100),
+            timestamp: U256::from(1234567890),
+            block_hash: None, // No hash provided
+            parent_beacon_block_root: None,
+        };
+
+        let result = system_calls.apply_system_calls(&config, &mut db);
+        assert!(result.is_ok());
+        assert!(db.block_hash_cache.borrow().is_empty());
+    }
+
+    #[test]
+    fn test_block_hash_cache_sequential_blocks() {
+        let mut db = MockDb::default();
+        let system_calls = SystemCalls::new(None, None);
+
+        // Simulate processing blocks 1, 2, 3
+        for block_num in 1..=3u64 {
+            let hash = B256::repeat_byte(u8::try_from(block_num).unwrap());
+            let config = SystemCallsConfig {
+                spec_id: SpecId::SHANGHAI,
+                block_number: U256::from(block_num),
+                timestamp: U256::from(1234567890 + block_num),
+                block_hash: Some(hash),
+                parent_beacon_block_root: None,
+            };
+            system_calls.apply_system_calls(&config, &mut db).unwrap();
+        }
+
+        // Verify all parent hashes are cached correctly
+        let cache = db.block_hash_cache.borrow();
+        assert_eq!(
+            cache.get(&0),
+            Some(&B256::repeat_byte(u8::try_from(1).unwrap()))
+        ); // Block 1's parent hash
+        assert_eq!(
+            cache.get(&1),
+            Some(&B256::repeat_byte(u8::try_from(2).unwrap()))
+        ); // Block 2's parent hash
+        assert_eq!(
+            cache.get(&2),
+            Some(&B256::repeat_byte(u8::try_from(3).unwrap()))
+        ); // Block 3's parent hash
+    }
 }
