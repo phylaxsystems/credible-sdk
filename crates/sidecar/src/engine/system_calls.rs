@@ -746,11 +746,11 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify block hash was cached for BLOCKHASH opcode
-        let cached_hash = db.block_hash_cache.borrow().get(&99).copied();
+        let cached_hash = db.block_hash_cache.borrow().get(&100).copied();
         assert_eq!(
             cached_hash,
             Some(block_hash),
-            "Parent block hash should be cached at block 99"
+            "Parent block hash should be cached at block 100"
         );
     }
 
@@ -812,19 +812,10 @@ mod tests {
             system_calls.apply_system_calls(&config, &mut db).unwrap();
         }
 
-        // Verify all parent hashes are cached correctly
+        // Verify all block hashes are cached correctly
         let cache = db.block_hash_cache.borrow();
-        assert_eq!(
-            cache.get(&0),
-            Some(&B256::repeat_byte(u8::try_from(1).unwrap()))
-        ); // Block 1's parent hash
-        assert_eq!(
-            cache.get(&1),
-            Some(&B256::repeat_byte(u8::try_from(2).unwrap()))
-        ); // Block 2's parent hash
-        assert_eq!(
-            cache.get(&2),
-            Some(&B256::repeat_byte(u8::try_from(3).unwrap()))
-        ); // Block 3's parent hash
+        assert_eq!(cache.get(&1), Some(&B256::repeat_byte(1))); // Block 1's hash
+        assert_eq!(cache.get(&2), Some(&B256::repeat_byte(2))); // Block 2's hash
+        assert_eq!(cache.get(&3), Some(&B256::repeat_byte(3))); // Block 3's hash
     }
 }
