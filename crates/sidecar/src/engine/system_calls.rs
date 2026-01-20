@@ -180,7 +180,7 @@ impl SystemCalls {
             && config.block_number > U256::ZERO
         {
             let block_number: u64 = config.block_number.saturating_to::<u64>(); // Should not realistically overflow
-            db.store_parent_hash(block_number, block_hash);
+            db.store_block_hash(block_number, block_hash);
             trace!(
                 target = "system_calls",
                 block_number = %block_number,
@@ -447,7 +447,7 @@ mod tests {
     }
 
     impl BlockHashStore for MockDb {
-        fn store_parent_hash(&self, number: u64, hash: B256) {
+        fn store_block_hash(&self, number: u64, hash: B256) {
             self.block_hash_cache.borrow_mut().insert(number, hash);
         }
     }

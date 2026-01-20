@@ -2698,7 +2698,7 @@ impl DatabaseRef for MockDb {
 }
 
 impl BlockHashStore for MockDb {
-    fn store_parent_hash(&self, number: u64, hash: B256) {
+    fn store_block_hash(&self, number: u64, hash: B256) {
         self.block_hash_cache.borrow_mut().insert(number, hash);
     }
 }

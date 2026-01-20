@@ -41,5 +41,5 @@ pub trait RollbackDb {
 /// Trait for caching block hashes for BLOCKHASH opcode lookups.
 pub trait BlockHashStore {
     /// Cache a block hash for BLOCKHASH opcode lookups.
-    fn store_parent_hash(&self, number: u64, hash: B256);
+    fn store_block_hash(&self, number: u64, hash: B256);
 }

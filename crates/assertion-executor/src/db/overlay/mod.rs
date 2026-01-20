@@ -453,7 +453,7 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
 ///
 /// This caches block hashes in the overlay for BLOCKHASH opcode lookups.
 impl<Db> BlockHashStore for OverlayDb<Db> {
-    fn store_parent_hash(&self, number: u64, hash: B256) {
+    fn store_block_hash(&self, number: u64, hash: B256) {
         self.overlay
             .insert(TableKey::BlockHash(number), TableValue::BlockHash(hash));
     }
