@@ -325,7 +325,8 @@ The configuration file is a JSON file with the following schema:
         "protocol",
         "bind_addr",
         "health_bind_addr",
-        "event_id_buffer_capacity"
+        "event_id_buffer_capacity",
+        "pending_receive_ttl_ms"
       ],
       "properties": {
         "protocol": {
@@ -363,6 +364,13 @@ The configuration file is a JSON file with the following schema:
           "description": "Maximum number of events ID in the transport layer buffer before dropping new events.",
           "examples": [
             "1000"
+          ]
+        },
+        "pending_receive_ttl_ms": {
+          "type": "integer",
+          "description": "Maximum time (ms) a pending transaction receive entry may live before forced eviction.",
+          "examples": [
+            "5000"
           ]
         }
       },
@@ -482,7 +490,8 @@ The default configuration can be found in [default_config.json](default_config.j
   "transport": {
     "protocol": "grpc",
     "bind_addr": "0.0.0.0:50051",
-    "health_bind_addr": "0.0.0.0:9547"
+    "health_bind_addr": "0.0.0.0:9547",
+    "pending_receive_ttl_ms": 5000
   },
   "state": {
     "eth_rpc_source_ws_url": "ws://127.0.0.1:8546",

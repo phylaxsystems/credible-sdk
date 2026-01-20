@@ -28,7 +28,8 @@
   "transport": {
     "protocol": "grpc",
     "bind_addr": "0.0.0.0:50051",
-    "health_bind_addr": "0.0.0.0:9547"
+    "health_bind_addr": "0.0.0.0:9547",
+    "pending_receive_ttl_ms": 5000
   },
   "state": {
     "eth_rpc_source_ws_url": "ws://127.0.0.1:8546",

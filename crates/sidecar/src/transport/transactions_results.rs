@@ -30,6 +30,12 @@ use tracing::debug;
 
 /// How much we wait for txs to be received
 pub const TRANSACTION_RECEIVE_WAIT: u64 = 250;
+
+#[derive(Debug)]
+struct PendingReceive {
+    sender: broadcast::Sender<bool>,
+    created_at: Instant,
+}
 #[derive(Debug)]
 /// Represents the state of a transaction, we either have received a transaction
 /// in which case we return `Yes` or we haven't yet, in which case we return
@@ -48,9 +54,10 @@ pub enum AcceptedState {
 #[derive(Clone, Debug)]
 pub struct QueryTransactionsResults {
     transactions_state: Arc<TransactionsState>,
-    pending_receives: Arc<DashMap<TxExecutionId, broadcast::Sender<bool>>>,
+    pending_receives: Arc<DashMap<TxExecutionId, PendingReceive>>,
     bg_task_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     metrics: TransportTransactionsResultMetrics,
+    pending_receive_ttl: Duration,
 }
 
 pub type QueryTransactionsResultsResult<T = ()> = Result<T, QueryTransactionsResultsError>;
@@ -66,12 +73,13 @@ pub enum QueryTransactionsResultsError {
 }
 
 impl QueryTransactionsResults {
-    pub fn new(transactions_state: Arc<TransactionsState>) -> Self {
+    pub fn new(transactions_state: Arc<TransactionsState>, pending_receive_ttl: Duration) -> Self {
         let this = Self {
             transactions_state,
             pending_receives: Arc::new(DashMap::new()),
             bg_task_handle: Arc::new(Mutex::new(None)),
             metrics: TransportTransactionsResultMetrics::default(),
+            pending_receive_ttl,
         };
 
         this.spawn_cleanup_task();
@@ -92,13 +100,29 @@ impl QueryTransactionsResults {
 
         // Get or create the sender before updating the state.
         // This ensures the channel infrastructure exists for concurrent subscribers.
-        let sender = self
-            .pending_receives
-            .entry(tx.tx_execution_id)
-            .or_insert_with(|| {
+        let now = Instant::now();
+        let sender = match self.pending_receives.entry(tx.tx_execution_id) {
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                if occupied.get().created_at.elapsed() > self.pending_receive_ttl
+                    && occupied.get().sender.receiver_count() == 0
+                {
+                    let (tx, _) = broadcast::channel(1);
+                    occupied.insert(PendingReceive {
+                        sender: tx,
+                        created_at: now,
+                    });
+                }
+                occupied.get().sender.clone()
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
                 let (tx, _) = broadcast::channel(1);
+                vacant.insert(PendingReceive {
+                    sender: tx.clone(),
+                    created_at: now,
+                });
                 tx
-            });
+            }
+        };
 
         // Now update the state
         self.transactions_state.add_accepted_tx(tx_queue_contents);
@@ -124,6 +148,7 @@ impl QueryTransactionsResults {
 
         let pending_clone = self.pending_receives.clone();
         let metrics = self.metrics.clone();
+        let pending_receive_ttl = self.pending_receive_ttl;
         let task = tokio::task::spawn(async move {
             // Use slightly longer interval to reduce contention
             let mut cleanup_interval =
@@ -133,8 +158,8 @@ impl QueryTransactionsResults {
 
                 // With retain(), the check and remove happen atomically per-entry.
                 pending_clone.retain(|_key, sender| {
-                    // Keep entries that have active receivers
-                    sender.receiver_count() > 0
+                    let age = sender.created_at.elapsed();
+                    sender.sender.receiver_count() > 0 && age <= pending_receive_ttl
                 });
                 let len = pending_clone.len();
                 metrics.set_transport_pending_receives_length(len);
@@ -156,15 +181,31 @@ impl QueryTransactionsResults {
         }
 
         // Get or create the sender and subscribe
-        let entry = self
-            .pending_receives
-            .entry(*tx_execution_id)
-            .or_insert_with(|| {
+        let now = Instant::now();
+        let sender = match self.pending_receives.entry(*tx_execution_id) {
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                if occupied.get().created_at.elapsed() > self.pending_receive_ttl
+                    && occupied.get().sender.receiver_count() == 0
+                {
+                    let (tx, _) = broadcast::channel(1);
+                    occupied.insert(PendingReceive {
+                        sender: tx,
+                        created_at: now,
+                    });
+                }
+                occupied.get().sender.clone()
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
                 let (tx, _) = broadcast::channel(1);
+                vacant.insert(PendingReceive {
+                    sender: tx.clone(),
+                    created_at: now,
+                });
                 tx
-            });
+            }
+        };
 
-        let receiver = entry.value().subscribe();
+        let receiver = sender.subscribe();
 
         if self.transactions_state.is_tx_received(tx_execution_id) {
             return AcceptedState::Yes;
@@ -273,6 +314,8 @@ mod tests {
         Ordering,
     };
 
+    const DEFAULT_PENDING_RECEIVE_TTL_MS: u64 = 5_000;
+
     fn create_test_tx_execution_id(byte: u8) -> TxExecutionId {
         TxExecutionId::new(U256::from(1), 0, B256::from([byte; 32]), 0)
     }
@@ -291,7 +334,10 @@ mod tests {
     #[tokio::test]
     async fn test_is_tx_received_returns_not_yet_for_unknown_tx() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(1);
 
@@ -304,7 +350,10 @@ mod tests {
     #[tokio::test]
     async fn test_is_tx_received_returns_yes_after_add() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(1);
         let tx_contents = create_test_tx_queue_contents(tx_execution_id);
@@ -320,7 +369,10 @@ mod tests {
     #[tokio::test]
     async fn test_receiver_gets_notification_on_add() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(1);
 
@@ -343,7 +395,10 @@ mod tests {
     #[tokio::test]
     async fn pending_receive_is_evicted_when_no_receivers_left() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(3);
 
@@ -374,7 +429,10 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_does_not_race_with_subscribe() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(1);
 
@@ -417,7 +475,10 @@ mod tests {
     #[tokio::test]
     async fn test_double_check_catches_concurrent_add() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(1);
         let tx_contents = create_test_tx_queue_contents(tx_execution_id);
@@ -436,7 +497,10 @@ mod tests {
     async fn test_concurrent_add_and_subscribe() {
         for iteration in 0..50 {
             let transactions_state = TransactionsState::new();
-            let query_results = QueryTransactionsResults::new(transactions_state);
+            let query_results = QueryTransactionsResults::new(
+                transactions_state,
+                Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+            );
 
             let tx_execution_id = create_test_tx_execution_id(iteration as u8);
             let tx_contents = create_test_tx_queue_contents(tx_execution_id);
@@ -475,7 +539,10 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_subscribers_all_notified() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(1);
 
@@ -505,7 +572,10 @@ mod tests {
     #[tokio::test]
     async fn test_add_before_subscribe_still_works() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(1);
         let tx_contents = create_test_tx_queue_contents(tx_execution_id);
@@ -523,7 +593,10 @@ mod tests {
     #[tokio::test]
     async fn test_stress_concurrent_operations() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let num_txs = 100;
         let mut handles = Vec::new();
@@ -574,7 +647,10 @@ mod tests {
     #[tokio::test]
     async fn test_no_deadlock_under_contention() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(1);
         let tx_contents = create_test_tx_queue_contents(tx_execution_id);
@@ -611,7 +687,10 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_respects_active_waiters() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(1);
         let tx_contents = create_test_tx_queue_contents(tx_execution_id);
@@ -643,9 +722,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_receive_evicted_after_ttl_even_with_active_receiver() {
+        let transactions_state = TransactionsState::new();
+        let query_results =
+            QueryTransactionsResults::new(transactions_state, Duration::from_millis(100));
+
+        let tx_execution_id = create_test_tx_execution_id(9);
+
+        let receiver = match query_results.is_tx_received(&tx_execution_id) {
+            AcceptedState::NotYet(rx) => rx,
+            AcceptedState::Yes => panic!("transaction should not be marked received"),
+        };
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        assert!(
+            !query_results.has_pending_receive(&tx_execution_id),
+            "entry should be evicted after TTL even with a stuck receiver"
+        );
+
+        drop(receiver);
+    }
+
+    #[tokio::test]
     async fn test_is_tx_received_now() {
         let transactions_state = TransactionsState::new();
-        let query_results = QueryTransactionsResults::new(transactions_state);
+        let query_results = QueryTransactionsResults::new(
+            transactions_state,
+            Duration::from_millis(DEFAULT_PENDING_RECEIVE_TTL_MS),
+        );
 
         let tx_execution_id = create_test_tx_execution_id(1);
         let tx_contents = create_test_tx_queue_contents(tx_execution_id);

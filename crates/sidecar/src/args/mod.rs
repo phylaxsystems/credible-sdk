@@ -30,6 +30,10 @@ fn default_event_id_buffer_capacity() -> usize {
     1000
 }
 
+fn default_pending_receive_ttl_ms() -> u64 {
+    5_000
+}
+
 /// Configuration loaded from JSON file
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Config {
@@ -170,6 +174,9 @@ pub struct TransportConfig {
     /// Maximum number of events ID in the transport layer buffer before dropping new events.
     #[serde(default = "default_event_id_buffer_capacity")]
     pub event_id_buffer_capacity: usize,
+    /// Maximum time (ms) a pending transaction receive entry may live before forced eviction.
+    #[serde(default = "default_pending_receive_ttl_ms")]
+    pub pending_receive_ttl_ms: u64,
 }
 
 /// State configuration from file
