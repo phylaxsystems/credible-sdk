@@ -273,12 +273,12 @@ impl DatabaseRef for MdbxSource {
         // Check if block is within the EIP-2935 history window
         let target_block = Self::u256_to_u64(*self.target_block.read())?;
         let min_block = target_block.saturating_sub(HISTORY_SERVE_WINDOW as u64);
-        if number == 0 || number >= target_block || number < min_block {
+        if number == 0 || number > target_block || number <= min_block {
             return Err(Self::Error::BlockNotFound);
         }
 
         // EIP-2935 stores block hashes at slot = block_number % HISTORY_SERVE_WINDOW
-        let slot = U256::from(number % HISTORY_SERVE_WINDOW as u64);
+        let slot = U256::from(((number -1) % HISTORY_SERVE_WINDOW as u64));
         let value = self.storage_ref(HISTORY_STORAGE_ADDRESS, slot)?;
 
         if value != U256::ZERO {
