@@ -278,7 +278,7 @@ impl DatabaseRef for MdbxSource {
         }
 
         // EIP-2935 stores block hashes at slot = block_number % HISTORY_SERVE_WINDOW
-        let slot = U256::from(((number -1) % HISTORY_SERVE_WINDOW as u64));
+        let slot = U256::from(number.saturating_sub(1) % HISTORY_SERVE_WINDOW as u64);
         let value = self.storage_ref(HISTORY_STORAGE_ADDRESS, slot)?;
 
         if value != U256::ZERO {
