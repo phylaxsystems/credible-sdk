@@ -39,13 +39,17 @@ use std::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
     time::Duration,
 };
 use thiserror::Error;
-use tokio::task::JoinHandle;
+use tokio::{
+    task::JoinHandle,
+    time,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{
     debug,
@@ -55,13 +59,15 @@ use tracing::{
 };
 
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
-
 #[derive(Debug)]
 pub struct MdbxSource {
     backend: StateReader,
     /// Target block to request from state worker.
     target_block: Arc<RwLock<U256>>,
     cancel_token: CancellationToken,
+    range_poller_handle: JoinHandle<()>,
+    available_oldest_block: Arc<AtomicU64>,
+    available_observed_head: Arc<AtomicU64>,
     cache_status: Arc<CacheStatus>,
 }
 
@@ -76,15 +82,28 @@ impl MdbxSource {
     pub fn new(backend: StateReader) -> Self {
         let target_block = Arc::new(RwLock::new(U256::ZERO));
         let cancel_token = CancellationToken::new();
+        // Zero means "not yet loaded" for the MDBX available range.
+        let available_oldest_block = Arc::new(AtomicU64::new(0));
+        let available_observed_head = Arc::new(AtomicU64::new(0));
         let cache_status = Arc::new(CacheStatus {
             min_synced_block: RwLock::new(U256::ZERO),
             latest_head: RwLock::new(U256::ZERO),
         });
 
+        let range_poller_handle = Self::spawn_block_range_poller(
+            backend.clone(),
+            cancel_token.clone(),
+            available_oldest_block.clone(),
+            available_observed_head.clone(),
+        );
+
         Self {
             backend,
             target_block,
             cancel_token,
+            range_poller_handle,
+            available_oldest_block,
+            available_observed_head,
             cache_status,
         }
     }
@@ -132,6 +151,66 @@ impl MdbxSource {
         let lower_bound = min_synced_block.max(state_worker_oldest_block);
         let upper_bound = latest_head.min(state_worker_observed_head);
         lower_bound <= upper_bound
+    }
+
+    fn available_block_range(&self) -> Option<(u64, u64)> {
+        let oldest = self.available_oldest_block.load(Ordering::Acquire);
+        let head = self.available_observed_head.load(Ordering::Acquire);
+
+        // Treat zero as the unset sentinel to avoid extra MDBX reads on startup.
+        if oldest == 0 || head == 0 || oldest > head {
+            return None;
+        }
+
+        Some((oldest, head))
+    }
+
+    fn spawn_block_range_poller(
+        backend: StateReader,
+        cancel_token: CancellationToken,
+        available_oldest_block: Arc<AtomicU64>,
+        available_observed_head: Arc<AtomicU64>,
+    ) -> JoinHandle<()> {
+        Self::refresh_available_block_range(
+            &backend,
+            &available_oldest_block,
+            &available_observed_head,
+        );
+        tokio::spawn(async move {
+            let mut interval = time::interval(DEFAULT_SYNC_INTERVAL);
+
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => {
+                        break;
+                    }
+                    _ = interval.tick() => Self::refresh_available_block_range(
+                        &backend,
+                        &available_oldest_block,
+                        &available_observed_head,
+                    ),
+                }
+            }
+        })
+    }
+
+    fn refresh_available_block_range(
+        backend: &StateReader,
+        available_oldest_block: &AtomicU64,
+        available_observed_head: &AtomicU64,
+    ) {
+        match backend.get_available_block_range() {
+            Ok(Some((oldest, head))) => {
+                available_oldest_block.store(oldest, Ordering::Release);
+                available_observed_head.store(head, Ordering::Release);
+            }
+            Ok(None) => {
+                debug!(target: "state_worker", "missing available block range");
+            }
+            Err(e) => {
+                error!(target: "state_worker", error = ?e, "failed to get available block range");
+            }
+        }
     }
 }
 
@@ -228,21 +307,11 @@ impl DatabaseRef for MdbxSource {
 impl Source for MdbxSource {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool {
-        let (state_worker_oldest_block, state_worker_observed_head) = match self
-            .backend
-            .get_available_block_range()
-        {
-            Ok(Some((state_worker_oldest_block, state_worker_observed_head))) => {
-                (state_worker_oldest_block, state_worker_observed_head)
-            }
-            Err(e) => {
-                error!(target: "state_worker", error = ?e, "failed to get available block range");
-                return false;
-            }
-            Ok(None) => {
-                error!(target: "state_worker", "missing available block range");
-                return false;
-            }
+        let Some((state_worker_oldest_block, state_worker_observed_head)) =
+            self.available_block_range()
+        else {
+            debug!(target: "state_worker", "missing available block range");
+            return false;
         };
 
         trace!(
@@ -271,21 +340,11 @@ impl Source for MdbxSource {
         *self.cache_status.min_synced_block.write() = min_synced_block;
         *self.cache_status.latest_head.write() = latest_head;
 
-        let (state_worker_oldest_block, state_worker_observed_head) = match self
-            .backend
-            .get_available_block_range()
-        {
-            Ok(Some((state_worker_oldest_block, state_worker_observed_head))) => {
-                (state_worker_oldest_block, state_worker_observed_head)
-            }
-            Err(e) => {
-                error!(target: "state_worker", error = ?e, "failed to get available block range");
-                return;
-            }
-            Ok(None) => {
-                error!(target: "state_worker", "missing available block range");
-                return;
-            }
+        let Some((state_worker_oldest_block, state_worker_observed_head)) =
+            self.available_block_range()
+        else {
+            debug!(target: "state_worker", "missing available block range");
+            return;
         };
 
         if let Some(target) = Self::calculate_target_block(
@@ -307,6 +366,7 @@ impl Source for MdbxSource {
 impl Drop for MdbxSource {
     fn drop(&mut self) {
         self.cancel_token.cancel();
+        self.range_poller_handle.abort();
     }
 }
 
@@ -965,8 +1025,8 @@ mod tests {
         assert!(!cache.is_synced(90, 94));
     }
 
-    #[test]
-    fn mdbx_source_not_synced_for_nonexistent_blocks_after_bootstrap() {
+    #[tokio::test]
+    async fn mdbx_source_not_synced_for_nonexistent_blocks_after_bootstrap() {
         use state_store::{
             AccountState,
             AddressHash,
