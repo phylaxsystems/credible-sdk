@@ -271,10 +271,9 @@ impl DaStoreArgs {
                 "pcl".cyan().bold(),
                 assertion_key
             );
-            println!(
-                "Visit the Credible Layer DApp to link the assertion on-chain and enforce it:"
-            );
-            println!("  {}", "https://dapp.phylax.systems".cyan().bold());
+            let app_url = self.da_url.replace("://da.", "://app.");
+            println!("Visit the Credible Layer App to link the assertion on-chain and enforce it:");
+            println!("  {}", app_url.cyan().bold());
             println!(
                 "Tip: use `pcl store` to send assertions to the DA and `pcl submit` to begin enforcement."
             );
