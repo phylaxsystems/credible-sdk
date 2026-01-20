@@ -203,8 +203,10 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
                 .block_hash(number)
                 .map_err(|_| NotFoundError)?
         };
+
         // Found in DB, cache it
         self.overlay.insert(key, TableValue::BlockHash(block_hash));
+
         Ok(block_hash)
     }
 }

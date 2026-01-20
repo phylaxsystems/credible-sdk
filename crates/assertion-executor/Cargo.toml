@@ -18,7 +18,6 @@ metrics = { workspace = true }
 futures = { workspace = true }
 dashmap = { workspace = true }
 
-
 # ETH deps
 alloy = { workspace = true }
 alloy-provider = { workspace = true }

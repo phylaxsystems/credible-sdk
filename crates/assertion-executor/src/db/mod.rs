@@ -14,6 +14,7 @@ pub use version_db::{
 mod error;
 pub use error::NotFoundError;
 
+use alloy_primitives::B256;
 pub use revm::database::{
     Database,
     DatabaseCommit,
@@ -35,4 +36,10 @@ pub trait RollbackDb {
     /// Drops the changelog while keeping the latest state as the new base
     fn collapse_log(&mut self);
     fn depth(&self) -> usize;
+}
+
+/// Trait for caching block hashes for BLOCKHASH opcode lookups.
+pub trait BlockHashStore {
+    /// Cache a block hash for BLOCKHASH opcode lookups.
+    fn store_block_hash(&self, number: u64, hash: B256);
 }
