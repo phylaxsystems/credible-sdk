@@ -103,25 +103,13 @@ impl QueryTransactionsResults {
 
         // Get or create the sender before updating the state.
         // This ensures the channel infrastructure exists for concurrent subscribers.
-        let now = Instant::now();
         let sender = match self.pending_receives.entry(tx.tx_execution_id) {
-            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
-                if occupied.get().created_at.elapsed() > self.pending_receive_ttl
-                    && occupied.get().sender.receiver_count() == 0
-                {
-                    let (tx, _) = broadcast::channel(1);
-                    occupied.insert(PendingReceive {
-                        sender: tx,
-                        created_at: now,
-                    });
-                }
-                occupied.get().sender.clone()
-            }
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => occupied.get().sender.clone(),
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
                 let (tx, _) = broadcast::channel(1);
                 vacant.insert(PendingReceive {
                     sender: tx.clone(),
-                    created_at: now,
+                    created_at: Instant::now(),
                 });
                 tx
             }
@@ -190,25 +178,13 @@ impl QueryTransactionsResults {
         }
 
         // Get or create the sender and subscribe
-        let now = Instant::now();
         let sender = match self.pending_receives.entry(*tx_execution_id) {
-            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
-                if occupied.get().created_at.elapsed() > self.pending_receive_ttl
-                    && occupied.get().sender.receiver_count() == 0
-                {
-                    let (tx, _) = broadcast::channel(1);
-                    occupied.insert(PendingReceive {
-                        sender: tx,
-                        created_at: now,
-                    });
-                }
-                occupied.get().sender.clone()
-            }
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => occupied.get().sender.clone(),
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
                 let (tx, _) = broadcast::channel(1);
                 vacant.insert(PendingReceive {
                     sender: tx.clone(),
-                    created_at: now,
+                    created_at: Instant::now(),
                 });
                 tx
             }
