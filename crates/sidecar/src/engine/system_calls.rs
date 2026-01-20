@@ -736,7 +736,7 @@ mod tests {
             spec_id: SpecId::SHANGHAI, // Pre-Prague, only caching should happen
             block_number: U256::from(100),
             timestamp: U256::from(1234567890),
-            block_hash: block_hash,
+            block_hash,
             parent_beacon_block_root: None,
         };
 
