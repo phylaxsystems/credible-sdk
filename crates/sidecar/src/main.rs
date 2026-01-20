@@ -235,6 +235,10 @@ impl ThreadHandles {
     }
 }
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -244,6 +248,15 @@ async fn main() -> anyhow::Result<()> {
 
     let _guard = rust_tracing::trace();
     let config = Config::load()?;
+
+    // Initialize dhat profiler if feature is enabled
+    #[cfg(feature = "dhat-heap")]
+    let _dhat_profiler = if let Some(ref output_path) = config.dhat_output_path {
+        info!("Starting dhat memory profiler, output will be written to: {}", output_path.display());
+        Some(dhat::Profiler::builder().file_name(output_path).build())
+    } else {
+        None
+    };
 
     info!("Starting sidecar with config: {config:?}");
 

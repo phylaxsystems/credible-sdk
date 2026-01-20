@@ -20,7 +20,7 @@ use serde_with::{
 };
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     str::FromStr,
     time::Duration,
 };
@@ -54,6 +54,9 @@ pub struct Config {
     pub credible: CredibleConfig,
     pub transport: TransportConfig,
     pub state: StateConfig,
+    #[cfg(feature = "dhat-heap")]
+    #[serde(skip)]
+    pub dhat_output_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -81,6 +84,8 @@ impl Config {
             transport: file_config.transport,
             state: file_config.state,
             chain: file_config.chain,
+            #[cfg(feature = "dhat-heap")]
+            dhat_output_path: args.dhat_output_path,
         })
     }
 

@@ -53,6 +53,7 @@ hashlink = "0.11.0"
 flume = "0.12.0"
 parking_lot.workspace = true
 bincode.workspace = true
+dhat = { version = "0.3", optional = true }
 
 # revm
 revm.workspace = true
@@ -92,6 +93,7 @@ tokio-console = [
     "tokio-metrics",
 ]
 cache_validation = ["moka", "alloy-rpc-types-trace"]
+dhat-heap = ["dhat"]
 
 [package.metadata.cargo-shear]
 ignored = ["prost", "tonic-prost"]
