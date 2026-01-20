@@ -1,4 +1,5 @@
 #![allow(clippy::missing_panics_doc)]
+use super::OverlayDb;
 use crate::{
     db::{
         Database,
@@ -16,10 +17,8 @@ use crate::{
     },
 };
 use alloy_primitives::KECCAK256_EMPTY;
-use revm::database::InMemoryDB;
-
-use super::OverlayDb;
 use dashmap::DashMap;
+use revm::database::InMemoryDB;
 use std::{
     collections::HashMap,
     sync::{

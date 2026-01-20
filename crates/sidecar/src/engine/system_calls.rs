@@ -34,6 +34,7 @@ use alloy::{
         keccak256,
     },
 };
+use assertion_executor::db::BlockHashStore;
 use revm::{
     DatabaseCommit,
     DatabaseRef,
@@ -169,11 +170,25 @@ impl SystemCalls {
     ///
     /// This should be called at the start of each block iteration,
     /// before processing any user transactions.
-    pub fn apply_system_calls<DB: DatabaseRef + DatabaseCommit>(
+    pub fn apply_system_calls<DB: DatabaseRef + DatabaseCommit + BlockHashStore>(
         &self,
         config: &SystemCallsConfig,
         db: &mut DB,
     ) -> Result<(), SystemCallError> {
+        // Cache block hash for BLOCKHASH opcode lookups, all forks.
+        if  config.block_number > U256::ZERO
+        {
+            let block_hash = config.block_hash;
+            let block_number: u64 = config.block_number.saturating_to::<u64>(); // Should not realistically overflow
+            db.store_block_hash(block_number, block_hash);
+            trace!(
+                target = "system_calls",
+                block_number = %block_number,
+                %block_hash,
+                "Block hash cached for BLOCKHASH opcode"
+            );
+        }
+
         // Apply EIP-4788 first (Cancun+)
         if self.is_cancun_active(config) {
             self.apply_eip4788(config, db)?;
@@ -374,17 +389,23 @@ impl SystemCalls {
 mod tests {
     use super::*;
     use revm::database::DBErrorMarker;
-    use std::collections::HashMap;
+    use std::{
+        cell::RefCell,
+        collections::HashMap,
+    };
 
     /// Simple mock database for testing
     #[derive(Debug, Default)]
     struct MockDb {
         accounts: HashMap<Address, Account>,
+        block_hash_cache: RefCell<HashMap<u64, B256>>,
     }
 
     #[derive(Error, Debug)]
-    #[error("MockDb error")]
-    pub enum MockError {}
+    pub enum MockError {
+        #[error("Block hash not found for block {0}")]
+        BlockHashNotFound(u64),
+    }
 
     impl DBErrorMarker for MockError {}
 
@@ -407,8 +428,12 @@ mod tests {
                 .map_or(U256::ZERO, |slot| slot.present_value))
         }
 
-        fn block_hash_ref(&self, _number: u64) -> Result<B256, Self::Error> {
-            Ok(B256::ZERO)
+        fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+            self.block_hash_cache
+                .borrow()
+                .get(&number)
+                .copied()
+                .ok_or(MockError::BlockHashNotFound(number))
         }
     }
 
@@ -417,6 +442,12 @@ mod tests {
             for (address, account) in changes {
                 self.accounts.insert(address, account);
             }
+        }
+    }
+
+    impl BlockHashStore for MockDb {
+        fn store_block_hash(&self, number: u64, hash: B256) {
+            self.block_hash_cache.borrow_mut().insert(number, hash);
         }
     }
 
@@ -694,5 +725,96 @@ mod tests {
         let account = db.accounts.get(&BEACON_ROOTS_ADDRESS).unwrap();
         assert_eq!(account.info.balance, existing_balance);
         assert_eq!(account.info.nonce, existing_nonce);
+    }
+
+    #[test]
+    fn test_block_hash_cache_populated() {
+        let mut db = MockDb::default();
+        let system_calls = SystemCalls::new(None, None);
+
+        let block_hash = B256::repeat_byte(0xab);
+        let config = SystemCallsConfig {
+            spec_id: SpecId::SHANGHAI, // Pre-Prague, only caching should happen
+            block_number: U256::from(100),
+            timestamp: U256::from(1234567890),
+            block_hash: block_hash,
+            parent_beacon_block_root: None,
+        };
+
+        let result = system_calls.apply_system_calls(&config, &mut db);
+        assert!(result.is_ok());
+
+        // Verify block hash was cached for BLOCKHASH opcode
+        let cached_hash = db.block_hash_cache.borrow().get(&100).copied();
+        assert_eq!(
+            cached_hash,
+            Some(block_hash),
+            "Parent block hash should be cached at block 100"
+        );
+    }
+
+    #[test]
+    fn test_block_hash_cache_not_populated_for_genesis() {
+        let mut db = MockDb::default();
+        let system_calls = SystemCalls::new(None, None);
+
+        let config = SystemCallsConfig {
+            spec_id: SpecId::SHANGHAI,
+            block_number: U256::from(0), // Genesis
+            timestamp: U256::from(0),
+            block_hash: B256::repeat_byte(0xab),
+            parent_beacon_block_root: None,
+        };
+
+        let result = system_calls.apply_system_calls(&config, &mut db);
+        assert!(result.is_ok());
+
+        // Genesis has no parent, so nothing should be cached
+        assert!(
+            db.block_hash_cache.borrow().is_empty(),
+            "No hash should be cached for genesis"
+        );
+    }
+    #[test]
+    fn test_block_hash_cache_with_no_hash_provided() {
+        let mut db = MockDb::default();
+        let system_calls = SystemCalls::new(None, None);
+
+        let config = SystemCallsConfig {
+            spec_id: SpecId::SHANGHAI,
+            block_number: U256::from(100),
+            timestamp: U256::from(1234567890),
+            block_hash: B256::ZERO, // No hash provided
+            parent_beacon_block_root: None,
+        };
+
+        let result = system_calls.apply_system_calls(&config, &mut db);
+        assert!(result.is_ok());
+        assert!(db.block_hash_cache.borrow().is_empty());
+    }
+
+    #[test]
+    fn test_block_hash_cache_sequential_blocks() {
+        let mut db = MockDb::default();
+        let system_calls = SystemCalls::new(None, None);
+
+        // Simulate processing blocks 1, 2, 3
+        for block_num in 1..=3u64 {
+            let hash = B256::repeat_byte(u8::try_from(block_num).unwrap());
+            let config = SystemCallsConfig {
+                spec_id: SpecId::SHANGHAI,
+                block_number: U256::from(block_num),
+                timestamp: U256::from(1234567890 + block_num),
+                block_hash:hash,
+                parent_beacon_block_root: None,
+            };
+            system_calls.apply_system_calls(&config, &mut db).unwrap();
+        }
+
+        // Verify all block hashes are cached correctly
+        let cache = db.block_hash_cache.borrow();
+        assert_eq!(cache.get(&1), Some(&B256::repeat_byte(1))); // Block 1's hash
+        assert_eq!(cache.get(&2), Some(&B256::repeat_byte(2))); // Block 2's hash
+        assert_eq!(cache.get(&3), Some(&B256::repeat_byte(3))); // Block 3's hash
     }
 }

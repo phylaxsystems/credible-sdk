@@ -19,6 +19,7 @@ use super::fork_db::{
 };
 use crate::{
     db::{
+        BlockHashStore,
         Database,
         DatabaseCommit,
         DatabaseRef,
@@ -336,8 +337,7 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
         if let Some(value) = self.overlay.get(&key) {
             // Found in cache
             counter!("assex_overlay_db_block_hash_ref_hits").increment(1);
-            let block_hash = *value.as_block_hash().unwrap();
-            return Ok(block_hash); // unwrap safe
+            return Ok(*value.as_block_hash().unwrap()); // unwrap safe
         }
 
         counter!("assex_overlay_db_block_hash_ref_misses").increment(1);
@@ -446,6 +446,16 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
                 }
             }
         }
+    }
+}
+
+/// Implementation of `BlockHashStore` for `OverlayDb`.
+///
+/// This caches block hashes in the overlay for BLOCKHASH opcode lookups.
+impl<Db> BlockHashStore for OverlayDb<Db> {
+    fn store_block_hash(&self, number: u64, hash: B256) {
+        self.overlay
+            .insert(TableKey::BlockHash(number), TableValue::BlockHash(hash));
     }
 }
 

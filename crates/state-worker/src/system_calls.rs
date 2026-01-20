@@ -291,7 +291,7 @@ mod tests {
 
         let eip2935_state = states
             .iter()
-            .find(|s| s.address_hash == AddressHash::from(keccak256(HISTORY_STORAGE_ADDRESS)))
+            .find(|s| s.address_hash == HISTORY_STORAGE_ADDRESS.into())
             .expect("EIP-2935 state should exist");
 
         // Slot = (100 - 1) % 8191 = 99
@@ -425,7 +425,7 @@ mod tests {
 
         let eip2935_state = states
             .iter()
-            .find(|s| s.address_hash == AddressHash::from(keccak256(HISTORY_STORAGE_ADDRESS)))
+            .find(|s| s.address_hash == HISTORY_STORAGE_ADDRESS.into())
             .unwrap();
 
         // (8191 + 99 - 1) % 8191 = 98
@@ -451,10 +451,7 @@ mod tests {
 
         // Should only have EIP-2935, not EIP-4788
         assert_eq!(states.len(), 1);
-        assert_eq!(
-            states[0].address_hash,
-            AddressHash::from(keccak256(HISTORY_STORAGE_ADDRESS))
-        );
+        assert_eq!(states[0].address_hash, HISTORY_STORAGE_ADDRESS.into());
     }
 
     #[test]
