@@ -2663,8 +2663,10 @@ struct MockDb {
 }
 
 #[derive(Error, Debug)]
-#[error("MockDb error")]
-pub struct MockDbError;
+pub enum MockDbError {
+    #[error("Block hash not found for block {0}")]
+    BlockHashNotFound(u64),
+}
 
 impl DBErrorMarker for MockDbError {}
 
@@ -2688,12 +2690,11 @@ impl DatabaseRef for MockDb {
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        Ok(self
-            .block_hash_cache
+        self.block_hash_cache
             .borrow()
             .get(&number)
             .copied()
-            .unwrap_or(B256::ZERO))
+            .ok_or(MockDbError::BlockHashNotFound(number))
     }
 }
 
