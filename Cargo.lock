@@ -11136,6 +11136,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "serde_with",
  "sidecar-test-macros",
  "sled",
  "state-store",
