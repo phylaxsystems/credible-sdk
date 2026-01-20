@@ -44,6 +44,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use anyhow::anyhow;
 
 /// Trait for fetching block state from different trace providers
 #[async_trait]
@@ -116,14 +117,19 @@ impl BlockStateUpdateBuilder {
         block_hash: B256,
         state_root: B256,
         traces: Vec<alloy_rpc_types_trace::geth::TraceResult>,
-    ) -> BlockStateUpdate {
-        let accounts = geth::process_geth_traces(traces);
-        BlockStateUpdate {
+    ) -> Result<BlockStateUpdate> {
+        let accounts = geth::process_geth_traces(traces).map_err(|(index, tx_hash, err)| {
+            anyhow!(
+                "block {block_number}: tx trace failed at index {index} (tx: {tx_hash:?}): {err}"
+            )
+        })?;
+
+        Ok(BlockStateUpdate {
             block_number,
             block_hash,
             state_root,
             accounts,
-        }
+        })
     }
 
     pub fn from_accounts(

@@ -10,10 +10,12 @@
 
 use super::AccountSnapshot;
 use alloy::primitives::{
+    B256,
     U256,
     keccak256,
 };
 use alloy_rpc_types_trace::geth::{
+    GethTrace,
     PreStateFrame,
     TraceResult,
 };
@@ -22,24 +24,38 @@ use state_store::{
     AddressHash,
 };
 use std::collections::HashMap;
+use tracing::warn;
 
-pub fn process_geth_traces(traces: Vec<TraceResult>) -> Vec<AccountState> {
+pub fn process_geth_traces(
+    traces: Vec<TraceResult>,
+) -> Result<Vec<AccountState>, (usize, Option<B256>, String)> {
     let mut accounts: HashMap<AddressHash, AccountSnapshot> = HashMap::new();
 
-    for trace in traces {
-        if let TraceResult::Success {
-            result: alloy_rpc_types_trace::geth::GethTrace::PreStateTracer(frame),
-            ..
-        } = trace
-        {
-            process_frame(&mut accounts, frame);
+    for (index, trace) in traces.into_iter().enumerate() {
+        match trace {
+            TraceResult::Success {
+                result: GethTrace::PreStateTracer(frame),
+                ..
+            } => {
+                process_frame(&mut accounts, frame);
+            }
+            TraceResult::Success { result, tx_hash } => {
+                warn!(
+                    ?tx_hash,
+                    tracer_type = ?std::mem::discriminant(&result),
+                    "unexpected tracer type, expected PreStateTracer"
+                );
+            }
+            TraceResult::Error { error, tx_hash } => {
+                return Err((index, tx_hash, error));
+            }
         }
     }
 
-    accounts
+    Ok(accounts
         .into_iter()
         .filter_map(|(address, snapshot)| snapshot.finalize(address))
-        .collect()
+        .collect())
 }
 
 fn process_frame(accounts: &mut HashMap<AddressHash, AccountSnapshot>, frame: PreStateFrame) {
@@ -211,7 +227,8 @@ mod tests {
 
         let diff = DiffMode { pre, post };
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(!results[0].deleted);
@@ -243,7 +260,8 @@ mod tests {
             post,
         };
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
 
         assert_eq!(results.len(), 1);
         let slot_hash = keccak256(slot.0);
@@ -273,7 +291,8 @@ mod tests {
             post,
         };
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(!results[0].deleted);
@@ -312,7 +331,8 @@ mod tests {
             post,
         };
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
 
         assert_eq!(results.len(), 2);
 
@@ -367,7 +387,8 @@ mod tests {
         let results = process_geth_traces(vec![
             make_trace_result(PreStateFrame::Diff(diff1)),
             make_trace_result(PreStateFrame::Diff(diff2)),
-        ]);
+        ])
+        .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].balance, U256::from(800));
@@ -381,7 +402,8 @@ mod tests {
             post: std::collections::BTreeMap::new(),
         };
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
 
         assert!(results.is_empty());
     }
@@ -426,7 +448,8 @@ mod tests {
 
         let diff = DiffMode { pre, post };
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].balance, U256::from(1000));
@@ -473,7 +496,8 @@ mod tests {
 
         let diff = DiffMode { pre, post };
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
 
         assert_eq!(results.len(), 1);
         let slot_hash = keccak256(slot.0);
@@ -505,7 +529,8 @@ mod tests {
             post: std::collections::BTreeMap::new(),
         };
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(results[0].deleted);
@@ -550,7 +575,8 @@ mod tests {
 
         let diff = DiffMode { pre, post };
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
         assert_eq!(results.len(), 1);
 
         let slot_a_hash = keccak256(slot_a.0);
@@ -608,7 +634,8 @@ mod tests {
         let results = process_geth_traces(vec![
             make_trace_result(PreStateFrame::Diff(diff1)),
             make_trace_result(PreStateFrame::Diff(diff2)),
-        ]);
+        ])
+        .unwrap();
 
         assert_eq!(results.len(), 1);
         let slot_hash = keccak256(slot.0);
@@ -658,7 +685,8 @@ mod tests {
         let results = process_geth_traces(vec![
             make_trace_result(PreStateFrame::Diff(diff1)),
             make_trace_result(PreStateFrame::Diff(diff2)),
-        ]);
+        ])
+        .unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(results[0].deleted);
@@ -709,7 +737,8 @@ mod tests {
         let results = process_geth_traces(vec![
             make_trace_result(PreStateFrame::Diff(diff1)),
             make_trace_result(PreStateFrame::Diff(diff2)),
-        ]);
+        ])
+        .unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(!results[0].deleted);
@@ -747,7 +776,8 @@ mod tests {
             post: std::collections::BTreeMap::new(),
         };
 
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
 
         assert_eq!(results.len(), 1);
         assert!(results[0].deleted);
@@ -784,7 +814,8 @@ mod tests {
         );
 
         let diff = DiffMode { pre, post };
-        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]);
+        let results =
+            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].code, Some(new_code.clone()));

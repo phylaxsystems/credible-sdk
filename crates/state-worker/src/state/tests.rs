@@ -47,7 +47,7 @@ fn test_simple_balance_change() {
         post,
     }))];
 
-    let mut accounts = geth::process_geth_traces(traces);
+    let mut accounts = geth::process_geth_traces(traces).unwrap();
     assert_eq!(accounts.len(), 1);
     accounts.sort_by_key(|a| a.address_hash);
 
@@ -80,7 +80,7 @@ fn test_contract_deployment() {
         post,
     }))];
 
-    let mut accounts = geth::process_geth_traces(traces);
+    let mut accounts = geth::process_geth_traces(traces).unwrap();
     assert_eq!(accounts.len(), 1);
     accounts.sort_by_key(|a| a.address_hash);
 
@@ -136,7 +136,7 @@ fn test_storage_updates() {
         pre,
         post,
     }))];
-    let mut accounts = geth::process_geth_traces(traces);
+    let mut accounts = geth::process_geth_traces(traces).unwrap();
     assert_eq!(accounts.len(), 1);
     accounts.sort_by_key(|a| a.address_hash);
 
@@ -177,7 +177,7 @@ fn test_selfdestruct_balance_transfer() {
         pre,
         post,
     }))];
-    let accounts = geth::process_geth_traces(traces);
+    let accounts = geth::process_geth_traces(traces).unwrap();
 
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].balance, U256::ZERO);
@@ -214,7 +214,7 @@ fn test_selfdestruct_storage_persists() {
         pre,
         post,
     }))];
-    let accounts = geth::process_geth_traces(traces);
+    let accounts = geth::process_geth_traces(traces).unwrap();
 
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].balance, U256::ZERO);
@@ -242,7 +242,7 @@ fn test_account_deletion() {
         post: BTreeMap::new(),
     }))];
 
-    let accounts = geth::process_geth_traces(traces);
+    let accounts = geth::process_geth_traces(traces).unwrap();
     assert_eq!(accounts.len(), 1);
     assert!(accounts[0].deleted);
 }
@@ -287,7 +287,7 @@ fn test_account_deletion_overrides_storage_updates() {
         post: BTreeMap::new(),
     }));
 
-    let accounts = geth::process_geth_traces(vec![trace1, trace2]);
+    let accounts = geth::process_geth_traces(vec![trace1, trace2]).unwrap();
     assert_eq!(accounts.len(), 1);
     assert!(accounts[0].deleted);
     assert!(accounts[0].storage.is_empty());
@@ -334,7 +334,7 @@ fn test_account_deleted_then_recreated() {
         post: post2,
     }));
 
-    let accounts = geth::process_geth_traces(vec![trace1, trace2]);
+    let accounts = geth::process_geth_traces(vec![trace1, trace2]).unwrap();
     assert_eq!(accounts.len(), 1);
 
     let account = &accounts[0];
@@ -382,7 +382,7 @@ fn test_multiple_transactions() {
         post: post2,
     }));
 
-    let accounts = geth::process_geth_traces(vec![trace1, trace2]);
+    let accounts = geth::process_geth_traces(vec![trace1, trace2]).unwrap();
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].balance, U256::from(800));
     assert_eq!(accounts[0].nonce, 2);
@@ -444,7 +444,7 @@ fn test_complex_scenario() {
         pre,
         post,
     }))];
-    let mut results = geth::process_geth_traces(traces);
+    let mut results = geth::process_geth_traces(traces).unwrap();
 
     assert_eq!(results.len(), 3);
     results.sort_by_key(|a| a.address_hash);
