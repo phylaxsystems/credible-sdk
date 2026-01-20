@@ -32,8 +32,8 @@ use alloy::primitives::{
 };
 use alloy_provider::RootProvider;
 use anyhow::{
+    Context,
     Result,
-    anyhow,
 };
 use async_trait::async_trait;
 use revm::primitives::KECCAK_EMPTY;
@@ -120,11 +120,8 @@ impl BlockStateUpdateBuilder {
         state_root: B256,
         traces: Vec<alloy_rpc_types_trace::geth::TraceResult>,
     ) -> Result<BlockStateUpdate> {
-        let accounts = geth::process_geth_traces(traces).map_err(|(index, tx_hash, err)| {
-            anyhow!(
-                "block {block_number}: tx trace failed at index {index} (tx: {tx_hash:?}): {err}"
-            )
-        })?;
+        let accounts =
+            geth::process_geth_traces(traces).context(format!("block {block_number}"))?;
 
         Ok(BlockStateUpdate {
             block_number,

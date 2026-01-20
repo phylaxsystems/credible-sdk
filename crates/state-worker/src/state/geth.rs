@@ -10,7 +10,6 @@
 
 use super::AccountSnapshot;
 use alloy::primitives::{
-    B256,
     U256,
     keccak256,
 };
@@ -19,18 +18,17 @@ use alloy_rpc_types_trace::geth::{
     PreStateFrame,
     TraceResult,
 };
+use anyhow::anyhow;
 use state_store::{
     AccountState,
     AddressHash,
 };
 use std::collections::HashMap;
 
-pub fn process_geth_traces(
-    traces: Vec<TraceResult>,
-) -> Result<Vec<AccountState>, (usize, Option<B256>, String)> {
+pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<AccountState>> {
     let mut accounts: HashMap<AddressHash, AccountSnapshot> = HashMap::new();
 
-    for (index, trace) in traces.into_iter().enumerate() {
+    for trace in traces {
         match trace {
             TraceResult::Success {
                 result: GethTrace::PreStateTracer(frame),
@@ -39,10 +37,8 @@ pub fn process_geth_traces(
                 process_frame(&mut accounts, frame);
             }
             TraceResult::Success { tx_hash, .. } | TraceResult::Error { tx_hash, .. } => {
-                return Err((
-                    index,
-                    tx_hash,
-                    "trace failed or unexpected tracer type".into(),
+                return Err(anyhow!(
+                    "trace failed or unexpected tracer type (tx: {tx_hash:?})"
                 ));
             }
         }
