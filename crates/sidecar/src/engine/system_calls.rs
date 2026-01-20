@@ -81,7 +81,7 @@ pub struct SystemCallsConfig {
     pub block_number: U256,
     /// Current block timestamp
     pub timestamp: U256,
-    /// Parent block hash (required for EIP-2935)
+    /// Current block hash (required for EIP-2935)
     pub block_hash: Option<B256>,
     /// Parent beacon block root (required for EIP-4788)
     /// This comes from the consensus layer
@@ -179,13 +179,11 @@ impl SystemCalls {
         if let Some(block_hash) = config.block_hash
             && config.block_number > U256::ZERO
         {
-            let parent_block_number: u64 = (config.block_number.saturating_sub(U256::from(1)))
-                .try_into()
-                .unwrap_or(u64::MAX); // Should not realistically overflow
-            db.store_parent_hash(parent_block_number, block_hash);
+            let block_number: u64 = config.block_number.saturating_to::<u64>(); // Should not realistically overflow
+            db.store_parent_hash(block_number, block_hash);
             trace!(
                 target = "system_calls",
-                parent_block_number = %parent_block_number,
+                block_number = %block_number,
                 %block_hash,
                 "Block hash cached for BLOCKHASH opcode"
             );
