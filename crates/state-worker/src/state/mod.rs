@@ -31,7 +31,10 @@ use alloy::primitives::{
     keccak256,
 };
 use alloy_provider::RootProvider;
-use anyhow::Result;
+use anyhow::{
+    Result,
+    anyhow,
+};
 use async_trait::async_trait;
 use revm::primitives::KECCAK_EMPTY;
 use state_store::{
@@ -44,7 +47,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use anyhow::anyhow;
 
 /// Trait for fetching block state from different trace providers
 #[async_trait]

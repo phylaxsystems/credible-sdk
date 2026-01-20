@@ -24,7 +24,6 @@ use state_store::{
     AddressHash,
 };
 use std::collections::HashMap;
-use tracing::warn;
 
 pub fn process_geth_traces(
     traces: Vec<TraceResult>,
@@ -39,15 +38,12 @@ pub fn process_geth_traces(
             } => {
                 process_frame(&mut accounts, frame);
             }
-            TraceResult::Success { result, tx_hash } => {
-                warn!(
-                    ?tx_hash,
-                    tracer_type = ?std::mem::discriminant(&result),
-                    "unexpected tracer type, expected PreStateTracer"
-                );
-            }
-            TraceResult::Error { error, tx_hash } => {
-                return Err((index, tx_hash, error));
+            TraceResult::Success { tx_hash, .. } | TraceResult::Error { tx_hash, .. } => {
+                return Err((
+                    index,
+                    tx_hash,
+                    "trace failed or unexpected tracer type".into(),
+                ));
             }
         }
     }
