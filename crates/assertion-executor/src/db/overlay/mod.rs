@@ -344,15 +344,14 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
 
         // Not in cache, try underlying DB
         if let Some(db) = self.underlying_db.as_ref() {
-            match db.block_hash_ref(number) {
-                Ok(block_hash) => {
-                    self.overlay.insert(key, TableValue::BlockHash(block_hash));
-                    Ok(block_hash)
-                }
-                Err(_) => Ok(B256::ZERO), // Return zero instead of error per EVM spec
-            }
+            // Underlying DB returns Result<B256, Error>
+            let block_hash = db.block_hash_ref(number).map_err(|_| NotFoundError)?;
+            // Found in DB, cache it
+            self.overlay.insert(key, TableValue::BlockHash(block_hash));
+            Ok(block_hash)
         } else {
-            Ok(B256::ZERO) // No DB, return zero per EVM spec
+            // No underlying DB and not in cache
+            Err(NotFoundError) // Indicate not found
         }
     }
 }
