@@ -58,6 +58,8 @@ revm.workspace = true
 
 # alloy 
 alloy.workspace = true
+alloy-primitives.workspace = true
+alloy-eips.workspace = true
 alloy-provider.workspace = true
 
 # reth

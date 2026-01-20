@@ -584,7 +584,7 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
             }
             None => {
                 // No underlying DB and not in cache
-                Err(NotFoundError) // Indicate not found
+                 Err(NotFoundError) // Indicate not found
             }
         }
     }
