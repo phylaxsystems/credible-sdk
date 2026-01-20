@@ -336,12 +336,35 @@ async fn main() -> anyhow::Result<()> {
                 TransportProtocol::Grpc => {
                     let (tx, rx) = unbounded();
                     (
-                        TransactionsState::with_result_sender(tx.clone()),
+                        TransactionsState::with_result_sender_and_ttls(
+                            tx.clone(),
+                            Duration::from_millis(
+                                config
+                                    .credible
+                                    .transaction_results_pending_requests_ttl_ms
+                                    .max(1),
+                            ),
+                            Duration::from_millis(config.credible.accepted_txs_ttl_ms.max(1)),
+                        ),
                         Some(rx),
                         Some(tx),
                     )
                 }
-                TransportProtocol::Http => (TransactionsState::new(), None, None),
+                TransportProtocol::Http => {
+                    (
+                        TransactionsState::new_with_ttls(
+                            Duration::from_millis(
+                                config
+                                    .credible
+                                    .transaction_results_pending_requests_ttl_ms
+                                    .max(1),
+                            ),
+                            Duration::from_millis(config.credible.accepted_txs_ttl_ms.max(1)),
+                        ),
+                        None,
+                        None,
+                    )
+                }
             };
 
         let mut transport = create_transport_from_args(

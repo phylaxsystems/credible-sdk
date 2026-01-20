@@ -142,6 +142,8 @@ The configuration file is a JSON file with the following schema:
         "state_oracle",
         "state_oracle_deployment_block",
         "transaction_results_max_capacity",
+        "transaction_results_pending_requests_ttl_ms",
+        "accepted_txs_ttl_ms",
         "assertion_store_prune_config_interval_ms",
         "assertion_store_prune_config_retention_blocks"
       ],
@@ -290,6 +292,22 @@ The configuration file is a JSON file with the following schema:
             10000
           ]
         },
+        "transaction_results_pending_requests_ttl_ms": {
+          "type": "integer",
+          "description": "Maximum time (ms) to keep transaction result request channels alive",
+          "minimum": 1,
+          "examples": [
+            600000
+          ]
+        },
+        "accepted_txs_ttl_ms": {
+          "type": "integer",
+          "description": "Maximum time (ms) to keep accepted transactions without results",
+          "minimum": 1,
+          "examples": [
+            600000
+          ]
+        },
         "cache_checker_ws_url": {
           "type": "string",
           "description": "Cache checker client websocket URL (only when cache_validation feature is enabled)",
@@ -325,7 +343,8 @@ The configuration file is a JSON file with the following schema:
         "protocol",
         "bind_addr",
         "health_bind_addr",
-        "event_id_buffer_capacity"
+        "event_id_buffer_capacity",
+        "pending_receive_ttl_ms"
       ],
       "properties": {
         "protocol": {
@@ -363,6 +382,13 @@ The configuration file is a JSON file with the following schema:
           "description": "Maximum number of events ID in the transport layer buffer before dropping new events.",
           "examples": [
             "1000"
+          ]
+        },
+        "pending_receive_ttl_ms": {
+          "type": "integer",
+          "description": "Maximum time (ms) a pending transaction receive entry may live before forced eviction.",
+          "examples": [
+            "5000"
           ]
         }
       },
@@ -477,12 +503,15 @@ The default configuration can be found in [default_config.json](default_config.j
     "block_tag": "latest",
     "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
     "state_oracle_deployment_block": 0,
-    "transaction_results_max_capacity": 1000
+    "transaction_results_max_capacity": 1000,
+    "transaction_results_pending_requests_ttl_ms": 600000,
+    "accepted_txs_ttl_ms": 600000
   },
   "transport": {
     "protocol": "grpc",
     "bind_addr": "0.0.0.0:50051",
-    "health_bind_addr": "0.0.0.0:9547"
+    "health_bind_addr": "0.0.0.0:9547",
+    "pending_receive_ttl_ms": 5000
   },
   "state": {
     "eth_rpc_source_ws_url": "ws://127.0.0.1:8546",

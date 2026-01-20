@@ -30,6 +30,17 @@ fn default_event_id_buffer_capacity() -> usize {
     1000
 }
 
+fn default_pending_receive_ttl_ms() -> u64 {
+    5_000
+}
+
+fn default_pending_request_ttl_ms() -> u64 {
+    600_000
+}
+
+fn default_accepted_txs_ttl_ms() -> u64 {
+    600_000
+}
 /// Configuration loaded from JSON file
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Config {
@@ -140,6 +151,12 @@ pub struct CredibleConfig {
     pub state_oracle_deployment_block: u64,
     /// Maximum capacity for transaction results
     pub transaction_results_max_capacity: usize,
+    /// Maximum time (ms) to keep transaction result request channels alive.
+    #[serde(default = "default_pending_request_ttl_ms")]
+    pub transaction_results_pending_requests_ttl_ms: u64,
+    /// Maximum time (ms) to keep accepted transactions without results.
+    #[serde(default = "default_accepted_txs_ttl_ms")]
+    pub accepted_txs_ttl_ms: u64,
     /// Cache checker client websocket url
     #[cfg(feature = "cache_validation")]
     pub cache_checker_ws_url: String,
@@ -170,6 +187,9 @@ pub struct TransportConfig {
     /// Maximum number of events ID in the transport layer buffer before dropping new events.
     #[serde(default = "default_event_id_buffer_capacity")]
     pub event_id_buffer_capacity: usize,
+    /// Maximum time (ms) a pending transaction receive entry may live before forced eviction.
+    #[serde(default = "default_pending_receive_ttl_ms")]
+    pub pending_receive_ttl_ms: u64,
 }
 
 /// State configuration from file
