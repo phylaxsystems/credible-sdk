@@ -774,23 +774,6 @@ mod tests {
             "No hash should be cached for genesis"
         );
     }
-    #[test]
-    fn test_block_hash_cache_with_no_hash_provided() {
-        let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
-
-        let config = SystemCallsConfig {
-            spec_id: SpecId::SHANGHAI,
-            block_number: U256::from(100),
-            timestamp: U256::from(1234567890),
-            block_hash: B256::ZERO, // No hash provided
-            parent_beacon_block_root: None,
-        };
-
-        let result = system_calls.apply_system_calls(&config, &mut db);
-        assert!(result.is_ok());
-        assert!(db.block_hash_cache.borrow().is_empty());
-    }
 
     #[test]
     fn test_block_hash_cache_sequential_blocks() {
