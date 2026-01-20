@@ -87,11 +87,6 @@ impl TraceProvider for GethTraceProvider {
             .await
             .with_context(|| format!("failed to trace block {block_number}"))?;
 
-        Ok(BlockStateUpdateBuilder::from_geth_traces(
-            block_number,
-            block_hash,
-            state_root,
-            traces,
-        ))
+        BlockStateUpdateBuilder::from_geth_traces(block_number, block_hash, state_root, traces)
     }
 }

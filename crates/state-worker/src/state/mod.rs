@@ -31,7 +31,10 @@ use alloy::primitives::{
     keccak256,
 };
 use alloy_provider::RootProvider;
-use anyhow::Result;
+use anyhow::{
+    Context,
+    Result,
+};
 use async_trait::async_trait;
 use revm::primitives::KECCAK_EMPTY;
 use state_store::{
@@ -116,14 +119,16 @@ impl BlockStateUpdateBuilder {
         block_hash: B256,
         state_root: B256,
         traces: Vec<alloy_rpc_types_trace::geth::TraceResult>,
-    ) -> BlockStateUpdate {
-        let accounts = geth::process_geth_traces(traces);
-        BlockStateUpdate {
+    ) -> Result<BlockStateUpdate> {
+        let accounts =
+            geth::process_geth_traces(traces).context(format!("block {block_number}"))?;
+
+        Ok(BlockStateUpdate {
             block_number,
             block_hash,
             state_root,
             accounts,
-        }
+        })
     }
 
     pub fn from_accounts(
