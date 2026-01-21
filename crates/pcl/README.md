@@ -95,7 +95,7 @@ Commands:
   delete  Delete the current configuration
 ```
 
-Configuration is stored in `~/.pcl/config.toml` and includes:
+Configuration is stored in `$XDG_CONFIG_HOME/pcl/config.toml` (defaults to `~/.config/pcl/config.toml`) and includes:
 
 - Authentication token
 - Pending assertions for submission
