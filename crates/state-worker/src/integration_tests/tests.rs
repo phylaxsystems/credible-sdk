@@ -12,15 +12,12 @@ use alloy::primitives::{
     keccak256,
 };
 use serde_json::json;
-use state_worker_test_macros::{
-    database_test,
-    traced_database_test,
-};
 use std::time::Duration;
 use tokio::time::sleep;
+use tracing_test::traced_test;
 
-#[database_test(all)]
-async fn test_state_worker_hydrates_genesis_state(_instance: TestInstance) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_state_worker_hydrates_genesis_state() {
     let genesis_account = "0x00000000000000000000000000000000000000aa";
     let genesis_code = "0x6000";
 
@@ -96,8 +93,11 @@ async fn test_state_worker_hydrates_genesis_state(_instance: TestInstance) {
     assert_eq!(latest, Some(0), "Latest block should be 0 (genesis)");
 }
 
-#[database_test(all)]
-async fn test_state_worker_processes_multiple_state_changes(instance: TestInstance) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_state_worker_processes_multiple_state_changes() {
+    let instance = TestInstance::new_mdbx()
+        .await
+        .expect("Failed to create MDBX test instance");
     sleep(Duration::from_millis(200)).await;
 
     let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -241,8 +241,11 @@ async fn test_state_worker_processes_multiple_state_changes(instance: TestInstan
     assert_eq!(storage_value, U256::from(3));
 }
 
-#[database_test(all)]
-async fn test_state_worker_handles_rapid_state_changes(instance: TestInstance) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_state_worker_handles_rapid_state_changes() {
+    let instance = TestInstance::new_mdbx()
+        .await
+        .expect("Failed to create MDBX test instance");
     for _ in 0..5 {
         let geth_trace = json!({
             "jsonrpc": "2.0",
@@ -280,8 +283,12 @@ async fn test_state_worker_handles_rapid_state_changes(instance: TestInstance) {
     );
 }
 
-#[traced_database_test(all)]
-async fn test_state_worker_non_consecutive_blocks_critical_alert(instance: TestInstance) {
+#[traced_test]
+#[tokio::test]
+async fn test_state_worker_non_consecutive_blocks_critical_alert() {
+    let instance = TestInstance::new_mdbx()
+        .await
+        .expect("Failed to create MDBX test instance");
     // Setup valid trace response for block 1 with no traces
     let valid_geth_trace_1 = json!({
         "jsonrpc": "2.0",
@@ -318,8 +325,12 @@ async fn test_state_worker_non_consecutive_blocks_critical_alert(instance: TestI
     assert!(logs_contain("Missing block"));
 }
 
-#[traced_database_test(all)]
-async fn test_state_worker_missing_state_critical_alert(instance: TestInstance) {
+#[traced_test]
+#[tokio::test]
+async fn test_state_worker_missing_state_critical_alert() {
+    let instance = TestInstance::new_mdbx()
+        .await
+        .expect("Failed to create MDBX test instance");
     let geth_trace_block_1 = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -347,8 +358,11 @@ async fn test_state_worker_missing_state_critical_alert(instance: TestInstance) 
     assert!(logs_contain("critical"));
 }
 
-#[database_test(all)]
-async fn test_circular_buffer_rotation_with_state_diffs(instance: TestInstance) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_circular_buffer_rotation_with_state_diffs() {
+    let instance = TestInstance::new_mdbx()
+        .await
+        .expect("Failed to create MDBX test instance");
     for _ in 0..6 {
         let geth_trace = json!({
             "jsonrpc": "2.0",
@@ -380,8 +394,11 @@ async fn test_circular_buffer_rotation_with_state_diffs(instance: TestInstance) 
     assert_eq!(latest, Some(6), "Latest block should be 6 after rotation");
 }
 
-#[database_test(all)]
-async fn test_zero_storage_values_are_deleted(instance: TestInstance) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_zero_storage_values_are_deleted() {
+    let instance = TestInstance::new_mdbx()
+        .await
+        .expect("Failed to create MDBX test instance");
     let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
 
@@ -505,8 +522,11 @@ async fn test_zero_storage_values_are_deleted(instance: TestInstance) {
     );
 }
 
-#[database_test(all)]
-async fn test_get_account_does_not_load_storage(instance: TestInstance) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_get_account_does_not_load_storage() {
+    let instance = TestInstance::new_mdbx()
+        .await
+        .expect("Failed to create MDBX test instance");
     let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
 
@@ -562,8 +582,11 @@ async fn test_get_account_does_not_load_storage(instance: TestInstance) {
     assert_eq!(account_info.nonce, 1);
 }
 
-#[database_test(all)]
-async fn test_get_storage_returns_individual_slot(instance: TestInstance) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_get_storage_returns_individual_slot() {
+    let instance = TestInstance::new_mdbx()
+        .await
+        .expect("Failed to create MDBX test instance");
     let test_address = "0xcccccccccccccccccccccccccccccccccccccccc";
     let address_hash = keccak256(hex::decode(test_address.trim_start_matches("0x")).unwrap());
 

@@ -30,4 +30,3 @@ int-test-utils = { path = "../int-test-utils" }
 serde_json = { workspace = true }
 tracing-test = "0.2.5"
 uuid = "0.8.2"
-state-worker-test-macros = { path = "src/integration_tests/macros" }

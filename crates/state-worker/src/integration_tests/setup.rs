@@ -21,7 +21,6 @@ use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use state_store::{
     AddressHash,
     Reader,
-    Writer,
 };
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -99,10 +98,6 @@ impl TestInstance {
         // For MDBX, StateWriter implements both Reader and Writer.
         let writer_reader = StateWriter::new(mdbx_dir.path_str(), config.clone())
             .map_err(|e| format!("Failed to initialize MDBX writer: {e}"))?;
-
-        writer_reader
-            .ensure_dump_index_metadata()
-            .map_err(|e| format!("Failed to ensure dump index metadata: {e}"))?;
 
         // Clone the reader BEFORE the worker takes ownership of the writer.
         // This works because StateDb uses Arc<DatabaseEnv> internally,

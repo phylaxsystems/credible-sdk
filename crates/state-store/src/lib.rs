@@ -22,21 +22,6 @@ use std::{
 
 pub mod mdbx;
 
-/// Information about a recovered stale lock.
-#[derive(Debug, Clone)]
-pub struct StaleLockRecovery {
-    /// The namespace that had the stale lock.
-    pub namespace: String,
-    /// The block number that was being written when the crash occurred.
-    pub target_block: u64,
-    /// The writer ID that held the lock.
-    pub writer_id: String,
-    /// When the lock was acquired (unix timestamp).
-    pub started_at: i64,
-    /// The block number the namespace had before the failed write (if any).
-    pub previous_block: Option<u64>,
-}
-
 /// Account info without storage (for reader API).
 ///
 /// This is the lightweight response type for `get_account()` calls.
@@ -402,21 +387,6 @@ pub trait Writer {
     ///
     /// Returns statistics about the commit operation for metrics tracking.
     fn commit_block(&self, update: &BlockStateUpdate) -> Result<CommitStats, Self::Error>;
-
-    /// Ensure the metadata matches the configured namespace rotation size.
-    fn ensure_dump_index_metadata(&self) -> Result<(), Self::Error>;
-
-    /// Check for and recover from stale locks on all namespaces.
-    ///
-    /// Should be called during startup before processing blocks. For each stale lock:
-    /// - If the state can be repaired (diffs exist): completes the write, releases lock
-    /// - If repair fails (missing diffs): returns error, lock remains in place
-    ///
-    /// The lock is NEVER released until the state is consistent, ensuring readers
-    /// cannot access corrupt data.
-    ///
-    /// Returns information about successfully recovered locks.
-    fn recover_stale_locks(&self) -> Result<Vec<StaleLockRecovery>, Self::Error>;
 
     /// Bootstrap the circular buffer from a single state snapshot.
     ///

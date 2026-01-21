@@ -61,7 +61,6 @@ use crate::{
     BlockStateUpdate,
     CommitStats,
     Reader,
-    StaleLockRecovery,
     Writer,
     mdbx,
     mdbx::{
@@ -919,22 +918,6 @@ impl Writer for StateWriter {
         );
 
         Ok(stats)
-    }
-
-    /// Ensure the database metadata matches the configured buffer size.
-    fn ensure_dump_index_metadata(&self) -> StateResult<()> {
-        Ok(())
-    }
-
-    /// Check for and recover from stale locks on all namespaces.
-    ///
-    /// Note: MDBX doesn't use the same locking semantics as Redis.
-    /// This is a no-op for MDBX but implemented for trait compatibility.
-    fn recover_stale_locks(&self) -> StateResult<Vec<StaleLockRecovery>> {
-        // MDBX uses MVCC and doesn't have the same lock recovery needs as Redis.
-        // Returning empty vec indicates no recovery was needed.
-        trace!("recover_stale_locks called (no-op for MDBX)");
-        Ok(vec![])
     }
 
     /// Bootstrap the circular buffer from a single state snapshot.
