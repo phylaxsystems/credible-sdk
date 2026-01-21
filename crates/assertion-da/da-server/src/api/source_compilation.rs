@@ -1186,7 +1186,7 @@ mod tests {
 
         let image_exists_after = images_after
             .iter()
-            .any(|img| img.repo_tags.contains(&image_name.clone()));
+            .any(|img| img.repo_tags.contains(&image_name));
 
         assert!(image_exists_after, "Image should exist after compilation");
     }
