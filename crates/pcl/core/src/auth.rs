@@ -172,17 +172,28 @@ impl AuthCommand {
             .map_err(AuthError::AuthRequestInvalidResponse)
     }
 
-    /// Display login URL and code to the user
+    /// Display login URL and code to the user, attempting to open the browser automatically
     fn display_login_instructions(&self, auth_response: &AuthResponse) {
         let url = format!(
             "{}/device?session_id={}",
             self.auth_url, auth_response.session_id
         );
-        println!(
-            "\nTo authenticate, please visit:\n\n🔗 {}\n📝 {}\n",
-            url.white(),
-            format!("Code: {}", auth_response.code).green().bold()
-        );
+
+        // Try to open the URL in the default browser
+        if open::that(&url).is_ok() {
+            println!(
+                "\n{} Opening browser for authentication...\n\n🔗 {}\n📝 {}\n",
+                "🌐".green(),
+                url.white(),
+                format!("Code: {}", auth_response.code).green().bold()
+            );
+        } else {
+            println!(
+                "\nTo authenticate, please visit:\n\n🔗 {}\n📝 {}\n",
+                url.white(),
+                format!("Code: {}", auth_response.code).green().bold()
+            );
+        }
     }
 
     async fn wait_for_verification(
