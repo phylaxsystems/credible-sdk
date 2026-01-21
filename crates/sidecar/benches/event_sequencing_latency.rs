@@ -4,19 +4,17 @@
 //! to receiving the corresponding output events on the engine channel.
 
 use alloy::primitives::{
+    B256,
     TxHash,
     U256,
-    B256
 };
 use criterion::{
     BatchSize,
     Criterion,
 };
-use revm::{
-    context::{
-        BlockEnv,
-        TxEnv,
-    },
+use revm::context::{
+    BlockEnv,
+    TxEnv,
 };
 use sidecar::{
     engine::queue::{
