@@ -1342,7 +1342,7 @@ impl Listener {
         block_hash: B256,
         parent_beacon_block_root: Option<B256>,
     ) -> Result<()> {
-        let block_hash_bytes = block_hash.0.to_vec();
+        let block_hash_bytes = block_hash.to_vec();
         let parent_beacon_bytes = parent_beacon_block_root.map(|h| h.to_vec());
 
         stream
