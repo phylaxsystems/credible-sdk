@@ -136,6 +136,24 @@ impl TransactionsState {
         self.transaction_results.remove(tx_execution_id);
     }
 
+    /// Clears all tracked transaction state.
+    ///
+    /// Intended for cache invalidation / reorg recovery where any previously
+    /// tracked in-flight transactions may no longer be valid.
+    pub fn clear_all(&self) {
+        self.transaction_results.clear();
+        self.transaction_results_pending_requests.clear();
+        self.accepted_txs.clear();
+    }
+
+    /// Clears only the in-flight tracking (accepted txs + pending result requests).
+    ///
+    /// Useful when invalidating an iteration while keeping historical results.
+    pub fn clear_in_flight(&self) {
+        self.transaction_results_pending_requests.clear();
+        self.accepted_txs.clear();
+    }
+
     pub fn add_accepted_tx(&self, tx_queue_contents: &TxQueueContents) {
         if let TxQueueContents::Tx(tx) = tx_queue_contents {
             self.accepted_txs.insert(tx.tx_execution_id, Instant::now());

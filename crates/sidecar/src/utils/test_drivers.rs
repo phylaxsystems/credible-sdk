@@ -4,6 +4,7 @@ use super::instance::{
     LocalInstance,
     TestTransport,
 };
+use super::shared_db::SharedDb;
 use crate::{
     CoreEngine,
     Sources,
@@ -180,7 +181,7 @@ const HTTP_RETRY_DELAY_MS: u64 = 100;
 
 /// Common initialization for all driver types
 struct CommonSetup {
-    underlying_db: Arc<CacheDB<Arc<Sources>>>,
+    underlying_db: Arc<SharedDb<CacheDB<Arc<Sources>>>>,
     sources: Arc<Sources>,
     eth_rpc_source_http_mock: DualProtocolMockServer,
     fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
@@ -223,7 +224,7 @@ impl CommonSetup {
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
 
-        let underlying_db = Arc::new(underlying_db);
+        let underlying_db = Arc::new(SharedDb::new(underlying_db));
 
         let assertion_store = match assertion_store {
             Some(store) => Arc::new(store),
@@ -279,6 +280,7 @@ impl CommonSetup {
             Some(&self.eth_rpc_source_http_mock.ws_url()),
         )
         .await;
+        engine.set_canonical_db_for_tests(self.underlying_db.clone());
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let (engine_handle, _engine_exit_rx) = engine

@@ -64,6 +64,7 @@ use assertion_executor::{
 };
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use rand::Rng;
+use super::shared_db::SharedDb;
 use revm::{
     context::{
         transaction::AccessListItem,
@@ -71,6 +72,7 @@ use revm::{
     },
     context_interface::block::BlobExcessGasAndPrice,
     database::CacheDB,
+    DatabaseRef,
     primitives::{
         Bytes,
         address,
@@ -209,7 +211,7 @@ pub trait TestTransport: Sized {
 /// manually sending/verifying because of this.
 pub struct LocalInstance<T: TestTransport> {
     /// The underlying database
-    db: Arc<CacheDB<Arc<Sources>>>,
+    db: Arc<SharedDb<CacheDB<Arc<Sources>>>>,
     /// Underlying cache
     sources: Arc<Sources>,
     /// List of cache sources
@@ -259,7 +261,7 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Internal constructor for creating `LocalInstance` with all fields
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_internal(
-        db: Arc<CacheDB<Arc<Sources>>>,
+        db: Arc<SharedDb<CacheDB<Arc<Sources>>>>,
         sources: Arc<Sources>,
         eth_rpc_source_http_mock: DualProtocolMockServer,
         fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
@@ -325,7 +327,7 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Get a reference to the underlying database
-    pub fn db(&self) -> &Arc<CacheDB<Arc<Sources>>> {
+    pub fn db(&self) -> &Arc<SharedDb<CacheDB<Arc<Sources>>>> {
         &self.db
     }
 
@@ -378,6 +380,49 @@ impl<T: TestTransport> LocalInstance<T> {
     pub fn clear_nonce(&mut self) {
         self.iteration_nonce.clear();
         self.committed_nonce.clear();
+    }
+
+    fn resync_nonces_from_canonical_state(&mut self) -> Result<(), String> {
+        let mut addresses = HashSet::new();
+        addresses.insert(self.default_account);
+
+        for address in self.committed_nonce.keys() {
+            addresses.insert(*address);
+        }
+        for ((address, _iteration_id), _) in &self.iteration_nonce {
+            addresses.insert(*address);
+        }
+
+        // Pending state is invalid after a cache flush.
+        self.iteration_nonce.clear();
+        self.committed_nonce.clear();
+
+        for address in addresses {
+            let nonce = self
+                .db
+                .with_read(|db| db.basic_ref(address))
+                .map_err(|e| format!("Failed to read account nonce for {address}: {e:?}"))?
+                .map(|info| info.nonce)
+                .unwrap_or(0);
+            self.committed_nonce.insert(address, nonce);
+        }
+
+        Ok(())
+    }
+
+    async fn wait_for_engine_head(&self, block_number: U256) -> Result<(), String> {
+        let start = Instant::now();
+        loop {
+            if self.sources.get_latest_head() >= block_number {
+                return Ok(());
+            }
+            if start.elapsed() > Self::CONDITION_TIMEOUT {
+                return Err(format!(
+                    "timed out waiting for engine to commit block {block_number}"
+                ));
+            }
+            tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
+        }
     }
 
     /// Wait for a short time to allow transaction processing
@@ -523,23 +568,20 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Prefund accounts with ETH for testing
     pub fn fund_accounts(&mut self, accounts: &[(Address, U256)]) -> Result<(), String> {
-        let db = Arc::get_mut(&mut self.db)
-            .ok_or_else(|| "Cannot get mutable reference to database".to_string())?;
-
-        for (address, balance) in accounts {
-            let account_info = AccountInfo {
-                balance: *balance,
-                ..Default::default()
-            };
-            db.insert_account_info(*address, account_info);
-        }
+        self.db.with_write(|db| {
+            for (address, balance) in accounts {
+                let account_info = AccountInfo {
+                    balance: *balance,
+                    ..Default::default()
+                };
+                db.insert_account_info(*address, account_info);
+            }
+        });
 
         Ok(())
     }
 
     /// Execute an async action and assert it results in a cache flush.
-    // TODO: because we do not commit state to underlying sources properly we lose all state
-    // made during tests when we flush, thus we have to set the nonce to 0
     pub async fn expect_cache_flush<F>(&mut self, action: F) -> Result<(), String>
     where
         for<'a> F: FnOnce(&'a mut Self) -> Pin<Box<dyn Future<Output = Result<(), String>> + 'a>>,
@@ -559,7 +601,7 @@ impl<T: TestTransport> LocalInstance<T> {
             }
             tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
         }
-        self.clear_nonce();
+        self.resync_nonces_from_canonical_state()?;
 
         Ok(())
     }
@@ -610,6 +652,7 @@ impl<T: TestTransport> LocalInstance<T> {
         }
 
         self.transport.send_commit_head(commit_head).await?;
+        self.wait_for_engine_head(block_number).await?;
 
         // Update committed nonce snapshot using the iteration we just finalized.
         let selected_iteration_id = self.iteration_id;

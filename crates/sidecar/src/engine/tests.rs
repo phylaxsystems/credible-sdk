@@ -72,6 +72,7 @@ impl<DB> CoreEngine<DB> {
         let sources = Arc::new(Sources::new(vec![], 10));
         Self {
             cache: OverlayDb::new(None),
+            canonical_db: None,
             current_block_iterations: HashMap::new(),
             tx_receiver,
             incident_sender: None,
@@ -908,6 +909,7 @@ async fn test_execute_reorg_depth_truncates_tail() {
         version_db,
         n_transactions: 3,
         executed_txs: vec![tx1, tx2, tx3],
+        executed_state_deltas: Vec::new(),
         incident_txs: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -986,6 +988,7 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
         version_db,
         n_transactions: 3,
         executed_txs: vec![tx1, tx2, tx3],
+        executed_state_deltas: Vec::new(),
         incident_txs: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -1059,6 +1062,7 @@ async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
         version_db,
         n_transactions: 2,
         executed_txs: vec![tx1, tx2],
+        executed_state_deltas: Vec::new(),
         incident_txs: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -1136,6 +1140,7 @@ async fn test_execute_reorg_removes_all_transactions() {
         version_db,
         n_transactions: 3,
         executed_txs: vec![tx1, tx2, tx3],
+        executed_state_deltas: Vec::new(),
         incident_txs: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -1213,6 +1218,7 @@ async fn test_execute_reorg_with_all_failed_transactions() {
         version_db,
         n_transactions: 2,
         executed_txs: vec![tx1, tx2],
+        executed_state_deltas: Vec::new(),
         incident_txs: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -1288,6 +1294,7 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
         version_db,
         n_transactions: 5,
         executed_txs: txs.clone(),
+        executed_state_deltas: Vec::new(),
         incident_txs: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -1361,6 +1368,7 @@ async fn test_database_commit_and_block_env_requirements() {
         version_db: VersionDb::new(engine.cache.clone()),
         n_transactions: 0,
         executed_txs: Vec::new(),
+        executed_state_deltas: Vec::new(),
         incident_txs: Vec::new(),
         block_env,
     };
@@ -1533,6 +1541,60 @@ async fn test_block_env_wrong_transaction_number(mut instance: crate::utils::Loc
 }
 
 #[crate::utils::engine_test(all)]
+async fn test_committed_nonce_persists_across_cache_flush(mut instance: crate::utils::LocalInstance) {
+    // Block 1 (commit empty, start block 2)
+    instance.new_block().await.unwrap();
+
+    // Block 2: execute a tx so the canonical nonce increments.
+    instance.new_iteration(1).await.unwrap();
+    let tx1 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+    assert!(instance.is_transaction_successful(&tx1).await.unwrap());
+
+    // Commit block 2 (start block 3)
+    instance.new_block().await.unwrap();
+
+    let account = instance.default_account();
+    let nonce_after_commit = instance
+        .db()
+        .with_read(|db| db.basic_ref(account).unwrap().unwrap().nonce);
+    assert_eq!(
+        nonce_after_commit, 1,
+        "canonical db should reflect the committed nonce"
+    );
+
+    // Force a cache flush on the next commit.
+    instance.transport.set_n_transactions(999);
+    instance
+        .expect_cache_flush(|instance| {
+            Box::pin(async move {
+                instance.new_block().await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+
+    let nonce_after_flush = instance
+        .db()
+        .with_read(|db| db.basic_ref(account).unwrap().unwrap().nonce);
+    assert_eq!(
+        nonce_after_flush, 1,
+        "canonical db nonce should persist across cache flush"
+    );
+
+    // Next tx should use nonce=1 and succeed.
+    instance.new_iteration(1).await.unwrap();
+    let tx2 = instance
+        .send_successful_create_tx_dry(uint!(0_U256), Bytes::new())
+        .await
+        .unwrap();
+    assert!(instance.is_transaction_successful(&tx2).await.unwrap());
+}
+
+#[crate::utils::engine_test(all)]
 async fn test_block_env_wrong_last_tx_hash(mut instance: crate::utils::LocalInstance) {
     tracing::info!("test_block_env_wrong_last_tx_hash: sending first tx");
     // Send and verify a reverting CREATE transaction
@@ -1699,6 +1761,7 @@ async fn test_failed_transaction_commit() {
         version_db,
         n_transactions: 1,
         executed_txs: vec![tx_execution_id],
+        executed_state_deltas: Vec::new(),
         incident_txs: Vec::new(),
         block_env: BlockEnv {
             number: U256::from(1),
