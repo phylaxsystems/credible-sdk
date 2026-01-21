@@ -354,8 +354,6 @@ async fn main() -> anyhow::Result<()> {
                 .credible
                 .overlay_cache_invalidation_every_block
                 .unwrap_or(false),
-            config.chain.cancun_time,
-            config.chain.prague_time,
             incident_report_tx,
             #[cfg(feature = "cache_validation")]
             Some(&config.credible.cache_checker_ws_url),

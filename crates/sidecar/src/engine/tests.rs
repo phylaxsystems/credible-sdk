@@ -85,7 +85,7 @@ impl<DB> CoreEngine<DB> {
             state_sources_sync_timeout: Duration::from_millis(100),
             check_sources_available: true,
             overlay_cache_invalidation_every_block: false,
-            system_calls: SystemCalls::new(None, None),
+            system_calls: SystemCalls,
             #[cfg(feature = "cache_validation")]
             processed_transactions: Arc::new(
                 moka::sync::Cache::builder().max_capacity(100).build(),
@@ -201,8 +201,6 @@ async fn create_test_engine_with_timeout(
         timeout,
         timeout / 2, // We divide by 2 to ensure we read the cache status before we timeout
         false,
-        None,
-        None,
         None,
         #[cfg(feature = "cache_validation")]
         None,
@@ -2715,7 +2713,7 @@ impl revm::DatabaseCommit for MockDb {
 #[test]
 fn test_ring_buffer_and_slot_calculations() {
     let mut db = MockDb::default();
-    let system_calls = SystemCalls::new(None, None);
+    let system_calls = SystemCalls::new();
 
     // EIP-2935: Test with block number that wraps around the ring buffer
     let block_number = HISTORY_SERVE_WINDOW + 99;
@@ -2788,7 +2786,7 @@ fn test_spec_id_activation_and_behavior() {
     assert!(SpecId::PRAGUE.is_cancun_active());
     assert!(SpecId::PRAGUE.is_prague_active());
 
-    let system_calls = SystemCalls::new(None, None);
+    let system_calls = SystemCalls::new();
 
     // Shanghai: neither contract should be touched
     let mut db = MockDb::default();
