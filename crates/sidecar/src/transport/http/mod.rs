@@ -124,7 +124,10 @@ impl Transport for HttpTransport {
             tx_sender,
             bind_addr: config.bind_addr,
             shutdown_token: CancellationToken::new(),
-            transactions_results: QueryTransactionsResults::new(state_results),
+            transactions_results: QueryTransactionsResults::new(
+                state_results,
+                config.pending_receive_ttl,
+            ),
             block_context: BlockContext::default(),
         })
     }

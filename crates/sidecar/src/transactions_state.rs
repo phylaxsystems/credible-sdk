@@ -7,18 +7,37 @@ use crate::{
 };
 use dashmap::{
     DashMap,
-    DashSet,
     mapref::one::Ref,
 };
-use std::sync::Arc;
-use tokio::sync::broadcast;
-use tracing::error;
+use std::{
+    sync::{
+        Arc,
+        Mutex,
+    },
+    time::Duration,
+};
+use tokio::{
+    runtime::Handle,
+    sync::broadcast,
+    task::JoinHandle,
+    time::Instant,
+};
+use tracing::{
+    error,
+    warn,
+};
 
 /// Event emitted when a transaction result is available.
 #[derive(Debug, Clone)]
 pub struct TransactionResultEvent {
     pub tx_execution_id: TxExecutionId,
     pub result: TransactionResult,
+}
+
+#[derive(Clone, Debug)]
+struct PendingResultRequest {
+    sender: broadcast::Sender<TransactionResult>,
+    created_at: Instant,
 }
 
 #[derive(Debug)]
@@ -30,24 +49,34 @@ pub struct TransactionsState {
     ///
     /// It is also used to create new receivers for multiple clients waiting for the result.
     ///
-    /// Unlike in `QueryTransactionsResults` we dont need a cleanup taks, because we know that
-    /// pending transactions will eventually be included.
-    transaction_results_pending_requests:
-        DashMap<TxExecutionId, broadcast::Sender<TransactionResult>>,
-    /// `HashSet` containing the accepted transactions which haven't been processed yet.
-    accepted_txs: DashSet<TxExecutionId>,
+    /// Pending requests are cleaned up by a background task to avoid unbounded growth.
+    transaction_results_pending_requests: DashMap<TxExecutionId, PendingResultRequest>,
+    /// Accepted transactions which haven't been processed yet, with insertion time.
+    accepted_txs: DashMap<TxExecutionId, Instant>,
     /// Optional channel for streaming transaction results to external observers (e.g., transports).
     result_event_sender: Option<flume::Sender<TransactionResultEvent>>,
+    pending_requests_ttl: Duration,
+    accepted_txs_ttl: Duration,
+    bg_task_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl TransactionsState {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
+        Self::new_with_ttls(Duration::from_secs(600), Duration::from_secs(600))
+    }
+
+    pub fn new_with_ttls(pending_requests_ttl: Duration, accepted_txs_ttl: Duration) -> Arc<Self> {
+        let state = Arc::new(Self {
             transaction_results: DashMap::new(),
             transaction_results_pending_requests: DashMap::new(),
-            accepted_txs: DashSet::new(),
+            accepted_txs: DashMap::new(),
             result_event_sender: None,
-        })
+            pending_requests_ttl,
+            accepted_txs_ttl,
+            bg_task_handle: Arc::new(Mutex::new(None)),
+        });
+        state.spawn_cleanup_task();
+        state
     }
 
     /// Create a new `TransactionsState` with a result event sender.
@@ -57,12 +86,29 @@ impl TransactionsState {
     pub fn with_result_sender(
         result_event_sender: flume::Sender<TransactionResultEvent>,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        Self::with_result_sender_and_ttls(
+            result_event_sender,
+            Duration::from_secs(600),
+            Duration::from_secs(600),
+        )
+    }
+
+    pub fn with_result_sender_and_ttls(
+        result_event_sender: flume::Sender<TransactionResultEvent>,
+        pending_requests_ttl: Duration,
+        accepted_txs_ttl: Duration,
+    ) -> Arc<Self> {
+        let state = Arc::new(Self {
             transaction_results: DashMap::new(),
             transaction_results_pending_requests: DashMap::new(),
-            accepted_txs: DashSet::new(),
+            accepted_txs: DashMap::new(),
             result_event_sender: Some(result_event_sender),
-        })
+            pending_requests_ttl,
+            accepted_txs_ttl,
+            bg_task_handle: Arc::new(Mutex::new(None)),
+        });
+        state.spawn_cleanup_task();
+        state
     }
 
     pub fn add_transaction_result(
@@ -92,7 +138,7 @@ impl TransactionsState {
 
     pub fn add_accepted_tx(&self, tx_queue_contents: &TxQueueContents) {
         if let TxQueueContents::Tx(tx, _) = tx_queue_contents {
-            self.accepted_txs.insert(tx.tx_execution_id);
+            self.accepted_txs.insert(tx.tx_execution_id, Instant::now());
         }
     }
 
@@ -106,14 +152,14 @@ impl TransactionsState {
 
     /// The transaction is processed if it is either accepted or it was already processed by the engine.
     pub fn is_tx_received(&self, tx_execution_id: &TxExecutionId) -> bool {
-        self.accepted_txs.contains(tx_execution_id)
+        self.accepted_txs.contains_key(tx_execution_id)
             || self.transaction_results.contains_key(tx_execution_id)
     }
 
     /// Check if there is a pending query for the processed result
     fn process_pending_queries(&self, tx_execution_id: TxExecutionId, result: &TransactionResult) {
         // O(1)
-        let Some((_, sender)) = self
+        let Some((_, pending)) = self
             .transaction_results_pending_requests
             .remove(&tx_execution_id)
         else {
@@ -121,7 +167,7 @@ impl TransactionsState {
         };
         // Purposedly ignore this error in case there is a race condition and the result is sent twice
         // O(1)
-        let _ = sender.send(result.clone()).map_err(|e| {
+        let _ = pending.sender.send(result.clone()).map_err(|e| {
             error!(
                 target = "transactions_state",
                 error = ?e,
@@ -161,12 +207,17 @@ impl TransactionsState {
                 .transaction_results_pending_requests
                 .get(tx_execution_id)
             {
-                return RequestTransactionResult::Channel(channel.subscribe());
+                return RequestTransactionResult::Channel(channel.sender.subscribe());
             }
 
             let (response_tx, response_rx) = broadcast::channel(1);
-            self.transaction_results_pending_requests
-                .insert(*tx_execution_id, response_tx);
+            self.transaction_results_pending_requests.insert(
+                *tx_execution_id,
+                PendingResultRequest {
+                    sender: response_tx,
+                    created_at: Instant::now(),
+                },
+            );
 
             // Check the race condition in which the engine is faster than the transport layer process:
             // Then it could happen:
@@ -182,6 +233,40 @@ impl TransactionsState {
             }
             RequestTransactionResult::Channel(response_rx)
         }
+    }
+
+    fn spawn_cleanup_task(self: &Arc<Self>) {
+        if Handle::try_current().is_err() {
+            return;
+        }
+        let Ok(mut handle_lock) = self.bg_task_handle.lock() else {
+            warn!("cleanup task mutex poisoned; skipping cleanup spawn");
+            return;
+        };
+        if handle_lock.is_some() {
+            return;
+        }
+
+        let pending_requests = self.transaction_results_pending_requests.clone();
+        let accepted_txs = self.accepted_txs.clone();
+        let pending_requests_ttl = self.pending_requests_ttl;
+        let accepted_txs_ttl = self.accepted_txs_ttl;
+
+        let task = tokio::task::spawn(async move {
+            let mut cleanup_interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                cleanup_interval.tick().await;
+
+                pending_requests.retain(|_, pending| {
+                    let age = pending.created_at.elapsed();
+                    pending.sender.receiver_count() > 0 && age <= pending_requests_ttl
+                });
+
+                accepted_txs.retain(|_, created_at| created_at.elapsed() <= accepted_txs_ttl);
+            }
+        });
+
+        *handle_lock = Some(task);
     }
 }
 
@@ -334,13 +419,13 @@ mod tests {
 
         // First add to accepted transactions
         state.add_accepted_tx(&tx_queue_contents);
-        assert!(state.accepted_txs.contains(&tx_execution_id));
+        assert!(state.accepted_txs.contains_key(&tx_execution_id));
 
         // Then add the result, should remove from accepted_txs
         let result = create_test_transaction_result();
         state.add_transaction_result(tx_execution_id, &result);
 
-        assert!(!state.accepted_txs.contains(&tx_execution_id));
+        assert!(!state.accepted_txs.contains_key(&tx_execution_id));
         assert_eq!(state.transaction_results.len(), 1);
     }
 
@@ -352,7 +437,7 @@ mod tests {
 
         state.add_accepted_tx(&tx_queue_contents);
 
-        assert!(state.accepted_txs.contains(&tx_execution_id));
+        assert!(state.accepted_txs.contains_key(&tx_execution_id));
         assert_eq!(state.accepted_txs.len(), 1);
     }
 
@@ -521,9 +606,13 @@ mod tests {
 
         // Simulate race condition: add result after request is made but before channel is returned
         let (tx, _rx) = broadcast::channel(1);
-        state
-            .transaction_results_pending_requests
-            .insert(tx_execution_id, tx);
+        state.transaction_results_pending_requests.insert(
+            tx_execution_id,
+            PendingResultRequest {
+                sender: tx,
+                created_at: Instant::now(),
+            },
+        );
 
         // Add the transaction result
         state.add_transaction_result(tx_execution_id, &result.clone());

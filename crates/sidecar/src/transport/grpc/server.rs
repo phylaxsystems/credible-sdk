@@ -76,7 +76,10 @@ use futures::stream::{
     FuturesUnordered,
     StreamExt,
 };
-use metrics::histogram;
+use metrics::{
+    counter,
+    histogram,
+};
 use revm::{
     context::{
         BlockEnv as RevmBlockEnv,
@@ -93,6 +96,7 @@ use revm::{
     },
 };
 use std::{
+    collections::HashMap,
     pin::Pin,
     sync::{
         Arc,
@@ -579,7 +583,8 @@ const RESULT_BROADCAST_BUFFER: usize = 16_384;
 struct GrpcServiceInner {
     commit_head_seen: AtomicBool,
     result_broadcaster: broadcast::Sender<PbTransactionResult>,
-    abort_handles: Mutex<Vec<AbortHandle>>,
+    abort_handles: Mutex<HashMap<u64, AbortHandle>>,
+    next_abort_id: AtomicU64,
     /// Buffer for detecting duplicate event IDs
     event_id_buffer: EventIdBuffer,
 }
@@ -588,7 +593,7 @@ impl Drop for GrpcServiceInner {
     fn drop(&mut self) {
         // get_mut() avoids async lock—safe because we have &mut self (exclusive access)
         let handles = self.abort_handles.get_mut();
-        for handle in handles.drain(..) {
+        for handle in handles.drain().map(|(_, handle)| handle) {
             handle.abort();
         }
     }
@@ -625,10 +630,20 @@ impl GrpcService {
             abort_handle.push(handle.abort_handle());
         }
 
+        let next_abort_id = u64::try_from(abort_handle.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
         let inner = Arc::new(GrpcServiceInner {
             commit_head_seen: AtomicBool::new(false),
             result_broadcaster,
-            abort_handles: Mutex::new(abort_handle),
+            abort_handles: Mutex::new(
+                abort_handle
+                    .into_iter()
+                    .enumerate()
+                    .map(|(id, handle)| (u64::try_from(id).unwrap_or(u64::MAX), handle))
+                    .collect(),
+            ),
+            next_abort_id: AtomicU64::new(next_abort_id),
             event_id_buffer: EventIdBuffer::new(event_buffer_capacity),
         });
 
@@ -926,9 +941,13 @@ impl SidecarTransport for GrpcService {
         let events_processed_clone = events_processed.clone();
 
         let (tx, rx) = mpsc::channel(256);
+        let inner = Arc::downgrade(&self.inner);
+        let abort_id = self.inner.next_abort_id.fetch_add(1, Ordering::Relaxed);
 
         // Spawn task to process incoming events
         let handle = tokio::spawn(async move {
+            let mut send_final_ack = true;
+
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(event) => {
@@ -945,7 +964,8 @@ impl SidecarTransport for GrpcService {
                                 event_id,
                             };
                             let _ = tx.send(Ok(error_ack)).await;
-                            return;
+                            send_final_ack = false;
+                            break;
                         }
 
                         // Send success ACK with event_id
@@ -957,32 +977,40 @@ impl SidecarTransport for GrpcService {
                         };
                         if tx.send(Ok(ack)).await.is_err() {
                             // Client disconnected
-                            return;
+                            send_final_ack = false;
+                            break;
                         }
                     }
                     Err(e) => {
                         error!(error = ?e, "Error receiving event from stream");
                         let _ = tx.send(Err(e)).await;
-                        return;
+                        send_final_ack = false;
+                        break;
                     }
                 }
             }
 
-            // Send final ack on stream completion (event_id 0 indicates completion)
-            let final_ack = StreamAck {
-                success: true,
-                message: "stream completed".into(),
-                events_processed: events_processed_clone.load(Ordering::Relaxed),
-                event_id: 0,
-            };
-            let _ = tx.send(Ok(final_ack)).await;
+            if send_final_ack {
+                // Send final ack on stream completion (event_id 0 indicates completion)
+                let final_ack = StreamAck {
+                    success: true,
+                    message: "stream completed".into(),
+                    events_processed: events_processed_clone.load(Ordering::Relaxed),
+                    event_id: 0,
+                };
+                let _ = tx.send(Ok(final_ack)).await;
+            }
+
+            if let Some(inner) = inner.upgrade() {
+                inner.abort_handles.lock().await.remove(&abort_id);
+            }
         });
 
         self.inner
             .abort_handles
             .lock()
             .await
-            .push(handle.abort_handle());
+            .insert(abort_id, handle.abort_handle());
 
         let output_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Response::new(Box::pin(output_stream)))
@@ -1012,12 +1040,8 @@ impl SidecarTransport for GrpcService {
 
         // Subscribe to the broadcast channel
         let mut rx = self.inner.result_broadcaster.subscribe();
-        crate::metrics::set_grpc_result_subscribers(
-            u64::try_from(self.inner.result_broadcaster.receiver_count()).unwrap_or(u64::MAX),
-        );
 
         let (tx, stream_rx) = mpsc::channel(256);
-        let broadcaster = self.inner.result_broadcaster.clone();
 
         // Spawn task to filter and forward results to the gRPC stream
         tokio::spawn(async move {
@@ -1055,10 +1079,6 @@ impl SidecarTransport for GrpcService {
                     }
                 }
             }
-
-            crate::metrics::set_grpc_result_subscribers(
-                u64::try_from(broadcaster.receiver_count()).unwrap_or(u64::MAX),
-            );
         });
 
         let output_stream = tokio_stream::wrappers::ReceiverStream::new(stream_rx);

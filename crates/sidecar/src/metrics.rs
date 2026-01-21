@@ -458,49 +458,6 @@ fn u256_to_f64(value: U256) -> f64 {
     }
 }
 
-/// Convert usize to f64 with clamping to avoid precision loss warnings.
-#[inline]
-pub fn usize_to_f64(value: usize) -> f64 {
-    let clamped = u32::try_from(value).unwrap_or(u32::MAX);
-    f64::from(clamped)
-}
-
-/// Convert u64 to f64 with clamping to avoid precision loss warnings.
-#[inline]
-pub fn u64_to_f64(value: u64) -> f64 {
-    let clamped = u32::try_from(value).unwrap_or(u32::MAX);
-    f64::from(clamped)
-}
-
-static GRPC_RESULT_SUBSCRIBERS: AtomicU64 = AtomicU64::new(0);
-static TRANSPORT_PENDING_RECEIVES_LEN: AtomicU64 = AtomicU64::new(0);
-
-#[inline]
-pub fn set_grpc_result_subscribers(count: u64) {
-    GRPC_RESULT_SUBSCRIBERS.store(count, Ordering::Relaxed);
-}
-
-#[inline]
-pub fn get_grpc_result_subscribers() -> u64 {
-    GRPC_RESULT_SUBSCRIBERS.load(Ordering::Relaxed)
-}
-
-#[inline]
-pub fn set_transport_pending_receives_len(len: usize) {
-    let clamped = u64::try_from(len).unwrap_or(u64::MAX);
-    TRANSPORT_PENDING_RECEIVES_LEN.store(clamped, Ordering::Relaxed);
-}
-
-#[inline]
-pub fn set_transport_pending_receives_len_u64(len: u64) {
-    TRANSPORT_PENDING_RECEIVES_LEN.store(len, Ordering::Relaxed);
-}
-
-#[inline]
-pub fn get_transport_pending_receives_len() -> u64 {
-    TRANSPORT_PENDING_RECEIVES_LEN.load(Ordering::Relaxed)
-}
-
 /// Metrics for an individual source
 ///
 /// Tracks per-source synchronization status and statistics including
@@ -605,13 +562,6 @@ impl EngineTransactionsResultMetrics {
     /// Committed as a `Gauge`.
     pub fn set_engine_transactions_state_transaction_results_length(&self, len: usize) {
         gauge!("sidecar_engine_transactions_state_transaction_results_length").set(len as f64);
-    }
-
-    /// Set the current engine result event queue length (`sidecar_engine_result_event_queue_len`)
-    ///
-    /// Committed as a `Gauge`.
-    pub fn set_engine_result_event_queue_len(&self, len: usize) {
-        gauge!("sidecar_engine_result_event_queue_len").set(usize_to_f64(len));
     }
 }
 

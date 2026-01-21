@@ -12,7 +12,7 @@ repository.workspace = true
 
 assertion-executor = { workspace = true, default-features = false }
 assertion-da-client.workspace = true
-credible-utils.workspace=true
+credible-utils.workspace = true
 dapp-api-client.workspace = true
 sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
 state-store = { workspace = true, features = ["reader"] }
@@ -33,6 +33,7 @@ tonic-prost = "0.14.2"
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_with = "3.16.1"
 chrono = { workspace = true }
 tracing = { workspace = true }
 ctor = { version = "0.6.3", optional = true }
@@ -58,6 +59,8 @@ revm.workspace = true
 
 # alloy 
 alloy.workspace = true
+alloy-primitives.workspace = true
+alloy-eips.workspace = true
 alloy-provider.workspace = true
 
 # reth

@@ -128,40 +128,12 @@ impl SpecIdExt for SpecId {
 
 /// Handles EIP-2935 and EIP-4788 system contract updates.
 #[derive(Debug, Clone, Default)]
-pub struct SystemCalls {
-    /// Cancun fork activation timestamp (enables EIP-4788).
-    pub cancun_time: Option<u64>,
-    /// Prague fork activation timestamp (enables EIP-2935).
-    pub prague_time: Option<u64>,
-}
+pub struct SystemCalls;
 
 impl SystemCalls {
-    /// Creates a new `SystemCalls` instance with optional fork activation times.
-    pub fn new(cancun_time: Option<u64>, prague_time: Option<u64>) -> Self {
-        Self {
-            cancun_time,
-            prague_time,
-        }
-    }
-
-    fn timestamp_u64(config: &SystemCallsConfig) -> u64 {
-        u64::try_from(config.timestamp).unwrap_or(u64::MAX)
-    }
-
-    fn is_cancun_active(&self, config: &SystemCallsConfig) -> bool {
-        if let Some(cancun_time) = self.cancun_time {
-            Self::timestamp_u64(config) >= cancun_time
-        } else {
-            config.spec_id.is_cancun_active()
-        }
-    }
-
-    fn is_prague_active(&self, config: &SystemCallsConfig) -> bool {
-        if let Some(prague_time) = self.prague_time {
-            Self::timestamp_u64(config) >= prague_time
-        } else {
-            config.spec_id.is_prague_active()
-        }
+    /// Creates a new `SystemCalls` instance.
+    pub fn new() -> Self {
+        Self
     }
 
     /// Applies all applicable system calls for the given configuration.
@@ -187,7 +159,7 @@ impl SystemCalls {
         }
 
         // Apply EIP-4788 first (Cancun+)
-        if self.is_cancun_active(config) {
+        if config.spec_id.is_cancun_active() {
             self.apply_eip4788(config, db)?;
             debug!(
                 target = "system_calls",
@@ -197,7 +169,7 @@ impl SystemCalls {
         }
 
         // Apply EIP-2935 (Prague+)
-        if self.is_prague_active(config) {
+        if config.spec_id.is_prague_active() {
             self.apply_eip2935(config, db)?;
         }
 
@@ -451,7 +423,7 @@ mod tests {
     #[test]
     fn test_eip2935_stores_hash() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         let hash = B256::repeat_byte(0xab);
         let config = SystemCallsConfig {
@@ -485,7 +457,7 @@ mod tests {
     #[test]
     fn test_eip4788_stores_beacon_root() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         let beacon_root = B256::repeat_byte(0xcd);
         let timestamp = 1700000000u64;
@@ -529,7 +501,7 @@ mod tests {
     #[test]
     fn test_genesis_block_skipped() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         let config = SystemCallsConfig {
             spec_id: SpecId::PRAGUE,
@@ -562,7 +534,7 @@ mod tests {
     #[test]
     fn test_apply_all_system_calls() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         let config = SystemCallsConfig {
             spec_id: SpecId::PRAGUE,
@@ -581,27 +553,9 @@ mod tests {
     }
 
     #[test]
-    fn test_cancun_time_gate_skips_pre_fork() {
-        let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(Some(200), None);
-
-        let config = SystemCallsConfig {
-            spec_id: SpecId::CANCUN,
-            block_number: U256::from(100),
-            timestamp: U256::from(100),
-            block_hash: B256::ZERO,
-            parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
-        };
-
-        let result = system_calls.apply_system_calls(&config, &mut db);
-        assert!(result.is_ok());
-        assert!(!db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
-    }
-
-    #[test]
     fn test_ring_buffer_wraparound() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         // Test with block number that wraps around the ring buffer
         let hash = B256::repeat_byte(0xff);
@@ -628,7 +582,7 @@ mod tests {
     #[test]
     fn test_preserves_existing_account_state_eip2935() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         // Pre-populate the account with balance and nonce (simulating SELFDESTRUCT or prior txs)
         let existing_balance = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
@@ -668,7 +622,7 @@ mod tests {
     #[test]
     fn test_preserves_existing_account_state_eip4788() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         // Pre-populate the account with balance and nonce (simulating SELFDESTRUCT or prior txs)
         let existing_balance = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
@@ -707,7 +661,7 @@ mod tests {
     #[test]
     fn test_block_hash_cache_populated() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         let block_hash = B256::repeat_byte(0xab);
         let config = SystemCallsConfig {
@@ -733,7 +687,7 @@ mod tests {
     #[test]
     fn test_block_hash_cache_not_populated_for_genesis() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         let config = SystemCallsConfig {
             spec_id: SpecId::SHANGHAI,
@@ -756,7 +710,7 @@ mod tests {
     #[test]
     fn test_block_hash_cache_sequential_blocks() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         // Simulate processing blocks 1, 2, 3
         for block_num in 1..=3u64 {

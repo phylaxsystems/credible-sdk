@@ -11,7 +11,11 @@ use crate::{
     Source,
     cache::sources::SourceName,
 };
-use alloy::primitives::keccak256;
+use alloy_eips::eip2935::{
+    HISTORY_SERVE_WINDOW,
+    HISTORY_STORAGE_ADDRESS,
+};
+use alloy_primitives::keccak256;
 use assertion_executor::primitives::{
     AccountInfo,
     Address,
@@ -246,6 +250,9 @@ impl DatabaseRef for MdbxSource {
     }
 
     /// Looks up the canonical hash for the requested block number.
+    ///
+    /// First tries the block metadata table, then falls back to EIP-2935
+    /// contract storage if the block is within the history window.
     #[instrument(
         name = "cache_source::block_hash_ref",
         level = "trace",
@@ -253,12 +260,32 @@ impl DatabaseRef for MdbxSource {
         fields(source = %self.name(), block_number = number)
     )]
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        let block_hash = self
+        // First try the block metadata table
+        if let Some(block_hash) = self
             .backend
             .get_block_hash(number)
             .map_err(Self::Error::StateWorkerBlockHash)?
-            .ok_or(Self::Error::BlockNotFound)?;
-        Ok(block_hash)
+        {
+            return Ok(block_hash);
+        }
+
+        // Fallback: try EIP-2935 contract storage lookup
+        // Check if block is within the EIP-2935 history window
+        let target_block = Self::u256_to_u64(*self.target_block.read())?;
+        let min_block = target_block.saturating_sub(HISTORY_SERVE_WINDOW as u64);
+        if number == 0 || number > target_block || number <= min_block {
+            return Err(Self::Error::BlockNotFound);
+        }
+
+        // EIP-2935 stores block hashes at slot = block_number % HISTORY_SERVE_WINDOW
+        let slot = U256::from(number.saturating_sub(1) % HISTORY_SERVE_WINDOW as u64);
+        let value = self.storage_ref(HISTORY_STORAGE_ADDRESS, slot)?;
+
+        if value != U256::ZERO {
+            return Ok(B256::from(value.to_be_bytes::<32>()));
+        }
+
+        Err(Self::Error::BlockNotFound)
     }
 
     /// Loads bytecode previously stored for a code hash.

@@ -14,10 +14,15 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use serde_with::{
+    DurationMilliSeconds,
+    serde_as,
+};
 use std::{
     fs,
     path::Path,
     str::FromStr,
+    time::Duration,
 };
 
 const DEFAULT_CONFIG: &str = include_str!("../../default_config.json");
@@ -28,6 +33,18 @@ fn default_health_bind_addr() -> String {
 
 fn default_event_id_buffer_capacity() -> usize {
     1000
+}
+
+fn default_pending_receive_ttl_ms() -> Duration {
+    Duration::from_secs(2)
+}
+
+fn default_pending_request_ttl_ms() -> Duration {
+    Duration::from_secs(2)
+}
+
+fn default_accepted_txs_ttl_ms() -> Duration {
+    Duration::from_secs(2)
 }
 
 /// Configuration loaded from JSON file
@@ -97,13 +114,10 @@ pub struct ChainConfig {
     pub spec_id: SpecId,
     /// Chain ID
     pub chain_id: u64,
-    /// Cancun fork activation timestamp (enables EIP-4788)
-    pub cancun_time: Option<u64>,
-    /// Prague fork activation timestamp (enables EIP-2935)
-    pub prague_time: Option<u64>,
 }
 
 /// Credible configuration from file
+#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CredibleConfig {
     /// Gas limit for assertion execution
@@ -140,6 +154,14 @@ pub struct CredibleConfig {
     pub state_oracle_deployment_block: u64,
     /// Maximum capacity for transaction results
     pub transaction_results_max_capacity: usize,
+    /// Maximum time (ms) to keep transaction result request channels alive.
+    #[serde(default = "default_pending_request_ttl_ms")]
+    #[serde_as(as = "DurationMilliSeconds<u64>")]
+    pub transaction_results_pending_requests_ttl_ms: Duration,
+    /// Maximum time (ms) to keep accepted transactions without results.
+    #[serde(default = "default_accepted_txs_ttl_ms")]
+    #[serde_as(as = "DurationMilliSeconds<u64>")]
+    pub accepted_txs_ttl_ms: Duration,
     /// Cache checker client websocket url
     #[cfg(feature = "cache_validation")]
     pub cache_checker_ws_url: String,
@@ -158,6 +180,7 @@ pub enum TransportProtocol {
 }
 
 /// Transport configuration from file
+#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TransportConfig {
     /// Select which transport protocol to run
@@ -170,6 +193,10 @@ pub struct TransportConfig {
     /// Maximum number of events ID in the transport layer buffer before dropping new events.
     #[serde(default = "default_event_id_buffer_capacity")]
     pub event_id_buffer_capacity: usize,
+    /// Maximum time (ms) a pending transaction receive entry may live before forced eviction.
+    #[serde(default = "default_pending_receive_ttl_ms")]
+    #[serde_as(as = "DurationMilliSeconds<u64>")]
+    pub pending_receive_ttl_ms: Duration,
 }
 
 /// State configuration from file

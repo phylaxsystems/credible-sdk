@@ -275,8 +275,6 @@ impl CommonSetup {
             Duration::from_millis(100),
             Duration::from_millis(20),
             false,
-            None,
-            None,
             incident_sender,
             #[cfg(feature = "cache_validation")]
             Some(&self.eth_rpc_source_http_mock.ws_url()),
@@ -639,7 +637,10 @@ impl LocalInstanceHttpDriver {
 
         drop(listener);
 
-        let config = HttpTransportConfig { bind_addr: address };
+        let config = HttpTransportConfig {
+            bind_addr: address,
+            pending_receive_ttl: Duration::from_secs(5),
+        };
         let transport = HttpTransport::new(
             config,
             transport_tx_sender,
@@ -1073,7 +1074,10 @@ impl LocalInstanceGrpcDriver {
 
         drop(listener);
 
-        let config = GrpcTransportConfig { bind_addr: address };
+        let config = GrpcTransportConfig {
+            bind_addr: address,
+            pending_receive_ttl: Duration::from_secs(5),
+        };
 
         // Use with_result_receiver to enable SubscribeResults streaming
         let transport = GrpcTransport::with_result_receiver(
