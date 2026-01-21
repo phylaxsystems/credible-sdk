@@ -10,7 +10,7 @@ use thiserror::Error;
 
 pub mod eth_rpc_source;
 mod json_rpc_db;
-pub mod state_worker;
+pub mod mdbx;
 
 /// A data source that provides blockchain state information.
 ///

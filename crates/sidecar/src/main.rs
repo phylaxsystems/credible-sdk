@@ -32,7 +32,7 @@ use sidecar::{
         sources::{
             Source,
             eth_rpc_source::EthRpcSource,
-            state_worker::MdbxSource,
+            mdbx::MdbxSource,
         },
     },
     config::{
