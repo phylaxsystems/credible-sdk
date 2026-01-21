@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn test_block_hash_cache_populated() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         let block_hash = B256::repeat_byte(0xab);
         let config = SystemCallsConfig {
@@ -712,7 +712,7 @@ mod tests {
     #[test]
     fn test_block_hash_cache_not_populated_for_genesis() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         let config = SystemCallsConfig {
             spec_id: SpecId::SHANGHAI,
@@ -734,7 +734,7 @@ mod tests {
     #[test]
     fn test_block_hash_cache_with_no_hash_provided() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         let config = SystemCallsConfig {
             spec_id: SpecId::SHANGHAI,
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     fn test_block_hash_cache_sequential_blocks() {
         let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
+        let system_calls = SystemCalls::new();
 
         // Simulate processing blocks 1, 2, 3
         for block_num in 1..=3u64 {
