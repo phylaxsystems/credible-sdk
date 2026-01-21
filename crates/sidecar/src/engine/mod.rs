@@ -354,8 +354,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         state_sources_sync_timeout: Duration,
         source_monitoring_period: Duration,
         overlay_cache_invalidation_every_block: bool,
-        cancun_time: Option<u64>,
-        prague_time: Option<u64>,
         incident_sender: Option<IncidentReportSender>,
         #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
     ) -> Self {
@@ -399,7 +397,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 source_monitoring_period,
             ),
             overlay_cache_invalidation_every_block,
-            system_calls: SystemCalls::new(cancun_time, prague_time),
+            system_calls: SystemCalls::new(),
             #[cfg(feature = "cache_validation")]
             processed_transactions,
             #[cfg(feature = "cache_validation")]

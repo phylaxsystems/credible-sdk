@@ -1,9 +1,7 @@
 {
   "chain": {
     "spec_id": "CANCUN",
-    "chain_id": 1337,
-    "cancun_time": null,
-    "prague_time": null
+    "chain_id": 1337
   },
   "credible": {
     "assertion_gas_limit": 3000000,
