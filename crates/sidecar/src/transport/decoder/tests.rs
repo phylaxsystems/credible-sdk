@@ -1302,7 +1302,7 @@ fn test_reorg_valid() {
     assert_eq!(contents.len(), 1);
 
     match &contents[0] {
-        TxQueueContents::Reorg(reorg, _) => {
+        TxQueueContents::Reorg(reorg) => {
             assert_eq!(
                 reorg.tx_execution_id.tx_hash,
                 B256::from_str(
@@ -1570,7 +1570,7 @@ fn test_send_events_single_commit_head() {
     assert!(result.is_ok());
     let events = result.unwrap();
     assert_eq!(events.len(), 1);
-    assert!(matches!(events[0], TxQueueContents::CommitHead(_, _)));
+    assert!(matches!(events[0], TxQueueContents::CommitHead(_)));
 }
 
 #[test]
@@ -1602,7 +1602,7 @@ fn test_send_events_single_new_iteration() {
     assert!(result.is_ok());
     let events = result.unwrap();
     assert_eq!(events.len(), 1);
-    assert!(matches!(events[0], TxQueueContents::NewIteration(_, _)));
+    assert!(matches!(events[0], TxQueueContents::NewIteration(_)));
 }
 
 #[test]
@@ -1728,7 +1728,7 @@ fn test_send_events_new_iteration_iteration_id_boundaries() {
         let events = result.unwrap();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            TxQueueContents::NewIteration(new_iteration, _) => {
+            TxQueueContents::NewIteration(new_iteration) => {
                 assert_eq!(new_iteration.iteration_id, iteration_id);
             }
             _ => panic!("Expected NewIteration event for case: {name}"),
@@ -2224,11 +2224,11 @@ fn test_send_events_mixed_commit_head_and_new_iteration_success() {
     let events = result.unwrap();
     assert_eq!(events.len(), 2);
     assert!(
-        matches!(events[0], TxQueueContents::CommitHead(_, _)),
+        matches!(events[0], TxQueueContents::CommitHead(_)),
         "First event should be CommitHead"
     );
     assert!(
-        matches!(events[1], TxQueueContents::NewIteration(_, _)),
+        matches!(events[1], TxQueueContents::NewIteration(_)),
         "Second event should be NewIteration"
     );
 }

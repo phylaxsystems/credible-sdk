@@ -272,13 +272,10 @@ async fn test_core_engine_errors_when_no_synced_sources() {
     };
 
     tx_sender
-        .send(TxQueueContents::NewIteration(
-            new_iteration,
-            tracing::Span::none(),
-        ))
+        .send(TxQueueContents::NewIteration(new_iteration))
         .expect("queue send should succeed");
     tx_sender
-        .send(TxQueueContents::Tx(queue_tx, tracing::Span::none()))
+        .send(TxQueueContents::Tx(queue_tx))
         .expect("queue send should succeed");
 
     assert_eq!(sources.iter_synced_sources().count(), 0);
