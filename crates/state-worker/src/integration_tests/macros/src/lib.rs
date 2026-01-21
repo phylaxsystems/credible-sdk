@@ -1,7 +1,7 @@
 //! Procedural macros for state worker integration tests.
 //!
 //! This crate provides the `database_test` macro which automatically generates
-//! test functions for multiple database backends (Redis, MDBX).
+//! test functions for the MDBX database backend.
 #![allow(clippy::missing_panics_doc)]
 
 use proc_macro::TokenStream;
@@ -20,16 +20,10 @@ struct BackendVariant {
     constructor: &'static str,
 }
 
-const VARIANTS: &[BackendVariant] = &[
-    BackendVariant {
-        test_name: "redis",
-        constructor: "new_redis",
-    },
-    BackendVariant {
-        test_name: "mdbx",
-        constructor: "new_mdbx",
-    },
-];
+const VARIANTS: &[BackendVariant] = &[BackendVariant {
+    test_name: "mdbx",
+    constructor: "new_mdbx",
+}];
 
 /// Procedural macro for database integration tests.
 ///
@@ -39,9 +33,8 @@ const VARIANTS: &[BackendVariant] = &[
 ///
 /// # Arguments
 ///
-/// - `all` - Generate tests for all backends (redis, mdbx)
-/// - `redis` - Generate test only for Redis backend
-/// - `mdbx` - Generate test only for MDBX backend
+/// - `all` - Generate tests for the MDBX backend
+/// - `mdbx` - Generate test only for the MDBX backend
 ///
 /// # Example
 ///
@@ -56,7 +49,6 @@ const VARIANTS: &[BackendVariant] = &[
 /// ```
 ///
 /// This generates:
-/// - `redis_test_state_changes`
 /// - `mdbx_test_state_changes`
 ///
 /// # Panics
@@ -74,8 +66,8 @@ pub fn database_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse which variants to test - require arguments
     let variants_to_test: Vec<&'static str> = if attr.is_empty() {
         panic!(
-            "database_test macro requires an argument: use #[database_test(all)], \
-             #[database_test(redis)], or #[database_test(mdbx)]"
+            "database_test macro requires an argument: use #[database_test(all)] or \
+             #[database_test(mdbx)]"
         );
     } else {
         let attr_str = attr.to_string();
@@ -170,8 +162,8 @@ pub fn traced_database_test(attr: TokenStream, item: TokenStream) -> TokenStream
     // Parse which variants to test - require arguments
     let variants_to_test: Vec<&'static str> = if attr.is_empty() {
         panic!(
-            "traced_database_test macro requires an argument: use #[traced_database_test(all)], \
-             #[traced_database_test(redis)], or #[traced_database_test(mdbx)]"
+            "traced_database_test macro requires an argument: use #[traced_database_test(all)] or \
+             #[traced_database_test(mdbx)]"
         );
     } else {
         let attr_str = attr.to_string();

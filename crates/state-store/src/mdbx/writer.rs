@@ -61,6 +61,7 @@ use crate::{
     BlockStateUpdate,
     CommitStats,
     Reader,
+    StaleLockRecovery,
     Writer,
     mdbx,
     mdbx::{
@@ -97,7 +98,6 @@ use crate::{
         },
         db::StateDb,
     },
-    redis::writer::StaleLockRecovery,
 };
 use alloy::primitives::{
     B256,
