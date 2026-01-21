@@ -23,6 +23,10 @@ on:
         required: false
         default: false
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Pin nightly to a specific version for consistent caching across workflow runs
   # Update this monthly or when new Rust features are needed
@@ -78,7 +82,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-
           shared-key: ${{ needs.setup.outputs.rust-nightly }}-base
           key: default
 
