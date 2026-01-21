@@ -64,8 +64,6 @@ pub const HISTORY_BUFFER_LENGTH: u64 = 8191;
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum SystemCallError {
-    #[error("Missing parent block hash for EIP-2935")]
-    MissingParentBlockHash,
     #[error("Missing parent beacon block root for EIP-4788")]
     MissingParentBeaconBlockRoot,
     #[error("Genesis block cannot have non-zero parent beacon root")]
@@ -549,26 +547,6 @@ mod tests {
         // EIP-4788 should return Ok(()): genesis block
         let result = system_calls.apply_eip4788(&config, &mut db);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_missing_hash_errors() {
-        let mut db = MockDb::default();
-        let system_calls = SystemCalls::new(None, None);
-
-        let config = SystemCallsConfig {
-            spec_id: SpecId::PRAGUE,
-            block_number: U256::from(100),
-            timestamp: U256::from(1234567890),
-            block_hash: B256::ZERO,
-            parent_beacon_block_root: None,
-        };
-
-        let result = system_calls.apply_eip2935(&config, &mut db);
-        assert!(matches!(
-            result,
-            Err(SystemCallError::MissingParentBlockHash)
-        ));
     }
 
     #[test]

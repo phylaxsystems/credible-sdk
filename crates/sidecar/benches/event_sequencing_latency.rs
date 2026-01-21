@@ -6,6 +6,7 @@
 use alloy::primitives::{
     TxHash,
     U256,
+    B256
 };
 use criterion::{
     BatchSize,
@@ -16,7 +17,6 @@ use revm::{
         BlockEnv,
         TxEnv,
     },
-    primitives::B256,
 };
 use sidecar::{
     engine::queue::{
