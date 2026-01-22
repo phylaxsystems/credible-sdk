@@ -260,7 +260,7 @@ struct CommitHeadEvent {
     n_transactions: u64,
     block_number: U256,
     selected_iteration_id: Option<u64>,
-    block_hash: Option<B256>,
+    block_hash: B256,
     parent_beacon_block_root: Option<B256>,
     timestamp: U256,
 }

@@ -13,7 +13,10 @@ use alloy::{
         Transaction,
         TxType,
     },
-    primitives::U256,
+    primitives::{
+        B256,
+        U256,
+    },
     providers::WsConnect,
     rpc::types::Header,
 };
@@ -728,7 +731,7 @@ impl Listener {
             None,
             0,
             initial_block.header.timestamp,
-            Some(initial_block.header.hash),
+            initial_block.header.hash,
             initial_block.header.parent_beacon_block_root,
         )
         .await
@@ -1011,7 +1014,7 @@ impl Listener {
             last_successful_tx_hash,
             successful_tx_count,
             block.header.timestamp,
-            Some(block.header.hash),
+            block.header.hash,
             block.header.parent_beacon_block_root,
         )
         .await?;
@@ -1058,7 +1061,7 @@ impl Listener {
         mut client: SidecarTransportClient<Channel>,
         provider: Arc<RootProvider>,
         block_number: u64,
-        tx_hashes: Vec<alloy::primitives::B256>,
+        tx_hashes: Vec<B256>,
     ) -> Result<()> {
         if tx_hashes.is_empty() {
             return Ok(());
@@ -1344,10 +1347,10 @@ impl Listener {
         last_tx_hash: Option<Vec<u8>>,
         n_transactions: usize,
         timestamp: u64,
-        block_hash: Option<alloy::primitives::B256>,
-        parent_beacon_block_root: Option<alloy::primitives::B256>,
+        block_hash: B256,
+        parent_beacon_block_root: Option<B256>,
     ) -> Result<()> {
-        let block_hash_bytes = block_hash.map(|h| h.to_vec());
+        let block_hash_bytes = block_hash.to_vec();
         let parent_beacon_bytes = parent_beacon_block_root.map(|h| h.to_vec());
 
         stream

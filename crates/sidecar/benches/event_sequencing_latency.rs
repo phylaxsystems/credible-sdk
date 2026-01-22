@@ -4,6 +4,7 @@
 //! to receiving the corresponding output events on the engine channel.
 
 use alloy::primitives::{
+    B256,
     TxHash,
     U256,
 };
@@ -98,7 +99,7 @@ fn create_commit_head(
         iteration,
         last_tx_hash,
         n_txs,
-        None,
+        B256::ZERO,
         None,
         U256::ZERO,
     ))

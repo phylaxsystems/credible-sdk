@@ -14,6 +14,7 @@ use crate::{
 };
 use alloy::primitives::TxHash;
 use assertion_executor::primitives::{
+    B256,
     Bytes,
     U256,
 };
@@ -254,7 +255,7 @@ fn create_commit_head(
         iteration,
         last_tx_hash,
         n_txs,
-        None,
+        B256::ZERO,
         None,
         U256::ZERO,
     ))

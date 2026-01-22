@@ -64,8 +64,6 @@ pub const HISTORY_BUFFER_LENGTH: u64 = 8191;
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum SystemCallError {
-    #[error("Missing parent block hash for EIP-2935")]
-    MissingParentBlockHash,
     #[error("Missing parent beacon block root for EIP-4788")]
     MissingParentBeaconBlockRoot,
     #[error("Genesis block cannot have non-zero parent beacon root")]
@@ -82,7 +80,7 @@ pub struct SystemCallsConfig {
     /// Current block timestamp
     pub timestamp: U256,
     /// Current block hash (required for EIP-2935)
-    pub block_hash: Option<B256>,
+    pub block_hash: B256,
     /// Parent beacon block root (required for EIP-4788)
     /// This comes from the consensus layer
     pub parent_beacon_block_root: Option<B256>,
@@ -94,7 +92,7 @@ impl SystemCallsConfig {
         spec_id: SpecId,
         block_number: U256,
         timestamp: U256,
-        block_hash: Option<B256>,
+        block_hash: B256,
         beacon_block_root: Option<B256>,
     ) -> Self {
         Self {
@@ -148,9 +146,8 @@ impl SystemCalls {
         db: &mut DB,
     ) -> Result<(), SystemCallError> {
         // Cache block hash for BLOCKHASH opcode lookups, all forks.
-        if let Some(block_hash) = config.block_hash
-            && config.block_number > U256::ZERO
-        {
+        if config.block_number > U256::ZERO {
+            let block_hash = config.block_hash;
             let block_number: u64 = config.block_number.saturating_to::<u64>(); // Should not realistically overflow
             db.store_block_hash(block_number, block_hash);
             trace!(
@@ -196,9 +193,7 @@ impl SystemCalls {
             return Ok(());
         }
 
-        let block_hash = config
-            .block_hash
-            .ok_or(SystemCallError::MissingParentBlockHash)?;
+        let block_hash = config.block_hash;
 
         let block_number = config.block_number;
 
@@ -435,7 +430,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(99),
             timestamp: U256::from(1234567890),
-            block_hash: Some(hash),
+            block_hash: hash,
             parent_beacon_block_root: None,
         };
 
@@ -471,7 +466,7 @@ mod tests {
             spec_id: SpecId::CANCUN,
             block_number: U256::from(100),
             timestamp: U256::from(timestamp),
-            block_hash: None,
+            block_hash: B256::ZERO,
             parent_beacon_block_root: Some(beacon_root),
         };
 
@@ -512,7 +507,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(0),
             timestamp: U256::from(0),
-            block_hash: Some(B256::ZERO),
+            block_hash: B256::ZERO,
             parent_beacon_block_root: Some(B256::ZERO),
         };
 
@@ -524,26 +519,6 @@ mod tests {
         // EIP-4788 should return Ok(()): genesis block
         let result = system_calls.apply_eip4788(&config, &mut db);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_missing_hash_errors() {
-        let mut db = MockDb::default();
-        let system_calls = SystemCalls::new();
-
-        let config = SystemCallsConfig {
-            spec_id: SpecId::PRAGUE,
-            block_number: U256::from(100),
-            timestamp: U256::from(1234567890),
-            block_hash: None,
-            parent_beacon_block_root: None,
-        };
-
-        let result = system_calls.apply_eip2935(&config, &mut db);
-        assert!(matches!(
-            result,
-            Err(SystemCallError::MissingParentBlockHash)
-        ));
     }
 
     #[test]
@@ -565,7 +540,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(100),
             timestamp: U256::from(1700000000),
-            block_hash: Some(B256::repeat_byte(0xab)),
+            block_hash: B256::repeat_byte(0xab),
             parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
@@ -590,7 +565,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(block_number),
             timestamp: U256::from(1234567890),
-            block_hash: Some(hash),
+            block_hash: hash,
             parent_beacon_block_root: None,
         };
 
@@ -631,7 +606,7 @@ mod tests {
             spec_id: SpecId::PRAGUE,
             block_number: U256::from(100),
             timestamp: U256::from(1234567890),
-            block_hash: Some(hash),
+            block_hash: hash,
             parent_beacon_block_root: None,
         };
 
@@ -670,7 +645,7 @@ mod tests {
             spec_id: SpecId::CANCUN,
             block_number: U256::from(100),
             timestamp: U256::from(1700000000),
-            block_hash: None,
+            block_hash: B256::ZERO,
             parent_beacon_block_root: Some(beacon_root),
         };
 
@@ -693,7 +668,7 @@ mod tests {
             spec_id: SpecId::SHANGHAI, // Pre-Prague, only caching should happen
             block_number: U256::from(100),
             timestamp: U256::from(1234567890),
-            block_hash: Some(block_hash),
+            block_hash,
             parent_beacon_block_root: None,
         };
 
@@ -718,7 +693,7 @@ mod tests {
             spec_id: SpecId::SHANGHAI,
             block_number: U256::from(0), // Genesis
             timestamp: U256::from(0),
-            block_hash: Some(B256::repeat_byte(0xab)),
+            block_hash: B256::repeat_byte(0xab),
             parent_beacon_block_root: None,
         };
 
@@ -730,23 +705,6 @@ mod tests {
             db.block_hash_cache.borrow().is_empty(),
             "No hash should be cached for genesis"
         );
-    }
-    #[test]
-    fn test_block_hash_cache_with_no_hash_provided() {
-        let mut db = MockDb::default();
-        let system_calls = SystemCalls::new();
-
-        let config = SystemCallsConfig {
-            spec_id: SpecId::SHANGHAI,
-            block_number: U256::from(100),
-            timestamp: U256::from(1234567890),
-            block_hash: None, // No hash provided
-            parent_beacon_block_root: None,
-        };
-
-        let result = system_calls.apply_system_calls(&config, &mut db);
-        assert!(result.is_ok());
-        assert!(db.block_hash_cache.borrow().is_empty());
     }
 
     #[test]
@@ -761,7 +719,7 @@ mod tests {
                 spec_id: SpecId::SHANGHAI,
                 block_number: U256::from(block_num),
                 timestamp: U256::from(1234567890 + block_num),
-                block_hash: Some(hash),
+                block_hash: hash,
                 parent_beacon_block_root: None,
             };
             system_calls.apply_system_calls(&config, &mut db).unwrap();
