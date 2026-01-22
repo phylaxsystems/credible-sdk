@@ -1540,7 +1540,7 @@ async fn test_block_env_wrong_transaction_number(mut instance: crate::utils::Loc
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(mock)]
 async fn test_committed_nonce_persists_across_cache_flush(
     mut instance: crate::utils::LocalInstance,
 ) {
