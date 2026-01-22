@@ -186,8 +186,17 @@ pub trait TestTransport: Sized {
     /// Set the number of transactions to be sent in the next blockEnv
     fn set_n_transactions(&mut self, n_transactions: u64);
 
-    /// Set the last tx hash to be sent in the next blockEnv
+    /// Set the last tx hash to be sent in the next `CommitHead`.
+    ///
+    /// This is used to intentionally create invalid `CommitHead` events in tests
+    /// (e.g. "wrong last tx hash" scenarios).
     fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>);
+
+    /// Override the `prev_tx_hash` used for the next transaction sent via `send_transaction`.
+    ///
+    /// Test drivers treat this as a one-shot override to model broken or non-linear chains
+    /// without affecting `CommitHead` construction.
+    fn set_prev_tx_hash(&mut self, tx_hash: Option<TxHash>);
 
     /// Get the last transaction hash for a given iteration
     fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash>;
