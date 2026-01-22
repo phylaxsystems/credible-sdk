@@ -1671,8 +1671,6 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
         Duration::from_millis(20),
         false,
         None,
-        None,
-        None,
         #[cfg(feature = "cache_validation")]
         None,
     )
@@ -1770,6 +1768,7 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
 async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
     use crate::utils::local_instance_db::LocalInstanceDb;
 
@@ -1807,8 +1806,6 @@ async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
         Duration::from_millis(100),
         Duration::from_millis(20),
         false,
-        None,
-        None,
         None,
         #[cfg(feature = "cache_validation")]
         None,

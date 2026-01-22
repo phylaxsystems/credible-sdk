@@ -76,24 +76,11 @@ where
         system_calls: &SystemCalls,
         config: &SystemCallsConfig,
     ) -> Result<(), SystemCallError> {
-        let timestamp_u64 = u64::try_from(config.timestamp).unwrap_or(u64::MAX);
-
-        let cancun_active = system_calls
-            .cancun_time
-            .map_or(config.spec_id.is_cancun_active(), |cancun_time| {
-                timestamp_u64 >= cancun_time
-            });
-        let prague_active = system_calls
-            .prague_time
-            .map_or(config.spec_id.is_prague_active(), |prague_time| {
-                timestamp_u64 >= prague_time
-            });
-
         self.with_write(|db| {
-            if cancun_active {
+            if config.spec_id.is_cancun_active() {
                 system_calls.apply_eip4788(config, db)?;
             }
-            if prague_active {
+            if config.spec_id.is_prague_active() {
                 system_calls.apply_eip2935(config, db)?;
             }
             Ok(())
