@@ -62,6 +62,8 @@ use self::{
         SystemCallsConfig,
     },
 };
+#[cfg(any(test, feature = "bench-utils"))]
+use crate::utils::shared_db::SharedDb;
 use crate::{
     TransactionsState,
     critical,
@@ -80,8 +82,6 @@ use assertion_executor::primitives::{
     EVMError,
     TxValidationResult,
 };
-#[cfg(any(test, feature = "bench-utils"))]
-use crate::utils::shared_db::SharedDb;
 use std::{
     fmt::Debug,
     sync::{
@@ -1470,7 +1470,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             let new_len = start;
             let removed_txs = current_block_iteration.executed_txs.split_off(new_len);
             #[cfg(any(test, feature = "bench-utils"))]
-            current_block_iteration.executed_state_deltas.truncate(new_len);
+            current_block_iteration
+                .executed_state_deltas
+                .truncate(new_len);
             // Also truncate incident_txs to match
             current_block_iteration.incident_txs.truncate(new_len);
             // Rollback the version database to the state before the removed transactions

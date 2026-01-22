@@ -1541,7 +1541,9 @@ async fn test_block_env_wrong_transaction_number(mut instance: crate::utils::Loc
 }
 
 #[crate::utils::engine_test(all)]
-async fn test_committed_nonce_persists_across_cache_flush(mut instance: crate::utils::LocalInstance) {
+async fn test_committed_nonce_persists_across_cache_flush(
+    mut instance: crate::utils::LocalInstance,
+) {
     // Block 1 (commit empty, start block 2)
     instance.new_block().await.unwrap();
 
@@ -1592,6 +1594,304 @@ async fn test_committed_nonce_persists_across_cache_flush(mut instance: crate::u
         .await
         .unwrap();
     assert!(instance.is_transaction_successful(&tx2).await.unwrap());
+}
+
+#[derive(Debug)]
+struct NullSource;
+
+impl DatabaseRef for NullSource {
+    type Error = crate::cache::sources::SourceError;
+
+    fn basic_ref(&self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        Ok(None)
+    }
+
+    fn code_by_hash_ref(&self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+        Ok(Bytecode::default())
+    }
+
+    fn storage_ref(&self, _address: Address, _index: U256) -> Result<U256, Self::Error> {
+        Ok(U256::ZERO)
+    }
+
+    fn block_hash_ref(&self, _number: u64) -> Result<B256, Self::Error> {
+        Ok(B256::ZERO)
+    }
+}
+
+impl crate::cache::sources::Source for NullSource {
+    fn is_synced(&self, _min_synced_block: U256, _latest_head: U256) -> bool {
+        true
+    }
+
+    fn name(&self) -> crate::cache::sources::SourceName {
+        crate::cache::sources::SourceName::Other
+    }
+
+    fn update_cache_status(&self, _min_synced_block: U256, _latest_head: U256) {}
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn test_canonical_db_nonce_committed_on_commit_head() {
+    use crate::utils::shared_db::SharedDb;
+
+    let sources: Vec<Arc<dyn crate::cache::sources::Source>> = vec![Arc::new(NullSource)];
+    let sources = Arc::new(Sources::new(sources, 10));
+    let mut canonical = CacheDB::new(sources.clone());
+
+    let caller = Address::from([0x03; 20]);
+    canonical.insert_account_info(
+        caller,
+        AccountInfo {
+            balance: U256::MAX,
+            nonce: 0,
+            ..Default::default()
+        },
+    );
+
+    let canonical = Arc::new(SharedDb::new(canonical));
+    let state = OverlayDb::new(Some(canonical.clone()));
+
+    let (tx_sender, tx_receiver) = flume::unbounded();
+    drop(tx_sender);
+
+    let assertion_executor =
+        AssertionExecutor::new(ExecutorConfig::default(), AssertionStore::new_ephemeral());
+    let state_results = TransactionsState::new();
+
+    let mut engine = CoreEngine::new(
+        state,
+        sources,
+        tx_receiver,
+        assertion_executor,
+        state_results,
+        10,
+        Duration::from_millis(100),
+        Duration::from_millis(20),
+        false,
+        None,
+        None,
+        None,
+        #[cfg(feature = "cache_validation")]
+        None,
+    )
+    .await;
+    engine.set_canonical_db_for_tests(canonical.clone());
+
+    let block_env = BlockEnv {
+        number: U256::from(1),
+        basefee: 0,
+        ..Default::default()
+    };
+    engine
+        .process_iteration(&NewIteration::new(1, block_env))
+        .unwrap();
+
+    let tx_hash = B256::from([0x42; 32]);
+    let tx_execution_id = TxExecutionId::new(U256::from(1), 1, tx_hash, 0);
+    let tx_env = TxEnv {
+        caller,
+        gas_limit: 100_000,
+        gas_price: 0,
+        kind: TxKind::Create,
+        value: uint!(0_U256),
+        data: Bytes::new(),
+        nonce: 0,
+        ..Default::default()
+    };
+    engine
+        .execute_transaction(tx_execution_id, &tx_env)
+        .unwrap();
+
+    let tx_result = engine
+        .get_transaction_result_cloned(&tx_execution_id)
+        .expect("engine should store transaction result");
+    match tx_result {
+        TransactionResult::ValidationCompleted { .. } => {}
+        TransactionResult::ValidationError(err) => {
+            panic!("transaction validation error: {err}");
+        }
+    }
+
+    let block_id = tx_execution_id.as_block_execution_id();
+    let iteration = engine.current_block_iterations.get(&block_id).unwrap();
+    let nonce_in_iteration = iteration
+        .version_db
+        .basic_ref(caller)
+        .unwrap()
+        .unwrap()
+        .nonce;
+    assert_eq!(nonce_in_iteration, 1, "iteration db should increment nonce");
+
+    #[cfg(any(test, feature = "bench-utils"))]
+    {
+        assert_eq!(
+            iteration.executed_state_deltas.len(),
+            1,
+            "engine should record one state delta"
+        );
+        let delta = iteration.executed_state_deltas[0].as_ref().unwrap();
+        let caller_account = delta
+            .get(&caller)
+            .expect("delta should include caller account");
+        assert!(
+            caller_account.is_touched(),
+            "delta caller account should be marked touched"
+        );
+        assert_eq!(
+            caller_account.info.nonce, 1,
+            "delta should reflect incremented nonce"
+        );
+    }
+
+    let commit_head = CommitHead::new(
+        U256::from(1),
+        1,
+        Some(tx_hash),
+        1,
+        Some(B256::random()),
+        Some(B256::random()),
+        U256::from(1234567890),
+    );
+
+    let mut processed_blocks = 0;
+    let mut block_processing_time = Instant::now();
+    engine
+        .process_commit_head(
+            &commit_head,
+            &mut processed_blocks,
+            &mut block_processing_time,
+        )
+        .unwrap();
+
+    let nonce_after_commit = canonical.with_read(|db| db.basic_ref(caller).unwrap().unwrap().nonce);
+    assert_eq!(nonce_after_commit, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
+    use crate::utils::shared_db::SharedDb;
+
+    let sources: Vec<Arc<dyn crate::cache::sources::Source>> = vec![Arc::new(NullSource)];
+    let sources = Arc::new(Sources::new(sources, 10));
+    let mut canonical = CacheDB::new(sources.clone());
+
+    let caller = Address::from([0x03; 20]);
+    canonical.insert_account_info(
+        caller,
+        AccountInfo {
+            balance: U256::MAX,
+            nonce: 0,
+            ..Default::default()
+        },
+    );
+
+    let canonical = Arc::new(SharedDb::new(canonical));
+    let state = OverlayDb::new(Some(canonical.clone()));
+
+    let (tx_sender, tx_receiver) = flume::unbounded();
+    drop(tx_sender);
+
+    let assertion_executor =
+        AssertionExecutor::new(ExecutorConfig::default(), AssertionStore::new_ephemeral());
+    let state_results = TransactionsState::new();
+
+    let mut engine = CoreEngine::new(
+        state,
+        sources,
+        tx_receiver,
+        assertion_executor,
+        state_results,
+        10,
+        Duration::from_millis(100),
+        Duration::from_millis(20),
+        false,
+        None,
+        None,
+        None,
+        #[cfg(feature = "cache_validation")]
+        None,
+    )
+    .await;
+    engine.set_canonical_db_for_tests(canonical.clone());
+
+    // Commit block 1 without ever having created an iteration (matches `LocalInstance::new_block()` behavior).
+    let commit_head_1 = CommitHead::new(
+        U256::from(1),
+        1,
+        None,
+        0,
+        Some(B256::random()),
+        Some(B256::random()),
+        U256::from(1234567890),
+    );
+    let mut processed_blocks = 0;
+    let mut block_processing_time = Instant::now();
+    engine
+        .process_commit_head(
+            &commit_head_1,
+            &mut processed_blocks,
+            &mut block_processing_time,
+        )
+        .unwrap();
+
+    // Block 2 iteration and tx.
+    let block_env_2 = BlockEnv {
+        number: U256::from(2),
+        basefee: 0,
+        ..Default::default()
+    };
+    engine
+        .process_iteration(&NewIteration::new(1, block_env_2))
+        .unwrap();
+
+    let tx_hash = B256::from([0x42; 32]);
+    let tx_execution_id = TxExecutionId::new(U256::from(2), 1, tx_hash, 0);
+    let tx_env = TxEnv {
+        caller,
+        gas_limit: 100_000,
+        gas_price: 0,
+        kind: TxKind::Create,
+        value: uint!(0_U256),
+        data: Bytes::new(),
+        nonce: 0,
+        ..Default::default()
+    };
+    engine
+        .execute_transaction(tx_execution_id, &tx_env)
+        .unwrap();
+
+    let tx_result = engine
+        .get_transaction_result_cloned(&tx_execution_id)
+        .expect("engine should store transaction result");
+    match tx_result {
+        TransactionResult::ValidationCompleted { .. } => {}
+        TransactionResult::ValidationError(err) => {
+            panic!("transaction validation error: {err}");
+        }
+    }
+
+    let commit_head_2 = CommitHead::new(
+        U256::from(2),
+        1,
+        Some(tx_hash),
+        1,
+        Some(B256::random()),
+        Some(B256::random()),
+        U256::from(1234567890),
+    );
+
+    engine
+        .process_commit_head(
+            &commit_head_2,
+            &mut processed_blocks,
+            &mut block_processing_time,
+        )
+        .unwrap();
+
+    let nonce_after_commit = canonical.with_read(|db| db.basic_ref(caller).unwrap().unwrap().nonce);
+    assert_eq!(nonce_after_commit, 1);
 }
 
 #[crate::utils::engine_test(all)]

@@ -8,10 +8,10 @@
 #[cfg(any(test, feature = "bench-utils"))]
 #[allow(dead_code)]
 pub mod instance;
-#[cfg(any(test, feature = "bench-utils"))]
-pub mod shared_db;
 pub(crate) mod macros;
 pub mod profiling;
+#[cfg(any(test, feature = "bench-utils"))]
+pub mod shared_db;
 #[cfg(any(test, feature = "bench-utils"))]
 #[allow(dead_code)]
 pub mod test_drivers;

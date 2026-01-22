@@ -1,10 +1,12 @@
 #![allow(clippy::too_many_lines)]
-use super::instance::{
-    EngineThreadHandle,
-    LocalInstance,
-    TestTransport,
+use super::{
+    instance::{
+        EngineThreadHandle,
+        LocalInstance,
+        TestTransport,
+    },
+    shared_db::SharedDb,
 };
-use super::shared_db::SharedDb;
 use crate::{
     CoreEngine,
     Sources,

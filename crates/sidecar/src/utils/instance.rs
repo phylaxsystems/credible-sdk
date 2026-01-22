@@ -14,6 +14,7 @@
 //! - Create and send arbitrary transaction events over the transports,
 //! - Contains helper functions to validate transaction inclusion and assertion execution.
 
+use super::shared_db::SharedDb;
 use crate::{
     cache::{
         Sources,
@@ -64,15 +65,14 @@ use assertion_executor::{
 };
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use rand::Rng;
-use super::shared_db::SharedDb;
 use revm::{
+    DatabaseRef,
     context::{
         transaction::AccessListItem,
         tx::TxEnvBuilder,
     },
     context_interface::block::BlobExcessGasAndPrice,
     database::CacheDB,
-    DatabaseRef,
     primitives::{
         Bytes,
         address,
@@ -389,7 +389,7 @@ impl<T: TestTransport> LocalInstance<T> {
         for address in self.committed_nonce.keys() {
             addresses.insert(*address);
         }
-        for ((address, _iteration_id), _) in &self.iteration_nonce {
+        for (address, _iteration_id) in self.iteration_nonce.keys() {
             addresses.insert(*address);
         }
 
@@ -402,8 +402,7 @@ impl<T: TestTransport> LocalInstance<T> {
                 .db
                 .with_read(|db| db.basic_ref(address))
                 .map_err(|e| format!("Failed to read account nonce for {address}: {e:?}"))?
-                .map(|info| info.nonce)
-                .unwrap_or(0);
+                .map_or(0, |info| info.nonce);
             self.committed_nonce.insert(address, nonce);
         }
 
