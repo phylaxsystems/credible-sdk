@@ -566,17 +566,26 @@ async fn test_assertion_invalid_tx_reorg_keeps_count_in_sync(
     }
 
     assert!(
-        instance.is_transaction_invalid(&tx_fail_1_id).await.unwrap(),
+        instance
+            .is_transaction_invalid(&tx_fail_1_id)
+            .await
+            .unwrap(),
         "Second transaction should fail assertions"
     );
     assert!(
-        instance.is_transaction_invalid(&tx_fail_2_id).await.unwrap(),
+        instance
+            .is_transaction_invalid(&tx_fail_2_id)
+            .await
+            .unwrap(),
         "Third transaction should fail assertions"
     );
 
     instance.send_reorg(tx_fail_2_id).await.unwrap();
     assert!(
-        instance.is_transaction_removed(&tx_fail_2_id).await.unwrap(),
+        instance
+            .is_transaction_removed(&tx_fail_2_id)
+            .await
+            .unwrap(),
         "Reorg should remove the last assertion-invalid transaction"
     );
 

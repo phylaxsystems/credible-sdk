@@ -250,7 +250,7 @@ struct BlockIterationData<DB> {
     /// Handles base state, current state, and commit log internally.
     version_db: VersionDb<OverlayDb<DB>>,
     /// How many transactions we have processed for this iteration.
-    /// This tracks executed txs (including assertion-invalid ones) to stay in sync with the sequencer's CommitHead.
+    /// This tracks executed txs (including assertion-invalid ones) to stay in sync with the sequencer's `CommitHead`.
     n_transactions: u64,
     /// Ordered list of executed transactions for this iteration (used for rollback).
     executed_txs: Vec<TxExecutionId>,
