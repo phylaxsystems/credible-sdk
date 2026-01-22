@@ -163,6 +163,13 @@ use tracing::{
     warn,
 };
 
+#[cfg(feature = "cache_validation")]
+type TxStateMap = HashMap<TxHash, Option<EvmState>>;
+#[cfg(feature = "cache_validation")]
+type BlockTxStateMap = Arc<TxStateMap>;
+#[cfg(feature = "cache_validation")]
+type ProcessedBlocksCache = Arc<moka::sync::Cache<u64, BlockTxStateMap>>;
+
 /// Timeout for recv - threads will check for the shutdown flag at this interval
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -321,7 +328,7 @@ pub struct CoreEngine<DB> {
     /// System calls handler for EIP-2935 and EIP-4788.
     system_calls: SystemCalls,
     #[cfg(feature = "cache_validation")]
-    processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
+    processed_transactions: ProcessedBlocksCache,
     #[cfg(feature = "cache_validation")]
     iteration_pending_processed_transactions:
         HashMap<BlockExecutionId, HashMap<TxHash, Option<EvmState>>>,
@@ -361,8 +368,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let report_incidents = incident_sender.is_some();
         #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
-            let processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>> =
-                Arc::new(moka::sync::Cache::builder().max_capacity(100).build());
+            let processed_transactions: ProcessedBlocksCache =
+                Arc::new(moka::sync::Cache::builder().max_capacity(128).build());
             let handle = if let Some(provider_ws_url) = provider_ws_url
                 && let Ok(cache_checker) =
                     CacheChecker::try_new(provider_ws_url, processed_transactions.clone()).await
@@ -1161,9 +1168,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .iteration_pending_processed_transactions
                 .remove(&block_execution_id)
             {
-                for (tx_hash, state) in iteration {
-                    self.processed_transactions.insert(tx_hash, state);
-                }
+                let block_number = commit_head.block_number.saturating_to::<u64>();
+                self.processed_transactions
+                    .insert(block_number, Arc::new(iteration));
             }
             self.iteration_pending_processed_transactions.clear();
         }
