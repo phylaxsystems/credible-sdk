@@ -50,13 +50,17 @@ use sidecar::transport::grpc::pb::{
     sidecar_transport_client::SidecarTransportClient,
 };
 use std::{
-    collections::HashMap,
+    collections::{
+        HashMap,
+        VecDeque,
+    },
     sync::Arc,
     time::Duration,
 };
 use tokio::{
     sync::{
         Mutex,
+        Notify,
         mpsc,
         watch,
     },
@@ -91,6 +95,8 @@ const GET_TX_RECEIPT_TIMEOUT_SECS: u64 = 60;
 const GRPC_GET_TRANSACTIONS_TIMEOUT_SECS: u64 = 120;
 const SUBSCRIPTION_SETUP_TIMEOUT_SECS: u64 = 30;
 const COMPARISON_CHANNEL_BUFFER_SIZE: usize = 256;
+const COMPARISON_BACKLOG_LIMIT: usize = 4096;
+const COMPARISON_MAX_QUEUE_AGE: Duration = Duration::from_secs(2);
 
 /// Pending event awaiting acknowledgment
 struct PendingEvent {
@@ -274,6 +280,144 @@ struct ComparisonRequest {
     tx_hashes: Vec<alloy::primitives::B256>,
     client: SidecarTransportClient<Channel>,
     provider: Arc<RootProvider>,
+    enqueued_at: time::Instant,
+}
+
+/// Manages comparison request buffering and backpressure.
+struct ComparisonManager {
+    tx: mpsc::Sender<ComparisonRequest>,
+    backlog: Mutex<VecDeque<ComparisonRequest>>,
+    backlog_limit: usize,
+    backlog_notify: Notify,
+    backlog_space_notify: Notify,
+}
+
+impl ComparisonManager {
+    fn new(tx: mpsc::Sender<ComparisonRequest>, backlog_limit: usize) -> Self {
+        Self {
+            tx,
+            backlog: Mutex::new(VecDeque::new()),
+            backlog_limit,
+            backlog_notify: Notify::new(),
+            backlog_space_notify: Notify::new(),
+        }
+    }
+
+    async fn enqueue(&self, request: ComparisonRequest) -> Result<()> {
+        let mut pending = Some(request);
+
+        loop {
+            if pending
+                .as_ref()
+                .is_some_and(|r| r.enqueued_at.elapsed() > COMPARISON_MAX_QUEUE_AGE)
+            {
+                warn!(
+                    "Dropping stale comparison request (>{}s)",
+                    COMPARISON_MAX_QUEUE_AGE.as_secs()
+                );
+                return Ok(());
+            }
+
+            let notified = self.backlog_space_notify.notified();
+            let mut backlog = self.backlog.lock().await;
+
+            if !backlog.is_empty() {
+                if backlog.len() >= self.backlog_limit {
+                    drop(backlog);
+                    notified.await;
+                    continue;
+                }
+
+                backlog.push_back(pending.take().expect("pending request missing"));
+                drop(backlog);
+                self.backlog_notify.notify_one();
+                return Ok(());
+            }
+
+            match self
+                .tx
+                .try_send(pending.take().expect("pending request missing"))
+            {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::TrySendError::Full(request)) => {
+                    if request.enqueued_at.elapsed() > COMPARISON_MAX_QUEUE_AGE {
+                        drop(backlog);
+                        warn!(
+                            "Dropping stale comparison request (>{}s)",
+                            COMPARISON_MAX_QUEUE_AGE.as_secs()
+                        );
+                        return Ok(());
+                    }
+                    if backlog.len() >= self.backlog_limit {
+                        pending = Some(request);
+                        drop(backlog);
+                        notified.await;
+                        continue;
+                    }
+
+                    backlog.push_back(request);
+                    drop(backlog);
+                    self.backlog_notify.notify_one();
+                    return Ok(());
+                }
+                Err(mpsc::error::TrySendError::Closed(_request)) => {
+                    return Err(anyhow!("comparison worker closed"));
+                }
+            }
+        }
+    }
+
+    async fn run_backlog_drainer(self: Arc<Self>) {
+        loop {
+            let next = {
+                let mut backlog = self.backlog.lock().await;
+                let mut next = backlog.pop_front();
+                while let Some(request) = next.as_ref() {
+                    if request.enqueued_at.elapsed() <= COMPARISON_MAX_QUEUE_AGE {
+                        break;
+                    }
+                    warn!(
+                        "Dropping stale comparison request from backlog (>{}s)",
+                        COMPARISON_MAX_QUEUE_AGE.as_secs()
+                    );
+                    next = backlog.pop_front();
+                }
+                if next.is_some() {
+                    self.backlog_space_notify.notify_one();
+                }
+                next
+            };
+
+            if let Some(request) = next {
+                let elapsed = request.enqueued_at.elapsed();
+                if elapsed > COMPARISON_MAX_QUEUE_AGE {
+                    warn!(
+                        "Dropping stale comparison request before send (>{}s)",
+                        COMPARISON_MAX_QUEUE_AGE.as_secs()
+                    );
+                    continue;
+                }
+
+                let remaining = COMPARISON_MAX_QUEUE_AGE.saturating_sub(elapsed);
+                match time::timeout(remaining, self.tx.send(request)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        warn!("Comparison backlog drainer failed to send request: {e}");
+                        return;
+                    }
+                    Err(_) => {
+                        warn!(
+                            "Dropping stale comparison request while waiting to send (>{}s)",
+                            COMPARISON_MAX_QUEUE_AGE.as_secs()
+                        );
+                    }
+                }
+                continue;
+            }
+
+            self.backlog_notify.notified().await;
+        }
+    }
 }
 
 /// Background worker that processes transaction result comparisons
@@ -337,7 +481,7 @@ pub struct Listener {
     /// Flag to enable/disable transaction result querying
     query_results: bool,
     /// Channel to send comparison requests to background worker
-    comparison_tx: Option<mpsc::Sender<ComparisonRequest>>,
+    comparison_manager: Option<Arc<ComparisonManager>>,
 }
 
 impl Listener {
@@ -352,7 +496,7 @@ impl Listener {
             last_committed_block: None,
             starting_block,
             query_results: false,
-            comparison_tx: None,
+            comparison_manager: None,
         }
     }
 
@@ -382,7 +526,10 @@ impl Listener {
         if enabled {
             // Create channel and spawn background worker
             let (tx, rx) = mpsc::channel::<ComparisonRequest>(COMPARISON_CHANNEL_BUFFER_SIZE);
-            self.comparison_tx = Some(tx);
+            let manager = Arc::new(ComparisonManager::new(tx, COMPARISON_BACKLOG_LIMIT));
+            self.comparison_manager = Some(manager.clone());
+
+            tokio::spawn(manager.run_backlog_drainer());
 
             let worker = ComparisonWorker::new(rx);
             tokio::spawn(worker.run());
@@ -1030,25 +1177,23 @@ impl Listener {
         // STEP 5: Queue transaction result comparison (non-blocking)
         if self.query_results
             && !successful_tx_hashes.is_empty()
-            && let Some(ref comparison_tx) = self.comparison_tx
+            && let Some(ref comparison_manager) = self.comparison_manager
         {
             let request = ComparisonRequest {
                 block_number,
                 tx_hashes: successful_tx_hashes,
                 client: client.clone(),
                 provider: self.provider.clone(),
+                enqueued_at: time::Instant::now(),
             };
 
-            // Use try_send to never block - drop if channel is full
-            match comparison_tx.try_send(request) {
-                Ok(()) => {
-                    debug!("Queued comparison for block {block_number}");
-                }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!("Comparison queue full, skipping comparison for block {block_number}");
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    warn!("Comparison worker closed, skipping comparison for block {block_number}");
+            // Enqueue with backpressure to avoid dropping comparisons.
+            match comparison_manager.enqueue(request).await {
+                Ok(()) => debug!("Queued comparison for block {block_number}"),
+                Err(e) => {
+                    warn!(
+                        "Comparison manager unavailable, skipping comparison for block {block_number}: {e}"
+                    );
                 }
             }
         }
@@ -1500,5 +1645,84 @@ fn result_status_to_string(status: i32) -> &'static str {
         x if x == ResultStatus::Failed as i32 => "FAILED",
         x if x == ResultStatus::AssertionFailed as i32 => "ASSERTION_FAILED",
         _ => "UNKNOWN",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_provider::ProviderBuilder;
+    use alloy_transport::mock::Asserter;
+    use tokio::time::Duration;
+
+    fn test_provider() -> Arc<RootProvider> {
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        Arc::new(provider.root().clone())
+    }
+
+    fn test_client() -> SidecarTransportClient<Channel> {
+        let channel = Channel::from_static("http://127.0.0.1:50051").connect_lazy();
+        SidecarTransportClient::new(channel)
+    }
+
+    fn make_request(block_number: u64, enqueued_at: time::Instant) -> ComparisonRequest {
+        ComparisonRequest {
+            block_number,
+            tx_hashes: Vec::new(),
+            client: test_client(),
+            provider: test_provider(),
+            enqueued_at,
+        }
+    }
+
+    #[tokio::test]
+    async fn queues_and_drains_backlog() {
+        let (tx, mut rx) = mpsc::channel::<ComparisonRequest>(1);
+        let manager = Arc::new(ComparisonManager::new(tx, 4));
+        tokio::spawn(manager.clone().run_backlog_drainer());
+
+        let now = time::Instant::now();
+        manager.enqueue(make_request(1, now)).await.unwrap();
+        manager.enqueue(make_request(2, now)).await.unwrap();
+
+        let first = rx.recv().await.expect("first request");
+        assert_eq!(first.block_number, 1);
+
+        let second = rx.recv().await.expect("second request");
+        assert_eq!(second.block_number, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drops_stale_request_on_enqueue() {
+        let (tx, mut rx) = mpsc::channel::<ComparisonRequest>(1);
+        let manager = Arc::new(ComparisonManager::new(tx, 4));
+        tokio::spawn(manager.clone().run_backlog_drainer());
+
+        let enqueued_at = time::Instant::now();
+        time::advance(Duration::from_secs(3)).await;
+        manager.enqueue(make_request(1, enqueued_at)).await.unwrap();
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drops_stale_request_while_waiting_to_send() {
+        let (tx, mut rx) = mpsc::channel::<ComparisonRequest>(1);
+        let manager = Arc::new(ComparisonManager::new(tx, 4));
+        tokio::spawn(manager.clone().run_backlog_drainer());
+
+        let now = time::Instant::now();
+        manager.enqueue(make_request(1, now)).await.unwrap();
+
+        manager.enqueue(make_request(2, now)).await.unwrap();
+        tokio::task::yield_now().await;
+
+        time::advance(Duration::from_secs(3)).await;
+
+        let first = rx.recv().await.expect("first request");
+        assert_eq!(first.block_number, 1);
+
+        assert!(rx.try_recv().is_err());
     }
 }

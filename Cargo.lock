@@ -11089,6 +11089,7 @@ version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-provider",
+ "alloy-transport",
  "anyhow",
  "clap",
  "credible-utils",
