@@ -89,7 +89,7 @@ impl<DB> CoreEngine<DB> {
             system_calls: SystemCalls,
             #[cfg(feature = "cache_validation")]
             processed_transactions: Arc::new(
-                moka::sync::Cache::builder().max_capacity(100).build(),
+                moka::sync::Cache::builder().max_capacity(128).build(),
             ),
             #[cfg(feature = "cache_validation")]
             cache_checker: None,
