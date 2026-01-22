@@ -33,6 +33,7 @@ inquire = "0.9"
 toml = "0.8.2"
 dirs = "6.0.0"
 indicatif = "0.18"
+open = "5"
 
 [features]
 default = ["full-test"]

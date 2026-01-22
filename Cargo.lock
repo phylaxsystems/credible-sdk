@@ -1445,10 +1445,10 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-client"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
- "assertion-da-core 1.0.0",
+ "assertion-da-core 1.0.2",
  "assertion-da-server",
  "bincode",
  "bollard",
@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-core"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "serde",
@@ -1484,14 +1484,14 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-server"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-dyn-abi",
  "alloy-json-abi",
  "anyhow",
- "assertion-da-client 1.0.0",
- "assertion-da-core 1.0.0",
+ "assertion-da-client 1.0.2",
+ "assertion-da-core 1.0.2",
  "bincode",
  "bollard",
  "clap",
@@ -1564,7 +1564,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-executor"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -1583,8 +1583,8 @@ dependencies = [
  "alloy-transport",
  "alloy-transport-ws",
  "anyhow",
- "assertion-da-client 1.0.0",
- "assertion-executor 1.0.0",
+ "assertion-da-client 1.0.2",
+ "assertion-executor 1.0.2",
  "bincode",
  "clap",
  "criterion",
@@ -2854,7 +2854,7 @@ dependencies = [
 
 [[package]]
 name = "credible-utils"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "tokio",
@@ -3066,7 +3066,7 @@ dependencies = [
 
 [[package]]
 name = "dapp-api-client"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -5050,7 +5050,7 @@ dependencies = [
 
 [[package]]
 name = "geth_snapshot"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "anyhow",
@@ -6400,7 +6400,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -6725,11 +6725,11 @@ dependencies = [
 
 [[package]]
 name = "int-test-utils"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "anyhow",
- "assertion-da-client 1.0.0",
+ "assertion-da-client 1.0.2",
  "assertion-da-server",
  "axum",
  "dashmap",
@@ -6788,6 +6788,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "is-docker"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
 name = "is-terminal"
 version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6796,6 +6805,16 @@ dependencies = [
  "hermit-abi",
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "is-wsl"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
+dependencies = [
+ "is-docker",
+ "once_cell",
 ]
 
 [[package]]
@@ -8059,6 +8078,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "open"
+version = "5.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43bb73a7fa3799b198970490a51174027ba0d4ec504b03cd08caf513d40024bc"
+dependencies = [
+ "is-wsl",
+ "libc",
+ "pathdiff",
+]
+
+[[package]]
 name = "openapiv3"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8357,6 +8387,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pathdiff"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
+
+[[package]]
 name = "pbkdf2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8377,7 +8413,7 @@ dependencies = [
 
 [[package]]
 name = "pcl"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -8392,7 +8428,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-common"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "clap",
  "serde_json",
@@ -8400,12 +8436,12 @@ dependencies = [
 
 [[package]]
 name = "pcl-core"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-primitives",
  "anyhow",
- "assertion-da-client 1.0.0",
+ "assertion-da-client 1.0.2",
  "chrono",
  "clap",
  "color-eyre",
@@ -8415,6 +8451,7 @@ dependencies = [
  "inquire",
  "int-test-utils",
  "mockito",
+ "open",
  "pcl-common",
  "pcl-phoundry",
  "reqwest",
@@ -8428,7 +8465,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-phoundry"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy-json-abi",
  "clap",
@@ -11048,7 +11085,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-driver"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -11097,7 +11134,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sidecar"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -11105,8 +11142,8 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-types-trace",
  "anyhow",
- "assertion-da-client 1.0.0",
- "assertion-executor 1.0.0",
+ "assertion-da-client 1.0.2",
+ "assertion-executor 1.0.2",
  "axum",
  "bincode",
  "chrono",
@@ -11159,7 +11196,7 @@ dependencies = [
 
 [[package]]
 name = "sidecar-test-macros"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11531,7 +11568,7 @@ dependencies = [
 
 [[package]]
 name = "state-checker"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -11552,16 +11589,13 @@ dependencies = [
 
 [[package]]
 name = "state-store"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
- "anyhow",
  "bytes",
- "chrono",
  "hex",
  "modular-bitfield",
  "rayon",
- "redis",
  "reth-codecs",
  "reth-db",
  "reth-db-api",
@@ -11569,52 +11603,34 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "testcontainers",
- "testcontainers-modules",
  "thiserror 2.0.17",
- "tokio",
  "tracing",
- "uuid 1.19.0",
 ]
 
 [[package]]
 name = "state-worker"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-provider",
  "alloy-rpc-types-trace",
  "anyhow",
  "async-trait",
- "chrono",
  "clap",
  "futures",
  "hex",
  "int-test-utils",
  "metrics",
- "redis",
  "revm",
  "rust-tracing",
  "rustls",
  "serde",
  "serde_json",
  "state-store",
- "state-worker-test-macros",
- "testcontainers",
- "testcontainers-modules",
  "tokio",
  "tracing",
  "tracing-test",
  "uuid 0.8.2",
-]
-
-[[package]]
-name = "state-worker-test-macros"
-version = "1.0.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.111",
 ]
 
 [[package]]

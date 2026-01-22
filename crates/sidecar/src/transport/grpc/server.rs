@@ -391,14 +391,11 @@ pub fn decode_transaction(t: &Transaction) -> Result<TxQueueContents, HttpDecode
         .transpose()
         .map_err(|_| HttpDecoderError::InvalidHash(String::new()))?;
 
-    Ok(TxQueueContents::Tx(
-        QueueTransaction {
-            tx_execution_id,
-            tx_env,
-            prev_tx_hash,
-        },
-        tracing::Span::current(),
-    ))
+    Ok(TxQueueContents::Tx(QueueTransaction {
+        tx_execution_id,
+        tx_env,
+        prev_tx_hash,
+    }))
 }
 
 #[inline]
@@ -728,26 +725,20 @@ impl GrpcService {
         match variant {
             EventVariant::CommitHead(commit) => {
                 let commit_head = decode_commit_head(&commit)?;
-                self.send_queue_event(TxQueueContents::CommitHead(
-                    commit_head,
-                    tracing::Span::current(),
-                ))?;
+                self.send_queue_event(TxQueueContents::CommitHead(commit_head))?;
                 self.mark_commit_head_seen();
             }
             EventVariant::NewIteration(iteration) => {
                 self.ensure_commit_head_seen()?;
                 let new_iteration = decode_new_iteration(iteration)?;
-                self.send_queue_event(TxQueueContents::NewIteration(
-                    new_iteration,
-                    tracing::Span::current(),
-                ))?;
+                self.send_queue_event(TxQueueContents::NewIteration(new_iteration))?;
             }
             EventVariant::Transaction(transaction) => {
                 self.ensure_commit_head_seen()?;
                 let queue_tx = decode_transaction(&transaction)
                     .map_err(|e| Status::invalid_argument(format!("invalid transaction: {e}")))?;
 
-                if let TxQueueContents::Tx(ref tx, _) = queue_tx
+                if let TxQueueContents::Tx(ref tx) = queue_tx
                     && self
                         .transactions_results
                         .is_tx_received_now(&tx.tx_execution_id)
@@ -784,13 +775,10 @@ impl GrpcService {
                         "tx_hashes last entry must match tx_hash",
                     ));
                 }
-                let event = TxQueueContents::Reorg(
-                    ReorgRequest {
-                        tx_execution_id,
-                        tx_hashes,
-                    },
-                    tracing::Span::current(),
-                );
+                let event = TxQueueContents::Reorg(ReorgRequest {
+                    tx_execution_id,
+                    tx_hashes,
+                });
                 self.transactions_results.add_accepted_tx(&event);
                 self.tx_sender
                     .send(event)

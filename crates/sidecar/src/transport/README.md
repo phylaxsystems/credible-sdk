@@ -182,14 +182,13 @@ All transports communicate with the core engine through a unified message queue:
 
 ```rust, ignore
 use sidecar::engine::queue::{CommitHead, NewIteration, QueueTransaction, ReorgRequest};
-use tracing::Span;
 
 #[derive(Debug)]
 pub enum TxQueueContents {
-    CommitHead(CommitHead, tracing::Span),
-    NewIteration(NewIteration, tracing::Span),
-    Tx(QueueTransaction, tracing::Span),
-    Reorg(ReorgRequest, tracing::Span),
+    CommitHead(CommitHead),
+    NewIteration(NewIteration),
+    Tx(QueueTransaction),
+    Reorg(ReorgRequest),
 }
 ```
 

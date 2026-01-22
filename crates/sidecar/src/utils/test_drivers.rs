@@ -96,7 +96,6 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tracing::{
-    Span,
     debug,
     error,
     info,
@@ -419,7 +418,7 @@ impl TestTransport for LocalInstanceMockDriver {
         self.override_last_tx_hash = None;
 
         self.mock_sender
-            .send(TxQueueContents::CommitHead(commit_head, Span::current()))
+            .send(TxQueueContents::CommitHead(commit_head))
             .map_err(|e| format!("Failed to send commit head: {e}"))?;
 
         info!(target: "test_transport", "Successfully sent commit head to mock_sender");
@@ -446,7 +445,7 @@ impl TestTransport for LocalInstanceMockDriver {
             prev_tx_hash,
         };
         self.mock_sender
-            .send(TxQueueContents::Tx(queue_tx, Span::current()))
+            .send(TxQueueContents::Tx(queue_tx))
             .map_err(|e| format!("Failed to send transaction: {e}"))
     }
 
@@ -461,10 +460,7 @@ impl TestTransport for LocalInstanceMockDriver {
 
         let new_iteration = NewIteration::new(iteration_id, block_env);
         self.mock_sender
-            .send(TxQueueContents::NewIteration(
-                new_iteration,
-                Span::current(),
-            ))
+            .send(TxQueueContents::NewIteration(new_iteration))
             .map_err(|e| format!("Failed to send new iteration: {e}"))
     }
 
@@ -502,13 +498,10 @@ impl TestTransport for LocalInstanceMockDriver {
         }
 
         self.mock_sender
-            .send(TxQueueContents::Reorg(
-                ReorgRequest {
-                    tx_execution_id,
-                    tx_hashes,
-                },
-                Span::current(),
-            ))
+            .send(TxQueueContents::Reorg(ReorgRequest {
+                tx_execution_id,
+                tx_hashes,
+            }))
             .map_err(|e| format!("Failed to send reorg: {e}"))
     }
 

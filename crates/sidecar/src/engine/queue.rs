@@ -107,28 +107,28 @@ impl ReorgRequest {
 /// process it as a valid event if it matches.
 #[derive(Debug, Clone)]
 pub enum TxQueueContents {
-    Tx(QueueTransaction, tracing::Span),
-    Reorg(ReorgRequest, tracing::Span),
-    CommitHead(CommitHead, tracing::Span),
-    NewIteration(NewIteration, tracing::Span),
+    Tx(QueueTransaction),
+    Reorg(ReorgRequest),
+    CommitHead(CommitHead),
+    NewIteration(NewIteration),
 }
 
 impl TxQueueContents {
     pub fn block_number(&self) -> U256 {
         match self {
-            TxQueueContents::Tx(v, _) => v.tx_execution_id.block_number,
-            TxQueueContents::Reorg(v, _) => v.tx_execution_id.block_number,
-            TxQueueContents::CommitHead(v, _) => v.block_number,
-            TxQueueContents::NewIteration(v, _) => v.block_env.number,
+            TxQueueContents::Tx(v) => v.tx_execution_id.block_number,
+            TxQueueContents::Reorg(v) => v.tx_execution_id.block_number,
+            TxQueueContents::CommitHead(v) => v.block_number,
+            TxQueueContents::NewIteration(v) => v.block_env.number,
         }
     }
 
     pub fn iteration_id(&self) -> u64 {
         match self {
-            TxQueueContents::Tx(v, _) => v.tx_execution_id.iteration_id,
-            TxQueueContents::Reorg(v, _) => v.tx_execution_id.iteration_id,
-            TxQueueContents::CommitHead(v, _) => v.selected_iteration_id,
-            TxQueueContents::NewIteration(v, _) => v.iteration_id,
+            TxQueueContents::Tx(v) => v.tx_execution_id.iteration_id,
+            TxQueueContents::Reorg(v) => v.tx_execution_id.iteration_id,
+            TxQueueContents::CommitHead(v) => v.selected_iteration_id,
+            TxQueueContents::NewIteration(v) => v.iteration_id,
         }
     }
 }

@@ -1217,13 +1217,21 @@ impl Listener {
                     "TX {tx_hash}: MATCH (status={provider_success}, gas_used={provider_gas_used})"
                 );
             } else {
-                mismatches += 1;
                 let sidecar_status_str = result_status_to_string(sidecar_result.status);
-                warn!(
-                    "TX {tx_hash}: x MISMATCH - \
+                if sidecar_status_str == "ASSERTION_FAILED" {
+                    warn!(
+                        "TX {tx_hash}: x ASSERTION FAILED - \
                      provider(status={provider_success}, gas={provider_gas_used}) vs \
                      sidecar(status={sidecar_status_str}, gas={sidecar_gas_used})"
-                );
+                    );
+                } else {
+                    mismatches += 1;
+                    warn!(
+                        "TX {tx_hash}: x MISMATCH - \
+                     provider(status={provider_success}, gas={provider_gas_used}) vs \
+                     sidecar(status={sidecar_status_str}, gas={sidecar_gas_used})"
+                    );
+                }
 
                 if !status_matches {
                     warn!(

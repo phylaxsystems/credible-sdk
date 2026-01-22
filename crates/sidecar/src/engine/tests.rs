@@ -25,6 +25,7 @@ use assertion_executor::{
         ExecutionResult,
     },
     store::AssertionStore,
+    test_utils::counter_call,
 };
 use revm::{
     DatabaseRef,
@@ -270,13 +271,10 @@ async fn test_core_engine_errors_when_no_synced_sources() {
     };
 
     tx_sender
-        .send(TxQueueContents::NewIteration(
-            new_iteration,
-            tracing::Span::none(),
-        ))
+        .send(TxQueueContents::NewIteration(new_iteration))
         .expect("queue send should succeed");
     tx_sender
-        .send(TxQueueContents::Tx(queue_tx, tracing::Span::none()))
+        .send(TxQueueContents::Tx(queue_tx))
         .expect("queue send should succeed");
 
     assert_eq!(sources.iter_synced_sources().count(), 0);
@@ -430,6 +428,177 @@ async fn test_execute_assertion_passing_failing_pair(mut instance: crate::utils:
         .send_assertion_passing_failing_pair()
         .await
         .unwrap();
+}
+
+#[crate::utils::engine_test(mock)]
+async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
+    mut instance: crate::utils::LocalInstance,
+) {
+    let initial_cache_resets = instance.cache_reset_count();
+    let basefee = 10u64;
+    let caller = counter_call().caller;
+    let tx_block_number = instance.block_number + U256::from(1);
+    let block_exec_id = BlockExecutionId {
+        block_number: tx_block_number,
+        iteration_id: instance.iteration_id,
+    };
+
+    let mut tx_pass = counter_call();
+    tx_pass.nonce = instance.next_nonce(caller, block_exec_id);
+    tx_pass.gas_price = basefee.into();
+
+    let mut tx_fail = counter_call();
+    tx_fail.nonce = instance.next_nonce(caller, block_exec_id);
+    tx_fail.gas_price = basefee.into();
+
+    let hash_pass = B256::random();
+    let hash_fail = B256::random();
+
+    instance
+        .send_block_with_txs(vec![(hash_pass, tx_pass), (hash_fail, tx_fail)])
+        .await
+        .unwrap();
+
+    let tx_pass_id = TxExecutionId {
+        block_number: tx_block_number,
+        iteration_id: instance.iteration_id,
+        tx_hash: hash_pass,
+        index: 0,
+    };
+    let tx_fail_id = TxExecutionId {
+        block_number: tx_block_number,
+        iteration_id: instance.iteration_id,
+        tx_hash: hash_fail,
+        index: 1,
+    };
+
+    match instance.wait_for_transaction_processed(&tx_pass_id).await {
+        Ok(TransactionResult::ValidationCompleted { is_valid, .. }) => {
+            assert!(is_valid, "First transaction should pass assertions");
+        }
+        Ok(TransactionResult::ValidationError(e)) => panic!("{e}"),
+        Err(e) => panic!("{e:?}"),
+    }
+
+    assert!(
+        instance.is_transaction_invalid(&tx_fail_id).await.unwrap(),
+        "Second transaction should fail assertions"
+    );
+
+    instance.new_block_with_hashes(B256::ZERO, None).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(25))
+        .await;
+
+    assert_eq!(
+        instance.cache_reset_count(),
+        initial_cache_resets,
+        "Cache should remain valid when the sequencer keeps the assertion-invalid transaction"
+    );
+}
+
+#[crate::utils::engine_test(mock)]
+async fn test_assertion_invalid_tx_reorg_keeps_count_in_sync(
+    mut instance: crate::utils::LocalInstance,
+) {
+    let initial_cache_resets = instance.cache_reset_count();
+    let basefee = 10u64;
+    let caller = counter_call().caller;
+    let tx_block_number = instance.block_number + U256::from(1);
+    let block_exec_id = BlockExecutionId {
+        block_number: tx_block_number,
+        iteration_id: instance.iteration_id,
+    };
+
+    let mut tx_pass = counter_call();
+    tx_pass.nonce = instance.next_nonce(caller, block_exec_id);
+    tx_pass.gas_price = basefee.into();
+
+    let mut tx_fail_1 = counter_call();
+    tx_fail_1.nonce = instance.next_nonce(caller, block_exec_id);
+    tx_fail_1.gas_price = basefee.into();
+
+    let mut tx_fail_2 = counter_call();
+    tx_fail_2.nonce = instance.next_nonce(caller, block_exec_id);
+    tx_fail_2.gas_price = basefee.into();
+
+    let hash_pass = B256::random();
+    let hash_fail_1 = B256::random();
+    let hash_fail_2 = B256::random();
+
+    instance
+        .send_block_with_txs(vec![
+            (hash_pass, tx_pass),
+            (hash_fail_1, tx_fail_1),
+            (hash_fail_2, tx_fail_2),
+        ])
+        .await
+        .unwrap();
+
+    let tx_pass_id = TxExecutionId {
+        block_number: tx_block_number,
+        iteration_id: instance.iteration_id,
+        tx_hash: hash_pass,
+        index: 0,
+    };
+    let tx_fail_1_id = TxExecutionId {
+        block_number: tx_block_number,
+        iteration_id: instance.iteration_id,
+        tx_hash: hash_fail_1,
+        index: 1,
+    };
+    let tx_fail_2_id = TxExecutionId {
+        block_number: tx_block_number,
+        iteration_id: instance.iteration_id,
+        tx_hash: hash_fail_2,
+        index: 2,
+    };
+
+    match instance.wait_for_transaction_processed(&tx_pass_id).await {
+        Ok(TransactionResult::ValidationCompleted { is_valid, .. }) => {
+            assert!(is_valid, "First transaction should pass assertions");
+        }
+        Ok(TransactionResult::ValidationError(e)) => panic!("{e}"),
+        Err(e) => panic!("{e:?}"),
+    }
+
+    assert!(
+        instance
+            .is_transaction_invalid(&tx_fail_1_id)
+            .await
+            .unwrap(),
+        "Second transaction should fail assertions"
+    );
+    assert!(
+        instance
+            .is_transaction_invalid(&tx_fail_2_id)
+            .await
+            .unwrap(),
+        "Third transaction should fail assertions"
+    );
+
+    instance.send_reorg(tx_fail_2_id).await.unwrap();
+    assert!(
+        instance
+            .is_transaction_removed(&tx_fail_2_id)
+            .await
+            .unwrap(),
+        "Reorg should remove the last assertion-invalid transaction"
+    );
+
+    instance.transport.set_n_transactions(2);
+    instance.transport.set_last_tx_hash(Some(hash_fail_1));
+
+    instance.new_block_with_hashes(B256::ZERO, None).await.unwrap();
+    instance
+        .wait_for_processing(Duration::from_millis(25))
+        .await;
+
+    assert_eq!(
+        instance.cache_reset_count(),
+        initial_cache_resets,
+        "Cache should remain valid after reorging the last invalid transaction"
+    );
 }
 
 #[crate::utils::engine_test(all)]
@@ -809,7 +978,7 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        n_transactions: 2,
+        n_transactions: 3,
         executed_txs: vec![tx1, tx2, tx3],
         incident_txs: Vec::new(),
         block_env: BlockEnv {
@@ -845,10 +1014,10 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
         .expect("block iteration should exist");
     assert_eq!(current_block_iteration.executed_txs, vec![tx1, tx2]);
     assert_eq!(current_block_iteration.depth(), 2);
-    assert_eq!(current_block_iteration.n_transactions, 1);
+    assert_eq!(current_block_iteration.n_transactions, 2);
 }
 
-/// Tests that missing transaction results are treated as invalid for `n_transactions`.
+/// Tests that missing transaction results do not affect `n_transactions` tracking.
 #[tokio::test]
 async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
     let (mut engine, _) = create_test_engine().await;
@@ -882,7 +1051,7 @@ async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        n_transactions: 1,
+        n_transactions: 2,
         executed_txs: vec![tx1, tx2],
         incident_txs: Vec::new(),
         block_env: BlockEnv {
@@ -1036,7 +1205,7 @@ async fn test_execute_reorg_with_all_failed_transactions() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        n_transactions: 0,
+        n_transactions: 2,
         executed_txs: vec![tx1, tx2],
         incident_txs: Vec::new(),
         block_env: BlockEnv {
@@ -1070,7 +1239,7 @@ async fn test_execute_reorg_with_all_failed_transactions() {
         .expect("block iteration should exist");
     assert_eq!(current_block_iteration.executed_txs, vec![tx1]);
     assert_eq!(current_block_iteration.depth(), 1);
-    assert_eq!(current_block_iteration.n_transactions, 0);
+    assert_eq!(current_block_iteration.n_transactions, 1);
 }
 
 /// Tests a deep reorg (depth > 1) with an alternating success/failure pattern.
@@ -1111,7 +1280,7 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        n_transactions: 3,
+        n_transactions: 5,
         executed_txs: txs.clone(),
         incident_txs: Vec::new(),
         block_env: BlockEnv {

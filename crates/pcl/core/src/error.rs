@@ -85,11 +85,11 @@ pub enum DappSubmitError {
 /// Errors that can occur during configuration operations
 #[derive(Error, Debug)]
 pub enum ConfigError {
-    /// Error when reading the config file from ~/.pcl/config.toml fails
+    /// Error when reading the config file from ~/.config/pcl/config.toml fails
     #[error("Failed to read config file: {0}")]
     ReadError(std::io::Error),
 
-    /// Error when writing to the config file at ~/.pcl/config.toml fails
+    /// Error when writing to the config file at ~/.config/pcl/config.toml fails
     #[error("Failed to write config file: {0}")]
     WriteError(std::io::Error),
 

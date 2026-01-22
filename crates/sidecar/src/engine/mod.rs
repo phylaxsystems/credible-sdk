@@ -249,7 +249,8 @@ struct BlockIterationData<DB> {
     /// Versioned database managing state with rollback capability.
     /// Handles base state, current state, and commit log internally.
     version_db: VersionDb<OverlayDb<DB>>,
-    /// How many transactions we have seen for each iteration in the `blockEnv` we are currently working on
+    /// How many transactions we have processed for this iteration.
+    /// This tracks executed txs (including assertion-invalid ones) to stay in sync with the sequencer's `CommitHead`.
     n_transactions: u64,
     /// Ordered list of executed transactions for this iteration (used for rollback).
     executed_txs: Vec<TxExecutionId>,
@@ -713,12 +714,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             .get_mut(&block_id)
             .ok_or(EngineError::TransactionError)?;
         current_block_iteration.incident_txs.push(tx_data);
-        // Only count transactions that pass validation (is_valid == true).
-        // Invalid transactions (failed assertions) are not counted as they
-        // won't be included in the block.
-        if is_valid {
-            current_block_iteration.n_transactions += 1;
-        }
+        // Count every executed transaction; the sequencer is authoritative on inclusion.
+        // If it later decides to drop one, it will reorg and we will roll back.
+        current_block_iteration.n_transactions += 1;
 
         Ok(())
     }
@@ -852,27 +850,21 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             let event_start = Instant::now();
 
             let result = match event {
-                TxQueueContents::NewIteration(new_iteration, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::NewIteration(new_iteration) => {
                     self.process_iteration(&new_iteration)
                 }
-                TxQueueContents::CommitHead(commit_head, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::CommitHead(commit_head) => {
                     self.process_commit_head(
                         &commit_head,
                         &mut processed_blocks,
                         &mut block_processing_time,
                     )
                 }
-                TxQueueContents::Tx(queue_transaction, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::Tx(queue_transaction) => {
                     self.verify_state_sources_synced_blocking(&shutdown)
                         .and_then(|()| self.process_transaction_event(queue_transaction))
                 }
-                TxQueueContents::Reorg(reorg, current_span) => {
-                    let _guard = current_span.enter();
-                    self.execute_reorg(&reorg)
-                }
+                TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
             };
 
             if let Err(error) = result {
@@ -987,27 +979,21 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
             // Process event and handle errors appropriately
             let result = match event {
-                TxQueueContents::NewIteration(new_iteration, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::NewIteration(new_iteration) => {
                     self.process_iteration(&new_iteration)
                 }
-                TxQueueContents::CommitHead(commit_head, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::CommitHead(commit_head) => {
                     self.process_commit_head(
                         &commit_head,
                         &mut processed_blocks,
                         &mut block_processing_time,
                     )
                 }
-                TxQueueContents::Tx(queue_transaction, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::Tx(queue_transaction) => {
                     // In test mode, skip state source sync verification
                     self.process_transaction_event(queue_transaction)
                 }
-                TxQueueContents::Reorg(reorg, current_span) => {
-                    let _guard = current_span.enter();
-                    self.execute_reorg(&reorg)
-                }
+                TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
             };
 
             // Handle the result of event processing
@@ -1328,9 +1314,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     ///
     /// ## State Rollback
     /// Uses `VersionDb::rollback_to()` to restore state to before the reorged
-    /// transactions. Only decrements `n_transactions` by the count of VALID
-    /// transactions being removed (invalid transactions don't count toward
-    /// the block's transaction count).
+    /// transactions. `n_transactions` tracks executed txs, so we decrement by
+    /// the reorg depth.
     #[allow(clippy::too_many_lines)]
     fn execute_reorg(&mut self, reorg: &ReorgRequest) -> Result<(), EngineError> {
         let tx_execution_id = reorg.tx_execution_id;
@@ -1434,27 +1419,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .rollback_to(new_len)
                 .map_err(|_| EngineError::ReorgError)?;
 
-            // Count how many of the removed transactions were valid.
-            // Only valid transactions contribute to `n_transactions` (the count used
-            // in CommitHead validation), so we only decrement by the valid count.
-            // Invalid transactions (failed assertions) are tracked in executed_txs
-            // but don't affect n_transactions.
-            let mut valid_tx_count = 0u64;
             for removed in removed_txs {
-                let is_valid = self
-                    .transaction_results
-                    .get_transaction_result(&removed)
-                    .is_some_and(|result_ref| {
-                        matches!(
-                            &*result_ref,
-                            TransactionResult::ValidationCompleted { is_valid: true, .. }
-                        )
-                    });
-
-                if is_valid {
-                    valid_tx_count += 1;
-                }
-
                 self.transaction_results.remove_transaction_result(removed);
                 #[cfg(feature = "cache_validation")]
                 if let Some(iteration) = self
@@ -1465,11 +1430,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 }
             }
 
-            // Decrement n_transactions by valid count only (saturating to handle edge cases)
-            current_block_iteration.n_transactions = current_block_iteration
-                .n_transactions
-                .saturating_sub(valid_tx_count);
-
+            // Decrement by reorg depth to keep in sync with executed txs.
+            current_block_iteration.n_transactions = new_len as u64;
             return Ok(());
         }
 

@@ -91,9 +91,6 @@ where
         start_override: Option<u64>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<()> {
-        // Recover from any stale locks left by crashed writers
-        self.recover_stale_locks()?;
-
         let mut next_block = self.compute_start_block(start_override)?;
 
         loop {
@@ -124,40 +121,6 @@ where
                         () = time::sleep(Duration::from_secs(SUBSCRIPTION_RETRY_DELAY_SECS)) => {}
                     }
                 }
-            }
-        }
-    }
-
-    /// Check for and recover from stale write locks.
-    ///
-    /// If recovery fails (e.g., missing diffs), the lock remains in place, and
-    /// the worker fails to start. This prevents readers from accessing corrupt data.
-    fn recover_stale_locks(&self) -> Result<()> {
-        match self.writer_reader.recover_stale_locks() {
-            Ok(recoveries) => {
-                if recoveries.is_empty() {
-                    debug!("no stale locks detected");
-                } else {
-                    for recovery in &recoveries {
-                        info!(
-                            namespace = %recovery.namespace,
-                            target_block = recovery.target_block,
-                            previous_block = ?recovery.previous_block,
-                            writer_id = %recovery.writer_id,
-                            "recovered stale lock and repaired state"
-                        );
-                        self.metrics.record_stale_lock_recovery();
-                    }
-                }
-                Ok(())
-            }
-            Err(err) => {
-                // Recovery failed. The lock remains in place to protect readers.
-                critical!(
-                    error = %err,
-                    "failed to recover stale lock, namespace remains locked, manual intervention required"
-                );
-                Err(anyhow!("stale lock recovery failed: {err}"))
             }
         }
     }

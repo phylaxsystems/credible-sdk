@@ -97,7 +97,7 @@ impl QueryTransactionsResults {
         self.metrics
             .set_transport_pending_receives_length(self.pending_receives.len());
 
-        let TxQueueContents::Tx(tx, _) = tx_queue_contents else {
+        let TxQueueContents::Tx(tx) = tx_queue_contents else {
             self.transactions_state.add_accepted_tx(tx_queue_contents);
             return Ok(());
         };
@@ -304,14 +304,11 @@ mod tests {
     }
 
     fn create_test_tx_queue_contents(tx_execution_id: TxExecutionId) -> TxQueueContents {
-        TxQueueContents::Tx(
-            QueueTransaction {
-                tx_execution_id,
-                tx_env: TxEnv::default(),
-                prev_tx_hash: None,
-            },
-            tracing::Span::current(),
-        )
+        TxQueueContents::Tx(QueueTransaction {
+            tx_execution_id,
+            tx_env: TxEnv::default(),
+            prev_tx_hash: None,
+        })
     }
 
     #[tokio::test]
