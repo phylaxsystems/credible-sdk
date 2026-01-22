@@ -169,21 +169,32 @@ impl DaStoreArgs {
     fn split_top_level_commas(input: &str) -> Vec<String> {
         let mut parts = Vec::new();
         let mut current = String::new();
-        let mut depth: i32 = 0;
+        let mut paren_depth: i32 = 0;
+        let mut bracket_depth: i32 = 0;
 
         for ch in input.chars() {
             match ch {
                 '(' => {
-                    depth += 1;
+                    paren_depth += 1;
                     current.push(ch);
                 }
                 ')' => {
-                    if depth > 0 {
-                        depth -= 1;
+                    if paren_depth > 0 {
+                        paren_depth -= 1;
                     }
                     current.push(ch);
                 }
-                ',' if depth == 0 => {
+                '[' => {
+                    bracket_depth += 1;
+                    current.push(ch);
+                }
+                ']' => {
+                    if bracket_depth > 0 {
+                        bracket_depth -= 1;
+                    }
+                    current.push(ch);
+                }
+                ',' if paren_depth == 0 && bracket_depth == 0 => {
                     parts.push(current.clone());
                     current.clear();
                 }
@@ -202,8 +213,8 @@ impl DaStoreArgs {
         let mut updated = balance;
         for ch in token.chars() {
             match ch {
-                '(' => updated += 1,
-                ')' => {
+                '(' | '[' => updated += 1,
+                ')' | ']' => {
                     if updated > 0 {
                         updated -= 1;
                     }
@@ -977,5 +988,116 @@ mod tests {
 
         let result = args.run(&cli_args, &mut config).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_positional_assertions_parse_array_arg() {
+        // Single array argument
+        let args = DaStoreArgs {
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            root: None,
+            assertion_specs: vec![],
+            positional_assertions: vec!["ArrayAssertion([addr1,addr2])".to_string()],
+        };
+
+        let assertions = args.assertions_to_store();
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].assertion_name, "ArrayAssertion");
+        assert_eq!(assertions[0].constructor_args, vec!["[addr1,addr2]"]);
+    }
+
+    #[test]
+    fn test_positional_assertions_parse_array_with_other_args() {
+        // Array with other arguments
+        let args = DaStoreArgs {
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            root: None,
+            assertion_specs: vec![],
+            positional_assertions: vec!["MixedAssertion(arg1,[addr1,addr2],arg3)".to_string()],
+        };
+
+        let assertions = args.assertions_to_store();
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].assertion_name, "MixedAssertion");
+        assert_eq!(
+            assertions[0].constructor_args,
+            vec!["arg1", "[addr1,addr2]", "arg3"]
+        );
+    }
+
+    #[test]
+    fn test_positional_assertions_parse_multiple_arrays() {
+        // Multiple array arguments
+        let args = DaStoreArgs {
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            root: None,
+            assertion_specs: vec![],
+            positional_assertions: vec!["MultiArrayAssertion([a,b],[c,d])".to_string()],
+        };
+
+        let assertions = args.assertions_to_store();
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].assertion_name, "MultiArrayAssertion");
+        assert_eq!(assertions[0].constructor_args, vec!["[a,b]", "[c,d]"]);
+    }
+
+    #[test]
+    fn test_positional_assertions_csv_with_array() {
+        // CSV separated assertions where one has an array
+        let args = DaStoreArgs {
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            root: None,
+            assertion_specs: vec![],
+            positional_assertions: vec![
+                "FirstAssertion([addr1,addr2]),SecondAssertion(arg1)".to_string(),
+            ],
+        };
+
+        let assertions = args.assertions_to_store();
+        assert_eq!(assertions.len(), 2);
+        assert_eq!(assertions[0].assertion_name, "FirstAssertion");
+        assert_eq!(assertions[0].constructor_args, vec!["[addr1,addr2]"]);
+        assert_eq!(assertions[1].assertion_name, "SecondAssertion");
+        assert_eq!(assertions[1].constructor_args, vec!["arg1"]);
+    }
+
+    #[test]
+    fn test_positional_assertions_split_across_tokens_with_array() {
+        // Array argument split across shell tokens
+        let args = DaStoreArgs {
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            root: None,
+            assertion_specs: vec![],
+            positional_assertions: vec![
+                "ArrayAssertion([addr1,".to_string(),
+                "addr2])".to_string(),
+            ],
+        };
+
+        let assertions = args.assertions_to_store();
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].assertion_name, "ArrayAssertion");
+        assert_eq!(assertions[0].constructor_args, vec!["[addr1, addr2]"]);
+    }
+
+    #[test]
+    fn test_positional_assertions_ethereum_address_array() {
+        // Realistic use case: array of Ethereum addresses
+        let args = DaStoreArgs {
+            da_url: "https://demo-21-assertion-da.phylax.systems".to_string(),
+            root: None,
+            assertion_specs: vec![],
+            positional_assertions: vec![
+                "TokenAssertion([0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd])".to_string(),
+            ],
+        };
+
+        let assertions = args.assertions_to_store();
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].assertion_name, "TokenAssertion");
+        assert_eq!(
+            assertions[0].constructor_args,
+            vec!["[0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd]"]
+        );
     }
 }

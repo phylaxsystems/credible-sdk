@@ -108,13 +108,52 @@ impl From<String> for AssertionKey {
             };
         }
 
-        let constructor_args = args.split(',').map(|arg| arg.trim().to_string()).collect();
+        let constructor_args = split_args_respecting_brackets(args);
 
         Self {
             assertion_name: cleaned_name,
             constructor_args,
         }
     }
+}
+
+/// Splits a string by commas, but respects square brackets `[]` so that
+/// commas inside arrays are not treated as separators.
+///
+/// # Arguments
+/// * `input` - The string to split (e.g., "arg1,[addr1,addr2],arg3")
+///
+/// # Returns
+/// A vector of trimmed argument strings
+fn split_args_respecting_brackets(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut bracket_depth: i32 = 0;
+
+    for ch in input.chars() {
+        match ch {
+            '[' => {
+                bracket_depth += 1;
+                current.push(ch);
+            }
+            ']' => {
+                if bracket_depth > 0 {
+                    bracket_depth -= 1;
+                }
+                current.push(ch);
+            }
+            ',' if bracket_depth == 0 => {
+                args.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    // Always push the remaining content (handles trailing commas producing empty args)
+    args.push(current.trim().to_string());
+
+    args
 }
 impl FromStr for AssertionKey {
     type Err = String;
@@ -951,5 +990,80 @@ mod tests {
         assert_eq!(assertion_key.assertion_name, "assertion_name");
         assert_eq!(assertion_key.constructor_args, <Vec<String>>::new());
         assert_eq!(assertion_key.to_string(), assertion_key_str);
+    }
+
+    #[test]
+    fn test_assertion_key_from_string_with_array_arg() {
+        // Single array argument
+        let assertion_key_str = "assertion_name([addr1,addr2])".to_string();
+        let assertion_key = AssertionKey::from(assertion_key_str);
+
+        assert_eq!(assertion_key.assertion_name, "assertion_name");
+        assert_eq!(assertion_key.constructor_args, vec!["[addr1,addr2]"]);
+    }
+
+    #[test]
+    fn test_assertion_key_from_string_with_array_and_other_args() {
+        // Array with other arguments
+        let assertion_key_str = "assertion_name(arg1,[addr1,addr2],arg3)".to_string();
+        let assertion_key = AssertionKey::from(assertion_key_str);
+
+        assert_eq!(assertion_key.assertion_name, "assertion_name");
+        assert_eq!(
+            assertion_key.constructor_args,
+            vec!["arg1", "[addr1,addr2]", "arg3"]
+        );
+    }
+
+    #[test]
+    fn test_assertion_key_from_string_with_multiple_arrays() {
+        // Multiple array arguments
+        let assertion_key_str = "assertion_name([a,b],[c,d])".to_string();
+        let assertion_key = AssertionKey::from(assertion_key_str);
+
+        assert_eq!(assertion_key.assertion_name, "assertion_name");
+        assert_eq!(assertion_key.constructor_args, vec!["[a,b]", "[c,d]"]);
+    }
+
+    #[test]
+    fn test_assertion_key_from_string_with_ethereum_addresses_array() {
+        // Array of Ethereum addresses (realistic use case)
+        let assertion_key_str =
+            "TokenAssertion([0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd])"
+                .to_string();
+        let assertion_key = AssertionKey::from(assertion_key_str);
+
+        assert_eq!(assertion_key.assertion_name, "TokenAssertion");
+        assert_eq!(
+            assertion_key.constructor_args,
+            vec![
+                "[0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd]"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_assertion_key_from_string_with_uint_array() {
+        // Array of uints (like in Solidity: [uint(1), 2, 3])
+        let assertion_key_str = "NumberAssertion([1,2,3])".to_string();
+        let assertion_key = AssertionKey::from(assertion_key_str);
+
+        assert_eq!(assertion_key.assertion_name, "NumberAssertion");
+        assert_eq!(assertion_key.constructor_args, vec!["[1,2,3]"]);
+    }
+
+    #[test]
+    fn test_assertion_key_roundtrip_with_array() {
+        // Test that Display and From are consistent for arrays
+        let original = AssertionKey::new(
+            "TestAssertion".to_string(),
+            vec!["arg1".to_string(), "[addr1,addr2]".to_string(), "arg3".to_string()],
+        );
+        let displayed = original.to_string();
+        let parsed = AssertionKey::from(displayed.clone());
+
+        assert_eq!(original.assertion_name, parsed.assertion_name);
+        assert_eq!(original.constructor_args, parsed.constructor_args);
+        assert_eq!(displayed, "TestAssertion(arg1,[addr1,addr2],arg3)");
     }
 }
