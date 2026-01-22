@@ -81,7 +81,7 @@ pub struct DaStoreArgs {
         value_name = "ASSERTION",
         value_hint = ValueHint::Other,
         value_parser,
-        help = "Assertion contract in the format 'ContractName' or 'ContractName(constructorArg0,constructorArg1,...)'. Repeat the flag to store multiple assertions (wrap the value in quotes to avoid shell parsing)."
+        help = "Assertion contract in the format 'ContractName' or 'ContractName(arg0,arg1,...)'. Array arguments are supported, e.g. 'ContractName([addr1,addr2])'. Repeat the flag to store multiple assertions (wrap the value in quotes to avoid shell parsing)."
     )]
     pub assertion_specs: Vec<AssertionKey>,
 
@@ -89,7 +89,7 @@ pub struct DaStoreArgs {
     #[clap(
         value_name = "ASSERTION",
         value_hint = ValueHint::Other,
-        help = "Assertion spec(s) in the format 'ContractName' or 'ContractName(arg0,arg1,...)'. Multiple specs can be separated by whitespace or commas.",
+        help = "Assertion spec(s) in the format 'ContractName' or 'ContractName(arg0,arg1,...)'. Array arguments are supported, e.g. 'ContractName([addr1,addr2])'. Multiple specs can be separated by whitespace or commas.",
         required_unless_present = "assertion_specs",
         trailing_var_arg = true
     )]

@@ -77,6 +77,8 @@ struct Project {
                   pcl submit AssertionName arg1 arg2 arg3\n\n    \
                   Submit multiple assertions (with -a flag):\n        \
                   pcl submit -a \"AssertionName1(arg1,arg2,arg3)\" -a \"AssertionName2(arg1,arg2,arg3)\"\n\n    \
+                  Submit an assertion with an array argument:\n        \
+                  pcl submit -a \"TokenAssertion([0xaddr1,0xaddr2])\"\n\n    \
                   Note: Positional arguments are for single assertions only.\n    \
                   The -a flag with parentheses format is for specifying assertions with arguments."
 )]
@@ -110,7 +112,7 @@ pub struct DappSubmitArgs {
         short = 'a',
         value_name = "ASSERTION",
         value_hint = ValueHint::Other,
-        help = "Assertion in format 'Name(arg1,arg2)'. Use multiple -a flags for multiple assertions.",
+        help = "Assertion in format 'Name(arg1,arg2)'. Array arguments are supported, e.g. 'Name([addr1,addr2])'. Use multiple -a flags for multiple assertions.",
         value_parser
     )]
     pub assertion_keys: Option<Vec<AssertionKey>>,
