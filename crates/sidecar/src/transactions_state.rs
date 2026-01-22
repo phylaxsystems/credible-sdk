@@ -137,7 +137,7 @@ impl TransactionsState {
     }
 
     pub fn add_accepted_tx(&self, tx_queue_contents: &TxQueueContents) {
-        if let TxQueueContents::Tx(tx, _) = tx_queue_contents {
+        if let TxQueueContents::Tx(tx) = tx_queue_contents {
             self.accepted_txs.insert(tx.tx_execution_id, Instant::now());
         }
     }
@@ -303,7 +303,6 @@ mod tests {
         Duration,
         timeout,
     };
-    use tracing::Span;
 
     /// Helper function to create a test transaction execution id
     fn create_test_tx_execution_id() -> TxExecutionId {
@@ -338,19 +337,16 @@ mod tests {
 
     /// Helper function to create a test `TxQueueContents` with transaction
     fn create_test_tx_queue_contents(tx_execution_id: TxExecutionId) -> TxQueueContents {
-        TxQueueContents::Tx(
-            QueueTransaction {
-                tx_execution_id,
-                tx_env: TxEnv::default(),
-                prev_tx_hash: None,
-            },
-            Span::current(),
-        )
+        TxQueueContents::Tx(QueueTransaction {
+            tx_execution_id,
+            tx_env: TxEnv::default(),
+            prev_tx_hash: None,
+        })
     }
 
     /// Helper function to create a test `TxQueueContents` with block
     fn create_test_block_queue_contents() -> TxQueueContents {
-        TxQueueContents::NewIteration(NewIteration::default(), Span::current())
+        TxQueueContents::NewIteration(NewIteration::default())
     }
 
     #[test]

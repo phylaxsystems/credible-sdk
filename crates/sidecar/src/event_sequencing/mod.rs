@@ -609,7 +609,7 @@ impl EventSequencing {
         let context = self.get_context_mut(block_number, "send_event_recursive")?;
 
         let (reorg_depth, reorg_tx_hashes) = match &event {
-            TxQueueContents::Reorg(reorg, _) => {
+            TxQueueContents::Reorg(reorg) => {
                 (reorg.depth() as u64, Some(reorg.tx_hashes.as_slice()))
             }
             _ => (0, None),
@@ -740,7 +740,7 @@ impl EventSequencing {
                 EventMetadata::Transaction {
                     tx_hash: sent_hash, ..
                 },
-                TxQueueContents::Tx(queue, _),
+                TxQueueContents::Tx(queue),
             ) = (event_metadata, &dependent_event)
                 && let Some(prev_hash) = queue.prev_tx_hash
                 && prev_hash != *sent_hash

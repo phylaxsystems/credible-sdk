@@ -44,17 +44,17 @@ pub async fn tracing_middleware(
 pub fn trace_tx_queue_contents(block_context: &BlockContext, tx_queue_contents: &TxQueueContents) {
     match tx_queue_contents {
         // If we receive a tx, add the tx hash to the current span
-        TxQueueContents::Tx(tx, span) => {
-            span.record("tx.hash", display(tx.tx_execution_id));
+        TxQueueContents::Tx(tx) => {
+            tracing::Span::current().record("tx.hash", display(tx.tx_execution_id));
         }
         // Record the tx hash of the reorg
-        TxQueueContents::Reorg(reorg, span) => {
-            span.record("tx.hash", display(reorg.tx_execution_id));
+        TxQueueContents::Reorg(reorg) => {
+            tracing::Span::current().record("tx.hash", display(reorg.tx_execution_id));
         }
         // CommitHead events do not carry block env data, so there is nothing to trace.
-        TxQueueContents::CommitHead(_, _) => {}
+        TxQueueContents::CommitHead(_) => {}
         // A new iteration indicates the next block env we should build on.
-        TxQueueContents::NewIteration(new_iteration, _) => {
+        TxQueueContents::NewIteration(new_iteration) => {
             block_context.update(new_iteration.block_env.number);
         }
     }

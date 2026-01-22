@@ -511,7 +511,7 @@ impl Eq for EventMetadata {}
 impl From<&TxQueueContents> for EventMetadata {
     fn from(value: &TxQueueContents) -> Self {
         match value {
-            TxQueueContents::Tx(queue, _) => {
+            TxQueueContents::Tx(queue) => {
                 Self::Transaction {
                     block_number: queue.tx_execution_id.block_number,
                     iteration_id: queue.tx_execution_id.iteration_id,
@@ -520,7 +520,7 @@ impl From<&TxQueueContents> for EventMetadata {
                     prev_tx_hash: queue.prev_tx_hash,
                 }
             }
-            TxQueueContents::Reorg(queue, _) => {
+            TxQueueContents::Reorg(queue) => {
                 Self::Reorg {
                     block_number: queue.tx_execution_id.block_number,
                     iteration_id: queue.tx_execution_id.iteration_id,
@@ -529,7 +529,7 @@ impl From<&TxQueueContents> for EventMetadata {
                     tx_hashes: queue.tx_hashes.clone(),
                 }
             }
-            TxQueueContents::CommitHead(queue, _) => {
+            TxQueueContents::CommitHead(queue) => {
                 Self::CommitHead {
                     block_number: queue.block_number,
                     selected_iteration_id: queue.selected_iteration_id,
@@ -537,7 +537,7 @@ impl From<&TxQueueContents> for EventMetadata {
                     prev_tx_hash: queue.last_tx_hash,
                 }
             }
-            TxQueueContents::NewIteration(queue, _) => {
+            TxQueueContents::NewIteration(queue) => {
                 Self::NewIteration {
                     block_number: queue.block_env.number,
                     iteration_id: queue.iteration_id,

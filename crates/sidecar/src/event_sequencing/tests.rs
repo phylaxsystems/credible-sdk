@@ -33,15 +33,15 @@ use std::sync::{
 impl PartialEq for TxQueueContents {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (TxQueueContents::Tx(tx1, _), TxQueueContents::Tx(tx2, _)) => tx1 == tx2,
-            (TxQueueContents::Reorg(id1, _), TxQueueContents::Reorg(id2, _)) => id1 == id2,
-            (TxQueueContents::CommitHead(c1, _), TxQueueContents::CommitHead(c2, _)) => {
+            (TxQueueContents::Tx(tx1), TxQueueContents::Tx(tx2)) => tx1 == tx2,
+            (TxQueueContents::Reorg(id1), TxQueueContents::Reorg(id2)) => id1 == id2,
+            (TxQueueContents::CommitHead(c1), TxQueueContents::CommitHead(c2)) => {
                 c1.block_number == c2.block_number
                     && c1.selected_iteration_id == c2.selected_iteration_id
                     && c1.last_tx_hash == c2.last_tx_hash
                     && c1.n_transactions == c2.n_transactions
             }
-            (TxQueueContents::NewIteration(n1, _), TxQueueContents::NewIteration(n2, _)) => {
+            (TxQueueContents::NewIteration(n1), TxQueueContents::NewIteration(n2)) => {
                 n1.iteration_id == n2.iteration_id && n1.block_env == n2.block_env
             }
             _ => false,
@@ -102,18 +102,18 @@ fn build_dependency_graph_from_events(
         let mut sorted_events = block_events.clone();
         sorted_events.sort_by_key(|e| {
             match e {
-                TxQueueContents::NewIteration(ni, _) => (0, ni.iteration_id, 0u64),
-                TxQueueContents::Tx(tx, _) => {
+                TxQueueContents::NewIteration(ni) => (0, ni.iteration_id, 0u64),
+                TxQueueContents::Tx(tx) => {
                     (1, tx.tx_execution_id.iteration_id, tx.tx_execution_id.index)
                 }
-                TxQueueContents::Reorg(reorg, _) => {
+                TxQueueContents::Reorg(reorg) => {
                     (
                         1,
                         reorg.tx_execution_id.iteration_id,
                         reorg.tx_execution_id.index,
                     )
                 }
-                TxQueueContents::CommitHead(ch, _) => (2, ch.selected_iteration_id, 0u64),
+                TxQueueContents::CommitHead(ch) => (2, ch.selected_iteration_id, 0u64),
             }
         });
 
@@ -145,18 +145,18 @@ fn build_dependency_graph_from_events(
             let mut sorted_next = next_block_events.clone();
             sorted_next.sort_by_key(|e| {
                 match e {
-                    TxQueueContents::NewIteration(ni, _) => (0, ni.iteration_id, 0u64),
-                    TxQueueContents::Tx(tx, _) => {
+                    TxQueueContents::NewIteration(ni) => (0, ni.iteration_id, 0u64),
+                    TxQueueContents::Tx(tx) => {
                         (1, tx.tx_execution_id.iteration_id, tx.tx_execution_id.index)
                     }
-                    TxQueueContents::Reorg(reorg, _) => {
+                    TxQueueContents::Reorg(reorg) => {
                         (
                             1,
                             reorg.tx_execution_id.iteration_id,
                             reorg.tx_execution_id.index,
                         )
                     }
-                    TxQueueContents::CommitHead(ch, _) => (2, ch.selected_iteration_id, 0u64),
+                    TxQueueContents::CommitHead(ch) => (2, ch.selected_iteration_id, 0u64),
                 }
             });
 
@@ -193,10 +193,7 @@ fn create_new_iteration(block: u64, iteration: u64) -> TxQueueContents {
     let mut block_env = BlockEnv::default();
     block_env.number = U256::from(block);
 
-    TxQueueContents::NewIteration(
-        NewIteration::new(iteration, block_env),
-        tracing::Span::none(),
-    )
+    TxQueueContents::NewIteration(NewIteration::new(iteration, block_env))
 }
 
 fn create_transaction(
@@ -213,14 +210,11 @@ fn create_transaction(
         index,
     };
 
-    TxQueueContents::Tx(
-        QueueTransaction {
-            tx_execution_id,
-            tx_env: TxEnv::default(),
-            prev_tx_hash,
-        },
-        tracing::Span::none(),
-    )
+    TxQueueContents::Tx(QueueTransaction {
+        tx_execution_id,
+        tx_env: TxEnv::default(),
+        prev_tx_hash,
+    })
 }
 
 fn create_reorg_with_hashes(
@@ -239,13 +233,10 @@ fn create_reorg_with_hashes(
         index,
     };
 
-    TxQueueContents::Reorg(
-        ReorgRequest {
-            tx_execution_id,
-            tx_hashes,
-        },
-        tracing::Span::none(),
-    )
+    TxQueueContents::Reorg(ReorgRequest {
+        tx_execution_id,
+        tx_hashes,
+    })
 }
 
 fn create_reorg(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -> TxQueueContents {
@@ -258,18 +249,15 @@ fn create_commit_head(
     n_txs: u64,
     last_tx_hash: Option<TxHash>,
 ) -> TxQueueContents {
-    TxQueueContents::CommitHead(
-        CommitHead::new(
-            U256::from(block),
-            iteration,
-            last_tx_hash,
-            n_txs,
-            None,
-            None,
-            U256::ZERO,
-        ),
-        tracing::Span::none(),
-    )
+    TxQueueContents::CommitHead(CommitHead::new(
+        U256::from(block),
+        iteration,
+        last_tx_hash,
+        n_txs,
+        None,
+        None,
+        U256::ZERO,
+    ))
 }
 
 #[test]
@@ -5116,15 +5104,15 @@ fn test_reorg_arrives_before_tx_it_cancels_is_not_dropped_future_block() {
 
     // Basic ordering checks
     match &sent[0] {
-        TxQueueContents::CommitHead(q, _) => assert_eq!(q.block_number, U256::from(9)),
+        TxQueueContents::CommitHead(q) => assert_eq!(q.block_number, U256::from(9)),
         other => panic!("expected CommitHead first, got: {other:?}"),
     }
     match &sent[1] {
-        TxQueueContents::NewIteration(q, _) => assert_eq!(q.block_env.number, U256::from(10)),
+        TxQueueContents::NewIteration(q) => assert_eq!(q.block_env.number, U256::from(10)),
         other => panic!("expected NewIteration second, got: {other:?}"),
     }
     match &sent[2] {
-        TxQueueContents::Tx(q, _) => {
+        TxQueueContents::Tx(q) => {
             assert_eq!(q.tx_execution_id.block_number, U256::from(10));
             assert_eq!(q.tx_execution_id.iteration_id, 1);
             assert_eq!(q.tx_execution_id.index, 0);

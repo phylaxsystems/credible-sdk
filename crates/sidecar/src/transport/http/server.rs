@@ -476,12 +476,12 @@ async fn process_request(
     // Send each decoded transaction to the queue
     for queue_tx in tx_queue_contents {
         match &queue_tx {
-            TxQueueContents::CommitHead(_, _) => {
+            TxQueueContents::CommitHead(_) => {
                 state.mark_commit_head_seen();
             }
-            TxQueueContents::NewIteration(_, _)
-            | TxQueueContents::Tx(_, _)
-            | TxQueueContents::Reorg(_, _) => {
+            TxQueueContents::NewIteration(_)
+            | TxQueueContents::Tx(_)
+            | TxQueueContents::Reorg(_) => {
                 if !state.has_commit_head() {
                     debug!("Rejecting request without prior commit head");
                     return Ok(JsonRpcResponse::invalid_request(
@@ -493,7 +493,7 @@ async fn process_request(
         }
 
         trace_tx_queue_contents(&state.block_context, &queue_tx);
-        if let TxQueueContents::Tx(tx, _) = &queue_tx
+        if let TxQueueContents::Tx(tx) = &queue_tx
             && state
                 .transactions_results
                 .is_tx_received_now(&tx.tx_execution_id)

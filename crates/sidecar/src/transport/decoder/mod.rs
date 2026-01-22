@@ -122,29 +122,25 @@ impl HttpTransactionDecoder {
         let mut queue_events = Vec::with_capacity(send_params.events.len());
 
         for event in send_params.events {
-            let current_span = tracing::Span::current();
             match event {
                 SendEvent::CommitHead(commit_head) => {
                     let commit_head = convert_commit_head_event(&commit_head)?;
-                    queue_events.push(TxQueueContents::CommitHead(commit_head, current_span));
+                    queue_events.push(TxQueueContents::CommitHead(commit_head));
                 }
                 SendEvent::NewIteration(new_iteration) => {
                     let new_iteration = convert_new_iteration_event(new_iteration);
-                    queue_events.push(TxQueueContents::NewIteration(new_iteration, current_span));
+                    queue_events.push(TxQueueContents::NewIteration(new_iteration));
                 }
                 SendEvent::Transaction(transaction) => {
                     let tx_execution_id = transaction.tx_execution_id;
                     let tx_env = transaction.tx_env;
                     let prev_tx_hash = transaction.prev_tx_hash;
 
-                    queue_events.push(TxQueueContents::Tx(
-                        QueueTransaction {
-                            tx_execution_id,
-                            tx_env,
-                            prev_tx_hash,
-                        },
-                        current_span,
-                    ));
+                    queue_events.push(TxQueueContents::Tx(QueueTransaction {
+                        tx_execution_id,
+                        tx_env,
+                        prev_tx_hash,
+                    }));
                 }
             }
         }
@@ -202,15 +198,11 @@ impl HttpTransactionDecoder {
 
         for transaction in send_params.transactions {
             let tx_execution_id = transaction.tx_execution_id;
-            let current_span = tracing::Span::current();
-            queue_transactions.push(TxQueueContents::Tx(
-                QueueTransaction {
-                    tx_execution_id,
-                    tx_env: transaction.tx_env,
-                    prev_tx_hash: transaction.prev_tx_hash,
-                },
-                current_span,
-            ));
+            queue_transactions.push(TxQueueContents::Tx(QueueTransaction {
+                tx_execution_id,
+                tx_env: transaction.tx_env,
+                prev_tx_hash: transaction.prev_tx_hash,
+            }));
         }
 
         Ok(queue_transactions)
@@ -237,8 +229,7 @@ impl Decoder for HttpTransactionDecoder {
                     tx_hashes: reorg_params.tx_hashes,
                 };
 
-                let current_span = tracing::Span::current();
-                Ok(vec![TxQueueContents::Reorg(reorg, current_span.clone())])
+                Ok(vec![TxQueueContents::Reorg(reorg)])
             }
             _ => {
                 Err(HttpDecoderError::InvalidTransaction(

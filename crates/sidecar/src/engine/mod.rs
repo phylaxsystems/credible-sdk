@@ -850,27 +850,21 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             let event_start = Instant::now();
 
             let result = match event {
-                TxQueueContents::NewIteration(new_iteration, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::NewIteration(new_iteration) => {
                     self.process_iteration(&new_iteration)
                 }
-                TxQueueContents::CommitHead(commit_head, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::CommitHead(commit_head) => {
                     self.process_commit_head(
                         &commit_head,
                         &mut processed_blocks,
                         &mut block_processing_time,
                     )
                 }
-                TxQueueContents::Tx(queue_transaction, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::Tx(queue_transaction) => {
                     self.verify_state_sources_synced_blocking(&shutdown)
                         .and_then(|()| self.process_transaction_event(queue_transaction))
                 }
-                TxQueueContents::Reorg(reorg, current_span) => {
-                    let _guard = current_span.enter();
-                    self.execute_reorg(&reorg)
-                }
+                TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
             };
 
             if let Err(error) = result {
@@ -985,27 +979,21 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
             // Process event and handle errors appropriately
             let result = match event {
-                TxQueueContents::NewIteration(new_iteration, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::NewIteration(new_iteration) => {
                     self.process_iteration(&new_iteration)
                 }
-                TxQueueContents::CommitHead(commit_head, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::CommitHead(commit_head) => {
                     self.process_commit_head(
                         &commit_head,
                         &mut processed_blocks,
                         &mut block_processing_time,
                     )
                 }
-                TxQueueContents::Tx(queue_transaction, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::Tx(queue_transaction) => {
                     // In test mode, skip state source sync verification
                     self.process_transaction_event(queue_transaction)
                 }
-                TxQueueContents::Reorg(reorg, current_span) => {
-                    let _guard = current_span.enter();
-                    self.execute_reorg(&reorg)
-                }
+                TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
             };
 
             // Handle the result of event processing
