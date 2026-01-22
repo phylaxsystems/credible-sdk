@@ -14,7 +14,7 @@
 //! - Create and send arbitrary transaction events over the transports,
 //! - Contains helper functions to validate transaction inclusion and assertion execution.
 
-use super::shared_db::SharedDb;
+use super::local_instance_db::LocalInstanceDb;
 use crate::{
     cache::{
         Sources,
@@ -211,7 +211,7 @@ pub trait TestTransport: Sized {
 /// manually sending/verifying because of this.
 pub struct LocalInstance<T: TestTransport> {
     /// The underlying database
-    db: Arc<SharedDb<CacheDB<Arc<Sources>>>>,
+    db: Arc<LocalInstanceDb<CacheDB<Arc<Sources>>>>,
     /// Underlying cache
     sources: Arc<Sources>,
     /// List of cache sources
@@ -261,7 +261,7 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Internal constructor for creating `LocalInstance` with all fields
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_internal(
-        db: Arc<SharedDb<CacheDB<Arc<Sources>>>>,
+        db: Arc<LocalInstanceDb<CacheDB<Arc<Sources>>>>,
         sources: Arc<Sources>,
         eth_rpc_source_http_mock: DualProtocolMockServer,
         fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
@@ -327,7 +327,7 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Get a reference to the underlying database
-    pub fn db(&self) -> &Arc<SharedDb<CacheDB<Arc<Sources>>>> {
+    pub fn db(&self) -> &Arc<LocalInstanceDb<CacheDB<Arc<Sources>>>> {
         &self.db
     }
 

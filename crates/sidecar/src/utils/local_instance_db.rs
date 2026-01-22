@@ -25,11 +25,11 @@ use revm::{
 /// while the engine cache overlay is invalidated/rebuilt (matching production behavior,
 /// where canonical state lives in an external source).
 #[derive(Debug)]
-pub struct SharedDb<Db> {
+pub struct LocalInstanceDb<Db> {
     inner: RwLock<Db>,
 }
 
-impl<Db> SharedDb<Db> {
+impl<Db> LocalInstanceDb<Db> {
     pub fn new(inner: Db) -> Self {
         Self {
             inner: RwLock::new(inner),
@@ -47,7 +47,7 @@ impl<Db> SharedDb<Db> {
     }
 }
 
-impl<Db: DatabaseRef> DatabaseRef for SharedDb<Db> {
+impl<Db: DatabaseRef> DatabaseRef for LocalInstanceDb<Db> {
     type Error = <Db as DatabaseRef>::Error;
 
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
@@ -67,7 +67,7 @@ impl<Db: DatabaseRef> DatabaseRef for SharedDb<Db> {
     }
 }
 
-impl<Db> SharedDb<Db>
+impl<Db> LocalInstanceDb<Db>
 where
     Db: DatabaseRef + DatabaseCommit,
 {

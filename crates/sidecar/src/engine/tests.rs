@@ -1634,7 +1634,7 @@ impl crate::cache::sources::Source for NullSource {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn test_canonical_db_nonce_committed_on_commit_head() {
-    use crate::utils::shared_db::SharedDb;
+    use crate::utils::local_instance_db::LocalInstanceDb;
 
     let sources: Vec<Arc<dyn crate::cache::sources::Source>> = vec![Arc::new(NullSource)];
     let sources = Arc::new(Sources::new(sources, 10));
@@ -1650,7 +1650,7 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
         },
     );
 
-    let canonical = Arc::new(SharedDb::new(canonical));
+    let canonical = Arc::new(LocalInstanceDb::new(canonical));
     let state = OverlayDb::new(Some(canonical.clone()));
 
     let (tx_sender, tx_receiver) = flume::unbounded();
@@ -1771,7 +1771,7 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
-    use crate::utils::shared_db::SharedDb;
+    use crate::utils::local_instance_db::LocalInstanceDb;
 
     let sources: Vec<Arc<dyn crate::cache::sources::Source>> = vec![Arc::new(NullSource)];
     let sources = Arc::new(Sources::new(sources, 10));
@@ -1787,7 +1787,7 @@ async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
         },
     );
 
-    let canonical = Arc::new(SharedDb::new(canonical));
+    let canonical = Arc::new(LocalInstanceDb::new(canonical));
     let state = OverlayDb::new(Some(canonical.clone()));
 
     let (tx_sender, tx_receiver) = flume::unbounded();

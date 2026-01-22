@@ -63,7 +63,7 @@ use self::{
     },
 };
 #[cfg(any(test, feature = "bench-utils"))]
-use crate::utils::shared_db::SharedDb;
+use crate::utils::local_instance_db::LocalInstanceDb;
 use crate::{
     TransactionsState,
     critical,
@@ -307,7 +307,7 @@ pub struct CoreEngine<DB> {
     /// In tests, we use a mutable in-memory database so cache invalidations behave like
     /// production (i.e. state falls back to the latest committed state).
     #[cfg(any(test, feature = "bench-utils"))]
-    canonical_db: Option<Arc<SharedDb<revm::database::CacheDB<Arc<Sources>>>>>,
+    canonical_db: Option<Arc<LocalInstanceDb<revm::database::CacheDB<Arc<Sources>>>>>,
     /// Current block iteration data per block execution id.
     current_block_iterations: HashMap<BlockExecutionId, BlockIterationData<DB>>,
     /// Current head: last committed block.
@@ -432,7 +432,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     #[cfg(any(test, feature = "bench-utils"))]
     pub fn set_canonical_db_for_tests(
         &mut self,
-        canonical_db: Arc<SharedDb<revm::database::CacheDB<Arc<Sources>>>>,
+        canonical_db: Arc<LocalInstanceDb<revm::database::CacheDB<Arc<Sources>>>>,
     ) {
         self.canonical_db = Some(canonical_db);
     }

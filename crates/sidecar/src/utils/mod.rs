@@ -11,7 +11,7 @@ pub mod instance;
 pub(crate) mod macros;
 pub mod profiling;
 #[cfg(any(test, feature = "bench-utils"))]
-pub mod shared_db;
+pub mod local_instance_db;
 #[cfg(any(test, feature = "bench-utils"))]
 #[allow(dead_code)]
 pub mod test_drivers;
