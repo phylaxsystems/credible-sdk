@@ -21,12 +21,22 @@ jobs:
       - name: Determine version tag
         id: determine-version
         run: |
-          if git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -q '^Cargo.toml$'; then
-            VERSION=$(grep -m 1 '^version = ' Cargo.toml | cut -d '"' -f2)
-            echo "Cargo.toml changed, using version: $VERSION"
+          BEFORE="${{ github.event.before }}"
+
+          if [[ "$BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+            OLD_VERSION=$(git show "${BEFORE}:Cargo.toml" 2>/dev/null | grep -m 1 '^version = ' | cut -d '"' -f2 || echo "")
+          else
+            OLD_VERSION=""
+          fi
+
+          NEW_VERSION=$(grep -m 1 '^version = ' Cargo.toml | cut -d '"' -f2)
+
+          if [ -n "$NEW_VERSION" ] && [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
+            VERSION="$NEW_VERSION"
+            echo "Version changed from ${OLD_VERSION:-none} to $NEW_VERSION"
           else
             VERSION=""
-            echo "Cargo.toml not changed, no version tag"
+            echo "Version unchanged ($NEW_VERSION)"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
