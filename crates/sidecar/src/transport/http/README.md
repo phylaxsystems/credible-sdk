@@ -244,6 +244,8 @@ Reorg the last sent transaction(s). `tx_hashes` must list the transaction hashes
 
 **Request:**
 
+**Single transaction reorg:**
+
 ```json
 {
   "id": 1,
@@ -252,12 +254,31 @@ Reorg the last sent transaction(s). `tx_hashes` must list the transaction hashes
   "params": {
     "block_number": 1000,
     "iteration_id": 1,
-    "tx_hash": "0x1234567890abcdef...",
+    "tx_hash": "0xaaaa...",
     "index": 0,
-    "tx_hashes": ["0x1234567890abcdef..."]
+    "tx_hashes": ["0xaaaa..."]
   }
 }
 ```
+
+**Multi-transaction reorg (remove last 3 transactions):**
+
+```json
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "method": "reorg",
+  "params": {
+    "block_number": 1000,
+    "iteration_id": 1,
+    "tx_hash": "0xcccc...",
+    "index": 2,
+    "tx_hashes": ["0xaaaa...", "0xbbbb...", "0xcccc..."]
+  }
+}
+```
+
+In the multi-tx example, `tx_hashes` lists the 3 transactions to remove in chronological order (oldest first). The `tx_hash` field must match the last entry in `tx_hashes`. Transactions at indices 0, 1, and 2 will be removed.
 
 **Response:**
 
