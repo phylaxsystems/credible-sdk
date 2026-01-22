@@ -485,7 +485,10 @@ async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
         "Second transaction should fail assertions"
     );
 
-    instance.new_block_with_hashes(B256::ZERO, None).await.unwrap();
+    instance
+        .new_block_with_hashes(B256::ZERO, None)
+        .await
+        .unwrap();
     instance
         .wait_for_processing(Duration::from_millis(25))
         .await;
@@ -589,7 +592,10 @@ async fn test_assertion_invalid_tx_reorg_keeps_count_in_sync(
     instance.transport.set_n_transactions(2);
     instance.transport.set_last_tx_hash(Some(hash_fail_1));
 
-    instance.new_block_with_hashes(B256::ZERO, None).await.unwrap();
+    instance
+        .new_block_with_hashes(B256::ZERO, None)
+        .await
+        .unwrap();
     instance
         .wait_for_processing(Duration::from_millis(25))
         .await;
