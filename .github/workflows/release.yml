@@ -160,7 +160,7 @@ jobs:
     with:
       binary-name: pcl
       version: ${{ needs.create-tag.outputs.version }}
-      artifact_name: pcl-binaries
+      artifact_name: pcl-binaries-${{ needs.create-tag.outputs.version }}
       rust-channel: "nightly"
       package: "pcl"
 
@@ -171,7 +171,7 @@ jobs:
     with:
       binary-name: assertion-da
       version: ${{ needs.create-tag.outputs.version }}
-      artifact_name: assertion-da-binaries
+      artifact_name: assertion-da-binaries-${{ needs.create-tag.outputs.version }}
       rust-channel: "nightly"
       package: "assertion-da-server"
 
@@ -182,7 +182,7 @@ jobs:
     with:
       binary-name: sidecar
       version: ${{ needs.create-tag.outputs.version }}
-      artifact_name: sidecar-binaries
+      artifact_name: sidecar-binaries-${{ needs.create-tag.outputs.version }}
       rust-channel: "nightly"
       package: "sidecar"
 
@@ -194,19 +194,19 @@ jobs:
       - name: Download PCL artifacts
         uses: actions/download-artifact@v4
         with:
-          name: pcl-binaries
+          name: pcl-binaries-${{ needs.create-tag.outputs.version }}
           path: pcl-artifacts/
 
       - name: Download assertion-da artifacts
         uses: actions/download-artifact@v4
         with:
-          name: assertion-da-binaries
+          name: assertion-da-binaries-${{ needs.create-tag.outputs.version }}
           path: assertion-da-artifacts/
 
       - name: Download sidecar artifacts
         uses: actions/download-artifact@v4
         with:
-          name: sidecar-binaries
+          name: sidecar-binaries-${{ needs.create-tag.outputs.version }}
           path: sidecar-artifacts/
 
       - name: Combine artifacts
@@ -220,7 +220,7 @@ jobs:
       - name: Upload combined artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-artifacts
+          name: release-artifacts-${{ needs.create-tag.outputs.version }}
           path: release-artifacts/
           retention-days: 1
 
@@ -231,7 +231,8 @@ jobs:
     permissions:
       contents: write
     with:
-      artifact_name: release-artifacts
+      tag: ${{ needs.create-tag.outputs.version }}
+      artifact_name: release-artifacts-${{ needs.create-tag.outputs.version }}
       release_name: ${{ needs.create-tag.outputs.version }}
       generate_release_notes: true
       draft: false
