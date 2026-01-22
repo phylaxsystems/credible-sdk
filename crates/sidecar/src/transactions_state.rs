@@ -136,16 +136,6 @@ impl TransactionsState {
         self.transaction_results.remove(tx_execution_id);
     }
 
-    /// Clears all tracked transaction state.
-    ///
-    /// Intended for cache invalidation / reorg recovery where any previously
-    /// tracked in-flight transactions may no longer be valid.
-    pub fn clear_all(&self) {
-        self.transaction_results.clear();
-        self.transaction_results_pending_requests.clear();
-        self.accepted_txs.clear();
-    }
-
     /// Clears only the in-flight tracking (accepted txs + pending result requests).
     ///
     /// Useful when invalidating an iteration while keeping historical results.

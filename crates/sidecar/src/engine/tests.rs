@@ -1748,7 +1748,7 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
         1,
         Some(tx_hash),
         1,
-        Some(B256::random()),
+        B256::random(),
         Some(B256::random()),
         U256::from(1234567890),
     );
@@ -1819,7 +1819,7 @@ async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
         1,
         None,
         0,
-        Some(B256::random()),
+        B256::random(),
         Some(B256::random()),
         U256::from(1234567890),
     );
@@ -1874,7 +1874,7 @@ async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
         1,
         Some(tx_hash),
         1,
-        Some(B256::random()),
+        B256::random(),
         Some(B256::random()),
         U256::from(1234567890),
     );
