@@ -21,22 +21,15 @@ jobs:
       - name: Determine version tag
         id: determine-version
         run: |
-          BEFORE="${{ github.event.before }}"
-
-          if [[ "$BEFORE" != "0000000000000000000000000000000000000000" ]]; then
-            OLD_VERSION=$(git show "${BEFORE}:Cargo.toml" 2>/dev/null | grep -m 1 '^version = ' | cut -d '"' -f2 || echo "")
-          else
-            OLD_VERSION=""
-          fi
-
-          NEW_VERSION=$(grep -m 1 '^version = ' Cargo.toml | cut -d '"' -f2)
-
-          if [ -n "$NEW_VERSION" ] && [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
-            VERSION="$NEW_VERSION"
-            echo "Version changed from ${OLD_VERSION:-none} to $NEW_VERSION"
-          else
-            VERSION=""
-            echo "Version unchanged ($NEW_VERSION)"
+          OLD_VERSION=$(git show HEAD~1:Cargo.toml 2>/dev/null | grep -m 1 '^version = ' | cut -d '"' -f2)                                                                                                           
+          NEW_VERSION=$(grep -m 1 '^version = ' Cargo.toml | cut -d '"' -f2)                                                                                                                                               
+                                                                                                                                                                                                                   
+          if [ -n "$NEW_VERSION" ] && [ "$OLD_VERSION" != "$NEW_VERSION" ]; then                                                                                                                                           
+            VERSION="$NEW_VERSION"                                                                                                                                                                                       
+            echo "Version changed from $OLD_VERSION to $NEW_VERSION"                                                                                                                                                     
+          else                                                                                                                                                                                                             
+            VERSION=""                                                                                                                                                                                                   
+            echo "Version unchanged"                                                                                                                                                                                     
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
