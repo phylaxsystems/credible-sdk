@@ -1057,7 +1057,11 @@ mod tests {
         // Test that Display and From are consistent for arrays
         let original = AssertionKey::new(
             "TestAssertion".to_string(),
-            vec!["arg1".to_string(), "[addr1,addr2]".to_string(), "arg3".to_string()],
+            vec![
+                "arg1".to_string(),
+                "[addr1,addr2]".to_string(),
+                "arg3".to_string(),
+            ],
         );
         let displayed = original.to_string();
         let parsed = AssertionKey::from(displayed.clone());

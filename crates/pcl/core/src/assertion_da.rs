@@ -1097,7 +1097,9 @@ mod tests {
         assert_eq!(assertions[0].assertion_name, "TokenAssertion");
         assert_eq!(
             assertions[0].constructor_args,
-            vec!["[0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd]"]
+            vec![
+                "[0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd]"
+            ]
         );
     }
 }
