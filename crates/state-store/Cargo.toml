@@ -7,16 +7,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-redis = { workspace = true }
-tokio = { workspace = true }
-anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
 alloy = { workspace = true }
 thiserror = { workspace = true }
-uuid = { version = "1.15", features = ["v4"] }
-chrono = { workspace = true }
 bytes = "1.11.0"
 modular-bitfield = "0.11.2"
 reth-db = { workspace = true }
@@ -30,8 +25,6 @@ tracing = { workspace = true }
 ignored = ["modular-bitfield"]
 
 [dev-dependencies]
-testcontainers.workspace = true
-testcontainers-modules = { workspace = true, features = ["redis"] }
 tempfile = { workspace = true }
 
 [features]

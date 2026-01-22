@@ -86,12 +86,4 @@ impl WorkerMetrics {
     pub fn record_block_failure(&self) {
         counter!("state_worker_block_failures_total").increment(1);
     }
-
-    /// Record a successful stale lock recovery.
-    ///
-    /// Committed as a `Counter`: `state_worker_stale_lock_recoveries_total`
-    #[allow(clippy::unused_self)]
-    pub fn record_stale_lock_recovery(&self) {
-        counter!("state_worker_stale_lock_recoveries_total").increment(1);
-    }
 }

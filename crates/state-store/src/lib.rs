@@ -1,7 +1,6 @@
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::missing_errors_doc)]
 
-use crate::redis::writer::StaleLockRecovery;
 use alloy::primitives::{
     Address,
     B256,
@@ -22,7 +21,6 @@ use std::{
 };
 
 pub mod mdbx;
-pub mod redis;
 
 /// Account info without storage (for reader API).
 ///
@@ -389,21 +387,6 @@ pub trait Writer {
     ///
     /// Returns statistics about the commit operation for metrics tracking.
     fn commit_block(&self, update: &BlockStateUpdate) -> Result<CommitStats, Self::Error>;
-
-    /// Ensure the Redis metadata matches the configured namespace rotation size.
-    fn ensure_dump_index_metadata(&self) -> Result<(), Self::Error>;
-
-    /// Check for and recover from stale locks on all namespaces.
-    ///
-    /// Should be called during startup before processing blocks. For each stale lock:
-    /// - If the state can be repaired (diffs exist): completes the write, releases lock
-    /// - If repair fails (missing diffs): returns error, lock remains in place
-    ///
-    /// The lock is NEVER released until the state is consistent, ensuring readers
-    /// cannot access corrupt data.
-    ///
-    /// Returns information about successfully recovered locks.
-    fn recover_stale_locks(&self) -> Result<Vec<StaleLockRecovery>, Self::Error>;
 
     /// Bootstrap the circular buffer from a single state snapshot.
     ///

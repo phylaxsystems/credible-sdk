@@ -52,12 +52,9 @@ use anyhow::{
     Result,
 };
 use clap::Parser;
-use state_store::{
-    Writer,
-    mdbx::{
-        StateWriter,
-        common::CircularBufferConfig,
-    },
+use state_store::mdbx::{
+    StateWriter,
+    common::CircularBufferConfig,
 };
 use std::{
     panic::AssertUnwindSafe,
@@ -132,9 +129,6 @@ async fn run_once(args: &Args) -> Result<()> {
         CircularBufferConfig::new(args.state_depth)?,
     )
     .context("failed to initialize database client")?;
-    writer_reader
-        .ensure_dump_index_metadata()
-        .context("failed to ensure database namespace index metadata")?;
 
     // Load genesis from file (required to seed initial state)
     let file_path = &args.file_to_genesis;

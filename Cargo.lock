@@ -11592,13 +11592,10 @@ name = "state-store"
 version = "1.0.2"
 dependencies = [
  "alloy",
- "anyhow",
  "bytes",
- "chrono",
  "hex",
  "modular-bitfield",
  "rayon",
- "redis",
  "reth-codecs",
  "reth-db",
  "reth-db-api",
@@ -11606,12 +11603,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "testcontainers",
- "testcontainers-modules",
  "thiserror 2.0.17",
- "tokio",
  "tracing",
- "uuid 1.19.0",
 ]
 
 [[package]]
@@ -11623,35 +11616,21 @@ dependencies = [
  "alloy-rpc-types-trace",
  "anyhow",
  "async-trait",
- "chrono",
  "clap",
  "futures",
  "hex",
  "int-test-utils",
  "metrics",
- "redis",
  "revm",
  "rust-tracing",
  "rustls",
  "serde",
  "serde_json",
  "state-store",
- "state-worker-test-macros",
- "testcontainers",
- "testcontainers-modules",
  "tokio",
  "tracing",
  "tracing-test",
  "uuid 0.8.2",
-]
-
-[[package]]
-name = "state-worker-test-macros"
-version = "1.0.2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.111",
 ]
 
 [[package]]
