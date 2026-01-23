@@ -1,0 +1,8 @@
+[package]
+name = "benchmark-utils"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+assertion-executor = { workspace = true, features = ["test"] }
+revm = { workspace = true }

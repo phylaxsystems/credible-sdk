@@ -1876,6 +1876,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
+name = "benchmark-utils"
+version = "1.0.3"
+dependencies = [
+ "assertion-executor 1.0.3",
+ "revm",
+]
+
+[[package]]
 name = "bimap"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
