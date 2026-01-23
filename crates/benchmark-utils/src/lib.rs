@@ -51,6 +51,7 @@ use assertion_executor::{
         deployed_bytecode,
     },
 };
+use revm::context_interface::result::Output;
 
 mod erc20;
 mod uniswap_v3;
@@ -82,6 +83,9 @@ pub enum BenchmarkPackageError {
 
 /// Prefunded benchmark account
 pub const BENCH_ACCOUNT: Address = address!("feA6F304C546857b820cDed9127156BaD2543666");
+
+/// Prefunded deployer account used for Uniswap v3 setup txs
+pub const UNI_V3_DEPLOYER_ACCOUNT: Address = address!("1111111111111111111111111111111111111111");
 
 /// Dead address for simple transfers
 pub const DEAD_ADDRESS: Address = address!("000000000000000000000000000000000000dEaD");
@@ -734,6 +738,7 @@ mod tests {
 mod tests {
     use super::*;
     use assertion_executor::db::DatabaseRef;
+    use revm::context_interface::result::SuccessReason;
 
     #[tokio::test]
     async fn test_benchmark_package_eoa_only() {
@@ -780,5 +785,40 @@ mod tests {
 
         // Bundle should have 5 EOA + 5 ERC20 txs
         assert_eq!(package.bundle.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_benchmark_package_with_uniswap_v3_pool_deploy_and_swap() {
+        let load = LoadDefinition {
+            tx_amount: 2,
+            eoa_percent: 0.0,
+            erc20_percent: 0.0,
+            uni_percent: 100.0,
+        };
+
+        let mut package = BenchmarkPackage::new(load);
+
+        // Factory should be deployed during setup
+        let factory = uniswap_v3_factory_address();
+        let factory_account = package.db.basic_ref(factory).unwrap().unwrap();
+        assert!(factory_account.code.is_some());
+
+        // Execute pool deploy tx then swap tx
+        for tx in package.bundle.clone() {
+            let result = package
+                .executor
+                .execute_forked_tx_ext_db(&package.block_env, tx, &mut package.db)
+                .unwrap();
+
+            match result.result_and_state.result {
+                ExecutionResult::Success {
+                    reason: SuccessReason::Stop | SuccessReason::Return,
+                    ..
+                } => {}
+                other => panic!("tx failed: {other:?}"),
+            }
+
+            package.db.commit(result.result_and_state.state);
+        }
     }
 }
