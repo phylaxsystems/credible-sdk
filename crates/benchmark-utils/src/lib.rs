@@ -729,3 +729,56 @@ mod tests {
             .expect("Benchmark run with mixed load should succeed");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assertion_executor::db::DatabaseRef;
+
+    #[tokio::test]
+    async fn test_benchmark_package_eoa_only() {
+        let load = LoadDefinition::default();
+        let package = BenchmarkPackage::new(load);
+
+        // Query BENCH_ACCOUNT - should have MAX balance
+        let account = package.db.basic_ref(BENCH_ACCOUNT).unwrap().unwrap();
+        assert_eq!(account.balance, U256::MAX);
+        assert!(account.code.is_none());
+
+        // ERC20 contract should not exist (erc20_percent = 0)
+        let erc20 = package.db.basic_ref(ERC20_CONTRACT).unwrap();
+        assert!(erc20.is_none());
+
+        // Bundle should have 1 EOA tx
+        assert_eq!(package.bundle.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_benchmark_package_with_erc20() {
+        let load = LoadDefinition {
+            tx_amount: 10,
+            eoa_percent: 50.0,
+            erc20_percent: 50.0,
+            uni_percent: 0.0,
+        };
+        let package = BenchmarkPackage::new(load);
+
+        // Query ERC20 contract - should have code deployed
+        let erc20_account = package.db.basic_ref(ERC20_CONTRACT).unwrap().unwrap();
+        assert!(erc20_account.code.is_some(), "ERC20 contract should have code");
+        assert!(!erc20_account.code.as_ref().unwrap().is_empty(), "ERC20 code should not be empty");
+
+        // Verify code hash matches
+        let expected_code = deployed_bytecode(MOCK_ERC20_ARTIFACT);
+        let expected_hash = keccak256(&expected_code);
+        assert_eq!(erc20_account.code_hash, expected_hash);
+
+        // Query BENCH_ACCOUNT token balance from storage
+        let balance_slot = erc20_balance_slot(BENCH_ACCOUNT);
+        let balance = package.db.storage_ref(ERC20_CONTRACT, balance_slot).unwrap();
+        assert_eq!(balance, U256::MAX, "BENCH_ACCOUNT should have MAX token balance");
+
+        // Bundle should have 5 EOA + 5 ERC20 txs
+        assert_eq!(package.bundle.len(), 10);
+    }
+}
