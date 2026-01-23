@@ -1,3 +1,15 @@
+//! `benchmark-utils`
+//! 
+//! This package is used to:
+//! - Create a bundle of transactions representative of blocks on live networks,
+//! - Create a *package* of everything needed to benchmark assex.
+//! 
+//! The tx bundles is easily configurable by setting the # of tx to be included
+//! and what % each of the tx should be. We have 3 groups:
+//! - EOA sends,
+//! - ERC20 sends,
+//! - Uniswap v3 swaps.
+
 use std::collections::HashMap;
 
 use assertion_executor::{
@@ -32,23 +44,46 @@ pub fn eoa_tx() -> TxEnv {
 /// Defines how a transaction bundle should look like.
 #[derive(Debug)]
 pub struct LoadDefinition {
-    pub eoatx_amount: usize,
+    pub tx_amount: usize,
+    pub eoa_percent: f64,
+    pub erc20_percent: f64,
+    pub uni_percent: f64,
 }
 
 impl Default for LoadDefinition {
     fn default() -> Self {
-        Self { eoatx_amount: 1 }
+        Self { tx_amount: 1, eoa_percent: 100.0, erc20_percent: 0.0, uni_percent: 0.0 }
     }
 }
 
 impl LoadDefinition {
     pub fn create_tx_vec(&self) -> Vec<TxEnv> {
-        let mut tx_vec = Vec::with_capacity(self.eoatx_amount);
-        for i in 0..self.eoatx_amount {
+        let mut tx_vec = Vec::with_capacity(self.tx_amount);
+
+        let eoa_count = (self.tx_amount as f64 * self.eoa_percent / 100.0).round() as usize;
+        let erc20_count = (self.tx_amount as f64 * self.erc20_percent / 100.0).round() as usize;
+        let uni_count = (self.tx_amount as f64 * self.uni_percent / 100.0).round() as usize;
+
+        let mut nonce = 0u64;
+
+        // EOA transfers
+        for _ in 0..eoa_count {
             let mut tx = eoa_tx();
-            tx.nonce = i as u64;
+            tx.nonce = nonce;
+            nonce += 1;
             tx_vec.push(tx);
         }
+
+        // ERC20 transfers
+        for _ in 0..erc20_count {
+            unimplemented!("ERC20 transfers not yet implemented");
+        }
+
+        // Uniswap swaps
+        for _ in 0..uni_count {
+            unimplemented!("Uniswap swaps not yet implemented");
+        }
+
         tx_vec
     }
 }
