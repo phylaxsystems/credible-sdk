@@ -1881,6 +1881,7 @@ version = "1.0.3"
 dependencies = [
  "assertion-executor 1.0.3",
  "revm",
+ "tokio",
 ]
 
 [[package]]
