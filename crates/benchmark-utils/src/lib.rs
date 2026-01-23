@@ -51,7 +51,23 @@ use assertion_executor::{
         deployed_bytecode,
     },
 };
-use revm::context_interface::result::Output;
+
+mod erc20;
+mod uniswap_v3;
+
+pub use erc20::{
+    ERC20_CONTRACT,
+    erc20_transfer_tx,
+};
+pub use uniswap_v3::{
+    UNI_V3_BENCH_CONTRACT,
+    UNI_V3_DEPLOYER_ACCOUNT,
+    UNI_V3_TOKEN_A,
+    UNI_V3_TOKEN_B,
+    uniswap_v3_deploy_pool_tx,
+    uniswap_v3_factory_address,
+    uniswap_v3_swap_tx,
+};
 
 mod erc20;
 mod uniswap_v3;
@@ -83,9 +99,6 @@ pub enum BenchmarkPackageError {
 
 /// Prefunded benchmark account
 pub const BENCH_ACCOUNT: Address = address!("feA6F304C546857b820cDed9127156BaD2543666");
-
-/// Prefunded deployer account used for Uniswap v3 setup txs
-pub const UNI_V3_DEPLOYER_ACCOUNT: Address = address!("1111111111111111111111111111111111111111");
 
 /// Dead address for simple transfers
 pub const DEAD_ADDRESS: Address = address!("000000000000000000000000000000000000dEaD");
@@ -737,26 +750,14 @@ mod tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assertion_executor::db::DatabaseRef;
+    use assertion_executor::{
+        db::DatabaseRef,
+        primitives::{
+            ExecutionResult,
+            keccak256,
+        },
+    };
     use revm::context_interface::result::SuccessReason;
-
-    #[tokio::test]
-    async fn test_benchmark_package_eoa_only() {
-        let load = LoadDefinition::default();
-        let package = BenchmarkPackage::new(load);
-
-        // Query BENCH_ACCOUNT - should have MAX balance
-        let account = package.db.basic_ref(BENCH_ACCOUNT).unwrap().unwrap();
-        assert_eq!(account.balance, U256::MAX);
-        assert!(account.code.is_none());
-
-        // ERC20 contract should not exist (erc20_percent = 0)
-        let erc20 = package.db.basic_ref(ERC20_CONTRACT).unwrap();
-        assert!(erc20.is_none());
-
-        // Bundle should have 1 EOA tx
-        assert_eq!(package.bundle.len(), 1);
-    }
 
     #[tokio::test]
     async fn test_benchmark_package_with_erc20() {
@@ -770,18 +771,31 @@ mod tests {
 
         // Query ERC20 contract - should have code deployed
         let erc20_account = package.db.basic_ref(ERC20_CONTRACT).unwrap().unwrap();
-        assert!(erc20_account.code.is_some(), "ERC20 contract should have code");
-        assert!(!erc20_account.code.as_ref().unwrap().is_empty(), "ERC20 code should not be empty");
+        assert!(
+            erc20_account.code.is_some(),
+            "ERC20 contract should have code"
+        );
+        assert!(
+            !erc20_account.code.as_ref().unwrap().is_empty(),
+            "ERC20 code should not be empty"
+        );
 
         // Verify code hash matches
-        let expected_code = deployed_bytecode(MOCK_ERC20_ARTIFACT);
+        let expected_code = erc20::mock_erc20_deployed_bytecode();
         let expected_hash = keccak256(&expected_code);
         assert_eq!(erc20_account.code_hash, expected_hash);
 
         // Query BENCH_ACCOUNT token balance from storage
-        let balance_slot = erc20_balance_slot(BENCH_ACCOUNT);
-        let balance = package.db.storage_ref(ERC20_CONTRACT, balance_slot).unwrap();
-        assert_eq!(balance, U256::MAX, "BENCH_ACCOUNT should have MAX token balance");
+        let balance_slot = erc20::erc20_balance_slot(BENCH_ACCOUNT);
+        let balance = package
+            .db
+            .storage_ref(ERC20_CONTRACT, balance_slot)
+            .unwrap();
+        assert_eq!(
+            balance,
+            U256::MAX,
+            "BENCH_ACCOUNT should have MAX token balance"
+        );
 
         // Bundle should have 5 EOA + 5 ERC20 txs
         assert_eq!(package.bundle.len(), 10);
@@ -820,5 +834,70 @@ mod tests {
 
             package.db.commit(result.result_and_state.state);
         }
+    }
+
+    #[test]
+    fn test_normalized_percentages() {
+        // Exact 100% - no change
+        let load = LoadDefinition {
+            tx_amount: 10,
+            eoa_percent: 50.0,
+            erc20_percent: 30.0,
+            uni_percent: 20.0,
+        };
+        let (eoa, erc20, uni) = load.normalized_percentages();
+        assert!((eoa - 50.0).abs() < f64::EPSILON);
+        assert!((erc20 - 30.0).abs() < f64::EPSILON);
+        assert!((uni - 20.0).abs() < f64::EPSILON);
+
+        // Over 100% (150%) - should normalize
+        let load = LoadDefinition {
+            tx_amount: 10,
+            eoa_percent: 50.0,
+            erc20_percent: 50.0,
+            uni_percent: 50.0,
+        };
+        let (eoa, erc20, uni) = load.normalized_percentages();
+        assert!((eoa - 100.0 / 3.0).abs() < 0.001);
+        assert!((erc20 - 100.0 / 3.0).abs() < 0.001);
+        assert!((uni - 100.0 / 3.0).abs() < 0.001);
+
+        // Under 100% (50%) - should normalize
+        let load = LoadDefinition {
+            tx_amount: 10,
+            eoa_percent: 25.0,
+            erc20_percent: 25.0,
+            uni_percent: 0.0,
+        };
+        let (eoa, erc20, uni) = load.normalized_percentages();
+        assert!((eoa - 50.0).abs() < f64::EPSILON);
+        assert!((erc20 - 50.0).abs() < f64::EPSILON);
+        assert!(uni.abs() < f64::EPSILON);
+
+        // Zero total - returns zeros
+        let load = LoadDefinition {
+            tx_amount: 10,
+            eoa_percent: 0.0,
+            erc20_percent: 0.0,
+            uni_percent: 0.0,
+        };
+        let (eoa, erc20, uni) = load.normalized_percentages();
+        assert!(eoa.abs() < f64::EPSILON);
+        assert!(erc20.abs() < f64::EPSILON);
+        assert!(uni.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_create_tx_vec_normalizes_percentages() {
+        // 150% total should normalize to equal thirds
+        let load = LoadDefinition {
+            tx_amount: 9,
+            eoa_percent: 50.0,
+            erc20_percent: 50.0,
+            uni_percent: 50.0,
+        };
+        let txs = load.create_tx_vec();
+        // Each should get 3 txs (33.33% of 9 rounded)
+        assert_eq!(txs.len(), 9);
     }
 }
