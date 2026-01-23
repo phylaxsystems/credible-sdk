@@ -44,7 +44,7 @@
 
 use crate::{
     AccountInfo,
-    mdbx::common::types::{
+    common::types::{
         BlockMetadata,
         GlobalMetadata,
         NamespacedAccountKey,

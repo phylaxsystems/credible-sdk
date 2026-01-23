@@ -21,7 +21,7 @@ use anyhow::{
     Result,
 };
 use async_trait::async_trait;
-use state_store::BlockStateUpdate;
+use mdbx::BlockStateUpdate;
 use std::{
     sync::Arc,
     time::Duration,

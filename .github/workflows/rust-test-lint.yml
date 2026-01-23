@@ -55,7 +55,7 @@ jobs:
       submodules: true
       use-nextest: true
       foundry-command: "forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol"
-      test-args: "--exclude state-store --exclude state-worker --no-tests=warn"
+      test-args: "--exclude mdbx --exclude state-worker --no-tests=warn"
       deny-checks: "advisories"
       feature-sets: '[
         "--no-default-features --features test",
@@ -64,7 +64,7 @@ jobs:
 
   # FIXME: State worker tests need special handling (single-threaded execution).
   # Ideally, rust-base.yaml should support a test-matrix input with clean package selection
-  # (e.g., packages: ["state-store", "state-worker"]) to avoid this duplication.
+  # (e.g., packages: ["mdbx", "state-worker"]) to avoid this duplication.
   # For now, we run these tests inline to avoid duplicate lint jobs.
   state-worker-tests:
     name: State Worker Tests (single-threaded)
@@ -95,4 +95,4 @@ jobs:
         run: forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol
 
       - name: Run state-worker tests
-        run: cargo nextest run --package state-store --package state-worker --locked --cargo-profile release --no-default-features --test-threads=2
+        run: cargo nextest run --package mdbx --package state-worker --locked --cargo-profile release --no-default-features --test-threads=2

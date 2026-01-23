@@ -15,7 +15,7 @@ use alloy_rpc_types_trace::geth::{
     PreStateFrame,
     TraceResult,
 };
-use state_store::AddressHash;
+use mdbx::AddressHash;
 use std::collections::BTreeMap;
 
 fn make_trace_result(frame: PreStateFrame) -> TraceResult {

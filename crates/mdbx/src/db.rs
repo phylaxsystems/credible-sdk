@@ -22,7 +22,7 @@
 //! └── Metadata            (0 → global metadata, e.g., latest block)
 //! ```
 
-use crate::mdbx::common::{
+use crate::common::{
     error::{
         StateError,
         StateResult,
@@ -64,7 +64,7 @@ const DEFAULT_MAX_DB_SIZE: usize = 2 * 1024 * 1024 * 1024 * 1024;
 /// ## Example
 ///
 /// ```ignore
-/// use state_store::{StateDb, CircularBufferConfig};
+/// use mdbx::{StateDb, CircularBufferConfig};
 ///
 /// let config = CircularBufferConfig::new(100)?;
 /// let db = StateDb::open("/path/to/db", config)?;

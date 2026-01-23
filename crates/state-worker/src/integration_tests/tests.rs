@@ -656,16 +656,14 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() {
         B256,
         U256,
     };
-    use state_store::{
+    use mdbx::{
         AccountState,
         AddressHash,
         BlockStateUpdate,
         Reader,
+        StateWriter,
         Writer,
-        mdbx::{
-            StateWriter,
-            common::CircularBufferConfig,
-        },
+        common::CircularBufferConfig,
     };
     use std::collections::HashMap;
 

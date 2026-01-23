@@ -4,12 +4,12 @@
 
 #![allow(clippy::cast_precision_loss)]
 
+use mdbx::CommitStats;
 use metrics::{
     counter,
     gauge,
     histogram,
 };
-use state_store::CommitStats;
 
 /// Metrics for the state worker commit operations.
 ///

@@ -19,7 +19,7 @@ use alloy_rpc_types_trace::geth::{
     TraceResult,
 };
 use anyhow::anyhow;
-use state_store::{
+use mdbx::{
     AccountState,
     AddressHash,
 };

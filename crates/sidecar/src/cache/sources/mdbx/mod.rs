@@ -5,7 +5,7 @@
 pub(crate) mod error;
 
 pub use error::StateWorkerCacheError;
-use state_store::mdbx::StateReader;
+use mdbx::StateReader;
 
 use crate::{
     Source,
@@ -23,6 +23,7 @@ use assertion_executor::primitives::{
     Bytecode,
     U256,
 };
+use mdbx::Reader;
 use parking_lot::RwLock;
 use revm::{
     DatabaseRef,
@@ -31,7 +32,6 @@ use revm::{
         StorageValue,
     },
 };
-use state_store::Reader;
 use std::{
     collections::HashMap,
     fmt::{
@@ -1054,16 +1054,14 @@ mod tests {
 
     #[tokio::test]
     async fn mdbx_source_not_synced_for_nonexistent_blocks_after_bootstrap() {
-        use state_store::{
+        use mdbx::{
             AccountState,
             AddressHash,
             Reader as _,
+            StateReader,
+            StateWriter,
             Writer as _,
-            mdbx::{
-                StateReader,
-                StateWriter,
-                common::CircularBufferConfig,
-            },
+            common::CircularBufferConfig,
         };
         use std::collections::HashMap;
         use tempfile::TempDir;

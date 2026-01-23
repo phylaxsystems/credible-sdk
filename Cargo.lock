@@ -5056,10 +5056,10 @@ dependencies = [
  "anyhow",
  "clap",
  "hex",
+ "mdbx",
  "regex",
  "serde",
  "serde_json",
- "state-store",
 ]
 
 [[package]]
@@ -7331,6 +7331,26 @@ dependencies = [
  "tempfile",
  "toml 0.5.11",
  "topological-sort",
+]
+
+[[package]]
+name = "mdbx"
+version = "1.0.3"
+dependencies = [
+ "alloy",
+ "bytes",
+ "hex",
+ "modular-bitfield",
+ "rayon",
+ "reth-codecs",
+ "reth-db",
+ "reth-db-api",
+ "reth-libmdbx",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
@@ -11161,6 +11181,7 @@ dependencies = [
  "hex",
  "httpmock",
  "int-test-utils",
+ "mdbx",
  "metrics",
  "moka",
  "parking_lot",
@@ -11179,7 +11200,6 @@ dependencies = [
  "serde_with",
  "sidecar-test-macros",
  "sled",
- "state-store",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
@@ -11578,33 +11598,13 @@ dependencies = [
  "clap",
  "hex",
  "log",
+ "mdbx",
  "rayon",
  "revm",
  "rust-tracing",
  "rustls",
- "state-store",
  "tempfile",
  "tokio",
- "tracing",
-]
-
-[[package]]
-name = "state-store"
-version = "1.0.3"
-dependencies = [
- "alloy",
- "bytes",
- "hex",
- "modular-bitfield",
- "rayon",
- "reth-codecs",
- "reth-db",
- "reth-db-api",
- "reth-libmdbx",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.17",
  "tracing",
 ]
 
@@ -11621,13 +11621,13 @@ dependencies = [
  "futures",
  "hex",
  "int-test-utils",
+ "mdbx",
  "metrics",
  "revm",
  "rust-tracing",
  "rustls",
  "serde",
  "serde_json",
- "state-store",
  "tokio",
  "tracing",
  "tracing-test",
