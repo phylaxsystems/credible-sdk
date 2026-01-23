@@ -29,6 +29,7 @@ use mdbx::{
 use sidecar::{
     args::{
         Config,
+        StateSourceConfig,
         TransportProtocol,
     },
     cache::{
@@ -89,6 +90,7 @@ use std::{
 use tracing::{
     error,
     log::info,
+    warn,
 };
 
 /// Create transport with optional result streaming support.
@@ -211,33 +213,66 @@ async fn main() -> anyhow::Result<()> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
         let mut sources: Vec<Arc<dyn Source>> = vec![];
-        if let (Some(state_worker_path), Some(state_worker_depth)) = (
-            config.state.state_worker_mdbx_path.as_ref(),
-            config.state.state_worker_depth,
-        ) {
-            match StateReader::new(
-                state_worker_path,
-                CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
+        if config.state.sources.is_empty() {
+            if config.state.legacy.has_any() {
+                warn!("Using legacy state source configuration; migrate to state.sources.");
+            }
+            if let (Some(state_worker_path), Some(state_worker_depth)) = (
+                config.state.legacy.state_worker_mdbx_path.as_ref(),
+                config.state.legacy.state_worker_depth,
             ) {
-                Ok(state_worker_client) => {
-                    sources.push(Arc::new(MdbxSource::new(state_worker_client)));
-                }
-                Err(e) => {
-                    error!(error = ?e, "Failed to connect MDBX");
+                match StateReader::new(
+                    state_worker_path,
+                    CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
+                ) {
+                    Ok(state_worker_client) => {
+                        sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                    }
+                    Err(e) => {
+                        error!(error = ?e, "Failed to connect MDBX");
+                    }
                 }
             }
-        }
 
-        if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
-            &config.state.eth_rpc_source_ws_url,
-            &config.state.eth_rpc_source_http_url,
-        ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
-            eth_rpc_source_ws_url.as_str(),
-            eth_rpc_source_http_url.as_str(),
-        )
-        .await
-        {
-            sources.push(eth_rpc_source);
+            if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
+                &config.state.legacy.eth_rpc_source_ws_url,
+                &config.state.legacy.eth_rpc_source_http_url,
+            ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
+                eth_rpc_source_ws_url.as_str(),
+                eth_rpc_source_http_url.as_str(),
+            )
+            .await
+            {
+                sources.push(eth_rpc_source);
+            }
+        } else {
+            if config.state.legacy.has_any() {
+                warn!("Ignoring legacy state source configuration; state.sources is set.");
+            }
+            for source_config in &config.state.sources {
+                match source_config {
+                    StateSourceConfig::Mdbx { mdbx_path, depth } => {
+                        match StateReader::new(
+                            mdbx_path,
+                            CircularBufferConfig::new(u8::try_from(*depth)?)?,
+                        ) {
+                            Ok(state_worker_client) => {
+                                sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                            }
+                            Err(e) => {
+                                error!(error = ?e, "Failed to connect MDBX");
+                            }
+                        }
+                    }
+                    StateSourceConfig::EthRpc { ws_url, http_url } => {
+                        if let Ok(eth_rpc_source) =
+                            EthRpcSource::try_build(ws_url.as_str(), http_url.as_str()).await
+                        {
+                            sources.push(eth_rpc_source);
+                        }
+                    }
+                }
+            }
         }
 
         let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
