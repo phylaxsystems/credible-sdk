@@ -1,10 +1,10 @@
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::format_collect)]
-//! Core orchestration loop that keeps Redis in sync with the execution client.
+//! Core orchestration loop that keeps MDBX in sync with the execution client.
 //!
 //! The worker bootstraps from the last persisted block, catches up to head via
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
-//! is traced with the pre-state tracer and written into Redis.
+//! is traced with the pre-state tracer and written into MDBX.
 //!
 //! Uses gRPC bidirectional streaming via `StreamEvents` RPC.
 
@@ -485,7 +485,7 @@ pub struct Listener {
 }
 
 impl Listener {
-    /// Build a worker that shares the provider/Redis client across async tasks.
+    /// Build a worker that shares the provider/MDBX client across async tasks.
     pub async fn new(ws_url: &str, grpc_endpoint: &str, starting_block: Option<u64>) -> Self {
         Self {
             ws_url: ws_url.to_string(),

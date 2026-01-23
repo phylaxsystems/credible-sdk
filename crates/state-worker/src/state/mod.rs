@@ -36,12 +36,12 @@ use anyhow::{
     Result,
 };
 use async_trait::async_trait;
-use revm::primitives::KECCAK_EMPTY;
-use state_store::{
+use mdbx::{
     AccountState,
     AddressHash,
     BlockStateUpdate,
 };
+use revm::primitives::KECCAK_EMPTY;
 use std::{
     collections::HashMap,
     sync::Arc,

@@ -18,7 +18,7 @@ use alloy::primitives::{
     U256,
 };
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
-use state_store::{
+use mdbx::{
     AddressHash,
     Reader,
 };
@@ -35,7 +35,7 @@ pub struct TestInstance {
     // Backend-specific handles for cleanup.
     mdbx_dir: MdbxTestDir,
     // Pre-created reader for MDBX (shares the same db connection).
-    mdbx_reader: state_store::mdbx::StateReader,
+    mdbx_reader: mdbx::StateReader,
 }
 
 impl TestInstance {
@@ -76,7 +76,7 @@ impl TestInstance {
     where
         F: FnOnce(&DualProtocolMockServer),
     {
-        use state_store::mdbx::{
+        use mdbx::{
             StateWriter,
             common::CircularBufferConfig,
         };
@@ -156,7 +156,7 @@ pub trait ReaderHelper: Send + Sync {
         &self,
         address_hash: AddressHash,
         block: u64,
-    ) -> Result<Option<state_store::AccountInfo>, String>;
+    ) -> Result<Option<mdbx::AccountInfo>, String>;
 
     fn get_storage_boxed(
         &self,
@@ -169,14 +169,14 @@ pub trait ReaderHelper: Send + Sync {
 }
 
 // For MDBX, use StateReader which shares the database connection via Arc.
-struct MdbxReaderWrapper(state_store::mdbx::StateReader);
+struct MdbxReaderWrapper(mdbx::StateReader);
 
 impl ReaderHelper for MdbxReaderWrapper {
     fn get_account_boxed(
         &self,
         address_hash: AddressHash,
         block: u64,
-    ) -> Result<Option<state_store::AccountInfo>, String> {
+    ) -> Result<Option<mdbx::AccountInfo>, String> {
         self.0
             .get_account(address_hash, block)
             .map_err(|e| e.to_string())

@@ -11,9 +11,9 @@ use anyhow::{
     Result,
     anyhow,
 };
+use mdbx::AccountState;
 use revm::primitives::KECCAK_EMPTY;
 use serde::Deserialize;
-use state_store::AccountState;
 use std::{
     collections::HashMap,
     str::FromStr,

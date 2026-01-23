@@ -22,7 +22,7 @@ rust-tracing = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-state-store = { path = "../state-store", features = ["writer"] }
+mdbx = { path = "../mdbx", features = ["writer"] }
 metrics = { workspace = true }
 
 [dev-dependencies]

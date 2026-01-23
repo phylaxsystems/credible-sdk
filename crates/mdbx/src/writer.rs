@@ -30,7 +30,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use state_store::{StateWriter, CircularBufferConfig, BlockStateUpdate, AccountState};
+//! use mdbx::{StateWriter, CircularBufferConfig, BlockStateUpdate, AccountState};
 //! use alloy::primitives::{B256, U256};
 //!
 //! let config = CircularBufferConfig::new(100)?;
@@ -61,42 +61,40 @@ use crate::{
     BlockStateUpdate,
     CommitStats,
     Reader,
+    StateReader,
     Writer,
-    mdbx,
-    mdbx::{
-        StateReader,
-        common::{
-            error::{
-                StateError,
-                StateResult,
-            },
-            tables::{
-                BlockMetadataTable,
-                BlockNumber,
-                Bytecode,
-                Bytecodes,
-                Metadata,
-                MetadataKey,
-                NamespaceBlocks,
-                NamespaceIdx,
-                NamespacedAccounts,
-                NamespacedStorage,
-                StateDiffData,
-                StateDiffs,
-            },
-            types::{
-                BinaryAccountDiff,
-                BinaryStateDiff,
-                CircularBufferConfig,
-                GlobalMetadata,
-                NamespacedAccountKey,
-                NamespacedBytecodeKey,
-                NamespacedStorageKey,
-                StorageValue,
-            },
+    common::{
+        error::{
+            StateError,
+            StateResult,
         },
-        db::StateDb,
+        tables::{
+            BlockMetadataTable,
+            BlockNumber,
+            Bytecode,
+            Bytecodes,
+            Metadata,
+            MetadataKey,
+            NamespaceBlocks,
+            NamespaceIdx,
+            NamespacedAccounts,
+            NamespacedStorage,
+            StateDiffData,
+            StateDiffs,
+        },
+        types,
+        types::{
+            BinaryAccountDiff,
+            BinaryStateDiff,
+            CircularBufferConfig,
+            GlobalMetadata,
+            NamespacedAccountKey,
+            NamespacedBytecodeKey,
+            NamespacedStorageKey,
+            StorageValue,
+        },
     },
+    db::StateDb,
 };
 use alloy::primitives::{
     B256,
@@ -130,7 +128,6 @@ use tracing::{
     trace,
     warn,
 };
-
 // ============================================================================
 // Write Batch Types
 // ============================================================================
@@ -480,7 +477,7 @@ impl BootstrapWriter {
         self.tx
             .put::<BlockMetadataTable>(
                 BlockNumber(self.block_number),
-                crate::mdbx::common::types::BlockMetadata {
+                crate::common::types::BlockMetadata {
                     block_hash: self.block_hash,
                     state_root: self.state_root,
                 },
@@ -867,7 +864,7 @@ impl Writer for StateWriter {
         // Update block metadata
         tx.put::<BlockMetadataTable>(
             BlockNumber(block_number),
-            crate::mdbx::common::types::BlockMetadata {
+            crate::common::types::BlockMetadata {
                 block_hash: update.block_hash,
                 state_root: update.state_root,
             },
@@ -1481,7 +1478,7 @@ impl StateWriter {
         // 4. Write block metadata at correct key
         tx.put::<BlockMetadataTable>(
             BlockNumber(block_number),
-            mdbx::common::types::BlockMetadata {
+            types::BlockMetadata {
                 block_hash,
                 state_root: final_state_root,
             },

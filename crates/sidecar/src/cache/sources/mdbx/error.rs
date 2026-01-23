@@ -2,7 +2,7 @@
 
 use crate::cache::sources::SourceError;
 use assertion_executor::primitives::B256;
-use state_store::mdbx;
+use mdbx;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

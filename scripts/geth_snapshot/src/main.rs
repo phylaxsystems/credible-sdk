@@ -14,17 +14,15 @@ use anyhow::{
     bail,
 };
 use clap::Parser;
-use regex::Regex;
-use serde::Deserialize;
-use state_store::{
+use mdbx::{
     AccountState,
     AddressHash,
     Reader,
-    mdbx::{
-        StateWriter,
-        common::CircularBufferConfig,
-    },
+    StateWriter,
+    common::CircularBufferConfig,
 };
+use regex::Regex;
+use serde::Deserialize;
 use std::{
     collections::HashMap,
     fs::File,

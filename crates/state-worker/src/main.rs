@@ -52,7 +52,7 @@ use anyhow::{
     Result,
 };
 use clap::Parser;
-use state_store::mdbx::{
+use mdbx::{
     StateWriter,
     common::CircularBufferConfig,
 };

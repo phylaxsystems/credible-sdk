@@ -1,7 +1,7 @@
+use ::mdbx::common::error::StateError;
 use alloy::primitives::U256;
 use assertion_executor::db::DatabaseRef;
 use revm::context::DBErrorMarker;
-use state_store::mdbx::common::error::StateError;
 use std::fmt::{
     Debug,
     Display,

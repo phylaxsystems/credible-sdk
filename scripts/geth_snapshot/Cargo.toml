@@ -13,5 +13,5 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
-state-store = { path = "../../crates/state-store" }
+mdbx = { path = "../../crates/mdbx" }
 regex = "1.12.2"
