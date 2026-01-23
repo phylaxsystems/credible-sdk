@@ -18,7 +18,7 @@
 //! ```
 //! ## API reference
 //!
-//! Below you'll be able to find the API reference for the sidecar as `JSON-RPC` calls. For protobuf, see the `grpc` mod.
+//! See the `grpc` mod for the protobuf API reference.
 #![doc = include_str!("./README.md")]
 // For auto generated code and docs
 #![allow(clippy::too_many_lines)]

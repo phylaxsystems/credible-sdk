@@ -234,7 +234,7 @@ pub struct LocalInstance<T: TestTransport> {
     iteration_nonce: HashMap<(Address, u64), u64>,
     /// Container type that holds the transport and impls `TestTransport`
     pub transport: T,
-    /// Local address for the HTTP transport
+    /// Local address for the transport
     pub local_address: Option<SocketAddr>,
     /// Current iteration ID to be set in the transactions and `blockEnv`
     pub iteration_id: u64,
