@@ -62,6 +62,8 @@ use self::{
         SystemCallsConfig,
     },
 };
+#[cfg(any(test, feature = "bench-utils"))]
+use crate::utils::local_instance_db::LocalInstanceDb;
 use crate::{
     TransactionsState,
     critical,
@@ -163,6 +165,13 @@ use tracing::{
     warn,
 };
 
+#[cfg(feature = "cache_validation")]
+type TxStateMap = HashMap<TxHash, Option<EvmState>>;
+#[cfg(feature = "cache_validation")]
+type BlockTxStateMap = Arc<TxStateMap>;
+#[cfg(feature = "cache_validation")]
+type ProcessedBlocksCache = Arc<moka::sync::Cache<u64, BlockTxStateMap>>;
+
 /// Timeout for recv - threads will check for the shutdown flag at this interval
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -254,6 +263,9 @@ struct BlockIterationData<DB> {
     n_transactions: u64,
     /// Ordered list of executed transactions for this iteration (used for rollback).
     executed_txs: Vec<TxExecutionId>,
+    /// State deltas for executed transactions (used to persist canonical state in tests).
+    #[cfg(any(test, feature = "bench-utils"))]
+    executed_state_deltas: Vec<Option<EvmState>>,
     /// Stores executed transactions for incident reporting (full tx data).
     incident_txs: Vec<ReconstructableTx>,
     /// Iteration `BlockEnv`
@@ -289,6 +301,13 @@ pub struct CoreEngine<DB> {
     ///
     /// This is the state the `CoreEngine` is executing transactions against.
     cache: OverlayDb<DB>,
+    /// Optional canonical backing store (tests only).
+    ///
+    /// In production, canonical state lives in external sources and is fetched on demand.
+    /// In tests, we use a mutable in-memory database so cache invalidations behave like
+    /// production (i.e. state falls back to the latest committed state).
+    #[cfg(any(test, feature = "bench-utils"))]
+    canonical_db: Option<Arc<LocalInstanceDb<revm::database::CacheDB<Arc<Sources>>>>>,
     /// Current block iteration data per block execution id.
     current_block_iterations: HashMap<BlockExecutionId, BlockIterationData<DB>>,
     /// Current head: last committed block.
@@ -321,7 +340,7 @@ pub struct CoreEngine<DB> {
     /// System calls handler for EIP-2935 and EIP-4788.
     system_calls: SystemCalls,
     #[cfg(feature = "cache_validation")]
-    processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
+    processed_transactions: ProcessedBlocksCache,
     #[cfg(feature = "cache_validation")]
     iteration_pending_processed_transactions:
         HashMap<BlockExecutionId, HashMap<TxHash, Option<EvmState>>>,
@@ -361,8 +380,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let report_incidents = incident_sender.is_some();
         #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
-            let processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>> =
-                Arc::new(moka::sync::Cache::builder().max_capacity(100).build());
+            let processed_transactions: ProcessedBlocksCache =
+                Arc::new(moka::sync::Cache::builder().max_capacity(128).build());
             let handle = if let Some(provider_ws_url) = provider_ws_url
                 && let Ok(cache_checker) =
                     CacheChecker::try_new(provider_ws_url, processed_transactions.clone()).await
@@ -379,6 +398,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         Self {
             cache_metrics_handle: Some(cache.spawn_monitoring_thread()),
             cache,
+            #[cfg(any(test, feature = "bench-utils"))]
+            canonical_db: None,
             current_block_iterations: HashMap::new(),
             current_head: U256::ZERO,
             sources: sources.clone(),
@@ -406,6 +427,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             #[cfg(feature = "cache_validation")]
             cache_checker,
         }
+    }
+
+    #[cfg(any(test, feature = "bench-utils"))]
+    pub fn set_canonical_db_for_tests(
+        &mut self,
+        canonical_db: Arc<LocalInstanceDb<revm::database::CacheDB<Arc<Sources>>>>,
+    ) {
+        self.canonical_db = Some(canonical_db);
     }
 
     /// Returns the current spec ID from the executor configuration.
@@ -498,6 +527,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         }
 
         current_block_iteration.executed_txs.push(tx_execution_id);
+        #[cfg(any(test, feature = "bench-utils"))]
+        current_block_iteration
+            .executed_state_deltas
+            .push(state.clone());
         current_block_iteration.version_db.commit_opt(state);
         self.transaction_results
             .add_transaction_result(tx_execution_id, result);
@@ -723,8 +756,25 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
     /// Invalidates the state and cache for all block iterations
     fn invalidate_all(&mut self, commit_head: &CommitHead) {
-        self.sources
-            .reset_latest_unprocessed_block(commit_head.block_number);
+        self.invalidate_all_at_block(commit_head.block_number);
+    }
+
+    /// Invalidates all in-memory state and clears any in-flight transaction tracking.
+    ///
+    /// This is used when we detect that our cached state is no longer safe to use.
+    fn invalidate_all_at_block(&mut self, reset_to_block: U256) {
+        self.sources.reset_latest_unprocessed_block(reset_to_block);
+
+        // Flush any transactions that were executed for the iterations we're about to drop,
+        // otherwise we can retain leftover tx state/results across invalidations.
+        let tx_ids = self
+            .current_block_iterations
+            .values()
+            .flat_map(|iteration| iteration.executed_txs.iter().copied())
+            .collect::<Vec<_>>();
+        self.transaction_results.invalidate_tx_ids(tx_ids);
+        #[cfg(feature = "cache_validation")]
+        self.iteration_pending_processed_transactions.clear();
 
         // Measure cache invalidation time and set its new min required driver height
         let instant = Instant::now();
@@ -732,7 +782,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         self.cache.invalidate_all();
         self.current_block_iterations.clear();
         self.block_metrics
-            .increment_cache_invalidation(instant.elapsed(), commit_head.block_number);
+            .increment_cache_invalidation(instant.elapsed(), reset_to_block);
     }
 
     /// Checks if the cache should be cleared and clears it.
@@ -875,10 +925,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                             error = ?error,
                             "Recoverable error occurred during event processing, continuing"
                         );
-                        self.cache.invalidate_all();
-                        self.sources
-                            .reset_latest_unprocessed_block(self.current_head);
-                        self.current_block_iterations.clear();
+                        self.invalidate_all_at_block(self.current_head);
                     }
                     ErrorRecoverability::Unrecoverable => {
                         critical!(
@@ -1006,11 +1053,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                             error = ?error,
                             "Recoverable error occurred during event processing, continuing"
                         );
-                        // Invalid the cache and reset the latest unprocessed block
-                        self.cache.invalidate_all();
-                        self.sources
-                            .reset_latest_unprocessed_block(self.current_head);
-                        self.current_block_iterations.clear();
+                        // Invalidate the cache and reset the latest unprocessed block
+                        self.invalidate_all_at_block(self.current_head);
                     }
                     ErrorRecoverability::Unrecoverable => {
                         // Log the critical error and break the loop
@@ -1070,6 +1114,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             version_db: VersionDb::new(self.cache.clone()),
             n_transactions: 0,
             executed_txs: Vec::new(),
+            #[cfg(any(test, feature = "bench-utils"))]
+            executed_state_deltas: Vec::new(),
             incident_txs: Vec::new(),
             block_env: block_env.clone(),
         };
@@ -1152,6 +1198,19 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             .apply_system_calls(&config, &mut self.cache)
             .map_err(EngineError::SystemCallError)?;
 
+        #[cfg(any(test, feature = "bench-utils"))]
+        if let Some(canonical_db) = self.canonical_db.as_ref() {
+            if let Some(iteration) = self.current_block_iterations.get_mut(&block_execution_id) {
+                for changes in iteration.executed_state_deltas.drain(..).flatten() {
+                    canonical_db.with_write(|db| db.commit(changes));
+                }
+            }
+
+            canonical_db
+                .apply_system_calls_canonical(&system_calls, &config)
+                .map_err(EngineError::SystemCallError)?;
+        }
+
         *processed_blocks += 1;
 
         #[cfg(feature = "cache_validation")]
@@ -1161,9 +1220,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .iteration_pending_processed_transactions
                 .remove(&block_execution_id)
             {
-                for (tx_hash, state) in iteration {
-                    self.processed_transactions.insert(tx_hash, state);
-                }
+                let block_number = commit_head.block_number.saturating_to::<u64>();
+                self.processed_transactions
+                    .insert(block_number, Arc::new(iteration));
             }
             self.iteration_pending_processed_transactions.clear();
         }
@@ -1410,6 +1469,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
             let new_len = start;
             let removed_txs = current_block_iteration.executed_txs.split_off(new_len);
+            #[cfg(any(test, feature = "bench-utils"))]
+            current_block_iteration
+                .executed_state_deltas
+                .truncate(new_len);
             // Also truncate incident_txs to match
             current_block_iteration.incident_txs.truncate(new_len);
             // Rollback the version database to the state before the removed transactions

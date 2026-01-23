@@ -22,6 +22,10 @@ use assertion_executor::{
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
+use mdbx::{
+    StateReader,
+    common::CircularBufferConfig,
+};
 use sidecar::{
     args::{
         Config,
@@ -65,10 +69,6 @@ use sidecar::{
         },
     },
     utils::ErrorRecoverability,
-};
-use state_store::mdbx::{
-    StateReader,
-    common::CircularBufferConfig,
 };
 use std::{
     net::SocketAddr,

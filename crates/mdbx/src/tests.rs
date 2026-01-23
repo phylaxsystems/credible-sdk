@@ -8,13 +8,12 @@ use crate::{
     AccountState,
     AddressHash,
     BlockStateUpdate,
+    CommitStats,
     Reader,
     Writer,
-    mdbx::{
-        common::CircularBufferConfig,
-        reader::StateReader,
-        writer::StateWriter,
-    },
+    common::CircularBufferConfig,
+    reader::StateReader,
+    writer::StateWriter,
 };
 use alloy::primitives::{
     Address,
@@ -23,7 +22,10 @@ use alloy::primitives::{
     U256,
     keccak256,
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::Duration,
+};
 use tempfile::TempDir;
 
 fn u256(v: u64) -> U256 {
@@ -697,7 +699,7 @@ fn test_block_not_found_error() {
 
     let r = reader_for(&tmp, 3);
     match r.get_account(a.into(), 100) {
-        Err(crate::mdbx::common::error::StateError::BlockNotFound { block_number, .. }) => {
+        Err(crate::common::error::StateError::BlockNotFound { block_number, .. }) => {
             assert_eq!(block_number, 100);
         }
         _ => panic!("Expected BlockNotFound error"),
@@ -4527,4 +4529,36 @@ fn test_fix_block_metadata_empty_database_fails() {
     let result = w.fix_block_metadata(100, B256::ZERO, None);
 
     assert!(result.is_err());
+}
+
+#[test]
+fn test_block_state_update_json() {
+    let update = BlockStateUpdate {
+        block_number: 100,
+        block_hash: B256::repeat_byte(0x11),
+        state_root: B256::repeat_byte(0x22),
+        accounts: vec![AccountState {
+            address_hash: AddressHash(B256::repeat_byte(0xAA)),
+            balance: U256::from(1000),
+            nonce: 5,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: HashMap::new(),
+            deleted: false,
+        }],
+    };
+
+    let json = update.to_json().unwrap();
+    let decoded = BlockStateUpdate::from_json(&json).unwrap();
+
+    assert_eq!(decoded.block_number, 100);
+    assert_eq!(decoded.accounts.len(), 1);
+    assert_eq!(decoded.accounts[0].balance, U256::from(1000));
+}
+
+#[test]
+fn test_commit_stats_default() {
+    let stats = CommitStats::default();
+    assert_eq!(stats.accounts_written, 0);
+    assert_eq!(stats.total_duration, Duration::ZERO);
 }

@@ -16,7 +16,7 @@ members = [
     "crates/sidecar/src/utils/test-macros",
     "crates/state-worker",
     "crates/shadow-driver",
-    "crates/state-store",
+    "crates/mdbx",
     "crates/state-checker",
     "crates/credible-utils",
     "scripts/geth_snapshot",
@@ -26,7 +26,7 @@ resolver = "2"
 
 
 [workspace.package]
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 authors = ["Phylax Systems"]
 license = "BSL 1.1"
@@ -57,7 +57,7 @@ int-test-utils = { path = "crates/int-test-utils" }
 assertion-executor = { path = "crates/assertion-executor", default-features = false }
 
 sidecar = { path = "crates/sidecar" }
-state-store = { path = "crates/state-store", features = ["reader"] }
+mdbx = { path = "crates/mdbx", features = ["reader"] }
 
 # misc
 anyhow = "1.0.100"

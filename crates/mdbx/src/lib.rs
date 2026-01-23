@@ -20,7 +20,23 @@ use std::{
     time::Duration,
 };
 
-pub mod mdbx;
+pub mod common;
+pub mod db;
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(feature = "reader")]
+pub mod reader;
+
+#[cfg(feature = "writer")]
+pub mod writer;
+
+#[cfg(feature = "writer")]
+pub use writer::StateWriter;
+
+#[cfg(feature = "reader")]
+pub use reader::StateReader;
 
 /// Account info without storage (for reader API).
 ///
@@ -408,41 +424,4 @@ pub trait Writer {
         block_hash: B256,
         state_root: B256,
     ) -> Result<CommitStats, Self::Error>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_block_state_update_json() {
-        let update = BlockStateUpdate {
-            block_number: 100,
-            block_hash: B256::repeat_byte(0x11),
-            state_root: B256::repeat_byte(0x22),
-            accounts: vec![AccountState {
-                address_hash: AddressHash(B256::repeat_byte(0xAA)),
-                balance: U256::from(1000),
-                nonce: 5,
-                code_hash: B256::ZERO,
-                code: None,
-                storage: HashMap::new(),
-                deleted: false,
-            }],
-        };
-
-        let json = update.to_json().unwrap();
-        let decoded = BlockStateUpdate::from_json(&json).unwrap();
-
-        assert_eq!(decoded.block_number, 100);
-        assert_eq!(decoded.accounts.len(), 1);
-        assert_eq!(decoded.accounts[0].balance, U256::from(1000));
-    }
-
-    #[test]
-    fn test_commit_stats_default() {
-        let stats = CommitStats::default();
-        assert_eq!(stats.accounts_written, 0);
-        assert_eq!(stats.total_duration, Duration::ZERO);
-    }
 }

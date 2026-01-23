@@ -27,7 +27,7 @@ use anyhow::{
     anyhow,
 };
 use futures::StreamExt;
-use state_store::{
+use mdbx::{
     BlockStateUpdate,
     Reader,
     Writer,

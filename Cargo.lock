@@ -1445,10 +1445,10 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-client"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
- "assertion-da-core 1.0.2",
+ "assertion-da-core 1.0.3",
  "assertion-da-server",
  "bincode",
  "bollard",
@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-core"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
  "serde",
@@ -1484,14 +1484,14 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-server"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
  "alloy-dyn-abi",
  "alloy-json-abi",
  "anyhow",
- "assertion-da-client 1.0.2",
- "assertion-da-core 1.0.2",
+ "assertion-da-client 1.0.3",
+ "assertion-da-core 1.0.3",
  "bincode",
  "bollard",
  "clap",
@@ -1564,7 +1564,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-executor"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -1583,8 +1583,8 @@ dependencies = [
  "alloy-transport",
  "alloy-transport-ws",
  "anyhow",
- "assertion-da-client 1.0.2",
- "assertion-executor 1.0.2",
+ "assertion-da-client 1.0.3",
+ "assertion-executor 1.0.3",
  "bincode",
  "clap",
  "criterion",
@@ -2854,7 +2854,7 @@ dependencies = [
 
 [[package]]
 name = "credible-utils"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "tokio",
@@ -3066,7 +3066,7 @@ dependencies = [
 
 [[package]]
 name = "dapp-api-client"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -5050,16 +5050,16 @@ dependencies = [
 
 [[package]]
 name = "geth_snapshot"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
  "anyhow",
  "clap",
  "hex",
+ "mdbx",
  "regex",
  "serde",
  "serde_json",
- "state-store",
 ]
 
 [[package]]
@@ -6725,11 +6725,11 @@ dependencies = [
 
 [[package]]
 name = "int-test-utils"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
  "anyhow",
- "assertion-da-client 1.0.2",
+ "assertion-da-client 1.0.3",
  "assertion-da-server",
  "axum",
  "dashmap",
@@ -7331,6 +7331,26 @@ dependencies = [
  "tempfile",
  "toml 0.5.11",
  "topological-sort",
+]
+
+[[package]]
+name = "mdbx"
+version = "1.0.3"
+dependencies = [
+ "alloy",
+ "bytes",
+ "hex",
+ "modular-bitfield",
+ "rayon",
+ "reth-codecs",
+ "reth-db",
+ "reth-db-api",
+ "reth-libmdbx",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]
@@ -8413,7 +8433,7 @@ dependencies = [
 
 [[package]]
 name = "pcl"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -8428,7 +8448,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-common"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "clap",
  "serde_json",
@@ -8436,12 +8456,12 @@ dependencies = [
 
 [[package]]
 name = "pcl-core"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
  "alloy-primitives",
  "anyhow",
- "assertion-da-client 1.0.2",
+ "assertion-da-client 1.0.3",
  "chrono",
  "clap",
  "color-eyre",
@@ -8465,7 +8485,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-phoundry"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy-json-abi",
  "clap",
@@ -11085,10 +11105,11 @@ dependencies = [
 
 [[package]]
 name = "shadow-driver"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
  "alloy-provider",
+ "alloy-transport",
  "anyhow",
  "clap",
  "credible-utils",
@@ -11134,7 +11155,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sidecar"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -11142,8 +11163,8 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-types-trace",
  "anyhow",
- "assertion-da-client 1.0.2",
- "assertion-executor 1.0.2",
+ "assertion-da-client 1.0.3",
+ "assertion-executor 1.0.3",
  "axum",
  "bincode",
  "chrono",
@@ -11160,6 +11181,7 @@ dependencies = [
  "hex",
  "httpmock",
  "int-test-utils",
+ "mdbx",
  "metrics",
  "moka",
  "parking_lot",
@@ -11178,7 +11200,6 @@ dependencies = [
  "serde_with",
  "sidecar-test-macros",
  "sled",
- "state-store",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
@@ -11196,7 +11217,7 @@ dependencies = [
 
 [[package]]
 name = "sidecar-test-macros"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11568,7 +11589,7 @@ dependencies = [
 
 [[package]]
 name = "state-checker"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -11577,39 +11598,19 @@ dependencies = [
  "clap",
  "hex",
  "log",
+ "mdbx",
  "rayon",
  "revm",
  "rust-tracing",
  "rustls",
- "state-store",
  "tempfile",
  "tokio",
  "tracing",
 ]
 
 [[package]]
-name = "state-store"
-version = "1.0.2"
-dependencies = [
- "alloy",
- "bytes",
- "hex",
- "modular-bitfield",
- "rayon",
- "reth-codecs",
- "reth-db",
- "reth-db-api",
- "reth-libmdbx",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.17",
- "tracing",
-]
-
-[[package]]
 name = "state-worker"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -11620,13 +11621,13 @@ dependencies = [
  "futures",
  "hex",
  "int-test-utils",
+ "mdbx",
  "metrics",
  "revm",
  "rust-tracing",
  "rustls",
  "serde",
  "serde_json",
- "state-store",
  "tokio",
  "tracing",
  "tracing-test",

@@ -24,8 +24,8 @@ use anyhow::{
     Result,
     anyhow,
 };
+use mdbx::Reader;
 use rayon::prelude::*;
-use state_store::Reader;
 use std::collections::HashMap;
 use tracing::info;
 
@@ -95,7 +95,7 @@ fn calculate_storage_root(storage: &HashMap<B256, U256>) -> B256 {
             continue;
         }
 
-        // Storage keys from state-store are already keccak256(pad32(slot)).
+        // Storage keys from mdbx are already keccak256(pad32(slot)).
         // Use them directly to avoid double-hashing.
         let key_hash = *slot;
 
@@ -277,17 +277,15 @@ mod tests {
         address,
         keccak256,
     };
-    use revm::primitives::KECCAK_EMPTY;
-    use state_store::{
+    use mdbx::{
         AccountState as StoreAccountState,
         AddressHash,
         BlockStateUpdate,
+        StateWriter,
         Writer,
-        mdbx::{
-            StateWriter,
-            common::CircularBufferConfig,
-        },
+        common::CircularBufferConfig,
     };
+    use revm::primitives::KECCAK_EMPTY;
     use tempfile::TempDir;
 
     #[test]

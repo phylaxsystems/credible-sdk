@@ -16,7 +16,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use state_store::{StateReader, CircularBufferConfig, AddressHash};
+//! use mdbx::{StateReader, CircularBufferConfig, AddressHash};
 //! use alloy::primitives::B256;
 //!
 //! let config = CircularBufferConfig::new(100)?;
@@ -41,32 +41,30 @@ use crate::{
     BlockMetadata,
     ReadStats,
     Reader,
-    mdbx::{
-        common::{
-            error::{
-                StateError,
-                StateResult,
-            },
-            tables::{
-                BlockMetadataTable,
-                BlockNumber,
-                Bytecodes,
-                Metadata,
-                MetadataKey,
-                NamespaceBlocks,
-                NamespaceIdx,
-                NamespacedAccounts,
-                NamespacedStorage,
-            },
-            types::{
-                CircularBufferConfig,
-                NamespacedAccountKey,
-                NamespacedBytecodeKey,
-                NamespacedStorageKey,
-            },
+    common::{
+        error::{
+            StateError,
+            StateResult,
         },
-        db::StateDb,
+        tables::{
+            BlockMetadataTable,
+            BlockNumber,
+            Bytecodes,
+            Metadata,
+            MetadataKey,
+            NamespaceBlocks,
+            NamespaceIdx,
+            NamespacedAccounts,
+            NamespacedStorage,
+        },
+        types::{
+            CircularBufferConfig,
+            NamespacedAccountKey,
+            NamespacedBytecodeKey,
+            NamespacedStorageKey,
+        },
     },
+    db::StateDb,
 };
 use alloy::primitives::{
     B256,
@@ -487,7 +485,7 @@ impl StateReader {
     fn get_block_metadata_internal(
         &self,
         block_number: u64,
-    ) -> StateResult<Option<crate::mdbx::common::types::BlockMetadata>> {
+    ) -> StateResult<Option<crate::common::types::BlockMetadata>> {
         let tx = self.db.tx()?;
         tx.get::<BlockMetadataTable>(BlockNumber(block_number))
             .map_err(StateError::Database)

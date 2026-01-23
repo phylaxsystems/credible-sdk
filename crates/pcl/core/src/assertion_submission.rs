@@ -77,6 +77,8 @@ struct Project {
                   pcl submit AssertionName arg1 arg2 arg3\n\n    \
                   Submit multiple assertions (with -a flag):\n        \
                   pcl submit -a \"AssertionName1(arg1,arg2,arg3)\" -a \"AssertionName2(arg1,arg2,arg3)\"\n\n    \
+                  Submit an assertion with an array argument:\n        \
+                  pcl submit -a \"TokenAssertion([0xaddr1,0xaddr2])\"\n\n    \
                   Note: Positional arguments are for single assertions only.\n    \
                   The -a flag with parentheses format is for specifying assertions with arguments."
 )]
@@ -110,7 +112,7 @@ pub struct DappSubmitArgs {
         short = 'a',
         value_name = "ASSERTION",
         value_hint = ValueHint::Other,
-        help = "Assertion in format 'Name(arg1,arg2)'. Use multiple -a flags for multiple assertions.",
+        help = "Assertion in format 'Name(arg1,arg2)'. Array arguments are supported, e.g. 'Name([addr1,addr2])'. Use multiple -a flags for multiple assertions.",
         value_parser
     )]
     pub assertion_keys: Option<Vec<AssertionKey>>,
@@ -1054,10 +1056,10 @@ mod tests {
         let parsed = args.assertion_keys.unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].assertion_name, "JsonAssertion");
-        // The current parser splits on all commas, including those within JSON structures
+        // The parser respects square brackets, keeping arrays intact
         assert_eq!(
             parsed[0].constructor_args,
-            vec![r#"{"key":"value"}"#, r#"["item1""#, r#""item2"]"#]
+            vec![r#"{"key":"value"}"#, r#"["item1","item2"]"#]
         );
     }
 
@@ -1361,5 +1363,135 @@ mod tests {
         assert_eq!(key.assertion_name, "SimpleAssertion");
         assert_eq!(key.constructor_args.len(), 0);
         assert_eq!(key.to_string(), "SimpleAssertion");
+    }
+
+    #[test]
+    fn test_parse_assertion_keys_with_array_arg() {
+        // Test handling of array arguments (e.g., address[])
+        let args = DappSubmitArgs {
+            api_url: String::new(),
+            project_name: None,
+            assertion_keys: Some(vec![AssertionKey::from(
+                "ArrayAssertion([addr1,addr2,addr3])",
+            )]),
+            assertion_name: None,
+            constructor_args: vec![],
+        };
+
+        let parsed = args.assertion_keys.unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].assertion_name, "ArrayAssertion");
+        assert_eq!(parsed[0].constructor_args, vec!["[addr1,addr2,addr3]"]);
+    }
+
+    #[test]
+    fn test_parse_assertion_keys_with_array_and_other_args() {
+        // Test array mixed with other arguments
+        let args = DappSubmitArgs {
+            api_url: String::new(),
+            project_name: None,
+            assertion_keys: Some(vec![AssertionKey::from(
+                "MixedAssertion(arg1,[addr1,addr2],arg3)",
+            )]),
+            assertion_name: None,
+            constructor_args: vec![],
+        };
+
+        let parsed = args.assertion_keys.unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].assertion_name, "MixedAssertion");
+        assert_eq!(
+            parsed[0].constructor_args,
+            vec!["arg1", "[addr1,addr2]", "arg3"]
+        );
+    }
+
+    #[test]
+    fn test_parse_assertion_keys_with_multiple_arrays() {
+        // Test multiple array arguments
+        let args = DappSubmitArgs {
+            api_url: String::new(),
+            project_name: None,
+            assertion_keys: Some(vec![AssertionKey::from(
+                "MultiArrayAssertion([a,b],[c,d,e])",
+            )]),
+            assertion_name: None,
+            constructor_args: vec![],
+        };
+
+        let parsed = args.assertion_keys.unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].assertion_name, "MultiArrayAssertion");
+        assert_eq!(parsed[0].constructor_args, vec!["[a,b]", "[c,d,e]"]);
+    }
+
+    #[test]
+    fn test_parse_assertion_keys_with_ethereum_address_array() {
+        // Test realistic use case: array of Ethereum addresses
+        let args = DappSubmitArgs {
+            api_url: String::new(),
+            project_name: None,
+            assertion_keys: Some(vec![AssertionKey::from(
+                "TokenAssertion([0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd])",
+            )]),
+            assertion_name: None,
+            constructor_args: vec![],
+        };
+
+        let parsed = args.assertion_keys.unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].assertion_name, "TokenAssertion");
+        assert_eq!(
+            parsed[0].constructor_args,
+            vec![
+                "[0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd]"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_assertion_keys_positional_with_array() {
+        // Test positional args where one arg is an array
+        let args = DappSubmitArgs {
+            api_url: String::new(),
+            project_name: None,
+            assertion_keys: None,
+            assertion_name: Some("ArrayAssertion".to_string()),
+            constructor_args: vec!["[addr1,addr2]".to_string()],
+        };
+
+        // Create the key that would be used in the run method
+        let key = AssertionKey::new(
+            args.assertion_name.clone().unwrap(),
+            args.constructor_args.clone(),
+        );
+
+        assert_eq!(key.assertion_name, "ArrayAssertion");
+        assert_eq!(key.constructor_args, vec!["[addr1,addr2]"]);
+        assert_eq!(key.to_string(), "ArrayAssertion([addr1,addr2])");
+    }
+
+    #[test]
+    fn test_parse_assertion_keys_multiple_with_arrays() {
+        // Test multiple assertions with array arguments
+        let args = DappSubmitArgs {
+            api_url: String::new(),
+            project_name: None,
+            assertion_keys: Some(vec![
+                AssertionKey::from("FirstAssertion([a,b])"),
+                AssertionKey::from("SecondAssertion(arg1,[c,d],arg2)"),
+            ]),
+            assertion_name: None,
+            constructor_args: vec![],
+        };
+
+        let parsed = args.assertion_keys.unwrap();
+        assert_eq!(parsed.len(), 2);
+
+        assert_eq!(parsed[0].assertion_name, "FirstAssertion");
+        assert_eq!(parsed[0].constructor_args, vec!["[a,b]"]);
+
+        assert_eq!(parsed[1].assertion_name, "SecondAssertion");
+        assert_eq!(parsed[1].constructor_args, vec!["arg1", "[c,d]", "arg2"]);
     }
 }

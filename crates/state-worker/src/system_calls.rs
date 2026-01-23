@@ -37,7 +37,7 @@ use anyhow::{
     Result,
     bail,
 };
-use state_store::{
+use mdbx::{
     AccountState,
     AddressHash,
     Reader,
@@ -268,7 +268,7 @@ impl SystemCalls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use state_store::mdbx::StateReader;
+    use mdbx::StateReader;
 
     fn system_calls_always_active() -> SystemCalls {
         SystemCalls::new(Some(0), Some(0))

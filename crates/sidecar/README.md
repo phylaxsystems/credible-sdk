@@ -468,6 +468,15 @@ The configuration file is a JSON file with the following schema:
           "examples": [
             1000
           ]
+        },
+        "enable_parallel_sources": {
+          "type": "boolean",
+          "description": "When enabled, queries all synced state sources simultaneously and returns the first successful response. Useful when sources have variable latency. Spawns a thread per source per query.",
+          "default": false,
+          "examples": [
+            false,
+            true
+          ]
         }
       },
       "additionalProperties": false
@@ -518,7 +527,8 @@ The default configuration can be found in [default_config.json](default_config.j
     "state_worker_depth": 3,
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
-    "sources_monitoring_period_ms": 500
+    "sources_monitoring_period_ms": 500,
+    "enable_parallel_sources": false
   }
 }
 ```

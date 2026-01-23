@@ -15,7 +15,7 @@ assertion-da-client.workspace = true
 credible-utils.workspace = true
 dapp-api-client.workspace = true
 sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
-state-store = { workspace = true, features = ["reader"] }
+mdbx = { workspace = true, features = ["reader"] }
 int-test-utils = { workspace = true, optional = true }
 
 clap = { workspace = true }
