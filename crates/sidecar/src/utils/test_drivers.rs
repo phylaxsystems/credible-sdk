@@ -1,8 +1,11 @@
 #![allow(clippy::too_many_lines)]
-use super::instance::{
-    EngineThreadHandle,
-    LocalInstance,
-    TestTransport,
+use super::{
+    instance::{
+        EngineThreadHandle,
+        LocalInstance,
+        TestTransport,
+    },
+    local_instance_db::LocalInstanceDb,
 };
 use crate::{
     CoreEngine,
@@ -24,7 +27,10 @@ use crate::{
         EventSequencing,
         EventSequencingError,
     },
-    execution_ids::TxExecutionId,
+    execution_ids::{
+        BlockExecutionId,
+        TxExecutionId,
+    },
     transaction_observer::IncidentReportSender,
     transactions_state::TransactionResultEvent,
     transport::{
@@ -180,7 +186,7 @@ const HTTP_RETRY_DELAY_MS: u64 = 100;
 
 /// Common initialization for all driver types
 struct CommonSetup {
-    underlying_db: Arc<CacheDB<Arc<Sources>>>,
+    underlying_db: Arc<LocalInstanceDb<CacheDB<Arc<Sources>>>>,
     sources: Arc<Sources>,
     eth_rpc_source_http_mock: DualProtocolMockServer,
     fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
@@ -223,7 +229,7 @@ impl CommonSetup {
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
 
-        let underlying_db = Arc::new(underlying_db);
+        let underlying_db = Arc::new(LocalInstanceDb::new(underlying_db));
 
         let assertion_store = match assertion_store {
             Some(store) => Arc::new(store),
@@ -279,6 +285,7 @@ impl CommonSetup {
             Some(&self.eth_rpc_source_http_mock.ws_url()),
         )
         .await;
+        engine.set_canonical_db_for_tests(self.underlying_db.clone());
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let (engine_handle, _engine_exit_rx) = engine
@@ -298,10 +305,17 @@ impl CommonSetup {
 
 pub struct LocalInstanceMockDriver {
     mock_sender: TransactionQueueSender,
-    block_tx_hashes_by_iteration: HashMap<u64, Vec<TxHash>>,
+    /// Tracks tx hashes per (block, iteration). This must not be keyed only by `iteration_id`
+    /// because tests can send txs for future blocks before their `NewIteration` arrives.
+    block_tx_hashes: HashMap<BlockExecutionId, Vec<TxHash>>,
+    /// Tracks the "current" block number per `iteration_id` for `LocalInstance` helpers that only
+    /// pass `iteration_id` (e.g. `LocalInstance::send_block_with_hashes_internal`).
+    current_block_by_iteration: HashMap<u64, U256>,
     override_n_transactions: Option<u64>,
     #[allow(clippy::option_option)]
     override_last_tx_hash: Option<Option<TxHash>>,
+    #[allow(clippy::option_option)]
+    override_prev_tx_hash: Option<Option<TxHash>>,
 }
 
 impl LocalInstanceMockDriver {
@@ -347,9 +361,11 @@ impl LocalInstanceMockDriver {
             setup.list_of_sources,
             LocalInstanceMockDriver {
                 mock_sender: mock_tx,
-                block_tx_hashes_by_iteration: HashMap::new(),
+                block_tx_hashes: HashMap::new(),
+                current_block_by_iteration: HashMap::new(),
                 override_n_transactions: None,
                 override_last_tx_hash: None,
+                override_prev_tx_hash: None,
             },
         ))
     }
@@ -385,8 +401,20 @@ impl TestTransport for LocalInstanceMockDriver {
         selected_iteration_id: u64,
         _n_transactions: u64,
     ) -> Result<(), String> {
-        let n_transactions = self.get_tx_count(selected_iteration_id);
-        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
+        let block_id = BlockExecutionId {
+            block_number,
+            iteration_id: selected_iteration_id,
+        };
+        let n_transactions = self.override_n_transactions.unwrap_or_else(|| {
+            self.block_tx_hashes
+                .get(&block_id)
+                .map_or(0, |v| v.len() as u64)
+        });
+        let last_tx_hash = self.override_last_tx_hash.unwrap_or_else(|| {
+            self.block_tx_hashes
+                .get(&block_id)
+                .and_then(|v| v.last().copied())
+        });
 
         // Use random hashes for EIP-2935 and EIP-4788
         let block_hash = B256::random();
@@ -413,9 +441,12 @@ impl TestTransport for LocalInstanceMockDriver {
     async fn send_commit_head(&mut self, commit_head: CommitHead) -> Result<(), String> {
         info!(target: "test_transport", "LocalInstance sending commit head for block: {:?}", commit_head.block_number);
 
-        self.block_tx_hashes_by_iteration.clear();
+        // Clear only the committed block's tracking; keep future blocks.
+        self.block_tx_hashes
+            .retain(|k, _| k.block_number != commit_head.block_number);
         self.override_n_transactions = None;
         self.override_last_tx_hash = None;
+        self.override_prev_tx_hash = None;
 
         self.mock_sender
             .send(TxQueueContents::CommitHead(commit_head))
@@ -430,11 +461,15 @@ impl TestTransport for LocalInstanceMockDriver {
         tx_execution_id: TxExecutionId,
         tx_env: TxEnv,
     ) -> Result<(), String> {
-        let iteration_id = tx_execution_id.iteration_id;
-        let prev_tx_hash = self.get_last_tx_hash(iteration_id);
+        let block_id = tx_execution_id.as_block_execution_id();
+        let prev_tx_hash = self.override_prev_tx_hash.take().unwrap_or_else(|| {
+            self.block_tx_hashes
+                .get(&block_id)
+                .and_then(|v| v.last().copied())
+        });
 
-        self.block_tx_hashes_by_iteration
-            .entry(iteration_id)
+        self.block_tx_hashes
+            .entry(block_id)
             .or_default()
             .push(tx_execution_id.tx_hash);
 
@@ -455,8 +490,14 @@ impl TestTransport for LocalInstanceMockDriver {
         block_env: BlockEnv,
     ) -> Result<(), String> {
         info!(target: "test_transport", "LocalInstance sending new iteration: {}", iteration_id);
-        self.block_tx_hashes_by_iteration
-            .insert(iteration_id, Vec::new());
+        self.current_block_by_iteration
+            .insert(iteration_id, block_env.number);
+        self.block_tx_hashes
+            .entry(BlockExecutionId {
+                block_number: block_env.number,
+                iteration_id,
+            })
+            .or_default();
 
         let new_iteration = NewIteration::new(iteration_id, block_env);
         self.mock_sender
@@ -479,10 +520,10 @@ impl TestTransport for LocalInstanceMockDriver {
             "LocalInstance sending reorg for: {:?} with depth {}",
             tx_execution_id, tx_hashes.len()
         );
-        let iteration_id = tx_execution_id.iteration_id;
+        let block_id = tx_execution_id.as_block_execution_id();
 
         // Remove the reorged transactions from our local tracking
-        if let Some(hashes) = self.block_tx_hashes_by_iteration.get_mut(&iteration_id) {
+        if let Some(hashes) = self.block_tx_hashes.get_mut(&block_id) {
             for tx_hash in tx_hashes.iter().rev() {
                 if hashes.last() == Some(tx_hash) {
                     hashes.pop();
@@ -490,7 +531,7 @@ impl TestTransport for LocalInstanceMockDriver {
                     debug!(
                         target: "test_transport",
                         "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
-                        tx_hash, hashes.last(), iteration_id
+                        tx_hash, hashes.last(), block_id.iteration_id
                     );
                     break;
                 }
@@ -513,20 +554,37 @@ impl TestTransport for LocalInstanceMockDriver {
         self.override_last_tx_hash = Some(tx_hash);
     }
 
+    fn set_prev_tx_hash(&mut self, tx_hash: Option<TxHash>) {
+        self.override_prev_tx_hash = Some(tx_hash);
+    }
+
     fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
         if let Some(value) = &self.override_last_tx_hash {
-            *value
-        } else {
-            self.block_tx_hashes_by_iteration
-                .get(&iteration_id)
-                .and_then(|v| v.last().copied())
+            return *value;
         }
+        let block_number = self
+            .current_block_by_iteration
+            .get(&iteration_id)
+            .copied()?;
+        self.block_tx_hashes
+            .get(&BlockExecutionId {
+                block_number,
+                iteration_id,
+            })
+            .and_then(|v| v.last().copied())
     }
 
     fn get_tx_count(&self, iteration_id: u64) -> u64 {
         self.override_n_transactions.unwrap_or_else(|| {
-            self.block_tx_hashes_by_iteration
-                .get(&iteration_id)
+            let Some(block_number) = self.current_block_by_iteration.get(&iteration_id).copied()
+            else {
+                return 0;
+            };
+            self.block_tx_hashes
+                .get(&BlockExecutionId {
+                    block_number,
+                    iteration_id,
+                })
                 .map_or(0, |v| v.len() as u64)
         })
     }
@@ -536,10 +594,13 @@ impl TestTransport for LocalInstanceMockDriver {
 pub struct LocalInstanceHttpDriver {
     client: reqwest::Client,
     address: SocketAddr,
-    block_tx_hashes_by_iteration: HashMap<u64, Vec<TxHash>>,
+    block_tx_hashes: HashMap<BlockExecutionId, Vec<TxHash>>,
+    current_block_by_iteration: HashMap<u64, U256>,
     override_n_transactions: Option<u64>,
     #[allow(clippy::option_option)]
     override_last_tx_hash: Option<Option<TxHash>>,
+    #[allow(clippy::option_option)]
+    override_prev_tx_hash: Option<Option<TxHash>>,
 }
 
 impl LocalInstanceHttpDriver {
@@ -673,9 +734,11 @@ impl LocalInstanceHttpDriver {
             LocalInstanceHttpDriver {
                 client: reqwest::Client::new(),
                 address,
-                block_tx_hashes_by_iteration: HashMap::new(),
+                block_tx_hashes: HashMap::new(),
+                current_block_by_iteration: HashMap::new(),
                 override_n_transactions: None,
                 override_last_tx_hash: None,
+                override_prev_tx_hash: None,
             },
         ))
     }
@@ -705,8 +768,20 @@ impl TestTransport for LocalInstanceHttpDriver {
         selected_iteration_id: u64,
         _n_transactions: u64,
     ) -> Result<(), String> {
-        let n_transactions = self.get_tx_count(selected_iteration_id);
-        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
+        let block_id = BlockExecutionId {
+            block_number,
+            iteration_id: selected_iteration_id,
+        };
+        let n_transactions = self.override_n_transactions.unwrap_or_else(|| {
+            self.block_tx_hashes
+                .get(&block_id)
+                .map_or(0, |v| v.len() as u64)
+        });
+        let last_tx_hash = self.override_last_tx_hash.unwrap_or_else(|| {
+            self.block_tx_hashes
+                .get(&block_id)
+                .and_then(|v| v.last().copied())
+        });
 
         // Use random hashes for EIP-2935 and EIP-4788
         let block_hash = B256::random();
@@ -769,9 +844,12 @@ impl TestTransport for LocalInstanceHttpDriver {
           }
         });
 
-        self.block_tx_hashes_by_iteration.clear();
+        // Clear only the committed block's tracking; keep future blocks.
+        self.block_tx_hashes
+            .retain(|k, _| k.block_number != commit_head.block_number);
         self.override_n_transactions = None;
         self.override_last_tx_hash = None;
+        self.override_prev_tx_hash = None;
 
         self.submit_json_request(&request).await
     }
@@ -783,10 +861,14 @@ impl TestTransport for LocalInstanceHttpDriver {
     ) -> Result<(), String> {
         debug!(target: "LocalInstanceHttpDriver", "Sending transaction: {:?}", tx_execution_id);
 
-        let iteration_id = tx_execution_id.iteration_id;
-        let prev_tx_hash = self.get_last_tx_hash(iteration_id);
-        self.block_tx_hashes_by_iteration
-            .entry(iteration_id)
+        let block_id = tx_execution_id.as_block_execution_id();
+        let prev_tx_hash = self.override_prev_tx_hash.take().unwrap_or_else(|| {
+            self.block_tx_hashes
+                .get(&block_id)
+                .and_then(|v| v.last().copied())
+        });
+        self.block_tx_hashes
+            .entry(block_id)
             .or_default()
             .push(tx_execution_id.tx_hash);
 
@@ -814,8 +896,14 @@ impl TestTransport for LocalInstanceHttpDriver {
         block_env: BlockEnv,
     ) -> Result<(), String> {
         info!(target: "LocalInstanceHttpDriver", "LocalInstance sending new iteration: {} with block {}", iteration_id, block_env.number);
-        self.block_tx_hashes_by_iteration
-            .insert(iteration_id, Vec::new());
+        self.current_block_by_iteration
+            .insert(iteration_id, block_env.number);
+        self.block_tx_hashes
+            .entry(BlockExecutionId {
+                block_number: block_env.number,
+                iteration_id,
+            })
+            .or_default();
 
         let block_env_json = Self::block_env_to_json(&block_env);
         let request = json!({
@@ -853,10 +941,10 @@ impl TestTransport for LocalInstanceHttpDriver {
             tx_execution_id, tx_hashes.len()
         );
 
-        let iteration_id = tx_execution_id.iteration_id;
+        let block_id = tx_execution_id.as_block_execution_id();
 
         // Remove the reorged transactions from our local tracking
-        if let Some(hashes) = self.block_tx_hashes_by_iteration.get_mut(&iteration_id) {
+        if let Some(hashes) = self.block_tx_hashes.get_mut(&block_id) {
             for tx_hash in tx_hashes.iter().rev() {
                 if hashes.last() == Some(tx_hash) {
                     hashes.pop();
@@ -864,7 +952,7 @@ impl TestTransport for LocalInstanceHttpDriver {
                     debug!(
                         target: "LocalInstanceHttpDriver",
                         "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
-                        tx_hash, hashes.last(), iteration_id
+                        tx_hash, hashes.last(), block_id.iteration_id
                     );
                     break;
                 }
@@ -897,20 +985,37 @@ impl TestTransport for LocalInstanceHttpDriver {
         self.override_last_tx_hash = Some(tx_hash);
     }
 
+    fn set_prev_tx_hash(&mut self, tx_hash: Option<TxHash>) {
+        self.override_prev_tx_hash = Some(tx_hash);
+    }
+
     fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
         if let Some(value) = &self.override_last_tx_hash {
-            *value
-        } else {
-            self.block_tx_hashes_by_iteration
-                .get(&iteration_id)
-                .and_then(|v| v.last().copied())
+            return *value;
         }
+        let block_number = self
+            .current_block_by_iteration
+            .get(&iteration_id)
+            .copied()?;
+        self.block_tx_hashes
+            .get(&BlockExecutionId {
+                block_number,
+                iteration_id,
+            })
+            .and_then(|v| v.last().copied())
     }
 
     fn get_tx_count(&self, iteration_id: u64) -> u64 {
         self.override_n_transactions.unwrap_or_else(|| {
-            self.block_tx_hashes_by_iteration
-                .get(&iteration_id)
+            let Some(block_number) = self.current_block_by_iteration.get(&iteration_id).copied()
+            else {
+                return 0;
+            };
+            self.block_tx_hashes
+                .get(&BlockExecutionId {
+                    block_number,
+                    iteration_id,
+                })
                 .map_or(0, |v| v.len() as u64)
         })
     }
@@ -920,13 +1025,18 @@ pub struct LocalInstanceGrpcDriver {
     event_sender: mpsc::Sender<Event>,
     /// gRPC client for the transport
     client: SidecarTransportClient<Channel>,
-    /// Ordered hashes for transactions sent per iteration since the last block announcement
-    block_tx_hashes_by_iteration: HashMap<u64, Vec<TxHash>>,
+    /// Tracks tx hashes per (block, iteration). This must not be keyed only by `iteration_id`
+    /// because tests can send txs for future blocks before their `NewIteration` arrives.
+    block_tx_hashes: HashMap<BlockExecutionId, Vec<TxHash>>,
+    /// Tracks the "current" block number per `iteration_id` for `LocalInstance` helpers that only
+    /// pass `iteration_id` (e.g. `LocalInstance::send_block_with_hashes_internal`).
+    current_block_by_iteration: HashMap<u64, U256>,
     /// Explicit override for the next `n_transactions` value
     override_n_transactions: Option<u64>,
-    /// Explicit override for the next `last_tx_hash` value
     #[allow(clippy::option_option)]
     override_last_tx_hash: Option<Option<TxHash>>,
+    #[allow(clippy::option_option)]
+    override_prev_tx_hash: Option<Option<TxHash>>,
 }
 
 impl LocalInstanceGrpcDriver {
@@ -1160,9 +1270,11 @@ impl LocalInstanceGrpcDriver {
             LocalInstanceGrpcDriver {
                 event_sender: event_tx,
                 client,
-                block_tx_hashes_by_iteration: HashMap::new(),
+                block_tx_hashes: HashMap::new(),
+                current_block_by_iteration: HashMap::new(),
                 override_n_transactions: None,
                 override_last_tx_hash: None,
+                override_prev_tx_hash: None,
             },
         ))
     }
@@ -1192,8 +1304,20 @@ impl TestTransport for LocalInstanceGrpcDriver {
         selected_iteration_id: u64,
         _n_transactions: u64,
     ) -> Result<(), String> {
-        let n_transactions = self.get_tx_count(selected_iteration_id);
-        let last_tx_hash = self.get_last_tx_hash(selected_iteration_id);
+        let block_id = BlockExecutionId {
+            block_number,
+            iteration_id: selected_iteration_id,
+        };
+        let n_transactions = self.override_n_transactions.unwrap_or_else(|| {
+            self.block_tx_hashes
+                .get(&block_id)
+                .map_or(0, |v| v.len() as u64)
+        });
+        let last_tx_hash = self.override_last_tx_hash.unwrap_or_else(|| {
+            self.block_tx_hashes
+                .get(&block_id)
+                .and_then(|v| v.last().copied())
+        });
 
         // Use random hashes for EIP-2935 and EIP-4788
         let block_hash = B256::random();
@@ -1240,9 +1364,12 @@ impl TestTransport for LocalInstanceGrpcDriver {
             event: Some(EventVariant::CommitHead(pb_commit_head)),
         };
 
-        self.block_tx_hashes_by_iteration.clear();
+        // Clear only the committed block's tracking; keep future blocks.
+        self.block_tx_hashes
+            .retain(|k, _| k.block_number != commit_head.block_number);
         self.override_n_transactions = None;
         self.override_last_tx_hash = None;
+        self.override_prev_tx_hash = None;
 
         self.send_event(event).await
     }
@@ -1258,11 +1385,15 @@ impl TestTransport for LocalInstanceGrpcDriver {
             return Err("Gas limit cannot be zero".to_string());
         }
 
-        let iteration_id = tx_execution_id.iteration_id;
-        let prev_tx_hash = self.get_last_tx_hash(iteration_id);
+        let block_id = tx_execution_id.as_block_execution_id();
+        let prev_tx_hash = self.override_prev_tx_hash.take().unwrap_or_else(|| {
+            self.block_tx_hashes
+                .get(&block_id)
+                .and_then(|v| v.last().copied())
+        });
 
-        self.block_tx_hashes_by_iteration
-            .entry(iteration_id)
+        self.block_tx_hashes
+            .entry(block_id)
             .or_default()
             .push(tx_execution_id.tx_hash);
 
@@ -1283,8 +1414,14 @@ impl TestTransport for LocalInstanceGrpcDriver {
     ) -> Result<(), String> {
         info!(target: "LocalInstanceGrpcDriver", "LocalInstance sending new iteration: {} with block {}", iteration_id, block_env.number);
 
-        self.block_tx_hashes_by_iteration
-            .insert(iteration_id, Vec::new());
+        self.current_block_by_iteration
+            .insert(iteration_id, block_env.number);
+        self.block_tx_hashes
+            .entry(BlockExecutionId {
+                block_number: block_env.number,
+                iteration_id,
+            })
+            .or_default();
 
         let new_iteration = pb::NewIteration {
             iteration_id,
@@ -1315,10 +1452,10 @@ impl TestTransport for LocalInstanceGrpcDriver {
             tx_execution_id.tx_hash, tx_hashes.len()
         );
 
-        let iteration_id = tx_execution_id.iteration_id;
+        let block_id = tx_execution_id.as_block_execution_id();
 
         // Remove the reorged transactions from our local tracking
-        if let Some(hashes) = self.block_tx_hashes_by_iteration.get_mut(&iteration_id) {
+        if let Some(hashes) = self.block_tx_hashes.get_mut(&block_id) {
             for tx_hash in tx_hashes.iter().rev() {
                 if hashes.last() == Some(tx_hash) {
                     hashes.pop();
@@ -1326,7 +1463,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
                     debug!(
                         target: "LocalInstanceGrpcDriver",
                         "Reorg hash {:?} does not match last tracked transaction {:?} in iteration {}",
-                        tx_hash, hashes.last(), iteration_id
+                        tx_hash, hashes.last(), block_id.iteration_id
                     );
                     break;
                 }
@@ -1354,20 +1491,37 @@ impl TestTransport for LocalInstanceGrpcDriver {
         self.override_last_tx_hash = Some(tx_hash);
     }
 
+    fn set_prev_tx_hash(&mut self, tx_hash: Option<TxHash>) {
+        self.override_prev_tx_hash = Some(tx_hash);
+    }
+
     fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
         if let Some(value) = &self.override_last_tx_hash {
-            *value
-        } else {
-            self.block_tx_hashes_by_iteration
-                .get(&iteration_id)
-                .and_then(|v| v.last().copied())
+            return *value;
         }
+        let block_number = self
+            .current_block_by_iteration
+            .get(&iteration_id)
+            .copied()?;
+        self.block_tx_hashes
+            .get(&BlockExecutionId {
+                block_number,
+                iteration_id,
+            })
+            .and_then(|v| v.last().copied())
     }
 
     fn get_tx_count(&self, iteration_id: u64) -> u64 {
         self.override_n_transactions.unwrap_or_else(|| {
-            self.block_tx_hashes_by_iteration
-                .get(&iteration_id)
+            let Some(block_number) = self.current_block_by_iteration.get(&iteration_id).copied()
+            else {
+                return 0;
+            };
+            self.block_tx_hashes
+                .get(&BlockExecutionId {
+                    block_number,
+                    iteration_id,
+                })
                 .map_or(0, |v| v.len() as u64)
         })
     }

@@ -94,6 +94,22 @@ impl TransactionsResults {
             .remove_transaction_result(&tx_execution_id);
     }
 
+    /// Removes tracked results for the provided transaction IDs and clears any
+    /// in-flight state (accepted txs + pending result requests).
+    ///
+    /// This is used when the engine invalidates its cache/iterations and needs
+    /// to ensure there is no leftover transaction state for the invalidated
+    /// work.
+    pub fn invalidate_tx_ids<I>(&mut self, tx_execution_ids: I)
+    where
+        I: IntoIterator<Item = TxExecutionId>,
+    {
+        for tx_execution_id in tx_execution_ids {
+            self.remove_transaction_result(tx_execution_id);
+        }
+        self.transactions_state.clear_in_flight();
+    }
+
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.transactions.len()
