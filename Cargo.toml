@@ -17,6 +17,7 @@ members = [
     "crates/state-worker",
     "crates/shadow-driver",
     "crates/mdbx",
+    "crates/benchmark-utils",
     "crates/state-checker",
     "crates/credible-utils",
     "scripts/geth_snapshot",
@@ -58,6 +59,7 @@ assertion-executor = { path = "crates/assertion-executor", default-features = fa
 
 sidecar = { path = "crates/sidecar" }
 mdbx = { path = "crates/mdbx", features = ["reader"] }
+benchmark-utils = { path = "crates/benchmark-utils", features = [] }
 
 # misc
 anyhow = "1.0.100"
