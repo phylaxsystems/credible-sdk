@@ -6,3 +6,6 @@ edition.workspace = true
 [dependencies]
 assertion-executor = { workspace = true, features = ["test"] }
 revm = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
