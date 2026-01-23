@@ -63,10 +63,6 @@ use sidecar::{
             GrpcTransport,
             config::GrpcTransportConfig,
         },
-        http::{
-            HttpTransport,
-            config::HttpTransportConfig,
-        },
     },
     utils::ErrorRecoverability,
 };
@@ -101,16 +97,6 @@ fn create_transport_from_args(
     result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
 ) -> anyhow::Result<AnyTransport> {
     match config.transport.protocol {
-        TransportProtocol::Http => {
-            let cfg = HttpTransportConfig::try_from(config.transport.clone())?;
-            let t = HttpTransport::new(
-                cfg,
-                tx_sender,
-                state_results,
-                config.transport.event_id_buffer_capacity,
-            )?;
-            Ok(AnyTransport::Http(t))
-        }
         TransportProtocol::Grpc => {
             let cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
             let t = match result_event_rx {
@@ -304,26 +290,6 @@ async fn main() -> anyhow::Result<()> {
                         accepted_txs_ttl,
                     ),
                     Some(rx),
-                )
-            }
-            TransportProtocol::Http => {
-                let pending_requests_ttl = if config
-                    .credible
-                    .transaction_results_pending_requests_ttl_ms
-                    .is_zero()
-                {
-                    Duration::from_secs(2)
-                } else {
-                    config.credible.transaction_results_pending_requests_ttl_ms
-                };
-                let accepted_txs_ttl = if config.credible.accepted_txs_ttl_ms.is_zero() {
-                    Duration::from_secs(2)
-                } else {
-                    config.credible.accepted_txs_ttl_ms
-                };
-                (
-                    TransactionsState::new_with_ttls(pending_requests_ttl, accepted_txs_ttl),
-                    None,
                 )
             }
         };

@@ -175,7 +175,6 @@ pub struct CredibleConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TransportProtocol {
-    Http,
     Grpc,
 }
 
@@ -326,7 +325,6 @@ mod tests {
         assert_eq!(config.credible.transaction_results_max_capacity, 10000);
 
         // Verify transport config
-        assert_eq!(config.transport.protocol, TransportProtocol::Http);
         assert_eq!(config.transport.bind_addr, "127.0.0.1:3000");
 
         // Verify state config

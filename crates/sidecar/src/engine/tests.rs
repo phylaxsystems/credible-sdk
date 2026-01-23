@@ -360,7 +360,7 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {
     // Send an empty block to verify we can advance the chain with empty blocks
     instance.new_block().await.unwrap();
@@ -607,7 +607,7 @@ async fn test_assertion_invalid_tx_reorg_keeps_count_in_sync(
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_core_engine_reject_tx_before_blockenv(mut instance: crate::utils::LocalInstance) {
     // Send and verify a successful CREATE transaction
     let rax = instance
@@ -626,7 +626,7 @@ async fn test_core_engine_reject_tx_before_blockenv(mut instance: crate::utils::
     // If the response is not successful, the test passes since the engine is down due to the error
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_core_engine_reorg_scenarios(mut instance: crate::utils::LocalInstance) {
     // 1. run tx + reorg
 
@@ -702,7 +702,7 @@ async fn test_core_engine_reorg_scenarios(mut instance: crate::utils::LocalInsta
     instance.send_reorg(tx_hash).await.unwrap();
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_core_engine_reorg_bad_tx(mut instance: crate::utils::LocalInstance) {
     // Send and verify a successful CREATE transaction
     let tx_hash = instance
@@ -727,7 +727,7 @@ async fn test_core_engine_reorg_bad_tx(mut instance: crate::utils::LocalInstance
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_core_engine_reorg_before_blockenv_rejected(
     mut instance: crate::utils::LocalInstance,
 ) {
@@ -741,7 +741,7 @@ async fn test_core_engine_reorg_before_blockenv_rejected(
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_core_engine_reorg_after_blockenv_before_tx_rejected(
     mut instance: crate::utils::LocalInstance,
 ) {
@@ -761,7 +761,7 @@ async fn test_core_engine_reorg_after_blockenv_before_tx_rejected(
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_core_engine_reorg_valid_then_previous_rejected(
     mut instance: crate::utils::LocalInstance,
 ) {
@@ -790,7 +790,7 @@ async fn test_core_engine_reorg_valid_then_previous_rejected(
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_core_engine_reorg_followed_by_blockenv_with_last_tx_hash(
     mut instance: crate::utils::LocalInstance,
 ) {
@@ -1495,7 +1495,7 @@ async fn test_database_commit_and_block_env_requirements() {
     }
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_block_env_wrong_transaction_number(mut instance: crate::utils::LocalInstance) {
     // Send and verify a reverting CREATE transaction
     let tx_hash = instance
@@ -1532,7 +1532,7 @@ async fn test_block_env_wrong_transaction_number(mut instance: crate::utils::Loc
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_block_env_wrong_last_tx_hash(mut instance: crate::utils::LocalInstance) {
     tracing::info!("test_block_env_wrong_last_tx_hash: sending first tx");
     // Send and verify a reverting CREATE transaction
@@ -1614,64 +1614,9 @@ async fn test_block_env_wrong_last_tx_hash(mut instance: crate::utils::LocalInst
     tracing::info!("test_block_env_wrong_last_tx_hash: test completed");
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_all_tx_types(mut instance: crate::utils::LocalInstance) {
     instance.send_all_tx_types().await.unwrap();
-}
-
-#[crate::utils::engine_test(http)]
-async fn test_block_env_transaction_number_greater_than_zero_and_no_last_tx_hash(
-    mut instance: crate::utils::LocalInstance,
-) {
-    // Send and verify a reverting CREATE transaction
-    let tx_execution_id = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx_execution_id)
-            .await
-            .unwrap(),
-        "Transaction should execute successfully and pass assertions"
-    );
-
-    instance.transport.set_last_tx_hash(None);
-
-    // Send a blockEnv with the wrong number of transactions
-    let res = instance.new_block().await;
-
-    assert!(res.is_err());
-}
-
-#[crate::utils::engine_test(http)]
-async fn test_block_env_transaction_number_zero_and_last_tx_hash(
-    mut instance: crate::utils::LocalInstance,
-) {
-    // Send and verify a reverting CREATE transaction
-    let tx_execution_id = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx_execution_id)
-            .await
-            .unwrap(),
-        "Transaction should execute successfully and pass assertions"
-    );
-
-    instance
-        .transport
-        .set_last_tx_hash(Some(tx_execution_id.tx_hash));
-    instance.transport.set_n_transactions(0);
-
-    // Send a blockEnv with the wrong number of transactions
-    let res = instance.new_block().await;
-
-    assert!(res.is_err());
 }
 
 #[tokio::test]
@@ -1721,7 +1666,7 @@ async fn test_failed_transaction_commit() {
     assert!(matches!(result, Err(EngineError::NothingToCommit)));
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_iteration_selection_and_commit(mut instance: crate::utils::LocalInstance) {
     info!("Testing multiple iterations with winner selection");
 
@@ -1797,7 +1742,7 @@ async fn test_iteration_selection_and_commit(mut instance: crate::utils::LocalIn
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_wrong_iteration_selected_triggers_flush(mut instance: crate::utils::LocalInstance) {
     info!("Testing that selecting wrong iteration triggers cache flush");
 
@@ -1851,7 +1796,7 @@ async fn test_wrong_iteration_selected_triggers_flush(mut instance: crate::utils
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_multiple_transactions_and_iterations(mut instance: crate::utils::LocalInstance) {
     info!("Testing multiple transactions in the same iteration");
 
@@ -1986,7 +1931,7 @@ async fn test_multiple_transactions_and_iterations(mut instance: crate::utils::L
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_iteration_selection_with_transaction_count_mismatch(
     mut instance: crate::utils::LocalInstance,
 ) {
@@ -2050,7 +1995,7 @@ async fn test_iteration_selection_with_transaction_count_mismatch(
         .unwrap();
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_reorg_in_specific_iteration(mut instance: crate::utils::LocalInstance) {
     info!("Testing reorg within iteration before block selection");
 
@@ -2240,7 +2185,7 @@ async fn test_arbitrary_depth_reorg_via_local_instance(mut instance: crate::util
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_empty_iteration_selected(mut instance: crate::utils::LocalInstance) {
     info!("Testing selection of empty iteration (no transactions)");
 
@@ -2275,7 +2220,7 @@ async fn test_empty_iteration_selected(mut instance: crate::utils::LocalInstance
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_multiple_blocks_multiple_iterations(mut instance: crate::utils::LocalInstance) {
     info!("Testing multiple blocks each with multiple iterations");
 
@@ -2328,7 +2273,7 @@ async fn test_multiple_blocks_multiple_iterations(mut instance: crate::utils::Lo
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_cache_miss_with_iteration_selection(mut instance: crate::utils::LocalInstance) {
     info!("Testing cache miss behavior with iteration selection");
 
@@ -2368,7 +2313,7 @@ async fn test_cache_miss_with_iteration_selection(mut instance: crate::utils::Lo
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_switching_winning_iterations_across_blocks(
     mut instance: crate::utils::LocalInstance,
 ) {
@@ -2436,7 +2381,7 @@ async fn test_switching_winning_iterations_across_blocks(
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_storage_slot_persistence_intra_and_cross_block(
     mut instance: crate::utils::LocalInstance,
 ) {
@@ -2619,7 +2564,7 @@ async fn test_storage_slot_persistence_intra_and_cross_block(
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_system_calls_configurations(mut instance: crate::utils::LocalInstance) {
     // Block 1: Setup
     instance.new_block().await.unwrap();
@@ -2692,7 +2637,7 @@ async fn test_system_calls_configurations(mut instance: crate::utils::LocalInsta
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_system_calls_sequential_blocks(mut instance: crate::utils::LocalInstance) {
     for i in 0..5 {
         instance.new_block().await.unwrap();
@@ -2730,7 +2675,7 @@ async fn test_system_calls_sequential_blocks(mut instance: crate::utils::LocalIn
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_system_calls_after_cache_flush(mut instance: crate::utils::LocalInstance) {
     // Block 1
     instance.new_block().await.unwrap();
@@ -2784,7 +2729,7 @@ async fn test_system_calls_after_cache_flush(mut instance: crate::utils::LocalIn
     );
 }
 
-#[crate::utils::engine_test(all)]
+#[crate::utils::engine_test(grpc)]
 async fn test_system_calls_with_reorg(mut instance: crate::utils::LocalInstance) {
     // Block 1
     instance.new_block().await.unwrap();

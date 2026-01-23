@@ -26,10 +26,8 @@
 #![allow(clippy::doc_markdown)]
 
 mod common;
-pub mod decoder;
 mod event_id_deduplication;
 pub mod grpc;
-pub mod http;
 pub mod mock;
 pub(crate) mod rpc_metrics;
 pub mod transactions_results;
@@ -111,15 +109,9 @@ use grpc::{
     GrpcTransport,
     GrpcTransportError,
 };
-use http::{
-    HttpTransport,
-    HttpTransportError,
-};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AnyTransportError {
-    #[error("HTTP transport error: {0}")]
-    Http(#[source] HttpTransportError),
     #[error("gRPC transport error: {0}")]
     Grpc(#[source] GrpcTransportError),
 }
@@ -127,7 +119,6 @@ pub enum AnyTransportError {
 impl From<&AnyTransportError> for ErrorRecoverability {
     fn from(e: &AnyTransportError) -> Self {
         match e {
-            AnyTransportError::Http(inner) => ErrorRecoverability::from(inner),
             AnyTransportError::Grpc(inner) => ErrorRecoverability::from(inner),
         }
     }
@@ -136,21 +127,18 @@ impl From<&AnyTransportError> for ErrorRecoverability {
 /// A simple enum wrapper to run any concrete transport behind a unified API.
 #[derive(Debug)]
 pub enum AnyTransport {
-    Http(HttpTransport),
     Grpc(GrpcTransport),
 }
 
 impl AnyTransport {
     pub async fn run(&self) -> Result<(), AnyTransportError> {
         match self {
-            AnyTransport::Http(t) => t.run().await.map_err(AnyTransportError::Http),
             AnyTransport::Grpc(t) => t.run().await.map_err(AnyTransportError::Grpc),
         }
     }
 
     pub fn stop(&mut self) {
         match self {
-            AnyTransport::Http(t) => t.stop(),
             AnyTransport::Grpc(t) => t.stop(),
         }
     }

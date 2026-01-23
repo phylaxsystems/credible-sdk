@@ -1,7 +1,7 @@
-//! Shared helpers for transport decoding/parsing across HTTP and gRPC.
+//! Shared helpers for transport decoding/parsing for gRPC.
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq)]
-pub enum HttpDecoderError {
+pub enum DecoderError {
     #[error("Invalid block number format: {0}")]
     InvalidBlockNumber(String),
     #[error("Invalid beneficiary format: {0}")]
