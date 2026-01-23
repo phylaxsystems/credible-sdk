@@ -10,10 +10,7 @@ use assertion_executor::{
     store::BlockTag,
 };
 use clap::Parser;
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use serde::Deserialize;
 use serde_with::{
     DurationMilliSeconds,
     serde_as,
@@ -199,9 +196,27 @@ pub struct TransportConfig {
     pub pending_receive_ttl_ms: Duration,
 }
 
-/// State configuration from file
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct StateConfig {
+#[serde(tag = "type")]
+pub enum StateSourceConfig {
+    #[serde(rename = "mdbx")]
+    Mdbx {
+        /// State worker MDBX path
+        mdbx_path: String,
+        /// State worker depth (how many blocks behind head state worker will have the data from)
+        depth: usize,
+    },
+    #[serde(rename = "eth-rpc")]
+    EthRpc {
+        /// Eth RPC source websocket bind address and port
+        ws_url: String,
+        /// Eth RPC source HTTP bind address and port
+        http_url: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct LegacyStateConfig {
     /// Eth RPC source websocket bind address and port
     pub eth_rpc_source_ws_url: Option<String>,
     /// Eth RCP source HTTP bind address and port
@@ -210,6 +225,26 @@ pub struct StateConfig {
     pub state_worker_mdbx_path: Option<String>,
     /// State worker depth (how many blocks behind head state worker will have the data from)
     pub state_worker_depth: Option<usize>,
+}
+
+impl LegacyStateConfig {
+    pub fn has_any(&self) -> bool {
+        self.eth_rpc_source_ws_url.is_some()
+            || self.eth_rpc_source_http_url.is_some()
+            || self.state_worker_mdbx_path.is_some()
+            || self.state_worker_depth.is_some()
+    }
+}
+
+/// State configuration from file
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct StateConfig {
+    /// State sources
+    #[serde(default)]
+    pub sources: Vec<StateSourceConfig>,
+    /// Legacy state source fields (deprecated).
+    #[serde(flatten)]
+    pub legacy: LegacyStateConfig,
     /// Minimum state diff to consider a cache synced
     pub minimum_state_diff: u64,
     /// Maximum time (ms) the engine will wait for a state source to report as  synced before
@@ -266,10 +301,18 @@ mod tests {
     "health_bind_addr": "127.0.0.1:3001"
   },
   "state": {
-    "eth_rpc_source_ws_url": "ws://localhost:8548",
-    "eth_rpc_source_http_url": "http://localhost:8545",
-    "state_worker_mdbx_path": "/data/state_worker.mdbx",
-    "state_worker_depth": 100,
+    "sources": [
+      {
+        "type": "eth-rpc",
+        "ws_url": "ws://localhost:8548",
+        "http_url": "http://localhost:8545"
+      },
+      {
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "depth": 100
+      }
+    ],
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -331,18 +374,18 @@ mod tests {
 
         // Verify state config
         assert_eq!(
-            config.state.eth_rpc_source_ws_url,
-            Some("ws://localhost:8548".to_string())
+            config.state.sources,
+            vec![
+                StateSourceConfig::EthRpc {
+                    ws_url: "ws://localhost:8548".to_string(),
+                    http_url: "http://localhost:8545".to_string(),
+                },
+                StateSourceConfig::Mdbx {
+                    mdbx_path: "/data/state_worker.mdbx".to_string(),
+                    depth: 100,
+                }
+            ]
         );
-        assert_eq!(
-            config.state.eth_rpc_source_http_url,
-            Some("http://localhost:8545".to_string())
-        );
-        assert_eq!(
-            config.state.state_worker_mdbx_path,
-            Some("/data/state_worker.mdbx".to_string())
-        );
-        assert_eq!(config.state.state_worker_depth, Some(100));
         assert_eq!(config.state.minimum_state_diff, 10);
         assert_eq!(config.state.sources_sync_timeout_ms, 30000);
         assert_eq!(config.state.sources_monitoring_period_ms, 1000);
@@ -432,7 +475,13 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
-    "state_worker_depth": 50,
+    "sources": [
+      {{
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "depth": 50
+      }}
+    ],
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -483,8 +532,13 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
-    "state_worker_mdbx_path": "/data/state_worker.mdbx",
-    "state_worker_depth": 3,
+    "sources": [
+      {{
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "depth": 3
+      }}
+    ],
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -541,7 +595,225 @@ mod tests {
 
         let config = Config::from_file(temp_file.path()).unwrap();
 
-        assert_eq!(config.state.eth_rpc_source_ws_url, None);
-        assert_eq!(config.state.state_worker_mdbx_path, None);
+        assert!(config.state.sources.is_empty());
+        assert!(!config.state.legacy.has_any());
+    }
+
+    #[test]
+    fn test_from_file_with_legacy_state_fields() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(
+            temp_file,
+            r#"{{
+  "chain": {{
+    "spec_id": "CANCUN",
+    "chain_id": 1
+  }},
+  "credible": {{
+    "assertion_gas_limit": 30000000,
+    "assertion_da_rpc_url": "http://localhost:8545",
+    "indexer_rpc_url": "ws://localhost:8546",
+    "indexer_db_path": "/tmp/indexer.db",
+    "assertion_store_db_path": "/tmp/store.db",
+    "transaction_observer_db_path": "/tmp/observer.db",
+    "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
+    "transaction_observer_auth_token": "test-token",
+    "transaction_observer_endpoint_rps_max": 50,
+    "transaction_observer_poll_interval_ms": 1000,
+    "block_tag": "latest",
+    "state_oracle": "0x1234567890123456789012345678901234567890",
+    "state_oracle_deployment_block": 100,
+    "transaction_results_max_capacity": 10000
+  }},
+  "transport": {{
+    "protocol": "http",
+    "bind_addr": "127.0.0.1:3000"
+  }},
+  "state": {{
+    "eth_rpc_source_ws_url": "ws://legacy.example:8546",
+    "eth_rpc_source_http_url": "http://legacy.example:8545",
+    "state_worker_mdbx_path": "/data/legacy_state_worker.mdbx",
+    "state_worker_depth": 7,
+    "minimum_state_diff": 10,
+    "sources_sync_timeout_ms": 30000,
+    "sources_monitoring_period_ms": 1000
+  }}
+}}"#
+        )
+        .unwrap();
+        temp_file.flush().unwrap();
+
+        let config = Config::from_file(temp_file.path()).unwrap();
+
+        assert!(config.state.sources.is_empty());
+        assert_eq!(
+            config.state.legacy.eth_rpc_source_ws_url,
+            Some("ws://legacy.example:8546".to_string())
+        );
+        assert_eq!(
+            config.state.legacy.eth_rpc_source_http_url,
+            Some("http://legacy.example:8545".to_string())
+        );
+        assert_eq!(
+            config.state.legacy.state_worker_mdbx_path,
+            Some("/data/legacy_state_worker.mdbx".to_string())
+        );
+        assert_eq!(config.state.legacy.state_worker_depth, Some(7));
+    }
+
+    #[test]
+    fn test_from_file_with_multiple_sources_preserves_order() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(
+            temp_file,
+            r#"{{
+  "chain": {{
+    "spec_id": "CANCUN",
+    "chain_id": 1
+  }},
+  "credible": {{
+    "assertion_gas_limit": 30000000,
+    "assertion_da_rpc_url": "http://localhost:8545",
+    "indexer_rpc_url": "ws://localhost:8546",
+    "indexer_db_path": "/tmp/indexer.db",
+    "assertion_store_db_path": "/tmp/store.db",
+    "transaction_observer_db_path": "/tmp/observer.db",
+    "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
+    "transaction_observer_auth_token": "test-token",
+    "transaction_observer_endpoint_rps_max": 50,
+    "transaction_observer_poll_interval_ms": 1000,
+    "block_tag": "latest",
+    "state_oracle": "0x1234567890123456789012345678901234567890",
+    "state_oracle_deployment_block": 100,
+    "transaction_results_max_capacity": 10000
+  }},
+  "transport": {{
+    "protocol": "http",
+    "bind_addr": "127.0.0.1:3000"
+  }},
+  "state": {{
+    "sources": [
+      {{
+        "type": "eth-rpc",
+        "ws_url": "ws://first.example:8546",
+        "http_url": "http://first.example:8545"
+      }},
+      {{
+        "type": "eth-rpc",
+        "ws_url": "ws://second.example:8546",
+        "http_url": "http://second.example:8545"
+      }},
+      {{
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "depth": 42
+      }}
+    ],
+    "minimum_state_diff": 10,
+    "sources_sync_timeout_ms": 30000,
+    "sources_monitoring_period_ms": 1000
+  }}
+}}"#
+        )
+        .unwrap();
+        temp_file.flush().unwrap();
+
+        let config = Config::from_file(temp_file.path()).unwrap();
+
+        assert_eq!(
+            config.state.sources,
+            vec![
+                StateSourceConfig::EthRpc {
+                    ws_url: "ws://first.example:8546".to_string(),
+                    http_url: "http://first.example:8545".to_string(),
+                },
+                StateSourceConfig::EthRpc {
+                    ws_url: "ws://second.example:8546".to_string(),
+                    http_url: "http://second.example:8545".to_string(),
+                },
+                StateSourceConfig::Mdbx {
+                    mdbx_path: "/data/state_worker.mdbx".to_string(),
+                    depth: 42,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn test_from_file_with_mixed_sources_including_duplicates() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(
+            temp_file,
+            r#"{{
+  "chain": {{
+    "spec_id": "CANCUN",
+    "chain_id": 1
+  }},
+  "credible": {{
+    "assertion_gas_limit": 30000000,
+    "assertion_da_rpc_url": "http://localhost:8545",
+    "indexer_rpc_url": "ws://localhost:8546",
+    "indexer_db_path": "/tmp/indexer.db",
+    "assertion_store_db_path": "/tmp/store.db",
+    "transaction_observer_db_path": "/tmp/observer.db",
+    "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
+    "transaction_observer_auth_token": "test-token",
+    "transaction_observer_endpoint_rps_max": 50,
+    "transaction_observer_poll_interval_ms": 1000,
+    "block_tag": "latest",
+    "state_oracle": "0x1234567890123456789012345678901234567890",
+    "state_oracle_deployment_block": 100,
+    "transaction_results_max_capacity": 10000
+  }},
+  "transport": {{
+    "protocol": "http",
+    "bind_addr": "127.0.0.1:3000"
+  }},
+  "state": {{
+    "sources": [
+      {{
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker_a.mdbx",
+        "depth": 10
+      }},
+      {{
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker_b.mdbx",
+        "depth": 20
+      }},
+      {{
+        "type": "eth-rpc",
+        "ws_url": "ws://rpc.example:8546",
+        "http_url": "http://rpc.example:8545"
+      }}
+    ],
+    "minimum_state_diff": 10,
+    "sources_sync_timeout_ms": 30000,
+    "sources_monitoring_period_ms": 1000
+  }}
+}}"#
+        )
+        .unwrap();
+        temp_file.flush().unwrap();
+
+        let config = Config::from_file(temp_file.path()).unwrap();
+
+        assert_eq!(
+            config.state.sources,
+            vec![
+                StateSourceConfig::Mdbx {
+                    mdbx_path: "/data/state_worker_a.mdbx".to_string(),
+                    depth: 10,
+                },
+                StateSourceConfig::Mdbx {
+                    mdbx_path: "/data/state_worker_b.mdbx".to_string(),
+                    depth: 20,
+                },
+                StateSourceConfig::EthRpc {
+                    ws_url: "ws://rpc.example:8546".to_string(),
+                    http_url: "http://rpc.example:8545".to_string(),
+                }
+            ]
+        );
     }
 }
