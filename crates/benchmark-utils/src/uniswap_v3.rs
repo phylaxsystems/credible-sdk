@@ -36,17 +36,29 @@ use crate::{
     erc20,
 };
 
-/// Prefunded deployer account used for Uniswap v3 setup txs
+/// Prefunded deployer account used for Uniswap v3 setup txs (non-AA)
 pub const UNI_V3_DEPLOYER_ACCOUNT: Address = address!("1111111111111111111111111111111111111111");
 
-/// Uniswap v3 benchmark helper contract address (`UniV3Bench`)
+/// Prefunded deployer account used for Uniswap v3 setup txs (AA variant)
+pub const UNI_V3_AA_DEPLOYER_ACCOUNT: Address = address!("1111111111111111111111111111111111111112");
+
+/// Uniswap v3 benchmark helper contract address (`UniV3Bench`) - non-AA
 pub const UNI_V3_BENCH_CONTRACT: Address = address!("2222222222222222222222222222222222222222");
+
+/// Uniswap v3 benchmark helper contract address (`UniV3Bench`) - AA variant
+pub const UNI_V3_BENCH_AA_CONTRACT: Address = address!("2222222222222222222222222222222222222223");
 
 /// Uniswap v3 token A contract address (MockERC20)
 pub const UNI_V3_TOKEN_A: Address = address!("3333333333333333333333333333333333333333");
 
 /// Uniswap v3 token B contract address (MockERC20)
 pub const UNI_V3_TOKEN_B: Address = address!("4444444444444444444444444444444444444444");
+
+/// Uniswap v3 token A contract address (MockERC20) - for AA bench contract
+pub const UNI_V3_AA_TOKEN_A: Address = address!("3333333333333333333333333333333333333334");
+
+/// Uniswap v3 token B contract address (MockERC20) - for AA bench contract
+pub const UNI_V3_AA_TOKEN_B: Address = address!("4444444444444444444444444444444444444445");
 
 /// Uniswap v3 factory artifact path
 const UNISWAP_V3_FACTORY_ARTIFACT: &str = "UniswapV3Factory.sol:UniswapV3Factory";
@@ -113,6 +125,10 @@ pub fn uniswap_v3_factory_address() -> Address {
     contract_address(UNI_V3_DEPLOYER_ACCOUNT, 0)
 }
 
+pub fn uniswap_v3_aa_factory_address() -> Address {
+    contract_address(UNI_V3_AA_DEPLOYER_ACCOUNT, 0)
+}
+
 fn abi_encode_address(value: Address, out: &mut Vec<u8>) {
     out.extend_from_slice(&[0u8; 12]);
     out.extend_from_slice(value.as_slice());
@@ -135,13 +151,44 @@ fn abi_encode_int(value: i128, out: &mut Vec<u8>) {
     out.extend_from_slice(&encoded.to_be_bytes::<32>());
 }
 
-pub fn uniswap_v3_deploy_pool_tx(nonce: u64) -> TxEnv {
+/// Parameters for creating UniV3 transactions
+#[derive(Debug, Clone, Copy)]
+pub struct UniV3TxParams {
+    pub bench_contract: Address,
+    pub factory: Address,
+    pub token_a: Address,
+    pub token_b: Address,
+}
+
+impl UniV3TxParams {
+    /// Non-AA variant parameters
+    pub fn non_aa() -> Self {
+        Self {
+            bench_contract: UNI_V3_BENCH_CONTRACT,
+            factory: uniswap_v3_factory_address(),
+            token_a: UNI_V3_TOKEN_A,
+            token_b: UNI_V3_TOKEN_B,
+        }
+    }
+
+    /// AA variant parameters
+    pub fn aa() -> Self {
+        Self {
+            bench_contract: UNI_V3_BENCH_AA_CONTRACT,
+            factory: uniswap_v3_aa_factory_address(),
+            token_a: UNI_V3_AA_TOKEN_A,
+            token_b: UNI_V3_AA_TOKEN_B,
+        }
+    }
+}
+
+pub fn uniswap_v3_deploy_pool_tx_with_params(nonce: u64, params: &UniV3TxParams) -> TxEnv {
     let mut data = Vec::with_capacity(4 + 32 * 8);
     data.extend_from_slice(&UNI_V3_DEPLOY_POOL_AND_MINT_SELECTOR);
 
-    abi_encode_address(uniswap_v3_factory_address(), &mut data);
-    abi_encode_address(UNI_V3_TOKEN_A, &mut data);
-    abi_encode_address(UNI_V3_TOKEN_B, &mut data);
+    abi_encode_address(params.factory, &mut data);
+    abi_encode_address(params.token_a, &mut data);
+    abi_encode_address(params.token_b, &mut data);
     abi_encode_uint(U256::from(UNI_V3_POOL_FEE), &mut data);
     abi_encode_uint(U256::from(UNI_V3_SQRT_PRICE_X96), &mut data);
     abi_encode_int(UNI_V3_TICK_LOWER as i128, &mut data);
@@ -150,7 +197,7 @@ pub fn uniswap_v3_deploy_pool_tx(nonce: u64) -> TxEnv {
 
     TxEnv {
         caller: BENCH_ACCOUNT,
-        kind: TxKind::Call(UNI_V3_BENCH_CONTRACT),
+        kind: TxKind::Call(params.bench_contract),
         value: U256::ZERO,
         gas_limit: 15_000_000,
         gas_price: 1,
@@ -160,13 +207,13 @@ pub fn uniswap_v3_deploy_pool_tx(nonce: u64) -> TxEnv {
     }
 }
 
-pub fn uniswap_v3_swap_tx(nonce: u64) -> TxEnv {
+pub fn uniswap_v3_swap_tx_with_params(nonce: u64, params: &UniV3TxParams) -> TxEnv {
     let mut data = Vec::with_capacity(4 + 32 * 7);
     data.extend_from_slice(&UNI_V3_SWAP_SELECTOR);
 
-    abi_encode_address(uniswap_v3_factory_address(), &mut data);
-    abi_encode_address(UNI_V3_TOKEN_A, &mut data);
-    abi_encode_address(UNI_V3_TOKEN_B, &mut data);
+    abi_encode_address(params.factory, &mut data);
+    abi_encode_address(params.token_a, &mut data);
+    abi_encode_address(params.token_b, &mut data);
     abi_encode_uint(U256::from(UNI_V3_POOL_FEE), &mut data);
     abi_encode_bool(true, &mut data); // zeroForOne
     abi_encode_int(1_000, &mut data); // amountSpecified (exact input)
@@ -174,7 +221,7 @@ pub fn uniswap_v3_swap_tx(nonce: u64) -> TxEnv {
 
     TxEnv {
         caller: BENCH_ACCOUNT,
-        kind: TxKind::Call(UNI_V3_BENCH_CONTRACT),
+        kind: TxKind::Call(params.bench_contract),
         value: U256::ZERO,
         gas_limit: 2_000_000,
         gas_price: 1,
@@ -184,9 +231,25 @@ pub fn uniswap_v3_swap_tx(nonce: u64) -> TxEnv {
     }
 }
 
-pub(crate) fn insert_uniswap_v3_accounts(evm_state: &mut EvmState) {
+pub fn uniswap_v3_deploy_pool_tx(nonce: u64) -> TxEnv {
+    uniswap_v3_deploy_pool_tx_with_params(nonce, &UniV3TxParams::non_aa())
+}
+
+pub fn uniswap_v3_swap_tx(nonce: u64) -> TxEnv {
+    uniswap_v3_swap_tx_with_params(nonce, &UniV3TxParams::non_aa())
+}
+
+pub fn uniswap_v3_aa_deploy_pool_tx(nonce: u64) -> TxEnv {
+    uniswap_v3_deploy_pool_tx_with_params(nonce, &UniV3TxParams::aa())
+}
+
+pub fn uniswap_v3_aa_swap_tx(nonce: u64) -> TxEnv {
+    uniswap_v3_swap_tx_with_params(nonce, &UniV3TxParams::aa())
+}
+
+fn insert_deployer_account(evm_state: &mut EvmState, deployer: Address) {
     evm_state.insert(
-        UNI_V3_DEPLOYER_ACCOUNT,
+        deployer,
         Account {
             info: AccountInfo {
                 balance: U256::MAX,
@@ -199,12 +262,13 @@ pub(crate) fn insert_uniswap_v3_accounts(evm_state: &mut EvmState) {
             status: AccountStatus::Touched,
         },
     );
+}
 
-    // Predeploy UniV3Bench helper contract
+fn insert_bench_contract(evm_state: &mut EvmState, bench_contract: Address) {
     let bench_code = deployed_bytecode(UNI_V3_BENCH_ARTIFACT);
     let bench_code_hash = keccak256(&bench_code);
     evm_state.insert(
-        UNI_V3_BENCH_CONTRACT,
+        bench_contract,
         Account {
             info: AccountInfo {
                 balance: U256::ZERO,
@@ -217,6 +281,11 @@ pub(crate) fn insert_uniswap_v3_accounts(evm_state: &mut EvmState) {
             status: AccountStatus::Touched,
         },
     );
+}
+
+pub(crate) fn insert_uniswap_v3_accounts(evm_state: &mut EvmState) {
+    insert_deployer_account(evm_state, UNI_V3_DEPLOYER_ACCOUNT);
+    insert_bench_contract(evm_state, UNI_V3_BENCH_CONTRACT);
 
     // Predeploy two MockERC20 tokens and fund UniV3Bench (for callbacks)
     erc20::insert_mock_erc20_with_balance(
@@ -233,12 +302,33 @@ pub(crate) fn insert_uniswap_v3_accounts(evm_state: &mut EvmState) {
     );
 }
 
-pub(crate) fn deploy_uniswap_v3_factory(
+pub(crate) fn insert_uniswap_v3_aa_accounts(evm_state: &mut EvmState) {
+    insert_deployer_account(evm_state, UNI_V3_AA_DEPLOYER_ACCOUNT);
+    insert_bench_contract(evm_state, UNI_V3_BENCH_AA_CONTRACT);
+
+    // Predeploy two MockERC20 tokens and fund UniV3Bench AA (for callbacks)
+    erc20::insert_mock_erc20_with_balance(
+        evm_state,
+        UNI_V3_AA_TOKEN_A,
+        UNI_V3_BENCH_AA_CONTRACT,
+        U256::MAX,
+    );
+    erc20::insert_mock_erc20_with_balance(
+        evm_state,
+        UNI_V3_AA_TOKEN_B,
+        UNI_V3_BENCH_AA_CONTRACT,
+        U256::MAX,
+    );
+}
+
+fn deploy_factory_with_deployer(
     executor: &AssertionExecutor,
     db: &mut ForkDb<OverlayDb<InMemoryDB>>,
+    deployer: Address,
+    expected_factory: Address,
 ) {
     let factory_deploy_tx = TxEnv {
-        caller: UNI_V3_DEPLOYER_ACCOUNT,
+        caller: deployer,
         kind: TxKind::Create,
         data: bytecode(UNISWAP_V3_FACTORY_ARTIFACT),
         gas_limit: 15_000_000,
@@ -264,11 +354,34 @@ pub(crate) fn deploy_uniswap_v3_factory(
         other => panic!("Factory deployment failed: {other:?}"),
     };
 
-    let expected_factory = uniswap_v3_factory_address();
     assert_eq!(
         deployed_factory, expected_factory,
         "Factory deployed at unexpected address"
     );
 
     db.commit(result.result_and_state.state);
+}
+
+pub(crate) fn deploy_uniswap_v3_factory(
+    executor: &AssertionExecutor,
+    db: &mut ForkDb<OverlayDb<InMemoryDB>>,
+) {
+    deploy_factory_with_deployer(
+        executor,
+        db,
+        UNI_V3_DEPLOYER_ACCOUNT,
+        uniswap_v3_factory_address(),
+    );
+}
+
+pub(crate) fn deploy_uniswap_v3_aa_factory(
+    executor: &AssertionExecutor,
+    db: &mut ForkDb<OverlayDb<InMemoryDB>>,
+) {
+    deploy_factory_with_deployer(
+        executor,
+        db,
+        UNI_V3_AA_DEPLOYER_ACCOUNT,
+        uniswap_v3_aa_factory_address(),
+    );
 }

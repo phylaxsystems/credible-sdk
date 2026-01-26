@@ -21,8 +21,11 @@ use assertion_executor::{
 
 use crate::BENCH_ACCOUNT;
 
-/// ERC20 token contract address
+/// ERC20 token contract address (non-AA)
 pub const ERC20_CONTRACT: Address = address!("EeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE");
+
+/// ERC20 token contract address (AA variant - registered in assertion store)
+pub const ERC20_AA_CONTRACT: Address = address!("EeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeF");
 
 /// MockERC20 artifact path
 pub(crate) const MOCK_ERC20_ARTIFACT: &str = "MockERC20.sol:MockERC20";
@@ -30,8 +33,8 @@ pub(crate) const MOCK_ERC20_ARTIFACT: &str = "MockERC20.sol:MockERC20";
 /// ERC20 transfer function selector: transfer(address,uint256)
 const ERC20_TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 
-/// Create an ERC20 transfer transaction
-pub fn erc20_transfer_tx(to: Address, amount: U256) -> TxEnv {
+/// Create an ERC20 transfer transaction targeting the specified contract
+pub fn erc20_transfer_tx_to_contract(contract: Address, to: Address, amount: U256) -> TxEnv {
     // Encode: transfer(address,uint256)
     // selector (4 bytes) + address (32 bytes, left-padded) + amount (32 bytes)
     let mut data = Vec::with_capacity(68);
@@ -42,13 +45,23 @@ pub fn erc20_transfer_tx(to: Address, amount: U256) -> TxEnv {
 
     TxEnv {
         caller: BENCH_ACCOUNT,
-        kind: TxKind::Call(ERC20_CONTRACT),
+        kind: TxKind::Call(contract),
         value: U256::ZERO,
         gas_limit: 60_000,
         gas_price: 1,
         data: Bytes::from(data),
         ..TxEnv::default()
     }
+}
+
+/// Create an ERC20 transfer transaction (non-AA contract)
+pub fn erc20_transfer_tx(to: Address, amount: U256) -> TxEnv {
+    erc20_transfer_tx_to_contract(ERC20_CONTRACT, to, amount)
+}
+
+/// Create an ERC20 transfer transaction (AA contract)
+pub fn erc20_aa_transfer_tx(to: Address, amount: U256) -> TxEnv {
+    erc20_transfer_tx_to_contract(ERC20_AA_CONTRACT, to, amount)
 }
 
 /// Calculate the storage slot for an ERC20 balance.
@@ -105,4 +118,8 @@ pub(crate) fn insert_mock_erc20_with_balance(
 
 pub(crate) fn insert_benchmark_erc20(evm_state: &mut EvmState) {
     insert_mock_erc20_with_balance(evm_state, ERC20_CONTRACT, BENCH_ACCOUNT, U256::MAX);
+}
+
+pub(crate) fn insert_benchmark_erc20_aa(evm_state: &mut EvmState) {
+    insert_mock_erc20_with_balance(evm_state, ERC20_AA_CONTRACT, BENCH_ACCOUNT, U256::MAX);
 }
