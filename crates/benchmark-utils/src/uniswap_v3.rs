@@ -40,7 +40,8 @@ use crate::{
 pub const UNI_V3_DEPLOYER_ACCOUNT: Address = address!("1111111111111111111111111111111111111111");
 
 /// Prefunded deployer account used for Uniswap v3 setup txs (AA variant)
-pub const UNI_V3_AA_DEPLOYER_ACCOUNT: Address = address!("1111111111111111111111111111111111111112");
+pub const UNI_V3_AA_DEPLOYER_ACCOUNT: Address =
+    address!("1111111111111111111111111111111111111112");
 
 /// Uniswap v3 benchmark helper contract address (`UniV3Bench`) - non-AA
 pub const UNI_V3_BENCH_CONTRACT: Address = address!("2222222222222222222222222222222222222222");
