@@ -144,7 +144,7 @@ When sending transactions via `sendTransactions` or `StreamEvents`, each transac
 
 ## Streaming Semantics
 
-### gRPC Transport
+### gRPC Transport (Streaming)
 
 The `SubscribeResults` RPC provides real-time streaming:
 
