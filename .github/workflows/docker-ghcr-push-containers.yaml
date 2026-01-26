@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag for Docker images (e.g. 1.0.3-patch). If not provided, will detect from Cargo.toml changes."
+        required: false
+        type: string
 
 permissions:
   packages: write
@@ -21,6 +26,15 @@ jobs:
       - name: Determine version tag
         id: determine-version
         run: |
+          # Use manual input if provided
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+            echo "Using manually specified version: $VERSION"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Otherwise detect from Cargo.toml changes
           OLD_VERSION=$(git show HEAD~1:Cargo.toml 2>/dev/null | grep -m 1 '^version = ' | cut -d '"' -f2)                                                                                                           
           NEW_VERSION=$(grep -m 1 '^version = ' Cargo.toml | cut -d '"' -f2)                                                                                                                                               
                                                                                                                                                                                                                    
