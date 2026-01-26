@@ -27,10 +27,7 @@ use mdbx::{
     common::CircularBufferConfig,
 };
 use sidecar::{
-    args::{
-        Config,
-        TransportProtocol,
-    },
+    args::Config,
     cache::{
         Sources,
         sources::{
@@ -61,7 +58,6 @@ use sidecar::{
         TransactionsState,
     },
     transport::{
-        AnyTransport,
         Transport,
         grpc::{
             GrpcTransport,
@@ -87,40 +83,36 @@ use tracing::{
     log::info,
 };
 
-/// Create transport with optional result streaming support.
+/// Create gRPC transport with optional result streaming support.
 ///
-/// For gRPC transport with `result_event_rx`, enables `SubscribeResults` streaming.
+/// With `result_event_rx`, enables `SubscribeResults` streaming.
 fn create_transport_from_args(
     config: &Config,
     tx_sender: TransactionQueueSender,
     state_results: Arc<TransactionsState>,
     result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
-) -> anyhow::Result<AnyTransport> {
-    match config.transport.protocol {
-        TransportProtocol::Grpc => {
-            let cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
-            let t = match result_event_rx {
-                Some(rx) => {
-                    GrpcTransport::with_result_receiver(
-                        &cfg,
-                        tx_sender,
-                        state_results,
-                        rx,
-                        config.transport.event_id_buffer_capacity,
-                    )?
-                }
-                None => {
-                    GrpcTransport::new(
-                        cfg,
-                        tx_sender,
-                        state_results,
-                        config.transport.event_id_buffer_capacity,
-                    )?
-                }
-            };
-            Ok(AnyTransport::Grpc(t))
+) -> anyhow::Result<GrpcTransport> {
+    let cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
+    let transport = match result_event_rx {
+        Some(rx) => {
+            GrpcTransport::with_result_receiver(
+                &cfg,
+                tx_sender,
+                state_results,
+                rx,
+                config.transport.event_id_buffer_capacity,
+            )?
         }
-    }
+        None => {
+            GrpcTransport::new(
+                cfg,
+                tx_sender,
+                state_results,
+                config.transport.event_id_buffer_capacity,
+            )?
+        }
+    };
+    Ok(transport)
 }
 
 /// Holds handles to spawned threads for graceful shutdown
@@ -266,33 +258,27 @@ async fn main() -> anyhow::Result<()> {
             (None, None)
         };
 
-        let (engine_state_results, result_event_rx) = match config.transport.protocol {
-            TransportProtocol::Grpc => {
-                let (tx, rx) = unbounded();
-                let pending_requests_ttl = if config
-                    .credible
-                    .transaction_results_pending_requests_ttl_ms
-                    .is_zero()
-                {
-                    Duration::from_secs(2)
-                } else {
-                    config.credible.transaction_results_pending_requests_ttl_ms
-                };
-                let accepted_txs_ttl = if config.credible.accepted_txs_ttl_ms.is_zero() {
-                    Duration::from_secs(2)
-                } else {
-                    config.credible.accepted_txs_ttl_ms
-                };
-                (
-                    TransactionsState::with_result_sender_and_ttls(
-                        tx,
-                        pending_requests_ttl,
-                        accepted_txs_ttl,
-                    ),
-                    Some(rx),
-                )
-            }
+        let (result_tx, result_rx) = unbounded();
+        let pending_requests_ttl = if config
+            .credible
+            .transaction_results_pending_requests_ttl_ms
+            .is_zero()
+        {
+            Duration::from_secs(2)
+        } else {
+            config.credible.transaction_results_pending_requests_ttl_ms
         };
+        let accepted_txs_ttl = if config.credible.accepted_txs_ttl_ms.is_zero() {
+            Duration::from_secs(2)
+        } else {
+            config.credible.accepted_txs_ttl_ms
+        };
+        let engine_state_results = TransactionsState::with_result_sender_and_ttls(
+            result_tx,
+            pending_requests_ttl,
+            accepted_txs_ttl,
+        );
+        let result_event_rx = Some(result_rx);
 
         let mut transport = create_transport_from_args(
             &config,

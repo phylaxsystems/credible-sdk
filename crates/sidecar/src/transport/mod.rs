@@ -109,37 +109,3 @@ use grpc::{
     GrpcTransport,
     GrpcTransportError,
 };
-
-#[derive(Debug, thiserror::Error)]
-pub enum AnyTransportError {
-    #[error("gRPC transport error: {0}")]
-    Grpc(#[source] GrpcTransportError),
-}
-
-impl From<&AnyTransportError> for ErrorRecoverability {
-    fn from(e: &AnyTransportError) -> Self {
-        match e {
-            AnyTransportError::Grpc(inner) => ErrorRecoverability::from(inner),
-        }
-    }
-}
-
-/// A simple enum wrapper to run any concrete transport behind a unified API.
-#[derive(Debug)]
-pub enum AnyTransport {
-    Grpc(GrpcTransport),
-}
-
-impl AnyTransport {
-    pub async fn run(&self) -> Result<(), AnyTransportError> {
-        match self {
-            AnyTransport::Grpc(t) => t.run().await.map_err(AnyTransportError::Grpc),
-        }
-    }
-
-    pub fn stop(&mut self) {
-        match self {
-            AnyTransport::Grpc(t) => t.stop(),
-        }
-    }
-}
