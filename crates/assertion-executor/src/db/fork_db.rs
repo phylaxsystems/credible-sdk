@@ -169,11 +169,16 @@ impl<ExtDb> DatabaseCommit for ForkDb<ExtDb> {
 
                 match self.storage.entry(address) {
                     Entry::Occupied(mut entry) => {
-                        let storage_map = entry.get_mut();
                         if is_created {
-                            storage_map.dont_read_from_inner_db = true;
+                            // CREATE resets storage entirely: discard old cached slots.
+                            entry.insert(ForkStorageMap {
+                                map: storage_updates,
+                                dont_read_from_inner_db: true,
+                            });
+                        } else {
+                            let storage_map = entry.get_mut();
+                            storage_map.map.extend(storage_updates.drain());
                         }
-                        storage_map.map.extend(storage_updates.drain());
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(ForkStorageMap {

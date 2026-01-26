@@ -421,27 +421,36 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
                     .map(|(slot, storage_slot)| (slot, storage_slot.present_value()))
                     .collect();
 
-                match self.overlay.entry(storage_key) {
-                    Entry::Occupied(mut entry) => {
-                        if let Some(existing) = entry.get_mut().as_storage_mut() {
-                            if is_created {
-                                existing.dont_read_from_inner_db = true;
+                if is_created {
+                    // CREATE resets storage completely (except constructor writes).
+                    // If we already cached storage for this address, it MUST be discarded.
+                    self.overlay.insert(
+                        storage_key,
+                        TableValue::Storage(ForkStorageMap {
+                            map: new_storage,
+                            dont_read_from_inner_db: true,
+                        }),
+                    );
+                } else {
+                    match self.overlay.entry(storage_key) {
+                        Entry::Occupied(mut entry) => {
+                            if let Some(existing) = entry.get_mut().as_storage_mut() {
+                                if !new_storage.is_empty() {
+                                    existing.map.extend(new_storage.drain());
+                                }
+                            } else {
+                                entry.insert(TableValue::Storage(ForkStorageMap {
+                                    map: new_storage,
+                                    dont_read_from_inner_db: false,
+                                }));
                             }
-                            if !new_storage.is_empty() {
-                                existing.map.extend(new_storage.drain());
-                            }
-                        } else {
+                        }
+                        Entry::Vacant(entry) => {
                             entry.insert(TableValue::Storage(ForkStorageMap {
                                 map: new_storage,
-                                dont_read_from_inner_db: is_created,
+                                dont_read_from_inner_db: false,
                             }));
                         }
-                    }
-                    Entry::Vacant(entry) => {
-                        entry.insert(TableValue::Storage(ForkStorageMap {
-                            map: new_storage,
-                            dont_read_from_inner_db: is_created,
-                        }));
                     }
                 }
             }
@@ -481,7 +490,10 @@ impl<Db> OverlayDb<Db> {
 
             match self.overlay.entry(storage_key) {
                 Entry::Occupied(mut entry) => {
-                    if let Some(existing) = entry.get_mut().as_storage_mut() {
+                    if slot_map.dont_read_from_inner_db {
+                        // Created account: replace cached storage entirely (no ghost slots).
+                        entry.insert(TableValue::Storage(slot_map));
+                    } else if let Some(existing) = entry.get_mut().as_storage_mut() {
                         existing.map.extend(slot_map.map.drain());
                         existing.dont_read_from_inner_db |= slot_map.dont_read_from_inner_db;
                     } else {
