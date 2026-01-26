@@ -13,28 +13,23 @@
 //! - Contract: `0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02`
 //! - Updated at the start of each block with the parent beacon block root
 
-use alloy::{
-    eips::{
-        eip2935::{
-            HISTORY_SERVE_WINDOW,
-            HISTORY_STORAGE_ADDRESS,
-            HISTORY_STORAGE_CODE,
-        },
-        eip4788::{
-            BEACON_ROOTS_ADDRESS,
-            BEACON_ROOTS_CODE,
-        },
-    },
-    primitives::{
-        Address,
-        B256,
-        Bytes,
-        U256,
-        address,
-        keccak256,
-    },
+use alloy::primitives::{
+    Address,
+    B256,
+    Bytes,
+    U256,
+    address,
+    keccak256,
 };
 use assertion_executor::db::BlockHashStore;
+use eip_system_calls::{
+    SystemContract,
+    eip2935::Eip2935,
+    eip4788::{
+        Eip4788,
+        HISTORY_BUFFER_LENGTH,
+    },
+};
 use revm::{
     DatabaseCommit,
     DatabaseRef,
@@ -58,9 +53,6 @@ use tracing::{
     trace,
     warn,
 };
-
-/// The length of the ring buffer for storing beacon roots.
-pub const HISTORY_BUFFER_LENGTH: u64 = 8191;
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum SystemCallError {
@@ -185,7 +177,7 @@ impl SystemCalls {
         db: &mut DB,
     ) -> Result<(), SystemCallError> {
         // Skip genesis block
-        if config.block_number == 0 {
+        if config.block_number == U256::ZERO {
             trace!(
                 target = "system_calls",
                 "Skipping EIP-2935 for genesis block"
@@ -195,11 +187,10 @@ impl SystemCalls {
 
         let block_hash = config.block_hash;
 
-        let block_number = config.block_number;
-
+        let block_number: u64 = config.block_number.saturating_to();
         // Calculate storage slot using ring buffer modulo
         // EIP-2935: slot = block.number % HISTORY_SERVE_WINDOW
-        let slot = U256::from(block_number % U256::from(HISTORY_SERVE_WINDOW));
+        let slot = Eip2935::slot(block_number);
 
         debug!(
             target = "system_calls",
@@ -212,27 +203,26 @@ impl SystemCalls {
 
         // Fetch existing account info, or create default with system contract code
         let existing_info = db
-            .basic_ref(HISTORY_STORAGE_ADDRESS)
+            .basic_ref(Eip2935::ADDRESS)
             .ok()
             .flatten()
             .unwrap_or_else(|| {
-                let code = Bytecode::new_raw(HISTORY_STORAGE_CODE.clone());
-                let code_hash = keccak256(HISTORY_STORAGE_CODE.clone());
                 AccountInfo {
                     balance: U256::ZERO,
                     nonce: 1,
-                    code_hash,
-                    code: Some(code),
+                    code_hash: Eip2935::code_hash(),
+                    code: Some(Bytecode::new_raw(Eip2935::bytecode().clone())),
                 }
             });
 
         // Build storage updates
         let mut storage = EvmStorage::default();
+        let current_value = Eip2935::hash_to_value(block_hash);
 
         // Store parent block hash at slot
         storage.insert(
             slot,
-            EvmStorageSlot::new_changed(U256::ZERO, U256::from_be_bytes(block_hash.0), 0),
+            EvmStorageSlot::new_changed(U256::ZERO, current_value, 0),
         );
 
         // Create account with existing info, just adding storage slots
@@ -245,12 +235,12 @@ impl SystemCalls {
 
         // Commit to database
         let mut state = EvmState::default();
-        state.insert(HISTORY_STORAGE_ADDRESS, account);
+        state.insert(Eip2935::ADDRESS, account);
         db.commit(state);
 
         trace!(
             target = "system_calls",
-            address = %HISTORY_STORAGE_ADDRESS,
+            address = %Eip2935::ADDRESS,
             "EIP-2935 state committed"
         );
 
@@ -284,35 +274,30 @@ impl SystemCalls {
             .parent_beacon_block_root
             .ok_or(SystemCallError::MissingParentBeaconBlockRoot)?;
 
-        let timestamp = config.timestamp;
-
-        // Calculate storage slots using ring buffer
-        let timestamp_index = timestamp % U256::from(HISTORY_BUFFER_LENGTH);
-        let timestamp_slot = U256::from(timestamp_index);
-        let root_slot = U256::from(timestamp_index + U256::from(HISTORY_BUFFER_LENGTH));
+        let timestamp: u64 = config.timestamp.saturating_to();
+        let timestamp_slot = Eip4788::timestamp_slot(timestamp);
+        let root_slot = Eip4788::root_slot(timestamp);
 
         debug!(
             target = "system_calls",
             block_number = %config.block_number,
             %timestamp,
-            %timestamp_index,
+            %timestamp_slot,
             %parent_beacon_root,
             "Applying EIP-4788 beacon root update"
         );
 
         // Fetch existing account info, or create default with system contract code
         let existing_info = db
-            .basic_ref(BEACON_ROOTS_ADDRESS)
+            .basic_ref(Eip4788::ADDRESS)
             .ok()
             .flatten()
             .unwrap_or_else(|| {
-                let code = Bytecode::new_raw(BEACON_ROOTS_CODE.clone());
-                let code_hash = keccak256(BEACON_ROOTS_CODE.clone());
                 AccountInfo {
                     balance: U256::ZERO,
                     nonce: 1,
-                    code_hash,
-                    code: Some(code),
+                    code_hash: Eip4788::code_hash(),
+                    code: Some(Bytecode::new_raw(Eip4788::bytecode().clone())),
                 }
             });
 
@@ -328,7 +313,7 @@ impl SystemCalls {
         // Store beacon root at root_slot
         storage.insert(
             root_slot,
-            EvmStorageSlot::new_changed(U256::ZERO, U256::from_be_bytes(parent_beacon_root.0), 0),
+            EvmStorageSlot::new_changed(U256::ZERO, Eip4788::root_to_value(parent_beacon_root), 0),
         );
 
         // Create account with existing info, just adding storage slots
@@ -341,12 +326,12 @@ impl SystemCalls {
 
         // Commit to database
         let mut state = EvmState::default();
-        state.insert(BEACON_ROOTS_ADDRESS, account);
+        state.insert(Eip4788::ADDRESS, account);
         db.commit(state);
 
         trace!(
             target = "system_calls",
-            address = %BEACON_ROOTS_ADDRESS,
+            address = %Eip4788::ADDRESS,
             "EIP-4788 state committed"
         );
 
@@ -357,6 +342,7 @@ impl SystemCalls {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eip_system_calls::eip2935::HISTORY_SERVE_WINDOW;
     use revm::database::DBErrorMarker;
     use std::{
         cell::RefCell,
@@ -438,7 +424,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify contract was created
-        let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS);
+        let account = db.accounts.get(&Eip2935::ADDRESS);
         assert!(account.is_some(), "History storage contract should exist");
 
         let account = account.unwrap();
@@ -451,7 +437,7 @@ mod tests {
 
         // Verify stored value
         let stored_hash = account.storage.get(&slot).unwrap();
-        assert_eq!(stored_hash.present_value, U256::from_be_bytes(hash.0));
+        assert_eq!(stored_hash.present_value, Eip2935::hash_to_value(hash));
     }
 
     #[test]
@@ -474,7 +460,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify contract was created
-        let account = db.accounts.get(&BEACON_ROOTS_ADDRESS);
+        let account = db.accounts.get(&Eip4788::ADDRESS);
         assert!(account.is_some(), "Beacon roots contract should exist");
 
         let account = account.unwrap();
@@ -514,7 +500,7 @@ mod tests {
         // EIP-2935 should succeed but not modify state
         let result = system_calls.apply_eip2935(&config, &mut db);
         assert!(result.is_ok());
-        assert!(!db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
+        assert!(!db.accounts.contains_key(&Eip2935::ADDRESS));
 
         // EIP-4788 should return Ok(()): genesis block
         let result = system_calls.apply_eip4788(&config, &mut db);
@@ -548,8 +534,8 @@ mod tests {
         assert!(result.is_ok());
 
         // Both contracts should be present
-        assert!(db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
-        assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
+        assert!(db.accounts.contains_key(&Eip2935::ADDRESS));
+        assert!(db.accounts.contains_key(&Eip4788::ADDRESS));
     }
 
     #[test]
@@ -572,7 +558,7 @@ mod tests {
         let result = system_calls.apply_eip2935(&config, &mut db);
         assert!(result.is_ok());
 
-        let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS).unwrap();
+        let account = db.accounts.get(&Eip2935::ADDRESS).unwrap();
 
         // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8291 % 8191 = 99
         let expected_slot = U256::from(99u64);
@@ -598,8 +584,7 @@ mod tests {
             storage: EvmStorage::default(),
             status: AccountStatus::LoadedAsNotExisting,
         };
-        db.accounts
-            .insert(HISTORY_STORAGE_ADDRESS, existing_account);
+        db.accounts.insert(Eip2935::ADDRESS, existing_account);
 
         let hash = B256::repeat_byte(0xab);
         let config = SystemCallsConfig {
@@ -614,7 +599,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify account state was preserved
-        let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS).unwrap();
+        let account = db.accounts.get(&Eip2935::ADDRESS).unwrap();
         assert_eq!(account.info.balance, existing_balance);
         assert_eq!(account.info.nonce, existing_nonce);
     }
@@ -638,7 +623,7 @@ mod tests {
             storage: EvmStorage::default(),
             status: AccountStatus::LoadedAsNotExisting,
         };
-        db.accounts.insert(BEACON_ROOTS_ADDRESS, existing_account);
+        db.accounts.insert(Eip4788::ADDRESS, existing_account);
 
         let beacon_root = B256::repeat_byte(0xcd);
         let config = SystemCallsConfig {
@@ -653,7 +638,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify account state was preserved
-        let account = db.accounts.get(&BEACON_ROOTS_ADDRESS).unwrap();
+        let account = db.accounts.get(&Eip4788::ADDRESS).unwrap();
         assert_eq!(account.info.balance, existing_balance);
         assert_eq!(account.info.nonce, existing_nonce);
     }
