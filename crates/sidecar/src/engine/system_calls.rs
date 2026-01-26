@@ -211,7 +211,7 @@ impl SystemCalls {
         );
 
         // Fetch existing account info, or create default with system contract code
-        let existing_info = db
+        let mut existing_info = db
             .basic_ref(HISTORY_STORAGE_ADDRESS)
             .ok()
             .flatten()
@@ -225,6 +225,10 @@ impl SystemCalls {
                     code: Some(code),
                 }
             });
+
+        // Overwrite the existing code in case the `basic_ref` is cached to none
+        existing_info.code = Some(Bytecode::new_raw(HISTORY_STORAGE_CODE.clone()));
+        existing_info.code_hash = keccak256(HISTORY_STORAGE_CODE.clone());
 
         // Build storage updates
         let mut storage = EvmStorage::default();
@@ -301,7 +305,7 @@ impl SystemCalls {
         );
 
         // Fetch existing account info, or create default with system contract code
-        let existing_info = db
+        let mut existing_info = db
             .basic_ref(BEACON_ROOTS_ADDRESS)
             .ok()
             .flatten()
@@ -315,6 +319,10 @@ impl SystemCalls {
                     code: Some(code),
                 }
             });
+
+        // Overwrite the existing code in case the `basic_ref` is cached to none
+        existing_info.code = Some(Bytecode::new_raw(BEACON_ROOTS_CODE.clone()));
+        existing_info.code_hash = keccak256(BEACON_ROOTS_CODE.clone());
 
         // Build storage updates
         let mut storage = EvmStorage::default();
