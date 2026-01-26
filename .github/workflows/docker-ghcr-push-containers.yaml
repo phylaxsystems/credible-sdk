@@ -1,4 +1,4 @@
-name: Docker GHCR Push - Assertion DA
+name: Docker GHCR Push
 
 on:
   push:
