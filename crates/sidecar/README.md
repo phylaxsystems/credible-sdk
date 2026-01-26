@@ -396,51 +396,86 @@ The configuration file is a JSON file with the following schema:
       "type": "object",
       "description": "State source configuration",
       "required": [
-        "state_worker_mdbx_path",
-        "state_worker_depth",
+        "sources",
         "minimum_state_diff",
         "sources_sync_timeout_ms",
         "sources_monitoring_period_ms"
       ],
       "properties": {
-        "eth_rpc_source_ws_url": {
-          "type": "string",
-          "description": "Eth RPC source WebSocket bind address and port (optional)",
-          "format": "uri",
-          "pattern": "^wss?://",
-          "examples": [
-            "ws://localhost:8548",
-            "ws://besu-service:8548"
-          ]
-        },
-        "eth_rpc_source_http_url": {
-          "type": "string",
-          "description": "Eth RPC source client HTTP bind address and port (optional)",
-          "format": "uri",
-          "pattern": "^https?://",
-          "examples": [
-            "http://localhost:8548",
-            "http://besu-service:8548"
-          ]
-        },
-        "state_worker_mdbx_path": {
-          "type": "string",
-          "description": "State worker MDBX path (optional)",
-          "format": "path",
-          "examples": [
-            "/tmp"
-          ]
-        },
-        "state_worker_depth": {
-          "type": "integer",
-          "description": "State worker state depth - how many blocks behind head state worker will have the data from",
-          "minimum": 0,
-          "maximum": 9007199254740991,
-          "examples": [
-            100,
-            250,
-            500
-          ]
+        "sources": {
+          "type": "array",
+          "description": "State sources to enable (ordered by priority: first = highest)",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "type",
+                  "mdbx_path",
+                  "depth"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "mdbx"
+                  },
+                  "mdbx_path": {
+                    "type": "string",
+                    "description": "State worker MDBX path",
+                    "format": "path",
+                    "examples": [
+                      "/tmp"
+                    ]
+                  },
+                  "depth": {
+                    "type": "integer",
+                    "description": "State worker state depth - how many blocks behind head state worker will have the data from",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "examples": [
+                      100,
+                      250,
+                      500
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type",
+                  "ws_url",
+                  "http_url"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "eth-rpc"
+                  },
+                  "ws_url": {
+                    "type": "string",
+                    "description": "Eth RPC source WebSocket bind address and port",
+                    "format": "uri",
+                    "pattern": "^wss?://",
+                    "examples": [
+                      "ws://localhost:8548",
+                      "ws://besu-service:8548"
+                    ]
+                  },
+                  "http_url": {
+                    "type": "string",
+                    "description": "Eth RPC source client HTTP bind address and port",
+                    "format": "uri",
+                    "pattern": "^https?://",
+                    "examples": [
+                      "http://localhost:8548",
+                      "http://besu-service:8548"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
         },
         "minimum_state_diff": {
           "type": "integer",
@@ -521,10 +556,18 @@ The default configuration can be found in [default_config.json](default_config.j
     "pending_receive_ttl_ms": 5000
   },
   "state": {
-    "eth_rpc_source_ws_url": "ws://127.0.0.1:8546",
-    "eth_rpc_source_http_url": "http://127.0.0.1:8545",
-    "state_worker_mdbx_path": "/data/state_worker.mdbx",
-    "state_worker_depth": 3,
+    "sources": [
+      {
+        "type": "eth-rpc",
+        "ws_url": "ws://127.0.0.1:8546",
+        "http_url": "http://127.0.0.1:8545"
+      },
+      {
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "depth": 3
+      }
+    ],
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
     "sources_monitoring_period_ms": 500,
