@@ -28,13 +28,11 @@ use assertion_executor::{
         InMemoryDB,
         OverlayDb,
     },
-    inspectors::TriggerRecorder,
     primitives::{
         Account,
         AccountInfo,
         AccountStatus,
         Address,
-        AssertionContract,
         BlockEnv,
         EvmState,
         TxEnv,
@@ -46,6 +44,7 @@ use assertion_executor::{
         AssertionState,
         AssertionStore,
     },
+    test_utils::bytecode,
 };
 
 mod erc20;
@@ -257,33 +256,38 @@ pub struct BenchmarkPackage<Db> {
     pub block_env: BlockEnv,
 }
 
-/// Helper to create a dummy assertion state for registering AA addresses
-fn create_dummy_assertion_state() -> AssertionState {
-    AssertionState {
-        activation_block: 0,
-        inactivation_block: None,
-        assertion_contract: AssertionContract::default(),
-        trigger_recorder: TriggerRecorder::default(),
-    }
+/// AverageAssertion artifact path
+const AVERAGE_ASSERTION_ARTIFACT: &str = "AverageAssertion.sol:AverageAssertion";
+
+/// Creates a real assertion state from the AverageAssertion contract.
+/// This assertion exercises typical precompile operations (fork, load, state changes, arithmetic).
+fn create_average_assertion_state(config: &ExecutorConfig) -> AssertionState {
+    let assertion_bytecode = bytecode(AVERAGE_ASSERTION_ARTIFACT);
+    AssertionState::new_active(&assertion_bytecode, config)
+        .expect("Failed to create AverageAssertion state")
 }
 
 impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
     pub fn new(load: LoadDefinition) -> Self {
+        let config = ExecutorConfig::default();
         let store = AssertionStore::new_ephemeral();
 
-        // Register AA addresses in the store based on what's needed
+        // Register AA addresses in the store with real assertions based on what's needed
         if load.needs_erc20_aa() {
             store
-                .insert(ERC20_AA_CONTRACT, create_dummy_assertion_state())
+                .insert(ERC20_AA_CONTRACT, create_average_assertion_state(&config))
                 .expect("Failed to register ERC20 AA contract");
         }
         if load.needs_uni_aa() {
             store
-                .insert(UNI_V3_BENCH_AA_CONTRACT, create_dummy_assertion_state())
+                .insert(
+                    UNI_V3_BENCH_AA_CONTRACT,
+                    create_average_assertion_state(&config),
+                )
                 .expect("Failed to register UniV3 AA contract");
         }
 
-        let executor = AssertionExecutor::new(ExecutorConfig::default(), store);
+        let executor = AssertionExecutor::new(config, store);
 
         // Create overlay with an in-memory underlying DB so basic lookups (e.g. empty code hash)
         // don't error during tx execution.
@@ -612,5 +616,41 @@ mod tests {
                 _ => panic!("Expected Call transaction"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_benchmark_package_run_with_aa_assertions() {
+        // Test that the run() method works with AA transactions and real assertions
+        let load = LoadDefinition {
+            tx_amount: 5,
+            eoa_percent: 0.0,
+            erc20_percent: 100.0,
+            uni_percent: 0.0,
+            aa_percent: 40.0, // 2 AA txs, 3 non-AA txs
+        };
+        let mut package = BenchmarkPackage::new(load);
+
+        // Run all transactions - this should execute assertions for AA txs
+        package.run().expect("Benchmark run should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_benchmark_package_run_mixed_load() {
+        // Test running with a mixed load (EOA + ERC20 + UniV3)
+        // Note: UniV3 pool has limited liquidity, so we limit the number of swaps
+        // to avoid hitting price limits. 1 deploy + 2 swaps works well.
+        let load = LoadDefinition {
+            tx_amount: 6,
+            eoa_percent: 17.0,   // 1 tx
+            erc20_percent: 33.0, // 2 txs
+            uni_percent: 50.0,   // 3 txs (1 deploy + 2 swaps)
+            aa_percent: 0.0,
+        };
+        let mut package = BenchmarkPackage::new(load);
+
+        // Run all transactions
+        package
+            .run()
+            .expect("Benchmark run with mixed load should succeed");
     }
 }
