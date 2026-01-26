@@ -157,6 +157,8 @@ reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-libmdbx = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 
+[workspace.metadata.cargo-shear]
+ignored = ["benchmark-utils"]
 
 # Maxperf profile for absolute maximum performance
 # Only use for builds that are going to get used by end users
