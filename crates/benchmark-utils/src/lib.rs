@@ -28,13 +28,11 @@ use assertion_executor::{
         InMemoryDB,
         OverlayDb,
     },
-    inspectors::TriggerRecorder,
     primitives::{
         Account,
         AccountInfo,
         AccountStatus,
         Address,
-        AssertionContract,
         BlockEnv,
         Bytecode,
         EvmState,
@@ -991,5 +989,41 @@ mod tests {
                 _ => panic!("Expected Call transaction"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_benchmark_package_run_with_aa_assertions() {
+        // Test that the run() method works with AA transactions and real assertions
+        let load = LoadDefinition {
+            tx_amount: 5,
+            eoa_percent: 0.0,
+            erc20_percent: 100.0,
+            uni_percent: 0.0,
+            aa_percent: 40.0, // 2 AA txs, 3 non-AA txs
+        };
+        let mut package = BenchmarkPackage::new(load);
+
+        // Run all transactions - this should execute assertions for AA txs
+        package.run().expect("Benchmark run should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_benchmark_package_run_mixed_load() {
+        // Test running with a mixed load (EOA + ERC20 + UniV3)
+        // Note: UniV3 pool has limited liquidity, so we limit the number of swaps
+        // to avoid hitting price limits. 1 deploy + 2 swaps works well.
+        let load = LoadDefinition {
+            tx_amount: 6,
+            eoa_percent: 17.0,   // 1 tx
+            erc20_percent: 33.0, // 2 txs
+            uni_percent: 50.0,   // 3 txs (1 deploy + 2 swaps)
+            aa_percent: 0.0,
+        };
+        let mut package = BenchmarkPackage::new(load);
+
+        // Run all transactions
+        package
+            .run()
+            .expect("Benchmark run with mixed load should succeed");
     }
 }
