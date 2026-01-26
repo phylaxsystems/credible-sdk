@@ -986,7 +986,7 @@ mod tests {
             };
             match tx.kind {
                 TxKind::Call(addr) => assert_eq!(addr, expected_target, "tx {i} target mismatch"),
-                _ => panic!("Expected Call transaction"),
+                TxKind::Create => panic!("Expected Call transaction"),
             }
         }
     }
