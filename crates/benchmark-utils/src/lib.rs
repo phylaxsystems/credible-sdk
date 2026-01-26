@@ -28,11 +28,13 @@ use assertion_executor::{
         InMemoryDB,
         OverlayDb,
     },
+    inspectors::TriggerRecorder,
     primitives::{
         Account,
         AccountInfo,
         AccountStatus,
         Address,
+        AssertionContract,
         BlockEnv,
         Bytecode,
         EvmState,
@@ -56,14 +58,19 @@ mod erc20;
 mod uniswap_v3;
 
 pub use erc20::{
+    ERC20_AA_CONTRACT,
     ERC20_CONTRACT,
+    erc20_aa_transfer_tx,
     erc20_transfer_tx,
 };
 pub use uniswap_v3::{
+    UNI_V3_BENCH_AA_CONTRACT,
     UNI_V3_BENCH_CONTRACT,
     UNI_V3_DEPLOYER_ACCOUNT,
     UNI_V3_TOKEN_A,
     UNI_V3_TOKEN_B,
+    uniswap_v3_aa_deploy_pool_tx,
+    uniswap_v3_aa_swap_tx,
     uniswap_v3_deploy_pool_tx,
     uniswap_v3_factory_address,
     uniswap_v3_swap_tx,
@@ -766,6 +773,7 @@ mod tests {
             eoa_percent: 50.0,
             erc20_percent: 50.0,
             uni_percent: 0.0,
+            aa_percent: 0.0,
         };
         let package = BenchmarkPackage::new(load);
 
@@ -808,6 +816,7 @@ mod tests {
             eoa_percent: 0.0,
             erc20_percent: 0.0,
             uni_percent: 100.0,
+            aa_percent: 0.0,
         };
 
         let mut package = BenchmarkPackage::new(load);
@@ -844,6 +853,7 @@ mod tests {
             eoa_percent: 50.0,
             erc20_percent: 30.0,
             uni_percent: 20.0,
+            aa_percent: 0.0,
         };
         let (eoa, erc20, uni) = load.normalized_percentages();
         assert!((eoa - 50.0).abs() < f64::EPSILON);
@@ -856,6 +866,7 @@ mod tests {
             eoa_percent: 50.0,
             erc20_percent: 50.0,
             uni_percent: 50.0,
+            aa_percent: 0.0,
         };
         let (eoa, erc20, uni) = load.normalized_percentages();
         assert!((eoa - 100.0 / 3.0).abs() < 0.001);
@@ -868,6 +879,7 @@ mod tests {
             eoa_percent: 25.0,
             erc20_percent: 25.0,
             uni_percent: 0.0,
+            aa_percent: 0.0,
         };
         let (eoa, erc20, uni) = load.normalized_percentages();
         assert!((eoa - 50.0).abs() < f64::EPSILON);
@@ -880,6 +892,7 @@ mod tests {
             eoa_percent: 0.0,
             erc20_percent: 0.0,
             uni_percent: 0.0,
+            aa_percent: 0.0,
         };
         let (eoa, erc20, uni) = load.normalized_percentages();
         assert!(eoa.abs() < f64::EPSILON);
@@ -895,9 +908,71 @@ mod tests {
             eoa_percent: 50.0,
             erc20_percent: 50.0,
             uni_percent: 50.0,
+            aa_percent: 0.0,
         };
         let txs = load.create_tx_vec();
         // Each should get 3 txs (33.33% of 9 rounded)
         assert_eq!(txs.len(), 9);
+    }
+
+    #[tokio::test]
+    async fn test_benchmark_package_with_aa_percent() {
+        // Test with 50% AA transactions
+        let load = LoadDefinition {
+            tx_amount: 10,
+            eoa_percent: 0.0,
+            erc20_percent: 100.0,
+            uni_percent: 0.0,
+            aa_percent: 50.0,
+        };
+        let package = BenchmarkPackage::new(load);
+
+        // Should have both ERC20 contracts deployed
+        let erc20_account = package.db.basic_ref(ERC20_CONTRACT).unwrap().unwrap();
+        assert!(erc20_account.code.is_some(), "ERC20 contract should have code");
+
+        let erc20_aa_account = package.db.basic_ref(ERC20_AA_CONTRACT).unwrap().unwrap();
+        assert!(erc20_aa_account.code.is_some(), "ERC20 AA contract should have code");
+
+        // Bundle should have 10 txs total (5 AA + 5 non-AA)
+        assert_eq!(package.bundle.len(), 10);
+
+        // Verify tx targets: first 5 should be AA, last 5 should be non-AA
+        for (i, tx) in package.bundle.iter().enumerate() {
+            let expected_target = if i < 5 { ERC20_AA_CONTRACT } else { ERC20_CONTRACT };
+            match tx.kind {
+                TxKind::Call(addr) => assert_eq!(addr, expected_target, "tx {i} target mismatch"),
+                _ => panic!("Expected Call transaction"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_benchmark_package_with_eoa_aa_percent() {
+        // Test EOA transactions with AA percentage
+        let load = LoadDefinition {
+            tx_amount: 10,
+            eoa_percent: 100.0,
+            erc20_percent: 0.0,
+            uni_percent: 0.0,
+            aa_percent: 30.0,
+        };
+        let package = BenchmarkPackage::new(load);
+
+        // ERC20 AA contract should be deployed (for EOA AA targets)
+        let erc20_aa_account = package.db.basic_ref(ERC20_AA_CONTRACT).unwrap().unwrap();
+        assert!(erc20_aa_account.code.is_some(), "ERC20 AA contract should have code for EOA AA txs");
+
+        // Bundle should have 10 txs total (3 AA + 7 non-AA)
+        assert_eq!(package.bundle.len(), 10);
+
+        // Verify tx targets: first 3 should target ERC20_AA_CONTRACT, last 7 should target DEAD_ADDRESS
+        for (i, tx) in package.bundle.iter().enumerate() {
+            let expected_target = if i < 3 { ERC20_AA_CONTRACT } else { DEAD_ADDRESS };
+            match tx.kind {
+                TxKind::Call(addr) => assert_eq!(addr, expected_target, "tx {i} target mismatch"),
+                _ => panic!("Expected Call transaction"),
+            }
+        }
     }
 }
