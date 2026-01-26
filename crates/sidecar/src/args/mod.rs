@@ -624,7 +624,7 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "http",
+    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
@@ -686,7 +686,7 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "http",
+    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
@@ -764,7 +764,7 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "http",
+    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
