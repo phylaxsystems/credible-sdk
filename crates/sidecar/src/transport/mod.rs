@@ -25,7 +25,6 @@
 #![allow(clippy::default_trait_access)]
 #![allow(clippy::doc_markdown)]
 
-mod common;
 mod event_id_deduplication;
 pub mod grpc;
 pub mod mock;

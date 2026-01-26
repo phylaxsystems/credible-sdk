@@ -47,7 +47,6 @@ use crate::{
     execution_ids::TxExecutionId,
     transactions_state::TransactionResultEvent,
     transport::{
-        common::DecoderError,
         event_id_deduplication::EventIdBuffer,
         rpc_metrics::RpcRequestDuration,
         transactions_results::{
@@ -183,22 +182,6 @@ pub enum GrpcDecodeError {
     InvalidTxType(u32),
     #[error("invalid signature")]
     InvalidSignature,
-}
-
-impl From<GrpcDecodeError> for DecoderError {
-    fn from(e: GrpcDecodeError) -> Self {
-        match e {
-            GrpcDecodeError::MissingTxEnv => DecoderError::MissingTxEnv,
-            GrpcDecodeError::MissingTxExecutionId => DecoderError::MissingTxExecutionId,
-            GrpcDecodeError::InvalidAddress(_) => DecoderError::InvalidAddress(String::new()),
-            GrpcDecodeError::InvalidHash(_) => DecoderError::InvalidHash(String::new()),
-            GrpcDecodeError::InvalidU128(_) | GrpcDecodeError::InvalidU256(_) => {
-                DecoderError::InvalidValue
-            }
-            GrpcDecodeError::InvalidTxType(t) => DecoderError::InvalidTxType(t.to_string()),
-            GrpcDecodeError::InvalidSignature => DecoderError::InvalidSignature,
-        }
-    }
 }
 
 #[inline]
@@ -374,7 +357,7 @@ pub fn decode_tx_env(pb: &TransactionEnv) -> Result<TxEnv, GrpcDecodeError> {
 }
 
 /// Convert a Transaction to queue transaction contents.
-pub fn decode_transaction(t: &Transaction) -> Result<TxQueueContents, DecoderError> {
+pub fn decode_transaction(t: &Transaction) -> Result<TxQueueContents, GrpcDecodeError> {
     let tx_env = decode_tx_env(t.tx_env.as_ref().ok_or(GrpcDecodeError::MissingTxEnv)?)?;
 
     let pb_id = t
@@ -389,8 +372,7 @@ pub fn decode_transaction(t: &Transaction) -> Result<TxQueueContents, DecoderErr
         .as_ref()
         .filter(|b| !b.is_empty())
         .map(|b| decode_b256(b))
-        .transpose()
-        .map_err(|_| DecoderError::InvalidHash(String::new()))?;
+        .transpose()?;
 
     Ok(TxQueueContents::Tx(QueueTransaction {
         tx_execution_id,
@@ -1162,15 +1144,13 @@ impl SidecarTransport for GrpcService {
 }
 
 /// Convert protobuf TransactionEnv to revm TxEnv.
-/// This is the legacy interface that returns DecoderError.
 #[inline]
-pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, DecoderError> {
-    decode_tx_env(pb_tx_env).map_err(DecoderError::from)
+pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, GrpcDecodeError> {
+    decode_tx_env(pb_tx_env)
 }
 
 /// Convert a Transaction to queue transaction contents.
-/// Legacy interface wrapper around decode_transaction.
 #[inline]
-pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, DecoderError> {
+pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, GrpcDecodeError> {
     decode_transaction(t)
 }
