@@ -39,6 +39,7 @@ use assertion_executor::{
         TxKind,
         U256,
         address,
+        keccak256,
     },
     store::{
         AssertionState,
@@ -82,6 +83,7 @@ pub const BENCH_ACCOUNT: Address = address!("feA6F304C546857b820cDed9127156BaD25
 pub const DEAD_ADDRESS: Address = address!("000000000000000000000000000000000000dEaD");
 
 /// Simple transaction that just sends 1 wei to the specified address from `BENCH_ACCOUNT`
+#[must_use]
 pub fn eoa_tx_to(target: Address) -> TxEnv {
     TxEnv {
         caller: BENCH_ACCOUNT,
@@ -94,30 +96,32 @@ pub fn eoa_tx_to(target: Address) -> TxEnv {
 }
 
 /// Simple transaction that just sends 1 wei to `DEAD_ADDRESS` from `BENCH_ACCOUNT`
+#[must_use]
 pub fn eoa_tx() -> TxEnv {
     eoa_tx_to(DEAD_ADDRESS)
 }
 
-/// Simple transaction that sends 1 wei to an AA address (reuses ERC20_AA_CONTRACT)
+/// Simple transaction that sends 1 wei to an AA address (reuses `ERC20_AA_CONTRACT`)
+#[must_use]
 pub fn eoa_aa_tx() -> TxEnv {
     eoa_tx_to(ERC20_AA_CONTRACT)
 }
 
 /// Defines how a transaction bundle should look like.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct LoadDefinition {
     pub tx_amount: usize,
     pub eoa_percent: f64,
     pub erc20_percent: f64,
     pub uni_percent: f64,
-    /// Percentage of contract-calling transactions (ERC20 + UniV3) that should
+    /// Percentage of contract-calling transactions (ERC20 + `UniV3`) that should
     /// target Assertion Adopter contracts (registered in the assertion store).
     /// Range: 0.0 to 100.0. Default: 0.0 (no AA transactions).
     pub aa_percent: f64,
 }
 
 /// Average loads for networks are the following:
-/// | **Network**   | **EOA Transfers**  | **ERC-20 Transfers**  | **DeFi Protocol Calls**  | **Avg TXs/Block**    | **Avg Gas Used/Block**  |
+/// | **Network**   | **EOA Transfers**  | **ERC-20 Transfers**  | **`DeFi` Protocol Calls**  | **Avg TXs/Block**    | **Avg Gas Used/Block**  |
 /// | ------------- | ------------------ | --------------------- | -------------------------| -------------------- | ----------------------- |
 /// | Ethereum L1   | ~10%               | ~30%                  | ~60%                     | ~330 (per 12s block) | ~30 million gas         |
 /// | Arbitrum (L2) | ~5%                | ~20%                  | ~75%                     | ~40 (per 2s block)   | ~7 million Arbitrum gas |
@@ -151,6 +155,12 @@ impl LoadDefinition {
         )
     }
 
+    #[must_use]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
     pub fn create_tx_vec(&self) -> Vec<TxEnv> {
         let mut tx_vec = Vec::with_capacity(self.tx_amount);
 
@@ -228,17 +238,20 @@ impl LoadDefinition {
         tx_vec
     }
 
-    /// Returns whether AA contracts need to be deployed based on aa_percent
+    /// Returns whether AA contracts need to be deployed based on `aa_percent`
+    #[must_use]
     pub fn needs_aa_contracts(&self) -> bool {
         self.aa_percent > 0.0
     }
 
     /// Returns whether the ERC20 AA contract is needed (for ERC20 txs or EOA txs targeting AAs)
+    #[must_use]
     pub fn needs_erc20_aa(&self) -> bool {
         self.aa_percent > 0.0 && (self.erc20_percent > 0.0 || self.eoa_percent > 0.0)
     }
 
-    /// Returns whether the UniV3 AA contracts are needed
+    /// Returns whether the `UniV3` AA contracts are needed
+    #[must_use]
     pub fn needs_uni_aa(&self) -> bool {
         self.aa_percent > 0.0 && self.uni_percent > 0.0
     }
@@ -256,10 +269,10 @@ pub struct BenchmarkPackage<Db> {
     pub block_env: BlockEnv,
 }
 
-/// AverageAssertion artifact path
+/// `AverageAssertion` artifact path
 const AVERAGE_ASSERTION_ARTIFACT: &str = "AverageAssertion.sol:AverageAssertion";
 
-/// Creates a real assertion state from the AverageAssertion contract.
+/// Creates a real assertion state from the `AverageAssertion` contract.
 /// This assertion exercises typical precompile operations (fork, load, state changes, arithmetic).
 fn create_average_assertion_state(config: &ExecutorConfig) -> AssertionState {
     let assertion_bytecode = bytecode(AVERAGE_ASSERTION_ARTIFACT);
@@ -268,6 +281,12 @@ fn create_average_assertion_state(config: &ExecutorConfig) -> AssertionState {
 }
 
 impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
+    /// Creates a new benchmark package with the given load definition.
+    ///
+    /// # Panics
+    ///
+    /// Panics if assertion state creation or registration fails.
+    #[must_use]
     pub fn new(load: LoadDefinition) -> Self {
         let config = ExecutorConfig::default();
         let store = AssertionStore::new_ephemeral();
@@ -303,7 +322,7 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
                 info: AccountInfo {
                     balance: U256::MAX,
                     nonce: 0,
-                    code_hash: Default::default(),
+                    code_hash: keccak256([]),
                     code: None,
                 },
                 transaction_id: 0,
@@ -354,6 +373,11 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
     /// Executes all of the transactions by sending them to the executor in a loop.
     /// Returns `()` if everything was a success or `BenchmarkError` if any tx
     /// failed to execute.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BenchmarkPackageError::EvmError` if transaction execution fails,
+    /// or `BenchmarkPackageError::BenchmarkError` if a transaction does not succeed.
     pub fn run(&mut self) -> Result<(), BenchmarkPackageError> {
         use assertion_executor::primitives::ExecutionResult;
         use revm::context_interface::result::SuccessReason;
@@ -362,7 +386,7 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
             let result = self
                 .executor
                 .execute_forked_tx_ext_db(&self.block_env, tx, &mut self.db)
-                .map_err(|err| BenchmarkPackageError::EvmError(err))?;
+                .map_err(BenchmarkPackageError::EvmError)?;
 
             match result.result_and_state.result {
                 ExecutionResult::Success {
@@ -577,7 +601,7 @@ mod tests {
             };
             match tx.kind {
                 TxKind::Call(addr) => assert_eq!(addr, expected_target, "tx {i} target mismatch"),
-                _ => panic!("Expected Call transaction"),
+                TxKind::Create => panic!("Expected Call transaction"),
             }
         }
     }
@@ -613,7 +637,7 @@ mod tests {
             };
             match tx.kind {
                 TxKind::Call(addr) => assert_eq!(addr, expected_target, "tx {i} target mismatch"),
-                _ => panic!("Expected Call transaction"),
+                TxKind::Create => panic!("Expected Call transaction"),
             }
         }
     }

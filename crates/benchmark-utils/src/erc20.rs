@@ -27,7 +27,7 @@ pub const ERC20_CONTRACT: Address = address!("EeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeee
 /// ERC20 token contract address (AA variant - registered in assertion store)
 pub const ERC20_AA_CONTRACT: Address = address!("EeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeF");
 
-/// MockERC20 artifact path
+/// `MockERC20` artifact path
 pub(crate) const MOCK_ERC20_ARTIFACT: &str = "MockERC20.sol:MockERC20";
 
 /// ERC20 transfer function selector: transfer(address,uint256)
@@ -55,18 +55,20 @@ pub fn erc20_transfer_tx_to_contract(contract: Address, to: Address, amount: U25
 }
 
 /// Create an ERC20 transfer transaction (non-AA contract)
+#[must_use]
 pub fn erc20_transfer_tx(to: Address, amount: U256) -> TxEnv {
     erc20_transfer_tx_to_contract(ERC20_CONTRACT, to, amount)
 }
 
 /// Create an ERC20 transfer transaction (AA contract)
+#[must_use]
 pub fn erc20_aa_transfer_tx(to: Address, amount: U256) -> TxEnv {
     erc20_transfer_tx_to_contract(ERC20_AA_CONTRACT, to, amount)
 }
 
 /// Calculate the storage slot for an ERC20 balance.
 ///
-/// MockERC20 has `_balanceOf` mapping at slot 4.
+/// `MockERC20` has `_balanceOf` mapping at slot 4.
 pub(crate) fn erc20_balance_slot(owner: Address) -> U256 {
     // keccak256(abi.encode(owner, 4))
     let mut key = [0u8; 64];

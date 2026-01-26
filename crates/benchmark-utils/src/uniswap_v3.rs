@@ -49,22 +49,22 @@ pub const UNI_V3_BENCH_CONTRACT: Address = address!("222222222222222222222222222
 /// Uniswap v3 benchmark helper contract address (`UniV3Bench`) - AA variant
 pub const UNI_V3_BENCH_AA_CONTRACT: Address = address!("2222222222222222222222222222222222222223");
 
-/// Uniswap v3 token A contract address (MockERC20)
+/// Uniswap v3 token A contract address (`MockERC20`)
 pub const UNI_V3_TOKEN_A: Address = address!("3333333333333333333333333333333333333333");
 
-/// Uniswap v3 token B contract address (MockERC20)
+/// Uniswap v3 token B contract address (`MockERC20`)
 pub const UNI_V3_TOKEN_B: Address = address!("4444444444444444444444444444444444444444");
 
-/// Uniswap v3 token A contract address (MockERC20) - for AA bench contract
+/// Uniswap v3 token A contract address (`MockERC20`) - for AA bench contract
 pub const UNI_V3_AA_TOKEN_A: Address = address!("3333333333333333333333333333333333333334");
 
-/// Uniswap v3 token B contract address (MockERC20) - for AA bench contract
+/// Uniswap v3 token B contract address (`MockERC20`) - for AA bench contract
 pub const UNI_V3_AA_TOKEN_B: Address = address!("4444444444444444444444444444444444444445");
 
 /// Uniswap v3 factory artifact path
 const UNISWAP_V3_FACTORY_ARTIFACT: &str = "UniswapV3Factory.sol:UniswapV3Factory";
 
-/// UniV3Bench helper contract artifact path
+/// `UniV3Bench` helper contract artifact path
 const UNI_V3_BENCH_ARTIFACT: &str = "UniV3Bench.sol:UniV3Bench";
 
 /// UniV3Bench.deployPoolAndMint selector
@@ -84,9 +84,10 @@ const UNI_V3_TICK_LOWER: i32 = -600;
 const UNI_V3_TICK_UPPER: i32 = 600;
 const UNI_V3_LIQUIDITY: u128 = 100_000;
 
-/// TickMath.MIN_SQRT_RATIO + 1 (used as swap price limit for zeroForOne swaps)
+/// `TickMath.MIN_SQRT_RATIO` + 1 (used as swap price limit for zeroForOne swaps)
 const UNI_V3_MIN_SQRT_RATIO_PLUS_ONE: u64 = 4_295_128_740;
 
+#[allow(clippy::cast_possible_truncation)]
 fn rlp_encode_u64(value: u64) -> Vec<u8> {
     if value == 0 {
         return vec![0x80];
@@ -107,6 +108,7 @@ fn rlp_encode_u64(value: u64) -> Vec<u8> {
     out
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn contract_address(deployer: Address, nonce: u64) -> Address {
     // keccak256(rlp([deployer, nonce]))[12..]
     let mut payload = Vec::with_capacity(32);
@@ -122,6 +124,7 @@ fn contract_address(deployer: Address, nonce: u64) -> Address {
     Address::from_slice(&hash.0[12..])
 }
 
+#[must_use]
 pub fn uniswap_v3_factory_address() -> Address {
     contract_address(UNI_V3_DEPLOYER_ACCOUNT, 0)
 }
@@ -143,16 +146,17 @@ fn abi_encode_bool(value: bool, out: &mut Vec<u8>) {
     abi_encode_uint(if value { U256::from(1) } else { U256::ZERO }, out);
 }
 
+#[allow(clippy::cast_sign_loss)]
 fn abi_encode_int(value: i128, out: &mut Vec<u8>) {
     let encoded = if value >= 0 {
-        U256::from(value as u128)
+        U256::from(value.cast_unsigned())
     } else {
-        (!U256::from((-value) as u128)) + U256::from(1)
+        (!U256::from((-value).cast_unsigned())) + U256::from(1)
     };
     out.extend_from_slice(&encoded.to_be_bytes::<32>());
 }
 
-/// Parameters for creating UniV3 transactions
+/// Parameters for creating `UniV3` transactions
 #[derive(Debug, Clone, Copy)]
 pub struct UniV3TxParams {
     pub bench_contract: Address,
@@ -192,8 +196,8 @@ pub fn uniswap_v3_deploy_pool_tx_with_params(nonce: u64, params: &UniV3TxParams)
     abi_encode_address(params.token_b, &mut data);
     abi_encode_uint(U256::from(UNI_V3_POOL_FEE), &mut data);
     abi_encode_uint(U256::from(UNI_V3_SQRT_PRICE_X96), &mut data);
-    abi_encode_int(UNI_V3_TICK_LOWER as i128, &mut data);
-    abi_encode_int(UNI_V3_TICK_UPPER as i128, &mut data);
+    abi_encode_int(i128::from(UNI_V3_TICK_LOWER), &mut data);
+    abi_encode_int(i128::from(UNI_V3_TICK_UPPER), &mut data);
     abi_encode_uint(U256::from(UNI_V3_LIQUIDITY), &mut data);
 
     TxEnv {
@@ -232,18 +236,22 @@ pub fn uniswap_v3_swap_tx_with_params(nonce: u64, params: &UniV3TxParams) -> TxE
     }
 }
 
+#[must_use]
 pub fn uniswap_v3_deploy_pool_tx(nonce: u64) -> TxEnv {
     uniswap_v3_deploy_pool_tx_with_params(nonce, &UniV3TxParams::non_aa())
 }
 
+#[must_use]
 pub fn uniswap_v3_swap_tx(nonce: u64) -> TxEnv {
     uniswap_v3_swap_tx_with_params(nonce, &UniV3TxParams::non_aa())
 }
 
+#[must_use]
 pub fn uniswap_v3_aa_deploy_pool_tx(nonce: u64) -> TxEnv {
     uniswap_v3_deploy_pool_tx_with_params(nonce, &UniV3TxParams::aa())
 }
 
+#[must_use]
 pub fn uniswap_v3_aa_swap_tx(nonce: u64) -> TxEnv {
     uniswap_v3_swap_tx_with_params(nonce, &UniV3TxParams::aa())
 }
@@ -255,7 +263,7 @@ fn insert_deployer_account(evm_state: &mut EvmState, deployer: Address) {
             info: AccountInfo {
                 balance: U256::MAX,
                 nonce: 0,
-                code_hash: Default::default(),
+                code_hash: keccak256([]),
                 code: None,
             },
             transaction_id: 0,
