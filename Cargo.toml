@@ -19,6 +19,7 @@ members = [
     "crates/mdbx",
     "crates/state-checker",
     "crates/credible-utils",
+    "crates/eip-system-calls",
     "scripts/geth_snapshot",
 ]
 exclude = ["fuzz"]
@@ -55,6 +56,9 @@ int-test-utils = { path = "crates/int-test-utils" }
 
 # assertion-executor
 assertion-executor = { path = "crates/assertion-executor", default-features = false }
+
+# common eip system calls
+eip-system-calls = { path = "crates/eip-system-calls" }
 
 sidecar = { path = "crates/sidecar" }
 mdbx = { path = "crates/mdbx", features = ["reader"] }
