@@ -135,10 +135,8 @@ impl SystemCalls {
 
         let address_hash = AddressHash::from(keccak256(HISTORY_STORAGE_ADDRESS));
 
-        // Storage slot = (block_number - 1) % HISTORY_SERVE_WINDOW (parent hash)
-        let slot_index =
-            config.block_number.saturating_sub(1) % u64::try_from(HISTORY_SERVE_WINDOW)?;
-        let slot = U256::from(slot_index);
+        // Storage slot = block_number % HISTORY_SERVE_WINDOW
+        let slot = U256::from(config.block_number % u64::try_from(HISTORY_SERVE_WINDOW)?);
         let value = U256::from_be_bytes(parent_hash.0);
 
         let mut storage = HashMap::new();
@@ -294,8 +292,8 @@ mod tests {
             .find(|s| s.address_hash == HISTORY_STORAGE_ADDRESS.into())
             .expect("EIP-2935 state should exist");
 
-        // Slot = (100 - 1) % 8191 = 99
-        let raw_slot = U256::from(99);
+        // Slot = 100 % 8191 = 100
+        let raw_slot = U256::from(100);
         let expected_slot_key = keccak256(raw_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
 
@@ -428,9 +426,9 @@ mod tests {
             .find(|s| s.address_hash == HISTORY_STORAGE_ADDRESS.into())
             .unwrap();
 
-        // (8191 + 99 - 1) % 8191 = 98
+        // (8191 + 99) % 8191 = 99
 
-        let raw_slot = U256::from(98);
+        let raw_slot = U256::from(99);
         let expected_slot_key = keccak256(raw_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
     }
