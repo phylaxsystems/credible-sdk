@@ -122,6 +122,12 @@ impl DatabaseRef for JsonRpcDb {
             let nonce = nonce_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
             let code = code_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
 
+            // JSON-RPC cannot distinguish non-existent accounts from empty accounts (balance=0, nonce=0, no code).
+            // Both return identical values. Treat empty accounts as non-existent per REVM's DatabaseRef contract.
+            if balance.is_zero() && nonce == 0 && code.is_empty() {
+                return Ok(None);
+            }
+
             let code_hash = if code.is_empty() {
                 revm::primitives::KECCAK_EMPTY
             } else {
