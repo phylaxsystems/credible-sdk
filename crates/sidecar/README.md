@@ -57,6 +57,74 @@ Currently the binary only exposes the configuration file selector. Run `cargo ru
 supported flags. To override individual settings, update the JSON configuration (either the embedded default or a custom
 file passed via `--config-file-path`).
 
+#### Env var fallback and precedence
+
+Each field is resolved independently with the following order:
+
+1. File value (if present)
+2. Environment variable (if the file omits that field)
+3. Error for required fields, or `None` for optional fields
+
+Defaults still apply to these fields if missing from both file and env:
+
+- `credible.transaction_results_pending_requests_ttl_ms`
+- `credible.accepted_txs_ttl_ms`
+- `transport.health_bind_addr`
+- `transport.event_id_buffer_capacity`
+- `transport.pending_receive_ttl_ms`
+
+The configuration file can now omit any field. If a required field is missing from the file and env, the sidecar will
+exit with a configuration error.
+
+#### Environment variables
+
+Format is `JSON field -> ENV VAR`.
+
+Chain:
+- `chain.spec_id` -> `SIDECAR_CHAIN_SPEC_ID`
+- `chain.chain_id` -> `SIDECAR_CHAIN_ID`
+
+Credible:
+- `credible.assertion_gas_limit` -> `SIDECAR_ASSERTION_GAS_LIMIT`
+- `credible.overlay_cache_invalidation_every_block` -> `SIDECAR_OVERLAY_CACHE_INVALIDATION_EVERY_BLOCK`
+- `credible.cache_capacity_bytes` -> `SIDECAR_CACHE_CAPACITY_BYTES`
+- `credible.flush_every_ms` -> `SIDECAR_FLUSH_EVERY_MS`
+- `credible.assertion_da_rpc_url` -> `SIDECAR_ASSERTION_DA_RPC_URL`
+- `credible.indexer_rpc_url` -> `SIDECAR_INDEXER_RPC_URL`
+- `credible.indexer_db_path` -> `SIDECAR_INDEXER_DB_PATH`
+- `credible.assertion_store_db_path` -> `SIDECAR_ASSERTION_STORE_DB_PATH`
+- `credible.transaction_observer_db_path` -> `SIDECAR_TRANSACTION_OBSERVER_DB_PATH`
+- `credible.transaction_observer_endpoint` -> `SIDECAR_TRANSACTION_OBSERVER_ENDPOINT`
+- `credible.transaction_observer_auth_token` -> `SIDECAR_TRANSACTION_OBSERVER_AUTH_TOKEN`
+- `credible.transaction_observer_endpoint_rps_max` -> `SIDECAR_TRANSACTION_OBSERVER_ENDPOINT_RPS_MAX`
+- `credible.transaction_observer_poll_interval_ms` -> `SIDECAR_TRANSACTION_OBSERVER_POLL_INTERVAL_MS`
+- `credible.block_tag` -> `SIDECAR_BLOCK_TAG`
+- `credible.state_oracle` -> `SIDECAR_STATE_ORACLE`
+- `credible.state_oracle_deployment_block` -> `SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK`
+- `credible.transaction_results_max_capacity` -> `SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY`
+- `credible.transaction_results_pending_requests_ttl_ms` -> `SIDECAR_TRANSACTION_RESULTS_PENDING_REQUESTS_TTL_MS`
+- `credible.accepted_txs_ttl_ms` -> `SIDECAR_ACCEPTED_TXS_TTL_MS`
+- `credible.assertion_store_prune_config_interval_ms` -> `SIDECAR_ASSERTION_STORE_PRUNE_INTERVAL_MS`
+- `credible.assertion_store_prune_config_retention_blocks` -> `SIDECAR_ASSERTION_STORE_PRUNE_RETENTION_BLOCKS`
+- `credible.cache_checker_ws_url` -> `SIDECAR_CACHE_CHECKER_WS_URL` (required when `cache_validation` feature is enabled)
+
+Transport:
+- `transport.protocol` -> `SIDECAR_TRANSPORT_PROTOCOL`
+- `transport.bind_addr` -> `SIDECAR_TRANSPORT_BIND_ADDR`
+- `transport.health_bind_addr` -> `SIDECAR_HEALTH_BIND_ADDR`
+- `transport.event_id_buffer_capacity` -> `SIDECAR_EVENT_ID_BUFFER_CAPACITY`
+- `transport.pending_receive_ttl_ms` -> `SIDECAR_PENDING_RECEIVE_TTL_MS`
+
+State:
+- `state.sources` -> `SIDECAR_STATE_SOURCES` (JSON array)
+- `state.minimum_state_diff` -> `SIDECAR_STATE_MINIMUM_STATE_DIFF`
+- `state.sources_sync_timeout_ms` -> `SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS`
+- `state.sources_monitoring_period_ms` -> `SIDECAR_STATE_SOURCES_MONITORING_PERIOD_MS`
+- `state.eth_rpc_source_ws_url` -> `SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL`
+- `state.eth_rpc_source_http_url` -> `SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL`
+- `state.state_worker_mdbx_path` -> `SIDECAR_STATE_WORKER_MDBX_PATH`
+- `state.state_worker_depth` -> `SIDECAR_STATE_WORKER_DEPTH`
+
 The configuration file is a JSON file with the following schema:
 
 ```json
