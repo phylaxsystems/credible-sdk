@@ -382,10 +382,15 @@ impl FromStr for TransportProtocol {
 }
 
 fn resolve_config(file: ConfigFile) -> Result<Config, ConfigError> {
-    let chain = resolve_chain(file.chain.unwrap_or_default())?;
-    let credible = resolve_credible(file.credible.unwrap_or_default())?;
-    let transport = resolve_transport(file.transport.unwrap_or_default())?;
-    let state = resolve_state(file.state.unwrap_or_default())?;
+    let chain_file = file.chain.unwrap_or_default();
+    let credible_file = file.credible.unwrap_or_default();
+    let transport_file = file.transport.unwrap_or_default();
+    let state_file = file.state.unwrap_or_default();
+
+    let chain = resolve_chain(&chain_file)?;
+    let credible = resolve_credible(&credible_file)?;
+    let transport = resolve_transport(&transport_file)?;
+    let state = resolve_state(&state_file)?;
 
     Ok(Config {
         chain,
@@ -395,8 +400,7 @@ fn resolve_config(file: ConfigFile) -> Result<Config, ConfigError> {
     })
 }
 
-#[allow(clippy::needless_pass_by_value)]
-fn resolve_chain(chain_file: ChainConfigFile) -> Result<ChainConfig, ConfigError> {
+fn resolve_chain(chain_file: &ChainConfigFile) -> Result<ChainConfig, ConfigError> {
     Ok(ChainConfig {
         spec_id: required_or_env_with(
             chain_file.spec_id,
@@ -408,62 +412,166 @@ fn resolve_chain(chain_file: ChainConfigFile) -> Result<ChainConfig, ConfigError
     })
 }
 
-#[allow(clippy::too_many_lines)]
-fn resolve_credible(credible_file: CredibleConfigFile) -> Result<CredibleConfig, ConfigError> {
+fn resolve_credible(credible_file: &CredibleConfigFile) -> Result<CredibleConfig, ConfigError> {
+    let required = resolve_credible_required(credible_file)?;
+    let optional = resolve_credible_optional(credible_file)?;
+    let ttls = resolve_credible_ttls(credible_file)?;
+    let prune = resolve_credible_prune(credible_file)?;
+
     Ok(CredibleConfig {
+        assertion_gas_limit: required.assertion_gas_limit,
+        overlay_cache_invalidation_every_block: optional.overlay_cache_invalidation_every_block,
+        cache_capacity_bytes: optional.cache_capacity_bytes,
+        flush_every_ms: optional.flush_every_ms,
+        assertion_da_rpc_url: required.assertion_da_rpc_url,
+        indexer_rpc_url: required.indexer_rpc_url,
+        indexer_db_path: required.indexer_db_path,
+        assertion_store_db_path: required.assertion_store_db_path,
+        transaction_observer_db_path: optional.transaction_observer_db_path,
+        transaction_observer_endpoint: optional.transaction_observer_endpoint,
+        transaction_observer_auth_token: optional.transaction_observer_auth_token,
+        transaction_observer_endpoint_rps_max: optional.transaction_observer_endpoint_rps_max,
+        transaction_observer_poll_interval_ms: optional.transaction_observer_poll_interval_ms,
+        block_tag: required.block_tag,
+        state_oracle: required.state_oracle,
+        state_oracle_deployment_block: required.state_oracle_deployment_block,
+        transaction_results_max_capacity: required.transaction_results_max_capacity,
+        transaction_results_pending_requests_ttl_ms: ttls
+            .transaction_results_pending_requests_ttl_ms,
+        accepted_txs_ttl_ms: ttls.accepted_txs_ttl_ms,
+        #[cfg(feature = "cache_validation")]
+        cache_checker_ws_url: required.cache_checker_ws_url,
+        assertion_store_prune_config_interval_ms: prune.assertion_store_prune_config_interval_ms,
+        assertion_store_prune_config_retention_blocks: prune
+            .assertion_store_prune_config_retention_blocks,
+    })
+}
+
+fn resolve_transport(transport_file: &TransportConfigFile) -> Result<TransportConfig, ConfigError> {
+    Ok(TransportConfig {
+        protocol: required_or_env_with(
+            transport_file.protocol.clone(),
+            "SIDECAR_TRANSPORT_PROTOCOL",
+            "transport.protocol",
+            parse_transport_protocol,
+        )?,
+        bind_addr: required_or_env(
+            transport_file.bind_addr.clone(),
+            "SIDECAR_TRANSPORT_BIND_ADDR",
+            "transport.bind_addr",
+        )?,
+        health_bind_addr: parse_env("SIDECAR_HEALTH_BIND_ADDR")?
+            .or_else(|| transport_file.health_bind_addr.clone())
+            .unwrap_or_else(default_health_bind_addr),
+        event_id_buffer_capacity: parse_env("SIDECAR_EVENT_ID_BUFFER_CAPACITY")?
+            .or(transport_file.event_id_buffer_capacity)
+            .unwrap_or_else(default_event_id_buffer_capacity),
+        pending_receive_ttl_ms: parse_env_duration_ms("SIDECAR_PENDING_RECEIVE_TTL_MS")?
+            .or(transport_file.pending_receive_ttl_ms)
+            .unwrap_or_else(default_pending_receive_ttl_ms),
+    })
+}
+
+fn resolve_state(state_file: &StateConfigFile) -> Result<StateConfig, ConfigError> {
+    let sources = parse_env_json("SIDECAR_STATE_SOURCES")?
+        .or_else(|| state_file.sources.clone())
+        .unwrap_or_default();
+
+    Ok(StateConfig {
+        sources,
+        legacy: LegacyStateConfig {
+            eth_rpc_source_ws_url: parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL")?
+                .or_else(|| state_file.legacy.eth_rpc_source_ws_url.clone()),
+            eth_rpc_source_http_url: parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL")?
+                .or_else(|| state_file.legacy.eth_rpc_source_http_url.clone()),
+            state_worker_mdbx_path: parse_env("SIDECAR_STATE_WORKER_MDBX_PATH")?
+                .or_else(|| state_file.legacy.state_worker_mdbx_path.clone()),
+            state_worker_depth: state_file
+                .legacy
+                .state_worker_depth
+                .or(parse_env("SIDECAR_STATE_WORKER_DEPTH")?),
+        },
+        minimum_state_diff: required_or_env(
+            state_file.minimum_state_diff,
+            "SIDECAR_STATE_MINIMUM_STATE_DIFF",
+            "state.minimum_state_diff",
+        )?,
+        sources_sync_timeout_ms: required_or_env(
+            state_file.sources_sync_timeout_ms,
+            "SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS",
+            "state.sources_sync_timeout_ms",
+        )?,
+        sources_monitoring_period_ms: required_or_env(
+            state_file.sources_monitoring_period_ms,
+            "SIDECAR_STATE_SOURCES_MONITORING_PERIOD_MS",
+            "state.sources_monitoring_period_ms",
+        )?,
+    })
+}
+
+struct CredibleRequired {
+    assertion_gas_limit: u64,
+    assertion_da_rpc_url: String,
+    indexer_rpc_url: String,
+    indexer_db_path: String,
+    assertion_store_db_path: String,
+    block_tag: BlockTag,
+    state_oracle: Address,
+    state_oracle_deployment_block: u64,
+    transaction_results_max_capacity: usize,
+    #[cfg(feature = "cache_validation")]
+    cache_checker_ws_url: String,
+}
+
+struct CredibleOptional {
+    overlay_cache_invalidation_every_block: Option<bool>,
+    cache_capacity_bytes: Option<usize>,
+    flush_every_ms: Option<usize>,
+    transaction_observer_db_path: Option<String>,
+    transaction_observer_endpoint: Option<String>,
+    transaction_observer_auth_token: Option<String>,
+    transaction_observer_endpoint_rps_max: Option<usize>,
+    transaction_observer_poll_interval_ms: Option<u64>,
+}
+
+struct CredibleTtls {
+    transaction_results_pending_requests_ttl_ms: Duration,
+    accepted_txs_ttl_ms: Duration,
+}
+
+struct CrediblePrune {
+    assertion_store_prune_config_interval_ms: Option<u64>,
+    assertion_store_prune_config_retention_blocks: Option<u64>,
+}
+
+fn resolve_credible_required(
+    credible_file: &CredibleConfigFile,
+) -> Result<CredibleRequired, ConfigError> {
+    Ok(CredibleRequired {
         assertion_gas_limit: required_or_env(
             credible_file.assertion_gas_limit,
             "SIDECAR_ASSERTION_GAS_LIMIT",
             "credible.assertion_gas_limit",
         )?,
-        overlay_cache_invalidation_every_block: optional_or_env(
-            credible_file.overlay_cache_invalidation_every_block,
-            "SIDECAR_OVERLAY_CACHE_INVALIDATION_EVERY_BLOCK",
-        )?,
-        cache_capacity_bytes: optional_or_env(
-            credible_file.cache_capacity_bytes,
-            "SIDECAR_CACHE_CAPACITY_BYTES",
-        )?,
-        flush_every_ms: optional_or_env(credible_file.flush_every_ms, "SIDECAR_FLUSH_EVERY_MS")?,
         assertion_da_rpc_url: required_or_env(
-            credible_file.assertion_da_rpc_url,
+            credible_file.assertion_da_rpc_url.clone(),
             "SIDECAR_ASSERTION_DA_RPC_URL",
             "credible.assertion_da_rpc_url",
         )?,
         indexer_rpc_url: required_or_env(
-            credible_file.indexer_rpc_url,
+            credible_file.indexer_rpc_url.clone(),
             "SIDECAR_INDEXER_RPC_URL",
             "credible.indexer_rpc_url",
         )?,
         indexer_db_path: required_or_env(
-            credible_file.indexer_db_path,
+            credible_file.indexer_db_path.clone(),
             "SIDECAR_INDEXER_DB_PATH",
             "credible.indexer_db_path",
         )?,
         assertion_store_db_path: required_or_env(
-            credible_file.assertion_store_db_path,
+            credible_file.assertion_store_db_path.clone(),
             "SIDECAR_ASSERTION_STORE_DB_PATH",
             "credible.assertion_store_db_path",
-        )?,
-        transaction_observer_db_path: optional_or_env(
-            credible_file.transaction_observer_db_path,
-            "SIDECAR_TRANSACTION_OBSERVER_DB_PATH",
-        )?,
-        transaction_observer_endpoint: optional_or_env(
-            credible_file.transaction_observer_endpoint,
-            "SIDECAR_TRANSACTION_OBSERVER_ENDPOINT",
-        )?,
-        transaction_observer_auth_token: optional_or_env(
-            credible_file.transaction_observer_auth_token,
-            "SIDECAR_TRANSACTION_OBSERVER_AUTH_TOKEN",
-        )?,
-        transaction_observer_endpoint_rps_max: optional_or_env(
-            credible_file.transaction_observer_endpoint_rps_max,
-            "SIDECAR_TRANSACTION_OBSERVER_ENDPOINT_RPS_MAX",
-        )?,
-        transaction_observer_poll_interval_ms: optional_or_env(
-            credible_file.transaction_observer_poll_interval_ms,
-            "SIDECAR_TRANSACTION_OBSERVER_POLL_INTERVAL_MS",
         )?,
         block_tag: required_or_env_with(
             credible_file.block_tag,
@@ -486,22 +594,68 @@ fn resolve_credible(credible_file: CredibleConfigFile) -> Result<CredibleConfig,
             "SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY",
             "credible.transaction_results_max_capacity",
         )?,
-        transaction_results_pending_requests_ttl_ms: credible_file
-            .transaction_results_pending_requests_ttl_ms
-            .or(parse_env_duration_ms(
-                "SIDECAR_TRANSACTION_RESULTS_PENDING_REQUESTS_TTL_MS",
-            )?)
-            .unwrap_or_else(default_pending_request_ttl_ms),
-        accepted_txs_ttl_ms: credible_file
-            .accepted_txs_ttl_ms
-            .or(parse_env_duration_ms("SIDECAR_ACCEPTED_TXS_TTL_MS")?)
-            .unwrap_or_else(default_accepted_txs_ttl_ms),
         #[cfg(feature = "cache_validation")]
         cache_checker_ws_url: required_or_env(
-            credible_file.cache_checker_ws_url,
+            credible_file.cache_checker_ws_url.clone(),
             "SIDECAR_CACHE_CHECKER_WS_URL",
             "credible.cache_checker_ws_url",
         )?,
+    })
+}
+
+fn resolve_credible_optional(
+    credible_file: &CredibleConfigFile,
+) -> Result<CredibleOptional, ConfigError> {
+    Ok(CredibleOptional {
+        overlay_cache_invalidation_every_block: optional_or_env(
+            credible_file.overlay_cache_invalidation_every_block,
+            "SIDECAR_OVERLAY_CACHE_INVALIDATION_EVERY_BLOCK",
+        )?,
+        cache_capacity_bytes: optional_or_env(
+            credible_file.cache_capacity_bytes,
+            "SIDECAR_CACHE_CAPACITY_BYTES",
+        )?,
+        flush_every_ms: optional_or_env(credible_file.flush_every_ms, "SIDECAR_FLUSH_EVERY_MS")?,
+        transaction_observer_db_path: optional_or_env(
+            credible_file.transaction_observer_db_path.clone(),
+            "SIDECAR_TRANSACTION_OBSERVER_DB_PATH",
+        )?,
+        transaction_observer_endpoint: optional_or_env(
+            credible_file.transaction_observer_endpoint.clone(),
+            "SIDECAR_TRANSACTION_OBSERVER_ENDPOINT",
+        )?,
+        transaction_observer_auth_token: optional_or_env(
+            credible_file.transaction_observer_auth_token.clone(),
+            "SIDECAR_TRANSACTION_OBSERVER_AUTH_TOKEN",
+        )?,
+        transaction_observer_endpoint_rps_max: optional_or_env(
+            credible_file.transaction_observer_endpoint_rps_max,
+            "SIDECAR_TRANSACTION_OBSERVER_ENDPOINT_RPS_MAX",
+        )?,
+        transaction_observer_poll_interval_ms: optional_or_env(
+            credible_file.transaction_observer_poll_interval_ms,
+            "SIDECAR_TRANSACTION_OBSERVER_POLL_INTERVAL_MS",
+        )?,
+    })
+}
+
+fn resolve_credible_ttls(credible_file: &CredibleConfigFile) -> Result<CredibleTtls, ConfigError> {
+    Ok(CredibleTtls {
+        transaction_results_pending_requests_ttl_ms: parse_env_duration_ms(
+            "SIDECAR_TRANSACTION_RESULTS_PENDING_REQUESTS_TTL_MS",
+        )?
+        .or(credible_file.transaction_results_pending_requests_ttl_ms)
+        .unwrap_or_else(default_pending_request_ttl_ms),
+        accepted_txs_ttl_ms: parse_env_duration_ms("SIDECAR_ACCEPTED_TXS_TTL_MS")?
+            .or(credible_file.accepted_txs_ttl_ms)
+            .unwrap_or_else(default_accepted_txs_ttl_ms),
+    })
+}
+
+fn resolve_credible_prune(
+    credible_file: &CredibleConfigFile,
+) -> Result<CrediblePrune, ConfigError> {
+    Ok(CrediblePrune {
         assertion_store_prune_config_interval_ms: optional_or_env(
             credible_file.assertion_store_prune_config_interval_ms,
             "SIDECAR_ASSERTION_STORE_PRUNE_INTERVAL_MS",
@@ -509,78 +663,6 @@ fn resolve_credible(credible_file: CredibleConfigFile) -> Result<CredibleConfig,
         assertion_store_prune_config_retention_blocks: optional_or_env(
             credible_file.assertion_store_prune_config_retention_blocks,
             "SIDECAR_ASSERTION_STORE_PRUNE_RETENTION_BLOCKS",
-        )?,
-    })
-}
-
-fn resolve_transport(transport_file: TransportConfigFile) -> Result<TransportConfig, ConfigError> {
-    Ok(TransportConfig {
-        protocol: required_or_env_with(
-            transport_file.protocol,
-            "SIDECAR_TRANSPORT_PROTOCOL",
-            "transport.protocol",
-            parse_transport_protocol,
-        )?,
-        bind_addr: required_or_env(
-            transport_file.bind_addr,
-            "SIDECAR_TRANSPORT_BIND_ADDR",
-            "transport.bind_addr",
-        )?,
-        health_bind_addr: transport_file
-            .health_bind_addr
-            .or(parse_env("SIDECAR_HEALTH_BIND_ADDR")?)
-            .unwrap_or_else(default_health_bind_addr),
-        event_id_buffer_capacity: transport_file
-            .event_id_buffer_capacity
-            .or(parse_env("SIDECAR_EVENT_ID_BUFFER_CAPACITY")?)
-            .unwrap_or_else(default_event_id_buffer_capacity),
-        pending_receive_ttl_ms: transport_file
-            .pending_receive_ttl_ms
-            .or(parse_env_duration_ms("SIDECAR_PENDING_RECEIVE_TTL_MS")?)
-            .unwrap_or_else(default_pending_receive_ttl_ms),
-    })
-}
-
-fn resolve_state(state_file: StateConfigFile) -> Result<StateConfig, ConfigError> {
-    let sources = state_file
-        .sources
-        .or(parse_env_json("SIDECAR_STATE_SOURCES")?)
-        .unwrap_or_default();
-
-    Ok(StateConfig {
-        sources,
-        legacy: LegacyStateConfig {
-            eth_rpc_source_ws_url: state_file
-                .legacy
-                .eth_rpc_source_ws_url
-                .or(parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL")?),
-            eth_rpc_source_http_url: state_file
-                .legacy
-                .eth_rpc_source_http_url
-                .or(parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL")?),
-            state_worker_mdbx_path: state_file
-                .legacy
-                .state_worker_mdbx_path
-                .or(parse_env("SIDECAR_STATE_WORKER_MDBX_PATH")?),
-            state_worker_depth: state_file
-                .legacy
-                .state_worker_depth
-                .or(parse_env("SIDECAR_STATE_WORKER_DEPTH")?),
-        },
-        minimum_state_diff: required_or_env(
-            state_file.minimum_state_diff,
-            "SIDECAR_STATE_MINIMUM_STATE_DIFF",
-            "state.minimum_state_diff",
-        )?,
-        sources_sync_timeout_ms: required_or_env(
-            state_file.sources_sync_timeout_ms,
-            "SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS",
-            "state.sources_sync_timeout_ms",
-        )?,
-        sources_monitoring_period_ms: required_or_env(
-            state_file.sources_monitoring_period_ms,
-            "SIDECAR_STATE_SOURCES_MONITORING_PERIOD_MS",
-            "state.sources_monitoring_period_ms",
         )?,
     })
 }
@@ -631,11 +713,11 @@ where
     T: FromStr,
     T::Err: std::fmt::Display,
 {
-    if let Some(value) = file_value {
+    if let Some(value) = parse_env(env_key)? {
         return Ok(value);
     }
 
-    if let Some(value) = parse_env(env_key)? {
+    if let Some(value) = file_value {
         return Ok(value);
     }
 
@@ -652,11 +734,8 @@ where
     T: FromStr,
     T::Err: std::fmt::Display,
 {
-    if file_value.is_some() {
-        return Ok(file_value);
-    }
-
-    parse_env(env_key)
+    let env_value = parse_env(env_key)?;
+    Ok(env_value.or(file_value))
 }
 
 fn required_or_env_with<T>(
@@ -665,13 +744,13 @@ fn required_or_env_with<T>(
     field_name: &'static str,
     parse: fn(&str) -> Result<T, String>,
 ) -> Result<T, ConfigError> {
-    if let Some(value) = file_value {
-        return Ok(value);
-    }
-
     if let Some(raw) = env_value(env_key) {
         return parse(&raw)
             .map_err(|e| ConfigError::ParseError(format!("Failed to parse env {env_key}: {e}")));
+    }
+
+    if let Some(value) = file_value {
+        return Ok(value);
     }
 
     Err(ConfigError::MissingRequired(format!(
@@ -1026,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn test_file_overrides_env_values() {
+    fn test_env_overrides_file_values() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _guards = clear_required_envs();
 
@@ -1068,8 +1147,8 @@ mod tests {
         temp_file.flush().unwrap();
 
         let config = Config::from_file(temp_file.path()).unwrap();
-        assert_eq!(config.transport.bind_addr, "127.0.0.1:3001");
-        assert_eq!(config.credible.block_tag, BlockTag::Finalized);
+        assert_eq!(config.transport.bind_addr, "127.0.0.1:9999");
+        assert_eq!(config.credible.block_tag, BlockTag::Safe);
     }
 
     #[test]

@@ -61,8 +61,8 @@ file passed via `--config-file-path`).
 
 Each field is resolved independently with the following order:
 
-1. File value (if present)
-2. Environment variable (if the file omits that field)
+1. Environment variable (if present)
+2. File value (if the env var is not set)
 3. Error for required fields, or `None` for optional fields
 
 Defaults still apply to these fields if missing from both file and env:
