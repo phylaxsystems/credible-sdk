@@ -1,9 +1,11 @@
 pub mod fork_db;
+pub use fork_db::ForkDb;
 
 pub mod multi_fork_db;
 pub use multi_fork_db::MultiForkDb;
 
 pub mod overlay;
+pub use overlay::OverlayDb;
 
 pub mod version_db;
 pub use version_db::{
@@ -19,7 +21,11 @@ pub use revm::database::{
     Database,
     DatabaseCommit,
     DatabaseRef,
+    InMemoryDB,
 };
+
+/// Type alias for an in-memory test database with fork and overlay capabilities.
+pub type TestDb = ForkDb<OverlayDb<InMemoryDB>>;
 
 pub trait PhDB: DatabaseRef + Sync + Send {}
 
