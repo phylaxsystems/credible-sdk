@@ -81,7 +81,3 @@ harness = false
 [[bench]]
 name = "executor_transaction_perf"
 harness = false
-
-[[bench]]
-name = "executor_transaction_perf"
-harness = false
