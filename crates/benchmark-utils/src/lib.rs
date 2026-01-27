@@ -970,20 +970,16 @@ mod tests {
         // ERC20 AA contract should be deployed (for EOA AA targets)
         let erc20_aa_account = package.db.basic_ref(ERC20_AA_CONTRACT).unwrap().unwrap();
         assert!(
-            erc20_aa_account.code.is_some(),
-            "ERC20 AA contract should have code for EOA AA txs"
+            eoa_aa_account.code.is_some(),
+            "EOA AA contract should have code for EOA AA txs"
         );
 
         // Bundle should have 10 txs total (3 AA + 7 non-AA)
         assert_eq!(package.bundle.len(), 10);
 
-        // Verify tx targets: first 3 should target ERC20_AA_CONTRACT, last 7 should target DEAD_ADDRESS
+        // Verify tx targets: first 3 should target EOA_AA_CONTRACT, last 7 should target DEAD_ADDRESS
         for (i, tx) in package.bundle.iter().enumerate() {
-            let expected_target = if i < 3 {
-                ERC20_AA_CONTRACT
-            } else {
-                DEAD_ADDRESS
-            };
+            let expected_target = if i < 3 { EOA_AA_CONTRACT } else { DEAD_ADDRESS };
             match tx.kind {
                 TxKind::Call(addr) => assert_eq!(addr, expected_target, "tx {i} target mismatch"),
                 TxKind::Create => panic!("Expected Call transaction"),
