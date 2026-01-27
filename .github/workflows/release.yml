@@ -239,3 +239,256 @@ jobs:
       prerelease: false
     secrets:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+
+  publish-cloudsmith:
+    needs: [create-tag, build-pcl, release-github]
+    if: needs.create-tag.outputs.tag_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download PCL artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: pcl-binaries-${{ needs.create-tag.outputs.version }}
+          path: pcl-artifacts/
+
+      - name: Install fpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential rpm
+          sudo gem install fpm
+
+      - name: Create deb and rpm packages
+        env:
+          VERSION: ${{ needs.create-tag.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          MAINTAINER="Phylax Systems <support@phylax.systems>"
+          DESCRIPTION="PCL - Credible Layer CLI for building, testing, and deploying assertions"
+          URL="https://github.com/phylaxsystems/credible-sdk"
+          LICENSE="MIT"
+
+          mkdir -p output
+
+          # Process x86_64
+          mkdir -p staging-amd64/usr/bin
+          tar -xzf pcl-artifacts/pcl-${VERSION}-linux-x86_64.tar.gz -C staging-amd64/usr/bin --strip-components=1
+          chmod 755 staging-amd64/usr/bin/pcl
+
+          # Process arm64
+          mkdir -p staging-arm64/usr/bin
+          tar -xzf pcl-artifacts/pcl-${VERSION}-linux-arm64.tar.gz -C staging-arm64/usr/bin --strip-components=1
+          chmod 755 staging-arm64/usr/bin/pcl
+
+          # Sanitize version for rpm (replace - with _)
+          RPM_VERSION="${VERSION//-/_}"
+
+          # Create amd64 deb
+          fpm -s dir -t deb \
+            -n pcl \
+            -v "$VERSION" \
+            -a amd64 \
+            --maintainer "$MAINTAINER" \
+            --description "$DESCRIPTION" \
+            --url "$URL" \
+            --license "$LICENSE" \
+            -C staging-amd64 \
+            -p "output/pcl_${VERSION}_amd64.deb" \
+            usr/bin/pcl
+
+          # Create arm64 deb
+          fpm -s dir -t deb \
+            -n pcl \
+            -v "$VERSION" \
+            -a arm64 \
+            --maintainer "$MAINTAINER" \
+            --description "$DESCRIPTION" \
+            --url "$URL" \
+            --license "$LICENSE" \
+            -C staging-arm64 \
+            -p "output/pcl_${VERSION}_arm64.deb" \
+            usr/bin/pcl
+
+          # Create x86_64 rpm
+          fpm -s dir -t rpm \
+            -n pcl \
+            -v "$RPM_VERSION" \
+            -a x86_64 \
+            --maintainer "$MAINTAINER" \
+            --description "$DESCRIPTION" \
+            --url "$URL" \
+            --license "$LICENSE" \
+            -C staging-amd64 \
+            -p "output/pcl-${RPM_VERSION}.x86_64.rpm" \
+            usr/bin/pcl
+
+          # Create aarch64 rpm
+          fpm -s dir -t rpm \
+            -n pcl \
+            -v "$RPM_VERSION" \
+            -a aarch64 \
+            --maintainer "$MAINTAINER" \
+            --description "$DESCRIPTION" \
+            --url "$URL" \
+            --license "$LICENSE" \
+            -C staging-arm64 \
+            -p "output/pcl-${RPM_VERSION}.aarch64.rpm" \
+            usr/bin/pcl
+
+          ls -la output/
+
+      - name: Upload to Cloudsmith
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          upload_package() {
+            local file=$1
+            local pkg_type=$2
+            local filename=$(basename "$file")
+
+            echo "Uploading $filename..."
+
+            # Step 1: Upload file
+            response=$(curl -s -X PUT \
+              "https://upload.cloudsmith.io/phylaxsystems/pcl/${filename}" \
+              -H "X-Api-Key: ${CLOUDSMITH_API_KEY}" \
+              -T "$file")
+
+            identifier=$(echo "$response" | jq -r '.identifier // empty')
+
+            if [[ -z "$identifier" ]]; then
+              echo "Failed to upload $filename: $response"
+              exit 1
+            fi
+
+            echo "  Upload ID: $identifier"
+
+            # Step 2: Create package from upload
+            create_response=$(curl -s -X POST \
+              "https://api.cloudsmith.io/v1/packages/phylaxsystems/pcl/upload/${pkg_type}/" \
+              -H "X-Api-Key: ${CLOUDSMITH_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"package_file\": \"${identifier}\", \"distribution\": \"any-distro/any-version\"}")
+
+            status=$(echo "$create_response" | jq -r '.status_str // empty')
+            if [[ -z "$status" ]]; then
+              echo "Failed to create package: $create_response"
+              exit 1
+            fi
+
+            echo "  Package status: $status"
+          }
+
+          for deb in output/*.deb; do
+            upload_package "$deb" "deb"
+          done
+
+          for rpm in output/*.rpm; do
+            upload_package "$rpm" "rpm"
+          done
+
+          echo "All packages uploaded to Cloudsmith!"
+
+  update-homebrew:
+    needs: [create-tag, build-pcl, release-github]
+    if: needs.create-tag.outputs.tag_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download PCL artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: pcl-binaries-${{ needs.create-tag.outputs.version }}
+          path: pcl-artifacts/
+
+      - name: Calculate SHA256 checksums
+        id: checksums
+        env:
+          VERSION: ${{ needs.create-tag.outputs.version }}
+        run: |
+          MACOS_ARM64_SHA=$(sha256sum pcl-artifacts/pcl-${VERSION}-macos-arm64.tar.gz | awk '{print $1}')
+          LINUX_X86_64_SHA=$(sha256sum pcl-artifacts/pcl-${VERSION}-linux-x86_64.tar.gz | awk '{print $1}')
+          LINUX_ARM64_SHA=$(sha256sum pcl-artifacts/pcl-${VERSION}-linux-arm64.tar.gz | awk '{print $1}')
+
+          echo "macos_arm64_sha=${MACOS_ARM64_SHA}" >> $GITHUB_OUTPUT
+          echo "linux_x86_64_sha=${LINUX_X86_64_SHA}" >> $GITHUB_OUTPUT
+          echo "linux_arm64_sha=${LINUX_ARM64_SHA}" >> $GITHUB_OUTPUT
+
+          echo "Checksums:"
+          echo "  macOS ARM64: ${MACOS_ARM64_SHA}"
+          echo "  Linux x86_64: ${LINUX_X86_64_SHA}"
+          echo "  Linux ARM64: ${LINUX_ARM64_SHA}"
+
+      - name: Checkout homebrew-pcl
+        uses: actions/checkout@v4
+        with:
+          repository: phylaxsystems/homebrew-pcl
+          token: ${{ secrets.HOMEBREW_PAT }}
+          path: homebrew-pcl
+
+      - name: Update formula
+        env:
+          VERSION: ${{ needs.create-tag.outputs.version }}
+          MACOS_ARM64_SHA: ${{ steps.checksums.outputs.macos_arm64_sha }}
+          LINUX_X86_64_SHA: ${{ steps.checksums.outputs.linux_x86_64_sha }}
+          LINUX_ARM64_SHA: ${{ steps.checksums.outputs.linux_arm64_sha }}
+        run: |
+          cat > homebrew-pcl/Formula/phylax.rb << 'FORMULA'
+          class Phylax < Formula
+            desc "Credible Layer CLI"
+            homepage "https://github.com/phylaxsystems/credible-sdk"
+            version "VERSION_PLACEHOLDER"
+
+            if OS.mac?
+              if Hardware::CPU.arm?
+                url "https://github.com/phylaxsystems/credible-sdk/releases/download/#{version}/pcl-#{version}-macos-arm64.tar.gz"
+                sha256 "MACOS_ARM64_SHA_PLACEHOLDER"
+              else
+                odie "Intel macOS is no longer supported."
+              end
+            elsif OS.linux?
+              if Hardware::CPU.intel?
+                url "https://github.com/phylaxsystems/credible-sdk/releases/download/#{version}/pcl-#{version}-linux-x86_64.tar.gz"
+                sha256 "LINUX_X86_64_SHA_PLACEHOLDER"
+              elsif Hardware::CPU.arm?
+                url "https://github.com/phylaxsystems/credible-sdk/releases/download/#{version}/pcl-#{version}-linux-arm64.tar.gz"
+                sha256 "LINUX_ARM64_SHA_PLACEHOLDER"
+              else
+                odie "Unsupported Linux architecture."
+              end
+            else
+              odie "Unsupported operating system."
+            end
+
+            def install
+              bin.install "pcl"
+            end
+
+            test do
+              assert_match "pcl #{version}", shell_output("#{bin}/pcl --version")
+            end
+          end
+          FORMULA
+
+          # Replace placeholders with actual values
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-pcl/Formula/phylax.rb
+          sed -i "s/MACOS_ARM64_SHA_PLACEHOLDER/${MACOS_ARM64_SHA}/g" homebrew-pcl/Formula/phylax.rb
+          sed -i "s/LINUX_X86_64_SHA_PLACEHOLDER/${LINUX_X86_64_SHA}/g" homebrew-pcl/Formula/phylax.rb
+          sed -i "s/LINUX_ARM64_SHA_PLACEHOLDER/${LINUX_ARM64_SHA}/g" homebrew-pcl/Formula/phylax.rb
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' homebrew-pcl/Formula/phylax.rb
+
+          cat homebrew-pcl/Formula/phylax.rb
+
+      - name: Commit and push
+        working-directory: homebrew-pcl
+        env:
+          VERSION: ${{ needs.create-tag.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/phylax.rb
+          git commit -m "Update pcl to ${VERSION}"
+          git push
