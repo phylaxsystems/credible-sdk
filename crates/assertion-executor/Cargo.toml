@@ -63,6 +63,7 @@ assertion-executor = { path = ".", default-features = false, features = ["test"]
 anyhow = { workspace = true }
 evm-glue = { workspace = true }
 alloy-signer-local = { workspace = true }
+benchmark-utils = { workspace = true }
 
 [[bench]]
 name = "worst-case-op"
@@ -74,10 +75,9 @@ name = "assertion_store_read"
 harness = false
 
 [[bench]]
-name = "validate_transaction"
-required-features = ["test"]
+name = "call-tracer-truncate"
 harness = false
 
 [[bench]]
-name = "call-tracer-truncate"
+name = "executor_transaction_perf"
 harness = false
