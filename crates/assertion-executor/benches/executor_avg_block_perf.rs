@@ -44,6 +44,16 @@ fn executor_avg_block_performance_benchmark(c: &mut Criterion) {
         ..LoadDefinition::default()
     };
 
+    group.bench_function("avg_block_vanilla", |b| {
+        b.iter_batched(
+            || BenchmarkPackage::new(avg_block_no_aa),
+            |mut package| {
+                package.run_vanilla().expect("benchmark run failed");
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
     group.bench_function("avg_block_0_aa", |b| {
         b.iter_batched(
             || BenchmarkPackage::new(avg_block_no_aa),
