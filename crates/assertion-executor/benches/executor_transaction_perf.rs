@@ -78,6 +78,37 @@ fn executor_transaction_performance_benchmark(c: &mut Criterion) {
         );
     });
 
+    let single_uni_tx = LoadDefinition {
+        tx_amount: 1,
+        eoa_percent: 0.0,
+        erc20_percent: 0.0,
+        uni_percent: 100.0,
+        aa_percent: 0.0,
+    };
+
+    let mut single_uni_tx_aa = single_uni_tx;
+    single_uni_tx_aa.aa_percent = 100.0;
+
+    group.bench_function("uniswap_transaction", |b| {
+        b.iter_batched(
+            || BenchmarkPackage::new(single_uni_tx),
+            |mut package| {
+                package.run().expect("benchmark run failed");
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("uniswap_transaction_aa", |b| {
+        b.iter_batched(
+            || BenchmarkPackage::new(single_uni_tx_aa),
+            |mut package| {
+                package.run().expect("benchmark run failed");
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
     group.finish();
 }
 
