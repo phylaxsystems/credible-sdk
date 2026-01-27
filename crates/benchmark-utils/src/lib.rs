@@ -14,6 +14,12 @@ use assertion_executor::{
     ExecutorError,
     TxExecutionError,
     db::NotFoundError,
+    evm::build_evm::{build_eth_evm, evm_env},
+};
+use revm::{
+    ExecuteEvm,
+    inspector::NoOpInspector,
+    primitives::hardfork::SpecId,
 };
 use std::{
     collections::HashMap,
@@ -455,6 +461,42 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
             }
 
             // Note: validate_transaction with commit=true already commits the state
+        }
+
+        Ok(())
+    }
+
+    /// Executes all transactions using vanilla revm without any assertion executor infrastructure.
+    /// No `CallTracer`, no assertion store - just pure EVM execution with `NoOpInspector`.
+    /// This provides a true baseline for comparing assertion overhead.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BenchmarkPackageError::BenchmarkError` if a transaction does not succeed.
+    pub fn run_vanilla(&mut self) -> Result<(), BenchmarkPackageError> {
+        use assertion_executor::primitives::ExecutionResult;
+        use revm::context_interface::result::SuccessReason;
+
+        let env = evm_env(
+            self.executor.config.chain_id,
+            SpecId::CANCUN,
+            self.block_env.clone(),
+        );
+
+        for tx in self.bundle.clone() {
+            let mut evm = build_eth_evm(&mut self.db, &env, NoOpInspector);
+
+            let result = evm.transact(tx).map_err(|_| BenchmarkPackageError::BenchmarkError)?;
+
+            match result.result {
+                ExecutionResult::Success {
+                    reason: SuccessReason::Stop | SuccessReason::Return,
+                    ..
+                } => {}
+                _ => return Err(BenchmarkPackageError::BenchmarkError),
+            }
+
+            self.db.commit(result.state);
         }
 
         Ok(())
