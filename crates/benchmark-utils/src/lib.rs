@@ -34,6 +34,7 @@ use assertion_executor::{
         AccountStatus,
         Address,
         BlockEnv,
+        Bytecode,
         EvmState,
         TxEnv,
         TxKind,
@@ -45,7 +46,10 @@ use assertion_executor::{
         AssertionState,
         AssertionStore,
     },
-    test_utils::bytecode,
+    test_utils::{
+        bytecode,
+        deployed_bytecode,
+    },
 };
 
 mod erc20;
@@ -82,6 +86,12 @@ pub const BENCH_ACCOUNT: Address = address!("feA6F304C546857b820cDed9127156BaD25
 /// Dead address for simple transfers
 pub const DEAD_ADDRESS: Address = address!("000000000000000000000000000000000000dEaD");
 
+/// `PayableReceiver` contract address for EOA AA transactions
+pub const EOA_AA_CONTRACT: Address = address!("E0AaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa");
+
+/// `PayableReceiver` artifact path
+const PAYABLE_RECEIVER_ARTIFACT: &str = "PayableReceiver.sol:PayableReceiver";
+
 /// Simple transaction that just sends 1 wei to the specified address from `BENCH_ACCOUNT`
 #[must_use]
 pub fn eoa_tx_to(target: Address) -> TxEnv {
@@ -101,10 +111,18 @@ pub fn eoa_tx() -> TxEnv {
     eoa_tx_to(DEAD_ADDRESS)
 }
 
-/// Simple transaction that sends 1 wei to an AA address (reuses `ERC20_AA_CONTRACT`)
+/// Simple transaction that sends 1 wei to an AA address (uses `EOA_AA_CONTRACT`)
+/// Uses higher gas limit than `eoa_tx` since it calls a contract with code.
 #[must_use]
 pub fn eoa_aa_tx() -> TxEnv {
-    eoa_tx_to(ERC20_AA_CONTRACT)
+    TxEnv {
+        caller: BENCH_ACCOUNT,
+        kind: TxKind::Call(EOA_AA_CONTRACT),
+        value: U256::from(1),
+        gas_limit: 30_000,
+        gas_price: 1,
+        ..TxEnv::default()
+    }
 }
 
 /// Defines how a transaction bundle should look like.
@@ -244,10 +262,16 @@ impl LoadDefinition {
         self.aa_percent > 0.0
     }
 
-    /// Returns whether the ERC20 AA contract is needed (for ERC20 txs or EOA txs targeting AAs)
+    /// Returns whether the ERC20 AA contract is needed
     #[must_use]
     pub fn needs_erc20_aa(&self) -> bool {
-        self.aa_percent > 0.0 && (self.erc20_percent > 0.0 || self.eoa_percent > 0.0)
+        self.aa_percent > 0.0 && self.erc20_percent > 0.0
+    }
+
+    /// Returns whether the EOA AA contract is needed (`PayableReceiver` for ETH transfers)
+    #[must_use]
+    pub fn needs_eoa_aa(&self) -> bool {
+        self.aa_percent > 0.0 && self.eoa_percent > 0.0
     }
 
     /// Returns whether the `UniV3` AA contracts are needed
@@ -280,6 +304,27 @@ fn create_average_assertion_state(config: &ExecutorConfig) -> AssertionState {
         .expect("Failed to create AverageAssertion state")
 }
 
+/// Inserts the `PayableReceiver` contract for EOA AA transactions.
+fn insert_payable_receiver(evm_state: &mut EvmState) {
+    let code = deployed_bytecode(PAYABLE_RECEIVER_ARTIFACT);
+    let code_hash = keccak256(&code);
+
+    evm_state.insert(
+        EOA_AA_CONTRACT,
+        Account {
+            info: AccountInfo {
+                balance: U256::ZERO,
+                nonce: 1,
+                code_hash,
+                code: Some(Bytecode::new_legacy(code)),
+            },
+            transaction_id: 0,
+            storage: HashMap::default(),
+            status: AccountStatus::Touched,
+        },
+    );
+}
+
 impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
     /// Creates a new benchmark package with the given load definition.
     ///
@@ -292,6 +337,11 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
         let store = AssertionStore::new_ephemeral();
 
         // Register AA addresses in the store with real assertions based on what's needed
+        if load.needs_eoa_aa() {
+            store
+                .insert(EOA_AA_CONTRACT, create_average_assertion_state(&config))
+                .expect("Failed to register EOA AA contract");
+        }
         if load.needs_erc20_aa() {
             store
                 .insert(ERC20_AA_CONTRACT, create_average_assertion_state(&config))
@@ -331,11 +381,16 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
             },
         );
 
+        // Deploy EOA AA contract if needed (PayableReceiver for ETH transfers)
+        if load.needs_eoa_aa() {
+            insert_payable_receiver(&mut evm_state);
+        }
+
         // Deploy ERC20 contracts if needed
         if load.erc20_percent > 0.0 {
             erc20::insert_benchmark_erc20(&mut evm_state);
         }
-        // Deploy ERC20 AA contract if needed (for ERC20 AA txs or EOA AA txs)
+        // Deploy ERC20 AA contract if needed
         if load.needs_erc20_aa() {
             erc20::insert_benchmark_erc20_aa(&mut evm_state);
         }
