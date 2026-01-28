@@ -1,7 +1,10 @@
 //! Unified configuration combining CLI args and file config
 pub mod cli;
 
-use crate::args::cli::SidecarArgs;
+use crate::{
+    args::cli::SidecarArgs,
+    transport::grpc::config::GrpcTransportConfig,
+};
 use assertion_executor::{
     primitives::{
         Address,
@@ -27,14 +30,6 @@ use std::{
 };
 
 const DEFAULT_CONFIG: &str = include_str!("../../default_config.json");
-
-fn default_health_bind_addr() -> String {
-    "0.0.0.0:9547".to_string()
-}
-
-fn default_event_id_buffer_capacity() -> usize {
-    1000
-}
 
 fn default_pending_receive_ttl_ms() -> Duration {
     Duration::from_secs(2)
@@ -91,7 +86,7 @@ impl FromStr for ConfigFile {
 pub struct Config {
     pub chain: ChainConfig,
     pub credible: CredibleConfig,
-    pub transport: GrpcConfig,
+    pub transport: GrpcTransportConfig,
     pub state: StateConfig,
 }
 
@@ -256,24 +251,6 @@ pub struct TransportConfigFile {
     pub pending_receive_ttl_ms: Option<Duration>,
 }
 
-/// Grpc configuration from file
-#[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct GrpcConfig {
-    /// Server bind address and port
-    pub bind_addr: String,
-    /// Health server bind address and port
-    #[serde(default = "default_health_bind_addr")]
-    pub health_bind_addr: String,
-    /// Maximum number of events ID in the transport layer buffer before dropping new events.
-    #[serde(default = "default_event_id_buffer_capacity")]
-    pub event_id_buffer_capacity: usize,
-    /// Maximum time (ms) a pending transaction receive entry may live before forced eviction.
-    #[serde(default = "default_pending_receive_ttl_ms")]
-    #[serde_as(as = "DurationMilliSeconds<u64>")]
-    pub pending_receive_ttl_ms: Duration,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type")]
 pub enum StateSourceConfig {
@@ -424,8 +401,10 @@ fn resolve_credible(credible_file: &CredibleConfigFile) -> Result<CredibleConfig
     })
 }
 
-fn resolve_transport(transport_file: &TransportConfigFile) -> Result<GrpcConfig, ConfigError> {
-    Ok(GrpcConfig {
+fn resolve_transport(
+    transport_file: &TransportConfigFile,
+) -> Result<GrpcTransportConfig, ConfigError> {
+    Ok(GrpcTransportConfig {
         bind_addr: required_or_env(
             transport_file.bind_addr.clone(),
             "SIDECAR_TRANSPORT_BIND_ADDR",
@@ -433,13 +412,15 @@ fn resolve_transport(transport_file: &TransportConfigFile) -> Result<GrpcConfig,
         )?,
         health_bind_addr: parse_env("SIDECAR_HEALTH_BIND_ADDR")?
             .or_else(|| transport_file.health_bind_addr.clone())
-            .unwrap_or_else(default_health_bind_addr),
+            .unwrap_or_else(|| GrpcTransportConfig::default().health_bind_addr),
         event_id_buffer_capacity: parse_env("SIDECAR_EVENT_ID_BUFFER_CAPACITY")?
             .or(transport_file.event_id_buffer_capacity)
-            .unwrap_or_else(default_event_id_buffer_capacity),
-        pending_receive_ttl_ms: parse_env_duration_ms("SIDECAR_PENDING_RECEIVE_TTL_MS")?
+            .unwrap_or_else(|| GrpcTransportConfig::default().event_id_buffer_capacity),
+        // Ensure pending_receive_ttl is never zero to avoid infinite waits
+        pending_receive_ttl: parse_env_duration_ms("SIDECAR_PENDING_RECEIVE_TTL_MS")?
             .or(transport_file.pending_receive_ttl_ms)
-            .unwrap_or_else(default_pending_receive_ttl_ms),
+            .unwrap_or_else(|| GrpcTransportConfig::default().pending_receive_ttl)
+            .max(Duration::from_millis(1)),
     })
 }
 
