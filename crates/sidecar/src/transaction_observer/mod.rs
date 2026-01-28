@@ -256,6 +256,7 @@ impl TransactionObserver {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     #[instrument(
         name = "transaction_observer::publish_invalidations",
         skip(self),
@@ -350,26 +351,20 @@ impl TransactionObserver {
 
         // Update consecutive failure tracking and log appropriately
         if failure_count > 0 {
+            let first_failure = self.consecutive_failures == 0;
             self.consecutive_failures += failure_count as u64;
 
             // Log at warn level on first failure and every FAILURE_LOG_INTERVAL failures
-            // to avoid spamming logs while still alerting operators to ongoing issues
-            let should_log_warn = self.consecutive_failures <= failure_count as u64
-                || self.consecutive_failures % FAILURE_LOG_INTERVAL == 0;
-
-            if should_log_warn {
+            if first_failure
+                || self
+                    .consecutive_failures
+                    .is_multiple_of(FAILURE_LOG_INTERVAL)
+            {
                 warn!(
                     target = "transaction_observer",
                     failed = failure_count,
                     total_consecutive_failures = self.consecutive_failures,
                     "Failed to publish invalidation incidents"
-                );
-            } else {
-                debug!(
-                    target = "transaction_observer",
-                    failed = failure_count,
-                    total_consecutive_failures = self.consecutive_failures,
-                    "Failed to publish invalidation incidents (suppressing repeated warnings)"
                 );
             }
         } else if self.consecutive_failures > 0 {

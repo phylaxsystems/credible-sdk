@@ -11,7 +11,7 @@ use url::Url;
 
 /// Builds the dapp client if all required configuration is present.
 ///
-/// Returns `None` if either endpoint or auth_token is empty/missing,
+/// Returns `None` if either endpoint or `auth_token` is empty/missing,
 /// which disables incident publishing.
 pub(super) fn build_dapp_client(
     config: &TransactionObserverConfig,
