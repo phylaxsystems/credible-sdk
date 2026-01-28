@@ -971,7 +971,6 @@ mod tests {
         assert!(result.is_err(), "Should fail with an invalid image");
     }
 
-    #[allow(clippy::case_sensitive_file_extension_comparisons)]
     #[tokio::test]
     async fn test_solidity_source_file() {
         let source_code = "contract Test {}";

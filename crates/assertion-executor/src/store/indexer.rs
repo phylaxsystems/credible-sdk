@@ -1289,7 +1289,6 @@ mod test_indexer {
         let result = indexer.extract_pending_modifications(&log_data, 0).await;
 
         // Test the result - might succeed in decoding removal events since they don't need DA
-        #[allow(clippy::match_same_arms)]
         match result {
             Ok(Some(PendingModification::Remove {
                 assertion_contract_id,
@@ -1306,12 +1305,8 @@ mod test_indexer {
                 // Shouldn't get Add variant for Remove event
                 panic!("Expected Remove modification, got Add");
             }
-            Ok(None) => {
-                // Event might not decode properly due to test setup
-            }
-            Err(_) => {
-                // Event decoding might fail due to ABI mismatch in test
-            }
+            // Event might not decode properly due to test setup, or decoding might fail due to ABI mismatch
+            Ok(None) | Err(_) => {}
         }
     }
 
