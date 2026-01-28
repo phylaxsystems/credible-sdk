@@ -977,7 +977,9 @@ mod tests {
         let source_file = SoliditySourceFile::new(source_code).unwrap();
 
         assert!(
-            source_file.file_name().ends_with(".sol"),
+            std::path::Path::new(source_file.file_name())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("sol")),
             "File should have .sol extension"
         );
         assert!(
