@@ -198,8 +198,8 @@ impl SystemCalls {
         let block_number = config.block_number;
 
         // Calculate storage slot using ring buffer modulo
-        // EIP-2935: slot = (block.number - 1) % HISTORY_SERVE_WINDOW
-        let slot = (block_number - U256::from(1u64)) % U256::from(HISTORY_SERVE_WINDOW);
+        // EIP-2935: slot = block.number % HISTORY_SERVE_WINDOW
+        let slot = U256::from(block_number % U256::from(HISTORY_SERVE_WINDOW));
 
         debug!(
             target = "system_calls",
@@ -211,7 +211,7 @@ impl SystemCalls {
         );
 
         // Fetch existing account info, or create default with system contract code
-        let existing_info = db
+        let mut existing_info = db
             .basic_ref(HISTORY_STORAGE_ADDRESS)
             .ok()
             .flatten()
@@ -225,6 +225,10 @@ impl SystemCalls {
                     code: Some(code),
                 }
             });
+
+        // Overwrite the existing code in case the `basic_ref` is cached to none
+        existing_info.code = Some(Bytecode::new_raw(HISTORY_STORAGE_CODE.clone()));
+        existing_info.code_hash = keccak256(HISTORY_STORAGE_CODE.clone());
 
         // Build storage updates
         let mut storage = EvmStorage::default();
@@ -301,7 +305,7 @@ impl SystemCalls {
         );
 
         // Fetch existing account info, or create default with system contract code
-        let existing_info = db
+        let mut existing_info = db
             .basic_ref(BEACON_ROOTS_ADDRESS)
             .ok()
             .flatten()
@@ -315,6 +319,10 @@ impl SystemCalls {
                     code: Some(code),
                 }
             });
+
+        // Overwrite the existing code in case the `basic_ref` is cached to none
+        existing_info.code = Some(Bytecode::new_raw(BEACON_ROOTS_CODE.clone()));
+        existing_info.code_hash = keccak256(BEACON_ROOTS_CODE.clone());
 
         // Build storage updates
         let mut storage = EvmStorage::default();
@@ -444,8 +452,8 @@ mod tests {
         let account = account.unwrap();
 
         // Verify storage slot
-        // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 98 % 8191 = 98
-        let slot = U256::from(98u64);
+        // EIP-2935: slot = block_number % HISTORY_SERVE_WINDOW = 99 % 8191 = 99
+        let slot = U256::from(99u64);
 
         assert!(account.storage.contains_key(&slot), "Slot should exist");
 
@@ -574,8 +582,8 @@ mod tests {
 
         let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS).unwrap();
 
-        // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8289 % 8191 = 98
-        let expected_slot = U256::from(98u64);
+        // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8291 % 8191 = 99
+        let expected_slot = U256::from(99u64);
         assert!(account.storage.contains_key(&expected_slot));
     }
 
