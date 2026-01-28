@@ -91,7 +91,6 @@ pub trait Transport: Send + Sync {
         config: Self::Config,
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
-        event_id_buffer_capacity: usize,
     ) -> Result<Self, Self::Error>
     where
         Self: Sized;
