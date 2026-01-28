@@ -10,3 +10,6 @@
 [submodule "testdata/mock-protocol/lib/credible-std"]
 	path = testdata/mock-protocol/lib/credible-std
 	url = https://github.com/phylaxsystems/credible-std
+[submodule "testdata/mock-protocol/lib/uniswap-v3-core"]
+	path = testdata/mock-protocol/lib/uniswap-v3-core
+	url = https://github.com/Uniswap/v3-core
