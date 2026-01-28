@@ -65,6 +65,8 @@ use self::{
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Timeout for recv - threads will check for the shutdown flag at this interval
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
+/// Only log publish failures at warn level every N consecutive failures to avoid log spam
+const FAILURE_LOG_INTERVAL: u64 = 60;
 
 /// This struct contains data for giving high level context to
 /// any observer about an incident (or invalidation) that occured.
@@ -151,6 +153,8 @@ pub struct TransactionObserver {
     db: IncidentDb,
     dapp_client: Option<Arc<DappClient>>,
     runtime: Runtime,
+    /// Tracks consecutive publish failures for rate-limited logging
+    consecutive_failures: u64,
 }
 
 impl TransactionObserver {
@@ -158,12 +162,6 @@ impl TransactionObserver {
         config: TransactionObserverConfig,
         incident_rx: IncidentReportReceiver,
     ) -> Result<Self, TransactionObserverError> {
-        if config.endpoint.trim().is_empty() {
-            warn!(
-                target = "transaction_observer",
-                "Dapp endpoint not configured; incident publishing disabled"
-            );
-        }
         let db = IncidentDb::open(&config.db_path)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -174,12 +172,26 @@ impl TransactionObserver {
                 }
             })?;
         let dapp_client = build_dapp_client(&config)?;
+
+        // Log once at startup if publishing is disabled due to missing config
+        if dapp_client.is_none() {
+            let endpoint_empty = config.endpoint.trim().is_empty();
+            let auth_token_empty = config.auth_token.trim().is_empty();
+            warn!(
+                target = "transaction_observer",
+                endpoint_configured = !endpoint_empty,
+                auth_token_configured = !auth_token_empty,
+                "Incident publishing disabled: endpoint and auth_token must both be configured"
+            );
+        }
+
         Ok(Self {
             config,
             incident_rx,
             db,
             dapp_client,
             runtime,
+            consecutive_failures: 0,
         })
     }
 
@@ -257,17 +269,7 @@ impl TransactionObserver {
     /// success, we can remove it from the db. If not, we leave it for the
     /// next run.
     fn publish_invalidations(&mut self) -> Result<(), TransactionObserverError> {
-        if self.config.endpoint.trim().is_empty() || self.config.endpoint_rps_max == 0 {
-            warn!(
-                target = "transaction_observer",
-                "Dapp endpoint or rps empty/0; skipping incident publishing"
-            );
-            return Ok(());
-        }
-
-        if self.dapp_client.is_none() {
-            self.dapp_client = build_dapp_client(&self.config)?;
-        }
+        // If dapp_client is None, publishing is disabled (logged once at startup)
         let Some(dapp_client) = self.dapp_client.as_ref() else {
             return Ok(());
         };
@@ -296,13 +298,14 @@ impl TransactionObserver {
                     let body = match build_incident_body(&report) {
                         Ok(body) => body,
                         Err(err) => {
+                            // Payload build errors are always logged as they indicate a bug
                             warn!(
                                 target = "transaction_observer",
                                 error = ?err,
                                 tx_hash = ?tx_hash,
                                 "Failed to build incident payload"
                             );
-                            return (key, false);
+                            return (key, Err(format!("payload build failed: {err}")));
                         }
                     };
 
@@ -316,22 +319,11 @@ impl TransactionObserver {
                         .inner()
                         .post_enforcer_incidents(x_api_key, &body)
                         .await;
-                    let success = result.is_ok();
-                    if let Err(err) = result {
-                        trace!(
-                            target = "transaction_observer",
-                            tx_hash = ?tx_hash,
-                            incidents_for_tx = report.failures.len(),
-                            "Incident publish failed"
-                        );
-                        warn!(
-                            target = "transaction_observer",
-                            error = ?err,
-                            tx_hash = ?tx_hash,
-                            "Failed to publish invalidation incident"
-                        );
+
+                    match result {
+                        Ok(_) => (key, Ok(())),
+                        Err(err) => (key, Err(format!("{err}"))),
                     }
-                    (key, success)
                 });
             }
 
@@ -343,13 +335,53 @@ impl TransactionObserver {
         });
 
         let total_results = results.len();
-        let keys_to_delete: Vec<Vec<u8>> = results
-            .into_iter()
-            .filter_map(|(key, success)| success.then_some(key))
-            .collect();
+        let mut keys_to_delete = Vec::new();
+        let mut failure_count = 0usize;
+
+        for (key, result) in results {
+            match result {
+                Ok(()) => keys_to_delete.push(key),
+                Err(_) => failure_count += 1,
+            }
+        }
+
         self.db.delete_keys(&keys_to_delete)?;
         let success_count = keys_to_delete.len();
-        let failure_count = total_results.saturating_sub(success_count);
+
+        // Update consecutive failure tracking and log appropriately
+        if failure_count > 0 {
+            self.consecutive_failures += failure_count as u64;
+
+            // Log at warn level on first failure and every FAILURE_LOG_INTERVAL failures
+            // to avoid spamming logs while still alerting operators to ongoing issues
+            let should_log_warn = self.consecutive_failures <= failure_count as u64
+                || self.consecutive_failures % FAILURE_LOG_INTERVAL == 0;
+
+            if should_log_warn {
+                warn!(
+                    target = "transaction_observer",
+                    failed = failure_count,
+                    total_consecutive_failures = self.consecutive_failures,
+                    "Failed to publish invalidation incidents"
+                );
+            } else {
+                debug!(
+                    target = "transaction_observer",
+                    failed = failure_count,
+                    total_consecutive_failures = self.consecutive_failures,
+                    "Failed to publish invalidation incidents (suppressing repeated warnings)"
+                );
+            }
+        } else if self.consecutive_failures > 0 {
+            // We had failures before but now succeeded - log recovery
+            info!(
+                target = "transaction_observer",
+                previous_consecutive_failures = self.consecutive_failures,
+                "Incident publishing recovered"
+            );
+            self.consecutive_failures = 0;
+        }
+
         counter!("transaction_observer_publish_success_total").increment(success_count as u64);
         counter!("transaction_observer_publish_failure_total").increment(failure_count as u64);
         histogram!("transaction_observer_publish_duration_seconds")
