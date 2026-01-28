@@ -137,7 +137,7 @@ impl FromStr for ConfigFile {
 pub struct Config {
     pub chain: ChainConfig,
     pub credible: CredibleConfig,
-    pub transport: TransportConfig,
+    pub transport: GrpcConfig,
     pub state: StateConfig,
 }
 
@@ -287,12 +287,10 @@ pub struct CredibleConfig {
     pub assertion_store_prune_config_retention_blocks: Option<u64>,
 }
 
-/// Select which transport protocol to run
+/// Transport configuration from file
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct TransportConfigFile {
-    /// Select which transport protocol to run
-    pub protocol: Option<TransportProtocol>,
     /// Server bind address and port
     pub bind_addr: Option<String>,
     /// Health server bind address and port
@@ -304,18 +302,10 @@ pub struct TransportConfigFile {
     pub pending_receive_ttl_ms: Option<Duration>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TransportProtocol {
-    Grpc,
-}
-
-/// Transport configuration from file
+/// Grpc configuration from file
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct TransportConfig {
-    /// Select which transport protocol to run
-    pub protocol: TransportProtocol,
+pub struct GrpcConfig {
     /// Server bind address and port
     pub bind_addr: String,
     /// Health server bind address and port
@@ -414,17 +404,6 @@ pub enum ConfigError {
     MissingRequired(String),
 }
 
-impl FromStr for TransportProtocol {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "grpc" => Ok(Self::Grpc),
-            other => Err(format!("Invalid transport protocol: {other}")),
-        }
-    }
-}
-
 fn resolve_config(file: ConfigFile) -> Result<Config, ConfigError> {
     let chain_file = file.chain.unwrap_or_default();
     let credible_file = file.credible.unwrap_or_default();
@@ -491,14 +470,8 @@ fn resolve_credible(credible_file: &CredibleConfigFile) -> Result<CredibleConfig
     })
 }
 
-fn resolve_transport(transport_file: &TransportConfigFile) -> Result<TransportConfig, ConfigError> {
-    Ok(TransportConfig {
-        protocol: required_or_env_with(
-            transport_file.protocol.clone(),
-            "SIDECAR_TRANSPORT_PROTOCOL",
-            "transport.protocol",
-            parse_transport_protocol,
-        )?,
+fn resolve_transport(transport_file: &TransportConfigFile) -> Result<GrpcConfig, ConfigError> {
+    Ok(GrpcConfig {
         bind_addr: required_or_env(
             transport_file.bind_addr.clone(),
             "SIDECAR_TRANSPORT_BIND_ADDR",
@@ -823,10 +796,6 @@ fn parse_block_tag(value: &str) -> Result<BlockTag, String> {
     }
 }
 
-fn parse_transport_protocol(value: &str) -> Result<TransportProtocol, String> {
-    TransportProtocol::from_str(value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -874,7 +843,7 @@ mod tests {
         EnvGuard { key, prev }
     }
 
-    const REQUIRED_ENV_KEYS: [&str; 14] = [
+    const REQUIRED_ENV_KEYS: [&str; 13] = [
         "SIDECAR_CHAIN_SPEC_ID",
         "SIDECAR_CHAIN_ID",
         "SIDECAR_ASSERTION_GAS_LIMIT",
@@ -886,7 +855,6 @@ mod tests {
         "SIDECAR_STATE_ORACLE",
         "SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK",
         "SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY",
-        "SIDECAR_TRANSPORT_PROTOCOL",
         "SIDECAR_TRANSPORT_BIND_ADDR",
         "SIDECAR_STATE_MINIMUM_STATE_DIFF",
     ];
@@ -923,7 +891,6 @@ mod tests {
             ),
             set_env_var("SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK", "100"),
             set_env_var("SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY", "10000"),
-            set_env_var("SIDECAR_TRANSPORT_PROTOCOL", "grpc"),
             set_env_var("SIDECAR_TRANSPORT_BIND_ADDR", "127.0.0.1:3000"),
             set_env_var("SIDECAR_STATE_MINIMUM_STATE_DIFF", "10"),
             set_env_var("SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS", "30000"),
@@ -959,7 +926,6 @@ mod tests {
     "transaction_results_max_capacity": 10000
   },
   "transport": {
-    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000",
     "health_bind_addr": "127.0.0.1:3001"
   },
@@ -1134,7 +1100,6 @@ mod tests {
         );
         let _state_oracle_block = set_env_var("SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK", "100");
         let _tx_results = set_env_var("SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY", "10000");
-        let _protocol = set_env_var("SIDECAR_TRANSPORT_PROTOCOL", "grpc");
         let _bind_addr = set_env_var("SIDECAR_TRANSPORT_BIND_ADDR", "127.0.0.1:3000");
         let _min_state_diff = set_env_var("SIDECAR_STATE_MINIMUM_STATE_DIFF", "10");
         let _sync_timeout = set_env_var("SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS", "30000");
@@ -1144,7 +1109,6 @@ mod tests {
 
         assert_eq!(config.chain.spec_id, SpecId::CANCUN);
         assert_eq!(config.chain.chain_id, 1);
-        assert_eq!(config.transport.protocol, TransportProtocol::Grpc);
     }
 
     #[test]
@@ -1176,7 +1140,6 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3001"
   }},
   "state": {{
@@ -1355,7 +1318,6 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
@@ -1379,7 +1341,6 @@ mod tests {
 
         assert_eq!(config.chain.spec_id, SpecId::SHANGHAI);
         assert_eq!(config.chain.chain_id, 11155111);
-        assert_eq!(config.transport.protocol, TransportProtocol::Grpc);
     }
 
     #[test]
@@ -1412,7 +1373,6 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
@@ -1464,7 +1424,6 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
@@ -1510,7 +1469,6 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
@@ -1572,7 +1530,6 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
@@ -1650,7 +1607,6 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
