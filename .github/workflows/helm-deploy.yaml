@@ -15,10 +15,6 @@ on:
       environment:
         type: string
         required: true
-      rollback-on-failure:
-        type: boolean
-        required: false
-        default: true
     secrets:
       GCP_SA_KEY:
         description: 'Credentials file for GKE auth'
@@ -50,11 +46,6 @@ on:
           - shadow-layer
           - benchmark
         required: true
-      rollback-on-failure:
-        description: Roll back to the previous Helm release if deploy fails
-        type: boolean
-        required: false
-        default: true
 
 permissions:
   contents: read
@@ -67,7 +58,6 @@ env:
   CHART_REPO: ${{ vars.SIDECAR_CHART_REPO || 'phylaxsystems/credible-sidecar-helm-chart' }}
   CONFIG_REPO: ${{ vars.SIDECAR_CONFIG_REPO || 'phylaxsystems/credible-layer-env-config' }}
   VALUES_FILE: ${{ vars.SIDECAR_VALUES_FILE || format('values-{0}.yaml', inputs.environment) }}
-  ROLLBACK_ON_FAILURE: ${{ inputs['rollback-on-failure'] }}
 
 jobs:
   deploy:
@@ -147,7 +137,6 @@ jobs:
             echo "- Release: \`${RELEASE_NAME}\`"
             echo "- Namespace: \`${NAMESPACE}\`"
             echo "- Image tag: \`${IMAGE_TAG}\`"
-            echo "- Rollback attempted: \`${ROLLBACK_ON_FAILURE}\`"
             echo ""
             echo "### Helm upgrade output"
             echo '```'
