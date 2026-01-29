@@ -2,7 +2,7 @@ name: Deploy Documentation
 
 on:
   push:
-    branches: [main, fix-doc]
+    branches: [main]
     paths:
       - 'crates/**'
       - 'Cargo.toml'
