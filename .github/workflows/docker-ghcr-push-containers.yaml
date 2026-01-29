@@ -92,3 +92,24 @@ jobs:
       requires-private-deps: false
       dockerfile-path: dockerfile/Dockerfile.state-worker
       version-tag: ${{ needs.get-version.outputs.version }}
+
+  helm-deploy:
+    needs:
+      - docker-ghcr-push-sidecar
+      - docker-ghcr-push-state-worker
+      - get-version
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - linea-internal
+          - shadow-layer
+          - benchmark
+    uses: ./.github/workflows/helm-deploy.yaml
+    with:
+      image-tag: ${{ needs.get-version.outputs.version }}
+      environment: ${{ matrix.environment }}
+      rollback-on-failure: true
+    secrets: inherit
+
+      
