@@ -1113,7 +1113,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         // Apply EIP-4788 once per block, before any transactions execute.
         // Ensures beacon root queries work correctly during tx execution.
-        // Only apply if parent_beacon_block_root is provided by the driver.
         if self.pre_tx_system_calls_block != Some(block_env.number) {
             let spec_id = self.get_spec_id();
             if spec_id.is_cancun_active() {
