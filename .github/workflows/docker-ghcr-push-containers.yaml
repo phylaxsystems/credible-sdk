@@ -104,12 +104,10 @@ jobs:
         environment:
           - linea-internal
           - shadow-layer
-          - benchmark
     uses: ./.github/workflows/helm-deploy.yaml
     with:
       image-tag: ${{ needs.get-version.outputs.version }}
       environment: ${{ matrix.environment }}
-      rollback-on-failure: true
     secrets: inherit
 
       
