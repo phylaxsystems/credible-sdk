@@ -146,17 +146,7 @@ impl SystemCalls {
         db: &mut DB,
     ) -> Result<(), SystemCallError> {
         // Cache block hash for BLOCKHASH opcode lookups, all forks.
-        if config.block_number > U256::ZERO {
-            let block_hash = config.block_hash;
-            let block_number: u64 = config.block_number.saturating_to::<u64>(); // Should not realistically overflow
-            db.store_block_hash(block_number, block_hash);
-            trace!(
-                target = "system_calls",
-                block_number = %block_number,
-                %block_hash,
-                "Block hash cached for BLOCKHASH opcode"
-            );
-        }
+        Self::cache_block_hash(config, db);
 
         // Apply EIP-4788 first (Cancun+)
         if config.spec_id.is_cancun_active() {
@@ -174,6 +164,41 @@ impl SystemCalls {
         }
 
         Ok(())
+    }
+
+    /// Applies post-transaction system calls: block hash caching and EIP-2935.
+    ///
+    /// Use this when EIP-4788 has already been applied before transaction execution
+    pub fn apply_system_calls_post_tx<DB: DatabaseRef + DatabaseCommit + BlockHashStore>(
+        &self,
+        config: &SystemCallsConfig,
+        db: &mut DB,
+    ) -> Result<(), SystemCallError> {
+        // Cache block hash for BLOCKHASH opcode lookups, all forks.
+        Self::cache_block_hash(config, db);
+
+        // Apply EIP-2935
+        if config.spec_id.is_prague_active() {
+            self.apply_eip2935(config, db)?;
+        }
+
+        Ok(())
+    }
+
+    // Caches the block hash for BLOCKHASH opcode lookups.
+    #[inline]
+    fn cache_block_hash<DB: BlockHashStore>(config: &SystemCallsConfig, db: &mut DB) {
+        if config.block_number > U256::ZERO {
+            let block_hash = config.block_hash;
+            let block_number: u64 = config.block_number.saturating_to::<u64>();
+            db.store_block_hash(block_number, block_hash);
+            trace!(
+                target = "system_calls",
+                block_number = %block_number,
+                %block_hash,
+                "Block hash cached for BLOCKHASH opcode"
+            );
+        }
     }
 
     /// Applies the EIP-2935 block hash update.

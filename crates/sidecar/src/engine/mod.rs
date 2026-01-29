@@ -1225,11 +1225,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             commit_head.parent_beacon_block_root,
         );
 
-        // Apply system calls for the new block.
-        // despite EIP-4788 is already applied BEFORE tx execution in process_iteration.
-        // EIP-2935 can be applied after because txs don't query current block's parent hash via this contract.
+        // Apply post-tx system calls ie. block hash caching and applying EIP-2935.
+        // EIP-4788 is already applied before tx execution in process_iteration.
         system_calls
-            .apply_system_calls(&config, &mut self.cache)
+            .apply_system_calls_post_tx(&config, &mut self.cache)
             .map_err(EngineError::SystemCallError)?;
 
         #[cfg(any(test, feature = "bench-utils"))]
