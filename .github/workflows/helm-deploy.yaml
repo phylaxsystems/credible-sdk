@@ -73,6 +73,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
+    concurrency:
+      group: helm-deploy-${{ inputs.environment }}
+      cancel-in-progress: false
     steps:
       - name: Check out helm chart repo
         uses: actions/checkout@v4
@@ -106,6 +109,13 @@ jobs:
       - name: Set up kubectl
         uses: azure/setup-kubectl@v3
 
+      - name: Verify values file exists
+        run: |
+          if [ ! -f "./config/${VALUES_FILE}" ]; then
+            echo "Missing values file: ./config/${VALUES_FILE}" >&2
+            exit 1
+          fi
+
       - name: Deploy with Helm
         id: helm-deploy
         run: |
@@ -115,6 +125,8 @@ jobs:
 
           helm upgrade "$RELEASE_NAME" ./chart \
             --namespace "$NAMESPACE" \
+            --cleanup-on-fail \
+            --rollback-on-failure \
             -f "./config/${VALUES_FILE}" \
             --set-string sidecar.image.repository="${SIDECAR_IMAGE_REPO}" \
             --set-string sidecar.image.tag="${IMAGE_TAG}" \
@@ -158,19 +170,8 @@ jobs:
             echo ""
             echo "### Recent Kubernetes events"
             echo '```'
-            if command -v kubectl >/dev/null 2>&1; then
-              kubectl -n "$NAMESPACE" get events --sort-by=.metadata.creationTimestamp 2>&1 | tail -n 20 || true
-            else
-              echo "kubectl is not available in the runner image."
+            kubectl -n "$NAMESPACE" get events --sort-by=.metadata.creationTimestamp 2>&1 | tail -n 20 || true
             fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Roll back Helm release
-        if: ${{ always() && steps.helm-deploy.outcome == 'failure' && inputs['rollback-on-failure'] }}
-        run: |
-          RELEASE_NAME="${{ secrets.RELEASE_NAME }}"
-          NAMESPACE="${{ secrets.NAMESPACE }}"
-
-          echo "Rolling back ${RELEASE_NAME} to previous revision ..."
-          helm rollback "$RELEASE_NAME" --namespace "$NAMESPACE" --wait --timeout 2m
