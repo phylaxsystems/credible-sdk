@@ -1,0 +1,12 @@
+[package]
+name = "benchmark-utils"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+alloy = { workspace = true, features = ["rlp"] }
+assertion-executor = { workspace = true, features = ["test"] }
+revm = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

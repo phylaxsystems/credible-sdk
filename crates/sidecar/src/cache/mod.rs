@@ -142,6 +142,15 @@ impl Sources {
         self.sources.iter().map(|s| s.name()).collect::<Vec<_>>()
     }
 
+    /// Returns an iterator over all configured sources (without filtering by sync status).
+    ///
+    /// Unlike `iter_synced_sources()`, this returns all sources regardless of their
+    /// synchronization status. Useful for monitoring/metrics that need to track
+    /// the sync status of every configured source.
+    pub fn iter_all_sources(&self) -> impl Iterator<Item = &Arc<dyn Source>> {
+        self.sources.iter()
+    }
+
     /// Returns whether parallel source querying is enabled.
     pub fn is_parallel_enabled(&self) -> bool {
         self.enable_parallel_sources

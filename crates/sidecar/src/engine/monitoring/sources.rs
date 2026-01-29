@@ -125,19 +125,16 @@ impl SourcesInner {
             let timestamp = Instant::now().duration_since(start).as_secs();
             let mut any_synced = false;
 
-            // Iterate over all configured sources
-            for entry in &self.metrics {
-                let (source_name, source_metric) = entry.pair();
-
-                // Get the source from cache and check its sync status
-                let is_synced = self
-                    .cache_sources
-                    .iter_synced_sources()
-                    .find(|s| s.name() == *source_name)
-                    .is_some_and(|source| source.is_synced(min_synced_block, head_block_number));
+            // Iterate over all configured sources and check their sync status
+            for source in self.cache_sources.iter_all_sources() {
+                let source_name = source.name();
+                let is_synced = source.is_synced(min_synced_block, head_block_number);
 
                 // Update per-source metrics
-                source_metric.update_sync_status(is_synced, timestamp);
+                if let Some(source_metric) = self.metrics.get(&source_name) {
+                    source_metric.update_sync_status(is_synced, timestamp);
+                }
+
                 if is_synced {
                     any_synced = true;
                 }
