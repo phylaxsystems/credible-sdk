@@ -499,7 +499,8 @@ impl TestTransport for LocalInstanceMockDriver {
             })
             .or_default();
 
-        let new_iteration = NewIteration::new(iteration_id, block_env);
+        let new_iteration =
+            NewIteration::with_beacon_root(iteration_id, block_env, Some(B256::ZERO));
         self.mock_sender
             .send(TxQueueContents::NewIteration(new_iteration))
             .map_err(|e| format!("Failed to send new iteration: {e}"))
@@ -915,7 +916,8 @@ impl TestTransport for LocalInstanceHttpDriver {
                     {
                         "new_iteration": {
                             "iteration_id": iteration_id,
-                            "block_env": block_env_json
+                            "block_env": block_env_json,
+                            "parent_beacon_block_root": "0x0000000000000000000000000000000000000000000000000000000000000000"
                         }
                     }
                 ]
@@ -1426,6 +1428,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let new_iteration = pb::NewIteration {
             iteration_id,
             block_env: Some(Self::build_pb_block_env(&block_env)),
+            parent_beacon_block_root: Some(vec![0u8; 32]), // B256::ZERO for EIP-4788
         };
 
         let event = Event {

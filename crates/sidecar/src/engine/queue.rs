@@ -188,9 +188,13 @@ impl CommitHead {
 
 /// Creates a new iteration with a specific block env
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NewIteration {
     pub(crate) iteration_id: u64,
     pub(crate) block_env: BlockEnv,
+    /// Parent beacon block root for EIP-4788, after Cancun.
+    /// Must be applied before transactions execute.
+    pub(crate) parent_beacon_block_root: Option<B256>,
 }
 
 impl NewIteration {
@@ -199,6 +203,20 @@ impl NewIteration {
         Self {
             iteration_id,
             block_env,
+            parent_beacon_block_root: None,
+        }
+    }
+
+    /// Construct a new iteration with parent beacon block root for EIP-4788.
+    pub fn with_beacon_root(
+        iteration_id: u64,
+        block_env: BlockEnv,
+        parent_beacon_block_root: Option<B256>,
+    ) -> Self {
+        Self {
+            iteration_id,
+            block_env,
+            parent_beacon_block_root,
         }
     }
 }

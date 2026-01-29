@@ -1256,6 +1256,7 @@ fn test_block_env_serialization_round_trip() {
             }),
         },
         iteration_id: 88,
+        parent_beacon_block_root: None,
     };
 
     let serialized = serde_json::to_value(&original).unwrap();

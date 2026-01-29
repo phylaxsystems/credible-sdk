@@ -269,6 +269,8 @@ struct CommitHeadEvent {
 struct NewIterationEvent {
     iteration_id: u64,
     block_env: BlockEnv,
+    #[serde(default)]
+    parent_beacon_block_root: Option<B256>,
 }
 
 fn convert_commit_head_event(
@@ -318,7 +320,11 @@ fn convert_commit_head_event(
 }
 
 fn convert_new_iteration_event(new_iteration: NewIterationEvent) -> NewIteration {
-    NewIteration::new(new_iteration.iteration_id, new_iteration.block_env)
+    NewIteration::with_beacon_root(
+        new_iteration.iteration_id,
+        new_iteration.block_env,
+        new_iteration.parent_beacon_block_root,
+    )
 }
 
 fn parse_block_env_payload(params: Value) -> Result<BlockEnvPayload, HttpDecoderError> {
