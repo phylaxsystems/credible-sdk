@@ -1,5 +1,12 @@
 use std::collections::HashMap;
 
+use alloy::{
+    rlp::{
+        Encodable,
+        Header,
+    },
+    sol_types::SolValue,
+};
 use assertion_executor::{
     AssertionExecutor,
     db::{
@@ -87,40 +94,21 @@ const UNI_V3_LIQUIDITY: u128 = 100_000;
 /// `TickMath.MIN_SQRT_RATIO` + 1 (used as swap price limit for zeroForOne swaps)
 const UNI_V3_MIN_SQRT_RATIO_PLUS_ONE: u64 = 4_295_128_740;
 
-#[allow(clippy::cast_possible_truncation)]
-fn rlp_encode_u64(value: u64) -> Vec<u8> {
-    if value == 0 {
-        return vec![0x80];
-    }
-
-    if value < 0x80 {
-        return vec![value as u8];
-    }
-
-    let mut buf = value.to_be_bytes().to_vec();
-    while buf.first() == Some(&0) {
-        buf.remove(0);
-    }
-
-    let mut out = Vec::with_capacity(1 + buf.len());
-    out.push(0x80 + buf.len() as u8);
-    out.extend_from_slice(&buf);
-    out
-}
-
-#[allow(clippy::cast_possible_truncation)]
 fn contract_address(deployer: Address, nonce: u64) -> Address {
     // keccak256(rlp([deployer, nonce]))[12..]
-    let mut payload = Vec::with_capacity(32);
-    payload.push(0x94);
-    payload.extend_from_slice(deployer.as_slice());
-    payload.extend_from_slice(&rlp_encode_u64(nonce));
+    let mut list_buf = Vec::new();
+    deployer.encode(&mut list_buf);
+    nonce.encode(&mut list_buf);
 
-    let mut rlp = Vec::with_capacity(1 + payload.len());
-    rlp.push(0xc0 + payload.len() as u8);
-    rlp.extend_from_slice(&payload);
+    let mut buf = Vec::new();
+    Header {
+        list: true,
+        payload_length: list_buf.len(),
+    }
+    .encode(&mut buf);
+    buf.extend_from_slice(&list_buf);
 
-    let hash = keccak256(&rlp);
+    let hash = keccak256(&buf);
     Address::from_slice(&hash.0[12..])
 }
 
@@ -134,26 +122,19 @@ pub fn uniswap_v3_aa_factory_address() -> Address {
 }
 
 fn abi_encode_address(value: Address, out: &mut Vec<u8>) {
-    out.extend_from_slice(&[0u8; 12]);
-    out.extend_from_slice(value.as_slice());
+    out.extend_from_slice(&value.abi_encode());
 }
 
 fn abi_encode_uint(value: U256, out: &mut Vec<u8>) {
-    out.extend_from_slice(&value.to_be_bytes::<32>());
+    out.extend_from_slice(&value.abi_encode());
 }
 
 fn abi_encode_bool(value: bool, out: &mut Vec<u8>) {
-    abi_encode_uint(if value { U256::from(1) } else { U256::ZERO }, out);
+    out.extend_from_slice(&value.abi_encode());
 }
 
-#[allow(clippy::cast_sign_loss)]
 fn abi_encode_int(value: i128, out: &mut Vec<u8>) {
-    let encoded = if value >= 0 {
-        U256::from(value.cast_unsigned())
-    } else {
-        (!U256::from((-value).cast_unsigned())) + U256::from(1)
-    };
-    out.extend_from_slice(&encoded.to_be_bytes::<32>());
+    out.extend_from_slice(&value.abi_encode());
 }
 
 /// Parameters for creating `UniV3` transactions
