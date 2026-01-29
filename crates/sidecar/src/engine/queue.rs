@@ -207,7 +207,7 @@ impl NewIteration {
         }
     }
 
-    /// Construct a new iteration with parent beacon block root for EIP-4788.
+    /// Build with parent beacon block root for EIP-4788.
     pub fn with_beacon_root(
         iteration_id: u64,
         block_env: BlockEnv,
