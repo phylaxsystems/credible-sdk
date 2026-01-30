@@ -105,6 +105,42 @@ impl SystemCallsConfig {
     }
 }
 
+/// Configuration for applying EIP-4788 beacon root update.
+#[derive(Debug, Clone)]
+pub struct Eip4788Config {
+    /// Current block number, for genesis check
+    pub block_number: U256,
+    /// Current block timestamp, for storage slot calculation
+    pub timestamp: U256,
+    /// Parent beacon block root from the consensus layer
+    pub parent_beacon_block_root: Option<B256>,
+}
+
+impl Eip4788Config {
+    /// Creates a new EIP-4788 configuration.
+    pub fn new(
+        block_number: U256,
+        timestamp: U256,
+        parent_beacon_block_root: Option<B256>,
+    ) -> Self {
+        Self {
+            block_number,
+            timestamp,
+            parent_beacon_block_root,
+        }
+    }
+}
+
+impl From<&SystemCallsConfig> for Eip4788Config {
+    fn from(config: &SystemCallsConfig) -> Self {
+        Self {
+            block_number: config.block_number,
+            timestamp: config.timestamp,
+            parent_beacon_block_root: config.parent_beacon_block_root,
+        }
+    }
+}
+
 /// Extension trait for `SpecId` to check hardfork activation.
 pub trait SpecIdExt {
     /// Returns true if the Cancun hardfork is active (EIP-4788 enabled).
@@ -146,21 +182,11 @@ impl SystemCalls {
         db: &mut DB,
     ) -> Result<(), SystemCallError> {
         // Cache block hash for BLOCKHASH opcode lookups, all forks.
-        if config.block_number > U256::ZERO {
-            let block_hash = config.block_hash;
-            let block_number: u64 = config.block_number.saturating_to::<u64>(); // Should not realistically overflow
-            db.store_block_hash(block_number, block_hash);
-            trace!(
-                target = "system_calls",
-                block_number = %block_number,
-                %block_hash,
-                "Block hash cached for BLOCKHASH opcode"
-            );
-        }
+        Self::cache_block_hash(config, db);
 
         // Apply EIP-4788 first (Cancun+)
         if config.spec_id.is_cancun_active() {
-            self.apply_eip4788(config, db)?;
+            self.apply_eip4788(&Eip4788Config::from(config), db)?;
             debug!(
                 target = "system_calls",
                 block_number = %config.block_number,
@@ -174,6 +200,41 @@ impl SystemCalls {
         }
 
         Ok(())
+    }
+
+    /// Applies post-transaction system calls: block hash caching and EIP-2935.
+    ///
+    /// Use this when EIP-4788 has already been applied before transaction execution
+    pub fn apply_system_calls_post_tx<DB: DatabaseRef + DatabaseCommit + BlockHashStore>(
+        &self,
+        config: &SystemCallsConfig,
+        db: &mut DB,
+    ) -> Result<(), SystemCallError> {
+        // Cache block hash for BLOCKHASH opcode lookups, all forks.
+        Self::cache_block_hash(config, db);
+
+        // Apply EIP-2935
+        if config.spec_id.is_prague_active() {
+            self.apply_eip2935(config, db)?;
+        }
+
+        Ok(())
+    }
+
+    // Caches the block hash for BLOCKHASH opcode lookups.
+    #[inline]
+    fn cache_block_hash<DB: BlockHashStore>(config: &SystemCallsConfig, db: &mut DB) {
+        if config.block_number > U256::ZERO {
+            let block_hash = config.block_hash;
+            let block_number: u64 = config.block_number.saturating_to::<u64>();
+            db.store_block_hash(block_number, block_hash);
+            trace!(
+                target = "system_calls",
+                block_number = %block_number,
+                %block_hash,
+                "Block hash cached for BLOCKHASH opcode"
+            );
+        }
     }
 
     /// Applies the EIP-2935 block hash update.
@@ -269,11 +330,11 @@ impl SystemCalls {
     /// - Slot `timestamp % HISTORY_BUFFER_LENGTH + HISTORY_BUFFER_LENGTH`: beacon root
     pub fn apply_eip4788<DB: DatabaseRef + DatabaseCommit>(
         &self,
-        config: &SystemCallsConfig,
+        config: &Eip4788Config,
         db: &mut DB,
     ) -> Result<(), SystemCallError> {
         // Skip genesis block
-        if config.block_number == 0 {
+        if config.block_number == U256::ZERO {
             // Verify genesis has zero beacon root if provided
             if let Some(root) = config.parent_beacon_block_root
                 && !root.is_zero()
@@ -470,13 +531,7 @@ mod tests {
         let beacon_root = B256::repeat_byte(0xcd);
         let timestamp = 1700000000u64;
 
-        let config = SystemCallsConfig {
-            spec_id: SpecId::CANCUN,
-            block_number: U256::from(100),
-            timestamp: U256::from(timestamp),
-            block_hash: B256::ZERO,
-            parent_beacon_block_root: Some(beacon_root),
-        };
+        let config = Eip4788Config::new(U256::from(100), U256::from(timestamp), Some(beacon_root));
 
         let result = system_calls.apply_eip4788(&config, &mut db);
         assert!(result.is_ok());
@@ -525,7 +580,7 @@ mod tests {
         assert!(!db.accounts.contains_key(&HISTORY_STORAGE_ADDRESS));
 
         // EIP-4788 should return Ok(()): genesis block
-        let result = system_calls.apply_eip4788(&config, &mut db);
+        let result = system_calls.apply_eip4788(&Eip4788Config::from(&config), &mut db);
         assert!(result.is_ok());
     }
 
@@ -649,13 +704,7 @@ mod tests {
         db.accounts.insert(BEACON_ROOTS_ADDRESS, existing_account);
 
         let beacon_root = B256::repeat_byte(0xcd);
-        let config = SystemCallsConfig {
-            spec_id: SpecId::CANCUN,
-            block_number: U256::from(100),
-            timestamp: U256::from(1700000000),
-            block_hash: B256::ZERO,
-            parent_beacon_block_root: Some(beacon_root),
-        };
+        let config = Eip4788Config::new(U256::from(100), U256::from(1700000000), Some(beacon_root));
 
         let result = system_calls.apply_eip4788(&config, &mut db);
         assert!(result.is_ok());

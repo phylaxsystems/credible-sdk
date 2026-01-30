@@ -57,6 +57,7 @@ use self::{
         TxQueueContents,
     },
     system_calls::{
+        Eip4788Config,
         SpecIdExt,
         SystemCalls,
         SystemCallsConfig,
@@ -340,6 +341,9 @@ pub struct CoreEngine<DB> {
     overlay_cache_invalidation_every_block: bool,
     /// System calls handler for EIP-2935 and EIP-4788.
     system_calls: SystemCalls,
+    /// Tracks the block number for which EIP-4788 has been applied.
+    /// Used to ensure EIP-4788 is applied exactly once per block, before any tx executes.
+    pre_tx_system_calls_block: Option<U256>,
     #[cfg(feature = "cache_validation")]
     processed_transactions: ProcessedBlocksCache,
     #[cfg(feature = "cache_validation")]
@@ -421,6 +425,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             ),
             overlay_cache_invalidation_every_block,
             system_calls: SystemCalls::new(),
+            pre_tx_system_calls_block: None,
             #[cfg(feature = "cache_validation")]
             processed_transactions,
             #[cfg(feature = "cache_validation")]
@@ -1108,6 +1113,31 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Err(EngineError::IterationError);
         }
 
+        // Apply EIP-4788 once per block, before any transactions execute.
+        // Ensures beacon root queries work correctly during tx execution.
+        if self.pre_tx_system_calls_block != Some(block_env.number) {
+            let spec_id = self.get_spec_id();
+            if spec_id.is_cancun_active() {
+                let eip4788_config = Eip4788Config::new(
+                    block_env.number,
+                    block_env.timestamp,
+                    new_iteration.parent_beacon_block_root,
+                );
+                self.system_calls
+                    .apply_eip4788(&eip4788_config, &mut self.cache)
+                    .map_err(EngineError::SystemCallError)?;
+
+                debug!(
+                    target = "engine",
+                    block_number = %block_env.number,
+                    timestamp = %block_env.timestamp,
+                    parent_beacon_block_root = ?new_iteration.parent_beacon_block_root,
+                    "EIP-4788 applied before first iteration"
+                );
+            }
+            self.pre_tx_system_calls_block = Some(block_env.number);
+        }
+
         let block_execution_id = BlockExecutionId::from(new_iteration);
 
         // Create a VersionDb with a clone of the cache - VersionDb will create its own ForkDb internally
@@ -1186,7 +1216,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             self.finalize_previous_block(block_execution_id);
         }
 
-        // Apply EIP-2935 and EIP-4788 system calls before finalizing
         let config = SystemCallsConfig::new(
             spec_id,
             commit_head.block_number,
@@ -1195,8 +1224,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             commit_head.parent_beacon_block_root,
         );
 
+        // Apply post-tx system calls ie. block hash caching and applying EIP-2935.
+        // EIP-4788 is already applied before tx execution in process_iteration.
         system_calls
-            .apply_system_calls(&config, &mut self.cache)
+            .apply_system_calls_post_tx(&config, &mut self.cache)
             .map_err(EngineError::SystemCallError)?;
 
         #[cfg(any(test, feature = "bench-utils"))]
@@ -1241,6 +1272,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         *block_processing_time = Instant::now();
 
         self.current_block_iterations.clear();
+        // Reset EIP-4788 flag so next block applies it fresh
+        self.pre_tx_system_calls_block = None;
 
         debug!(
             target = "engine",
@@ -1266,7 +1299,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let tx_env = queue_transaction.tx_env;
         self.block_metrics.transactions_considered += 1;
         counter!("sidecar_transactions_considered_total").increment(1);
-
         info!(
             target = "engine",
             tx_execution_id = ?tx_execution_id,

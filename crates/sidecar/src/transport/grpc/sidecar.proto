@@ -92,6 +92,7 @@ message CommitHead {
 message NewIteration {
   BlockEnv block_env = 1;                                 // block environment
   uint64 iteration_id = 2;                                // iteration ID
+  optional bytes parent_beacon_block_root = 3;            // 32 bytes - parent beacon block root for EIP-4788
 }
 
 // Reorg event - signals a chain reorganization.
