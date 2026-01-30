@@ -57,6 +57,7 @@ use self::{
         TxQueueContents,
     },
     system_calls::{
+        Eip4788Config,
         SpecIdExt,
         SystemCalls,
         SystemCallsConfig,
@@ -1117,15 +1118,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         if self.pre_tx_system_calls_block != Some(block_env.number) {
             let spec_id = self.get_spec_id();
             if spec_id.is_cancun_active() {
-                let config = SystemCallsConfig::new(
-                    spec_id,
+                let eip4788_config = Eip4788Config::new(
                     block_env.number,
                     block_env.timestamp,
-                    B256::ZERO, // Not used for EIP-4788
                     new_iteration.parent_beacon_block_root,
                 );
                 self.system_calls
-                    .apply_eip4788(&config, &mut self.cache)
+                    .apply_eip4788(&eip4788_config, &mut self.cache)
                     .map_err(EngineError::SystemCallError)?;
 
                 debug!(

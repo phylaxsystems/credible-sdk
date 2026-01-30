@@ -4,7 +4,10 @@
 
 use super::*;
 use crate::{
-    engine::system_calls::HISTORY_BUFFER_LENGTH,
+    engine::system_calls::{
+        Eip4788Config,
+        HISTORY_BUFFER_LENGTH,
+    },
     utils::TestDbError,
 };
 use alloy::eips::{
@@ -3284,13 +3287,7 @@ fn test_ring_buffer_and_slot_calculations() {
     let timestamp = HISTORY_BUFFER_LENGTH * 2 + 500;
     let beacon_root = B256::repeat_byte(0xee);
 
-    let config = SystemCallsConfig {
-        spec_id: SpecId::CANCUN,
-        block_number: U256::from(100),
-        timestamp: U256::from(timestamp),
-        block_hash: B256::ZERO,
-        parent_beacon_block_root: Some(beacon_root),
-    };
+    let config = Eip4788Config::new(U256::from(100), U256::from(timestamp), Some(beacon_root));
 
     let result = system_calls.apply_eip4788(&config, &mut db);
     assert!(result.is_ok());

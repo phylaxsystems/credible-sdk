@@ -1,4 +1,5 @@
 use crate::engine::system_calls::{
+    Eip4788Config,
     SpecIdExt,
     SystemCallError,
     SystemCalls,
@@ -78,7 +79,7 @@ where
     ) -> Result<(), SystemCallError> {
         self.with_write(|db| {
             if config.spec_id.is_cancun_active() {
-                system_calls.apply_eip4788(config, db)?;
+                system_calls.apply_eip4788(&Eip4788Config::from(config), db)?;
             }
             if config.spec_id.is_prague_active() {
                 system_calls.apply_eip2935(config, db)?;
