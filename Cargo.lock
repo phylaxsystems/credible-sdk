@@ -1585,6 +1585,7 @@ dependencies = [
  "anyhow",
  "assertion-da-client 1.0.6",
  "assertion-executor 1.0.6",
+ "benchmark-utils",
  "bincode",
  "clap",
  "criterion",
