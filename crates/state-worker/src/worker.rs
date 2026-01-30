@@ -94,7 +94,6 @@ where
     ) -> Result<()> {
         let mut next_block = self.compute_start_block(start_override)?;
         let mut missing_block_retries: u32 = 0;
-        let mut last_missing_block_at: Option<u64> = None;
 
         loop {
             // Check for shutdown before starting catch-up
@@ -119,13 +118,7 @@ where
                     let is_missing_block = err_str.contains("Missing block");
 
                     if is_missing_block {
-                        // Track consecutive missing block failures at the same position
-                        if last_missing_block_at == Some(next_block) {
-                            missing_block_retries += 1;
-                        } else {
-                            missing_block_retries = 1;
-                            last_missing_block_at = Some(next_block);
-                        }
+                        missing_block_retries += 1;
 
                         if missing_block_retries >= MAX_MISSING_BLOCK_RETRIES {
                             critical!(
@@ -137,7 +130,6 @@ where
                     } else {
                         // Reset retry counter for non-missing-block errors
                         missing_block_retries = 0;
-                        last_missing_block_at = None;
                     }
 
                     warn!(error = %err, "block subscription ended, retrying");
