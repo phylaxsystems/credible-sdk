@@ -742,9 +742,7 @@ impl LocalInstanceGrpcDriver {
         drop(listener);
 
         let config = GrpcTransportConfig {
-            bind_addr: address.to_string(),
-            health_bind_addr: "127.0.0.1:0".to_string(),
-            event_id_buffer_capacity: setup.event_id_buffer_capacity,
+            bind_addr: address,
             pending_receive_ttl: Duration::from_secs(5),
         };
 
@@ -754,6 +752,7 @@ impl LocalInstanceGrpcDriver {
             transport_tx_sender,
             setup.state_results.clone(),
             result_event_rx,
+            setup.event_id_buffer_capacity,
         )
         .map_err(|e| format!("Failed to create gRPC transport: {e}"))?;
 

@@ -52,6 +52,7 @@ impl Transport for MockTransport {
         _config: (),
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
+        _event_id_buffer_capacity: usize,
     ) -> Result<Self, Self::Error> {
         // Create a dummy receiver channel for the trait implementation
         let (_, mock_receiver) = flume::unbounded();

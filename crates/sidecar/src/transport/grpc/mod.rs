@@ -144,21 +144,19 @@ impl Transport for GrpcTransport {
         config: Self::Config,
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
+        event_id_buffer_capacity: usize,
     ) -> Result<Self, Self::Error> {
-        let bind_addr = config
-            .bind_socket_addr()
-            .map_err(|e| GrpcTransportError::BindAddress(e.to_string()))?;
         debug!(bind_addr = %config.bind_addr, "Creating gRPC transport");
         Ok(Self {
             tx_sender,
-            bind_addr,
+            bind_addr: config.bind_addr,
             shutdown_token: CancellationToken::new(),
             transactions_results: QueryTransactionsResults::new(
                 state_results,
                 config.pending_receive_ttl,
             ),
             result_event_rx: None,
-            event_id_buffer_capacity: config.event_id_buffer_capacity,
+            event_id_buffer_capacity,
         })
     }
 
@@ -218,21 +216,19 @@ impl GrpcTransport {
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
         result_event_rx: flume::Receiver<TransactionResultEvent>,
+        event_id_buffer_capacity: usize,
     ) -> Result<Self, GrpcTransportError> {
         debug!(bind_addr = %config.bind_addr, "Creating streaming gRPC transport with result receiver");
-        let bind_addr = config
-            .bind_socket_addr()
-            .map_err(|e| GrpcTransportError::BindAddress(e.to_string()))?;
         Ok(Self {
             tx_sender,
-            bind_addr,
+            bind_addr: config.bind_addr,
             shutdown_token: CancellationToken::new(),
             transactions_results: QueryTransactionsResults::new(
                 state_results,
                 config.pending_receive_ttl,
             ),
             result_event_rx: Some(result_event_rx),
-            event_id_buffer_capacity: config.event_id_buffer_capacity,
+            event_id_buffer_capacity,
         })
     }
 }
