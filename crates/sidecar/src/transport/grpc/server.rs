@@ -47,7 +47,6 @@ use crate::{
     execution_ids::TxExecutionId,
     transactions_state::TransactionResultEvent,
     transport::{
-        common::HttpDecoderError,
         event_id_deduplication::EventIdBuffer,
         rpc_metrics::RpcRequestDuration,
         transactions_results::{
@@ -166,7 +165,7 @@ const U256_LEN: usize = 32;
 // Optimized error type that avoids heap allocations for common error cases.
 // Only stores minimal metadata needed to reconstruct the error if necessary.
 #[derive(Debug, Clone, Error)]
-pub enum DecodeError {
+pub enum GrpcDecodeError {
     #[error("missing tx_env")]
     MissingTxEnv,
     #[error("missing tx_execution_id")]
@@ -185,50 +184,34 @@ pub enum DecodeError {
     InvalidSignature,
 }
 
-impl From<DecodeError> for HttpDecoderError {
-    fn from(e: DecodeError) -> Self {
-        match e {
-            DecodeError::MissingTxEnv => HttpDecoderError::MissingTxEnv,
-            DecodeError::MissingTxExecutionId => HttpDecoderError::MissingTxExecutionId,
-            DecodeError::InvalidAddress(_) => HttpDecoderError::InvalidAddress(String::new()),
-            DecodeError::InvalidHash(_) => HttpDecoderError::InvalidHash(String::new()),
-            DecodeError::InvalidU128(_) | DecodeError::InvalidU256(_) => {
-                HttpDecoderError::InvalidValue
-            }
-            DecodeError::InvalidTxType(t) => HttpDecoderError::InvalidTxType(t.to_string()),
-            DecodeError::InvalidSignature => HttpDecoderError::InvalidSignature,
-        }
-    }
-}
-
 #[inline]
-fn decode_address(bytes: &[u8]) -> Result<Address, DecodeError> {
+fn decode_address(bytes: &[u8]) -> Result<Address, GrpcDecodeError> {
     if bytes.len() != ADDRESS_LEN {
-        return Err(DecodeError::InvalidAddress(bytes.len()));
+        return Err(GrpcDecodeError::InvalidAddress(bytes.len()));
     }
     Ok(Address::from_slice(bytes))
 }
 
 #[inline]
-fn decode_b256(bytes: &[u8]) -> Result<B256, DecodeError> {
+fn decode_b256(bytes: &[u8]) -> Result<B256, GrpcDecodeError> {
     if bytes.len() != HASH_LEN {
-        return Err(DecodeError::InvalidHash(bytes.len()));
+        return Err(GrpcDecodeError::InvalidHash(bytes.len()));
     }
     Ok(B256::from_slice(bytes))
 }
 
 #[inline]
-fn decode_u128_be(bytes: &[u8]) -> Result<u128, DecodeError> {
+fn decode_u128_be(bytes: &[u8]) -> Result<u128, GrpcDecodeError> {
     if bytes.len() != U128_LEN {
-        return Err(DecodeError::InvalidU128(bytes.len()));
+        return Err(GrpcDecodeError::InvalidU128(bytes.len()));
     }
     Ok(u128::from_be_bytes(bytes.try_into().unwrap()))
 }
 
 #[inline]
-fn decode_u256_be(bytes: &[u8]) -> Result<U256, DecodeError> {
+fn decode_u256_be(bytes: &[u8]) -> Result<U256, GrpcDecodeError> {
     if bytes.len() != U256_LEN {
-        return Err(DecodeError::InvalidU256(bytes.len()));
+        return Err(GrpcDecodeError::InvalidU256(bytes.len()));
     }
     Ok(U256::from_be_bytes::<32>(bytes.try_into().unwrap()))
 }
@@ -239,7 +222,7 @@ fn encode_u256_be(value: U256) -> Vec<u8> {
 }
 
 #[inline]
-fn decode_tx_kind(bytes: &[u8]) -> Result<TxKind, DecodeError> {
+fn decode_tx_kind(bytes: &[u8]) -> Result<TxKind, GrpcDecodeError> {
     if bytes.is_empty() {
         Ok(TxKind::Create)
     } else {
@@ -268,7 +251,7 @@ fn encode_tx_execution_id(id: TxExecutionId) -> PbTxExecutionId {
 }
 
 #[inline]
-fn decode_tx_execution_id(pb: &PbTxExecutionId) -> Result<TxExecutionId, DecodeError> {
+fn decode_tx_execution_id(pb: &PbTxExecutionId) -> Result<TxExecutionId, GrpcDecodeError> {
     let block_number = decode_u256_be(&pb.block_number)?;
     let tx_hash = decode_b256(&pb.tx_hash)?;
     Ok(TxExecutionId::new(
@@ -280,7 +263,7 @@ fn decode_tx_execution_id(pb: &PbTxExecutionId) -> Result<TxExecutionId, DecodeE
 }
 
 #[inline]
-fn decode_access_list(items: &[pb::AccessListItem]) -> Result<AccessList, DecodeError> {
+fn decode_access_list(items: &[pb::AccessListItem]) -> Result<AccessList, GrpcDecodeError> {
     items
         .iter()
         .map(|item| {
@@ -301,7 +284,7 @@ fn decode_access_list(items: &[pb::AccessListItem]) -> Result<AccessList, Decode
 
 fn decode_authorization_list(
     auths: &[pb::Authorization],
-) -> Result<Vec<Either<SignedAuthorization, RecoveredAuthorization>>, DecodeError> {
+) -> Result<Vec<Either<SignedAuthorization, RecoveredAuthorization>>, GrpcDecodeError> {
     auths
         .iter()
         .map(|auth| {
@@ -310,7 +293,7 @@ fn decode_authorization_list(
             let r = decode_u256_be(&auth.r)?;
             let s = decode_u256_be(&auth.s)?;
             let y_parity =
-                u8::try_from(auth.y_parity).map_err(|_| DecodeError::InvalidSignature)?;
+                u8::try_from(auth.y_parity).map_err(|_| GrpcDecodeError::InvalidSignature)?;
 
             let inner = Authorization {
                 chain_id,
@@ -325,7 +308,7 @@ fn decode_authorization_list(
 }
 
 /// Convert protobuf TransactionEnv to revm TxEnv using binary decoding.
-pub fn decode_tx_env(pb: &TransactionEnv) -> Result<TxEnv, DecodeError> {
+pub fn decode_tx_env(pb: &TransactionEnv) -> Result<TxEnv, GrpcDecodeError> {
     let caller = decode_address(&pb.caller)?;
     let gas_price = decode_u128_be(&pb.gas_price)?;
     let kind = decode_tx_kind(&pb.transact_to)?;
@@ -355,7 +338,8 @@ pub fn decode_tx_env(pb: &TransactionEnv) -> Result<TxEnv, DecodeError> {
     let authorization_list = decode_authorization_list(&pb.authorization_list)?;
 
     Ok(TxEnv {
-        tx_type: u8::try_from(pb.tx_type).map_err(|_| DecodeError::InvalidTxType(pb.tx_type))?,
+        tx_type: u8::try_from(pb.tx_type)
+            .map_err(|_| GrpcDecodeError::InvalidTxType(pb.tx_type))?,
         caller,
         gas_limit: pb.gas_limit,
         gas_price,
@@ -373,13 +357,13 @@ pub fn decode_tx_env(pb: &TransactionEnv) -> Result<TxEnv, DecodeError> {
 }
 
 /// Convert a Transaction to queue transaction contents.
-pub fn decode_transaction(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
-    let tx_env = decode_tx_env(t.tx_env.as_ref().ok_or(DecodeError::MissingTxEnv)?)?;
+pub fn decode_transaction(t: &Transaction) -> Result<TxQueueContents, GrpcDecodeError> {
+    let tx_env = decode_tx_env(t.tx_env.as_ref().ok_or(GrpcDecodeError::MissingTxEnv)?)?;
 
     let pb_id = t
         .tx_execution_id
         .as_ref()
-        .ok_or(DecodeError::MissingTxExecutionId)?;
+        .ok_or(GrpcDecodeError::MissingTxExecutionId)?;
 
     let tx_execution_id = decode_tx_execution_id(pb_id)?;
 
@@ -388,8 +372,7 @@ pub fn decode_transaction(t: &Transaction) -> Result<TxQueueContents, HttpDecode
         .as_ref()
         .filter(|b| !b.is_empty())
         .map(|b| decode_b256(b))
-        .transpose()
-        .map_err(|_| HttpDecoderError::InvalidHash(String::new()))?;
+        .transpose()?;
 
     Ok(TxQueueContents::Tx(QueueTransaction {
         tx_execution_id,
@@ -1179,15 +1162,13 @@ impl SidecarTransport for GrpcService {
 }
 
 /// Convert protobuf TransactionEnv to revm TxEnv.
-/// This is the legacy interface that returns HttpDecoderError.
 #[inline]
-pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, HttpDecoderError> {
-    decode_tx_env(pb_tx_env).map_err(HttpDecoderError::from)
+pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, GrpcDecodeError> {
+    decode_tx_env(pb_tx_env)
 }
 
 /// Convert a Transaction to queue transaction contents.
-/// Legacy interface wrapper around decode_transaction.
 #[inline]
-pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, HttpDecoderError> {
+pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, GrpcDecodeError> {
     decode_transaction(t)
 }

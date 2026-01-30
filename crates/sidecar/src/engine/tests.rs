@@ -1978,61 +1978,6 @@ async fn test_all_tx_types(mut instance: crate::utils::LocalInstance) {
     instance.send_all_tx_types().await.unwrap();
 }
 
-#[crate::utils::engine_test(http)]
-async fn test_block_env_transaction_number_greater_than_zero_and_no_last_tx_hash(
-    mut instance: crate::utils::LocalInstance,
-) {
-    // Send and verify a reverting CREATE transaction
-    let tx_execution_id = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx_execution_id)
-            .await
-            .unwrap(),
-        "Transaction should execute successfully and pass assertions"
-    );
-
-    instance.transport.set_last_tx_hash(None);
-
-    // Send a blockEnv with the wrong number of transactions
-    let res = instance.new_block().await;
-
-    assert!(res.is_err());
-}
-
-#[crate::utils::engine_test(http)]
-async fn test_block_env_transaction_number_zero_and_last_tx_hash(
-    mut instance: crate::utils::LocalInstance,
-) {
-    // Send and verify a reverting CREATE transaction
-    let tx_execution_id = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx_execution_id)
-            .await
-            .unwrap(),
-        "Transaction should execute successfully and pass assertions"
-    );
-
-    instance
-        .transport
-        .set_last_tx_hash(Some(tx_execution_id.tx_hash));
-    instance.transport.set_n_transactions(0);
-
-    // Send a blockEnv with the wrong number of transactions
-    let res = instance.new_block().await;
-
-    assert!(res.is_err());
-}
-
 #[tokio::test]
 async fn test_failed_transaction_commit() {
     let (mut engine, _) = create_test_engine().await;

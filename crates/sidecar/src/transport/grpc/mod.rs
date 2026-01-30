@@ -62,7 +62,7 @@ pub mod config;
 mod server;
 
 pub use server::{
-    DecodeError,
+    GrpcDecodeError,
     GrpcService,
     convert_pb_tx_env_to_revm,
     decode_transaction,
