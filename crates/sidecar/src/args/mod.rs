@@ -373,7 +373,6 @@ impl FromStr for TransportProtocol {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "http" => Ok(Self::Http),
             "grpc" => Ok(Self::Grpc),
             other => Err(format!("Invalid transport protocol: {other}")),
         }
@@ -878,7 +877,7 @@ mod tests {
             ),
             set_env_var("SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK", "100"),
             set_env_var("SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY", "10000"),
-            set_env_var("SIDECAR_TRANSPORT_PROTOCOL", "http"),
+            set_env_var("SIDECAR_TRANSPORT_PROTOCOL", "grpc"),
             set_env_var("SIDECAR_TRANSPORT_BIND_ADDR", "127.0.0.1:3000"),
             set_env_var("SIDECAR_STATE_MINIMUM_STATE_DIFF", "10"),
             set_env_var("SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS", "30000"),
@@ -1089,7 +1088,7 @@ mod tests {
         );
         let _state_oracle_block = set_env_var("SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK", "100");
         let _tx_results = set_env_var("SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY", "10000");
-        let _protocol = set_env_var("SIDECAR_TRANSPORT_PROTOCOL", "http");
+        let _protocol = set_env_var("SIDECAR_TRANSPORT_PROTOCOL", "grpc");
         let _bind_addr = set_env_var("SIDECAR_TRANSPORT_BIND_ADDR", "127.0.0.1:3000");
         let _min_state_diff = set_env_var("SIDECAR_STATE_MINIMUM_STATE_DIFF", "10");
         let _sync_timeout = set_env_var("SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS", "30000");
@@ -1099,7 +1098,7 @@ mod tests {
 
         assert_eq!(config.chain.spec_id, SpecId::CANCUN);
         assert_eq!(config.chain.chain_id, 1);
-        assert_eq!(config.transport.protocol, TransportProtocol::Http);
+        assert_eq!(config.transport.protocol, TransportProtocol::Grpc);
     }
 
     #[test]
@@ -1131,7 +1130,7 @@ mod tests {
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
-    "protocol": "http",
+    "protocol": "grpc",
     "bind_addr": "127.0.0.1:3001"
   }},
   "state": {{
