@@ -11,8 +11,18 @@
 //! - Uniswap v3 swaps.
 
 use assertion_executor::{
+    ExecutorError,
     TxExecutionError,
     db::NotFoundError,
+    evm::build_evm::{
+        build_eth_evm,
+        evm_env,
+    },
+};
+use revm::{
+    ExecuteEvm,
+    inspector::NoOpInspector,
+    primitives::hardfork::SpecId,
 };
 use std::{
     collections::HashMap,
@@ -77,6 +87,7 @@ pub use uniswap_v3::{
 #[derive(Debug)]
 pub enum BenchmarkPackageError {
     EvmError(TxExecutionError<NotFoundError>),
+    ExecutorError(ExecutorError<NotFoundError>),
     BenchmarkError,
 }
 
@@ -425,13 +436,14 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
         }
     }
 
-    /// Executes all of the transactions by sending them to the executor in a loop.
+    /// Executes all of the transactions by sending them to the executor in a loop,
+    /// including assertion validation for AA transactions.
     /// Returns `()` if everything was a success or `BenchmarkError` if any tx
     /// failed to execute.
     ///
     /// # Errors
     ///
-    /// Returns `BenchmarkPackageError::EvmError` if transaction execution fails,
+    /// Returns `BenchmarkPackageError::ExecutorError` if transaction/assertion execution fails,
     /// or `BenchmarkPackageError::BenchmarkError` if a transaction does not succeed.
     pub fn run(&mut self) -> Result<(), BenchmarkPackageError> {
         use assertion_executor::primitives::ExecutionResult;
@@ -440,8 +452,8 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
         for tx in self.bundle.clone() {
             let result = self
                 .executor
-                .execute_forked_tx_ext_db(&self.block_env, tx, &mut self.db)
-                .map_err(BenchmarkPackageError::EvmError)?;
+                .validate_transaction(self.block_env.clone(), &tx, &mut self.db, true)
+                .map_err(BenchmarkPackageError::ExecutorError)?;
 
             match result.result_and_state.result {
                 ExecutionResult::Success {
@@ -451,7 +463,45 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
                 _ => return Err(BenchmarkPackageError::BenchmarkError),
             }
 
-            self.db.commit(result.result_and_state.state);
+            // Note: validate_transaction with commit=true already commits the state
+        }
+
+        Ok(())
+    }
+
+    /// Executes all transactions using vanilla revm without any assertion executor infrastructure.
+    /// No `CallTracer`, no assertion store - just pure EVM execution with `NoOpInspector`.
+    /// This provides a true baseline for comparing assertion overhead.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BenchmarkPackageError::BenchmarkError` if a transaction does not succeed.
+    pub fn run_vanilla(&mut self) -> Result<(), BenchmarkPackageError> {
+        use assertion_executor::primitives::ExecutionResult;
+        use revm::context_interface::result::SuccessReason;
+
+        let env = evm_env(
+            self.executor.config.chain_id,
+            SpecId::CANCUN,
+            self.block_env.clone(),
+        );
+
+        for tx in self.bundle.clone() {
+            let mut evm = build_eth_evm(&mut self.db, &env, NoOpInspector);
+
+            let result = evm
+                .transact(tx)
+                .map_err(|_| BenchmarkPackageError::BenchmarkError)?;
+
+            match result.result {
+                ExecutionResult::Success {
+                    reason: SuccessReason::Stop | SuccessReason::Return,
+                    ..
+                } => {}
+                _ => return Err(BenchmarkPackageError::BenchmarkError),
+            }
+
+            self.db.commit(result.state);
         }
 
         Ok(())

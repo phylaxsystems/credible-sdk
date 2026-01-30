@@ -10,6 +10,7 @@ use criterion::{
 };
 use tokio::runtime::Runtime;
 
+#[allow(clippy::too_many_lines)]
 fn executor_transaction_performance_benchmark(c: &mut Criterion) {
     let runtime = Runtime::new().expect("create tokio runtime");
     let _enter_guard = runtime.enter();
@@ -26,6 +27,16 @@ fn executor_transaction_performance_benchmark(c: &mut Criterion) {
 
     let mut single_tx_aa = single_tx;
     single_tx_aa.aa_percent = 100.0;
+
+    group.bench_function("eoa_vanilla", |b| {
+        b.iter_batched(
+            || BenchmarkPackage::new(single_tx),
+            |mut package| {
+                package.run_vanilla().expect("benchmark run failed");
+            },
+            BatchSize::SmallInput,
+        );
+    });
 
     group.bench_function("eoa_transaction", |b| {
         b.iter_batched(
@@ -58,6 +69,16 @@ fn executor_transaction_performance_benchmark(c: &mut Criterion) {
     let mut single_erc20_tx_aa = single_erc20_tx;
     single_erc20_tx_aa.aa_percent = 100.0;
 
+    group.bench_function("erc20_vanilla", |b| {
+        b.iter_batched(
+            || BenchmarkPackage::new(single_erc20_tx),
+            |mut package| {
+                package.run_vanilla().expect("benchmark run failed");
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
     group.bench_function("erc20_transaction", |b| {
         b.iter_batched(
             || BenchmarkPackage::new(single_erc20_tx),
@@ -88,6 +109,16 @@ fn executor_transaction_performance_benchmark(c: &mut Criterion) {
 
     let mut single_uni_tx_aa = single_uni_tx;
     single_uni_tx_aa.aa_percent = 100.0;
+
+    group.bench_function("uniswap_vanilla", |b| {
+        b.iter_batched(
+            || BenchmarkPackage::new(single_uni_tx),
+            |mut package| {
+                package.run_vanilla().expect("benchmark run failed");
+            },
+            BatchSize::SmallInput,
+        );
+    });
 
     group.bench_function("uniswap_transaction", |b| {
         b.iter_batched(
