@@ -68,7 +68,8 @@ pub fn erc20_aa_transfer_tx(to: Address, amount: U256) -> TxEnv {
 
 /// Calculate the storage slot for an ERC20 balance.
 ///
-/// OpenZeppelin's ERC20 has `_balances` mapping at slot 0.
+/// `OpenZeppelin's` ERC20 has `_balances` mapping at slot 0.
+/// See <https://github.com/OpenZeppelin/openzeppelin-contracts/blob/dde766bd542e4a1695fe8e4a07dc03b77305f367/contracts/token/ERC20/ERC20.sol#L30>
 pub(crate) fn erc20_balance_slot(owner: Address) -> U256 {
     // keccak256(abi.encode(owner, 0))
     let mut key = [0u8; 64];
