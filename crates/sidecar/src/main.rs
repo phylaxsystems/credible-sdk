@@ -295,7 +295,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(TransactionObserverConfig {
                     db_path: db_path.clone(),
                     endpoint: endpoint.clone(),
-                    auth_token: auth_token.clone(),
+                    auth_token: auth_token.expose().to_string(),
                     endpoint_rps_max,
                     poll_interval: Duration::from_millis(poll_interval_ms),
                 })
