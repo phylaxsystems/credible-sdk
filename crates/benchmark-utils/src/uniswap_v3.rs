@@ -133,6 +133,7 @@ fn abi_encode_bool(value: bool, out: &mut Vec<u8>) {
     out.extend_from_slice(&value.abi_encode());
 }
 
+#[allow(clippy::cast_sign_loss)]
 fn abi_encode_int(value: i128, out: &mut Vec<u8>) {
     out.extend_from_slice(&value.abi_encode());
 }

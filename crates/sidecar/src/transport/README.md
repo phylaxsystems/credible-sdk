@@ -8,19 +8,11 @@ abstraction layer that supports multiple transport mechanisms while maintaining 
 The transport system consists of:
 
 - **Transport Trait**: Defines the interface that all transports must implement
-- **HTTP Transport**: JSON-RPC 2.0 over HTTP (default)
 - **gRPC Transport**: Protocol Buffers over gRPC with streaming support
 - **Message Queue**: Internal channel for communication with the core engine
 - **Decoder**: Converts transport-specific messages to internal queue format
 
 ## Transport Implementations
-
-### HTTP Transport
-
-The HTTP transport provides a JSON-RPC 2.0 interface running on port 8080 by default.
-
-**[See HTTP Transport Documentation](http/README.md)** for detailed API reference, transaction examples, and
-implementation details.
 
 ### gRPC Transport
 
@@ -79,19 +71,26 @@ The `SubscribeResults` RPC provides real-time transaction results:
 - Multiple subscribers supported—each receives all results independently
 - Handles slow subscribers gracefully with configurable buffer (lagged subscribers receive a warning)
 
-## Choosing a Transport
+### Advantages
 
-| Use Case                    | Recommended Transport |
-|-----------------------------|-----------------------|
-| Debugging and development   | HTTP/JSON-RPC         |
-| Human-readable requests     | HTTP/JSON-RPC         |
-| Simple integrations         | HTTP/JSON-RPC         |
-| High-performance production | gRPC                  |
-| Real-time result streaming  | gRPC                  |
-| Tight latency requirements  | gRPC                  |
-| Testing                     | Mock                  |
+| Use Case                    | Benefit                                     |
+|-----------------------------|---------------------------------------------|
+| High-performance production | Binary protocol, lower overhead             |
+| Real-time result streaming  | Native bidirectional streaming              |
+| Tight latency requirements  | Persistent connections, no HTTP overhead    |
+| Type safety                 | Protocol buffer schema validation           |
 
-Both transports provide identical functionality and semantics for core operations.
+### Previous HTTP/JSON-RPC Implementation (Removed)
+
+The HTTP transport was removed in favor of gRPC. It previously offered:
+
+| Use Case                  | Benefit                            |
+|---------------------------|------------------------------------|
+| Debugging and development | Human-readable JSON requests       |
+| Simple integrations       | Standard HTTP tooling (curl, etc.) |
+| Quick prototyping         | No code generation required        |
+
+gRPC is now the sole supported transport.
 
 ## Core API Overview
 
@@ -143,15 +142,7 @@ When sending transactions via `sendTransactions` or `StreamEvents`, each transac
 - `tx_env`: The transaction environment data (TxEnv)
 - `prev_tx_hash`: The hash of the previous transaction in the batch, or null for the first transaction
 
-## Long-Polling vs Streaming Semantics
-
-### HTTP Transport (Long-Polling)
-
-The `getTransactions` and `getTransaction` methods use long-polling:
-
-- Requests will block until results are available
-- Configure appropriate timeouts on your client
-- For transactions not yet received, the response includes them in the `not_found` array
+## Streaming Semantics
 
 ### gRPC Transport (Streaming)
 
@@ -194,27 +185,22 @@ pub enum TxQueueContents {
 
 ## Transport Metrics
 
-Both transports expose latency histograms so operators can watch request health in Prometheus/Grafana. Every handler
+The gRPC transport exposes latency histograms so operators can watch request health in Prometheus/Grafana. Every handler
 creates an `RpcRequestDuration` guard when the request starts and the guard records a value in
 `sidecar_rpc_duration_*` when it drops:
 
-| Transport | Metric Name                                 | Description                                                              |
-|-----------|---------------------------------------------|--------------------------------------------------------------------------|
-| HTTP      | `sidecar_rpc_duration_sendTransactions`     | JSON-RPC `sendTransactions` batches                                      |
-| HTTP      | `sidecar_rpc_duration_sendEvents`           | JSON-RPC `sendEvents` batches                                            |
-| HTTP      | `sidecar_rpc_duration_reorg`                | JSON-RPC `reorg` requests                                                |
-| HTTP      | `sidecar_rpc_duration_getTransactions`      | JSON-RPC `getTransactions` long-polling calls                            |
-| HTTP      | `sidecar_rpc_duration_getTransaction`       | JSON-RPC `getTransaction` calls                                          |
-| Shared    | `sidecar_get_transaction_wait_duration`     | Time spent waiting for a transaction to be received while getTransaction |
-| gRPC      | `sidecar_rpc_duration_StreamEvents`         | `StreamEvents` bidirectional streaming                                   |
-| gRPC      | `sidecar_rpc_duration_GetTransactions`      | `GetTransactions` RPC                                                    |
-| gRPC      | `sidecar_rpc_duration_GetTransaction`       | `GetTransaction` RPC                                                     |
-| Shared    | `sidecar_fetch_transaction_result_duration` | Fetch + serialization latency for transaction results                    |
+| Metric Name                                 | Description                                                              |
+|---------------------------------------------|--------------------------------------------------------------------------|
+| `sidecar_rpc_duration_StreamEvents`         | `StreamEvents` bidirectional streaming                                   |
+| `sidecar_rpc_duration_GetTransactions`      | `GetTransactions` RPC                                                    |
+| `sidecar_rpc_duration_GetTransaction`       | `GetTransaction` RPC                                                     |
+| `sidecar_get_transaction_wait_duration`     | Time spent waiting for a transaction to be received while getTransaction |
+| `sidecar_fetch_transaction_result_duration` | Fetch + serialization latency for transaction results                    |
+| `sidecar_transport_block_processing_duration_seconds` | Duration between consecutive commit head events arriving at the transport |
 
 ## Transaction Types
 
-The sidecar supports all Ethereum transaction types through the `TxEnv` structure. This structure is used consistently
-across all transport protocols (HTTP JSON-RPC, gRPC, etc.).
+The sidecar supports all Ethereum transaction types through the `TxEnv` structure. This structure is used consistently across the gRPC transport protocol.
 
 ### Supported Types
 
@@ -246,8 +232,7 @@ null values, or zero values for fields that don't apply to your transaction type
 
 ### Transaction Examples
 
-These examples show the `TxEnv` structure for each transaction type. The exact wrapper format depends on your transport
-protocol (JSON-RPC for HTTP, protobuf for gRPC).
+These examples show the `TxEnv` structure for each transaction type. The gRPC transport uses protobuf encoding.
 
 #### Type 0: Legacy Transaction
 
@@ -441,20 +426,6 @@ This eliminates hex encoding/decoding overhead for high-throughput scenarios.
 
 Transport configuration can be set via command-line arguments or environment variables. See [
 `src/args/mod.rs`](../args/mod.rs) for the complete list of configuration options.
-
-### Transport Protocol Selection
-
-- **CLI Flag**: `--transport.protocol <value>`
-- **Environment Variable**: `TRANSPORT_PROTOCOL`
-- **Values**: `http` or `grpc`
-- **Default**: `grpc`
-
-### HTTP Transport Configuration
-
-- **Bind Address**:
-    - **CLI Flag**: `--transport.bind-addr <address:port>`
-    - **Environment Variable**: `TRANSPORT_BIND_ADDR`
-    - **Default**: `0.0.0.0:50051`
 
 ### gRPC Transport Configuration
 

@@ -24,11 +24,6 @@ const VARIANTS: &[TransportVariant] = &[
         options: |_| quote! {},
     },
     TransportVariant {
-        test_name: "http",
-        transport_type: "crate::utils::test_drivers::LocalInstanceHttpDriver",
-        options: |_| quote! {},
-    },
-    TransportVariant {
         test_name: "grpc",
         transport_type: "crate::utils::test_drivers::LocalInstanceGrpcDriver",
         options: |_| quote! {},
@@ -64,7 +59,7 @@ const VARIANTS: &[TransportVariant] = &[
 // }
 // ```
 // and would generate tests test_transaction_processing_mock,
-// test_transaction_processing_http, etc...
+// test_transaction_processing_grpc, etc...
 #[proc_macro_attribute]
 pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
