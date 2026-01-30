@@ -10,5 +10,8 @@
   },
   "lib/openzeppelin-contracts": {
     "rev": "49882a3d8b6c48068d9c988876d164b48dde5ca3"
+  },
+  "lib/uniswap-v3-core": {
+    "rev": "d8b1c635c275d2a9450bd6a78f3fa2484fef73eb"
   }
 }

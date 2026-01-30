@@ -4,12 +4,12 @@
 [submodule "testdata/mock-protocol/lib/forge-std"]
 	path = testdata/mock-protocol/lib/forge-std
 	url = https://github.com/foundry-rs/forge-std
-[submodule "lib/credible-layer-contracts"]
-	path = lib/credible-layer-contracts
-	url = https://github.com/phylaxsystems/credible-layer-contracts.git
 [submodule "testdata/mock-protocol/lib/credible-std"]
 	path = testdata/mock-protocol/lib/credible-std
 	url = https://github.com/phylaxsystems/credible-std
 [submodule "testdata/mock-protocol/lib/uniswap-v3-core"]
 	path = testdata/mock-protocol/lib/uniswap-v3-core
 	url = https://github.com/Uniswap/v3-core
+[submodule "lib/credible-layer-contracts"]
+	path = lib/credible-layer-contracts
+	url = https://github.com/phylaxsystems/credible-layer-contracts.git
