@@ -136,6 +136,7 @@ use assertion_executor::{
     },
 };
 use dashmap::DashMap;
+use metrics::counter;
 #[cfg(feature = "cache_validation")]
 use monitoring::cache::CacheChecker;
 use revm::primitives::hardfork::SpecId;
@@ -1264,6 +1265,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let tx_hash = tx_execution_id.tx_hash;
         let tx_env = queue_transaction.tx_env;
         self.block_metrics.transactions_considered += 1;
+        counter!("sidecar_transactions_considered_total").increment(1);
 
         info!(
             target = "engine",
