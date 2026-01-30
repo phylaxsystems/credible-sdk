@@ -27,8 +27,8 @@ pub const ERC20_CONTRACT: Address = address!("EeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeee
 /// ERC20 token contract address (AA variant - registered in assertion store)
 pub const ERC20_AA_CONTRACT: Address = address!("EeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeF");
 
-/// `MockERC20` artifact path
-pub(crate) const MOCK_ERC20_ARTIFACT: &str = "MockERC20.sol:MockERC20";
+/// `ERC20Mock` artifact path
+pub(crate) const MOCK_ERC20_ARTIFACT: &str = "ERC20Mock.sol:ERC20Mock";
 
 /// ERC20 transfer function selector: transfer(address,uint256)
 const ERC20_TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
@@ -68,12 +68,11 @@ pub fn erc20_aa_transfer_tx(to: Address, amount: U256) -> TxEnv {
 
 /// Calculate the storage slot for an ERC20 balance.
 ///
-/// `MockERC20` has `_balanceOf` mapping at slot 4.
+/// OpenZeppelin's ERC20 has `_balances` mapping at slot 0.
 pub(crate) fn erc20_balance_slot(owner: Address) -> U256 {
-    // keccak256(abi.encode(owner, 4))
+    // keccak256(abi.encode(owner, 0))
     let mut key = [0u8; 64];
     key[12..32].copy_from_slice(owner.as_slice()); // address left-padded to 32 bytes
-    key[63] = 4; // slot 4
     U256::from_be_bytes(keccak256(key).0)
 }
 
@@ -90,13 +89,9 @@ pub(crate) fn insert_mock_erc20_with_balance(
     let code = mock_erc20_deployed_bytecode();
     let code_hash = keccak256(&code);
 
-    // Storage setup for MockERC20:
-    // - Slot 4: _balanceOf mapping
-    // - Slot 9: initialized = true
+    // Storage setup for OpenZeppelin ERC20:
+    // - Slot 0: _balances mapping
     let mut storage = HashMap::default();
-
-    // Set initialized = true (slot 9)
-    storage.insert(U256::from(9), EvmStorageSlot::new(U256::from(1), 0));
 
     // Set holder balance
     let balance_slot = erc20_balance_slot(holder);
