@@ -20,6 +20,7 @@ use serde_with::{
 };
 use std::{
     env,
+    fmt,
     fs,
     path::Path,
     str::FromStr,
@@ -46,6 +47,51 @@ fn default_pending_request_ttl_ms() -> Duration {
 
 fn default_accepted_txs_ttl_ms() -> Duration {
     Duration::from_secs(2)
+}
+
+#[derive(Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct SecretString(String);
+
+impl SecretString {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl fmt::Display for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl From<String> for SecretString {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for SecretString {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl FromStr for SecretString {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_string()))
+    }
 }
 
 /// Configuration loaded from JSON file
@@ -159,7 +205,7 @@ pub struct CredibleConfigFile {
     /// Dapp API endpoint for incident publishing
     pub transaction_observer_endpoint: Option<String>,
     /// Dapp API auth token for incident publishing
-    pub transaction_observer_auth_token: Option<String>,
+    pub transaction_observer_auth_token: Option<SecretString>,
     /// Max incident publish requests per poll interval
     pub transaction_observer_endpoint_rps_max: Option<usize>,
     /// Poll interval for incident publishing in milliseconds
@@ -211,7 +257,7 @@ pub struct CredibleConfig {
     /// Dapp API endpoint for incident publishing
     pub transaction_observer_endpoint: Option<String>,
     /// Dapp API auth token for incident publishing
-    pub transaction_observer_auth_token: Option<String>,
+    pub transaction_observer_auth_token: Option<SecretString>,
     /// Max incident publish requests per poll interval
     pub transaction_observer_endpoint_rps_max: Option<usize>,
     /// Poll interval for incident publishing in milliseconds
@@ -529,7 +575,7 @@ struct CredibleOptional {
     flush_every_ms: Option<usize>,
     transaction_observer_db_path: Option<String>,
     transaction_observer_endpoint: Option<String>,
-    transaction_observer_auth_token: Option<String>,
+    transaction_observer_auth_token: Option<SecretString>,
     transaction_observer_endpoint_rps_max: Option<usize>,
     transaction_observer_poll_interval_ms: Option<u64>,
 }
@@ -974,7 +1020,7 @@ mod tests {
         );
         assert_eq!(
             config.credible.transaction_observer_auth_token,
-            Some("test-token".to_string())
+            Some(SecretString::new("test-token"))
         );
         assert_eq!(
             config.credible.transaction_observer_endpoint_rps_max,
@@ -1175,7 +1221,7 @@ mod tests {
         );
         assert_eq!(
             config.credible.transaction_observer_auth_token,
-            Some("token-123".to_string())
+            Some(SecretString::new("token-123"))
         );
         assert_eq!(
             config.credible.transaction_observer_endpoint_rps_max,
