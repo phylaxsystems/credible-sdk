@@ -210,6 +210,7 @@ creates an `RpcRequestDuration` guard when the request starts and the guard reco
 | gRPC      | `sidecar_rpc_duration_GetTransactions`      | `GetTransactions` RPC                                                    |
 | gRPC      | `sidecar_rpc_duration_GetTransaction`       | `GetTransaction` RPC                                                     |
 | Shared    | `sidecar_fetch_transaction_result_duration` | Fetch + serialization latency for transaction results                    |
+| Shared    | `sidecar_transport_block_processing_duration_seconds` | Duration between consecutive commit head events arriving at the transport |
 
 ## Transaction Types
 
