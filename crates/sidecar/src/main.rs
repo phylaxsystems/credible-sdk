@@ -62,10 +62,7 @@ use sidecar::{
     },
     transport::{
         Transport,
-        grpc::{
-            GrpcTransport,
-            config::GrpcTransportConfig,
-        },
+        grpc::GrpcTransport,
     },
     utils::ErrorRecoverability,
 };
@@ -96,25 +93,10 @@ fn create_transport_from_args(
     state_results: Arc<TransactionsState>,
     result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
 ) -> anyhow::Result<GrpcTransport> {
-    let cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
+    let config = config.transport.clone();
     let transport = match result_event_rx {
-        Some(rx) => {
-            GrpcTransport::with_result_receiver(
-                &cfg,
-                tx_sender,
-                state_results,
-                rx,
-                config.transport.event_id_buffer_capacity,
-            )?
-        }
-        None => {
-            GrpcTransport::new(
-                cfg,
-                tx_sender,
-                state_results,
-                config.transport.event_id_buffer_capacity,
-            )?
-        }
+        Some(rx) => GrpcTransport::with_result_receiver(&config, tx_sender, state_results, rx)?,
+        None => GrpcTransport::new(config, tx_sender, state_results)?,
     };
     Ok(transport)
 }
