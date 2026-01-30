@@ -14,7 +14,10 @@ use assertion_executor::{
     ExecutorError,
     TxExecutionError,
     db::NotFoundError,
-    evm::build_evm::{build_eth_evm, evm_env},
+    evm::build_evm::{
+        build_eth_evm,
+        evm_env,
+    },
 };
 use revm::{
     ExecuteEvm,
@@ -486,7 +489,9 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
         for tx in self.bundle.clone() {
             let mut evm = build_eth_evm(&mut self.db, &env, NoOpInspector);
 
-            let result = evm.transact(tx).map_err(|_| BenchmarkPackageError::BenchmarkError)?;
+            let result = evm
+                .transact(tx)
+                .map_err(|_| BenchmarkPackageError::BenchmarkError)?;
 
             match result.result {
                 ExecutionResult::Success {

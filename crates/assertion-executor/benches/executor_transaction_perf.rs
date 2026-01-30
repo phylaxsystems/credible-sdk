@@ -10,6 +10,7 @@ use criterion::{
 };
 use tokio::runtime::Runtime;
 
+#[allow(clippy::too_many_lines)]
 fn executor_transaction_performance_benchmark(c: &mut Criterion) {
     let runtime = Runtime::new().expect("create tokio runtime");
     let _enter_guard = runtime.enter();
