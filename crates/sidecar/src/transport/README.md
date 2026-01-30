@@ -196,6 +196,7 @@ creates an `RpcRequestDuration` guard when the request starts and the guard reco
 | `sidecar_rpc_duration_GetTransaction`       | `GetTransaction` RPC                                                     |
 | `sidecar_get_transaction_wait_duration`     | Time spent waiting for a transaction to be received while getTransaction |
 | `sidecar_fetch_transaction_result_duration` | Fetch + serialization latency for transaction results                    |
+| `sidecar_transport_block_processing_duration_seconds` | Duration between consecutive commit head events arriving at the transport |
 
 ## Transaction Types
 
