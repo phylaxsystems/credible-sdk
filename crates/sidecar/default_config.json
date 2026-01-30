@@ -26,6 +26,7 @@
     "assertion_store_prune_config_retention_blocks": 0
   },
   "transport": {
+    "protocol": "grpc",
     "bind_addr": "0.0.0.0:50051",
     "health_bind_addr": "0.0.0.0:9547",
     "pending_receive_ttl_ms": 5000

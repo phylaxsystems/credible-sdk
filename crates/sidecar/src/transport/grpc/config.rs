@@ -1,6 +1,6 @@
 //! # Configuration for the `GrpcTransport`.
 
-use crate::args::GrpcConfig;
+use crate::args::TransportConfig;
 use std::{
     net::{
         AddrParseError,
@@ -8,10 +8,6 @@ use std::{
     },
     time::Duration,
 };
-
-const DEFAULT_PENDING_RECEIVE_TTL_MS: Duration = Duration::from_secs(5);
-
-const DEFAULT_BIND_ADDR: &str = "127.0.0.1:9090";
 
 #[derive(Debug, Clone)]
 pub struct GrpcTransportConfig {
@@ -24,15 +20,15 @@ pub struct GrpcTransportConfig {
 impl Default for GrpcTransportConfig {
     fn default() -> Self {
         Self {
-            bind_addr: DEFAULT_BIND_ADDR.parse().unwrap(),
-            pending_receive_ttl: DEFAULT_PENDING_RECEIVE_TTL_MS,
+            bind_addr: "127.0.0.1:9090".parse().unwrap(),
+            pending_receive_ttl: Duration::from_secs(5),
         }
     }
 }
 
-impl TryFrom<GrpcConfig> for GrpcTransportConfig {
+impl TryFrom<TransportConfig> for GrpcTransportConfig {
     type Error = AddrParseError;
-    fn try_from(value: GrpcConfig) -> Result<Self, Self::Error> {
+    fn try_from(value: TransportConfig) -> Result<Self, Self::Error> {
         let pending_receive_ttl = if value.pending_receive_ttl_ms.is_zero() {
             Duration::from_millis(1)
         } else {
