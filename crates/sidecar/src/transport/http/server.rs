@@ -337,6 +337,8 @@ pub struct ServerState {
     transactions_results: QueryTransactionsResults,
     /// Block context for tracing
     block_context: BlockContext,
+    /// Tracks when the last commit head was received for inter-commit-head duration metrics.
+    last_commit_head_time: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 impl ServerState {
@@ -350,6 +352,7 @@ impl ServerState {
             tx_sender,
             transactions_results,
             block_context,
+            last_commit_head_time: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -359,6 +362,19 @@ impl ServerState {
 
     fn mark_commit_head_seen(&self) {
         self.commit_head_seen.store(true, Ordering::Release);
+    }
+
+    /// Records the duration since the last commit head and resets the timer.
+    fn record_commit_head_duration(&self) {
+        let mut last = self
+            .last_commit_head_time
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(prev) = *last {
+            histogram!("sidecar_transport_block_processing_duration_seconds")
+                .record(prev.elapsed());
+        }
+        *last = Some(Instant::now());
     }
 }
 
@@ -477,6 +493,7 @@ async fn process_request(
     for queue_tx in tx_queue_contents {
         match &queue_tx {
             TxQueueContents::CommitHead(_) => {
+                state.record_commit_head_duration();
                 state.mark_commit_head_seen();
             }
             TxQueueContents::NewIteration(_)

@@ -584,6 +584,8 @@ struct GrpcServiceInner {
     next_abort_id: AtomicU64,
     /// Buffer for detecting duplicate event IDs
     event_id_buffer: EventIdBuffer,
+    /// Tracks when the last commit head was received for inter-commit-head duration metrics.
+    last_commit_head_time: std::sync::Mutex<Option<Instant>>,
 }
 
 impl Drop for GrpcServiceInner {
@@ -642,6 +644,7 @@ impl GrpcService {
             ),
             next_abort_id: AtomicU64::new(next_abort_id),
             event_id_buffer: EventIdBuffer::new(event_buffer_capacity),
+            last_commit_head_time: std::sync::Mutex::new(None),
         });
 
         Self {
@@ -691,6 +694,20 @@ impl GrpcService {
         self.inner.commit_head_seen.store(true, Ordering::Release);
     }
 
+    /// Records the duration since the last commit head and resets the timer.
+    fn record_commit_head_duration(&self) {
+        let mut last = self
+            .inner
+            .last_commit_head_time
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(prev) = *last {
+            histogram!("sidecar_transport_block_processing_duration_seconds")
+                .record(prev.elapsed());
+        }
+        *last = Some(Instant::now());
+    }
+
     #[inline]
     fn ensure_commit_head_seen(&self) -> Result<(), Status> {
         if self.inner.commit_head_seen.load(Ordering::Acquire) {
@@ -726,6 +743,7 @@ impl GrpcService {
             EventVariant::CommitHead(commit) => {
                 let commit_head = decode_commit_head(&commit)?;
                 self.send_queue_event(TxQueueContents::CommitHead(commit_head))?;
+                self.record_commit_head_duration();
                 self.mark_commit_head_seen();
             }
             EventVariant::NewIteration(iteration) => {
