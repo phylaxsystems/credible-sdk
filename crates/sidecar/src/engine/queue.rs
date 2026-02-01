@@ -188,7 +188,7 @@ impl CommitHead {
 
 /// Creates a new iteration with a specific block env.
 ///
-/// Contains all data needed to apply system calls - EIP-4788, EIP-2935 
+/// Contains all data needed to apply system calls - EIP-4788, EIP-2935
 /// It should be applied before the transaction execution
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

@@ -1111,7 +1111,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let block_execution_id = BlockExecutionId::from(new_iteration);
 
         // Create a VersionDb with a clone of the cache - VersionDb will create its own ForkDb internally
-        let block_iteration_data = BlockIterationData {
+        let mut block_iteration_data = BlockIterationData {
             version_db: VersionDb::new(self.cache.clone()),
             n_transactions: 0,
             executed_txs: Vec::new(),
@@ -1120,6 +1120,21 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             incident_txs: Vec::new(),
             block_env: block_env.clone(),
         };
+
+        // Apply eips system calls to the ForkDb before any transaction.
+        // Ensure transactions can query beacon roots and block hashes from system contracts.
+        let spec_id = self.get_spec_id();
+        let config = SystemCallsConfig::new(
+            spec_id,
+            block_env.number,
+            block_env.timestamp,
+            new_iteration.block_hash,
+            new_iteration.parent_beacon_block_root,
+        );
+
+        self.system_calls
+            .apply_pre_tx_system_calls(&config, block_iteration_data.version_db.state_mut())
+            .map_err(EngineError::SystemCallError)?;
 
         // NOTE: If the sidecar receives the same iteration twice, the last one prevails
         self.current_block_iterations
@@ -1132,7 +1147,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             gas_limit = block_env.gas_limit,
             base_fee = ?block_env.basefee,
             iteration_id = block_execution_id.iteration_id,
-            "Iteration successfully created"
+            block_hash = ?new_iteration.block_hash,
+            parent_beacon_block_root = ?new_iteration.parent_beacon_block_root,
+            "Iteration successfully created with system calls applied"
         );
 
         Ok(())
@@ -1169,16 +1186,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             self.check_cache(commit_head, &block_execution_id);
         }
 
-        let spec_id = self.get_spec_id();
-        let system_calls = self.system_calls.clone();
-
         if let Some(iteration) = self.current_block_iterations.get(&block_execution_id)
             && iteration.version_db.last_commit_was_empty()
         {
             return Err(EngineError::NothingToCommit);
         }
 
-        // Finalize the previous block by committing its fork to the underlying state
+        // Finalize the previous block by committing its fork to the underlying state.
+        // This merges the ForkDb (which already has system calls applied) into the OverlayDb.
         if self
             .current_block_iterations
             .contains_key(&block_execution_id)
@@ -1186,18 +1201,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             self.finalize_previous_block(block_execution_id);
         }
 
-        // Apply EIP-2935 and EIP-4788 system calls before finalizing
-        let config = SystemCallsConfig::new(
-            spec_id,
+        // Cache block hash for BLOCKHASH opcode lookups on future blocks.
+        // EIP-4788 and EIP-2935 were already applied to the ForkDb at iteration time.
+        self.system_calls.cache_block_hash(
             commit_head.block_number,
-            commit_head.timestamp,
             commit_head.block_hash,
-            commit_head.parent_beacon_block_root,
+            &self.cache,
         );
-
-        system_calls
-            .apply_system_calls(&config, &mut self.cache)
-            .map_err(EngineError::SystemCallError)?;
 
         #[cfg(any(test, feature = "bench-utils"))]
         if let Some(canonical_db) = self.canonical_db.as_ref() {
@@ -1207,8 +1217,17 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 }
             }
 
+            // For canonical_db, test only, apply full system calls since it's a separate DB
+            let spec_id = self.get_spec_id();
+            let config = SystemCallsConfig::new(
+                spec_id,
+                commit_head.block_number,
+                commit_head.timestamp,
+                commit_head.block_hash,
+                commit_head.parent_beacon_block_root,
+            );
             canonical_db
-                .apply_system_calls_canonical(&system_calls, &config)
+                .apply_system_calls_canonical(&self.system_calls, &config)
                 .map_err(EngineError::SystemCallError)?;
         }
 

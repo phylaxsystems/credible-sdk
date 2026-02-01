@@ -176,6 +176,60 @@ impl SystemCalls {
         Ok(())
     }
 
+    /// Applies pre-transaction system calls (EIP-4788 and EIP-2935) to a database.
+    /// It is  designed for `ForkDb` which doesn't implement `BlockHashStore`.
+    /// It applies EIP-4788 (beacon root) and EIP-2935 (block hash storage) so that
+    /// transactions executing in this iteration can query the system contracts.
+    pub fn apply_pre_tx_system_calls<DB: DatabaseRef + DatabaseCommit>(
+        &self,
+        config: &SystemCallsConfig,
+        db: &mut DB,
+    ) -> Result<(), SystemCallError> {
+        // Apply EIP-4788 first (Cancun+)
+        if config.spec_id.is_cancun_active() {
+            self.apply_eip4788(config, db)?;
+            debug!(
+                target = "system_calls",
+                block_number = %config.block_number,
+                timestamp = %config.timestamp,
+                "Applied EIP-4788 beacon root update (pre-tx)"
+            );
+        }
+
+        if config.spec_id.is_prague_active() {
+            self.apply_eip2935(config, db)?;
+            debug!(
+                target = "system_calls",
+                block_number = %config.block_number,
+                "Applied EIP-2935 block hash update (pre-tx)"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Caches the block hash for BLOCKHASH opcode lookups.
+    ///
+    /// This should be called at commit time on the `OverlayDb` after the iteration
+    /// is finalized. It doesn't modify EVM state, only the block hash cache.
+    pub fn cache_block_hash<DB: BlockHashStore>(
+        &self,
+        block_number: U256,
+        block_hash: B256,
+        db: &DB,
+    ) {
+        if block_number > U256::ZERO {
+            let block_num: u64 = block_number.saturating_to::<u64>();
+            db.store_block_hash(block_num, block_hash);
+            trace!(
+                target = "system_calls",
+                block_number = %block_num,
+                %block_hash,
+                "Block hash cached for BLOCKHASH opcode"
+            );
+        }
+    }
+
     /// Applies the EIP-2935 block hash update.
     ///
     /// Stores the parent block hash in the history storage contract.

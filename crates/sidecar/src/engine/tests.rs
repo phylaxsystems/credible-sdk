@@ -1689,7 +1689,12 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
         ..Default::default()
     };
     engine
-        .process_iteration(&NewIteration::new(1, block_env, B256::ZERO, Some(B256::ZERO)))
+        .process_iteration(&NewIteration::new(
+            1,
+            block_env,
+            B256::ZERO,
+            Some(B256::ZERO),
+        ))
         .unwrap();
 
     let tx_hash = B256::from([0x42; 32]);
@@ -1846,7 +1851,12 @@ async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
         ..Default::default()
     };
     engine
-        .process_iteration(&NewIteration::new(1, block_env_2, B256::ZERO, Some(B256::ZERO)))
+        .process_iteration(&NewIteration::new(
+            1,
+            block_env_2,
+            B256::ZERO,
+            Some(B256::ZERO),
+        ))
         .unwrap();
 
     let tx_hash = B256::from([0x42; 32]);
