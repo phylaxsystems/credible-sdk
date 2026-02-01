@@ -1430,6 +1430,10 @@ impl Listener {
     ) -> Result<()> {
         let block_number = block.header.number;
         let block_env = Self::build_block_env(block);
+        // Block hash for EIP-2935
+        let block_hash = block.header.hash.to_vec();
+        // Parent beacon block root for EIP-4788
+        let parent_beacon_block_root = block.header.parent_beacon_block_root.map(|h| h.to_vec());
 
         stream
             .send_event_with_retry(
@@ -1439,6 +1443,8 @@ impl Listener {
                         event: Some(EventVariant::NewIteration(NewIteration {
                             iteration_id: DEFAULT_ITERATION_ID,
                             block_env: Some(block_env.clone()),
+                            block_hash: block_hash.clone(),
+                            parent_beacon_block_root: parent_beacon_block_root.clone(),
                         })),
                     }
                 },

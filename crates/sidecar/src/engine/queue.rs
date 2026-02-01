@@ -186,19 +186,34 @@ impl CommitHead {
     }
 }
 
-/// Creates a new iteration with a specific block env
+/// Creates a new iteration with a specific block env.
+///
+/// Contains all data needed to apply system calls - EIP-4788, EIP-2935 
+/// It should be applied before the transaction execution
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NewIteration {
     pub(crate) iteration_id: u64,
     pub(crate) block_env: BlockEnv,
+    /// Reauired block hash for EIP-2935, historical block hashes in states
+    pub(crate) block_hash: B256,
+    /// Required parent beacon block root for EIP-4788
+    pub(crate) parent_beacon_block_root: Option<B256>,
 }
 
 impl NewIteration {
-    /// Construct a new iteration event.
-    pub fn new(iteration_id: u64, block_env: BlockEnv) -> Self {
+    /// Construct a new iteration event with all system call data.
+    pub fn new(
+        iteration_id: u64,
+        block_env: BlockEnv,
+        block_hash: B256,
+        parent_beacon_block_root: Option<B256>,
+    ) -> Self {
         Self {
             iteration_id,
             block_env,
+            block_hash,
+            parent_beacon_block_root,
         }
     }
 }
