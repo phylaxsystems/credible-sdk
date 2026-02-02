@@ -424,6 +424,8 @@ mod tests {
         cell::RefCell,
         collections::HashMap,
     };
+    use assertion_executor::db::{RollbackDb, VersionDb, DatabaseCommit};
+
 
     /// Simple mock database for testing
     #[derive(Debug, Default)]
@@ -792,5 +794,236 @@ mod tests {
         assert_eq!(cache.get(&1), Some(&B256::repeat_byte(1))); // Block 1's hash
         assert_eq!(cache.get(&2), Some(&B256::repeat_byte(2))); // Block 2's hash
         assert_eq!(cache.get(&3), Some(&B256::repeat_byte(3))); // Block 3's hash
+    }
+
+    #[test]
+    fn test_system_calls_via_state_mut_visible_to_reads() {
+
+        let mock = MockDb::default();
+        let mut version_db = VersionDb::new(mock);
+        let system_calls = SystemCalls::new();
+
+        let config = SystemCallsConfig {
+            spec_id: SpecId::PRAGUE,
+            block_number: U256::from(100),
+            timestamp: U256::from(1700000000),
+            block_hash: B256::repeat_byte(0xab),
+            parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
+        };
+
+        system_calls
+            .apply_pre_tx_system_calls(&config, version_db.state_mut())
+            .unwrap();
+
+        // EIP-2935 and EIP-4788 contracts readable through VersionDb
+        assert!(version_db.basic_ref(HISTORY_STORAGE_ADDRESS).unwrap().is_some());
+        assert!(version_db.basic_ref(BEACON_ROOTS_ADDRESS).unwrap().is_some());
+
+        // Verify EIP-2935 storage (slot = block_number % 8191 = 100)
+        let slot = U256::from(100u64);
+        let stored = version_db.storage_ref(HISTORY_STORAGE_ADDRESS, slot).unwrap();
+        assert_eq!(stored, U256::from_be_bytes(B256::repeat_byte(0xab).0));
+    }
+
+    #[test]
+    fn test_system_calls_persist_after_tx_commit() {
+
+        let mock = MockDb::default();
+        let mut version_db = VersionDb::new(mock);
+        let system_calls = SystemCalls::new();
+
+        let config = SystemCallsConfig {
+            spec_id: SpecId::PRAGUE,
+            block_number: U256::from(50),
+            timestamp: U256::from(1700000000),
+            block_hash: B256::repeat_byte(0x11),
+            parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
+        };
+
+        system_calls
+            .apply_pre_tx_system_calls(&config, version_db.state_mut())
+            .unwrap();
+
+        // Commit a user transaction
+        let user_addr = address!("1111111111111111111111111111111111111111");
+        let mut tx_state = EvmState::default();
+        tx_state.insert(
+            user_addr,
+            Account {
+                info: AccountInfo {
+                    balance: U256::from(1000),
+                    nonce: 1,
+                    code_hash: B256::ZERO,
+                    code: None,
+                },
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Touched,
+            },
+        );
+        DatabaseCommit::commit(&mut version_db, tx_state);
+
+        // System contracts still accessible after tx commit
+        assert!(version_db.basic_ref(HISTORY_STORAGE_ADDRESS).unwrap().is_some());
+        assert!(version_db.basic_ref(BEACON_ROOTS_ADDRESS).unwrap().is_some());
+        assert_eq!(
+            version_db.basic_ref(user_addr).unwrap().unwrap().balance,
+            U256::from(1000)
+        );
+    }
+
+    #[test]
+    fn test_rollback_loses_system_call_state() {
+        // System calls applied via state_mut() are lost on rollback because
+        // VersionDb rebuilds from base_state. In the engine, system calls
+        // are reapplied on each new iteration after reorg.
+
+        let mock = MockDb::default();
+        let mut version_db = VersionDb::new(mock);
+        let system_calls = SystemCalls::new();
+
+        let config = SystemCallsConfig {
+            spec_id: SpecId::PRAGUE,
+            block_number: U256::from(200),
+            timestamp: U256::from(1700000000),
+            block_hash: B256::repeat_byte(0x33),
+            parent_beacon_block_root: Some(B256::repeat_byte(0x44)),
+        };
+
+        system_calls
+            .apply_pre_tx_system_calls(&config, version_db.state_mut())
+            .unwrap();
+
+        // Commit two transactions
+        let addr1 = address!("1111111111111111111111111111111111111111");
+        let addr2 = address!("2222222222222222222222222222222222222222");
+
+        let mut tx1 = EvmState::default();
+        tx1.insert(addr1, Account {
+            info: AccountInfo { balance: U256::from(100), nonce: 1, code_hash: B256::ZERO, code: None },
+            transaction_id: 0,
+            storage: EvmStorage::default(),
+            status: AccountStatus::Touched,
+        });
+        DatabaseCommit::commit(&mut version_db, tx1);
+
+        let mut tx2 = EvmState::default();
+        tx2.insert(addr2, Account {
+            info: AccountInfo { balance: U256::from(200), nonce: 1, code_hash: B256::ZERO, code: None },
+            transaction_id: 0,
+            storage: EvmStorage::default(),
+            status: AccountStatus::Touched,
+        });
+        DatabaseCommit::commit(&mut version_db, tx2);
+
+        version_db.rollback_to(1).unwrap();
+
+        // System calls are LOST after rollback (rebuilds from base_state)
+        assert!(version_db.basic_ref(HISTORY_STORAGE_ADDRESS).unwrap().is_none());
+
+        // tx1 visible, tx2 rolled back
+        assert!(version_db.basic_ref(addr1).unwrap().is_some());
+        assert!(version_db.basic_ref(addr2).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_different_timestamps_different_beacon_slots() {
+
+        let mock = MockDb::default();
+        let mut version_db = VersionDb::new(mock);
+        let system_calls = SystemCalls::new();
+
+        let ts1 = 1700000000u64;
+        let ts2 = 1700000012u64; // skipped slot
+
+        let config1 = SystemCallsConfig {
+            spec_id: SpecId::CANCUN,
+            block_number: U256::from(100),
+            timestamp: U256::from(ts1),
+            block_hash: B256::ZERO,
+            parent_beacon_block_root: Some(B256::repeat_byte(0x11)),
+        };
+        system_calls
+            .apply_pre_tx_system_calls(&config1, version_db.state_mut())
+            .unwrap();
+
+        let config2 = SystemCallsConfig {
+            spec_id: SpecId::CANCUN,
+            block_number: U256::from(100),
+            timestamp: U256::from(ts2),
+            block_hash: B256::ZERO,
+            parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
+        };
+        system_calls
+            .apply_pre_tx_system_calls(&config2, version_db.state_mut())
+            .unwrap();
+
+        // Both beacon roots at different slots
+        let root_slot1 = U256::from((ts1 % HISTORY_BUFFER_LENGTH) + HISTORY_BUFFER_LENGTH);
+        let root_slot2 = U256::from((ts2 % HISTORY_BUFFER_LENGTH) + HISTORY_BUFFER_LENGTH);
+
+        let stored1 = version_db.storage_ref(BEACON_ROOTS_ADDRESS, root_slot1).unwrap();
+        let stored2 = version_db.storage_ref(BEACON_ROOTS_ADDRESS, root_slot2).unwrap();
+        assert_eq!(stored1, U256::from_be_bytes(B256::repeat_byte(0x11).0));
+        assert_eq!(stored2, U256::from_be_bytes(B256::repeat_byte(0x22).0));
+    }
+
+    #[test]
+    fn test_eip2935_parent_hash_at_current_slot() {
+        use assertion_executor::db::VersionDb;
+
+        let mock = MockDb::default();
+        let mut version_db = VersionDb::new(mock);
+        let system_calls = SystemCalls::new();
+
+        // Block 100 receives parent hash (block 99's hash)
+        let parent_hash = B256::repeat_byte(0x99);
+        let config = SystemCallsConfig {
+            spec_id: SpecId::PRAGUE,
+            block_number: U256::from(100),
+            timestamp: U256::from(1700000000),
+            block_hash: parent_hash,
+            parent_beacon_block_root: Some(B256::ZERO), // Required for Prague (includes Cancun)
+        };
+
+        system_calls
+            .apply_pre_tx_system_calls(&config, version_db.state_mut())
+            .unwrap();
+
+        // Slot 100 contains parent hash
+        let slot = U256::from(100u64);
+        let stored = version_db.storage_ref(HISTORY_STORAGE_ADDRESS, slot).unwrap();
+        assert_eq!(stored, U256::from_be_bytes(parent_hash.0));
+    }
+
+    #[test]
+    fn test_empty_block_system_calls_only() {
+
+        let mock = MockDb::default();
+        let mut version_db = VersionDb::new(mock);
+        let system_calls = SystemCalls::new();
+
+        let config = SystemCallsConfig {
+            spec_id: SpecId::PRAGUE,
+            block_number: U256::from(500),
+            timestamp: U256::from(1700000000),
+            block_hash: B256::repeat_byte(0xee),
+            parent_beacon_block_root: Some(B256::repeat_byte(0xff)),
+        };
+
+        system_calls
+            .apply_pre_tx_system_calls(&config, version_db.state_mut())
+            .unwrap();
+
+        // No tx commits
+        assert_eq!(version_db.depth(), 0);
+
+        // System contracts present
+        assert!(version_db.basic_ref(HISTORY_STORAGE_ADDRESS).unwrap().is_some());
+        assert!(version_db.basic_ref(BEACON_ROOTS_ADDRESS).unwrap().is_some());
+
+        // Collapse finalizes to base state
+        version_db.collapse_log();
+        assert!(version_db.base_state().basic_ref(HISTORY_STORAGE_ADDRESS).unwrap().is_some());
     }
 }
