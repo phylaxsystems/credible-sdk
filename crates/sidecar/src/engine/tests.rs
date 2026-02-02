@@ -3300,7 +3300,7 @@ fn test_spec_id_activation_and_behavior() {
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
-    let result = system_calls.apply_system_calls(&config, &mut db);
+    let result = system_calls.apply_pre_tx_system_calls(&config, &mut db);
     assert!(result.is_ok());
     // Neither contract should be touched for Shanghai
     assert!(!db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
@@ -3316,7 +3316,7 @@ fn test_spec_id_activation_and_behavior() {
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
-    let result = system_calls.apply_system_calls(&config, &mut db);
+    let result = system_calls.apply_pre_tx_system_calls(&config, &mut db);
     assert!(result.is_ok());
     // Only beacon roots should be touched for Cancun
     assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
@@ -3332,7 +3332,7 @@ fn test_spec_id_activation_and_behavior() {
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
-    let result = system_calls.apply_system_calls(&config, &mut db);
+    let result = system_calls.apply_pre_tx_system_calls(&config, &mut db);
     assert!(result.is_ok());
     // Both contracts should be touched for Prague
     assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));

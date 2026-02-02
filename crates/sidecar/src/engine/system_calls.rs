@@ -136,47 +136,6 @@ impl SystemCalls {
         Self
     }
 
-    /// Applies all applicable system calls for the given configuration.
-    ///
-    /// This should be called at the start of each block iteration,
-    /// before processing any user transactions.
-    pub fn apply_system_calls<DB: DatabaseRef + DatabaseCommit + BlockHashStore>(
-        &self,
-        config: &SystemCallsConfig,
-        db: &mut DB,
-    ) -> Result<(), SystemCallError> {
-        // Cache block hash for BLOCKHASH opcode lookups, all forks.
-        if config.block_number > U256::ZERO
-            && let Some(block_hash) = config.block_hash
-        {
-            let block_number: u64 = config.block_number.saturating_to::<u64>(); // Should not realistically overflow
-            db.store_block_hash(block_number, block_hash);
-            trace!(
-                target = "system_calls",
-                block_number = %block_number,
-                %block_hash,
-                "Block hash cached for BLOCKHASH opcode"
-            );
-        }
-
-        // Apply EIP-4788 first (Cancun+)
-        if config.spec_id.is_cancun_active() {
-            self.apply_eip4788(config, db)?;
-            debug!(
-                target = "system_calls",
-                block_number = %config.block_number,
-                "Applied EIP-4788 beacon root update"
-            );
-        }
-
-        // Apply EIP-2935 (Prague+)
-        if config.spec_id.is_prague_active() {
-            self.apply_eip2935(config, db)?;
-        }
-
-        Ok(())
-    }
-
     /// Applies pre-transaction system calls (EIP-4788 and EIP-2935) to a database.
     /// It is  designed for `ForkDb` which doesn't implement `BlockHashStore`.
     /// It applies EIP-4788 (beacon root) and EIP-2935 (block hash storage) so that
@@ -608,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_all_system_calls() {
+    fn test_apply_pre_tx_system_calls() {
         let mut db = MockDb::default();
         let system_calls = SystemCalls::new();
 
@@ -620,7 +579,7 @@ mod tests {
             parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
-        let result = system_calls.apply_system_calls(&config, &mut db);
+        let result = system_calls.apply_pre_tx_system_calls(&config, &mut db);
         assert!(result.is_ok());
 
         // Both contracts should be present
@@ -736,45 +695,30 @@ mod tests {
 
     #[test]
     fn test_block_hash_cache_populated() {
-        let mut db = MockDb::default();
+        let db = MockDb::default();
         let system_calls = SystemCalls::new();
 
         let block_hash = B256::repeat_byte(0xab);
-        let config = SystemCallsConfig {
-            spec_id: SpecId::SHANGHAI, // Pre-Prague, only caching should happen
-            block_number: U256::from(100),
-            timestamp: U256::from(1234567890),
-            block_hash: Some(block_hash),
-            parent_beacon_block_root: None,
-        };
+        let block_number = U256::from(100);
 
-        let result = system_calls.apply_system_calls(&config, &mut db);
-        assert!(result.is_ok());
+        system_calls.cache_block_hash(block_number, block_hash, &db);
 
         // Verify block hash was cached for BLOCKHASH opcode
         let cached_hash = db.block_hash_cache.borrow().get(&100).copied();
         assert_eq!(
             cached_hash,
             Some(block_hash),
-            "Parent block hash should be cached at block 100"
+            "Block hash should be cached at block 100"
         );
     }
 
     #[test]
     fn test_block_hash_cache_not_populated_for_genesis() {
-        let mut db = MockDb::default();
+        let db = MockDb::default();
         let system_calls = SystemCalls::new();
 
-        let config = SystemCallsConfig {
-            spec_id: SpecId::SHANGHAI,
-            block_number: U256::from(0), // Genesis
-            timestamp: U256::from(0),
-            block_hash: Some(B256::repeat_byte(0xab)),
-            parent_beacon_block_root: None,
-        };
-
-        let result = system_calls.apply_system_calls(&config, &mut db);
-        assert!(result.is_ok());
+        // Genesis block (block 0) should not cache anything
+        system_calls.cache_block_hash(U256::from(0), B256::repeat_byte(0xab), &db);
 
         // Genesis has no parent, so nothing should be cached
         assert!(
@@ -785,20 +729,13 @@ mod tests {
 
     #[test]
     fn test_block_hash_cache_sequential_blocks() {
-        let mut db = MockDb::default();
+        let db = MockDb::default();
         let system_calls = SystemCalls::new();
 
-        // Simulate processing blocks 1, 2, 3
+        // Simulate caching block hashes for blocks 1, 2, 3
         for block_num in 1..=3u64 {
             let hash = B256::repeat_byte(u8::try_from(block_num).unwrap());
-            let config = SystemCallsConfig {
-                spec_id: SpecId::SHANGHAI,
-                block_number: U256::from(block_num),
-                timestamp: U256::from(1234567890 + block_num),
-                block_hash: Some(hash),
-                parent_beacon_block_root: None,
-            };
-            system_calls.apply_system_calls(&config, &mut db).unwrap();
+            system_calls.cache_block_hash(U256::from(block_num), hash, &db);
         }
 
         // Verify all block hashes are cached correctly
