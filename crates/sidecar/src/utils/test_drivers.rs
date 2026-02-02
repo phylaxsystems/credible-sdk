@@ -311,6 +311,8 @@ pub struct LocalInstanceMockDriver {
     override_last_tx_hash: Option<Option<TxHash>>,
     #[allow(clippy::option_option)]
     override_prev_tx_hash: Option<Option<TxHash>>,
+    /// Tracks the last committed block hash so `NewIteration` can include its parent hash.
+    last_committed_block_hash: B256,
 }
 
 impl LocalInstanceMockDriver {
@@ -361,6 +363,7 @@ impl LocalInstanceMockDriver {
                 override_n_transactions: None,
                 override_last_tx_hash: None,
                 override_prev_tx_hash: None,
+                last_committed_block_hash: B256::ZERO,
             },
         ))
     }
@@ -442,6 +445,7 @@ impl TestTransport for LocalInstanceMockDriver {
         self.override_n_transactions = None;
         self.override_last_tx_hash = None;
         self.override_prev_tx_hash = None;
+        self.last_committed_block_hash = commit_head.block_hash;
 
         self.mock_sender
             .send(TxQueueContents::CommitHead(commit_head))
@@ -494,8 +498,12 @@ impl TestTransport for LocalInstanceMockDriver {
             })
             .or_default();
 
-        let new_iteration =
-            NewIteration::new(iteration_id, block_env, B256::ZERO, Some(B256::ZERO));
+        let new_iteration = NewIteration::new(
+            iteration_id,
+            block_env,
+            self.last_committed_block_hash,
+            Some(B256::ZERO),
+        );
         self.mock_sender
             .send(TxQueueContents::NewIteration(new_iteration))
             .map_err(|e| format!("Failed to send new iteration: {e}"))
@@ -602,6 +610,8 @@ pub struct LocalInstanceGrpcDriver {
     override_last_tx_hash: Option<Option<TxHash>>,
     #[allow(clippy::option_option)]
     override_prev_tx_hash: Option<Option<TxHash>>,
+    /// Tracks the last committed block hash so `NewIteration` can include its parent hash.
+    last_committed_block_hash: B256,
 }
 
 impl LocalInstanceGrpcDriver {
@@ -840,6 +850,7 @@ impl LocalInstanceGrpcDriver {
                 override_n_transactions: None,
                 override_last_tx_hash: None,
                 override_prev_tx_hash: None,
+                last_committed_block_hash: B256::ZERO,
             },
         ))
     }
@@ -935,6 +946,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         self.override_n_transactions = None;
         self.override_last_tx_hash = None;
         self.override_prev_tx_hash = None;
+        self.last_committed_block_hash = commit_head.block_hash;
 
         self.send_event(event).await
     }
@@ -991,7 +1003,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let new_iteration = pb::NewIteration {
             iteration_id,
             block_env: Some(Self::build_pb_block_env(&block_env)),
-            block_hash: B256::ZERO.to_vec(), // Default for tests
+            block_hash: self.last_committed_block_hash.to_vec(),
             parent_beacon_block_root: Some(B256::ZERO.to_vec()), // Default for tests
         };
 

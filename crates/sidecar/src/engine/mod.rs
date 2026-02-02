@@ -1187,20 +1187,17 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         }
 
         // Safety fallback: `CommitHead` without prior `NewIteration`.
-        // Normal empty blocks should have NewIteration.
-        // Only warn/invalidate after baseline is established ie current_head > 0.
+        // Empty blocks should still receive NewIteration, treat this as unsafe state.
         if !self
             .current_block_iterations
             .contains_key(&block_execution_id)
         {
-            if self.current_head > U256::ZERO {
-                warn!(
-                    target = "engine",
-                    block_number = %commit_head.block_number,
-                    "CommitHead without NewIteration - invalidating cache"
-                );
-                self.invalidate_all(commit_head);
-            }
+            warn!(
+                target = "engine",
+                block_number = %commit_head.block_number,
+                "CommitHead without NewIteration - invalidating cache"
+            );
+            self.invalidate_all(commit_head);
 
             self.system_calls.cache_block_hash(
                 commit_head.block_number,
