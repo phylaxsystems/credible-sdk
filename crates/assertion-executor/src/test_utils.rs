@@ -251,8 +251,7 @@ pub async fn anvil_provider() -> (RootProvider<alloy_network::Ethereum>, AnvilIn
         .await
         .unwrap();
     provider.anvil_set_auto_mine(false).await.unwrap();
-    #[allow(deprecated)]
-    let provider = provider.root().clone().boxed();
+    let provider = provider.root().clone();
 
     (provider, anvil)
 }
