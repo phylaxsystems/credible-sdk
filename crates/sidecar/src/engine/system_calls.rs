@@ -419,13 +419,16 @@ impl SystemCalls {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assertion_executor::db::{
+        DatabaseCommit,
+        RollbackDb,
+        VersionDb,
+    };
     use revm::database::DBErrorMarker;
     use std::{
         cell::RefCell,
         collections::HashMap,
     };
-    use assertion_executor::db::{RollbackDb, VersionDb, DatabaseCommit};
-
 
     /// Simple mock database for testing
     #[derive(Debug, Default)]
@@ -798,7 +801,6 @@ mod tests {
 
     #[test]
     fn test_system_calls_via_state_mut_visible_to_reads() {
-
         let mock = MockDb::default();
         let mut version_db = VersionDb::new(mock);
         let system_calls = SystemCalls::new();
@@ -816,18 +818,29 @@ mod tests {
             .unwrap();
 
         // EIP-2935 and EIP-4788 contracts readable through VersionDb
-        assert!(version_db.basic_ref(HISTORY_STORAGE_ADDRESS).unwrap().is_some());
-        assert!(version_db.basic_ref(BEACON_ROOTS_ADDRESS).unwrap().is_some());
+        assert!(
+            version_db
+                .basic_ref(HISTORY_STORAGE_ADDRESS)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            version_db
+                .basic_ref(BEACON_ROOTS_ADDRESS)
+                .unwrap()
+                .is_some()
+        );
 
         // Verify EIP-2935 storage (slot = block_number % 8191 = 100)
         let slot = U256::from(100u64);
-        let stored = version_db.storage_ref(HISTORY_STORAGE_ADDRESS, slot).unwrap();
+        let stored = version_db
+            .storage_ref(HISTORY_STORAGE_ADDRESS, slot)
+            .unwrap();
         assert_eq!(stored, U256::from_be_bytes(B256::repeat_byte(0xab).0));
     }
 
     #[test]
     fn test_system_calls_persist_after_tx_commit() {
-
         let mock = MockDb::default();
         let mut version_db = VersionDb::new(mock);
         let system_calls = SystemCalls::new();
@@ -864,8 +877,18 @@ mod tests {
         DatabaseCommit::commit(&mut version_db, tx_state);
 
         // System contracts still accessible after tx commit
-        assert!(version_db.basic_ref(HISTORY_STORAGE_ADDRESS).unwrap().is_some());
-        assert!(version_db.basic_ref(BEACON_ROOTS_ADDRESS).unwrap().is_some());
+        assert!(
+            version_db
+                .basic_ref(HISTORY_STORAGE_ADDRESS)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            version_db
+                .basic_ref(BEACON_ROOTS_ADDRESS)
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(
             version_db.basic_ref(user_addr).unwrap().unwrap().balance,
             U256::from(1000)
@@ -899,27 +922,48 @@ mod tests {
         let addr2 = address!("2222222222222222222222222222222222222222");
 
         let mut tx1 = EvmState::default();
-        tx1.insert(addr1, Account {
-            info: AccountInfo { balance: U256::from(100), nonce: 1, code_hash: B256::ZERO, code: None },
-            transaction_id: 0,
-            storage: EvmStorage::default(),
-            status: AccountStatus::Touched,
-        });
+        tx1.insert(
+            addr1,
+            Account {
+                info: AccountInfo {
+                    balance: U256::from(100),
+                    nonce: 1,
+                    code_hash: B256::ZERO,
+                    code: None,
+                },
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Touched,
+            },
+        );
         DatabaseCommit::commit(&mut version_db, tx1);
 
         let mut tx2 = EvmState::default();
-        tx2.insert(addr2, Account {
-            info: AccountInfo { balance: U256::from(200), nonce: 1, code_hash: B256::ZERO, code: None },
-            transaction_id: 0,
-            storage: EvmStorage::default(),
-            status: AccountStatus::Touched,
-        });
+        tx2.insert(
+            addr2,
+            Account {
+                info: AccountInfo {
+                    balance: U256::from(200),
+                    nonce: 1,
+                    code_hash: B256::ZERO,
+                    code: None,
+                },
+                transaction_id: 0,
+                storage: EvmStorage::default(),
+                status: AccountStatus::Touched,
+            },
+        );
         DatabaseCommit::commit(&mut version_db, tx2);
 
         version_db.rollback_to(1).unwrap();
 
         // System calls are LOST after rollback (rebuilds from base_state)
-        assert!(version_db.basic_ref(HISTORY_STORAGE_ADDRESS).unwrap().is_none());
+        assert!(
+            version_db
+                .basic_ref(HISTORY_STORAGE_ADDRESS)
+                .unwrap()
+                .is_none()
+        );
 
         // tx1 visible, tx2 rolled back
         assert!(version_db.basic_ref(addr1).unwrap().is_some());
@@ -928,7 +972,6 @@ mod tests {
 
     #[test]
     fn test_different_timestamps_different_beacon_slots() {
-
         let mock = MockDb::default();
         let mut version_db = VersionDb::new(mock);
         let system_calls = SystemCalls::new();
@@ -962,43 +1005,18 @@ mod tests {
         let root_slot1 = U256::from((ts1 % HISTORY_BUFFER_LENGTH) + HISTORY_BUFFER_LENGTH);
         let root_slot2 = U256::from((ts2 % HISTORY_BUFFER_LENGTH) + HISTORY_BUFFER_LENGTH);
 
-        let stored1 = version_db.storage_ref(BEACON_ROOTS_ADDRESS, root_slot1).unwrap();
-        let stored2 = version_db.storage_ref(BEACON_ROOTS_ADDRESS, root_slot2).unwrap();
+        let stored1 = version_db
+            .storage_ref(BEACON_ROOTS_ADDRESS, root_slot1)
+            .unwrap();
+        let stored2 = version_db
+            .storage_ref(BEACON_ROOTS_ADDRESS, root_slot2)
+            .unwrap();
         assert_eq!(stored1, U256::from_be_bytes(B256::repeat_byte(0x11).0));
         assert_eq!(stored2, U256::from_be_bytes(B256::repeat_byte(0x22).0));
     }
 
     #[test]
-    fn test_eip2935_parent_hash_at_current_slot() {
-        use assertion_executor::db::VersionDb;
-
-        let mock = MockDb::default();
-        let mut version_db = VersionDb::new(mock);
-        let system_calls = SystemCalls::new();
-
-        // Block 100 receives parent hash (block 99's hash)
-        let parent_hash = B256::repeat_byte(0x99);
-        let config = SystemCallsConfig {
-            spec_id: SpecId::PRAGUE,
-            block_number: U256::from(100),
-            timestamp: U256::from(1700000000),
-            block_hash: parent_hash,
-            parent_beacon_block_root: Some(B256::ZERO), // Required for Prague (includes Cancun)
-        };
-
-        system_calls
-            .apply_pre_tx_system_calls(&config, version_db.state_mut())
-            .unwrap();
-
-        // Slot 100 contains parent hash
-        let slot = U256::from(100u64);
-        let stored = version_db.storage_ref(HISTORY_STORAGE_ADDRESS, slot).unwrap();
-        assert_eq!(stored, U256::from_be_bytes(parent_hash.0));
-    }
-
-    #[test]
     fn test_empty_block_system_calls_only() {
-
         let mock = MockDb::default();
         let mut version_db = VersionDb::new(mock);
         let system_calls = SystemCalls::new();
@@ -1019,11 +1037,27 @@ mod tests {
         assert_eq!(version_db.depth(), 0);
 
         // System contracts present
-        assert!(version_db.basic_ref(HISTORY_STORAGE_ADDRESS).unwrap().is_some());
-        assert!(version_db.basic_ref(BEACON_ROOTS_ADDRESS).unwrap().is_some());
+        assert!(
+            version_db
+                .basic_ref(HISTORY_STORAGE_ADDRESS)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            version_db
+                .basic_ref(BEACON_ROOTS_ADDRESS)
+                .unwrap()
+                .is_some()
+        );
 
         // Collapse finalizes to base state
         version_db.collapse_log();
-        assert!(version_db.base_state().basic_ref(HISTORY_STORAGE_ADDRESS).unwrap().is_some());
+        assert!(
+            version_db
+                .base_state()
+                .basic_ref(HISTORY_STORAGE_ADDRESS)
+                .unwrap()
+                .is_some()
+        );
     }
 }
