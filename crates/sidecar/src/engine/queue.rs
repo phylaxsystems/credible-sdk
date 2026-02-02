@@ -195,7 +195,7 @@ impl CommitHead {
 pub struct NewIteration {
     pub(crate) iteration_id: u64,
     pub(crate) block_env: BlockEnv,
-    /// Reauired block hash for EIP-2935, historical block hashes in states
+    /// Required parent block hash for EIP-2935, stored at current block's slot
     pub(crate) block_hash: B256,
     /// Required parent beacon block root for EIP-4788
     pub(crate) parent_beacon_block_root: Option<B256>,
