@@ -441,7 +441,6 @@ async fn test_execute_assertion_passing_failing_pair(mut instance: crate::utils:
 async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
     mut instance: crate::utils::LocalInstance,
 ) {
-    let initial_cache_resets = instance.cache_reset_count();
     let basefee = 10u64;
     let caller = counter_call().caller;
     let tx_block_number = instance.block_number + U256::from(1);
@@ -465,6 +464,10 @@ async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
         .send_block_with_txs(vec![(hash_pass, tx_pass), (hash_fail, tx_fail)])
         .await
         .unwrap();
+
+    // Capture cache resets after initial setup. The first send_block_with_txs() may cause one reset
+    // because CommitHead arrives before any NewIteration exists for that block.
+    let initial_cache_resets = instance.cache_reset_count();
 
     let tx_pass_id = TxExecutionId {
         block_number: tx_block_number,
@@ -511,7 +514,6 @@ async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
 async fn test_assertion_invalid_tx_reorg_keeps_count_in_sync(
     mut instance: crate::utils::LocalInstance,
 ) {
-    let initial_cache_resets = instance.cache_reset_count();
     let basefee = 10u64;
     let caller = counter_call().caller;
     let tx_block_number = instance.block_number + U256::from(1);
@@ -544,6 +546,10 @@ async fn test_assertion_invalid_tx_reorg_keeps_count_in_sync(
         ])
         .await
         .unwrap();
+
+    // Capture cache resets after initial setup. The first send_block_with_txs() may cause one reset
+    // because CommitHead arrives before any NewIteration exists for that block.
+    let initial_cache_resets = instance.cache_reset_count();
 
     let tx_pass_id = TxExecutionId {
         block_number: tx_block_number,
