@@ -23,11 +23,11 @@ struct ContentHashCacheInner {
     enabled: bool,
 }
 
-/// Three-layer dedup cache for transaction content hashes.
+/// Three-layer cache for transaction content hashes.
 ///
 /// 1. **Moka** – bounded in-memory LRU. Fastest path.
 /// 2. **Bloom filter** – fast negative when moka misses. Avoids MDBX reads.
-/// 3. **MDBX** – persistent write-through on every new entry; read on bloom positive.
+/// 3. **MDBX** – persistent store for known hashes; read on bloom positive.
 ///
 /// This type is cheaply cloneable (Arc-backed) and can be shared across threads.
 #[derive(Clone)]
@@ -81,10 +81,7 @@ impl ContentHashCache {
         }
 
         if count > 0 {
-            info!(
-                restored = count,
-                "ContentHashCache rebuilt from MDBX"
-            );
+            info!(restored = count, "ContentHashCache rebuilt from MDBX");
         }
 
         Ok(Self {
@@ -109,71 +106,109 @@ impl ContentHashCache {
         }
     }
 
-    /// Check whether `hash` is a known duplicate. If new, insert into all layers.
+    /// Returns `true` if `hash` is known (present in the cache), `false` otherwise.
     ///
-    /// Returns `true` if the hash was already seen (duplicate), `false` if new.
-    pub fn check_and_insert(&self, hash: B256, block: u64) -> bool {
+    /// Intended usage: the transport checks if a transaction is a known-invalidating
+    /// repeat, and the engine records hashes only when it observes an invalidation.
+    pub fn contains(&self, hash: B256) -> bool {
         if !self.inner.enabled {
             return false;
         }
 
-        // Layer 1: moka hit → duplicate
+        // Layer 1: moka hit → known
         if self.inner.moka.get(&hash).is_some() {
             counter!("sidecar_dedup_content_hash_hits_total").increment(1);
             return true;
         }
 
-        // Layer 2: bloom miss → definitely new
+        // Layer 2: bloom miss → definitely unknown
         let bloom_contains = {
             let bloom = self.inner.bloom.lock();
             bloom.contains(hash)
         };
 
         if !bloom_contains {
-            // New entry — insert into all layers
-            self.insert_all(hash, block);
             return false;
         }
 
         // Layer 3: bloom positive → check MDBX to distinguish true positive from false positive
-        if let Some(db) = &self.inner.db
-            && let Ok(tx) = db.env().tx()
-        {
-            let found: Option<Vec<u8>> = tx
-                .inner
-                .get(db.content_hashes_dbi(), hash.as_slice())
-                .unwrap_or(None);
-            if found.is_some() {
-                // True positive — duplicate
-                self.inner.moka.insert(hash, block);
-                counter!("sidecar_dedup_content_hash_hits_total").increment(1);
-                return true;
+        let Some(db) = &self.inner.db else {
+            counter!("sidecar_dedup_content_hash_db_unavailable_total").increment(1);
+            return false;
+        };
+
+        let tx = match db.env().tx() {
+            Ok(tx) => tx,
+            Err(_) => {
+                counter!("sidecar_dedup_content_hash_db_read_errors_total").increment(1);
+                return false;
             }
+        };
+
+        let found: Option<Vec<u8>> = match tx.inner.get(db.content_hashes_dbi(), hash.as_slice()) {
+            Ok(found) => found,
+            Err(_) => {
+                counter!("sidecar_dedup_content_hash_db_read_errors_total").increment(1);
+                return false;
+            }
+        };
+
+        if let Some(found) = found {
+            // True positive — known
+            // Value is informational (block number of invalidation).
+            let block = found
+                .as_slice()
+                .try_into()
+                .map(u64::from_be_bytes)
+                .unwrap_or(0);
+            self.inner.moka.insert(hash, block);
+            counter!("sidecar_dedup_content_hash_hits_total").increment(1);
+            return true;
         }
 
-        // Bloom false positive — treat as new
+        // Bloom false positive — treat as unknown
         counter!("sidecar_dedup_bloom_false_positives_total").increment(1);
-        self.insert_all(hash, block);
         false
     }
 
-    fn insert_all(&self, hash: B256, block: u64) {
+    /// Record a hash as invalidating, inserting into all layers.
+    pub fn record_invalidating(&self, hash: B256, block: u64) {
+        if !self.inner.enabled {
+            return;
+        }
+        counter!("sidecar_dedup_content_hash_inserts_total").increment(1);
         self.inner.moka.insert(hash, block);
         {
             let mut bloom = self.inner.bloom.lock();
             bloom.insert(hash);
         }
         // Write-through to MDBX
-        if let Some(db) = &self.inner.db
-            && let Ok(tx) = db.env().tx_mut()
-        {
-            let _ = tx.inner.put(
-                db.content_hashes_dbi(),
-                hash.as_slice(),
-                block.to_be_bytes(),
-                WriteFlags::empty(),
-            );
-            let _ = tx.commit();
+        if let Some(db) = &self.inner.db {
+            let tx = match db.env().tx_mut() {
+                Ok(tx) => tx,
+                Err(_) => {
+                    counter!("sidecar_dedup_content_hash_db_write_errors_total").increment(1);
+                    return;
+                }
+            };
+
+            if tx
+                .inner
+                .put(
+                    db.content_hashes_dbi(),
+                    hash.as_slice(),
+                    block.to_be_bytes(),
+                    WriteFlags::empty(),
+                )
+                .is_err()
+            {
+                counter!("sidecar_dedup_content_hash_db_write_errors_total").increment(1);
+                return;
+            }
+
+            if tx.commit().is_err() {
+                counter!("sidecar_dedup_content_hash_db_write_errors_total").increment(1);
+            }
         }
     }
 }
@@ -191,28 +226,29 @@ mod tests {
     }
 
     #[test]
-    fn new_entry_returns_false() {
+    fn unknown_hash_returns_false() {
         let (_dir, db) = open_test_db();
         let cache = ContentHashCache::new(db, 1000, 1000).unwrap();
         let hash = B256::from([0xaa; 32]);
-        assert!(!cache.check_and_insert(hash, 10));
+        assert!(!cache.contains(hash));
     }
 
     #[test]
-    fn duplicate_returns_true() {
+    fn record_then_contains_returns_true() {
         let (_dir, db) = open_test_db();
         let cache = ContentHashCache::new(db, 1000, 1000).unwrap();
         let hash = B256::from([0xbb; 32]);
-        assert!(!cache.check_and_insert(hash, 10));
-        assert!(cache.check_and_insert(hash, 11));
+        cache.record_invalidating(hash, 10);
+        assert!(cache.contains(hash));
     }
 
     #[test]
     fn disabled_cache_always_returns_false() {
         let cache = ContentHashCache::disabled();
         let hash = B256::from([0xcc; 32]);
-        assert!(!cache.check_and_insert(hash, 10));
-        assert!(!cache.check_and_insert(hash, 11));
+        assert!(!cache.contains(hash));
+        cache.record_invalidating(hash, 10);
+        assert!(!cache.contains(hash));
     }
 
     #[test]
@@ -224,14 +260,14 @@ mod tests {
         let hash_a = B256::from([0x01; 32]);
         let hash_b = B256::from([0x02; 32]);
 
-        assert!(!cache.check_and_insert(hash_a, 10));
-        assert!(!cache.check_and_insert(hash_b, 11));
+        cache.record_invalidating(hash_a, 10);
+        cache.record_invalidating(hash_b, 11);
 
         // Force moka eviction
         cache.inner.moka.run_pending_tasks();
 
         // hash_a should still be found via bloom + MDBX
-        assert!(cache.check_and_insert(hash_a, 12));
+        assert!(cache.contains(hash_a));
     }
 
     #[test]
@@ -245,14 +281,15 @@ mod tests {
         {
             let db = Arc::new(SidecarDb::open(&path).unwrap());
             let cache = ContentHashCache::new(db, 1000, 1000).unwrap();
-            assert!(!cache.check_and_insert(hash, 42));
+            cache.record_invalidating(hash, 42);
+            assert!(cache.contains(hash));
         }
 
         // Phase 2: reopen — should find it
         {
             let db = Arc::new(SidecarDb::open(&path).unwrap());
             let cache = ContentHashCache::new(db, 1000, 1000).unwrap();
-            assert!(cache.check_and_insert(hash, 43));
+            assert!(cache.contains(hash));
         }
     }
 
@@ -270,7 +307,8 @@ mod tests {
                         bytes[0] = thread_id;
                         bytes[1] = i;
                         let hash = B256::from(bytes);
-                        cache.check_and_insert(hash, u64::from(i));
+                        cache.record_invalidating(hash, u64::from(i));
+                        let _ = cache.contains(hash);
                     }
                 })
             })

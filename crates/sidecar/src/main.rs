@@ -266,16 +266,21 @@ async fn main() -> anyhow::Result<()> {
         // Determine if we need the shared SidecarDb (for observer OR dedup cache)
         let observer_configured = config.credible.transaction_observer_endpoint.is_some()
             && config.credible.transaction_observer_auth_token.is_some()
-            && config.credible.transaction_observer_endpoint_rps_max.is_some()
-            && config.credible.transaction_observer_poll_interval_ms.is_some();
+            && config
+                .credible
+                .transaction_observer_endpoint_rps_max
+                .is_some()
+            && config
+                .credible
+                .transaction_observer_poll_interval_ms
+                .is_some();
         let dedup_enabled = config.transport.content_hash_dedup_enabled;
 
         let sidecar_db: Option<Arc<SidecarDb>> =
             if (observer_configured || dedup_enabled) && config.sidecar_db_path.is_some() {
-                let db_path = config
-                    .sidecar_db_path
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("sidecar_db_path required when observer or dedup is enabled"))?;
+                let db_path = config.sidecar_db_path.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("sidecar_db_path required when observer or dedup is enabled")
+                })?;
                 Some(Arc::new(SidecarDb::open(db_path).map_err(|e| {
                     anyhow::anyhow!("Failed to open sidecar database: {e}")
                 })?))
@@ -293,7 +298,9 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .map_err(|e| anyhow::anyhow!("Failed to create content hash cache: {e}"))?
             } else {
-                warn!("Content hash dedup enabled but sidecar_db_path not configured, disabling dedup");
+                warn!(
+                    "Content hash dedup enabled but sidecar_db_path not configured, disabling dedup"
+                );
                 ContentHashCache::disabled()
             }
         } else {
@@ -306,12 +313,7 @@ async fn main() -> anyhow::Result<()> {
             config.credible.transaction_observer_endpoint_rps_max,
             config.credible.transaction_observer_poll_interval_ms,
         ) {
-            (
-                Some(endpoint),
-                Some(auth_token),
-                Some(endpoint_rps_max),
-                Some(poll_interval_ms),
-            ) => {
+            (Some(endpoint), Some(auth_token), Some(endpoint_rps_max), Some(poll_interval_ms)) => {
                 Some(TransactionObserverConfig {
                     endpoint: endpoint.clone(),
                     auth_token: auth_token.expose().to_string(),
@@ -356,6 +358,7 @@ async fn main() -> anyhow::Result<()> {
         );
         let result_event_rx = Some(result_rx);
 
+        let invalidating_tx_cache = content_hash_cache.clone();
         let mut transport = create_transport_from_args(
             &config,
             transport_tx_sender,
@@ -384,6 +387,7 @@ async fn main() -> anyhow::Result<()> {
                 .overlay_cache_invalidation_every_block
                 .unwrap_or(false),
             incident_report_tx,
+            invalidating_tx_cache,
             #[cfg(feature = "cache_validation")]
             Some(&config.credible.cache_checker_ws_url),
         )
@@ -391,14 +395,10 @@ async fn main() -> anyhow::Result<()> {
         let (engine_handle, engine_exited) = engine.spawn(Arc::clone(&shutdown_flag))?;
         thread_handles.engine = Some(engine_handle);
 
-        let observer_exited_rx = match (
-            transaction_observer_config,
-            incident_report_rx,
-            sidecar_db,
-        ) {
+        let observer_exited_rx = match (transaction_observer_config, incident_report_rx, sidecar_db)
+        {
             (Some(obs_config), Some(incident_rx), Some(db)) => {
-                let transaction_observer =
-                    TransactionObserver::new(obs_config, incident_rx, db)?;
+                let transaction_observer = TransactionObserver::new(obs_config, incident_rx, db)?;
                 let (observer_handle, observer_exited) =
                     transaction_observer.spawn(Arc::clone(&shutdown_flag))?;
                 thread_handles.transaction_observer = Some(observer_handle);

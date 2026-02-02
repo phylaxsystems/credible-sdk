@@ -771,22 +771,16 @@ impl GrpcService {
                 let queue_tx = decode_transaction(&transaction)
                     .map_err(|e| Status::invalid_argument(format!("invalid transaction: {e}")))?;
 
-                // Content-hash deduplication: skip transactions with identical content
+                // Content-hash filter: skip known-invalidating transactions with identical content
                 // (same calldata, value, etc.) even if nonce/gas parameters differ.
                 if let TxQueueContents::Tx(ref tx) = queue_tx {
                     let content_hash = tx_content_hash(&tx.tx_env);
-                    let block_number = tx.tx_execution_id.block_number.saturating_to::<u64>();
-                    if self
-                        .inner
-                        .content_hash_cache
-                        .check_and_insert(content_hash, block_number)
-                    {
+                    if self.inner.content_hash_cache.contains(content_hash) {
                         info!(
                             tx_hash = ?tx.tx_execution_id.tx_hash,
                             content_hash = ?content_hash,
                             "Invalidating content hash duplicate, skipping"
                         );
-                        counter!("sidecar_dedup_content_hash_hits_total").increment(1);
                         return Ok(());
                     }
                 }

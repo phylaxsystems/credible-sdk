@@ -456,8 +456,7 @@ fn resolve_config(file: ConfigFile) -> Result<Config, ConfigError> {
     let transport = resolve_transport(&transport_file)?;
     let state = resolve_state(&state_file)?;
 
-    let sidecar_db_path: Option<String> =
-        parse_env("SIDECAR_DB_PATH")?.or(file.sidecar_db_path);
+    let sidecar_db_path: Option<String> = parse_env("SIDECAR_DB_PATH")?.or(file.sidecar_db_path);
 
     Ok(Config {
         chain,
@@ -1019,6 +1018,9 @@ mod tests {
 
     #[test]
     fn test_from_file_success() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+
         // Create a temporary file with valid config
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(temp_file, "{}", valid_config_json()).unwrap();
@@ -1363,6 +1365,9 @@ mod tests {
 
     #[test]
     fn test_chain_config_different_spec_ids() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(
             temp_file,

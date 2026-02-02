@@ -280,6 +280,7 @@ impl CommonSetup {
             Duration::from_millis(20),
             false,
             incident_sender,
+            ContentHashCache::disabled(),
             #[cfg(feature = "cache_validation")]
             Some(&self.eth_rpc_source_http_mock.ws_url()),
         )

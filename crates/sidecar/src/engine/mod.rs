@@ -77,6 +77,10 @@ use crate::{
         IncidentReportSender,
         ReconstructableTx,
     },
+    transport::invalidation_dupe::{
+        ContentHashCache,
+        tx_content_hash,
+    },
 };
 use assertion_executor::primitives::{
     EVMError,
@@ -325,6 +329,8 @@ pub struct CoreEngine<DB> {
     incident_sender: Option<IncidentReportSender>,
     /// Cache whether incident reporting is enabled.
     report_incidents: bool,
+    /// Cache of known-invalidating transaction content hashes.
+    invalidating_tx_cache: ContentHashCache,
     /// Core engines instance of the assertion executor, executes transactions and assertions
     assertion_executor: AssertionExecutor,
     /// Stores results of executed transactions
@@ -376,6 +382,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         source_monitoring_period: Duration,
         overlay_cache_invalidation_every_block: bool,
         incident_sender: Option<IncidentReportSender>,
+        invalidating_tx_cache: ContentHashCache,
         #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
     ) -> Self {
         let report_incidents = incident_sender.is_some();
@@ -407,6 +414,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             tx_receiver,
             incident_sender,
             report_incidents,
+            invalidating_tx_cache,
             assertion_executor,
             transaction_results: TransactionsResults::new(
                 state_results,
@@ -707,6 +715,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         };
 
         let is_valid = rax.is_valid();
+        if !is_valid {
+            let content_hash = tx_content_hash(tx_env);
+            let block_number = tx_execution_id.block_number.saturating_to::<u64>();
+            self.invalidating_tx_cache
+                .record_invalidating(content_hash, block_number);
+        }
         let prev_txs = if should_report && !is_valid {
             Some(current_block_iteration.incident_txs.clone())
         } else {

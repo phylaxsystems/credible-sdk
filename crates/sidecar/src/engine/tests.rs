@@ -82,6 +82,7 @@ impl<DB> CoreEngine<DB> {
             tx_receiver,
             incident_sender: None,
             report_incidents: false,
+            invalidating_tx_cache: ContentHashCache::disabled(),
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
                 AssertionStore::new_ephemeral(),
@@ -209,6 +210,7 @@ async fn create_test_engine_with_timeout(
         timeout / 2, // We divide by 2 to ensure we read the cache status before we timeout
         false,
         None,
+        ContentHashCache::disabled(),
         #[cfg(feature = "cache_validation")]
         None,
     )
@@ -1690,6 +1692,7 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
         Duration::from_millis(20),
         false,
         None,
+        ContentHashCache::disabled(),
         #[cfg(feature = "cache_validation")]
         None,
     )
@@ -1831,6 +1834,7 @@ async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
         Duration::from_millis(20),
         false,
         None,
+        ContentHashCache::disabled(),
         #[cfg(feature = "cache_validation")]
         None,
     )
