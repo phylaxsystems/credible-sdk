@@ -26,6 +26,10 @@ pub struct GrpcTransportConfig {
     pub bind_addr: SocketAddr,
     /// Max age for pending receive entries.
     pub pending_receive_ttl: Duration,
+    /// Maximum number of stored transaction results.
+    ///
+    /// This bounds transport-level early results (e.g. known-invalidating duplicates).
+    pub transaction_results_max_capacity: usize,
     /// Content-hash dedup cache configuration.
     pub dedup_cache: DedupCacheConfig,
 }
@@ -35,6 +39,7 @@ impl Default for GrpcTransportConfig {
         Self {
             bind_addr: "127.0.0.1:9090".parse().unwrap(),
             pending_receive_ttl: Duration::from_secs(5),
+            transaction_results_max_capacity: 10_000,
             dedup_cache: DedupCacheConfig::default(),
         }
     }
@@ -51,6 +56,7 @@ impl TryFrom<TransportConfig> for GrpcTransportConfig {
         Ok(Self {
             bind_addr: value.bind_addr.parse()?,
             pending_receive_ttl,
+            transaction_results_max_capacity: 10_000,
             dedup_cache: DedupCacheConfig {
                 enabled: value.content_hash_dedup_enabled,
                 moka_capacity: value.content_hash_dedup_moka_capacity,

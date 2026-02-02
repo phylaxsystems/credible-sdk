@@ -27,10 +27,10 @@
 
 mod event_id_deduplication;
 pub mod grpc;
+pub mod invalidation_dupe;
 pub mod mock;
 pub(crate) mod rpc_metrics;
 pub mod transactions_results;
-pub mod invalidation_dupe;
 
 use crate::{
     engine::queue::TransactionQueueSender,

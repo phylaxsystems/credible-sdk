@@ -766,6 +766,7 @@ impl LocalInstanceGrpcDriver {
         let config = GrpcTransportConfig {
             bind_addr: address,
             pending_receive_ttl: Duration::from_secs(5),
+            transaction_results_max_capacity: 10_000,
             dedup_cache: DedupCacheConfig::default(),
         };
 

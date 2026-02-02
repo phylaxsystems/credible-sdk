@@ -155,9 +155,10 @@ impl Transport for GrpcTransport {
             tx_sender,
             bind_addr: config.bind_addr,
             shutdown_token: CancellationToken::new(),
-            transactions_results: QueryTransactionsResults::new(
+            transactions_results: QueryTransactionsResults::new_with_early_results_capacity(
                 state_results,
                 config.pending_receive_ttl,
+                config.transaction_results_max_capacity,
             ),
             result_event_rx: None,
             event_id_buffer_capacity,
@@ -230,9 +231,10 @@ impl GrpcTransport {
             tx_sender,
             bind_addr: config.bind_addr,
             shutdown_token: CancellationToken::new(),
-            transactions_results: QueryTransactionsResults::new(
+            transactions_results: QueryTransactionsResults::new_with_early_results_capacity(
                 state_results,
                 config.pending_receive_ttl,
+                config.transaction_results_max_capacity,
             ),
             result_event_rx: Some(result_event_rx),
             event_id_buffer_capacity,

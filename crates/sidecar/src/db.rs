@@ -41,8 +41,10 @@ impl SidecarDb {
 
         let path = Path::new(path);
         if !path.exists() {
-            std::fs::create_dir_all(path).map_err(|e| SidecarDbError::Open {
-                reason: format!("failed to create db directory: {e}"),
+            std::fs::create_dir_all(path).map_err(|e| {
+                SidecarDbError::Open {
+                    reason: format!("failed to create db directory: {e}"),
+                }
             })?;
         }
 
@@ -53,25 +55,33 @@ impl SidecarDb {
             }
         })?;
 
-        let tx = env.tx_mut().map_err(|e| SidecarDbError::Open {
-            reason: e.to_string(),
+        let tx = env.tx_mut().map_err(|e| {
+            SidecarDbError::Open {
+                reason: e.to_string(),
+            }
         })?;
         let content_hashes_db = tx
             .inner
             .create_db(Some(TX_CONTENT_HASHES_TABLE), DatabaseFlags::default())
-            .map_err(|e| SidecarDbError::Open {
-                reason: e.to_string(),
+            .map_err(|e| {
+                SidecarDbError::Open {
+                    reason: e.to_string(),
+                }
             })?;
         let incident_reports_db = tx
             .inner
             .create_db(Some(INCIDENT_REPORTS_TABLE), DatabaseFlags::default())
-            .map_err(|e| SidecarDbError::Open {
-                reason: e.to_string(),
+            .map_err(|e| {
+                SidecarDbError::Open {
+                    reason: e.to_string(),
+                }
             })?;
         let content_hashes_dbi = content_hashes_db.dbi();
         let incident_reports_dbi = incident_reports_db.dbi();
-        tx.commit().map_err(|e| SidecarDbError::Open {
-            reason: e.to_string(),
+        tx.commit().map_err(|e| {
+            SidecarDbError::Open {
+                reason: e.to_string(),
+            }
         })?;
 
         Ok(Self {

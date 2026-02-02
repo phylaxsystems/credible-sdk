@@ -776,10 +776,21 @@ impl GrpcService {
                 if let TxQueueContents::Tx(ref tx) = queue_tx {
                     let content_hash = tx_content_hash(&tx.tx_env);
                     if self.inner.content_hash_cache.contains(content_hash) {
+                        // Return an immediate assertion-failed result without enqueueing
+                        // the transaction for execution.
+                        let early_result = TransactionResult::ValidationCompleted {
+                            execution_result: ExecutionResult::Revert {
+                                gas_used: 0,
+                                output: Bytes::new(),
+                            },
+                            is_valid: false,
+                        };
+                        self.transactions_results
+                            .add_early_transaction_result(tx.tx_execution_id, &early_result);
                         info!(
                             tx_hash = ?tx.tx_execution_id.tx_hash,
                             content_hash = ?content_hash,
-                            "Invalidating content hash duplicate, skipping"
+                            "Known-invalidating content hash duplicate, early rejecting"
                         );
                         return Ok(());
                     }
@@ -1204,6 +1215,108 @@ impl SidecarTransport for GrpcService {
                 outcome: Some(GetTransactionOutcome::NotFound(not_found_hash)),
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        TransactionsState,
+        db::SidecarDb,
+    };
+    use std::{
+        sync::{
+            Arc,
+            atomic::AtomicU64,
+        },
+        time::Duration,
+    };
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn known_invalidating_duplicate_emits_early_assertion_failed_result() {
+        let (tx_sender, tx_receiver) = flume::unbounded();
+        let transactions_state = TransactionsState::new();
+        let transactions_results =
+            QueryTransactionsResults::new(Arc::clone(&transactions_state), Duration::from_secs(5));
+
+        let dir = TempDir::new().unwrap();
+        let db = Arc::new(SidecarDb::open(&dir.path().to_string_lossy()).unwrap());
+        let content_hash_cache = ContentHashCache::new(db, 1_000, 1_000).unwrap();
+
+        let service = GrpcService::new(
+            tx_sender,
+            transactions_results,
+            None,
+            100,
+            content_hash_cache.clone(),
+        );
+        service
+            .inner
+            .commit_head_seen
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        let pb_tx_env = TransactionEnv {
+            tx_type: 0,
+            caller: Address::ZERO.as_slice().to_vec(),
+            gas_limit: 21_000,
+            gas_price: 1u128.to_be_bytes().to_vec(),
+            transact_to: Address::ZERO.as_slice().to_vec(),
+            value: U256::ZERO.to_be_bytes::<32>().to_vec(),
+            data: vec![0x01, 0x02],
+            nonce: 0,
+            chain_id: Some(1),
+            access_list: vec![],
+            gas_priority_fee: None,
+            blob_hashes: vec![],
+            max_fee_per_blob_gas: vec![],
+            authorization_list: vec![],
+        };
+
+        // Seed the cache with the invalidating content hash.
+        let decoded_tx_env = decode_tx_env(&pb_tx_env).unwrap();
+        let content_hash = tx_content_hash(&decoded_tx_env);
+        content_hash_cache.record_invalidating(content_hash, 1);
+
+        let pb_tx_execution_id = PbTxExecutionId {
+            block_number: U256::from(1u64).to_be_bytes::<32>().to_vec(),
+            iteration_id: 1,
+            tx_hash: [0x11u8; 32].to_vec(),
+            index: 0,
+        };
+        let tx_execution_id = decode_tx_execution_id(&pb_tx_execution_id).unwrap();
+
+        let tx = Transaction {
+            tx_execution_id: Some(pb_tx_execution_id),
+            tx_env: Some(pb_tx_env),
+            prev_tx_hash: None,
+        };
+
+        let event = Event {
+            event_id: 1,
+            event: Some(EventVariant::Transaction(tx)),
+        };
+
+        let events_processed = AtomicU64::new(0);
+        service.process_event(event, &events_processed).unwrap();
+
+        // Transaction should not be forwarded to the engine.
+        assert!(tx_receiver.try_recv().is_err());
+
+        // But it should have an immediate assertion-failed result stored.
+        let stored = transactions_state
+            .get_transaction_result(&tx_execution_id)
+            .expect("early result should be stored");
+
+        let expected = TransactionResult::ValidationCompleted {
+            execution_result: ExecutionResult::Revert {
+                gas_used: 0,
+                output: Bytes::new(),
+            },
+            is_valid: false,
+        };
+        assert_eq!(*stored, expected);
     }
 }
 

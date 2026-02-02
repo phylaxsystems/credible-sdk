@@ -88,11 +88,13 @@ pub fn tx_content_hash(tx: &TxEnv) -> B256 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::eips::eip7702::{
-        Authorization,
-        SignedAuthorization,
+    use alloy::{
+        eips::eip7702::{
+            Authorization,
+            SignedAuthorization,
+        },
+        signers::Either,
     };
-    use alloy::signers::Either;
     use alloy_primitives::U256;
     use revm::{
         context::transaction::{
