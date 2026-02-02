@@ -1186,6 +1186,38 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             self.check_cache(commit_head, &block_execution_id);
         }
 
+        // Safety fallback: `CommitHead` without prior `NewIteration`.
+        // Normal empty blocks should have NewIteration.
+        // Only warn/invalidate after baseline is established ie current_head > 0.
+        if !self.current_block_iterations.contains_key(&block_execution_id) {
+            if self.current_head > U256::ZERO {
+                warn!(
+                    target = "engine",
+                    block_number = %commit_head.block_number,
+                    "CommitHead without NewIteration - invalidating cache"
+                );
+                self.invalidate_all(commit_head);
+            }
+
+            self.system_calls.cache_block_hash(
+                commit_head.block_number,
+                commit_head.block_hash,
+                &self.cache,
+            );
+
+            self.sources.set_block_number(commit_head.block_number);
+            self.current_head = commit_head.block_number;
+
+            self.block_metrics.block_processing_duration = block_processing_time.elapsed();
+            self.block_metrics.current_height = commit_head.block_number;
+            self.block_metrics.commit();
+            self.block_metrics.reset();
+            *block_processing_time = Instant::now();
+            *processed_blocks += 1;
+
+            return Ok(());
+        }
+
         if let Some(iteration) = self.current_block_iterations.get(&block_execution_id)
             && iteration.version_db.last_commit_was_empty()
         {
