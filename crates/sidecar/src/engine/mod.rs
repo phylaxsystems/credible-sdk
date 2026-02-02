@@ -1128,7 +1128,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             spec_id,
             block_env.number,
             block_env.timestamp,
-            new_iteration.block_hash,
+            new_iteration.parent_block_hash,
             new_iteration.parent_beacon_block_root,
         );
 
@@ -1147,7 +1147,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             gas_limit = block_env.gas_limit,
             base_fee = ?block_env.basefee,
             iteration_id = block_execution_id.iteration_id,
-            block_hash = ?new_iteration.block_hash,
+            parent_block_hash = ?new_iteration.parent_block_hash,
             parent_beacon_block_root = ?new_iteration.parent_beacon_block_root,
             "Iteration successfully created with system calls applied"
         );

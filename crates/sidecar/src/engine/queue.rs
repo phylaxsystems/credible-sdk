@@ -196,7 +196,7 @@ pub struct NewIteration {
     pub(crate) iteration_id: u64,
     pub(crate) block_env: BlockEnv,
     /// Required parent block hash for EIP-2935, stored at current block's slot
-    pub(crate) block_hash: B256,
+    pub(crate) parent_block_hash: B256,
     /// Required parent beacon block root for EIP-4788
     pub(crate) parent_beacon_block_root: Option<B256>,
 }
@@ -206,13 +206,13 @@ impl NewIteration {
     pub fn new(
         iteration_id: u64,
         block_env: BlockEnv,
-        block_hash: B256,
+        parent_block_hash: B256,
         parent_beacon_block_root: Option<B256>,
     ) -> Self {
         Self {
             iteration_id,
             block_env,
-            block_hash,
+            parent_block_hash,
             parent_beacon_block_root,
         }
     }

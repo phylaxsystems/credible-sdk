@@ -1003,7 +1003,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let new_iteration = pb::NewIteration {
             iteration_id,
             block_env: Some(Self::build_pb_block_env(&block_env)),
-            block_hash: self.last_committed_block_hash.to_vec(),
+            parent_block_hash: self.last_committed_block_hash.to_vec(),
             parent_beacon_block_root: Some(B256::ZERO.to_vec()), // Default for tests
         };
 

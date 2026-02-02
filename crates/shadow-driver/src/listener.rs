@@ -1443,7 +1443,7 @@ impl Listener {
                         event: Some(EventVariant::NewIteration(NewIteration {
                             iteration_id: DEFAULT_ITERATION_ID,
                             block_env: Some(block_env.clone()),
-                            block_hash: parent_block_hash.clone(),
+                            parent_block_hash: parent_block_hash.clone(),
                             parent_beacon_block_root: parent_beacon_block_root.clone(),
                         })),
                     }

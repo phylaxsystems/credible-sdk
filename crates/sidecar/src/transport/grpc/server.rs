@@ -489,8 +489,8 @@ fn decode_new_iteration(pb: PbNewIteration) -> Result<NewIteration, Status> {
             .ok_or_else(|| Status::invalid_argument(error_messages::BLOCK_ENV_REQUIRED))?,
     )?;
 
-    // Decode block_hash for EIP-2935
-    let block_hash = decode_b256(&pb.block_hash)
+    // Decode parent_block_hash for EIP-2935
+    let parent_block_hash = decode_b256(&pb.parent_block_hash)
         .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_HASH))?;
 
     // Decode parent_beacon_block_root for EIP-4788
@@ -505,7 +505,7 @@ fn decode_new_iteration(pb: PbNewIteration) -> Result<NewIteration, Status> {
     Ok(NewIteration::new(
         pb.iteration_id,
         block_env,
-        block_hash,
+        parent_block_hash,
         parent_beacon_block_root,
     ))
 }
