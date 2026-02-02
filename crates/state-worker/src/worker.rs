@@ -6,7 +6,7 @@
 use crate::{
     critical,
     genesis::GenesisState,
-    metrics::WorkerMetrics,
+    metrics,
     state::{
         BlockStateUpdateBuilder,
         TraceProvider,
@@ -59,7 +59,6 @@ where
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
     system_calls: SystemCalls,
-    metrics: WorkerMetrics,
 }
 
 impl<WR> StateWorker<WR>
@@ -81,7 +80,6 @@ where
             writer_reader,
             genesis_state,
             system_calls,
-            metrics: WorkerMetrics::new(),
         }
     }
 
@@ -252,7 +250,7 @@ where
             Ok(update) => update,
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to trace block");
-                self.metrics.record_block_failure();
+                metrics::record_block_failure();
                 return Err(anyhow!("failed to trace block {block_number}"));
             }
         };
@@ -262,11 +260,11 @@ where
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
-                self.metrics.record_commit(block_number, &stats);
+                metrics::record_commit(block_number, &stats);
             }
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to persist block");
-                self.metrics.record_block_failure();
+                metrics::record_block_failure();
                 return Err(anyhow!("failed to persist block {block_number}"));
             }
         }
@@ -368,11 +366,11 @@ where
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
-                self.metrics.record_commit(0, &stats);
+                metrics::record_commit(0, &stats);
             }
             Err(err) => {
                 critical!(error = ?err, block_number = 0, "failed to persist genesis block");
-                self.metrics.record_block_failure();
+                metrics::record_block_failure();
                 return Err(anyhow!("failed to persist genesis block"));
             }
         }
