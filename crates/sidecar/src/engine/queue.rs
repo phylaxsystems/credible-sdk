@@ -148,8 +148,8 @@ pub struct CommitHead {
     pub(crate) last_tx_hash: Option<TxHash>,
     /// Number of txs included in the block.
     pub(crate) n_transactions: u64,
-    /// Current block hash for EIP-2935 (Prague+)
-    /// Required for historical block hash storage
+    /// Current block hash used for BLOCKHASH opcode cache
+    /// EIP-2935 system call uses parent hash from `NewIteration`
     pub(crate) block_hash: B256,
     /// Parent beacon block root for EIP-4788 (Cancun+)
     /// Required for beacon chain root storage
