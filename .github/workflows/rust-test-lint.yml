@@ -95,4 +95,4 @@ jobs:
         run: forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol
 
       - name: Run state-worker tests
-        run: cargo nextest run --package mdbx --package state-worker --locked --cargo-profile release --no-default-features --test-threads=2
+        run: cargo nextest run --package mdbx --package state-worker --locked --cargo-profile release --test-threads=2
