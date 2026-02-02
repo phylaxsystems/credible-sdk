@@ -263,7 +263,7 @@ async fn test_core_engine_errors_when_no_synced_sources() {
     let new_iteration = queue::NewIteration {
         block_env,
         iteration_id: 0,
-        parent_block_hash: B256::ZERO,
+        parent_block_hash: Some(B256::ZERO),
         parent_beacon_block_root: Some(B256::ZERO),
     };
 
@@ -299,7 +299,7 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     let queue_iteration_1 = queue::NewIteration {
         block_env: block_env_1,
         iteration_id: 0,
-        parent_block_hash: B256::ZERO,
+        parent_block_hash: Some(B256::ZERO),
         parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&queue_iteration_1).unwrap();
@@ -331,7 +331,7 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     let queue_iteration_mismatch = queue::NewIteration {
         block_env: block_env_mismatched,
         iteration_id: 0,
-        parent_block_hash: B256::ZERO,
+        parent_block_hash: Some(B256::ZERO),
         parent_beacon_block_root: Some(B256::ZERO),
     };
     let iteration_result = engine.process_iteration(&queue_iteration_mismatch);
@@ -1700,7 +1700,7 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
         .process_iteration(&NewIteration::new(
             1,
             block_env,
-            B256::ZERO,
+            Some(B256::ZERO),
             Some(B256::ZERO),
         ))
         .unwrap();
@@ -1862,7 +1862,7 @@ async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
         .process_iteration(&NewIteration::new(
             1,
             block_env_2,
-            B256::ZERO,
+            Some(B256::ZERO),
             Some(B256::ZERO),
         ))
         .unwrap();
@@ -3225,7 +3225,7 @@ fn test_ring_buffer_and_slot_calculations() {
         spec_id: SpecId::PRAGUE,
         block_number: U256::from(block_number),
         timestamp: U256::from(1234567890),
-        block_hash: hash,
+        block_hash: Some(hash),
         parent_beacon_block_root: None,
     };
 
@@ -3246,7 +3246,7 @@ fn test_ring_buffer_and_slot_calculations() {
         spec_id: SpecId::CANCUN,
         block_number: U256::from(100),
         timestamp: U256::from(timestamp),
-        block_hash: B256::ZERO,
+        block_hash: Some(B256::ZERO),
         parent_beacon_block_root: Some(beacon_root),
     };
 
@@ -3296,7 +3296,7 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::SHANGHAI,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: B256::repeat_byte(0x11),
+        block_hash: Some(B256::repeat_byte(0x11)),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
@@ -3312,7 +3312,7 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::CANCUN,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: B256::repeat_byte(0x11),
+        block_hash: Some(B256::repeat_byte(0x11)),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
@@ -3328,7 +3328,7 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::PRAGUE,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: B256::repeat_byte(0x11),
+        block_hash: Some(B256::repeat_byte(0x11)),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
@@ -3407,7 +3407,7 @@ async fn test_reverted_transactions_are_counted() {
     let new_iteration = queue::NewIteration {
         block_env: block_env.clone(),
         iteration_id: 0,
-        parent_block_hash: B256::ZERO,
+        parent_block_hash: Some(B256::ZERO),
         parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&new_iteration).unwrap();
@@ -3480,7 +3480,7 @@ async fn test_invalid_transactions_not_counted() {
     let new_iteration = queue::NewIteration {
         block_env: block_env.clone(),
         iteration_id: 0,
-        parent_block_hash: B256::ZERO,
+        parent_block_hash: Some(B256::ZERO),
         parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&new_iteration).unwrap();
@@ -3542,7 +3542,7 @@ async fn test_mixed_valid_and_invalid_transactions_counting() {
     let new_iteration = queue::NewIteration {
         block_env: block_env.clone(),
         iteration_id: 0,
-        parent_block_hash: B256::ZERO,
+        parent_block_hash: Some(B256::ZERO),
         parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&new_iteration).unwrap();

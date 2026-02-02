@@ -197,7 +197,7 @@ fn create_new_iteration(block: u64, iteration: u64) -> TxQueueContents {
     TxQueueContents::NewIteration(NewIteration::new(
         iteration,
         block_env,
-        B256::ZERO,
+        Some(B256::ZERO),
         Some(B256::ZERO),
     ))
 }

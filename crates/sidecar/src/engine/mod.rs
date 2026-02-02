@@ -1245,7 +1245,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 spec_id,
                 commit_head.block_number,
                 commit_head.timestamp,
-                commit_head.block_hash,
+                Some(commit_head.block_hash),
                 commit_head.parent_beacon_block_root,
             );
             canonical_db

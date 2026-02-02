@@ -490,7 +490,12 @@ fn decode_new_iteration(pb: PbNewIteration) -> Result<NewIteration, Status> {
     )?;
 
     // Decode parent_block_hash for EIP-2935
-    let parent_block_hash = decode_b256(&pb.parent_block_hash)
+    let parent_block_hash = pb
+        .parent_block_hash
+        .as_ref()
+        .filter(|b| !b.is_empty())
+        .map(|b| decode_b256(b))
+        .transpose()
         .map_err(|_| Status::invalid_argument(error_messages::INVALID_BLOCK_HASH))?;
 
     // Decode parent_beacon_block_root for EIP-4788

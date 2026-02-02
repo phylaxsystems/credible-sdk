@@ -1431,7 +1431,7 @@ impl Listener {
         let block_number = block.header.number;
         let block_env = Self::build_block_env(block);
         // Parent block hash for EIP-2935, as we apply it for every iteration
-        let parent_block_hash = block.header.parent_hash.to_vec();
+        let parent_block_hash = Some(block.header.parent_hash.to_vec());
         // Parent beacon block root for EIP-4788
         let parent_beacon_block_root = block.header.parent_beacon_block_root.map(|h| h.to_vec());
 

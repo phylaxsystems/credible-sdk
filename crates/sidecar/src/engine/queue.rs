@@ -195,9 +195,9 @@ impl CommitHead {
 pub struct NewIteration {
     pub(crate) iteration_id: u64,
     pub(crate) block_env: BlockEnv,
-    /// Required parent block hash for EIP-2935, stored at current block's slot
-    pub(crate) parent_block_hash: B256,
-    /// Required parent beacon block root for EIP-4788
+    /// Parent block hash for EIP-2935, stored at current block's slot.
+    pub(crate) parent_block_hash: Option<B256>,
+    /// Parent beacon block root for EIP-4788.
     pub(crate) parent_beacon_block_root: Option<B256>,
 }
 
@@ -206,7 +206,7 @@ impl NewIteration {
     pub fn new(
         iteration_id: u64,
         block_env: BlockEnv,
-        parent_block_hash: B256,
+        parent_block_hash: Option<B256>,
         parent_beacon_block_root: Option<B256>,
     ) -> Self {
         Self {
