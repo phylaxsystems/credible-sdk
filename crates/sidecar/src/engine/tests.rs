@@ -801,13 +801,15 @@ async fn test_core_engine_reorg_valid_then_previous_rejected(
 async fn test_core_engine_reorg_followed_by_blockenv_with_last_tx_hash(
     mut instance: crate::utils::LocalInstance,
 ) {
-    let initial_cache_resets = instance.cache_reset_count();
-
     // Start by sending a block environment so subsequent dry transactions share the same block.
     instance
         .new_block()
         .await
         .expect("initial blockenv should be accepted");
+
+    // Capture cache resets after initial setup. The first new_block() may cause one reset
+    // because CommitHead arrives before any NewIteration exists for that block.
+    let initial_cache_resets = instance.cache_reset_count();
 
     // Send two transactions without new blockenvs so they belong to the same block.
     let tx1 = instance
@@ -2046,9 +2048,10 @@ async fn test_failed_transaction_commit() {
 async fn test_iteration_selection_and_commit(mut instance: crate::utils::LocalInstance) {
     info!("Testing multiple iterations with winner selection");
 
-    let initial_cache_count = instance.cache_reset_count();
-
     instance.new_block().await.unwrap();
+
+    // Capture cache count after initial setup (first new_block may cause one reset)
+    let initial_cache_count = instance.cache_reset_count();
 
     // Send transactions with different iteration IDs in Block 1
     instance.new_iteration(1).await.unwrap();
