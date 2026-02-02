@@ -1188,6 +1188,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         // Safety fallback: `CommitHead` without prior `NewIteration`.
         // Empty blocks should still receive NewIteration, treat this as unsafe state.
+        // If we invalidate cache, the block processing is stopped.
         if !self
             .current_block_iterations
             .contains_key(&block_execution_id)
@@ -1198,12 +1199,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 "CommitHead without NewIteration - invalidating cache"
             );
             self.invalidate_all(commit_head);
-
-            self.system_calls.cache_block_hash(
-                commit_head.block_number,
-                commit_head.block_hash,
-                &self.cache,
-            );
 
             self.finalize_block_metrics(
                 commit_head.block_number,
