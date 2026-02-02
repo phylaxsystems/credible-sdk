@@ -252,14 +252,15 @@ impl SystemCalls {
         let block_number = config.block_number;
 
         // Calculate storage slot using ring buffer modulo
-        // EIP-2935: slot = block.number % HISTORY_SERVE_WINDOW
-        let slot = U256::from(block_number % U256::from(HISTORY_SERVE_WINDOW));
+        // EIP-2935: At block N, store parent hash (block N-1) at slot (N-1) % HISTORY_SERVE_WINDOW
+        let parent_block_number = block_number.saturating_sub(U256::from(1));
+        let parent_slot = parent_block_number % U256::from(HISTORY_SERVE_WINDOW);
 
         debug!(
             target = "system_calls",
             block_number = %config.block_number,
             %block_number,
-            %slot,
+            %parent_slot,
             %block_hash,
             "Applying EIP-2935 block hash update"
         );
@@ -289,7 +290,7 @@ impl SystemCalls {
 
         // Store parent block hash at slot
         storage.insert(
-            slot,
+            parent_slot,
             EvmStorageSlot::new_changed(U256::ZERO, U256::from_be_bytes(block_hash.0), 0),
         );
 
@@ -511,8 +512,8 @@ mod tests {
         let account = account.unwrap();
 
         // Verify storage slot
-        // EIP-2935: slot = block_number % HISTORY_SERVE_WINDOW = 99 % 8191 = 99
-        let slot = U256::from(99u64);
+        // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 98 % 8191 = 98
+        let slot = U256::from(98u64);
 
         assert!(account.storage.contains_key(&slot), "Slot should exist");
 
@@ -626,7 +627,7 @@ mod tests {
 
         // Test with block number that wraps around the ring buffer
         let hash = B256::repeat_byte(0xff);
-        let block_number = HISTORY_SERVE_WINDOW + 99; // Will wrap to slot 99
+        let block_number = HISTORY_SERVE_WINDOW + 100; // Will wrap to slot 99
 
         let config = SystemCallsConfig {
             spec_id: SpecId::PRAGUE,
@@ -641,7 +642,7 @@ mod tests {
 
         let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS).unwrap();
 
-        // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8291 % 8191 = 99
+        // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8290 % 8191 = 99
         let expected_slot = U256::from(99u64);
         assert!(account.storage.contains_key(&expected_slot));
     }
@@ -831,8 +832,8 @@ mod tests {
                 .is_some()
         );
 
-        // Verify EIP-2935 storage (slot = block_number % 8191 = 100)
-        let slot = U256::from(100u64);
+        // Verify EIP-2935 storage (slot = (block_number - 1) % 8191 = 99)
+        let slot = U256::from(99u64);
         let stored = version_db
             .storage_ref(HISTORY_STORAGE_ADDRESS, slot)
             .unwrap();
