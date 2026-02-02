@@ -4,7 +4,10 @@ use crate::{
         TransactionQueueSender,
     },
     transactions_state::TransactionsState,
-    transport::Transport,
+    transport::{
+        Transport,
+        invalidation_dupe::ContentHashCache,
+    },
 };
 use std::sync::Arc;
 
@@ -53,6 +56,7 @@ impl Transport for MockTransport {
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
         _event_id_buffer_capacity: usize,
+        _content_hash_cache: ContentHashCache,
     ) -> Result<Self, Self::Error> {
         // Create a dummy receiver channel for the trait implementation
         let (_, mock_receiver) = flume::unbounded();

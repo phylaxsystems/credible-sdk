@@ -290,7 +290,6 @@ async fn main() -> anyhow::Result<()> {
                     Arc::clone(db),
                     config.transport.content_hash_dedup_moka_capacity,
                     config.transport.content_hash_dedup_bloom_capacity,
-                    config.transport.content_hash_dedup_eviction_window,
                 )
                 .map_err(|e| anyhow::anyhow!("Failed to create content hash cache: {e}"))?
             } else {

@@ -41,6 +41,7 @@ use crate::{
     },
     transport::{
         Transport,
+        invalidation_dupe::ContentHashCache,
         transactions_results::QueryTransactionsResults,
     },
     utils::ErrorRecoverability,
@@ -133,6 +134,8 @@ pub struct GrpcTransport {
     result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
     /// Event ID deduplication buffer capacity.
     event_id_buffer_capacity: usize,
+    /// Content-hash deduplication cache for transactions.
+    content_hash_cache: ContentHashCache,
 }
 
 impl Transport for GrpcTransport {
@@ -145,6 +148,7 @@ impl Transport for GrpcTransport {
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
         event_id_buffer_capacity: usize,
+        content_hash_cache: ContentHashCache,
     ) -> Result<Self, Self::Error> {
         debug!(bind_addr = %config.bind_addr, "Creating gRPC transport");
         Ok(Self {
@@ -157,6 +161,7 @@ impl Transport for GrpcTransport {
             ),
             result_event_rx: None,
             event_id_buffer_capacity,
+            content_hash_cache,
         })
     }
 
@@ -174,6 +179,7 @@ impl Transport for GrpcTransport {
             self.transactions_results.clone(),
             self.result_event_rx.clone(),
             self.event_id_buffer_capacity,
+            self.content_hash_cache.clone(),
         );
 
         info!(bind_addr = %self.bind_addr, "gRPC transport server starting");
@@ -217,6 +223,7 @@ impl GrpcTransport {
         state_results: Arc<TransactionsState>,
         result_event_rx: flume::Receiver<TransactionResultEvent>,
         event_id_buffer_capacity: usize,
+        content_hash_cache: ContentHashCache,
     ) -> Result<Self, GrpcTransportError> {
         debug!(bind_addr = %config.bind_addr, "Creating streaming gRPC transport with result receiver");
         Ok(Self {
@@ -229,6 +236,7 @@ impl GrpcTransport {
             ),
             result_event_rx: Some(result_event_rx),
             event_id_buffer_capacity,
+            content_hash_cache,
         })
     }
 }

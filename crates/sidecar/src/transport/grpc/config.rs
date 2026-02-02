@@ -10,27 +10,14 @@ use std::{
 };
 
 /// Configuration for the content-hash deduplication cache.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DedupCacheConfig {
     /// Whether the dedup cache is enabled.
     pub enabled: bool,
-    /// Eviction window in blocks.
-    pub eviction_window: u64,
     /// Moka cache capacity.
     pub moka_capacity: u64,
     /// Bloom filter initial capacity.
     pub bloom_capacity: usize,
-}
-
-impl Default for DedupCacheConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            eviction_window: 256,
-            moka_capacity: 100_000,
-            bloom_capacity: 100_000,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -66,7 +53,6 @@ impl TryFrom<TransportConfig> for GrpcTransportConfig {
             pending_receive_ttl,
             dedup_cache: DedupCacheConfig {
                 enabled: value.content_hash_dedup_enabled,
-                eviction_window: value.content_hash_dedup_eviction_window,
                 moka_capacity: value.content_hash_dedup_moka_capacity,
                 bloom_capacity: value.content_hash_dedup_bloom_capacity,
             },

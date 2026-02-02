@@ -48,6 +48,10 @@ use crate::{
     transactions_state::TransactionResultEvent,
     transport::{
         event_id_deduplication::EventIdBuffer,
+        invalidation_dupe::{
+            ContentHashCache,
+            tx_content_hash,
+        },
         rpc_metrics::RpcRequestDuration,
         transactions_results::{
             AcceptedState,
@@ -593,6 +597,8 @@ struct GrpcServiceInner {
     event_id_buffer: EventIdBuffer,
     /// Tracks when the last commit head was received for inter-commit-head duration metrics.
     last_commit_head_time: std::sync::Mutex<Option<Instant>>,
+    /// Content-hash deduplication cache for transactions.
+    content_hash_cache: ContentHashCache,
 }
 
 impl Drop for GrpcServiceInner {
@@ -622,6 +628,7 @@ impl GrpcService {
         transactions_results: QueryTransactionsResults,
         result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
         event_buffer_capacity: usize,
+        content_hash_cache: ContentHashCache,
     ) -> Self {
         let (result_broadcaster, _) = broadcast::channel(RESULT_BROADCAST_BUFFER);
 
@@ -652,6 +659,7 @@ impl GrpcService {
             next_abort_id: AtomicU64::new(next_abort_id),
             event_id_buffer: EventIdBuffer::new(event_buffer_capacity),
             last_commit_head_time: std::sync::Mutex::new(None),
+            content_hash_cache,
         });
 
         Self {
@@ -762,6 +770,26 @@ impl GrpcService {
                 self.ensure_commit_head_seen()?;
                 let queue_tx = decode_transaction(&transaction)
                     .map_err(|e| Status::invalid_argument(format!("invalid transaction: {e}")))?;
+
+                // Content-hash deduplication: skip transactions with identical content
+                // (same calldata, value, etc.) even if nonce/gas parameters differ.
+                if let TxQueueContents::Tx(ref tx) = queue_tx {
+                    let content_hash = tx_content_hash(&tx.tx_env);
+                    let block_number = tx.tx_execution_id.block_number.saturating_to::<u64>();
+                    if self
+                        .inner
+                        .content_hash_cache
+                        .check_and_insert(content_hash, block_number)
+                    {
+                        info!(
+                            tx_hash = ?tx.tx_execution_id.tx_hash,
+                            content_hash = ?content_hash,
+                            "Invalidating content hash duplicate, skipping"
+                        );
+                        counter!("sidecar_dedup_content_hash_hits_total").increment(1);
+                        return Ok(());
+                    }
+                }
 
                 if let TxQueueContents::Tx(ref tx) = queue_tx
                     && self

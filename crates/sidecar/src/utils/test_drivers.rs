@@ -37,7 +37,10 @@ use crate::{
         Transport,
         grpc::{
             GrpcTransport,
-            config::GrpcTransportConfig,
+            config::{
+                DedupCacheConfig,
+                GrpcTransportConfig,
+            },
             pb::{
                 self,
                 Event,
@@ -46,6 +49,7 @@ use crate::{
                 sidecar_transport_client::SidecarTransportClient,
             },
         },
+        invalidation_dupe::ContentHashCache,
         mock::MockTransport,
     },
 };
@@ -761,6 +765,7 @@ impl LocalInstanceGrpcDriver {
         let config = GrpcTransportConfig {
             bind_addr: address,
             pending_receive_ttl: Duration::from_secs(5),
+            dedup_cache: DedupCacheConfig::default(),
         };
 
         // Use with_result_receiver to enable SubscribeResults streaming
@@ -770,6 +775,7 @@ impl LocalInstanceGrpcDriver {
             setup.state_results.clone(),
             result_event_rx,
             setup.event_id_buffer_capacity,
+            ContentHashCache::disabled(),
         )
         .map_err(|e| format!("Failed to create gRPC transport: {e}"))?;
 

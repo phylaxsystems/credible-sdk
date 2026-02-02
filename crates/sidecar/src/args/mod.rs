@@ -49,6 +49,9 @@ fn default_accepted_txs_ttl_ms() -> Duration {
     Duration::from_secs(2)
 }
 
+const DEFAULT_CONTENT_HASH_DEDUP_MOKA_CAPACITY: u64 = 1_000;
+const DEFAULT_CONTENT_HASH_DEDUP_BLOOM_CAPACITY: usize = 10_000;
+
 #[derive(Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct SecretString(String);
 
@@ -101,6 +104,8 @@ pub struct ConfigFile {
     pub credible: Option<CredibleConfigFile>,
     pub transport: Option<TransportConfigFile>,
     pub state: Option<StateConfigFile>,
+    /// Path to the shared sidecar MDBX database
+    pub sidecar_db_path: Option<String>,
 }
 
 impl ConfigFile {
@@ -139,6 +144,8 @@ pub struct Config {
     pub credible: CredibleConfig,
     pub transport: TransportConfig,
     pub state: StateConfig,
+    /// Path to the shared sidecar MDBX database (optional)
+    pub sidecar_db_path: Option<String>,
 }
 
 impl Config {
@@ -302,6 +309,12 @@ pub struct TransportConfigFile {
     /// Maximum time (ms) a pending transaction receive entry may live before forced eviction.
     #[serde_as(as = "Option<DurationMilliSeconds<u64>>")]
     pub pending_receive_ttl_ms: Option<Duration>,
+    /// Enable content-hash deduplication cache
+    pub content_hash_dedup_enabled: Option<bool>,
+    /// Moka cache capacity for content-hash dedup
+    pub content_hash_dedup_moka_capacity: Option<u64>,
+    /// Bloom filter initial capacity for content-hash dedup
+    pub content_hash_dedup_bloom_capacity: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -328,6 +341,13 @@ pub struct TransportConfig {
     #[serde(default = "default_pending_receive_ttl_ms")]
     #[serde_as(as = "DurationMilliSeconds<u64>")]
     pub pending_receive_ttl_ms: Duration,
+    /// Enable content-hash deduplication cache (default: false)
+    #[serde(default)]
+    pub content_hash_dedup_enabled: bool,
+    /// Moka cache capacity for content-hash dedup (default: `100_000`)
+    pub content_hash_dedup_moka_capacity: u64,
+    /// Bloom filter initial capacity for content-hash dedup (default: `100_000`)
+    pub content_hash_dedup_bloom_capacity: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -436,11 +456,15 @@ fn resolve_config(file: ConfigFile) -> Result<Config, ConfigError> {
     let transport = resolve_transport(&transport_file)?;
     let state = resolve_state(&state_file)?;
 
+    let sidecar_db_path: Option<String> =
+        parse_env("SIDECAR_DB_PATH")?.or(file.sidecar_db_path);
+
     Ok(Config {
         chain,
         credible,
         transport,
         state,
+        sidecar_db_path,
     })
 }
 
@@ -513,6 +537,15 @@ fn resolve_transport(transport_file: &TransportConfigFile) -> Result<TransportCo
         pending_receive_ttl_ms: parse_env_duration_ms("SIDECAR_PENDING_RECEIVE_TTL_MS")?
             .or(transport_file.pending_receive_ttl_ms)
             .unwrap_or_else(default_pending_receive_ttl_ms),
+        content_hash_dedup_enabled: parse_env("SIDECAR_CONTENT_HASH_DEDUP_ENABLED")?
+            .or(transport_file.content_hash_dedup_enabled)
+            .unwrap_or(false),
+        content_hash_dedup_moka_capacity: parse_env("SIDECAR_CONTENT_HASH_DEDUP_MOKA_CAPACITY")?
+            .or(transport_file.content_hash_dedup_moka_capacity)
+            .unwrap_or(DEFAULT_CONTENT_HASH_DEDUP_MOKA_CAPACITY),
+        content_hash_dedup_bloom_capacity: parse_env("SIDECAR_CONTENT_HASH_DEDUP_BLOOM_CAPACITY")?
+            .or(transport_file.content_hash_dedup_bloom_capacity)
+            .unwrap_or(DEFAULT_CONTENT_HASH_DEDUP_BLOOM_CAPACITY),
     })
 }
 

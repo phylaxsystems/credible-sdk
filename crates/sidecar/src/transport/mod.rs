@@ -30,12 +30,14 @@ pub mod grpc;
 pub mod mock;
 pub(crate) mod rpc_metrics;
 pub mod transactions_results;
+pub mod invalidation_dupe;
 
 use crate::{
     engine::queue::TransactionQueueSender,
     transactions_state::TransactionsState,
     utils::ErrorRecoverability,
 };
+use invalidation_dupe::ContentHashCache;
 use std::sync::Arc;
 
 /// The `Transport` trait defines the interface for external communication adapters that
@@ -92,6 +94,7 @@ pub trait Transport: Send + Sync {
         tx_sender: TransactionQueueSender,
         state_results: Arc<TransactionsState>,
         event_id_buffer_capacity: usize,
+        content_hash_cache: ContentHashCache,
     ) -> Result<Self, Self::Error>
     where
         Self: Sized;
