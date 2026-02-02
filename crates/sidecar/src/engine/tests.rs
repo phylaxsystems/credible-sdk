@@ -3233,8 +3233,8 @@ fn test_ring_buffer_and_slot_calculations() {
     assert!(result.is_ok());
 
     let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS).unwrap();
-    // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8290 % 8191 = 99
-    let expected_slot = U256::from(99u64);
+    // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8289 % 8191 = 98
+    let expected_slot = U256::from(98u64);
     assert!(account.storage.contains_key(&expected_slot));
 
     // EIP-4788: Test with timestamp that wraps around
