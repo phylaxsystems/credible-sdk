@@ -61,6 +61,7 @@ use self::{
     db::IncidentDb,
     payload::build_incident_body,
 };
+use crate::db::SidecarDb;
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Timeout for recv - threads will check for the shutdown flag at this interval
@@ -109,7 +110,6 @@ pub struct TransactionObserverConfig {
     pub endpoint_rps_max: usize,
     pub endpoint: String,
     pub auth_token: String,
-    pub db_path: String,
 }
 
 impl Default for TransactionObserverConfig {
@@ -119,7 +119,6 @@ impl Default for TransactionObserverConfig {
             endpoint_rps_max: 60,
             endpoint: String::default(),
             auth_token: String::default(),
-            db_path: String::default(),
         }
     }
 }
@@ -161,8 +160,9 @@ impl TransactionObserver {
     pub fn new(
         config: TransactionObserverConfig,
         incident_rx: IncidentReportReceiver,
+        sidecar_db: Arc<SidecarDb>,
     ) -> Result<Self, TransactionObserverError> {
-        let db = IncidentDb::open(&config.db_path)?;
+        let db = IncidentDb::new(sidecar_db);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

@@ -45,6 +45,7 @@ use sidecar::{
         init_indexer_config,
     },
     critical,
+    db::SidecarDb,
     engine::{
         CoreEngine,
         queue::TransactionQueueSender,
@@ -66,6 +67,7 @@ use sidecar::{
             GrpcTransport,
             config::GrpcTransportConfig,
         },
+        invalidation_dupe::ContentHashCache,
     },
     utils::ErrorRecoverability,
 };
@@ -95,6 +97,7 @@ fn create_transport_from_args(
     tx_sender: TransactionQueueSender,
     state_results: Arc<TransactionsState>,
     result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
+    content_hash_cache: ContentHashCache,
 ) -> anyhow::Result<GrpcTransport> {
     let cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
     let transport = match result_event_rx {
@@ -105,6 +108,7 @@ fn create_transport_from_args(
                 state_results,
                 rx,
                 config.transport.event_id_buffer_capacity,
+                content_hash_cache,
             )?
         }
         None => {
@@ -113,6 +117,7 @@ fn create_transport_from_args(
                 tx_sender,
                 state_results,
                 config.transport.event_id_buffer_capacity,
+                content_hash_cache,
             )?
         }
     };
@@ -258,22 +263,57 @@ async fn main() -> anyhow::Result<()> {
         let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
         let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
+        // Determine if we need the shared SidecarDb (for observer OR dedup cache)
+        let observer_configured = config.credible.transaction_observer_endpoint.is_some()
+            && config.credible.transaction_observer_auth_token.is_some()
+            && config.credible.transaction_observer_endpoint_rps_max.is_some()
+            && config.credible.transaction_observer_poll_interval_ms.is_some();
+        let dedup_enabled = config.transport.content_hash_dedup_enabled;
+
+        let sidecar_db: Option<Arc<SidecarDb>> =
+            if (observer_configured || dedup_enabled) && config.sidecar_db_path.is_some() {
+                let db_path = config
+                    .sidecar_db_path
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("sidecar_db_path required when observer or dedup is enabled"))?;
+                Some(Arc::new(SidecarDb::open(db_path).map_err(|e| {
+                    anyhow::anyhow!("Failed to open sidecar database: {e}")
+                })?))
+            } else {
+                None
+            };
+
+        // Create content hash cache (either enabled with SidecarDb or disabled)
+        let content_hash_cache = if dedup_enabled {
+            if let Some(ref db) = sidecar_db {
+                ContentHashCache::new(
+                    Arc::clone(db),
+                    config.transport.content_hash_dedup_moka_capacity,
+                    config.transport.content_hash_dedup_bloom_capacity,
+                    config.transport.content_hash_dedup_eviction_window,
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to create content hash cache: {e}"))?
+            } else {
+                warn!("Content hash dedup enabled but sidecar_db_path not configured, disabling dedup");
+                ContentHashCache::disabled()
+            }
+        } else {
+            ContentHashCache::disabled()
+        };
+
         let transaction_observer_config = match (
-            &config.credible.transaction_observer_db_path,
             &config.credible.transaction_observer_endpoint,
             &config.credible.transaction_observer_auth_token,
             config.credible.transaction_observer_endpoint_rps_max,
             config.credible.transaction_observer_poll_interval_ms,
         ) {
             (
-                Some(db_path),
                 Some(endpoint),
                 Some(auth_token),
                 Some(endpoint_rps_max),
                 Some(poll_interval_ms),
             ) => {
                 Some(TransactionObserverConfig {
-                    db_path: db_path.clone(),
                     endpoint: endpoint.clone(),
                     auth_token: auth_token.expose().to_string(),
                     endpoint_rps_max,
@@ -322,6 +362,7 @@ async fn main() -> anyhow::Result<()> {
             transport_tx_sender,
             engine_state_results.clone(),
             result_event_rx,
+            content_hash_cache,
         )?;
 
         // Spawn EventSequencing on a dedicated OS thread
@@ -351,20 +392,28 @@ async fn main() -> anyhow::Result<()> {
         let (engine_handle, engine_exited) = engine.spawn(Arc::clone(&shutdown_flag))?;
         thread_handles.engine = Some(engine_handle);
 
-        let observer_exited_rx =
-            if let (Some(transaction_observer_config), Some(incident_report_rx)) =
-                (transaction_observer_config, incident_report_rx)
-            {
+        let observer_exited_rx = match (
+            transaction_observer_config,
+            incident_report_rx,
+            sidecar_db,
+        ) {
+            (Some(obs_config), Some(incident_rx), Some(db)) => {
                 let transaction_observer =
-                    TransactionObserver::new(transaction_observer_config, incident_report_rx)?;
+                    TransactionObserver::new(obs_config, incident_rx, db)?;
                 let (observer_handle, observer_exited) =
                     transaction_observer.spawn(Arc::clone(&shutdown_flag))?;
                 thread_handles.transaction_observer = Some(observer_handle);
                 Some(observer_exited)
-            } else {
+            }
+            (Some(_), Some(_), None) => {
+                warn!("Transaction observer configured but sidecar_db_path not set, disabling");
+                None
+            }
+            _ => {
                 tracing::info!("Transaction observer disabled: missing config");
                 None
-            };
+            }
+        };
 
         let mut health_server = HealthServer::new(health_bind_addr);
 

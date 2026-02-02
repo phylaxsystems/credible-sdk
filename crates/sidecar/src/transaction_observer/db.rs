@@ -2,12 +2,8 @@ use super::{
     IncidentReport,
     TransactionObserverError,
 };
+use crate::db::SidecarDb;
 use rand::random;
-use reth_db::mdbx::{
-    DatabaseArguments,
-    DatabaseEnv,
-    DatabaseEnvKind,
-};
 use reth_db_api::{
     Database,
     transaction::{
@@ -16,72 +12,29 @@ use reth_db_api::{
     },
 };
 use reth_libmdbx::{
-    DatabaseFlags,
     WriteFlags,
+    ffi::MDBX_dbi,
 };
-use std::path::Path;
+use std::sync::Arc;
 
-const INCIDENT_REPORTS_TABLE: &str = "incident_reports";
 const MAX_INCIDENT_BATCH: usize = 10_000;
 
-/// Opens an MDBX database holding the incident reports.
-/// Used as the source of truth for what incidents we are
-/// yet to report on to the dapp API.
-// TODO: i dont really like that we are opening a seprate database
-// for this. we should have a global sidecar mdbx.
+/// MDBX-based storage for incident reports.
+///
+/// Uses the shared `SidecarDb` environment and the `incident_reports` table.
 pub(super) struct IncidentDb {
-    env: DatabaseEnv,
-    dbi: reth_libmdbx::ffi::MDBX_dbi,
+    db: Arc<SidecarDb>,
+    dbi: MDBX_dbi,
 }
 
 impl IncidentDb {
-    pub(super) fn open(path: &str) -> Result<Self, TransactionObserverError> {
-        if path.is_empty() {
-            return Err(TransactionObserverError::DatabaseOpen {
-                reason: "incident db path is empty".to_string(),
-            });
-        }
-
-        let path = Path::new(path);
-        if !path.exists() {
-            std::fs::create_dir_all(path).map_err(|e| {
-                TransactionObserverError::DatabaseOpen {
-                    reason: format!("Failed to create db directory: {e}"),
-                }
-            })?;
-        }
-
-        let args = DatabaseArguments::default();
-        let env = DatabaseEnv::open(path, DatabaseEnvKind::RW, args).map_err(|e| {
-            TransactionObserverError::DatabaseOpen {
-                reason: e.to_string(),
-            }
-        })?;
-
-        let tx = env.tx_mut().map_err(|e| {
-            TransactionObserverError::DatabaseOpen {
-                reason: e.to_string(),
-            }
-        })?;
-        let db = tx
-            .inner
-            .create_db(Some(INCIDENT_REPORTS_TABLE), DatabaseFlags::default())
-            .map_err(|e| {
-                TransactionObserverError::DatabaseOpen {
-                    reason: e.to_string(),
-                }
-            })?;
-        let dbi = db.dbi();
-        tx.commit().map_err(|e| {
-            TransactionObserverError::DatabaseOpen {
-                reason: e.to_string(),
-            }
-        })?;
-
-        Ok(Self { env, dbi })
+    /// Create a new `IncidentDb` backed by the shared `SidecarDb`.
+    pub(super) fn new(db: Arc<SidecarDb>) -> Self {
+        let dbi = db.incident_reports_dbi();
+        Self { db, dbi }
     }
 
-    /// Store an individual incident in an on disk persistant db.
+    /// Store an individual incident in an on disk persistent db.
     /// Incidents stored are synced to disk immediately.
     pub(super) fn store(&self, report: &IncidentReport) -> Result<(), TransactionObserverError> {
         // we need individual keys for incidents
@@ -97,7 +50,7 @@ impl IncidentDb {
             }
         })?;
 
-        let tx = self.env.tx_mut().map_err(|e| {
+        let tx = self.db.env().tx_mut().map_err(|e| {
             TransactionObserverError::PersistFailed {
                 reason: e.to_string(),
             }
@@ -114,7 +67,7 @@ impl IncidentDb {
                 reason: e.to_string(),
             }
         })?;
-        self.env.sync(true).map_err(|e| {
+        self.db.env().sync(true).map_err(|e| {
             TransactionObserverError::PersistFailed {
                 reason: e.to_string(),
             }
@@ -134,7 +87,7 @@ impl IncidentDb {
             return Ok(Vec::new());
         }
 
-        let tx = self.env.tx().map_err(|e| {
+        let tx = self.db.env().tx().map_err(|e| {
             TransactionObserverError::IoFailure {
                 reason: e.to_string(),
             }
@@ -177,7 +130,7 @@ impl IncidentDb {
             return Ok(());
         }
 
-        let tx = self.env.tx_mut().map_err(|e| {
+        let tx = self.db.env().tx_mut().map_err(|e| {
             TransactionObserverError::IoFailure {
                 reason: e.to_string(),
             }

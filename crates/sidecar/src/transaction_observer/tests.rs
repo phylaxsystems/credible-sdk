@@ -5,6 +5,7 @@ use super::{
     TransactionObserverConfig,
 };
 use crate::{
+    db::SidecarDb,
     execution_ids::TxExecutionId,
     utils::test_drivers::LocalInstanceMockDriver,
 };
@@ -237,6 +238,11 @@ fn build_incident_report() -> IncidentReport {
     }
 }
 
+fn build_sidecar_db(tempdir: &TempDir) -> Arc<SidecarDb> {
+    let path = tempdir.path().to_string_lossy().to_string();
+    Arc::new(SidecarDb::open(&path).expect("open sidecar db"))
+}
+
 fn build_observer(db_path: &TempDir, endpoint: String) -> TransactionObserver {
     let (_tx, rx) = flume::unbounded();
     let config = TransactionObserverConfig {
@@ -244,9 +250,9 @@ fn build_observer(db_path: &TempDir, endpoint: String) -> TransactionObserver {
         endpoint_rps_max: 10,
         endpoint,
         auth_token: "test-token".to_string(),
-        db_path: db_path.path().to_string_lossy().to_string(),
     };
-    TransactionObserver::new(config, rx).expect("observer")
+    let sidecar_db = build_sidecar_db(db_path);
+    TransactionObserver::new(config, rx, sidecar_db).expect("observer")
 }
 
 fn build_report_with_prev_txs(
@@ -542,9 +548,9 @@ fn observer_persists_and_loads_incident_with_previous_transactions() {
         endpoint_rps_max: 0,
         endpoint: String::new(),
         auth_token: String::new(),
-        db_path: tempdir.path().to_string_lossy().to_string(),
     };
-    let mut observer = TransactionObserver::new(config, rx).expect("observer");
+    let sidecar_db = build_sidecar_db(&tempdir);
+    let mut observer = TransactionObserver::new(config, rx, sidecar_db).expect("observer");
     let tx_keepalive = tx.clone();
 
     let mut report = build_incident_report();
@@ -704,9 +710,9 @@ fn observer_consumes_and_clears_on_success() {
         endpoint_rps_max: 10,
         endpoint: server.url("/api/v1/enforcer/incidents"),
         auth_token: "test-token".to_string(),
-        db_path: tempdir.path().to_string_lossy().to_string(),
     };
-    let mut observer = TransactionObserver::new(config, rx).expect("observer");
+    let sidecar_db = build_sidecar_db(&tempdir);
+    let mut observer = TransactionObserver::new(config, rx, sidecar_db).expect("observer");
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_sender = Arc::clone(&shutdown);
@@ -734,6 +740,7 @@ fn observer_consumes_and_clears_on_success() {
 fn observer_retries_after_failed_publish() {
     let expected_body = expected_incident_body();
     let tempdir = TempDir::new().expect("tempdir");
+    let sidecar_db = build_sidecar_db(&tempdir);
 
     let server_fail = MockServer::start();
     let fail_mock = server_fail.mock(|when, then| {
@@ -750,9 +757,9 @@ fn observer_retries_after_failed_publish() {
             endpoint_rps_max: 10,
             endpoint: server_fail.url("/api/v1/enforcer/incidents"),
             auth_token: "test-token".to_string(),
-            db_path: tempdir.path().to_string_lossy().to_string(),
         };
-        let mut observer = TransactionObserver::new(config, rx).expect("observer");
+        let mut observer =
+            TransactionObserver::new(config, rx, Arc::clone(&sidecar_db)).expect("observer");
         observer
             .store_incident(&build_incident_report())
             .expect("store incident");
@@ -785,9 +792,9 @@ fn observer_retries_after_failed_publish() {
         endpoint_rps_max: 10,
         endpoint: server_success.url("/api/v1/enforcer/incidents"),
         auth_token: "test-token".to_string(),
-        db_path: tempdir.path().to_string_lossy().to_string(),
     };
-    let mut observer = TransactionObserver::new(config, rx).expect("observer");
+    let mut observer =
+        TransactionObserver::new(config, rx, Arc::clone(&sidecar_db)).expect("observer");
     observer.publish_invalidations().expect("publish retry");
 
     success_mock.assert();
@@ -821,9 +828,9 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
         endpoint_rps_max: 10,
         endpoint: server.url("/api/v1/enforcer/incidents"),
         auth_token: "test-token".to_string(),
-        db_path: tempdir.path().to_string_lossy().to_string(),
     };
-    let observer = TransactionObserver::new(config, incident_rx).expect("observer");
+    let sidecar_db = build_sidecar_db(&tempdir);
+    let observer = TransactionObserver::new(config, incident_rx, sidecar_db).expect("observer");
     let shutdown = Arc::new(AtomicBool::new(false));
     let (observer_handle, observer_exit) = observer
         .spawn(Arc::clone(&shutdown))
