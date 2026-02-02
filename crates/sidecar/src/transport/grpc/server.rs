@@ -1218,6 +1218,18 @@ impl SidecarTransport for GrpcService {
     }
 }
 
+/// Convert protobuf TransactionEnv to revm TxEnv.
+#[inline]
+pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, GrpcDecodeError> {
+    decode_tx_env(pb_tx_env)
+}
+
+/// Convert a Transaction to queue transaction contents.
+#[inline]
+pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, GrpcDecodeError> {
+    decode_transaction(t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1233,6 +1245,155 @@ mod tests {
         time::Duration,
     };
     use tempfile::TempDir;
+
+    /// Integration test: simulates the full round-trip where:
+    /// 1. First transaction is processed and sent to the engine queue
+    /// 2. Engine records the invalidation (simulated via cache.record_invalidating)
+    /// 3. Duplicate transaction (same content, different nonce) is early-rejected
+    ///
+    /// This verifies the cache is correctly shared between engine and transport layers.
+    #[tokio::test]
+    async fn engine_records_invalidation_transport_rejects_duplicate() {
+        let (tx_sender, tx_receiver) = flume::unbounded();
+        let transactions_state = TransactionsState::new();
+        let transactions_results =
+            QueryTransactionsResults::new(Arc::clone(&transactions_state), Duration::from_secs(5));
+
+        let dir = TempDir::new().unwrap();
+        let db = Arc::new(SidecarDb::open(&dir.path().to_string_lossy()).unwrap());
+        let content_hash_cache = ContentHashCache::new(db, 1_000, 1_000).unwrap();
+
+        let service = GrpcService::new(
+            tx_sender,
+            transactions_results,
+            None,
+            100,
+            content_hash_cache.clone(),
+        );
+        service
+            .inner
+            .commit_head_seen
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        // First transaction - will be sent to engine
+        let pb_tx_env_1 = TransactionEnv {
+            tx_type: 2,
+            caller: Address::repeat_byte(0x42).as_slice().to_vec(),
+            gas_limit: 100_000,
+            gas_price: 1u128.to_be_bytes().to_vec(),
+            transact_to: Address::repeat_byte(0x99).as_slice().to_vec(),
+            value: U256::from(1000u64).to_be_bytes::<32>().to_vec(),
+            data: vec![0xde, 0xad, 0xbe, 0xef],
+            nonce: 5, // Original nonce
+            chain_id: Some(1),
+            access_list: vec![],
+            gas_priority_fee: Some(10u128.to_be_bytes().to_vec()),
+            blob_hashes: vec![],
+            max_fee_per_blob_gas: vec![],
+            authorization_list: vec![],
+        };
+
+        let pb_tx_execution_id_1 = PbTxExecutionId {
+            block_number: U256::from(100u64).to_be_bytes::<32>().to_vec(),
+            iteration_id: 1,
+            tx_hash: [0x11u8; 32].to_vec(),
+            index: 0,
+        };
+
+        let tx_1 = Transaction {
+            tx_execution_id: Some(pb_tx_execution_id_1.clone()),
+            tx_env: Some(pb_tx_env_1.clone()),
+            prev_tx_hash: None,
+        };
+
+        let event_1 = Event {
+            event_id: 1,
+            event: Some(EventVariant::Transaction(tx_1)),
+        };
+
+        // Process first transaction - should go to engine queue
+        let events_processed = AtomicU64::new(0);
+        service.process_event(event_1, &events_processed).unwrap();
+
+        // Verify first transaction was sent to the engine queue
+        let queued = tx_receiver.try_recv().expect("first tx should be queued");
+        assert!(matches!(
+            queued,
+            crate::engine::queue::TxQueueContents::Tx(_)
+        ));
+
+        // Simulate engine processing: transaction invalidates assertions
+        // Engine would call record_invalidating when !is_valid
+        let decoded_tx_env = decode_tx_env(&pb_tx_env_1).unwrap();
+        let content_hash = tx_content_hash(&decoded_tx_env);
+        content_hash_cache.record_invalidating(content_hash, 100);
+
+        // Verify content hash is now in cache
+        assert!(
+            content_hash_cache.contains(content_hash),
+            "cache should contain the invalidating content hash"
+        );
+
+        // Second transaction - same content, different nonce and gas parameters
+        // This simulates a user re-submitting with bumped nonce/gas
+        let mut pb_tx_env_2 = pb_tx_env_1.clone();
+        pb_tx_env_2.nonce = 6; // Different nonce
+        pb_tx_env_2.gas_price = 2u128.to_be_bytes().to_vec(); // Different gas price
+        pb_tx_env_2.gas_priority_fee = Some(20u128.to_be_bytes().to_vec()); // Different priority fee
+
+        // Verify the content hash is the same despite different nonce/gas
+        let decoded_tx_env_2 = decode_tx_env(&pb_tx_env_2).unwrap();
+        let content_hash_2 = tx_content_hash(&decoded_tx_env_2);
+        assert_eq!(
+            content_hash, content_hash_2,
+            "content hash should be identical despite different nonce/gas"
+        );
+
+        let pb_tx_execution_id_2 = PbTxExecutionId {
+            block_number: U256::from(100u64).to_be_bytes::<32>().to_vec(),
+            iteration_id: 1,
+            tx_hash: [0x22u8; 32].to_vec(), // Different tx hash
+            index: 1,
+        };
+        let tx_execution_id_2 = decode_tx_execution_id(&pb_tx_execution_id_2).unwrap();
+
+        let tx_2 = Transaction {
+            tx_execution_id: Some(pb_tx_execution_id_2),
+            tx_env: Some(pb_tx_env_2),
+            prev_tx_hash: None,
+        };
+
+        let event_2 = Event {
+            event_id: 2,
+            event: Some(EventVariant::Transaction(tx_2)),
+        };
+
+        // Process second transaction - should be early-rejected
+        service.process_event(event_2, &events_processed).unwrap();
+
+        // Verify duplicate was NOT sent to the engine queue
+        assert!(
+            tx_receiver.try_recv().is_err(),
+            "duplicate tx should not be queued to engine"
+        );
+
+        // Verify early rejection result was stored
+        let stored = transactions_state
+            .get_transaction_result(&tx_execution_id_2)
+            .expect("early rejection result should be stored");
+
+        let expected = TransactionResult::ValidationCompleted {
+            execution_result: ExecutionResult::Revert {
+                gas_used: 0,
+                output: Bytes::new(),
+            },
+            is_valid: false,
+        };
+        assert_eq!(
+            *stored, expected,
+            "early rejection should return assertion-failed result"
+        );
+    }
 
     #[tokio::test]
     async fn known_invalidating_duplicate_emits_early_assertion_failed_result() {
@@ -1318,16 +1479,4 @@ mod tests {
         };
         assert_eq!(*stored, expected);
     }
-}
-
-/// Convert protobuf TransactionEnv to revm TxEnv.
-#[inline]
-pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, GrpcDecodeError> {
-    decode_tx_env(pb_tx_env)
-}
-
-/// Convert a Transaction to queue transaction contents.
-#[inline]
-pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, GrpcDecodeError> {
-    decode_transaction(t)
 }

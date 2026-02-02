@@ -231,6 +231,8 @@ pub struct LocalInstance<T: TestTransport> {
     pub fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
     /// The assertion store
     assertion_store: Arc<AssertionStore>,
+    /// Content hash cache for deduplication (shared between engine and transport)
+    content_hash_cache: crate::transport::invalidation_dupe::ContentHashCache,
     /// Transport task handle
     transport_handle: Option<JoinHandle<()>>,
     /// Engine task handle
@@ -278,6 +280,7 @@ impl<T: TestTransport> LocalInstance<T> {
         eth_rpc_source_http_mock: DualProtocolMockServer,
         fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
         assertion_store: Arc<AssertionStore>,
+        content_hash_cache: crate::transport::invalidation_dupe::ContentHashCache,
         transport_handle: Option<JoinHandle<()>>,
         engine_handle: Option<EngineThreadHandle>,
         block_number: U256,
@@ -293,6 +296,7 @@ impl<T: TestTransport> LocalInstance<T> {
             eth_rpc_source_http_mock,
             fallback_eth_rpc_source_http_mock,
             assertion_store,
+            content_hash_cache,
             transport_handle,
             engine_handle,
             block_number,
@@ -358,6 +362,11 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Get a reference to the assertion store
     pub fn assertion_store(&self) -> &Arc<AssertionStore> {
         &self.assertion_store
+    }
+
+    /// Get a reference to the content hash cache for testing
+    pub fn content_hash_cache(&self) -> &crate::transport::invalidation_dupe::ContentHashCache {
+        &self.content_hash_cache
     }
 
     /// Get the default account address

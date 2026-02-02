@@ -194,6 +194,8 @@ struct CommonSetup {
     default_account: Address,
     list_of_sources: Vec<Arc<dyn Source>>,
     event_id_buffer_capacity: usize,
+    /// Content hash cache for deduplication (shared between engine and transport)
+    content_hash_cache: ContentHashCache,
 }
 
 impl CommonSetup {
@@ -201,9 +203,25 @@ impl CommonSetup {
     ///
     /// If `result_event_sender` is provided, the `TransactionsState` will broadcast
     /// transaction results to it (used for gRPC `SubscribeResults` streaming).
+    ///
+    /// If `content_hash_cache` is provided, it will be used; otherwise a disabled cache is used.
     async fn new(
         assertion_store: Option<AssertionStore>,
         result_event_sender: Option<flume::Sender<TransactionResultEvent>>,
+    ) -> Result<Self, String> {
+        Self::new_with_cache(
+            assertion_store,
+            result_event_sender,
+            ContentHashCache::disabled(),
+        )
+        .await
+    }
+
+    /// Initialize with an explicit content hash cache.
+    async fn new_with_cache(
+        assertion_store: Option<AssertionStore>,
+        result_event_sender: Option<flume::Sender<TransactionResultEvent>>,
+        content_hash_cache: ContentHashCache,
     ) -> Result<Self, String> {
         let eth_rpc_source_http_mock = DualProtocolMockServer::new()
             .await
@@ -251,6 +269,7 @@ impl CommonSetup {
             default_account,
             list_of_sources: sources,
             event_id_buffer_capacity: 100,
+            content_hash_cache,
         })
     }
 
@@ -280,7 +299,7 @@ impl CommonSetup {
             Duration::from_millis(20),
             false,
             incident_sender,
-            ContentHashCache::disabled(),
+            self.content_hash_cache.clone(),
             #[cfg(feature = "cache_validation")]
             Some(&self.eth_rpc_source_http_mock.ws_url()),
         )
@@ -356,6 +375,7 @@ impl LocalInstanceMockDriver {
             setup.eth_rpc_source_http_mock,
             setup.fallback_eth_rpc_source_http_mock,
             setup.assertion_store,
+            setup.content_hash_cache,
             Some(transport_handle),
             Some(engine_handle),
             U256::from(1),
@@ -777,7 +797,7 @@ impl LocalInstanceGrpcDriver {
             setup.state_results.clone(),
             result_event_rx,
             setup.event_id_buffer_capacity,
-            ContentHashCache::disabled(),
+            setup.content_hash_cache.clone(),
         )
         .map_err(|e| format!("Failed to create gRPC transport: {e}"))?;
 
@@ -849,6 +869,7 @@ impl LocalInstanceGrpcDriver {
             setup.eth_rpc_source_http_mock,
             setup.fallback_eth_rpc_source_http_mock,
             setup.assertion_store,
+            setup.content_hash_cache,
             Some(transport_handle),
             Some(engine_handle),
             U256::from(1),
@@ -881,6 +902,142 @@ impl LocalInstanceGrpcDriver {
         incident_sender: IncidentReportSender,
     ) -> Result<LocalInstance<Self>, String> {
         Self::create(Some(assertion_store), Some(incident_sender)).await
+    }
+
+    /// Create with a real content hash cache backed by MDBX.
+    ///
+    /// This is used for testing the content hash deduplication feature where
+    /// the cache is shared between the engine and transport.
+    pub async fn new_with_content_hash_cache(
+        content_hash_cache: ContentHashCache,
+    ) -> Result<LocalInstance<Self>, String> {
+        Self::create_with_cache(None, None, content_hash_cache).await
+    }
+
+    /// Internal create with an explicit cache.
+    async fn create_with_cache(
+        assertion_store: Option<AssertionStore>,
+        incident_sender: Option<IncidentReportSender>,
+        content_hash_cache: ContentHashCache,
+    ) -> Result<LocalInstance<Self>, String> {
+        info!(target: "LocalInstanceGrpcDriver", "Creating LocalInstance with streaming GrpcTransport and custom cache");
+
+        let (result_event_tx, result_event_rx) = flume::bounded(4096);
+        let setup =
+            CommonSetup::new_with_cache(assertion_store, Some(result_event_tx), content_hash_cache)
+                .await?;
+
+        let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
+
+        let (engine_handle, _sequencing_handle) = setup
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, incident_sender)
+            .await;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("Failed to bind to available port: {e}"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|e| format!("Failed to get local address: {e}"))?;
+
+        drop(listener);
+
+        let config = GrpcTransportConfig {
+            bind_addr: address,
+            pending_receive_ttl: Duration::from_secs(5),
+            transaction_results_max_capacity: 10_000,
+            dedup_cache: DedupCacheConfig::default(),
+        };
+
+        let transport = GrpcTransport::with_result_receiver(
+            &config,
+            transport_tx_sender,
+            setup.state_results.clone(),
+            result_event_rx,
+            setup.event_id_buffer_capacity,
+            setup.content_hash_cache.clone(),
+        )
+        .map_err(|e| format!("Failed to create gRPC transport: {e}"))?;
+
+        let transport_handle = tokio::spawn(async move {
+            info!(target: "LocalInstanceGrpcDriver", "Transport task started");
+            let result = transport.run().await;
+            match result {
+                Ok(()) => {
+                    info!(target: "LocalInstanceGrpcDriver", "Transport run() completed successfully");
+                }
+                Err(e) => {
+                    warn!(target: "LocalInstanceGrpcDriver", "Transport stopped with error: {e}");
+                }
+            }
+        });
+
+        let mut attempts = 0;
+        let client = loop {
+            attempts += 1;
+            match SidecarTransportClient::connect(format!("http://{address}")).await {
+                Ok(client) => break client,
+                Err(e) => {
+                    if attempts >= MAX_HTTP_RETRY_ATTEMPTS {
+                        return Err(format!(
+                            "Failed to connect to gRPC server after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {e}"
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(HTTP_RETRY_DELAY_MS)).await;
+                }
+            }
+        };
+
+        let (event_tx, event_rx) = mpsc::channel(2048);
+        let stream = ReceiverStream::new(event_rx);
+
+        let mut client_clone = client.clone();
+        let mut response_stream = client_clone
+            .stream_events(stream)
+            .await
+            .map_err(|e| format!("Failed to start event stream: {e}"))?
+            .into_inner();
+
+        tokio::spawn(async move {
+            while let Some(result) = response_stream.next().await {
+                match result {
+                    Ok(ack) => {
+                        if !ack.success {
+                            error!(target: "LocalInstanceGrpcDriver", "Stream ack indicates failure: {}", ack.message);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(target: "LocalInstanceGrpcDriver", "Stream error: {e}");
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(LocalInstance::new_internal(
+            setup.underlying_db,
+            setup.sources.clone(),
+            setup.eth_rpc_source_http_mock,
+            setup.fallback_eth_rpc_source_http_mock,
+            setup.assertion_store,
+            setup.content_hash_cache,
+            Some(transport_handle),
+            Some(engine_handle),
+            U256::from(1),
+            setup.state_results,
+            setup.default_account,
+            Some(&address),
+            setup.list_of_sources,
+            LocalInstanceGrpcDriver {
+                event_sender: event_tx,
+                client,
+                block_tx_hashes: HashMap::new(),
+                current_block_by_iteration: HashMap::new(),
+                override_n_transactions: None,
+                override_last_tx_hash: None,
+                override_prev_tx_hash: None,
+            },
+        ))
     }
 }
 

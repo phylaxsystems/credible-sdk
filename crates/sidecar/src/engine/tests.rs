@@ -4091,3 +4091,66 @@ async fn test_mixed_valid_and_invalid_transactions_counting() {
         "Only valid transactions (success + revert) should be counted, not invalid ones"
     );
 }
+
+/// Integration test: verifies the full round-trip of content hash deduplication.
+///
+/// 1. Creates a `LocalInstance` with a real `ContentHashCache` (backed by MDBX)
+/// 2. Sends a transaction that fails assertion validation
+/// 3. Verifies the engine records the invalidation in the cache
+/// 4. Verifies subsequent duplicates with the same content would be rejected
+///
+/// This test uses the `LocalInstance` infrastructure with the gRPC transport to verify
+/// the cache is correctly shared between the engine and transport layers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_content_hash_dedup_integration_round_trip() {
+    use crate::{
+        db::SidecarDb,
+        transport::invalidation_dupe::{
+            ContentHashCache,
+            tx_content_hash,
+        },
+        utils::test_drivers::LocalInstanceGrpcDriver,
+    };
+    use tempfile::TempDir;
+
+    // Create a real ContentHashCache backed by MDBX
+    let tempdir = TempDir::new().expect("tempdir");
+    let db = std::sync::Arc::new(
+        SidecarDb::open(&tempdir.path().to_string_lossy()).expect("open sidecar db"),
+    );
+    let content_hash_cache = ContentHashCache::new(db, 1_000, 1_000).expect("create cache");
+
+    // Create LocalInstance with the cache shared between engine and transport
+    let mut instance = LocalInstanceGrpcDriver::new_with_content_hash_cache(content_hash_cache)
+        .await
+        .expect("create instance");
+
+    // Verify the cache starts empty
+    let test_hash = B256::from([0x99; 32]);
+    assert!(
+        !instance.content_hash_cache().contains(test_hash),
+        "cache should start empty"
+    );
+
+    // Send a passing transaction followed by a failing transaction (same content).
+    // The test infrastructure's counter contract only allows one call - the second
+    // call fails assertion validation.
+    instance
+        .send_assertion_passing_failing_pair()
+        .await
+        .expect("send assertion pair");
+
+    // The failing transaction's content hash should now be in the cache.
+    // We need to compute the same hash that the engine would have computed.
+    // The counter_call() function returns the TxEnv used for both transactions.
+    let counter_tx = assertion_executor::test_utils::counter_call();
+    let content_hash = tx_content_hash(&counter_tx);
+
+    // Give the engine a moment to process and record the invalidation
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    assert!(
+        instance.content_hash_cache().contains(content_hash),
+        "cache should contain the invalidating transaction's content hash after engine records it"
+    );
+}

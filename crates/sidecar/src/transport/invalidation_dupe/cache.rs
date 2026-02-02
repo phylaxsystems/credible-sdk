@@ -137,21 +137,16 @@ impl ContentHashCache {
             return false;
         };
 
-        let tx = match db.env().tx() {
-            Ok(tx) => tx,
-            Err(_) => {
-                counter!("sidecar_dedup_content_hash_db_read_errors_total").increment(1);
-                return false;
-            }
+        let Ok(tx) = db.env().tx() else {
+            counter!("sidecar_dedup_content_hash_db_read_errors_total").increment(1);
+            return false;
         };
 
-        let found: Option<Vec<u8>> = match tx.inner.get(db.content_hashes_dbi(), hash.as_slice()) {
-            Ok(found) => found,
-            Err(_) => {
-                counter!("sidecar_dedup_content_hash_db_read_errors_total").increment(1);
-                return false;
-            }
+        let Ok(found) = tx.inner.get(db.content_hashes_dbi(), hash.as_slice()) else {
+            counter!("sidecar_dedup_content_hash_db_read_errors_total").increment(1);
+            return false;
         };
+        let found: Option<Vec<u8>> = found;
 
         if let Some(found) = found {
             // True positive — known
@@ -184,12 +179,9 @@ impl ContentHashCache {
         }
         // Write-through to MDBX
         if let Some(db) = &self.inner.db {
-            let tx = match db.env().tx_mut() {
-                Ok(tx) => tx,
-                Err(_) => {
-                    counter!("sidecar_dedup_content_hash_db_write_errors_total").increment(1);
-                    return;
-                }
+            let Ok(tx) = db.env().tx_mut() else {
+                counter!("sidecar_dedup_content_hash_db_write_errors_total").increment(1);
+                return;
             };
 
             if tx
