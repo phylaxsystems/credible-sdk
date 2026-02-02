@@ -1189,7 +1189,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // Safety fallback: `CommitHead` without prior `NewIteration`.
         // Normal empty blocks should have NewIteration.
         // Only warn/invalidate after baseline is established ie current_head > 0.
-        if !self.current_block_iterations.contains_key(&block_execution_id) {
+        if !self
+            .current_block_iterations
+            .contains_key(&block_execution_id)
+        {
             if self.current_head > U256::ZERO {
                 warn!(
                     target = "engine",
@@ -1205,16 +1208,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 &self.cache,
             );
 
-            self.sources.set_block_number(commit_head.block_number);
-            self.current_head = commit_head.block_number;
-
-            self.block_metrics.block_processing_duration = block_processing_time.elapsed();
-            self.block_metrics.current_height = commit_head.block_number;
-            self.block_metrics.commit();
-            self.block_metrics.reset();
-            *block_processing_time = Instant::now();
-            *processed_blocks += 1;
-
+            self.finalize_block_metrics(
+                commit_head.block_number,
+                processed_blocks,
+                block_processing_time,
+            );
             return Ok(());
         }
 
@@ -1263,8 +1261,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .map_err(EngineError::SystemCallError)?;
         }
 
-        *processed_blocks += 1;
-
         #[cfg(feature = "cache_validation")]
         {
             // Use remove to avoid clone
@@ -1279,18 +1275,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             self.iteration_pending_processed_transactions.clear();
         }
 
-        // Set the block number to the latest applied head
-        self.sources.set_block_number(commit_head.block_number);
-        self.current_head = commit_head.block_number;
-
-        self.block_metrics.block_processing_duration = block_processing_time.elapsed();
-        self.block_metrics.current_height = commit_head.block_number;
-        // Commit all values inside of `block_metrics` to prometheus collector
-        self.block_metrics.commit();
-        // Reset the values inside to their defaults
-        self.block_metrics.reset();
-        *block_processing_time = Instant::now();
-
+        self.finalize_block_metrics(
+            commit_head.block_number,
+            processed_blocks,
+            block_processing_time,
+        );
         self.current_block_iterations.clear();
 
         debug!(
@@ -1400,6 +1389,28 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // Commit the entire block's state to the underlying OverlayDb
         self.cache
             .commit_overlay_fork_db(current_block_iteration.version_db.state().clone());
+    }
+
+    // Finalize block metrics and reset timing for next block.
+    #[inline]
+    fn finalize_block_metrics(
+        &mut self,
+        block_number: U256,
+        processed_blocks: &mut u64,
+        block_processing_time: &mut Instant,
+    ) {
+        // Set the block number to the latest applied head
+        self.sources.set_block_number(block_number);
+        self.current_head = block_number;
+
+        self.block_metrics.block_processing_duration = block_processing_time.elapsed();
+        self.block_metrics.current_height = block_number;
+        // Commit all values inside of `block_metrics` to prometheus collector
+        self.block_metrics.commit();
+        // Reset the values inside to their defaults for the next block
+
+        *block_processing_time = Instant::now();
+        *processed_blocks += 1;
     }
 
     /// Processes a reorg event by validating the tail of executed transactions.
