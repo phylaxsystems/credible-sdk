@@ -641,15 +641,6 @@ impl<T: TestTransport> LocalInstance<T> {
         beacon_block_root: Option<B256>,
         send_rpc_node: bool,
     ) -> Result<(), String> {
-        if !self.active_iterations.contains(&self.iteration_id) {
-            // Ensure even empty blocks seed a NewIteration so per-iteration system calls run.
-            let block_env = Self::default_block_env(block_number);
-            self.transport
-                .new_iteration(self.iteration_id, block_env)
-                .await?;
-            self.active_iterations.insert(self.iteration_id);
-        }
-
         let n_transactions = self.transport.get_tx_count(self.iteration_id);
         let last_tx_hash = self.transport.get_last_tx_hash(self.iteration_id);
 
