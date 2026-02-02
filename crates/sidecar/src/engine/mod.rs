@@ -787,13 +787,26 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     }
 
     /// Checks if the cache should be cleared and clears it.
-    fn check_cache(&mut self, commit_head: &CommitHead, block_execution_id: &BlockExecutionId) {
+    /// Returns `true` if processing should continue, `false` if cache was invalidated.
+    fn check_cache(
+        &mut self,
+        commit_head: &CommitHead,
+        block_execution_id: &BlockExecutionId,
+    ) -> bool {
         // Single HashMap lookup instead of multiple
-        let (last_tx_id, n_transactions) =
-            match self.current_block_iterations.get(block_execution_id) {
-                Some(data) => (data.last_tx_id(), data.n_transactions),
-                None => (None, 0),
-            };
+        let Some(data) = self.current_block_iterations.get(block_execution_id) else {
+            // CommitHead without prior NewIteration - invalidate cache
+            warn!(
+                target = "engine",
+                block_number = %commit_head.block_number,
+                "Invalidating cache: CommitHead without NewIteration"
+            );
+            self.invalidate_all(commit_head);
+            return false;
+        };
+
+        let last_tx_id = data.last_tx_id();
+        let n_transactions = data.n_transactions;
 
         // Check cheapest conditions first
         let head_mismatch =
@@ -816,6 +829,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 "Invalidating cache: CommitHead not +1 from current head"
             );
             self.invalidate_all(commit_head);
+            return false;
         } else if tx_hash_mismatch {
             if let Some(prev_id) = last_tx_id {
                 warn!(
@@ -825,6 +839,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 );
             }
             self.invalidate_all(commit_head);
+            return false;
         } else if count_mismatch {
             warn!(
                 sidecar_n_transactions = n_transactions,
@@ -832,7 +847,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 "Invalidating cache: Transaction count mismatch"
             );
             self.invalidate_all(commit_head);
+            return false;
         }
+
+        true
     }
 
     /// Spawns the engine on a dedicated OS thread with blocking receive.
@@ -1178,28 +1196,15 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         let block_execution_id = BlockExecutionId::from(commit_head);
 
-        // If it is configured to invalidate the cache every block, do so
-        if self.overlay_cache_invalidation_every_block {
+        // Check if cache should be invalidated
+        let is_valid_state = if self.overlay_cache_invalidation_every_block {
             self.invalidate_all(commit_head);
+            false
         } else {
-            // If not, check if the cache should be invalidated.
-            self.check_cache(commit_head, &block_execution_id);
-        }
+            self.check_cache(commit_head, &block_execution_id)
+        };
 
-        // Safety fallback: `CommitHead` without prior `NewIteration`.
-        // Empty blocks should still receive NewIteration, treat this as unsafe state.
-        // If we invalidate cache, the block processing is stopped.
-        if !self
-            .current_block_iterations
-            .contains_key(&block_execution_id)
-        {
-            warn!(
-                target = "engine",
-                block_number = %commit_head.block_number,
-                "CommitHead without NewIteration - invalidating cache"
-            );
-            self.invalidate_all(commit_head);
-
+        if !is_valid_state {
             self.finalize_block_metrics(
                 commit_head.block_number,
                 processed_blocks,
