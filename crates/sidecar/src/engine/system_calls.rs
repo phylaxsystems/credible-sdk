@@ -79,9 +79,9 @@ pub struct SystemCallsConfig {
     pub block_number: U256,
     /// Current block timestamp
     pub timestamp: U256,
-    /// Block hash, optional for now, used for EIP-2935
+    /// Parent block hash, as we applied EIP-2935, before the tx execution.
     pub block_hash: Option<B256>,
-    /// Parent beacon block root (required for EIP-4788)
+    /// Parent beacon block root, required for EIP-4788.
     /// This comes from the consensus layer
     pub parent_beacon_block_root: Option<B256>,
 }
