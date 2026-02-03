@@ -545,6 +545,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_execution_id: TxExecutionId,
         tx_env: &TxEnv,
         rax: &TxValidationResult,
+        processing_duration: std::time::Duration,
     ) {
         let tx_hash = tx_execution_id.tx_hash;
         let is_valid = rax.is_valid();
@@ -563,6 +564,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             is_valid,
             status,
             gas_used = execution_result.gas_used(),
+            processing_duration = ?processing_duration,
             "Transaction processed"
         );
 
@@ -726,7 +728,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_metrics.assertion_gas_per_transaction = assertions_gas;
         tx_metrics.commit();
 
-        self.trace_execute_transaction_result(tx_execution_id, tx_env, &rax);
+        self.trace_execute_transaction_result(tx_execution_id, tx_env, &rax, processing_duration);
 
         let tx_data: ReconstructableTx = (tx_execution_id.tx_hash, tx_env.clone());
         if let Some(prev_txs) = prev_txs {
@@ -811,14 +813,20 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // Check cheapest conditions first
         let head_mismatch =
             self.current_head != commit_head.block_number.saturating_sub(U256::from(1));
+        let sidecar_last_tx_hash = last_tx_id.map(|id| id.tx_hash);
+        let commit_head_last_tx_hash = commit_head.last_tx_hash;
         let tx_hash_mismatch =
-            last_tx_id.is_some() && last_tx_id.map(|id| id.tx_hash) != commit_head.last_tx_hash;
+            sidecar_last_tx_hash.is_some() && sidecar_last_tx_hash != commit_head_last_tx_hash;
         let count_mismatch = n_transactions != commit_head.n_transactions;
 
         trace!(
             head_mismatch = head_mismatch,
             tx_hash_mismatch = tx_hash_mismatch,
             count_mismatch = count_mismatch,
+            sidecar_n_transactions = n_transactions,
+            commit_head_n_transactions = commit_head.n_transactions,
+            sidecar_last_tx_hash = ?sidecar_last_tx_hash,
+            commit_head_last_tx_hash = ?commit_head_last_tx_hash,
             "Checking cache conditions"
         );
 
@@ -826,24 +834,30 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             warn!(
                 current_head = %self.current_head,
                 commit_head = %commit_head.block_number,
+                sidecar_n_transactions = n_transactions,
+                commit_head_n_transactions = commit_head.n_transactions,
+                sidecar_last_tx_hash = ?sidecar_last_tx_hash,
+                commit_head_last_tx_hash = ?commit_head_last_tx_hash,
                 "Invalidating cache: CommitHead not +1 from current head"
             );
             self.invalidate_all(commit_head);
             return false;
         } else if tx_hash_mismatch {
-            if let Some(prev_id) = last_tx_id {
-                warn!(
-                    prev_tx_hash = %prev_id.tx_hash,
-                    current_tx_hash = ?commit_head.last_tx_hash,
-                    "Invalidating cache: Last transaction hash mismatch"
-                );
-            }
+            warn!(
+                sidecar_last_tx_hash = ?sidecar_last_tx_hash,
+                commit_head_last_tx_hash = ?commit_head_last_tx_hash,
+                sidecar_n_transactions = n_transactions,
+                commit_head_n_transactions = commit_head.n_transactions,
+                "Invalidating cache: Last transaction hash mismatch"
+            );
             self.invalidate_all(commit_head);
             return false;
         } else if count_mismatch {
             warn!(
                 sidecar_n_transactions = n_transactions,
                 block_env_n_transactions = commit_head.n_transactions,
+                sidecar_last_tx_hash = ?sidecar_last_tx_hash,
+                commit_head_last_tx_hash = ?commit_head_last_tx_hash,
                 "Invalidating cache: Transaction count mismatch"
             );
             self.invalidate_all(commit_head);
@@ -1191,6 +1205,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             processed_blocks = *processed_blocks,
             has_block_hash = ?commit_head.block_hash,
             has_parent_beacon_block_root = commit_head.parent_beacon_block_root.is_some(),
+            processing_duration = ?block_processing_time.elapsed(),
             "Processing CommitHead",
         );
 
