@@ -104,16 +104,10 @@ impl TransactionsResults {
     where
         I: IntoIterator<Item = TxExecutionId>,
     {
-        let mut tx_ids = tx_execution_ids.into_iter().peekable();
-        let had_invalidations = tx_ids.peek().is_some();
-
-        for tx_id in tx_ids {
-            self.remove_transaction_result(tx_id);
+        for tx_execution_id in tx_execution_ids {
+            self.remove_transaction_result(tx_execution_id);
         }
-
-        if had_invalidations {
-            self.transactions_state.clear_in_flight();
-        }
+        self.transactions_state.clear_in_flight();
     }
 
     #[cfg(test)]
