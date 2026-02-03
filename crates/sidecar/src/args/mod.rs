@@ -222,8 +222,6 @@ pub struct CredibleConfigFile {
     pub state_oracle: Option<Address>,
     /// Block number of the state oracle deployment
     pub state_oracle_deployment_block: Option<u64>,
-    /// Maximum capacity for transaction results
-    pub transaction_results_max_capacity: Option<usize>,
     /// Maximum time (ms) to keep transaction result request channels alive.
     #[serde_as(as = "Option<DurationMilliSeconds<u64>>")]
     pub transaction_results_pending_requests_ttl_ms: Option<Duration>,
@@ -274,8 +272,6 @@ pub struct CredibleConfig {
     pub state_oracle: Address,
     /// Block number of the state oracle deployment
     pub state_oracle_deployment_block: u64,
-    /// Maximum capacity for transaction results
-    pub transaction_results_max_capacity: usize,
     /// Maximum time (ms) to keep transaction result request channels alive.
     #[serde(default = "default_pending_request_ttl_ms")]
     #[serde_as(as = "DurationMilliSeconds<u64>")]
@@ -312,6 +308,8 @@ pub struct TransportConfigFile {
     pub content_hash_dedup_enabled: Option<bool>,
     /// Moka cache capacity for content-hash dedup
     pub content_hash_dedup_moka_capacity: Option<u64>,
+    /// Maximum capacity for transaction results
+    pub transaction_results_max_capacity: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -343,6 +341,8 @@ pub struct TransportConfig {
     pub content_hash_dedup_enabled: bool,
     /// Moka cache capacity for content-hash dedup (default: `1_000`)
     pub content_hash_dedup_moka_capacity: u64,
+    /// Maximum capacity for transaction results
+    pub transaction_results_max_capacity: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -497,7 +497,6 @@ fn resolve_credible(credible_file: &CredibleConfigFile) -> Result<CredibleConfig
         block_tag: required.block_tag,
         state_oracle: required.state_oracle,
         state_oracle_deployment_block: required.state_oracle_deployment_block,
-        transaction_results_max_capacity: required.transaction_results_max_capacity,
         transaction_results_pending_requests_ttl_ms: ttls
             .transaction_results_pending_requests_ttl_ms,
         accepted_txs_ttl_ms: ttls.accepted_txs_ttl_ms,
@@ -537,6 +536,11 @@ fn resolve_transport(transport_file: &TransportConfigFile) -> Result<TransportCo
         content_hash_dedup_moka_capacity: parse_env("SIDECAR_CONTENT_HASH_DEDUP_MOKA_CAPACITY")?
             .or(transport_file.content_hash_dedup_moka_capacity)
             .unwrap_or(DEFAULT_CONTENT_HASH_DEDUP_MOKA_CAPACITY),
+        transaction_results_max_capacity: required_or_env(
+            transport_file.transaction_results_max_capacity,
+            "SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY",
+            "transport.transaction_results_max_capacity",
+        )?,
     })
 }
 
@@ -586,7 +590,6 @@ struct CredibleRequired {
     block_tag: BlockTag,
     state_oracle: Address,
     state_oracle_deployment_block: u64,
-    transaction_results_max_capacity: usize,
     #[cfg(feature = "cache_validation")]
     cache_checker_ws_url: String,
 }
@@ -656,11 +659,6 @@ fn resolve_credible_required(
             credible_file.state_oracle_deployment_block,
             "SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK",
             "credible.state_oracle_deployment_block",
-        )?,
-        transaction_results_max_capacity: required_or_env(
-            credible_file.transaction_results_max_capacity,
-            "SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY",
-            "credible.transaction_results_max_capacity",
         )?,
         #[cfg(feature = "cache_validation")]
         cache_checker_ws_url: required_or_env(
@@ -979,13 +977,13 @@ mod tests {
     "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
-    "transaction_results_max_capacity": 10000
+    "state_oracle_deployment_block": 100
   },
   "transport": {
     "protocol": "grpc",
     "bind_addr": "127.0.0.1:3000",
-    "health_bind_addr": "127.0.0.1:3001"
+    "health_bind_addr": "127.0.0.1:3001",
+    "transaction_results_max_capacity": 10000
   },
   "state": {
     "sources": [
@@ -1056,10 +1054,10 @@ mod tests {
             Some(1000)
         );
         assert_eq!(config.credible.state_oracle_deployment_block, 100);
-        assert_eq!(config.credible.transaction_results_max_capacity, 10000);
 
         // Verify transport config
         assert_eq!(config.transport.bind_addr, "127.0.0.1:3000");
+        assert_eq!(config.transport.transaction_results_max_capacity, 10000);
 
         // Verify state config
         assert_eq!(
@@ -1199,12 +1197,12 @@ mod tests {
     "assertion_store_db_path": "/tmp/store.db",
     "block_tag": "finalized",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
-    "transaction_results_max_capacity": 10000
+    "state_oracle_deployment_block": 100
   }},
   "transport": {{
     "protocol": "grpc",
-    "bind_addr": "127.0.0.1:3001"
+    "bind_addr": "127.0.0.1:3001",
+    "transaction_results_max_capacity": 10000
   }},
   "state": {{
     "minimum_state_diff": 10,
@@ -1381,12 +1379,12 @@ mod tests {
     "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
-    "transaction_results_max_capacity": 10000
+    "state_oracle_deployment_block": 100
   }},
   "transport": {{
     "protocol": "grpc",
-    "bind_addr": "127.0.0.1:3000"
+    "bind_addr": "127.0.0.1:3000",
+    "transaction_results_max_capacity": 10000
   }},
   "state": {{
     "sources": [
@@ -1438,12 +1436,12 @@ mod tests {
     "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "Latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
-    "transaction_results_max_capacity": 10000
+    "state_oracle_deployment_block": 100
   }},
   "transport": {{
     "protocol": "grpc",
-    "bind_addr": "127.0.0.1:3000"
+    "bind_addr": "127.0.0.1:3000",
+    "transaction_results_max_capacity": 10000
   }},
   "state": {{
     "sources": [
@@ -1490,12 +1488,12 @@ mod tests {
     "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
-    "transaction_results_max_capacity": 10000
+    "state_oracle_deployment_block": 100
   }},
   "transport": {{
     "protocol": "grpc",
-    "bind_addr": "127.0.0.1:3000"
+    "bind_addr": "127.0.0.1:3000",
+    "transaction_results_max_capacity": 10000
   }},
   "state": {{
     "minimum_state_diff": 10,
@@ -1536,12 +1534,12 @@ mod tests {
     "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
-    "transaction_results_max_capacity": 10000
+    "state_oracle_deployment_block": 100
   }},
   "transport": {{
     "protocol": "grpc",
-    "bind_addr": "127.0.0.1:3000"
+    "bind_addr": "127.0.0.1:3000",
+    "transaction_results_max_capacity": 10000
   }},
   "state": {{
     "eth_rpc_source_ws_url": "ws://legacy.example:8546",
@@ -1598,12 +1596,12 @@ mod tests {
     "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
-    "transaction_results_max_capacity": 10000
+    "state_oracle_deployment_block": 100
   }},
   "transport": {{
     "protocol": "grpc",
-    "bind_addr": "127.0.0.1:3000"
+    "bind_addr": "127.0.0.1:3000",
+    "transaction_results_max_capacity": 10000
   }},
   "state": {{
     "sources": [
@@ -1676,12 +1674,12 @@ mod tests {
     "transaction_observer_poll_interval_ms": 1000,
     "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
-    "transaction_results_max_capacity": 10000
+    "state_oracle_deployment_block": 100
   }},
   "transport": {{
     "protocol": "grpc",
-    "bind_addr": "127.0.0.1:3000"
+    "bind_addr": "127.0.0.1:3000",
+    "transaction_results_max_capacity": 10000
   }},
   "state": {{
     "sources": [

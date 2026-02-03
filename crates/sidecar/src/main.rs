@@ -99,8 +99,7 @@ fn create_transport_from_args(
     result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
     content_hash_cache: ContentHashCache,
 ) -> anyhow::Result<GrpcTransport> {
-    let mut cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
-    cfg.transaction_results_max_capacity = config.credible.transaction_results_max_capacity;
+    let cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
     let transport = match result_event_rx {
         Some(rx) => {
             GrpcTransport::with_result_receiver(
@@ -368,7 +367,7 @@ async fn main() -> anyhow::Result<()> {
             engine_rx,
             assertion_executor.clone(),
             engine_state_results.clone(),
-            config.credible.transaction_results_max_capacity,
+            config.transport.transaction_results_max_capacity,
             Duration::from_millis(config.state.sources_sync_timeout_ms),
             Duration::from_millis(config.state.sources_monitoring_period_ms),
             config

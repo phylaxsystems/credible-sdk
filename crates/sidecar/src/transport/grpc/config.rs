@@ -54,7 +54,7 @@ impl TryFrom<TransportConfig> for GrpcTransportConfig {
         Ok(Self {
             bind_addr: value.bind_addr.parse()?,
             pending_receive_ttl,
-            transaction_results_max_capacity: 10_000,
+            transaction_results_max_capacity: value.transaction_results_max_capacity,
             dedup_cache: DedupCacheConfig {
                 enabled: value.content_hash_dedup_enabled,
                 moka_capacity: value.content_hash_dedup_moka_capacity,
