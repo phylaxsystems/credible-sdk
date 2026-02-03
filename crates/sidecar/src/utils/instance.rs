@@ -255,12 +255,15 @@ pub struct LocalInstance<T: TestTransport> {
     active_iterations: HashSet<u64>,
     /// Tracks the next committed nonce per address after the latest finalized block
     committed_nonce: HashMap<Address, u64>,
+    /// Optional per-block timestamp overrides for tests
+    block_timestamps: HashMap<u64, U256>,
 }
 
 impl<T: TestTransport> LocalInstance<T> {
     const TRANSACTION_RESULT_TIMEOUT: Duration = Duration::from_millis(250);
     const CONDITION_TIMEOUT: Duration = Duration::from_secs(10);
     const CONDITION_POLL_INTERVAL: Duration = Duration::from_millis(20);
+    const BASE_BLOCK_TIMESTAMP: u64 = 1_234_567_890;
 
     /// Create a new local instance with mock transport
     pub async fn new() -> Result<LocalInstance<T>, String> {
@@ -303,12 +306,19 @@ impl<T: TestTransport> LocalInstance<T> {
             iteration_tx_map: HashMap::new(),
             active_iterations: HashSet::new(),
             committed_nonce: HashMap::new(),
+            block_timestamps: HashMap::new(),
         }
     }
 
     /// Sets the current iteration ID
     pub fn set_current_iteration_id(&mut self, iteration_id: u64) {
         self.iteration_id = iteration_id;
+    }
+
+    /// Override the timestamp used for a given block number.
+    pub fn set_block_timestamp(&mut self, block_number: U256, timestamp: U256) {
+        let block_number: u64 = block_number.saturating_to::<u64>();
+        self.block_timestamps.insert(block_number, timestamp);
     }
 
     /// Send a block with multiple transactions
@@ -548,7 +558,7 @@ impl<T: TestTransport> LocalInstance<T> {
         let nonce = self.next_nonce(caller, block_execution_id);
         TxEnvBuilder::new()
             .caller(caller)
-            .gas_limit(100_000)
+            .gas_limit(5_000_000)
             .gas_price(0)
             .kind(TxKind::Create)
             .value(value)
@@ -651,7 +661,7 @@ impl<T: TestTransport> LocalInstance<T> {
             n_transactions,
             block_hash,
             beacon_block_root,
-            U256::from(1234567890),
+            self.block_timestamp(block_number),
         );
 
         if send_rpc_node {
@@ -674,7 +684,7 @@ impl<T: TestTransport> LocalInstance<T> {
         self.active_iterations.clear();
 
         let next_block_number = block_number + U256::from(1);
-        let block_env = Self::default_block_env(next_block_number);
+        let block_env = self.default_block_env(next_block_number);
         self.transport
             .new_iteration(self.iteration_id, block_env)
             .await?;
@@ -757,7 +767,7 @@ impl<T: TestTransport> LocalInstance<T> {
         }
 
         let current_block_number = self.block_number;
-        let block_env = Self::default_block_env(current_block_number);
+        let block_env = self.default_block_env(current_block_number);
 
         self.transport
             .new_iteration(iteration_id, block_env)
@@ -785,7 +795,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // Create transaction
         let tx_env = TxEnvBuilder::new()
             .caller(caller)
-            .gas_limit(100_000)
+            .gas_limit(5_000_000)
             .gas_price(0)
             .kind(TxKind::Create)
             .value(value)
@@ -1480,9 +1490,18 @@ impl<T: TestTransport> LocalInstance<T> {
         Ok(())
     }
 
-    fn default_block_env(block_number: U256) -> BlockEnv {
+    fn block_timestamp(&self, block_number: U256) -> U256 {
+        let block_number: u64 = block_number.saturating_to::<u64>();
+        self.block_timestamps
+            .get(&block_number)
+            .copied()
+            .unwrap_or_else(|| U256::from(Self::BASE_BLOCK_TIMESTAMP + block_number))
+    }
+
+    fn default_block_env(&self, block_number: U256) -> BlockEnv {
         BlockEnv {
             number: block_number,
+            timestamp: self.block_timestamp(block_number),
             gas_limit: 50_000_000,
             blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
                 excess_blob_gas: 0,
