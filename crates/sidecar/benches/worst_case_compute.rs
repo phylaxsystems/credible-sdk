@@ -28,6 +28,7 @@ use revm::{
     primitives::TxKind,
 };
 use sidecar::{
+    db::SidecarDb,
     execution_ids::TxExecutionId,
     transaction_observer::{
         IncidentReportReceiver,
@@ -264,9 +265,11 @@ impl ObserverHandle {
             endpoint_rps_max: 0,
             endpoint: String::new(),
             auth_token: String::new(),
-            db_path: tempdir.path().to_string_lossy().to_string(),
         };
-        let observer = TransactionObserver::new(config, incident_rx)
+        let sidecar_db = Arc::new(
+            SidecarDb::open(&tempdir.path().to_string_lossy()).expect("Failed to open sidecar db"),
+        );
+        let observer = TransactionObserver::new(config, incident_rx, sidecar_db)
             .expect("Failed to create transaction observer");
         let shutdown = Arc::new(AtomicBool::new(false));
         let (handle, _exit_rx) = observer
