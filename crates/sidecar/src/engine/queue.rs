@@ -148,8 +148,8 @@ pub struct CommitHead {
     pub(crate) last_tx_hash: Option<TxHash>,
     /// Number of txs included in the block.
     pub(crate) n_transactions: u64,
-    /// Current block hash for EIP-2935 (Prague+)
-    /// Required for historical block hash storage
+    /// Current block hash for BLOCKHASH opcode cache
+    /// EIP-2935 system call uses parent hash from `NewIteration`
     pub(crate) block_hash: B256,
     /// Parent beacon block root for EIP-4788 (Cancun+)
     /// Required for beacon chain root storage
@@ -186,19 +186,34 @@ impl CommitHead {
     }
 }
 
-/// Creates a new iteration with a specific block env
+/// Creates a new iteration with a specific block env.
+///
+/// Contains all data needed to apply system calls - EIP-4788, EIP-2935
+/// It should be applied before the transaction execution
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NewIteration {
     pub(crate) iteration_id: u64,
     pub(crate) block_env: BlockEnv,
+    /// Parent block hash for EIP-2935, stored at current block's slot.
+    pub(crate) parent_block_hash: Option<B256>,
+    /// Parent beacon block root for EIP-4788.
+    pub(crate) parent_beacon_block_root: Option<B256>,
 }
 
 impl NewIteration {
-    /// Construct a new iteration event.
-    pub fn new(iteration_id: u64, block_env: BlockEnv) -> Self {
+    /// Construct a new iteration event with all system call data.
+    pub fn new(
+        iteration_id: u64,
+        block_env: BlockEnv,
+        parent_block_hash: Option<B256>,
+        parent_beacon_block_root: Option<B256>,
+    ) -> Self {
         Self {
             iteration_id,
             block_env,
+            parent_block_hash,
+            parent_beacon_block_root,
         }
     }
 }

@@ -263,6 +263,8 @@ async fn test_core_engine_errors_when_no_synced_sources() {
     let new_iteration = queue::NewIteration {
         block_env,
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
 
     let queue_tx = queue::QueueTransaction {
@@ -297,6 +299,8 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     let queue_iteration_1 = queue::NewIteration {
         block_env: block_env_1,
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&queue_iteration_1).unwrap();
 
@@ -327,6 +331,8 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     let queue_iteration_mismatch = queue::NewIteration {
         block_env: block_env_mismatched,
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
     let iteration_result = engine.process_iteration(&queue_iteration_mismatch);
     assert!(
@@ -435,7 +441,6 @@ async fn test_execute_assertion_passing_failing_pair(mut instance: crate::utils:
 async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
     mut instance: crate::utils::LocalInstance,
 ) {
-    let initial_cache_resets = instance.cache_reset_count();
     let basefee = 10u64;
     let caller = counter_call().caller;
     let tx_block_number = instance.block_number + U256::from(1);
@@ -459,6 +464,10 @@ async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
         .send_block_with_txs(vec![(hash_pass, tx_pass), (hash_fail, tx_fail)])
         .await
         .unwrap();
+
+    // Capture cache resets after initial setup. The first send_block_with_txs() may cause one reset
+    // because CommitHead arrives before any NewIteration exists for that block.
+    let initial_cache_resets = instance.cache_reset_count();
 
     let tx_pass_id = TxExecutionId {
         block_number: tx_block_number,
@@ -505,7 +514,6 @@ async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
 async fn test_assertion_invalid_tx_reorg_keeps_count_in_sync(
     mut instance: crate::utils::LocalInstance,
 ) {
-    let initial_cache_resets = instance.cache_reset_count();
     let basefee = 10u64;
     let caller = counter_call().caller;
     let tx_block_number = instance.block_number + U256::from(1);
@@ -538,6 +546,10 @@ async fn test_assertion_invalid_tx_reorg_keeps_count_in_sync(
         ])
         .await
         .unwrap();
+
+    // Capture cache resets after initial setup. The first send_block_with_txs() may cause one reset
+    // because CommitHead arrives before any NewIteration exists for that block.
+    let initial_cache_resets = instance.cache_reset_count();
 
     let tx_pass_id = TxExecutionId {
         block_number: tx_block_number,
@@ -795,13 +807,15 @@ async fn test_core_engine_reorg_valid_then_previous_rejected(
 async fn test_core_engine_reorg_followed_by_blockenv_with_last_tx_hash(
     mut instance: crate::utils::LocalInstance,
 ) {
-    let initial_cache_resets = instance.cache_reset_count();
-
     // Start by sending a block environment so subsequent dry transactions share the same block.
     instance
         .new_block()
         .await
         .expect("initial blockenv should be accepted");
+
+    // Capture cache resets after initial setup. The first new_block() may cause one reset
+    // because CommitHead arrives before any NewIteration exists for that block.
+    let initial_cache_resets = instance.cache_reset_count();
 
     // Send two transactions without new blockenvs so they belong to the same block.
     let tx1 = instance
@@ -1683,7 +1697,12 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
         ..Default::default()
     };
     engine
-        .process_iteration(&NewIteration::new(1, block_env))
+        .process_iteration(&NewIteration::new(
+            1,
+            block_env,
+            Some(B256::ZERO),
+            Some(B256::ZERO),
+        ))
         .unwrap();
 
     let tx_hash = B256::from([0x42; 32]);
@@ -1840,7 +1859,12 @@ async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
         ..Default::default()
     };
     engine
-        .process_iteration(&NewIteration::new(1, block_env_2))
+        .process_iteration(&NewIteration::new(
+            1,
+            block_env_2,
+            Some(B256::ZERO),
+            Some(B256::ZERO),
+        ))
         .unwrap();
 
     let tx_hash = B256::from([0x42; 32]);
@@ -2030,9 +2054,10 @@ async fn test_failed_transaction_commit() {
 async fn test_iteration_selection_and_commit(mut instance: crate::utils::LocalInstance) {
     info!("Testing multiple iterations with winner selection");
 
-    let initial_cache_count = instance.cache_reset_count();
-
     instance.new_block().await.unwrap();
+
+    // Capture cache count after initial setup (first new_block may cause one reset)
+    let initial_cache_count = instance.cache_reset_count();
 
     // Send transactions with different iteration IDs in Block 1
     instance.new_iteration(1).await.unwrap();
@@ -3200,7 +3225,7 @@ fn test_ring_buffer_and_slot_calculations() {
         spec_id: SpecId::PRAGUE,
         block_number: U256::from(block_number),
         timestamp: U256::from(1234567890),
-        block_hash: hash,
+        block_hash: Some(hash),
         parent_beacon_block_root: None,
     };
 
@@ -3208,8 +3233,8 @@ fn test_ring_buffer_and_slot_calculations() {
     assert!(result.is_ok());
 
     let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS).unwrap();
-    // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8290 % 8191 = 99
-    let expected_slot = U256::from(99u64);
+    // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8289 % 8191 = 98
+    let expected_slot = U256::from(98u64);
     assert!(account.storage.contains_key(&expected_slot));
 
     // EIP-4788: Test with timestamp that wraps around
@@ -3221,7 +3246,7 @@ fn test_ring_buffer_and_slot_calculations() {
         spec_id: SpecId::CANCUN,
         block_number: U256::from(100),
         timestamp: U256::from(timestamp),
-        block_hash: B256::ZERO,
+        block_hash: Some(B256::ZERO),
         parent_beacon_block_root: Some(beacon_root),
     };
 
@@ -3271,11 +3296,11 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::SHANGHAI,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: B256::repeat_byte(0x11),
+        block_hash: Some(B256::repeat_byte(0x11)),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
-    let result = system_calls.apply_system_calls(&config, &mut db);
+    let result = system_calls.apply_pre_tx_system_calls(&config, &mut db);
     assert!(result.is_ok());
     // Neither contract should be touched for Shanghai
     assert!(!db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
@@ -3287,11 +3312,11 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::CANCUN,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: B256::repeat_byte(0x11),
+        block_hash: Some(B256::repeat_byte(0x11)),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
-    let result = system_calls.apply_system_calls(&config, &mut db);
+    let result = system_calls.apply_pre_tx_system_calls(&config, &mut db);
     assert!(result.is_ok());
     // Only beacon roots should be touched for Cancun
     assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
@@ -3303,11 +3328,11 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::PRAGUE,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: B256::repeat_byte(0x11),
+        block_hash: Some(B256::repeat_byte(0x11)),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
-    let result = system_calls.apply_system_calls(&config, &mut db);
+    let result = system_calls.apply_pre_tx_system_calls(&config, &mut db);
     assert!(result.is_ok());
     // Both contracts should be touched for Prague
     assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
@@ -3382,6 +3407,8 @@ async fn test_reverted_transactions_are_counted() {
     let new_iteration = queue::NewIteration {
         block_env: block_env.clone(),
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&new_iteration).unwrap();
 
@@ -3453,6 +3480,8 @@ async fn test_invalid_transactions_not_counted() {
     let new_iteration = queue::NewIteration {
         block_env: block_env.clone(),
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&new_iteration).unwrap();
 
@@ -3513,6 +3542,8 @@ async fn test_mixed_valid_and_invalid_transactions_counting() {
     let new_iteration = queue::NewIteration {
         block_env: block_env.clone(),
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&new_iteration).unwrap();
 

@@ -789,13 +789,29 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     }
 
     /// Checks if the cache should be cleared and clears it.
-    fn check_cache(&mut self, commit_head: &CommitHead, block_execution_id: &BlockExecutionId) {
+    /// Returns `true` if processing should continue, `false` if cache was invalidated.
+    fn check_cache(
+        &mut self,
+        commit_head: &CommitHead,
+        block_execution_id: &BlockExecutionId,
+    ) -> bool {
         // Single HashMap lookup instead of multiple
-        let (last_tx_id, n_transactions) =
-            match self.current_block_iterations.get(block_execution_id) {
-                Some(data) => (data.last_tx_id(), data.n_transactions),
-                None => (None, 0),
-            };
+        let Some(data) = self.current_block_iterations.get(block_execution_id) else {
+            // CommitHead without prior NewIteration - invalidate cache
+            warn!(
+                target = "engine",
+                current_head = %self.current_head,
+                commit_head_block_number = %commit_head.block_number,
+                commit_head_n_transactions = commit_head.n_transactions,
+                commit_head_last_tx_hash = ?commit_head.last_tx_hash,
+                "Invalidating cache: CommitHead without NewIteration"
+            );
+            self.invalidate_all(commit_head);
+            return false;
+        };
+
+        let last_tx_id = data.last_tx_id();
+        let n_transactions = data.n_transactions;
 
         // Check cheapest conditions first
         let head_mismatch =
@@ -828,6 +844,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 "Invalidating cache: CommitHead not +1 from current head"
             );
             self.invalidate_all(commit_head);
+            return false;
         } else if tx_hash_mismatch {
             warn!(
                 sidecar_last_tx_hash = ?sidecar_last_tx_hash,
@@ -837,6 +854,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 "Invalidating cache: Last transaction hash mismatch"
             );
             self.invalidate_all(commit_head);
+            return false;
         } else if count_mismatch {
             warn!(
                 sidecar_n_transactions = n_transactions,
@@ -846,7 +864,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 "Invalidating cache: Transaction count mismatch"
             );
             self.invalidate_all(commit_head);
+            return false;
         }
+
+        true
     }
 
     /// Spawns the engine on a dedicated OS thread with blocking receive.
@@ -1125,7 +1146,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let block_execution_id = BlockExecutionId::from(new_iteration);
 
         // Create a VersionDb with a clone of the cache - VersionDb will create its own ForkDb internally
-        let block_iteration_data = BlockIterationData {
+        let mut block_iteration_data = BlockIterationData {
             version_db: VersionDb::new(self.cache.clone()),
             n_transactions: 0,
             executed_txs: Vec::new(),
@@ -1134,6 +1155,21 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             incident_txs: Vec::new(),
             block_env: block_env.clone(),
         };
+
+        // Apply eips system calls to the ForkDb before any transaction.
+        // Ensure transactions can query beacon roots and block hashes from system contracts.
+        let spec_id = self.get_spec_id();
+        let config = SystemCallsConfig::new(
+            spec_id,
+            block_env.number,
+            block_env.timestamp,
+            new_iteration.parent_block_hash,
+            new_iteration.parent_beacon_block_root,
+        );
+
+        self.system_calls
+            .apply_pre_tx_system_calls(&config, block_iteration_data.version_db.state_mut())
+            .map_err(EngineError::SystemCallError)?;
 
         // NOTE: If the sidecar receives the same iteration twice, the last one prevails
         self.current_block_iterations
@@ -1146,7 +1182,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             gas_limit = block_env.gas_limit,
             base_fee = ?block_env.basefee,
             iteration_id = block_execution_id.iteration_id,
-            "Iteration successfully created"
+            parent_block_hash = ?new_iteration.parent_block_hash,
+            parent_beacon_block_root = ?new_iteration.parent_beacon_block_root,
+            "Iteration successfully created with system calls applied"
         );
 
         Ok(())
@@ -1176,16 +1214,25 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         let block_execution_id = BlockExecutionId::from(commit_head);
 
-        // If it is configured to invalidate the cache every block, do so
-        if self.overlay_cache_invalidation_every_block {
+        // Check if cache should be invalidated
+        let is_valid_state = if self.overlay_cache_invalidation_every_block {
             self.invalidate_all(commit_head);
+            false
         } else {
-            // If not, check if the cache should be invalidated.
-            self.check_cache(commit_head, &block_execution_id);
-        }
+            self.check_cache(commit_head, &block_execution_id)
+        };
 
-        let spec_id = self.get_spec_id();
-        let system_calls = self.system_calls.clone();
+        if !is_valid_state {
+            // Cache was invalidated (missing iteration, head/hash/count mismatch).
+            // Skip block finalization since there's no valid cached state to commit,
+            // we only update metrics and head tracking.
+            self.finalize_block_metrics(
+                commit_head.block_number,
+                processed_blocks,
+                block_processing_time,
+            );
+            return Ok(());
+        }
 
         if let Some(iteration) = self.current_block_iterations.get(&block_execution_id)
             && iteration.version_db.last_commit_was_empty()
@@ -1193,7 +1240,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Err(EngineError::NothingToCommit);
         }
 
-        // Finalize the previous block by committing its fork to the underlying state
+        // Finalize the previous block by committing its fork to the underlying state.
+        // This merges the ForkDb (which already has system calls applied) into the OverlayDb.
         if self
             .current_block_iterations
             .contains_key(&block_execution_id)
@@ -1201,18 +1249,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             self.finalize_previous_block(block_execution_id);
         }
 
-        // Apply EIP-2935 and EIP-4788 system calls before finalizing
-        let config = SystemCallsConfig::new(
-            spec_id,
+        // Cache block hash for BLOCKHASH opcode lookups on future blocks.
+        // EIP-4788 and EIP-2935 were already applied to the ForkDb at iteration time.
+        self.system_calls.cache_block_hash(
             commit_head.block_number,
-            commit_head.timestamp,
             commit_head.block_hash,
-            commit_head.parent_beacon_block_root,
+            &self.cache,
         );
-
-        system_calls
-            .apply_system_calls(&config, &mut self.cache)
-            .map_err(EngineError::SystemCallError)?;
 
         #[cfg(any(test, feature = "bench-utils"))]
         if let Some(canonical_db) = self.canonical_db.as_ref() {
@@ -1222,12 +1265,19 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 }
             }
 
+            // For canonical_db, test only, apply full system calls since it's a separate DB
+            let spec_id = self.get_spec_id();
+            let config = SystemCallsConfig::new(
+                spec_id,
+                commit_head.block_number,
+                commit_head.timestamp,
+                Some(commit_head.block_hash),
+                commit_head.parent_beacon_block_root,
+            );
             canonical_db
-                .apply_system_calls_canonical(&system_calls, &config)
+                .apply_system_calls_canonical(&self.system_calls, &config)
                 .map_err(EngineError::SystemCallError)?;
         }
-
-        *processed_blocks += 1;
 
         #[cfg(feature = "cache_validation")]
         {
@@ -1243,18 +1293,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             self.iteration_pending_processed_transactions.clear();
         }
 
-        // Set the block number to the latest applied head
-        self.sources.set_block_number(commit_head.block_number);
-        self.current_head = commit_head.block_number;
-
-        self.block_metrics.block_processing_duration = block_processing_time.elapsed();
-        self.block_metrics.current_height = commit_head.block_number;
-        // Commit all values inside of `block_metrics` to prometheus collector
-        self.block_metrics.commit();
-        // Reset the values inside to their defaults
-        self.block_metrics.reset();
-        *block_processing_time = Instant::now();
-
+        self.finalize_block_metrics(
+            commit_head.block_number,
+            processed_blocks,
+            block_processing_time,
+        );
         self.current_block_iterations.clear();
 
         debug!(
@@ -1364,6 +1407,29 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // Commit the entire block's state to the underlying OverlayDb
         self.cache
             .commit_overlay_fork_db(current_block_iteration.version_db.state().clone());
+    }
+
+    // Finalize block metrics and reset timing for next block.
+    #[inline]
+    fn finalize_block_metrics(
+        &mut self,
+        block_number: U256,
+        processed_blocks: &mut u64,
+        block_processing_time: &mut Instant,
+    ) {
+        // Set the block number to the latest applied head
+        self.sources.set_block_number(block_number);
+        self.current_head = block_number;
+
+        self.block_metrics.block_processing_duration = block_processing_time.elapsed();
+        self.block_metrics.current_height = block_number;
+        // Commit all values inside of `block_metrics` to prometheus collector
+        self.block_metrics.commit();
+        // Reset the values inside to their defaults for the next block
+        self.block_metrics.reset();
+
+        *block_processing_time = Instant::now();
+        *processed_blocks += 1;
     }
 
     /// Processes a reorg event by validating the tail of executed transactions.

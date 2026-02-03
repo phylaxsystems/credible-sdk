@@ -311,6 +311,10 @@ pub struct LocalInstanceMockDriver {
     override_last_tx_hash: Option<Option<TxHash>>,
     #[allow(clippy::option_option)]
     override_prev_tx_hash: Option<Option<TxHash>>,
+    /// Tracks the last committed block hash so `NewIteration` can include its parent hash.
+    last_committed_block_hash: B256,
+    /// Tracks the last committed beacon block root so `NewIteration` can include it for EIP-4788.
+    last_committed_beacon_root: Option<B256>,
 }
 
 impl LocalInstanceMockDriver {
@@ -361,6 +365,8 @@ impl LocalInstanceMockDriver {
                 override_n_transactions: None,
                 override_last_tx_hash: None,
                 override_prev_tx_hash: None,
+                last_committed_block_hash: B256::ZERO,
+                last_committed_beacon_root: None,
             },
         ))
     }
@@ -442,6 +448,8 @@ impl TestTransport for LocalInstanceMockDriver {
         self.override_n_transactions = None;
         self.override_last_tx_hash = None;
         self.override_prev_tx_hash = None;
+        self.last_committed_block_hash = commit_head.block_hash;
+        self.last_committed_beacon_root = commit_head.parent_beacon_block_root;
 
         self.mock_sender
             .send(TxQueueContents::CommitHead(commit_head))
@@ -494,7 +502,12 @@ impl TestTransport for LocalInstanceMockDriver {
             })
             .or_default();
 
-        let new_iteration = NewIteration::new(iteration_id, block_env);
+        let new_iteration = NewIteration::new(
+            iteration_id,
+            block_env,
+            Some(self.last_committed_block_hash),
+            self.last_committed_beacon_root,
+        );
         self.mock_sender
             .send(TxQueueContents::NewIteration(new_iteration))
             .map_err(|e| format!("Failed to send new iteration: {e}"))
@@ -601,6 +614,10 @@ pub struct LocalInstanceGrpcDriver {
     override_last_tx_hash: Option<Option<TxHash>>,
     #[allow(clippy::option_option)]
     override_prev_tx_hash: Option<Option<TxHash>>,
+    /// Tracks the last committed block hash so `NewIteration` can include its parent hash.
+    last_committed_block_hash: Option<B256>,
+    /// Tracks the last committed beacon block root so `NewIteration` can include it for EIP-4788.
+    last_committed_beacon_root: Option<B256>,
 }
 
 impl LocalInstanceGrpcDriver {
@@ -839,6 +856,8 @@ impl LocalInstanceGrpcDriver {
                 override_n_transactions: None,
                 override_last_tx_hash: None,
                 override_prev_tx_hash: None,
+                last_committed_block_hash: None,
+                last_committed_beacon_root: None,
             },
         ))
     }
@@ -934,6 +953,8 @@ impl TestTransport for LocalInstanceGrpcDriver {
         self.override_n_transactions = None;
         self.override_last_tx_hash = None;
         self.override_prev_tx_hash = None;
+        self.last_committed_block_hash = Some(commit_head.block_hash);
+        self.last_committed_beacon_root = commit_head.parent_beacon_block_root;
 
         self.send_event(event).await
     }
@@ -990,6 +1011,8 @@ impl TestTransport for LocalInstanceGrpcDriver {
         let new_iteration = pb::NewIteration {
             iteration_id,
             block_env: Some(Self::build_pb_block_env(&block_env)),
+            parent_block_hash: self.last_committed_block_hash.map(|r| r.to_vec()),
+            parent_beacon_block_root: self.last_committed_beacon_root.map(|r| r.to_vec()),
         };
 
         let event = Event {
