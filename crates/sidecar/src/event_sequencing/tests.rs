@@ -3304,8 +3304,21 @@ async fn test_future_block_reorg_with_replacement_and_redundant_reorgs(
     assert!(instance.get_transaction_result(&tx2_id).is_none());
     assert!(instance.get_transaction_result(&tx3_id).is_none());
 
-    // Advance to block 4
-    for block in 1..4 {
+    // Advance to block 4 - each block needs NewIteration for the next block
+    for block in 1..=3 {
+        // NewIteration for the block we're about to build
+        let block_env = BlockEnv {
+            number: U256::from(block),
+            gas_limit: 50_000_000,
+            ..Default::default()
+        };
+        instance
+            .transport
+            .new_iteration(1, block_env)
+            .await
+            .unwrap();
+
+        // Finalize the block
         instance
             .eth_rpc_source_http_mock
             .send_new_head_with_block_number(block);
@@ -3318,6 +3331,7 @@ async fn test_future_block_reorg_with_replacement_and_redundant_reorgs(
             .unwrap();
     }
 
+    // NewIteration for block 4
     let next_block_env = BlockEnv {
         number: U256::from(4),
         gas_limit: 50_000_000,
