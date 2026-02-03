@@ -156,6 +156,7 @@ impl SystemCalls {
             );
         }
 
+        // Apply EIP-2935 (Prague+)
         if config.spec_id.is_prague_active() {
             self.apply_eip2935(config, db)?;
             debug!(
