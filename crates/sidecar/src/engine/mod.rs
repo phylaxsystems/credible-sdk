@@ -1205,6 +1205,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         };
 
         if !is_valid_state {
+            // Cache was invalidated (missing iteration, head/hash/count mismatch).                                      
+            // Skip block finalization since there's no valid cached state to commit,
+            // we only update metrics and head tracking.
             self.finalize_block_metrics(
                 commit_head.block_number,
                 processed_blocks,
