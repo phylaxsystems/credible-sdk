@@ -1255,7 +1255,7 @@ mod tests {
         let transactions_results =
             QueryTransactionsResults::new(Arc::clone(&transactions_state), Duration::from_secs(5));
 
-        let content_hash_cache = ContentHashCache::new(1_000, 1_000);
+        let content_hash_cache = ContentHashCache::new(1_000);
 
         let service = GrpcService::new(
             tx_sender,
@@ -1396,7 +1396,7 @@ mod tests {
         let transactions_results =
             QueryTransactionsResults::new(Arc::clone(&transactions_state), Duration::from_secs(5));
 
-        let content_hash_cache = ContentHashCache::new(1_000, 1_000);
+        let content_hash_cache = ContentHashCache::new(1_000);
 
         let service = GrpcService::new(
             tx_sender,

@@ -4112,7 +4112,7 @@ async fn test_content_hash_dedup_integration_round_trip() {
     };
 
     // Create an in-memory ContentHashCache
-    let content_hash_cache = ContentHashCache::new(1_000, 1_000);
+    let content_hash_cache = ContentHashCache::new(1_000);
 
     // Create LocalInstance with the cache shared between engine and transport
     let mut instance = LocalInstanceGrpcDriver::new_with_content_hash_cache(content_hash_cache)

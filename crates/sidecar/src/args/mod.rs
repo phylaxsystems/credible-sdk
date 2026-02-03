@@ -50,7 +50,6 @@ fn default_accepted_txs_ttl_ms() -> Duration {
 }
 
 const DEFAULT_CONTENT_HASH_DEDUP_MOKA_CAPACITY: u64 = 1_000;
-const DEFAULT_CONTENT_HASH_DEDUP_BLOOM_CAPACITY: usize = 10_000;
 
 #[derive(Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct SecretString(String);
@@ -313,8 +312,6 @@ pub struct TransportConfigFile {
     pub content_hash_dedup_enabled: Option<bool>,
     /// Moka cache capacity for content-hash dedup
     pub content_hash_dedup_moka_capacity: Option<u64>,
-    /// Bloom filter initial capacity for content-hash dedup
-    pub content_hash_dedup_bloom_capacity: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -344,10 +341,8 @@ pub struct TransportConfig {
     /// Enable content-hash deduplication cache (default: false)
     #[serde(default)]
     pub content_hash_dedup_enabled: bool,
-    /// Moka cache capacity for content-hash dedup (default: `100_000`)
+    /// Moka cache capacity for content-hash dedup (default: `1_000`)
     pub content_hash_dedup_moka_capacity: u64,
-    /// Bloom filter initial capacity for content-hash dedup (default: `100_000`)
-    pub content_hash_dedup_bloom_capacity: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -542,9 +537,6 @@ fn resolve_transport(transport_file: &TransportConfigFile) -> Result<TransportCo
         content_hash_dedup_moka_capacity: parse_env("SIDECAR_CONTENT_HASH_DEDUP_MOKA_CAPACITY")?
             .or(transport_file.content_hash_dedup_moka_capacity)
             .unwrap_or(DEFAULT_CONTENT_HASH_DEDUP_MOKA_CAPACITY),
-        content_hash_dedup_bloom_capacity: parse_env("SIDECAR_CONTENT_HASH_DEDUP_BLOOM_CAPACITY")?
-            .or(transport_file.content_hash_dedup_bloom_capacity)
-            .unwrap_or(DEFAULT_CONTENT_HASH_DEDUP_BLOOM_CAPACITY),
     })
 }
 

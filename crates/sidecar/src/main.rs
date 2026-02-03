@@ -291,10 +291,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Create content hash cache (in-memory only, no persistence)
         let content_hash_cache = if dedup_enabled {
-            ContentHashCache::new(
-                config.transport.content_hash_dedup_moka_capacity,
-                config.transport.content_hash_dedup_bloom_capacity,
-            )
+            ContentHashCache::new(config.transport.content_hash_dedup_moka_capacity)
         } else {
             ContentHashCache::disabled()
         };

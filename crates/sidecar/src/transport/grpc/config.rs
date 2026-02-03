@@ -16,8 +16,6 @@ pub struct DedupCacheConfig {
     pub enabled: bool,
     /// Moka cache capacity.
     pub moka_capacity: u64,
-    /// Bloom filter initial capacity.
-    pub bloom_capacity: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -60,7 +58,6 @@ impl TryFrom<TransportConfig> for GrpcTransportConfig {
             dedup_cache: DedupCacheConfig {
                 enabled: value.content_hash_dedup_enabled,
                 moka_capacity: value.content_hash_dedup_moka_capacity,
-                bloom_capacity: value.content_hash_dedup_bloom_capacity,
             },
         })
     }

@@ -1036,6 +1036,8 @@ impl LocalInstanceGrpcDriver {
                 override_n_transactions: None,
                 override_last_tx_hash: None,
                 override_prev_tx_hash: None,
+                last_committed_block_hash: None,
+                last_committed_beacon_root: None,
             },
         ))
     }
