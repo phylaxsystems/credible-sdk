@@ -4104,21 +4104,15 @@ async fn test_mixed_valid_and_invalid_transactions_counting() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_content_hash_dedup_integration_round_trip() {
     use crate::{
-        db::SidecarDb,
         transport::invalidation_dupe::{
             ContentHashCache,
             tx_content_hash,
         },
         utils::test_drivers::LocalInstanceGrpcDriver,
     };
-    use tempfile::TempDir;
 
-    // Create a real ContentHashCache backed by MDBX
-    let tempdir = TempDir::new().expect("tempdir");
-    let db = std::sync::Arc::new(
-        SidecarDb::open(&tempdir.path().to_string_lossy()).expect("open sidecar db"),
-    );
-    let content_hash_cache = ContentHashCache::new(db, 1_000, 1_000).expect("create cache");
+    // Create an in-memory ContentHashCache
+    let content_hash_cache = ContentHashCache::new(1_000, 1_000);
 
     // Create LocalInstance with the cache shared between engine and transport
     let mut instance = LocalInstanceGrpcDriver::new_with_content_hash_cache(content_hash_cache)

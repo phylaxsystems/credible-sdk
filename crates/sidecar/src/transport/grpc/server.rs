@@ -1233,10 +1233,7 @@ pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, GrpcDecodeError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        TransactionsState,
-        db::SidecarDb,
-    };
+    use crate::TransactionsState;
     use std::{
         sync::{
             Arc,
@@ -1244,7 +1241,6 @@ mod tests {
         },
         time::Duration,
     };
-    use tempfile::TempDir;
 
     /// Integration test: simulates the full round-trip where:
     /// 1. First transaction is processed and sent to the engine queue
@@ -1259,9 +1255,7 @@ mod tests {
         let transactions_results =
             QueryTransactionsResults::new(Arc::clone(&transactions_state), Duration::from_secs(5));
 
-        let dir = TempDir::new().unwrap();
-        let db = Arc::new(SidecarDb::open(&dir.path().to_string_lossy()).unwrap());
-        let content_hash_cache = ContentHashCache::new(db, 1_000, 1_000).unwrap();
+        let content_hash_cache = ContentHashCache::new(1_000, 1_000);
 
         let service = GrpcService::new(
             tx_sender,
@@ -1402,9 +1396,7 @@ mod tests {
         let transactions_results =
             QueryTransactionsResults::new(Arc::clone(&transactions_state), Duration::from_secs(5));
 
-        let dir = TempDir::new().unwrap();
-        let db = Arc::new(SidecarDb::open(&dir.path().to_string_lossy()).unwrap());
-        let content_hash_cache = ContentHashCache::new(db, 1_000, 1_000).unwrap();
+        let content_hash_cache = ContentHashCache::new(1_000, 1_000);
 
         let service = GrpcService::new(
             tx_sender,

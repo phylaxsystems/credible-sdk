@@ -278,9 +278,9 @@ async fn main() -> anyhow::Result<()> {
         let dedup_enabled = config.transport.content_hash_dedup_enabled;
 
         let sidecar_db: Option<Arc<SidecarDb>> =
-            if (observer_configured || dedup_enabled) && config.sidecar_db_path.is_some() {
+            if observer_configured && config.sidecar_db_path.is_some() {
                 let db_path = config.sidecar_db_path.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!("sidecar_db_path required when observer or dedup is enabled")
+                    anyhow::anyhow!("sidecar_db_path required when observer is enabled")
                 })?;
                 Some(Arc::new(SidecarDb::open(db_path).map_err(|e| {
                     anyhow::anyhow!("Failed to open sidecar database: {e}")
@@ -289,21 +289,12 @@ async fn main() -> anyhow::Result<()> {
                 None
             };
 
-        // Create content hash cache (either enabled with SidecarDb or disabled)
+        // Create content hash cache (in-memory only, no persistence)
         let content_hash_cache = if dedup_enabled {
-            if let Some(ref db) = sidecar_db {
-                ContentHashCache::new(
-                    Arc::clone(db),
-                    config.transport.content_hash_dedup_moka_capacity,
-                    config.transport.content_hash_dedup_bloom_capacity,
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to create content hash cache: {e}"))?
-            } else {
-                warn!(
-                    "Content hash dedup enabled but sidecar_db_path not configured, disabling dedup"
-                );
-                ContentHashCache::disabled()
-            }
+            ContentHashCache::new(
+                config.transport.content_hash_dedup_moka_capacity,
+                config.transport.content_hash_dedup_bloom_capacity,
+            )
         } else {
             ContentHashCache::disabled()
         };
