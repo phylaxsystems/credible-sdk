@@ -1405,6 +1405,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // Commit all values inside of `block_metrics` to prometheus collector
         self.block_metrics.commit();
         // Reset the values inside to their defaults for the next block
+        self.block_metrics.reset();
 
         *block_processing_time = Instant::now();
         *processed_blocks += 1;
