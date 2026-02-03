@@ -89,7 +89,7 @@ const UNI_V3_SQRT_PRICE_X96: u128 = 1u128 << 96;
 /// Default Uniswap v3 liquidity parameters (tickSpacing for 0.3% fee is 60)
 const UNI_V3_TICK_LOWER: i32 = -600;
 const UNI_V3_TICK_UPPER: i32 = 600;
-const UNI_V3_LIQUIDITY: u128 = 100_000;
+const UNI_V3_LIQUIDITY: u128 = 1_000_000_000_000;
 
 /// `TickMath.MIN_SQRT_RATIO` + 1 (used as swap price limit for zeroForOne swaps)
 const UNI_V3_MIN_SQRT_RATIO_PLUS_ONE: u64 = 4_295_128_740;
@@ -203,7 +203,7 @@ pub fn uniswap_v3_swap_tx_with_params(nonce: u64, params: &UniV3TxParams) -> TxE
     abi_encode_address(params.token_b, &mut data);
     abi_encode_uint(U256::from(UNI_V3_POOL_FEE), &mut data);
     abi_encode_bool(true, &mut data); // zeroForOne
-    abi_encode_int(1_000, &mut data); // amountSpecified (exact input)
+    abi_encode_int(1, &mut data); // amountSpecified (exact input)
     abi_encode_uint(U256::from(UNI_V3_MIN_SQRT_RATIO_PLUS_ONE), &mut data);
 
     TxEnv {
