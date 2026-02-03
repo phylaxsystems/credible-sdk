@@ -1,6 +1,6 @@
 use crate::db::SidecarDb;
 use alloy_primitives::B256;
-use growable_bloom_filter::GrowableBloom;
+use bloomfilter::Bloom;
 use metrics::counter;
 use moka::sync::Cache;
 use parking_lot::Mutex;
@@ -15,10 +15,44 @@ use reth_libmdbx::WriteFlags;
 use std::sync::Arc;
 use tracing::info;
 
+/// Two fixed-size bloom filters that rotate to bound memory usage.
+/// When the active filter reaches capacity, it becomes the backup and the old backup is cleared.
+struct RotatingBloom {
+    active: Bloom<B256>,
+    backup: Bloom<B256>,
+    count: usize,
+    capacity: usize,
+}
+
+impl RotatingBloom {
+    fn new(capacity: usize, fp_rate: f64) -> Self {
+        Self {
+            active: Bloom::new_for_fp_rate(capacity, fp_rate),
+            backup: Bloom::new_for_fp_rate(capacity, fp_rate),
+            count: 0,
+            capacity,
+        }
+    }
+
+    fn contains(&self, item: &B256) -> bool {
+        self.active.check(item) || self.backup.check(item)
+    }
+
+    fn insert(&mut self, item: &B256) {
+        self.active.set(item);
+        self.count += 1;
+        if self.count >= self.capacity {
+            std::mem::swap(&mut self.active, &mut self.backup);
+            self.active.clear();
+            self.count = 0;
+        }
+    }
+}
+
 /// Inner state for `ContentHashCache`, wrapped in Arc for cheap cloning.
 struct ContentHashCacheInner {
     moka: Cache<B256, u64>,
-    bloom: Mutex<GrowableBloom>,
+    bloom: Mutex<RotatingBloom>,
     db: Option<Arc<SidecarDb>>,
     enabled: bool,
 }
@@ -50,10 +84,10 @@ impl ContentHashCache {
     pub fn new(
         db: Arc<SidecarDb>,
         moka_capacity: u64,
-        bloom_initial_capacity: usize,
+        bloom_capacity: usize,
     ) -> Result<Self, String> {
         let moka = Cache::new(moka_capacity);
-        let mut bloom = GrowableBloom::new(0.01, bloom_initial_capacity);
+        let mut bloom = RotatingBloom::new(bloom_capacity, 0.01);
 
         // Scan MDBX to rebuild in-memory state
         let tx = db.env().tx().map_err(|e| e.to_string())?;
@@ -72,7 +106,7 @@ impl ContentHashCache {
                 let block =
                     u64::from_be_bytes(value.as_slice().try_into().map_err(|e| format!("{e}"))?);
                 moka.insert(hash, block);
-                bloom.insert(hash);
+                bloom.insert(&hash);
                 count += 1;
             }
             next = cursor
@@ -99,7 +133,7 @@ impl ContentHashCache {
         Self {
             inner: Arc::new(ContentHashCacheInner {
                 moka: Cache::new(0),
-                bloom: Mutex::new(GrowableBloom::new(0.5, 1)),
+                bloom: Mutex::new(RotatingBloom::new(1, 0.5)),
                 db: None,
                 enabled: false,
             }),
@@ -124,7 +158,7 @@ impl ContentHashCache {
         // Layer 2: bloom miss → definitely unknown
         let bloom_contains = {
             let bloom = self.inner.bloom.lock();
-            bloom.contains(hash)
+            bloom.contains(&hash)
         };
 
         if !bloom_contains {
@@ -175,7 +209,7 @@ impl ContentHashCache {
         self.inner.moka.insert(hash, block);
         {
             let mut bloom = self.inner.bloom.lock();
-            bloom.insert(hash);
+            bloom.insert(&hash);
         }
         // Write-through to MDBX
         if let Some(db) = &self.inner.db {

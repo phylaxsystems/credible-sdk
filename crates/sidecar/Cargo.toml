@@ -45,7 +45,7 @@ metrics = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 moka = { version = "0.12.11", features = ["sync"] }
-growable-bloom-filter = "2"
+bloomfilter = "1"
 alloy-rpc-types-trace = { workspace = true, optional = true }
 url = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
