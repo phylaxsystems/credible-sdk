@@ -800,7 +800,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             // CommitHead without prior NewIteration - invalidate cache
             warn!(
                 target = "engine",
-                block_number = %commit_head.block_number,
+                current_head = %self.current_head,
+                commit_head_block_number = %commit_head.block_number,
+                commit_head_n_transactions = commit_head.n_transactions,
+                commit_head_last_tx_hash = ?commit_head.last_tx_hash,
                 "Invalidating cache: CommitHead without NewIteration"
             );
             self.invalidate_all(commit_head);
