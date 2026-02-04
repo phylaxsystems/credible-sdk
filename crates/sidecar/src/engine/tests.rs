@@ -107,6 +107,9 @@ impl<DB> CoreEngine<DB> {
             ),
             current_head: U256::from(0),
             cache_metrics_handle: None,
+            assertion_failure_cache: moka::sync::Cache::builder()
+                .max_capacity(super::ASSERTION_FAILURE_CACHE_SIZE)
+                .build(),
         }
     }
 

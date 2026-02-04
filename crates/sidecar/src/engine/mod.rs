@@ -183,6 +183,9 @@ type ProcessedBlocksCache = Arc<moka::sync::Cache<u64, BlockTxStateMap>>;
 /// Timeout for recv - threads will check for the shutdown flag at this interval
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// Max capacity for assertion failure cache.
+const ASSERTION_FAILURE_CACHE_SIZE: u64 = 2048;
+
 /// Branch prediction hint for unlikely conditions
 #[inline]
 #[cold]
@@ -355,6 +358,9 @@ pub struct CoreEngine<DB> {
     #[cfg(feature = "cache_validation")]
     cache_checker: Option<AbortHandle>,
     cache_metrics_handle: Option<JoinHandle<()>>,
+    /// Cache of tx hashes that triggered assertion failures.
+    /// Prevents duplicate logging/metrics on re-execution.
+    assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
 }
 
 #[cfg(feature = "cache_validation")]
@@ -403,6 +409,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             (processed_transactions, handle)
         };
 
+        let assertion_failure_cache = moka::sync::Cache::builder()
+            .max_capacity(ASSERTION_FAILURE_CACHE_SIZE)
+            .build();
+
         Self {
             cache_metrics_handle: Some(cache.spawn_monitoring_thread()),
             cache,
@@ -434,6 +444,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             iteration_pending_processed_transactions: HashMap::new(),
             #[cfg(feature = "cache_validation")]
             cache_checker,
+            assertion_failure_cache,
         }
     }
 
@@ -615,14 +626,20 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 tracing::field::debug(&failed_assertions),
             );
 
+            // Only count if not already cached (avoid duplicate noise on re-execution)
+            let not_cached = self.assertion_failure_cache.get(&tx_hash).is_none();
+            if not_cached {
+                self.block_metrics.invalidated_transactions += 1;
+                self.assertion_failure_cache.insert(tx_hash, ());
+            }
+
             warn!(
                 target = "engine",
                 tx_hash = %tx_hash,
                 failed_assertions = ?failed_assertions,
+                not_seen = not_cached,
                 "Transaction failed assertion validation"
             );
-
-            self.block_metrics.invalidated_transactions += 1;
         }
     }
 
@@ -753,8 +770,15 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let assertions_ran = rax.total_assertion_funcs_ran();
         let assertions_gas = rax.total_assertions_gas();
 
-        self.block_metrics.assertions_per_block += assertions_ran;
-        self.block_metrics.assertion_gas_per_block += assertions_gas;
+        // Only count assertion metrics if TX not already cached (failed assertion dedup)
+        if self
+            .assertion_failure_cache
+            .get(&tx_execution_id.tx_hash)
+            .is_none()
+        {
+            self.block_metrics.assertions_per_block += assertions_ran;
+            self.block_metrics.assertion_gas_per_block += assertions_gas;
+        }
         self.block_metrics.transactions_simulated += 1;
 
         // Commit transaction metrics
