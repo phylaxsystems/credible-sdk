@@ -33,41 +33,6 @@ use std::collections::{
 };
 use tracing::error;
 
-/// Macro to implement Inspector trait for multiple context types.
-/// This is cleaner than duplicating the implementation and more reliable than generic bounds.
-macro_rules! impl_call_tracer_inspector {
-    ($($context_type:ty),* $(,)?) => {
-        $(
-            impl<DB: Database> Inspector<$context_type> for CallTracer {
-                fn step(&mut self, _interp: &mut revm::interpreter::Interpreter, _context: &mut $context_type) {}
-                fn step_end(&mut self, _interp: &mut revm::interpreter::Interpreter, _context: &mut $context_type) {}
-                fn call(&mut self, context: &mut $context_type, inputs: &mut CallInputs) -> Option<CallOutcome> {
-                    let input_bytes = inputs.input.bytes(context);
-                    self.record_call_start(inputs.clone(), &input_bytes, &mut context.journaled_state.inner);
-                    None
-                }
-                fn call_end(&mut self, context: &mut $context_type, _inputs: &CallInputs, outcome: &mut CallOutcome) {
-                    self.journal = context.journaled_state.clone();
-                    let reverted = !outcome.result.result.is_ok();
-                    self.record_call_end(&mut context.journaled_state.inner, reverted);
-                }
-                fn create_end(&mut self, context: &mut $context_type, _inputs: &CreateInputs, _outcome: &mut CreateOutcome) {
-                    self.journal = context.journaled_state.clone();
-                }
-            }
-        )*
-    };
-}
-
-// Implement for both context types in one clean call
-impl_call_tracer_inspector!(EthCtx<'_, DB>, OpCtx<'_, DB>);
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TargetAndSelector {
-    pub target: Address,
-    pub selector: FixedBytes<4>,
-}
-
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum CallTracerError {
     #[error(
@@ -84,34 +49,15 @@ pub enum CallTracerError {
 
 #[derive(Clone, Debug)]
 pub struct CallTracer {
-    // Not public to prohibit inserting CallInputs with CallInput::SharedBuffer
-    // If call_inputs with CallInput::SharedBuffer are inserted, then accessing the data without the previous context will be problematic
-    // This is problematic as you would be required to pass the Context as it was,
-    // at the start of the call,  to read the bytes of the CallInput,
-    // if they are of the SharedBuffer variant.
-    // You otherwise would no longer have access to this data in the future when
-    // you want to read call_inputs from the tracer.
-    // Because of this, we coerce the bytes at the time of recording the call.
-    call_inputs: Vec<CallInputs>,
-    /// Parallel to `call_inputs`: the `(target, selector)` key used for indexing each recorded call.
-    ///
-    /// This lets truncation remove indices without scanning all map entries.
-    target_and_selector_by_call: Vec<TargetAndSelector>,
-    /// Parallel to `call_inputs`: for each call, its position within the key's Vec in
-    /// `target_and_selector_indices`. This enables O(1) truncation by directly knowing
-    /// where to truncate each key's Vec without binary search.
-    position_in_key_vec: Vec<usize>,
+    /// All call records, consolidating inputs, checkpoints, and indexing data.
+    call_records: Vec<CallRecord>,
     /// Assertion store, we limit call input recording to AAs when present.
     ///
     /// If set to `None`, the `CallTracer` will record data for all addresses
     assertion_store: Option<AssertionStore>,
     /// Cache adopter lookups to avoid repeated sled hits per address
     adopter_cache: HashMap<Address, bool>,
-    // Records assertion triggers
-    // triggers: HashMap<Address, HashSet<TriggerType>>,
     pub journal: JournalInner<JournalEntry>,
-    pub pre_call_checkpoints: Vec<JournalCheckpoint>,
-    pub post_call_checkpoints: Vec<Option<JournalCheckpoint>>,
     /// Stack of call indices awaiting `post_call_checkpoint`, indexed by depth.
     /// Uses Vec instead of `HashMap` since calls follow strict stack discipline (LIFO).
     /// Push on `call_start`, pop on `call_end`.
@@ -119,16 +65,13 @@ pub struct CallTracer {
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
     pub result: Result<(), CallTracerError>,
 }
+
 impl Default for CallTracer {
     fn default() -> Self {
         Self {
-            call_inputs: Vec::new(),
-            target_and_selector_by_call: Vec::new(),
-            position_in_key_vec: Vec::new(),
+            call_records: Vec::new(),
             assertion_store: None,
             journal: JournalInner::new(),
-            pre_call_checkpoints: Vec::new(),
-            post_call_checkpoints: Vec::new(),
             pending_post_call_writes: Vec::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
@@ -137,22 +80,12 @@ impl Default for CallTracer {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct CallInputsWithId<'a> {
-    pub call_input: &'a CallInputs,
-    pub id: usize,
-}
-
 impl CallTracer {
     pub fn new(assertion_store: AssertionStore) -> Self {
         Self {
-            call_inputs: Vec::new(),
-            target_and_selector_by_call: Vec::new(),
-            position_in_key_vec: Vec::new(),
+            call_records: Vec::new(),
             assertion_store: Some(assertion_store),
             journal: JournalInner::new(),
-            pre_call_checkpoints: Vec::new(),
-            post_call_checkpoints: Vec::new(),
             pending_post_call_writes: Vec::new(),
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
@@ -199,7 +132,6 @@ impl CallTracer {
 
         // In case where we are hit with a non-AA call, we want to ignore its calldata,
         // but we still have to store the rest of it to preserve the journal depth.
-        // unwrap
         if is_aa {
             // Coerce the bytes at the time of recording the call,
             // in case they are of the SharedBuffer variant
@@ -208,18 +140,15 @@ impl CallTracer {
             inputs.input = CallInput::Bytes(Bytes::default());
         }
 
-        let index = self.call_inputs.len();
+        let index = self.call_records.len();
 
         // Push to stack - tracks pending calls awaiting post_call_checkpoint
         self.pending_post_call_writes.push(index);
 
-        let checkpoint = JournalCheckpoint {
+        let pre_call_checkpoint = JournalCheckpoint {
             log_i: journal_inner.logs.len(),
             journal_i: journal_inner.journal.len(),
         };
-
-        self.pre_call_checkpoints.push(checkpoint);
-        self.post_call_checkpoints.push(None);
 
         let key = TargetAndSelector {
             target: inputs.target_address,
@@ -231,15 +160,19 @@ impl CallTracer {
             .target_and_selector_indices
             .get(&key)
             .map_or(0, Vec::len);
-        self.position_in_key_vec.push(position);
 
         self.target_and_selector_indices
             .entry(key.clone())
             .or_default()
             .push(index);
 
-        self.call_inputs.push(inputs);
-        self.target_and_selector_by_call.push(key);
+        self.call_records.push(CallRecord {
+            inputs,
+            target_and_selector: key,
+            position_in_key_vec: position,
+            pre_call_checkpoint,
+            post_call_checkpoint: None,
+        });
     }
 
     /// Records the end of a call, either committing or reverting based on the outcome.
@@ -260,12 +193,12 @@ impl CallTracer {
         if reverted {
             self.truncate_from(index);
         } else {
-            if self.post_call_checkpoints.len() <= index {
+            if self.call_records.len() <= index {
                 error!(target: "assertion-executor::call_tracer", index, "Post call checkpoint not initialized as None");
                 self.result = Err(CallTracerError::PostCallCheckpointNotInitialized { index });
                 return;
             }
-            self.post_call_checkpoints[index] = Some(JournalCheckpoint {
+            self.call_records[index].post_call_checkpoint = Some(JournalCheckpoint {
                 log_i: journal_inner.logs.len(),
                 journal_i: journal_inner.journal.len(),
             });
@@ -278,7 +211,7 @@ impl CallTracer {
     /// Uses bidirectional indexing for O(k) truncation where k is the number of entries removed,
     /// with O(u) `HashMap` operations where u is the number of unique keys in the truncated range.
     fn truncate_from(&mut self, index: usize) {
-        let old_len = self.call_inputs.len();
+        let old_len = self.call_records.len();
         if index >= old_len {
             return;
         }
@@ -286,11 +219,7 @@ impl CallTracer {
         if index == 0 {
             self.target_and_selector_indices.clear();
             self.pending_post_call_writes.clear();
-            self.call_inputs.clear();
-            self.pre_call_checkpoints.clear();
-            self.post_call_checkpoints.clear();
-            self.target_and_selector_by_call.clear();
-            self.position_in_key_vec.clear();
+            self.call_records.clear();
             return;
         }
 
@@ -301,8 +230,9 @@ impl CallTracer {
         if entries_to_remove == 1 {
             // Fast path for single-entry removal (common in bubble-up reverts)
             // O(1) HashMap lookup + O(1) Vec truncate
-            let key = &self.target_and_selector_by_call[index];
-            let pos = self.position_in_key_vec[index];
+            let record = &self.call_records[index];
+            let key = &record.target_and_selector;
+            let pos = record.position_in_key_vec;
             if let Some(indices) = self.target_and_selector_indices.get_mut(key) {
                 indices.truncate(pos);
                 if indices.is_empty() {
@@ -314,8 +244,9 @@ impl CallTracer {
             // (first occurrence), then truncate to that position.
             let mut truncate_positions: HashMap<&TargetAndSelector, usize> = HashMap::new();
             for i in index..old_len {
-                let key = &self.target_and_selector_by_call[i];
-                let pos = self.position_in_key_vec[i];
+                let record = &self.call_records[i];
+                let key = &record.target_and_selector;
+                let pos = record.position_in_key_vec;
                 truncate_positions
                     .entry(key)
                     .and_modify(|min| *min = (*min).min(pos))
@@ -341,12 +272,8 @@ impl CallTracer {
         // With stack discipline, record_call_end already popped the current entry,
         // and all remaining entries are ancestors with lower indices.
 
-        // Truncate all vectors
-        self.call_inputs.truncate(index);
-        self.pre_call_checkpoints.truncate(index);
-        self.post_call_checkpoints.truncate(index);
-        self.target_and_selector_by_call.truncate(index);
-        self.position_in_key_vec.truncate(index);
+        // Truncate `call_records`
+        self.call_records.truncate(index);
     }
 
     pub fn calls(&self) -> HashSet<Address> {
@@ -374,7 +301,7 @@ impl CallTracer {
                     .iter()
                     .map(|&index| {
                         CallInputsWithId {
-                            call_input: &self.call_inputs[index],
+                            call_input: &self.call_records[index].inputs,
                             id: index,
                         }
                     })
@@ -387,7 +314,35 @@ impl CallTracer {
     /// Check if a call is valid for forking (not inside a reverted subtree)
     #[inline]
     pub fn is_call_forkable(&self, call_id: usize) -> bool {
-        call_id < self.call_inputs.len()
+        call_id < self.call_records.len()
+    }
+
+    /// Returns the pre-call checkpoints for all recorded calls.
+    pub fn pre_call_checkpoints(&self) -> impl Iterator<Item = &JournalCheckpoint> {
+        self.call_records.iter().map(|r| &r.pre_call_checkpoint)
+    }
+
+    /// Returns the post-call checkpoints for all recorded calls.
+    pub fn post_call_checkpoints(&self) -> impl Iterator<Item = &Option<JournalCheckpoint>> {
+        self.call_records.iter().map(|r| &r.post_call_checkpoint)
+    }
+
+    /// Returns a reference to the call records.
+    pub fn call_records(&self) -> &[CallRecord] {
+        &self.call_records
+    }
+
+    /// Returns the pre-call checkpoint for a specific call index.
+    pub fn get_pre_call_checkpoint(&self, index: usize) -> Option<JournalCheckpoint> {
+        self.call_records.get(index).map(|r| r.pre_call_checkpoint)
+    }
+
+    /// Returns the post-call checkpoint for a specific call index.
+    /// Returns `None` if index is out of bounds or if the call hasn't ended yet.
+    pub fn get_post_call_checkpoint(&self, index: usize) -> Option<JournalCheckpoint> {
+        self.call_records
+            .get(index)
+            .and_then(|r| r.post_call_checkpoint)
     }
 
     #[cfg(any(test, feature = "test"))]
@@ -402,25 +357,36 @@ impl CallTracer {
             selector: FixedBytes::default(),
         };
 
+        let index = self.call_records.len();
         self.target_and_selector_indices
             .entry(key.clone())
             .or_default()
-            .push(self.call_inputs.len());
-        self.call_inputs.push(CallInputs {
-            input: CallInput::Bytes(Bytes::default()),
-            return_memory_offset: 0..0,
-            gas_limit: 0,
-            bytecode_address: address,
-            known_bytecode: None,
-            target_address: address,
-            caller: address,
-            is_static: false,
-            scheme: revm::interpreter::CallScheme::Call,
-            value: CallValue::default(),
+            .push(index);
+
+        self.call_records.push(CallRecord {
+            inputs: CallInputs {
+                input: CallInput::Bytes(Bytes::default()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: address,
+                known_bytecode: None,
+                target_address: address,
+                caller: address,
+                is_static: false,
+                scheme: revm::interpreter::CallScheme::Call,
+                value: CallValue::default(),
+            },
+            target_and_selector: key,
+            position_in_key_vec: 0,
+            pre_call_checkpoint: JournalCheckpoint {
+                log_i: 0,
+                journal_i: 0,
+            },
+            post_call_checkpoint: None,
         });
-        self.target_and_selector_by_call.push(key);
     }
 
+    /// Returns all trigger events (calls, balance changes, storage changes) grouped by address.
     pub fn triggers(&self) -> HashMap<Address, HashSet<TriggerType>> {
         let mut result: HashMap<Address, HashSet<TriggerType>> = HashMap::new();
         let journal = &self.journal;
@@ -461,7 +427,77 @@ impl CallTracer {
         }
         result
     }
+
+        /// Test helper to set checkpoints for the last inserted call record.
+    #[cfg(any(test, feature = "test"))]
+    pub fn set_last_call_checkpoints(
+        &mut self,
+        pre_call: JournalCheckpoint,
+        post_call: Option<JournalCheckpoint>,
+    ) {
+        if let Some(record) = self.call_records.last_mut() {
+            record.pre_call_checkpoint = pre_call;
+            record.post_call_checkpoint = post_call;
+        }
+    }
 }
+
+/// A record of a single call in the call stack.
+#[derive(Clone, Debug)]
+pub struct CallRecord {
+    /// The call inputs for this call.
+    pub inputs: CallInputs,
+    /// The (target, selector) key used for indexing this call.
+    pub target_and_selector: TargetAndSelector,
+    /// Position within the key's Vec in `target_and_selector_indices`.
+    /// Enables O(1) truncation.
+    pub position_in_key_vec: usize,
+    /// Journal checkpoint at the start of the call.
+    pub pre_call_checkpoint: JournalCheckpoint,
+    /// Journal checkpoint at the end of the call, None until `call_end`.
+    pub post_call_checkpoint: Option<JournalCheckpoint>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CallInputsWithId<'a> {
+    pub call_input: &'a CallInputs,
+    pub id: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TargetAndSelector {
+    pub target: Address,
+    pub selector: FixedBytes<4>,
+}
+
+/// Macro to implement Inspector trait for multiple context types.
+/// This is cleaner than duplicating the implementation and more reliable than generic bounds.
+macro_rules! impl_call_tracer_inspector {
+    ($($context_type:ty),* $(,)?) => {
+        $(
+            impl<DB: Database> Inspector<$context_type> for CallTracer {
+                fn step(&mut self, _interp: &mut revm::interpreter::Interpreter, _context: &mut $context_type) {}
+                fn step_end(&mut self, _interp: &mut revm::interpreter::Interpreter, _context: &mut $context_type) {}
+                fn call(&mut self, context: &mut $context_type, inputs: &mut CallInputs) -> Option<CallOutcome> {
+                    let input_bytes = inputs.input.bytes(context);
+                    self.record_call_start(inputs.clone(), &input_bytes, &mut context.journaled_state.inner);
+                    None
+                }
+                fn call_end(&mut self, context: &mut $context_type, _inputs: &CallInputs, outcome: &mut CallOutcome) {
+                    self.journal = context.journaled_state.clone();
+                    let reverted = !outcome.result.result.is_ok();
+                    self.record_call_end(&mut context.journaled_state.inner, reverted);
+                }
+                fn create_end(&mut self, context: &mut $context_type, _inputs: &CreateInputs, _outcome: &mut CreateOutcome) {
+                    self.journal = context.journaled_state.clone();
+                }
+            }
+        )*
+    };
+}
+
+// Implement for both context types in one clean call
+impl_call_tracer_inspector!(EthCtx<'_, DB>, OpCtx<'_, DB>);
 
 #[cfg(test)]
 mod test {
@@ -530,8 +566,14 @@ mod test {
 
         let expected = HashSet::from_iter(vec![callee; 33]);
         assert_eq!(tracer.calls(), expected);
-        println!("pre call: {:#?}", tracer.pre_call_checkpoints);
-        println!("post call: {:#?}", tracer.post_call_checkpoints);
+        println!(
+            "pre call: {:#?}",
+            tracer.pre_call_checkpoints().collect::<Vec<_>>()
+        );
+        println!(
+            "post call: {:#?}",
+            tracer.post_call_checkpoints().collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -589,17 +631,19 @@ mod test {
         assert!(result.is_none()); // Inspector should return None to continue execution
 
         // Verify call was recorded
-        assert_eq!(evm.inspector.call_inputs.len(), 1);
-        assert_eq!(evm.inspector.pre_call_checkpoints.len(), 1);
+        assert_eq!(evm.inspector.call_records().len(), 1);
         assert_eq!(
-            evm.inspector.pre_call_checkpoints[0],
+            evm.inspector.call_records()[0].pre_call_checkpoint,
             JournalCheckpoint {
                 log_i: 0,
                 journal_i: 0,
             }
         );
-        assert_eq!(evm.inspector.post_call_checkpoints.len(), 1);
-        assert!(evm.inspector.post_call_checkpoints[0].is_none()); // Should be None before call_end
+        assert!(
+            evm.inspector.call_records()[0]
+                .post_call_checkpoint
+                .is_none()
+        ); // Should be None before call_end
 
         // Verify target and selector mapping
         let expected_key = TargetAndSelector {
@@ -623,15 +667,18 @@ mod test {
             .call_end(&mut evm.ctx, &call_inputs, &mut call_outcome);
 
         // Verify call end was recorded
-        assert!(evm.inspector.post_call_checkpoints[0].is_some()); // Should now have a checkpoint
+        assert!(
+            evm.inspector.call_records()[0]
+                .post_call_checkpoint
+                .is_some()
+        ); // Should now have a checkpoint
         assert_eq!(
-            evm.inspector.post_call_checkpoints[0],
+            evm.inspector.call_records()[0].post_call_checkpoint,
             Some(JournalCheckpoint {
                 log_i: 0,
                 journal_i: 3,
             })
         );
-        assert!(evm.inspector.pending_post_call_writes.is_empty()); // Should be cleared after call_end
 
         // Verify we can retrieve the call inputs
         let retrieved_calls = evm.inspector.get_call_inputs(target_addr, selector);
@@ -1111,7 +1158,7 @@ mod test {
         journal.depth = 0;
         tracer.record_call_end(&mut journal, false);
 
-        assert_eq!(tracer.call_inputs.len(), 2);
+        assert_eq!(tracer.call_records().len(), 2);
         assert!(tracer.is_call_forkable(0), "Call 0 should be forkable");
         assert!(
             tracer.is_call_forkable(1),
@@ -1295,7 +1342,7 @@ mod test {
         journal.depth = 0;
         tracer.record_call_end(&mut journal, false);
 
-        assert_eq!(tracer.call_inputs.len(), 2);
+        assert_eq!(tracer.call_records().len(), 2);
         assert!(tracer.is_call_forkable(0));
         assert!(
             tracer.is_call_forkable(1),
@@ -1589,7 +1636,7 @@ mod test {
         tracer.result.clone().unwrap();
 
         // Should have root + 90 successful calls (10 reverted)
-        assert_eq!(tracer.call_inputs.len(), 91);
+        assert_eq!(tracer.call_records().len(), 91);
 
         // All remaining should be forkable
         for i in 0..91 {
@@ -1664,7 +1711,7 @@ mod test {
         tracer.record_call_end(&mut journal, false);
 
         // Should have: router, oracle, oracle, pool (pool's first call reverted)
-        assert_eq!(tracer.call_inputs.len(), 4);
+        assert_eq!(tracer.call_records().len(), 4);
 
         // Verify get_call_inputs returns correct data
         let oracle_calls = tracer.get_call_inputs(oracle, price_selector);
@@ -1722,7 +1769,7 @@ mod test {
         }
 
         // Only calls 0..49 should remain (deepest reverted)
-        assert_eq!(tracer.call_inputs.len(), DEPTH - 1);
+        assert_eq!(tracer.call_records().len(), DEPTH - 1);
         for i in 0..(DEPTH - 1) {
             assert!(tracer.is_call_forkable(i), "Call {i} should be forkable");
         }
@@ -1800,7 +1847,7 @@ mod test {
         tracer.record_call_end(&mut journal, false);
 
         // Should have calls: 0 (A.func1), 1 (A.func1 after revert)
-        assert_eq!(tracer.call_inputs.len(), 2);
+        assert_eq!(tracer.call_records().len(), 2);
 
         // Verify get_call_inputs
         let a_func1_calls = tracer.get_call_inputs(addr_a, selector_1);
