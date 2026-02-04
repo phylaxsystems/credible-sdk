@@ -169,7 +169,7 @@ impl CallTracer {
         self.call_records.push(CallRecord {
             inputs,
             target_and_selector: key,
-            position_in_key_vec: position,
+            key_index: position,
             pre_call_checkpoint,
             post_call_checkpoint: None,
         });
@@ -232,7 +232,7 @@ impl CallTracer {
             // O(1) HashMap lookup + O(1) Vec truncate
             let record = &self.call_records[index];
             let key = &record.target_and_selector;
-            let pos = record.position_in_key_vec;
+            let pos = record.key_index;
             if let Some(indices) = self.target_and_selector_indices.get_mut(key) {
                 indices.truncate(pos);
                 if indices.is_empty() {
@@ -246,7 +246,7 @@ impl CallTracer {
             for i in index..old_len {
                 let record = &self.call_records[i];
                 let key = &record.target_and_selector;
-                let pos = record.position_in_key_vec;
+                let pos = record.key_index;
                 truncate_positions
                     .entry(key)
                     .and_modify(|min| *min = (*min).min(pos))
@@ -377,7 +377,7 @@ impl CallTracer {
                 value: CallValue::default(),
             },
             target_and_selector: key,
-            position_in_key_vec: 0,
+            key_index: 0,
             pre_call_checkpoint: JournalCheckpoint {
                 log_i: 0,
                 journal_i: 0,
@@ -449,9 +449,9 @@ pub struct CallRecord {
     pub inputs: CallInputs,
     /// The (target, selector) key used for indexing this call.
     pub target_and_selector: TargetAndSelector,
-    /// Position within the key's Vec in `target_and_selector_indices`.
-    /// Enables O(1) truncation.
-    pub position_in_key_vec: usize,
+    /// Index within the key's Vec in `target_and_selector_indices`.
+    /// Enables O(1) truncation on reverts.
+    pub key_index: usize,
     /// Journal checkpoint at the start of the call.
     pub pre_call_checkpoint: JournalCheckpoint,
     /// Journal checkpoint at the end of the call, None until `call_end`.
