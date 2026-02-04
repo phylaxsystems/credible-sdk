@@ -628,8 +628,8 @@ mod test {
         call_tracer.insert_trace(address);
         call_tracer.set_last_call_checkpoints(
             JournalCheckpoint {
-                log_i: 0,
-                journal_i: 0,
+                log_i: test_journal.logs.len(),
+                journal_i: test_journal.journal.len(),
             },
             Some(JournalCheckpoint {
                 log_i: test_journal.logs.len(),
@@ -734,8 +734,8 @@ mod test {
         call_tracer.insert_trace(address);
         call_tracer.set_last_call_checkpoints(
             JournalCheckpoint {
-                log_i: 0,
-                journal_i: 0,
+                log_i: test_journal.logs.len(),
+                journal_i: test_journal.journal.len(),
             },
             Some(JournalCheckpoint {
                 log_i: test_journal.logs.len(),
@@ -817,8 +817,8 @@ mod test {
         call_tracer.insert_trace(address);
         call_tracer.set_last_call_checkpoints(
             JournalCheckpoint {
-                log_i: 0,
-                journal_i: 0,
+                log_i: test_journal.logs.len(),
+                journal_i: test_journal.journal.len(),
             },
             Some(JournalCheckpoint {
                 log_i: test_journal.logs.len(),
