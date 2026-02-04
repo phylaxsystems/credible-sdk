@@ -30,6 +30,7 @@ use crate::{
                 GetStateChangesError,
                 get_state_changes,
             },
+            tx_object::load_tx_object,
         },
         sol_primitives::{
             PhEvm,
@@ -116,7 +117,11 @@ pub struct PhEvmContext<'a> {
 }
 
 impl<'a> PhEvmContext<'a> {
-    pub fn new(logs_and_traces: &'a LogsAndTraces<'a>, adopter: Address, tx_env: &'a TxEnv) -> Self {
+    pub fn new(
+        logs_and_traces: &'a LogsAndTraces<'a>,
+        adopter: Address,
+        tx_env: &'a TxEnv,
+    ) -> Self {
         Self {
             logs_and_traces,
             adopter,
@@ -329,6 +334,7 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::getAssertionAdopterCall::SELECTOR => {
                 get_assertion_adopter(&self.context).map_err(PrecompileError::UnexpectedError)?
             }
+            PhEvm::getTxObjectCall::SELECTOR => load_tx_object(&self.context, inputs.gas_limit),
             console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
                 return crate::inspectors::precompiles::console_log::console_log(

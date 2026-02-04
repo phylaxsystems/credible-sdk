@@ -274,8 +274,11 @@ impl AssertionExecutor {
                         AssertionContractExecution,
                         AssertionExecutionError<<Active as DatabaseRef>::Error>,
                     > {
-                        let phevm_context =
-                            PhEvmContext::new(&logs_and_traces, assertion_for_execution.adopter, tx_env);
+                        let phevm_context = PhEvmContext::new(
+                            &logs_and_traces,
+                            assertion_for_execution.adopter,
+                            tx_env,
+                        );
 
                         self.run_assertion_contract(
                             &assertion_for_execution.assertion_contract,
