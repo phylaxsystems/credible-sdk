@@ -4092,12 +4092,14 @@ async fn test_mixed_valid_and_invalid_transactions_counting() {
     );
 }
 
-/// Integration test: verifies the full round-trip of content hash deduplication.
+/// Integration test: verifies the full round-trip of content hash tracking.
 ///
-/// 1. Creates a `LocalInstance` with a real `ContentHashCache` (backed by MDBX)
+/// 1. Creates a `LocalInstance` with a real `ContentHashCache`
 /// 2. Sends a transaction that fails assertion validation
 /// 3. Verifies the engine records the invalidation in the cache
-/// 4. Verifies subsequent duplicates with the same content would be rejected
+///
+/// The cache is used for metrics/logging only - duplicates are still processed
+/// by the engine (no early rejection).
 ///
 /// This test uses the `LocalInstance` infrastructure with the gRPC transport to verify
 /// the cache is correctly shared between the engine and transport layers.

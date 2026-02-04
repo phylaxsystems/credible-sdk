@@ -83,6 +83,7 @@ use crate::{
     },
 };
 use assertion_executor::primitives::{
+    Bytes,
     EVMError,
     TxValidationResult,
 };
@@ -591,9 +592,22 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 self.block_metrics.transactions_simulated_failure += 1;
             }
         } else {
+            let assertion_ids: Vec<_> = rax
+                .assertions_executions
+                .iter()
+                .flat_map(|assertion_execution| {
+                    assertion_execution
+                        .assertion_fns_results
+                        .iter()
+                        .filter(|fn_result| !fn_result.is_success())
+                        .map(|fn_result| fn_result.id.assertion_contract_id)
+                })
+                .collect();
+
             warn!(
                 target = "engine",
                 tx_hash = %tx_hash,
+                assertion_ids = ?assertion_ids,
                 "Transaction failed assertion validation"
             );
 
@@ -681,6 +695,19 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             .get_mut(&block_id)
             .ok_or(EngineError::TransactionError)?;
 
+        // Check if this is a known duplicate before execution
+        let content_hash = tx_content_hash(tx_env);
+        let is_dedup = self.invalidating_tx_cache.contains(content_hash);
+
+        if is_dedup {
+            debug!(
+                target = "engine",
+                tx_hash = %tx_execution_id.tx_hash,
+                content_hash = ?content_hash,
+                "Processing known-duplicate transaction (dedup cache hit)"
+            );
+        }
+
         let instant = Instant::now();
 
         trace!(
@@ -715,38 +742,76 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         };
 
         let is_valid = rax.is_valid();
-        if !is_valid {
-            let content_hash = tx_content_hash(tx_env);
+        if is_valid {
+            // If this transaction was previously marked invalidating but now passes, drop it.
+            if is_dedup {
+                self.invalidating_tx_cache.remove(content_hash);
+            }
+        } else {
             let block_number = tx_execution_id.block_number.saturating_to::<u64>();
             self.invalidating_tx_cache
                 .record_invalidating(content_hash, block_number);
         }
+
+        let suppress_metrics_and_reporting = is_dedup && !is_valid;
         let prev_txs = if should_report && !is_valid {
             Some(current_block_iteration.incident_txs.clone())
         } else {
             None
         };
 
-        // Batch metric updates
-        let assertions_ran = rax.total_assertion_funcs_ran();
-        let assertions_gas = rax.total_assertions_gas();
+        if suppress_metrics_and_reporting {
+            let assertion_ids: Vec<_> = rax
+                .assertions_executions
+                .iter()
+                .flat_map(|assertion_execution| {
+                    assertion_execution
+                        .assertion_fns_results
+                        .iter()
+                        .filter(|fn_result| !fn_result.is_success())
+                        .map(|fn_result| fn_result.id.assertion_contract_id)
+                })
+                .collect();
 
-        self.block_metrics.assertions_per_block += assertions_ran;
-        self.block_metrics.assertion_gas_per_block += assertions_gas;
-        self.block_metrics.transactions_simulated += 1;
+            warn!(
+                target = "engine",
+                tx_hash = %tx_execution_id.tx_hash,
+                content_hash = ?content_hash,
+                assertion_ids = ?assertion_ids,
+                "Transaction failed assertion validation (dedup cache hit; metrics/reporting suppressed)"
+            );
+            counter!("sidecar_dedup_transactions_skipped_total").increment(1);
+        } else {
+            // Batch metric updates
+            let assertions_ran = rax.total_assertion_funcs_ran();
+            let assertions_gas = rax.total_assertions_gas();
 
-        // Commit transaction metrics
-        let mut tx_metrics = TransactionMetrics::new();
-        tx_metrics.transaction_processing_duration = processing_duration;
-        tx_metrics.assertions_per_transaction = assertions_ran;
-        tx_metrics.assertion_gas_per_transaction = assertions_gas;
-        tx_metrics.commit();
+            self.block_metrics.assertions_per_block += assertions_ran;
+            self.block_metrics.assertion_gas_per_block += assertions_gas;
+            self.block_metrics.transactions_simulated += 1;
 
-        self.trace_execute_transaction_result(tx_execution_id, tx_env, &rax, processing_duration);
+            // Commit transaction metrics
+            let mut tx_metrics = TransactionMetrics::new();
+            tx_metrics.transaction_processing_duration = processing_duration;
+            tx_metrics.assertions_per_transaction = assertions_ran;
+            tx_metrics.assertion_gas_per_transaction = assertions_gas;
+            tx_metrics.commit();
+
+            self.trace_execute_transaction_result(
+                tx_execution_id,
+                tx_env,
+                &rax,
+                processing_duration,
+            );
+        }
 
         let tx_data: ReconstructableTx = (tx_execution_id.tx_hash, tx_env.clone());
-        if let Some(prev_txs) = prev_txs {
-            self.emit_incident_report(tx_data.clone(), &block_env, prev_txs, &rax);
+        if !suppress_metrics_and_reporting {
+            if let Some(prev_txs) = prev_txs {
+                self.emit_incident_report(tx_data.clone(), &block_env, prev_txs, &rax);
+            }
+        } else if should_report && !is_valid {
+            counter!("sidecar_dedup_incident_reports_skipped_total").increment(1);
         }
 
         let result_and_state = rax.result_and_state;

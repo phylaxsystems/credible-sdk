@@ -1,6 +1,5 @@
 use dashmap::DashMap;
 use futures::future;
-use hashlink::LinkedHashMap;
 use metrics::histogram;
 use std::{
     fmt::Debug,
@@ -15,10 +14,7 @@ use tokio::{
 };
 
 use crate::{
-    engine::{
-        TransactionResult,
-        queue::TxQueueContents,
-    },
+    engine::queue::TxQueueContents,
     execution_ids::TxExecutionId,
     metrics::TransportTransactionsResultMetrics,
     transactions_state::{
@@ -60,8 +56,6 @@ pub enum AcceptedState {
 pub struct QueryTransactionsResults {
     transactions_state: Arc<TransactionsState>,
     pending_receives: Arc<DashMap<TxExecutionId, PendingReceive>>,
-    early_results: Arc<Mutex<LinkedHashMap<TxExecutionId, ()>>>,
-    early_results_max_capacity: usize,
     bg_task_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     metrics: TransportTransactionsResultMetrics,
     pending_receive_ttl: Duration,
@@ -81,20 +75,9 @@ pub enum QueryTransactionsResultsError {
 
 impl QueryTransactionsResults {
     pub fn new(transactions_state: Arc<TransactionsState>, pending_receive_ttl: Duration) -> Self {
-        Self::new_with_early_results_capacity(transactions_state, pending_receive_ttl, 10_000)
-    }
-
-    pub fn new_with_early_results_capacity(
-        transactions_state: Arc<TransactionsState>,
-        pending_receive_ttl: Duration,
-        early_results_max_capacity: usize,
-    ) -> Self {
-        let early_results_max_capacity = early_results_max_capacity.max(1);
         let this = Self {
             transactions_state,
             pending_receives: Arc::new(DashMap::new()),
-            early_results: Arc::new(Mutex::new(LinkedHashMap::new())),
-            early_results_max_capacity,
             bg_task_handle: Arc::new(Mutex::new(None)),
             metrics: TransportTransactionsResultMetrics::default(),
             pending_receive_ttl,
@@ -103,41 +86,6 @@ impl QueryTransactionsResults {
         this.spawn_cleanup_task();
 
         this
-    }
-
-    /// Record a result without enqueueing the tx for execution.
-    ///
-    /// Used to immediately respond for known-invalidating duplicates (transport-level filter).
-    pub fn add_early_transaction_result(
-        &self,
-        tx_execution_id: TxExecutionId,
-        result: &TransactionResult,
-    ) {
-        self.transactions_state
-            .add_transaction_result(tx_execution_id, result);
-
-        let Ok(mut early_results) = self.early_results.lock() else {
-            warn!(
-                target = "transport::grpc",
-                "early results mutex poisoned; skipping early result pruning"
-            );
-            return;
-        };
-
-        // Move to back (most recent) if already present.
-        if early_results.contains_key(&tx_execution_id) {
-            early_results.remove(&tx_execution_id);
-        }
-        early_results.insert(tx_execution_id, ());
-
-        while early_results.len() > self.early_results_max_capacity {
-            if let Some((oldest_tx_execution_id, ())) = early_results.pop_front() {
-                self.transactions_state
-                    .remove_transaction_result(&oldest_tx_execution_id);
-            } else {
-                break;
-            }
-        }
     }
 
     /// Adds accepted tx to `transactions_state` and sends a message to all

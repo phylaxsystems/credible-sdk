@@ -132,6 +132,7 @@ use tracing::{
     error,
     info,
     instrument,
+    trace,
     warn,
 };
 
@@ -771,28 +772,18 @@ impl GrpcService {
                 let queue_tx = decode_transaction(&transaction)
                     .map_err(|e| Status::invalid_argument(format!("invalid transaction: {e}")))?;
 
-                // Content-hash filter: skip known-invalidating transactions with identical content
+                // Content-hash filter: log known-invalidating transactions with identical content
                 // (same calldata, value, etc.) even if nonce/gas parameters differ.
+                // We don't early-reject; we just increment counters for observability.
+                // Note: Engine handles dedup detection and emits debug logs there.
                 if let TxQueueContents::Tx(ref tx) = queue_tx {
                     let content_hash = tx_content_hash(&tx.tx_env);
                     if self.inner.content_hash_cache.contains(content_hash) {
-                        // Return an immediate assertion-failed result without enqueueing
-                        // the transaction for execution.
-                        let early_result = TransactionResult::ValidationCompleted {
-                            execution_result: ExecutionResult::Revert {
-                                gas_used: 0,
-                                output: Bytes::new(),
-                            },
-                            is_valid: false,
-                        };
-                        self.transactions_results
-                            .add_early_transaction_result(tx.tx_execution_id, &early_result);
-                        info!(
+                        trace!(
                             tx_hash = ?tx.tx_execution_id.tx_hash,
                             content_hash = ?content_hash,
-                            "Known-invalidating content hash duplicate, early rejecting"
+                            "Known-invalidating content hash detected"
                         );
-                        return Ok(());
                     }
                 }
 
@@ -1242,14 +1233,11 @@ mod tests {
         time::Duration,
     };
 
-    /// Integration test: simulates the full round-trip where:
-    /// 1. First transaction is processed and sent to the engine queue
-    /// 2. Engine records the invalidation (simulated via cache.record_invalidating)
-    /// 3. Duplicate transaction (same content, different nonce) is early-rejected
-    ///
-    /// This verifies the cache is correctly shared between engine and transport layers.
+    /// Integration test: verifies that known-invalidating transactions are still
+    /// queued to the engine (no early rejection). The cache is used for metrics
+    /// and logging only.
     #[tokio::test]
-    async fn engine_records_invalidation_transport_rejects_duplicate() {
+    async fn known_invalidating_duplicate_is_still_queued_to_engine() {
         let (tx_sender, tx_receiver) = flume::unbounded();
         let transactions_state = TransactionsState::new();
         let transactions_results =
@@ -1349,7 +1337,6 @@ mod tests {
             tx_hash: [0x22u8; 32].to_vec(), // Different tx hash
             index: 1,
         };
-        let tx_execution_id_2 = decode_tx_execution_id(&pb_tx_execution_id_2).unwrap();
 
         let tx_2 = Transaction {
             tx_execution_id: Some(pb_tx_execution_id_2),
@@ -1362,113 +1349,16 @@ mod tests {
             event: Some(EventVariant::Transaction(tx_2)),
         };
 
-        // Process second transaction - should be early-rejected
+        // Process second transaction - should still be queued (no early rejection)
         service.process_event(event_2, &events_processed).unwrap();
 
-        // Verify duplicate was NOT sent to the engine queue
-        assert!(
-            tx_receiver.try_recv().is_err(),
-            "duplicate tx should not be queued to engine"
-        );
-
-        // Verify early rejection result was stored
-        let stored = transactions_state
-            .get_transaction_result(&tx_execution_id_2)
-            .expect("early rejection result should be stored");
-
-        let expected = TransactionResult::ValidationCompleted {
-            execution_result: ExecutionResult::Revert {
-                gas_used: 0,
-                output: Bytes::new(),
-            },
-            is_valid: false,
-        };
-        assert_eq!(
-            *stored, expected,
-            "early rejection should return assertion-failed result"
-        );
-    }
-
-    #[tokio::test]
-    async fn known_invalidating_duplicate_emits_early_assertion_failed_result() {
-        let (tx_sender, tx_receiver) = flume::unbounded();
-        let transactions_state = TransactionsState::new();
-        let transactions_results =
-            QueryTransactionsResults::new(Arc::clone(&transactions_state), Duration::from_secs(5));
-
-        let content_hash_cache = ContentHashCache::new(1_000);
-
-        let service = GrpcService::new(
-            tx_sender,
-            transactions_results,
-            None,
-            100,
-            content_hash_cache.clone(),
-        );
-        service
-            .inner
-            .commit_head_seen
-            .store(true, std::sync::atomic::Ordering::Release);
-
-        let pb_tx_env = TransactionEnv {
-            tx_type: 0,
-            caller: Address::ZERO.as_slice().to_vec(),
-            gas_limit: 21_000,
-            gas_price: 1u128.to_be_bytes().to_vec(),
-            transact_to: Address::ZERO.as_slice().to_vec(),
-            value: U256::ZERO.to_be_bytes::<32>().to_vec(),
-            data: vec![0x01, 0x02],
-            nonce: 0,
-            chain_id: Some(1),
-            access_list: vec![],
-            gas_priority_fee: None,
-            blob_hashes: vec![],
-            max_fee_per_blob_gas: vec![],
-            authorization_list: vec![],
-        };
-
-        // Seed the cache with the invalidating content hash.
-        let decoded_tx_env = decode_tx_env(&pb_tx_env).unwrap();
-        let content_hash = tx_content_hash(&decoded_tx_env);
-        content_hash_cache.record_invalidating(content_hash, 1);
-
-        let pb_tx_execution_id = PbTxExecutionId {
-            block_number: U256::from(1u64).to_be_bytes::<32>().to_vec(),
-            iteration_id: 1,
-            tx_hash: [0x11u8; 32].to_vec(),
-            index: 0,
-        };
-        let tx_execution_id = decode_tx_execution_id(&pb_tx_execution_id).unwrap();
-
-        let tx = Transaction {
-            tx_execution_id: Some(pb_tx_execution_id),
-            tx_env: Some(pb_tx_env),
-            prev_tx_hash: None,
-        };
-
-        let event = Event {
-            event_id: 1,
-            event: Some(EventVariant::Transaction(tx)),
-        };
-
-        let events_processed = AtomicU64::new(0);
-        service.process_event(event, &events_processed).unwrap();
-
-        // Transaction should not be forwarded to the engine.
-        assert!(tx_receiver.try_recv().is_err());
-
-        // But it should have an immediate assertion-failed result stored.
-        let stored = transactions_state
-            .get_transaction_result(&tx_execution_id)
-            .expect("early result should be stored");
-
-        let expected = TransactionResult::ValidationCompleted {
-            execution_result: ExecutionResult::Revert {
-                gas_used: 0,
-                output: Bytes::new(),
-            },
-            is_valid: false,
-        };
-        assert_eq!(*stored, expected);
+        // Verify duplicate WAS sent to the engine queue (no early rejection)
+        let queued_2 = tx_receiver
+            .try_recv()
+            .expect("known-invalidating tx should still be queued to engine");
+        assert!(matches!(
+            queued_2,
+            crate::engine::queue::TxQueueContents::Tx(_)
+        ));
     }
 }

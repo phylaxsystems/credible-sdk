@@ -78,12 +78,25 @@ impl ContentHashCache {
     }
 
     /// Record a hash as invalidating, inserting into the cache.
+    ///
+    /// Only increments the insert counter if this is a new entry (not already in cache).
     pub fn record_invalidating(&self, hash: B256, block: u64) {
         if !self.inner.enabled {
             return;
         }
-        counter!("sidecar_dedup_content_hash_inserts_total").increment(1);
+        // Only count as new insert if not already present
+        if self.inner.moka.get(&hash).is_none() {
+            counter!("sidecar_dedup_content_hash_inserts_total").increment(1);
+        }
         self.inner.moka.insert(hash, block);
+    }
+
+    /// Remove a hash from the cache (used when a previously invalid tx later validates).
+    pub fn remove(&self, hash: B256) {
+        if !self.inner.enabled {
+            return;
+        }
+        self.inner.moka.invalidate(&hash);
     }
 }
 
@@ -113,6 +126,37 @@ mod tests {
         assert!(!cache.contains(hash));
         cache.record_invalidating(hash, 10);
         assert!(!cache.contains(hash));
+    }
+
+    #[test]
+    fn remove_clears_hash() {
+        let cache = ContentHashCache::new(1000);
+        let hash = B256::from([0xab; 32]);
+        cache.record_invalidating(hash, 1);
+        assert!(cache.contains(hash));
+
+        cache.remove(hash);
+        assert!(!cache.contains(hash));
+    }
+
+    #[test]
+    fn re_recording_same_hash_is_idempotent() {
+        let cache = ContentHashCache::new(1000);
+        let hash = B256::from([0xdd; 32]);
+
+        // First record
+        cache.record_invalidating(hash, 10);
+        assert!(cache.contains(hash));
+
+        // Re-record same hash (should not change behavior)
+        cache.record_invalidating(hash, 20);
+        assert!(cache.contains(hash));
+
+        // Cache still works for other hashes
+        let hash2 = B256::from([0xee; 32]);
+        assert!(!cache.contains(hash2));
+        cache.record_invalidating(hash2, 30);
+        assert!(cache.contains(hash2));
     }
 
     #[test]
