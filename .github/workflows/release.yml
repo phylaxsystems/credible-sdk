@@ -239,3 +239,105 @@ jobs:
       prerelease: false
     secrets:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+
+  update-homebrew:
+    needs: [create-tag, build-pcl, release-github]
+    if: needs.create-tag.outputs.tag_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download PCL artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: pcl-binaries-${{ needs.create-tag.outputs.version }}
+          path: pcl-artifacts/
+
+      - name: Calculate SHA256 checksums
+        id: checksums
+        env:
+          VERSION: ${{ needs.create-tag.outputs.version }}
+        run: |
+          MACOS_ARM64_SHA=$(sha256sum pcl-artifacts/pcl-${VERSION}-macos-arm64.tar.gz | awk '{print $1}')
+          LINUX_X86_64_SHA=$(sha256sum pcl-artifacts/pcl-${VERSION}-linux-x86_64.tar.gz | awk '{print $1}')
+          LINUX_ARM64_SHA=$(sha256sum pcl-artifacts/pcl-${VERSION}-linux-arm64.tar.gz | awk '{print $1}')
+
+          echo "macos_arm64_sha=${MACOS_ARM64_SHA}" >> $GITHUB_OUTPUT
+          echo "linux_x86_64_sha=${LINUX_X86_64_SHA}" >> $GITHUB_OUTPUT
+          echo "linux_arm64_sha=${LINUX_ARM64_SHA}" >> $GITHUB_OUTPUT
+
+          echo "Checksums:"
+          echo "  macOS ARM64: ${MACOS_ARM64_SHA}"
+          echo "  Linux x86_64: ${LINUX_X86_64_SHA}"
+          echo "  Linux ARM64: ${LINUX_ARM64_SHA}"
+
+      - name: Checkout homebrew-pcl
+        uses: actions/checkout@v4
+        with:
+          repository: phylaxsystems/homebrew-pcl
+          token: ${{ secrets.HOMEBREW_PAT }}
+          path: homebrew-pcl
+
+      - name: Update formula
+        env:
+          VERSION: ${{ needs.create-tag.outputs.version }}
+          MACOS_ARM64_SHA: ${{ steps.checksums.outputs.macos_arm64_sha }}
+          LINUX_X86_64_SHA: ${{ steps.checksums.outputs.linux_x86_64_sha }}
+          LINUX_ARM64_SHA: ${{ steps.checksums.outputs.linux_arm64_sha }}
+        run: |
+          cat > homebrew-pcl/Formula/phylax.rb << 'FORMULA'
+          class Phylax < Formula
+            desc "Credible Layer CLI"
+            homepage "https://github.com/phylaxsystems/credible-sdk"
+            version "VERSION_PLACEHOLDER"
+
+            if OS.mac?
+              if Hardware::CPU.arm?
+                url "https://github.com/phylaxsystems/credible-sdk/releases/download/#{version}/pcl-#{version}-macos-arm64.tar.gz"
+                sha256 "MACOS_ARM64_SHA_PLACEHOLDER"
+              else
+                odie "Intel macOS is no longer supported."
+              end
+            elsif OS.linux?
+              if Hardware::CPU.intel?
+                url "https://github.com/phylaxsystems/credible-sdk/releases/download/#{version}/pcl-#{version}-linux-x86_64.tar.gz"
+                sha256 "LINUX_X86_64_SHA_PLACEHOLDER"
+              elsif Hardware::CPU.arm?
+                url "https://github.com/phylaxsystems/credible-sdk/releases/download/#{version}/pcl-#{version}-linux-arm64.tar.gz"
+                sha256 "LINUX_ARM64_SHA_PLACEHOLDER"
+              else
+                odie "Unsupported Linux architecture."
+              end
+            else
+              odie "Unsupported operating system."
+            end
+
+            def install
+              bin.install "pcl"
+            end
+
+            test do
+              assert_match "pcl #{version}", shell_output("#{bin}/pcl --version")
+            end
+          end
+          FORMULA
+
+          # Replace placeholders with actual values
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-pcl/Formula/phylax.rb
+          sed -i "s/MACOS_ARM64_SHA_PLACEHOLDER/${MACOS_ARM64_SHA}/g" homebrew-pcl/Formula/phylax.rb
+          sed -i "s/LINUX_X86_64_SHA_PLACEHOLDER/${LINUX_X86_64_SHA}/g" homebrew-pcl/Formula/phylax.rb
+          sed -i "s/LINUX_ARM64_SHA_PLACEHOLDER/${LINUX_ARM64_SHA}/g" homebrew-pcl/Formula/phylax.rb
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' homebrew-pcl/Formula/phylax.rb
+
+          cat homebrew-pcl/Formula/phylax.rb
+
+      - name: Commit and push
+        working-directory: homebrew-pcl
+        env:
+          VERSION: ${{ needs.create-tag.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/phylax.rb
+          git commit -m "Update pcl to ${VERSION}"
+          git push
